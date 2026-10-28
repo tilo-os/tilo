@@ -7,6 +7,16 @@ use zeroize::Zeroizing;
 /// longer is not a request.
 pub const MAX_LINE: usize = 16 * 1024;
 
+/// Whether a secret is a PIN (digits only) or a password. A screen asks for
+/// one or the other by name and offers a number pad for a PIN. Part of the
+/// protocol, so a client built without the service reads it too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SecretKind {
+    Pin,
+    Password,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum Request {
@@ -51,6 +61,23 @@ pub enum Request {
     /// which is when a fingerprint may confirm them (sign-in.md §4.3).
     /// Answered in `key_held`. The peer is root, that person or the greeter.
     KeyHeld { user: String },
+    /// Whether `user`'s secret is a PIN or a password, so the login screen
+    /// names the field and opens a number pad for a PIN. Answered in
+    /// `secret`, absent when their record does not say. The peer is root,
+    /// that person or the greeter; the volume header's sign-in tokens say
+    /// the same to anyone holding the disk.
+    SecretKind { user: String },
+    /// The device's sign-in comforts, which the login screens start with.
+    /// Answered with the comforts object or `null`; anyone may ask, as
+    /// anyone holding the disk can read them from the volume header.
+    SignInComforts,
+    /// Change the fields `comforts` names of the device's sign-in comforts
+    /// (`settings_store::sign_in_comforts`); the rest stay. The result is
+    /// mirrored into the volume header when it differs from the comforts
+    /// kept. The peer is root, the greeter or a person with a record here.
+    SetSignInComforts {
+        comforts: serde_json::Map<String, serde_json::Value>,
+    },
 }
 
 /// Why a request did not succeed.
@@ -92,6 +119,8 @@ pub struct Reply {
     pub factors: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_held: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<SecretKind>,
 }
 
 impl Reply {
@@ -129,6 +158,18 @@ mod tests {
         assert!(matches!(
             serde_json::from_str::<Request>(r#"{"op":"pending-sign-in"}"#).unwrap(),
             Request::PendingSignIn
+        ));
+        assert!(matches!(
+            serde_json::from_str::<Request>(r#"{"op":"sign-in-comforts"}"#).unwrap(),
+            Request::SignInComforts
+        ));
+        assert!(matches!(
+            serde_json::from_str::<Request>(
+                r#"{"op":"set-sign-in-comforts","comforts":{"screen_reader":true}}"#
+            )
+            .unwrap(),
+            Request::SetSignInComforts { ref comforts }
+                if comforts.get("screen_reader") == Some(&serde_json::Value::Bool(true))
         ));
         assert_eq!(
             serde_json::to_string(&Reply {

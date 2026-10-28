@@ -320,12 +320,18 @@ globalThis.__tiloPage ||= (() => {
   // frame 1 however many frames the page has had, and a number printed is a
   // number the actions take.
   const framesByNumber = new Map();
+  // The number a frame has in this document now: counted over every frame
+  // element the document holds, in document order, whether or not a frame
+  // whose mark-up is here has a document this one may read. The address the
+  // engine resolves a frame by is that number, so the number printed and the
+  // number taken are the same count.
   function frameNumber(element) {
     if (!element.isConnected) return 1;
     if (framesByNumber.size >= 4096) framesByNumber.clear();
-    const number = [...document.querySelectorAll('iframe,frame')].indexOf(element) + 1;
+    const root = document.contains(element) ? document : element.getRootNode();
+    const number = [...root.querySelectorAll('iframe,frame')].indexOf(element) + 1;
     framesByNumber.set(number, new WeakRef(element));
-    return number;
+    return Math.max(1, number);
   }
 
   const type = element => (element.getAttribute('type') || 'text').toLowerCase();
@@ -490,6 +496,73 @@ globalThis.__tiloPage ||= (() => {
       if (part.includes(MARKER)) return part;
     return '';
   }
+  const HIDDEN = {display: /^(?:none)$/i, visibility: /^(?:hidden|collapse)$/i,
+    'content-visibility': /^(?:hidden)$/i, opacity: /^0(?:\.0+)?%?$/};
+  // Where a rule's inner part names what sits under the hovered compound
+  // (`.menu:hover ul`, `.menu:hover > .panel`), the part the selector goes on
+  // with, or '' when the rule styles the trigger itself.
+  function afterHover(selector) {
+    if (typeof selector !== 'string') return '';
+    const at = selector.search(/:hover(?![\w-])/);
+    return at < 0 ? '' : selector.slice(at + 6).replace(/^[^\s>+~]*/, '').trim();
+  }
+  function ruleElements(rule) {
+    // A sheet a stylesheet import brings in is one more place a hover's rules
+    // sit; a layer's rules are nested like a media query's.
+    if (rule.styleSheet) {
+      let imported = null;
+      try { imported = rule.styleSheet.cssRules; } catch (error) { imported = null; }
+      return imported ? [...imported].flatMap(ruleElements) : [];
+    }
+    return rule.cssRules?.length ? [...rule.cssRules].flatMap(ruleElements) : [rule];
+  }
+  // Whether an element has a place on the page to be scrolled to: a box the
+  // page lays out and shows. A closed menu's rows, or a box of no size, have
+  // nowhere to be reached, and scrolling cannot open them.
+  function onPage(element) {
+    return element.getClientRects().length > 0 && !hiddenByStyle(element);
+  }
+  // Whether the page keeps this box out of sight with one of the hiding
+  // declarations it rests under. A box that has no size yet (an empty
+  // underline that grows on a hover) is not out of sight: it is a spacer, and
+  // a hover that gives it a size reveals nothing a gesture could reach.
+  function hiddenByStyle(element) {
+    for (let node = element, depth = 0; node && node.nodeType === 1 && depth++ < 32;
+      node = node.parentElement || node.getRootNode().host) {
+      const style = getComputedStyle(node);
+      if (Object.entries(HIDDEN).some(([name, held]) => held.test(String(style.getPropertyValue(name)).trim())))
+        return true;
+    }
+    return false;
+  }
+  // Whether an element the rule names after the hover is hidden now: what a
+  // hover would take out of hiding. The rest of the selector only means
+  // something under the box being hovered, so it is read from there: a rule
+  // that opens another box's panel says nothing about this one.
+  function hiddenNow(selector, under) {
+    if (!selector) return false;
+    let nodes = null;
+    try { nodes = under ? under.querySelectorAll(selector) : document.querySelectorAll(selector); }
+    catch (error) { return false; }
+    for (const node of nodes) if (hiddenByStyle(node)) return true;
+    return false;
+  }
+  // Whether one rule takes a box out of hiding on the hover: the part it names
+  // under the hovered compound starts hidden, or its own declarations bring a
+  // box the hidden declarations held down back into sight. A tint alone opens
+  // nothing.
+  function revealsOnHover(rule, element) {
+    for (const inner of ruleElements(rule)) {
+      const under = afterHover(String(inner && inner.selectorText || ''));
+      // A rule that only tints the trigger itself lays no box out to be
+      // reached: `display:flex` on a box the page already shows is a tint.
+      if (!under) continue;
+      if (hiddenNow(under, element)) return true;
+      // A rule the hover gives a size or a place to (`height:2px` on an empty
+      // underline) reveals nothing: it is the same box, drawn larger.
+    }
+    return false;
+  }
   function markHoverTargets() {
     hoverTargets = new Set();
     let seen = 0;
@@ -499,28 +572,52 @@ globalThis.__tiloPage ||= (() => {
       if (!rules) continue;
       for (const rule of rules) {
         if (seen++ > MAX_HOVER_RULES) return hoverTargets.size;
-        const trigger = hoverTrigger(rule.selectorText);
-        if (!trigger) continue;
-        // The marker is what a resting pointer puts on the element; it is
-        // borrowed here to read which elements a hover would land on.
-        const bare = trigger.split('.' + MARKER).join('');
-        if (!bare) continue;
-        for (const element of document.querySelectorAll('*')) {
-          let beside = false;
-          try { beside = element.matches(bare); } catch (error) { beside = false; }
+        try {
+          const trigger = hoverTrigger(rule.selectorText);
+          if (!trigger) continue;
+          // The marker is what a resting pointer puts on the element; it is
+          // borrowed here to read which elements a hover would land on.
+          const bare = trigger.split('.' + MARKER).join('');
+          let beside = null;
+          try { bare && (beside = document.querySelectorAll(bare)); } catch (error) { beside = null; }
           if (!beside) continue;
-          const had = element.classList.contains(MARKER);
-          if (!had) element.classList.add(MARKER);
-          let wanted = false;
-          try { wanted = element.matches(trigger); } catch (error) { wanted = false; }
-          if (!had) element.classList.remove(MARKER);
-          if (!wanted) continue;
-          if (hoverTargets.size >= MAX_HOVER_TARGETS) return hoverTargets.size;
-          hoverTargets.add(element);
+          for (const element of beside) {
+            const had = element.classList.contains(MARKER);
+            if (!had) element.classList.add(MARKER);
+            let wanted = false;
+            try { wanted = element.matches(trigger); } catch (error) { wanted = false; }
+            if (!had) element.classList.remove(MARKER);
+            if (!wanted || !revealsOnHover(rule, element)) continue;
+            if (hoverTargets.size >= MAX_HOVER_TARGETS) return hoverTargets.size;
+            hoverTargets.add(element);
+          }
+        } catch (error) {
+          // A rule this reader cannot follow is not a trigger it can name.
         }
       }
     }
     return hoverTargets.size;
+  }
+  // Whether a hover on this box is what takes a box out of hiding: the page's
+  // own rule says so, and the box the CSS hovers is the one a hand has to
+  // reach. It is read from the sheets, not from the class index: the index
+  // holds only the rules that style a box at rest.
+  function hoverRevealsUnder(element) {
+    let seen = 0;
+    for (const sheet of document.styleSheets) {
+      let rules = null;
+      try { rules = sheet.cssRules; } catch (error) { rules = null; }
+      if (!rules) continue;
+      for (const rule of rules) {
+        if (seen++ > MAX_HOVER_RULES) return false;
+        const trigger = hoverTrigger(rule.selectorText || '');
+        if (!trigger || !revealsOnHover(rule, element)) continue;
+        let beside = false;
+        try { beside = element.matches(trigger.split('.' + MARKER).join('')); } catch (error) { beside = false; }
+        if (beside) return true;
+      }
+    }
+    return false;
   }
   // The element on which a hover opens something: itself when a rule names
   // it, an ancestor when the rule hovers one, else the parent whose hovered
@@ -545,33 +642,19 @@ globalThis.__tiloPage ||= (() => {
 
   // The frame an action named, by the number the page prints for it: the frame
   // element this document holds it in, or the frame element the page numbered.
+  // The frame element this document numbers `number`: its frames are the ones
+  // it holds, numbered in the order it holds them, whether or not this document
+  // may read what a frame shows. A frame inside another one is numbered by that
+  // frame's own document, which is where a place with more parts is read.
   function numberedFrame(number) {
     if (!/^\d+$/.test(number || '')) return null;
-    // A frame this document may not read is still placed from the frame
-    // element that holds it, which this document does see.
-    const held = holdingFrame(Number(number));
-    return held || framesByNumber.get(String(Number(number)))?.deref?.() || null;
-  }
-
-  // The frame element this document numbers `number`: the one holding this
-  // document itself, or the one holding the frame this document numbers. The
-  // walk descends only into frames this document may read: a frame out of
-  // reach is placed from the mark-up around it, which is never out of reach.
-  function holdingFrame(number) {
-    if (document.frameElement) return document.frameElement;
-    const walk = root => {
-      for (const element of [...root.querySelectorAll('iframe,frame')].slice(0, 4096)) {
-        let child = null;
-        try { child = element.contentDocument; } catch { child = null; }
-        if (!child) continue;
-        const inner = child.querySelectorAll?.('iframe,frame') || [];
-        if (inner.length < number) return element;
-        const found = walk(child);
-        if (found) return found;
-      }
-      return null;
-    };
-    return walk(document);
+    const known = framesByNumber.get(String(Number(number)))?.deref?.();
+    if (known && known.isConnected) return known;
+    // A frame this document is held in is numbered from the document that
+    // holds it, so a document asked for a number above its own answers with
+    // the frame it is itself in.
+    if (document.frameElement && Number(number) === frameNumber(document.frameElement)) return document.frameElement;
+    return [...document.querySelectorAll('iframe,frame')].slice(0, 4096)[Number(number) - 1] || null;
   }
 
   // Where a frame this document lists sits in it now, in this document's
@@ -601,6 +684,47 @@ globalThis.__tiloPage ||= (() => {
     // and a click is placed from the page's viewport, so the frame's own
     // viewport position is the whole of the offset: no scroll is added.
     return {ok: true, message: `Frame ${number}`, x: rect.x, y: rect.y};
+  }
+
+  // The frame element this document numbers `part`, and the document a frame
+  // of that number holds: a frame whose mark-up is here is one this document
+  // can name even when the frame's own document belongs to another site, so a
+  // place that walks through it is answered here and continued there.
+  function frameElement(part) {
+    if (!/^\d+$/.test(part || '')) throw failure('invalid_request', 'A frame of this document is named by its number, such as 1 or 2');
+    const element = numberedFrame(part);
+    if (!element) throw failure('no_frame', `This document holds no frame ${part} now; read the page again`);
+    const box = element.getBoundingClientRect(), style = getComputedStyle(element);
+    // The place a frame's own document is moved by is the view's corner, inside
+    // the frame's border, and the doc gives the document a frame of its own.
+    const x = box.x + (parseFloat(style.borderLeftWidth) || 0), y = box.y + (parseFloat(style.borderTopWidth) || 0);
+    const held = element.contentWindow ? (() => { try { return element.contentWindow.document; } catch { return null; } })() : null;
+    return {ok: true, message: `Frame ${part}`, data: {x, y, frame: windowFrameId(part), same_origin: !!held}};
+  }
+
+  // The engine's name for the document a frame of one number holds: it belongs
+  // to the frame of this document, and is named by the number this document
+  // gives it.
+  function windowFrameId(part) {
+    const frame = windowFrame();
+    return frame ? `${frame}.${part}` : String(part);
+  }
+
+  // The engine's id of this document's frame, which a frame inside it is named
+  // under: the address the page calls this frame by, or nothing for the page.
+  function windowFrame() {
+    const element = window.frameElement;
+    if (!element) return '';
+    return frameAddress || internalId(element);
+  }
+
+  function internalId(element) {
+    const root = document.contains(element) ? document : element.getRootNode?.();
+    const frames = root?.querySelectorAll ? [...root.querySelectorAll('iframe,frame')] : [];
+    const part = frames.indexOf(element) + 1;
+    if (part < 1) return '';
+    const outer = window.frameElement ? internalId(window.frameElement) : '';
+    return outer ? `${outer}.${part}` : String(part);
   }
 
   // A point in a frame's own document means nothing in the page: the caller
@@ -899,7 +1023,10 @@ globalThis.__tiloPage ||= (() => {
       if (!INTERACTIVE.has(kind) && kind !== 'heading' && element.draggable) kind = 'draggable';
       // A page that keeps a menu hidden until the pointer rests on it names
       // the element a hand has to reach, so a gesture can address it by ref.
-      if (!INTERACTIVE.has(kind) && kind !== 'heading' && hovering.has(element)) kind = 'hoverable';
+      // A box a hover only tints is not a box it opens: a hand has nothing
+      // new to reach, so it is not listed as one a hover reveals.
+      if (!INTERACTIVE.has(kind) && kind !== 'heading' && hovering.has(element) && hoverRevealsUnder(element))
+        kind = 'hoverable';
       // A hover-only menu's trigger has no role of its own, no click and no
       // pointer cursor; it is found only by the rule its hover applies to.
       if (!kind && visible && !context.inside && tag !== 'body' && tag !== 'html' && hoverReveals(element))
@@ -933,6 +1060,9 @@ globalThis.__tiloPage ||= (() => {
         flush();
         // A frame is its own document: the line names the id an action takes to
         // run there, and the address, so the caller knows what it would reach.
+        // A frame whose mark-up this document holds is listed here even when
+        // its document is another site's: it is a frame of this page, and one
+        // the page numbered, so the id is one an action can take to it.
         const label = clean(element.title || element.name, MAX_NAME);
         const id = frameNumber(element);
         const parts = [kind];
@@ -1003,6 +1133,199 @@ globalThis.__tiloPage ||= (() => {
       'is on the screen with read-page-element-at';
     if (truncated) lines.push(`- text "… ${cut}"`);
     return {lines, cut, frames: frames()};
+  }
+
+  // What the page shows that an agent can act on, as the outline prints it:
+  // the same role words, the same names, the same order, so a caller who read
+  // a line names the element back by what it says. The walk keeps the places
+  // a line sits under — a named dialog, form or group, a table with a caption
+  // — so a box is found by the words its own line is printed beneath. One
+  // walk, so a find stays a bounded read of the page whatever the page does.
+  const MAX_FIND_CANDIDATES = 40000, MAX_FIND_NEAR = 20, MAX_FIND_AMBIGUOUS = 12;
+  // A box the outline names, and what a line printed inside it sits under:
+  // the named ones print their name, the rest a word for what they hold.
+  const FIND_NAMED = new Set(['dialog', 'alertdialog', 'form', 'group', 'table', 'region']);
+
+  // The kind the outline lists an element under, read as the outline reads
+  // it: the role its element carries, a drag source, a thing a pointer asks
+  // for, and what a bare element with a click is.
+  function kindOf(element, visible, inside, pointer) {
+    if (!visible) return '';
+    let kind = role(element);
+    if (!INTERACTIVE.has(kind) && kind !== 'heading' && element.draggable) kind = 'draggable';
+    const tag = element.localName;
+    if (!kind && visible && !inside && tag !== 'body' && tag !== 'html' && tag !== 'label' &&
+        (element.hasAttribute('onclick') || (element.hasAttribute('tabindex') && element.tabIndex >= 0) ||
+         (getComputedStyle(element).cursor === 'pointer' && !pointer))) kind = 'clickable';
+    if (!kind && tag === 'body') return '';
+    return kind;
+  }
+
+  function childrenOf(element) {
+    if (element.shadowRoot) return element.shadowRoot.childNodes;
+    const assigned = element.localName === 'slot' ? element.assignedNodes({flatten: true}) : null;
+    return assigned && assigned.length ? assigned : element.childNodes;
+  }
+
+  // Every element of this document the outline prints with a ref, in the
+  // outline's own order, each with the kind, the name, the places its line
+  // may sit under, and the line itself.
+  function findCandidates() {
+    const found = [];
+    let visited = 0;
+    const under = (places, text) => `${places}${text}${text.endsWith(':') ? ' ' : ': '}`;
+    const visit = (element, inside, places, pointer) => {
+      if (++visited > MAX_FIND_CANDIDATES) return;
+      const tag = element.localName;
+      if (SKIP.has(tag) || element.getAttribute('aria-hidden') === 'true') return;
+      if (tag === 'input' && type(element) === 'hidden') return;
+      if (element.checkVisibility && !element.checkVisibility()) return;
+      const style = getComputedStyle(element);
+      const visible = style.visibility === 'visible';
+      const kind = kindOf(element, visible, inside, pointer || style.cursor === 'pointer');
+      // A frame is its own document, read with the frame's id.
+      if (kind === 'iframe') return;
+      const inner = inside || (tag === 'label' && !!element.control);
+      if (INTERACTIVE.has(kind) || kind === 'heading') {
+        const label = name(element, kind, {naming: kind === 'hint'}) || '';
+        found.push({element, kind, label, places, line: `${places}${lineOf(label, kind, element)}`});
+        // A select prints its own line and its options beneath it.
+        if (tag === 'select') for (const option of element.options) {
+          const optionName = clean(option.label, MAX_NAME) || '';
+          found.push({element: option, kind: 'option', label: optionName, places: under(places, `combobox ${quote(label)}`),
+            line: `${under(places, `combobox ${quote(label)}`)}option ${quote(optionName)}`});
+        }
+        // The line's own name carries what is inside it, so what is found
+        // within is found under the line it is printed beneath.
+        if (kind === 'textbox' || kind === 'searchbox') return;
+        for (const child of childrenOf(element)) if (child.nodeType === 1)
+          visit(child, true, under(places, `${kind}${label ? ' ' + quote(label) : ''}`), style.cursor === 'pointer');
+        return;
+      }
+      if (CONTAINERS.has(kind)) {
+        const label = FIND_NAMED.has(kind) ? name(element, kind) : '';
+        const bar = `${kind}${label ? ' ' + quote(label) : ''}`;
+        for (const child of childrenOf(element)) if (child.nodeType === 1)
+          visit(child, inner, label ? under(places, bar) : places, pointer || style.cursor === 'pointer');
+        return;
+      }
+      for (const child of childrenOf(element)) if (child.nodeType === 1)
+        visit(child, inner, places, pointer || style.cursor === 'pointer');
+    };
+    if (document.body) visit(document.body, false, '', false);
+    return found;
+  }
+
+  // A line as the outline prints it, without the depth it is printed at: the
+  // words a caller read, which is what a find answers with.
+  function lineOf(label, kind, element) {
+    const parts = [kind];
+    if (label) parts.push(quote(label));
+    if (INTERACTIVE.has(kind)) parts.push(`[ref=${refOf(element)}]`);
+    parts.push(...details(element, kind));
+    if (kind === 'hint') parts.push('(a hover opens more)');
+    if (kind === 'draggable') parts.push('(draggable)');
+    return parts.join(' ');
+  }
+
+  // How a name matches what a line prints: as the whole name exactly, then
+  // in any letter case, then as a part of it.
+  const MATCHES = [
+    (label, wanted) => label === wanted,
+    (label, wanted) => label.toLowerCase() === wanted.toLowerCase(),
+    (label, wanted) => label.toLowerCase().includes(wanted.toLowerCase())
+  ];
+  const LOOSE = ['', ' in any letter case', ' by part of its name'];
+
+  function described(role, name) {
+    return [role ? `role ${quote(role)}` : '', name ? `name ${quote(name)}` : '']
+      .filter(Boolean).join(' and ');
+  }
+
+  // The distance about, so the nearest names are listed first: a letter
+  // slipped in a word is near, and so is a name sharing its start, which is
+  // how a person hears two names as alike.
+  function closeness(a, b) {
+    const left = a.toLowerCase(), right = b.toLowerCase();
+    const row = Array.from({length: right.length + 1}, (_, index) => index);
+    for (let i = 1; i <= left.length; i++) {
+      let corner = row[0];
+      row[0] = i;
+      for (let j = 1; j <= right.length; j++) {
+        const held = row[j];
+        row[j] = Math.min(row[j] + 1, row[j - 1] + 1, corner + (left[i - 1] === right[j - 1] ? 0 : 1));
+        corner = held;
+      }
+    }
+    let shared = 0;
+    while (shared < left.length && shared < right.length && left[shared] === right[shared]) shared++;
+    return row[right.length] - shared / (Math.max(left.length, right.length) + 1);
+  }
+
+  // What the page holds, so a caller who described nothing it has is told
+  // what it nearly said instead of being sent looking again.
+  function findsNothing(role, name, all) {
+    const asked = described(role, name);
+    // A find reads one document. A frame holds its own, so a caller told
+    // nothing matches is told where else to look rather than left believing
+    // the page holds none of it.
+    const elsewhere = [...document.querySelectorAll('iframe,frame')].map((element, index) => {
+      const label = clean(element.title || element.name, MAX_NAME);
+      return `frame=${index + 1}${label ? ` (${quote(label)})` : ''}`;
+    });
+    const frames = elsewhere.length
+      ? ` A frame is its own document: read it with read-page {${elsewhere.join(', ')}} or name it with frame, such as ${elsewhere[0].split(' ')[0]}`
+      : '';
+    if (!all.length)
+      return failure('not_found', `Nothing on the page is ${asked}; the page shows no element an action can act on.${frames}`);
+    const scored = all.map(candidate => ({candidate, near: name ? closeness(candidate.label, name)
+      : role ? closeness(candidate.kind, role) : 0}));
+    scored.sort((a, b) => a.near - b.near);
+    const nearest = scored.slice(0, MAX_FIND_NEAR).map(({candidate}) => candidate.line);
+    return failure('not_found', `Nothing on the page is ${asked}. The nearest are: ${nearest.join('; ')}.${frames}`);
+  }
+
+  // The element a stable description names, answered with its ref in this
+  // document as it is now, so a step recorded once plays again after the page
+  // has loaded. Nothing is guessed: several equal matches without a number are
+  // refused and listed, and a description the page does not hold names the
+  // nearest it has.
+  function find(command) {
+    const role = typeof command.role === 'string' && command.role.trim() ? command.role.trim().toLowerCase() : null;
+    const name = typeof command.name === 'string' && command.name.trim() ? command.name.trim() : null;
+    if (!role && !name)
+      throw failure('invalid_request', 'find-page-element needs a role, a name, or both, such as name="Email" or role=button name="Remove"');
+    const nth = typeof command.nth === 'number' ? command.nth : null;
+    const all = findCandidates();
+    const ofRole = role ? all.filter(candidate => candidate.kind === role) : all;
+    const asked = described(role, name);
+    // The whole name first; then in any letter case, then by a part of it,
+    // each only once nothing matched the way before it.
+    for (const step of [0, 1, 2]) {
+      if (!name && step > 0) break;
+      const matches = name ? ofRole.filter(candidate => MATCHES[step](candidate.label, name)) : ofRole;
+      if (!matches.length) continue;
+      const where = matches[0].places ? ` under ${matches[0].places.replace(/: $/, '')}` : '';
+      const loosely = name ? LOOSE[step] : '';
+      if (nth === null && matches.length > 1) {
+        const listed = matches.slice(0, MAX_FIND_AMBIGUOUS)
+          .map((candidate, index) => `(${index + 1}) ${candidate.line}`);
+        const more = matches.length > listed.length ? ` and ${matches.length - listed.length} more` : '';
+        throw failure('ambiguous', `${matches.length} elements are ${asked}${loosely}${where}: ` +
+          `${listed.join('; ')}${more}. Name one by its number, nth`);
+      }
+      const pick = nth === null ? matches[0] : matches[nth - 1];
+      if (!pick)
+        throw failure('not_found', `The page has ${matches.length} element${matches.length === 1 ? '' : 's'} ${asked}${loosely}` +
+          `${where}, so there is no (${nth}); name one from 1 to ${matches.length}`);
+      const ref = refOf(pick.element);
+      const number = nth === null ? 1 : nth;
+      const data = {element: ref, role: pick.kind, name: pick.label, line: pick.line,
+        nth: number, matches: matches.length};
+      return {ok: true, ...data, data,
+        message: `Found ${pick.line}${nth === null ? '' : ` of ${matches.length}`}`};
+    }
+    return findsNothing(role, name, all);
   }
 
   function clip(rect) {
@@ -1901,6 +2224,9 @@ globalThis.__tiloPage ||= (() => {
           case 'prepare_text_input': case 'start_text_input': case 'check_text_input': case 'commit_text_input': case 'cancel_text_input': case 'undo_text_input': case 'redo_text_input':
             return guardedTextInput(command);
           case 'outline': return outline();
+          // The ref of the element a stable description names, read from the
+          // page as it is now.
+          case 'find': return find(command);
           // The engine mirrors a hover through the page's CSS only when that
           // CSS opens something on hover; otherwise the browser's own pointer
           // is enough and nothing is applied.
@@ -1912,6 +2238,7 @@ globalThis.__tiloPage ||= (() => {
           case 'scroll_left': return scrollLeft();
           case 'at': return frameId() ? atInFrame() : at(command.x, command.y);
           case 'frame_offset': return frameOffset(command.frame, command.anchored);
+          case 'frame_element': return frameElement(command.frame);
           case 'frame_fence': return fence();
           case 'settle': return settle(command.quiet_ms, command.timeout_ms);
           case 'locate': arm('pointer'); return locate(command.element, command.cross_origin);

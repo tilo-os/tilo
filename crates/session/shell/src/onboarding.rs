@@ -548,6 +548,13 @@ pub(crate) fn holds_no_identity_secret(path: &Path) -> bool {
         })
 }
 
+/// The signed-in person's home directory, when the session names an absolute one.
+pub(crate) fn session_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

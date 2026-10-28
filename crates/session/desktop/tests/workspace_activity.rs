@@ -388,7 +388,9 @@ fn workspace_activity_unsettled_refresh_retains_only_current_admission_rows() {
 // in it, as checkpoints with nothing to show must fail this regression.
 #[test]
 fn workspace_activity_replay_starts_where_the_workspace_does() {
-    use automerge::{ObjType, transaction::CommitOptions};
+    use automerge::transaction::CommitOptions;
+    use tilo_desktop_model::shared_record::device;
+    use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
     let workspace = Workspace::new(WorkspaceId(4), "Planning");
     let mut doc = AutoCommit::new();
     let stamp = |doc: &mut AutoCommit, at: i64| {
@@ -397,23 +399,44 @@ fn workspace_activity_replay_starts_where_the_workspace_does() {
     doc.put(ROOT, "room", workspace.room().to_string()).unwrap();
     stamp(&mut doc, 0);
     doc.put(ROOT, "name", "Planning").unwrap();
-    let contents = doc.put_object(ROOT, "contents", ObjType::Map).unwrap();
-    let strip = doc
-        .put_object(&contents, "0001000000000003", ObjType::Map)
-        .unwrap();
-    doc.put(&strip, "name", "Planning").unwrap();
-    doc.put(&strip, "order", 0_u64).unwrap();
-    let groups = doc.put_object(&strip, "groups", ObjType::Map).unwrap();
+    // Then a device lays the workspace out in its layout record, a window at
+    // a time.
+    let mut layout = Workspace::in_room(workspace.id, workspace.room(), "Planning");
+    let mut strip = Strip::new(StripId::from((1 << 48) | 3), "Planning");
     for (at, group, tab, title) in [
-        (1, "0001000000000001", "0001000000000002", "Notes"),
-        (2, "0001000000000004", "0001000000000005", "Sheets"),
+        (1, (1 << 48) | 1, (1 << 48) | 2, "Notes"),
+        (2, (1 << 48) | 4, (1 << 48) | 5, "Sheets"),
     ] {
-        let group = doc.put_object(&groups, group, ObjType::Map).unwrap();
-        doc.put(&group, "order", 0_u64).unwrap();
-        let tabs = doc.put_object(&group, "tabs", ObjType::Map).unwrap();
-        let tab = doc.put_object(&tabs, tab, ObjType::Map).unwrap();
-        doc.put(&tab, "title", title).unwrap();
-        doc.put(&tab, "order", 0_u64).unwrap();
+        strip.window_groups.push(WindowGroup {
+            id: group,
+            tabs: vec![Tab {
+                id: tab,
+                title: title.into(),
+                tile: TileContent::LocalApp {
+                    app_id: format!("org.tilo.{title}"),
+                    label: title.into(),
+                    note: String::new(),
+                },
+                app_title: None,
+            }],
+            active_tab: tab,
+            width: WindowWidth::Wide,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
+        layout.strips = vec![strip.clone()];
+        device::write(
+            &mut doc,
+            workspace.room(),
+            &layout,
+            &device::Writer {
+                person: Some("ada"),
+                mine: &|id| id >> 48 == 1,
+                retained: &|_| true,
+                carried: device::Writer::NOTHING_CARRIED,
+            },
+        )
+        .unwrap();
         stamp(&mut doc, at);
     }
     let mut tree = ActivitySnapshot::new(

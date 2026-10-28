@@ -13,13 +13,13 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use automerge::AutoCommit;
 use containers::ContainersShell;
 use containers::app::ContainersApp;
 use containers::draft::{CreateDraft, CreateField};
 use containers::model::{DetailTab, Section, sample_engine};
 use containers::terminal;
 use ui::headless::FrameHarness as FrameDriver;
+use ui::headless::{RootAndStateMut, RootMut};
 use ui::prelude::TestApp;
 use ui::theme::Theme;
 
@@ -66,11 +66,10 @@ impl Driver {
     fn offline() -> Self {
         offline_at(VIEWPORT, Theme::dark())
     }
-    fn parts(&mut self) -> (&mut ContainersApp, &mut AutoCommit) {
-        let (app, state) = self.frame.root_and_state_mut::<ContainersApp>();
-        (app, &mut state.doc)
+    fn parts(&mut self) -> RootAndStateMut<'_, ContainersApp> {
+        self.frame.root_and_state_mut::<ContainersApp>()
     }
-    fn app(&mut self) -> &mut ContainersApp {
+    fn app(&mut self) -> RootMut<'_, ContainersApp> {
         self.frame.root_mut::<ContainersApp>()
     }
     fn frame(&mut self) {
@@ -91,7 +90,7 @@ fn offline() -> Driver {
     Driver::offline()
 }
 
-fn app(d: &mut Driver) -> &mut ContainersApp {
+fn app(d: &mut Driver) -> RootMut<'_, ContainersApp> {
     d.root_mut::<ContainersApp>()
 }
 
@@ -363,11 +362,13 @@ fn container_resources_open_terminal_and_log_detail() {
         let mut d = offline();
         d.key("2");
         let id = sample_engine().containers[1].id.clone();
-        let (app, _doc) = d.parts();
+        let mut parts = d.parts();
+        let (app, _state) = parts.split();
         app.perform_effect(containers::resource::ContainersEffect::OpenLogs {
             container: id.clone(),
         })
         .unwrap();
+        drop(parts);
         assert_eq!(d.app().section(), Section::Containers);
         assert_eq!(d.app().selected(), Some(id.as_str()));
         assert_eq!(d.app().tab(), DetailTab::Logs);

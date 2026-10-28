@@ -633,3 +633,126 @@ fn an_appended_hint_is_carried_to_where_the_scene_is_drawn() {
         Ok(vec![Rect::new(100.0, 0.0, 110.0, 10.0)])
     );
 }
+
+/// Background, a layer around a clipped part at `A` and a part at `B` with
+/// a gradient and text, then a part at `C` whose layer the section pops.
+fn layered_desktop() -> (Box<Scene>, SectionParts) {
+    section(|scene| {
+        let all = Rect::new(0.0, 0.0, 200.0, 50.0);
+        fill(scene, Affine::IDENTITY, all, Color::BLACK);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::Mix::Normal,
+            0.8,
+            Affine::IDENTITY,
+            &all,
+        );
+        part(scene, PartKey::new("a", 1_u64), vec![A], |scene| {
+            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &A);
+            fill(scene, Affine::IDENTITY, A.inflate(4.0, 4.0), Color::WHITE);
+            scene.pop_layer();
+        });
+        part(scene, PartKey::new("b", 2_u64), vec![B], |scene| {
+            let gradient = Gradient::new_linear((100.0, 0.0), (110.0, 0.0))
+                .with_stops([Color::WHITE, Color::BLACK]);
+            scene.fill(Fill::NonZero, Affine::IDENTITY, &gradient, None, &B);
+            TEXT.with(|text| {
+                text.borrow_mut().draw_text(
+                    scene,
+                    "caret",
+                    12.0,
+                    Color::WHITE,
+                    Affine::translate((100.0, 0.0)),
+                    None,
+                );
+            });
+        });
+        scene.pop_layer();
+        begin(scene, PartKey::new("open", 3_u64));
+        scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &C);
+        fill(scene, Affine::IDENTITY, C, Color::WHITE);
+        end(scene, vec![C]);
+        scene.pop_layer();
+        fill(
+            scene,
+            Affine::IDENTITY,
+            Rect::new(60.0, 0.0, 70.0, 10.0),
+            Color::WHITE,
+        );
+    })
+}
+
+const C: Rect = Rect::new(20.0, 0.0, 30.0, 10.0);
+
+fn wants_b(bounds: &[Rect]) -> bool {
+    bounds.iter().any(|rect| rect.overlaps(B))
+}
+
+#[test]
+fn counting_a_scene_s_streams_gives_what_encoding_it_counted() {
+    let (scene, _) = layered_desktop();
+    let mut counted = scene.encoding().clone();
+    count_streams(&mut counted);
+    let encoded = scene.encoding();
+    assert_eq!(
+        (
+            counted.n_paths,
+            counted.n_path_segments,
+            counted.n_clips,
+            counted.n_open_clips
+        ),
+        (
+            encoded.n_paths,
+            encoded.n_path_segments,
+            encoded.n_clips,
+            encoded.n_open_clips
+        )
+    );
+}
+
+#[test]
+fn a_scene_culled_to_a_damage_leaves_out_only_parts_it_can_leave_out() {
+    let (scene, parts) = layered_desktop();
+    assert!(
+        culled(&scene, &parts, |_| true).is_none(),
+        "every part wanted leaves the scene as it is"
+    );
+    let culled = culled(&scene, &parts, wants_b).expect("the part at A is left out");
+    let encoding = culled.encoding();
+    assert!(encoding.n_paths < scene.encoding().n_paths);
+    // The part whose layer the section pops stays, and its layer with it.
+    assert_eq!(encoding.n_clips, scene.encoding().n_clips - 2);
+    assert_eq!(encoding.n_open_clips, 0);
+}
+
+#[cfg(feature = "native")]
+#[test]
+fn a_culled_scene_paints_what_the_whole_one_does_where_it_was_wanted() {
+    let (scene, parts) = layered_desktop();
+    let culled = culled(&scene, &parts, wants_b).expect("the part at A is left out");
+    let (width, height) = (200_u32, 50_u32);
+    let render = |scene: &Scene| {
+        let mut pixels = vec![0_u8; (width * height * 4) as usize];
+        let mut target =
+            tilo_cpu_raster::Target::new(&mut pixels, width, height, width as usize * 4)
+                .expect("a raster target");
+        tilo_cpu_raster::CpuRasterizer::new(tilo_cpu_raster::Options::default()).render(
+            scene.encoding(),
+            &mut target,
+            None,
+            Color::from_rgb8(20, 30, 40),
+        );
+        pixels
+    };
+    let (whole, part) = (render(&scene), render(&culled));
+    let row = |pixels: &[u8], y: u32| {
+        let at = ((y * width + 100) * 4) as usize;
+        pixels[at..at + 40].to_vec()
+    };
+    for y in 0..10 {
+        assert_eq!(row(&whole, y), row(&part, y), "row {y} inside B");
+    }
+    let at = |pixels: &[u8], x: u32| pixels[((5 * width + x) * 4) as usize..][..4].to_vec();
+    assert_ne!(at(&whole, 5), at(&part, 5), "the part at A was not drawn");
+    assert_eq!(at(&whole, 25), at(&part, 25), "the part at C was drawn");
+}

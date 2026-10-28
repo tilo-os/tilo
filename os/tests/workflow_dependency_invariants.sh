@@ -56,21 +56,29 @@ else
 fi
 
 # The kernel is rebuilt for the module signer's own sources, not for the TLS fixtures beside
-# them: its fingerprint (kernel.sh inputs_digest) and its build check's inputs name exactly them.
+# them nor for the rest of Cargo.lock: its fingerprint (kernel.sh inputs_digest) names exactly
+# the signer's sources, kernel-signer-crate projects exactly them into the crate the kernel
+# compiles, and the kernel's build check takes that crate instead of the workspace.
 kernel_inputs="$(tcheck image-kernel-{arch} inputs)" || fail=1
+kernel_needs="$(tcheck image-kernel-{arch} needs)" || fail=1
+signer_inputs="$(tcheck kernel-signer-crate inputs)" || fail=1
 kernel_digest="$(sed -n '/^inputs_digest() {/,/^}/p' "$kernel_script")"
+signer_crate="$(sed -n '/^kernel_signer_crate() {/,/^}/p' "$publish/kernel-env.sh")"
 if [ -n "$kernel_digest" ] \
    && grep -Fq 'crates/system/tilo-crypto/Cargo.toml' <<<"$kernel_digest" \
    && grep -Fq 'crates/system/tilo-crypto/src/lib.rs' <<<"$kernel_digest" \
    && grep -Fq 'crates/system/tilo-crypto/src/main.rs' <<<"$kernel_digest" \
    && ! grep -Eq 'tilo-crypto( |/\*|$)|tls_fixture' <<<"$kernel_digest" \
-   && grep -Fxq 'crates/system/tilo-crypto/Cargo.toml' <<<"$kernel_inputs" \
-   && grep -Fxq 'crates/system/tilo-crypto/src/lib.rs' <<<"$kernel_inputs" \
-   && grep -Fxq 'crates/system/tilo-crypto/src/main.rs' <<<"$kernel_inputs" \
-   && ! grep -Eq '^crates/system/tilo-crypto/(\*\*|src/?\*?\*?)$|tls_fixture' <<<"$kernel_inputs" \
-   && grep -Fq 'COPY crates/system/tilo-crypto/src/lib.rs' "$repo/os/kernel/Containerfile" \
-   && grep -Fq 'COPY crates/system/tilo-crypto/src/main.rs' "$repo/os/kernel/Containerfile" \
-   && ! grep -Fq 'COPY crates/system/tilo-crypto/src /work/tilo-crypto/src' "$repo/os/kernel/Containerfile" \
+   && grep -Fxq 'crates/system/tilo-crypto/Cargo.toml' <<<"$signer_inputs" \
+   && grep -Fxq 'crates/system/tilo-crypto/src/lib.rs' <<<"$signer_inputs" \
+   && grep -Fxq 'crates/system/tilo-crypto/src/main.rs' <<<"$signer_inputs" \
+   && ! grep -Eq '^crates/system/tilo-crypto/(\*\*|src/?\*?\*?)$|tls_fixture' <<<"$signer_inputs" \
+   && grep -Fxq 'kernel-signer-crate' <<<"$kernel_needs" \
+   && ! grep -Eq '^(Cargo\.lock|Cargo\.toml|crates/.*)$' <<<"$kernel_inputs" \
+   && grep -Fq 'crates/system/tilo-crypto/src/lib.rs crates/system/tilo-crypto/src/main.rs' <<<"$signer_crate" \
+   && ! grep -Eq 'cp -r|tilo-crypto/src/? ' <<<"$signer_crate" \
+   && grep -Fq 'COPY --from=signer-crate' "$repo/os/kernel/Containerfile" \
+   && ! grep -Fq 'COPY Cargo.lock' "$repo/os/kernel/Containerfile" \
    && grep -Fq 'cargo build --release --frozen --no-default-features' "$repo/os/kernel/Containerfile"; then
   printf 'ok    kernel CI retriggers for signer sources, not TLS fixtures\n' >&2
 else

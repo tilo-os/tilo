@@ -448,6 +448,7 @@ impl Site {
                 host_cert: self.host_cert.clone(),
                 revocations: RevocationList::new(),
                 watching: false,
+                background: false,
             },
             Arc::new(device),
             Arc::new(MemoryPeerStore::default()),

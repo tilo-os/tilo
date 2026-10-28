@@ -285,7 +285,6 @@ impl Inventory {
     pub(super) fn view(&self, expanded: &BTreeSet<String>, bind: &Bindings) -> Element {
         let (selected, total) = self.counts();
         let state = self.toggle();
-        let changed = bind.all.clone();
         let mut body = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
@@ -296,17 +295,19 @@ impl Inventory {
                     .with_heading_level(2),
             ))
             .push(Box::new(
-                Checkbox::from_state(&ui::LocalState::new(state.checked()))
-                    .indeterminate(state.mixed())
-                    .with_id("installer.your-data.all")
-                    .with_label(super::t_args(
-                        "installer-your-data-all",
-                        &[
-                            ("selected", selected.to_string().into()),
-                            ("total", total.to_string().into()),
-                        ],
-                    ))
-                    .on_change(move |included| changed(included)),
+                bind.bound(
+                    Checkbox::from_state(&ui::LocalState::new(state.checked()))
+                        .indeterminate(state.mixed())
+                        .with_id("installer.your-data.all")
+                        .with_label(super::t_args(
+                            "installer-your-data-all",
+                            &[
+                                ("selected", selected.to_string().into()),
+                                ("total", total.to_string().into()),
+                            ],
+                        )),
+                    super::InstallerPreviewEffect::SET_YOUR_DATA_ALL,
+                ),
             ));
         for source in &self.sources {
             body = body.push(source_view(source, expanded, bind));
@@ -344,7 +345,6 @@ fn item_report(item: &Item) -> serde_json::Value {
 fn source_view(source: &Source, expanded: &BTreeSet<String>, bind: &Bindings) -> Element {
     let state = source.toggle();
     let (selected, total) = source.counts();
-    let changed = bind.source.clone();
     let id = source.id.clone();
     let mut column = Column::new()
         .with_no_padding()
@@ -373,12 +373,15 @@ fn source_view(source: &Source, expanded: &BTreeSet<String>, bind: &Bindings) ->
         format!("{name} ({summary})")
     };
     column = column.push(Box::new(
-        Checkbox::from_state(&ui::LocalState::new(state.checked()))
-            .indeterminate(state.mixed())
-            .with_enabled(source.selectable)
-            .with_id(&source.test_id)
-            .with_label(label)
-            .on_change(move |included| changed(id.clone(), included)),
+        bind.bound(
+            Checkbox::from_state(&ui::LocalState::new(state.checked()))
+                .indeterminate(state.mixed())
+                .with_enabled(source.selectable)
+                .with_id(&source.test_id)
+                .with_label(label),
+            super::InstallerPreviewEffect::SET_YOUR_DATA_SOURCE
+                .map(move |included: bool| (id.clone(), included)),
+        ),
     ));
     if let Some(detail) = &source.detail {
         column = column.push(Box::new(Text::new(detail).with_role(TextRole::Caption)));
@@ -416,7 +419,6 @@ fn open_id(source: &Source) -> String {
 fn group_view(group: &Group, expanded: &BTreeSet<String>, bind: &Bindings) -> Element {
     let state = group.toggle();
     let (selected, total) = group.counts();
-    let changed = bind.group.clone();
     let id = group.id.clone();
     let mut column = Column::new()
         .with_no_padding()
@@ -442,12 +444,15 @@ fn group_view(group: &Group, expanded: &BTreeSet<String>, bind: &Bindings) -> El
         format!("{name} ({summary})")
     };
     column = column.push(Box::new(
-        Checkbox::from_state(&ui::LocalState::new(state.checked()))
-            .indeterminate(state.mixed())
-            .with_enabled(group.selectable)
-            .with_id(&group.test_id)
-            .with_label(label)
-            .on_change(move |included| changed(id.clone(), included)),
+        bind.bound(
+            Checkbox::from_state(&ui::LocalState::new(state.checked()))
+                .indeterminate(state.mixed())
+                .with_enabled(group.selectable)
+                .with_id(&group.test_id)
+                .with_label(label),
+            super::InstallerPreviewEffect::SET_YOUR_DATA_GROUP
+                .map(move |included: bool| (id.clone(), included)),
+        ),
     ));
     if let Some(detail) = &group.detail {
         column = column.push(Box::new(Text::new(detail).with_role(TextRole::Caption)));
@@ -493,7 +498,6 @@ fn item_view(item: &Item, bind: &Bindings) -> Element {
         }
         return Box::new(row);
     }
-    let changed = bind.item.clone();
     let id = item.id.clone();
     let label = match &item.detail {
         Some(detail) => format!("{name} ({detail})"),
@@ -504,10 +508,13 @@ fn item_view(item: &Item, bind: &Bindings) -> Element {
         .with_intrinsic_height()
         .with_rhythm(Rhythm::Tight)
         .push(Box::new(
-            Checkbox::from_state(&ui::LocalState::new(item.included))
-                .with_id(&item.test_id)
-                .with_label(label)
-                .on_change(move |included| changed(id.clone(), included)),
+            bind.bound(
+                Checkbox::from_state(&ui::LocalState::new(item.included))
+                    .with_id(&item.test_id)
+                    .with_label(label),
+                super::InstallerPreviewEffect::SET_YOUR_DATA_ITEM
+                    .map(move |included: bool| (id.clone(), included)),
+            ),
         ));
     if let Some(note) = &item.note {
         column = column.push(Box::new(Text::new(note).with_role(TextRole::Caption)));
@@ -529,15 +536,23 @@ pub(super) fn slug(value: &str) -> String {
     slug.trim_matches('-').to_string()
 }
 
-/// What a checkbox in the tree asks the page to do. Each closure pushes the
-/// same validated effect the older controls use.
+/// What the tree's controls do: each checkbox is bound to the page's
+/// published selection effect for its node, and a disclosure opens or closes
+/// a source.
 #[derive(Clone)]
 pub(super) struct Bindings {
-    pub(super) all: Rc<dyn Fn(bool)>,
-    pub(super) source: Rc<dyn Fn(String, bool)>,
-    pub(super) group: Rc<dyn Fn(String, bool)>,
-    pub(super) item: Rc<dyn Fn(String, bool)>,
+    pub(super) actions: Option<ui::framework::Actions<crate::resource::Imager>>,
     pub(super) expanded: Rc<dyn Fn(String, bool)>,
+}
+
+impl Bindings {
+    fn bound(
+        &self,
+        checkbox: Checkbox,
+        effect: impl ui::tilo_resource::Binds<super::InstallerPreviewEffect, bool>,
+    ) -> Checkbox {
+        super::bound(self.actions.as_ref(), checkbox, effect)
+    }
 }
 
 /// A size a person can read, from a byte count the inventory actually read.

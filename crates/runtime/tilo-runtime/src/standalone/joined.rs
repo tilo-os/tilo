@@ -323,6 +323,8 @@ impl Joined {
                         Inbound::RemoteAction { .. }
                         | Inbound::Live { .. }
                         | Inbound::RecordOpened { .. }
+                        | Inbound::Committed { .. }
+                        | Inbound::CommitRefused { .. }
                         | Inbound::Voice(_),
                     ) => {}
                 },

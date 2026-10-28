@@ -209,13 +209,21 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
                 assert_eq!(record.intent["app_id"], env.route.app_id);
             }
 
-            // Another app's route in the same room: the connection may join
-            // it, but it is not this app's to speak for.
+            // Another app's route in the same room, which this app declares
+            // no read of: the connection may not join it, and no worker
+            // speaks for it.
             let other = CrdtRoute::record("so.tilo.notes", env.route.cluster_id.clone(), "notes-1");
-            let foreign = app
+            let refused = app
                 .join_channel(&other.channel_key(), &identity)
                 .await
-                .unwrap();
+                .err()
+                .expect("another app's route is not this app's to join");
+            assert!(
+                refused
+                    .to_string()
+                    .contains("declares no read of so.tilo.notes"),
+                "{refused:?}"
+            );
             assert!(
                 rig.state
                     .host_workers
@@ -225,22 +233,10 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
                     .is_none(),
                 "no worker speaks for another app's route"
             );
-            let refused = foreign
-                .admit_local_document_action(&edit_report(&env, &other))
-                .await
-                .expect_err("another app's route reports nothing on this connection");
-            assert!(
-                matches!(
-                    &refused,
-                    runtime_collab::LocalDocumentActionError::Rejected(reason)
-                        if reason == runtime_collab::LOCAL_DOCUMENT_CONNECTION_REPORTS_NOTHING
-                ),
-                "{refused:?}"
-            );
 
             rig.state.remove_connection(APP_PEER);
             assert!(!rig.state.host_workers.lock().unwrap().holds(APP_PEER));
-            drop((own, foreign, app));
+            drop((own, app));
             rig.stop().await;
         })
         .await;

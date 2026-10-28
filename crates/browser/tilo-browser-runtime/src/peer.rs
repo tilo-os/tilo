@@ -293,6 +293,10 @@ struct ConnectConfig {
     /// spectator ([`PeerConfig::watching`]).
     #[serde(default)]
     watching: bool,
+    /// The page keeps this peer beside the room in front, to deliver for
+    /// it ([`PeerConfig::background`]).
+    #[serde(default)]
+    background: bool,
 }
 
 /// The certified user as the toolkit's local identity.
@@ -1694,6 +1698,7 @@ impl WasmPeer {
                 host_cert: config.host_cert,
                 revocations: RevocationList::new(),
                 watching: config.watching,
+                background: config.background,
             },
             Arc::new(signer),
             store,
@@ -1735,7 +1740,7 @@ impl WasmPeer {
                         return;
                     };
                     crate::replication::pump(id);
-                    crate::feedback_delivery::pump(id);
+                    crate::feedback_code::pump(id);
                     let current = listeners.borrow().clone();
                     for listener in current {
                         let _ = listener.call0(&JsValue::NULL);
@@ -1765,7 +1770,7 @@ impl WasmPeer {
     /// Refuses missing existing membership, record or a repeated configuration.
     #[wasm_bindgen(js_name = configureFeedback)]
     pub fn configure_feedback(&self, destination: &str) -> Result<(), JsError> {
-        crate::feedback_delivery::configure(
+        crate::feedback_code::configure(
             self.id,
             self.handle.clone(),
             self.reporter_cert.clone(),
@@ -1774,9 +1779,16 @@ impl WasmPeer {
         )
         .map_err(js_error)
     }
+    /// Send the reports of desktops mounted with this peer through the
+    /// page's peer `carrier` (its `id`), which is in the destination's room:
+    /// reports reach that room's channel from whichever room the page is in.
+    #[wasm_bindgen(js_name = sendFeedbackThrough)]
+    pub fn send_feedback_through(&self, carrier: u32) {
+        crate::feedback_code::send_through(self.id, carrier);
+    }
     #[wasm_bindgen(js_name = feedbackStatus)]
     pub fn feedback_status(&self) -> String {
-        crate::feedback_delivery::status(self.id)
+        crate::feedback_code::status(self.id)
     }
 
     /// `PeerSnapshot` JSON.
@@ -1806,8 +1818,16 @@ impl WasmPeer {
             .insert(workspace_id, room.to_owned());
         if let Some((events, store)) = self.replication.borrow_mut().take() {
             let device = hex::encode(self.device_key);
-            crate::replication::open(self.id, device, self.handle.clone(), events, room, store)
-                .map_err(js_error)?;
+            let own = tilo_relay_protocol::own_room(&self.reporter_cert.user_public_key) == room;
+            crate::replication::open(
+                self.id,
+                device,
+                self.handle.clone(),
+                events,
+                (room, own),
+                store,
+            )
+            .map_err(js_error)?;
             // The room the page replicates is the one its person talks in
             // privately; a page that only watches has no conversations.
             if !self.handle.watching() && crate::page_person::speaks(self.id) {

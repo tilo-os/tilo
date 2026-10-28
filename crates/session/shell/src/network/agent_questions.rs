@@ -33,7 +33,7 @@ const RETRY_MAX: Duration = Duration::from_secs(30);
 /// Where questions are answered.
 #[derive(Clone)]
 pub(crate) struct Sheet {
-    queue: PortalDialogQueue,
+    pub(crate) queue: PortalDialogQueue,
 }
 
 impl Sheet {
@@ -202,6 +202,36 @@ fn request(question: &PendingConfirmation, person: &str) -> AppActionConsentRequ
         resource_label: question.resource_label.clone(),
         action_label: question.action_label.clone(),
         // A risk the host could not name is read as the gravest it may be.
+        risk: tilo_actions::RiskLevel::from_name(&question.risk)
+            .unwrap_or(tilo_actions::RiskLevel::Destructive),
+        needs_confirmation: true,
+        confirming: true,
+        moderation: None,
+        preview: None,
+        scope: None,
+        draft: None,
+    }
+}
+
+/// The sheet's question for a device of the person's own that asks them what
+/// an invocation on a device that is not theirs may do: it confirms that one
+/// invocation and grants nothing.
+pub(crate) fn request_for_foreign(
+    question: &tilo_actions::remote::ConfirmationQuestion,
+    person: &str,
+) -> AppActionConsentRequest {
+    AppActionConsentRequest {
+        handle: format!("foreign-question:{}", hex::encode(question.id)),
+        room: question.room.clone(),
+        person: person.to_owned(),
+        app_id: question.device_label.clone(),
+        target_app: String::new(),
+        resource: String::new(),
+        action: String::new(),
+        resource_label: question.resource_label.clone(),
+        action_label: question.action_label.clone(),
+        // A risk the asking device could not name is read as the gravest it
+        // may be.
         risk: tilo_actions::RiskLevel::from_name(&question.risk)
             .unwrap_or(tilo_actions::RiskLevel::Destructive),
         needs_confirmation: true,

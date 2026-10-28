@@ -40,8 +40,8 @@ else
 fi
 
 # A persistent builder keeps BuildKit state on the runner slot between jobs.
-# Its name carries the trust class, so a pull request never writes state a
-# main build reads, and publications (tags, dispatches, the OS and kernel
+# Its name carries the trust class, so an unverified ref never writes state a
+# promoted build reads, and publications (tags, dispatches, the OS and kernel
 # images) never opt in: no remaining workflow does.
 persistent_ok=1
 for file in "$workflows"/*.yml "$workflows"/*.yaml; do
@@ -50,7 +50,7 @@ for file in "$workflows"/*.yml "$workflows"/*.yaml; do
     persistent_ok=0
   fi
 done
-grep -Fq "TRUST: \${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'trusted' || 'untrusted' }}" "$repo/.forgejo/actions/setup-buildx/action.yml" \
+grep -Fq "TRUST: \${{ github.event_name == 'push' && github.ref == 'refs/heads/stable' && 'trusted' || 'untrusted' }}" "$repo/.forgejo/actions/setup-buildx/action.yml" \
   && grep -Fq 'name="tilo-$TRUST-$digest"' "$repo/.forgejo/actions/setup-buildx/action.yml" \
   && grep -Fq 'default: "false"' "$repo/.forgejo/actions/setup-buildx/action.yml" \
   || persistent_ok=0
@@ -65,6 +65,10 @@ fi
 t_toml="$repo/t.toml"
 publish="$repo/tools/ci/publish"
 kernel_script="$publish/kernel.sh"
+# What every build of os/kernel/Containerfile sets up (the buildroot it runs FROM, its platform and
+# arguments), shared by the kernel's build and its compiler cache's.
+kernel_env="$publish/kernel-env.sh"
+kernel_cache_script="$publish/kernel-compile-cache.sh"
 # A t check's field, one value per line (a string as itself, an array per element, a table as
 # key=value); fails when t.toml declares no such check, so a renamed check cannot pass unobserved.
 tcheck() {
@@ -117,10 +121,10 @@ kernel_pins="$(sed -n '/^  pins)$/,/^    ;;$/p' "$kernel_script")"
 kernel_provenance="$(sed -n '/^  provenance)$/,/^    ;;$/p' "$kernel_script")"
 if t_has image-kernel-{arch} requires 'arch={arch}' \
   && t_has image-kernel-{arch} matrix 'arch=['"'"'x86_64'"'"', '"'"'aarch64'"'"']' \
-  && grep -Fq 'x86_64:x86_64 | aarch64:aarch64 | x86_64:aarch64) ;;' "$kernel_script" \
-  && grep -Fq '*) die "the $arch kernel is built natively or on x86_64, not on $host" ;;' "$kernel_script" \
-  && grep -Fq 'x86_64) platform=linux/amd64 key=KERNEL_BUILDROOT_X86_64_REF ;;' "$kernel_script" \
-  && grep -Fq 'aarch64) platform=linux/arm64 key=KERNEL_BUILDROOT_AARCH64_REF ;;' "$kernel_script" \
+  && grep -Fq 'x86_64:x86_64 | aarch64:aarch64 | x86_64:aarch64) ;;' "$kernel_env" \
+  && grep -Fq '*) die "the $arch kernel is built natively or on x86_64, not on $host" ;;' "$kernel_env" \
+  && grep -Fq 'x86_64) platform=linux/amd64 key=KERNEL_BUILDROOT_X86_64_REF ;;' "$kernel_env" \
+  && grep -Fq 'aarch64) platform=linux/arm64 key=KERNEL_BUILDROOT_AARCH64_REF ;;' "$kernel_env" \
   && grep -Fq 'printf '"'"'%s\n'"'"' "$buildroot" > "$out/buildroot"' "$kernel_script" \
   && grep -Fq 'printf '"'"'%s\n'"'"' "$host" > "$out/build-architecture"' "$kernel_script" \
   && grep -Fq '[[ $buildroot == "${!key}" ]]' <<<"$kernel_provenance" \
@@ -145,10 +149,10 @@ fi
 # compile: the native image, the cross build's repository and the cache take the same ones; only
 # the cross build's repackaging for the kernel's platform, which compiles nothing, does not); the
 # build has explicit bounds.
-if [ "$(grep -Fc '"${args[@]}"' "$kernel_script")" -eq 4 ] \
-  && [ "$(grep -c '^ *b build ' "$kernel_script")" -eq 5 ] \
+if [ "$(cat "$kernel_script" "$kernel_cache_script" | grep -Fc '"${args[@]}"')" -eq 4 ] \
+  && [ "$(cat "$kernel_script" "$kernel_cache_script" | grep -c '^ *b build ')" -eq 5 ] \
   && grep -Fq -- '--target publish-cross \' "$kernel_script" \
-  && grep -Fq -- '--build-arg "KERNEL_BUILD_JOBS=$(nproc)"' "$kernel_script" \
+  && grep -Fq -- '--build-arg "KERNEL_BUILD_JOBS=$(nproc)"' "$kernel_env" \
   && grep -Fq -- '--target secureboot-probe-inputs' "$kernel_script" \
   && grep -q '^memory=' <<<"$(tcheck image-kernel-{arch} requirement)" \
   && grep -q '^cores=' <<<"$(tcheck image-kernel-{arch} requirement)" \
@@ -194,9 +198,11 @@ else
 fi
 
 kernel_containerfile="$repo/os/kernel/Containerfile"
-kernel_build="$(sed -n '/^  build | compile-cache)$/,$p' "$kernel_script")"
-verify_line="$(grep -nF 'cosign verify --key keys/cosign.pub "$buildroot"' <<<"$kernel_build" | head -1 | cut -d: -f1)"
-first_build_line="$(grep -nF 'b build ' <<<"$kernel_build" | head -1 | cut -d: -f1)"
+# The build as it runs: kernel-env.sh's setup, then kernel.sh's build from where it calls it.
+kernel_build="$(sed -n '/^kernel_build_setup() {$/,/^}$/p' "$kernel_env"; sed -n '/^kernel_build_setup "$arch"$/,$p' "$kernel_script")"
+# A missing line leaves these empty (and the check failing) rather than ending the script.
+verify_line="$(grep -nF 'cosign verify --key keys/cosign.pub "$buildroot"' <<<"$kernel_build" | head -1 | cut -d: -f1 || true)"
+first_build_line="$(grep -nF 'b build ' <<<"$kernel_build" | head -1 | cut -d: -f1 || true)"
 if grep -Fq '. os/kernel-buildroot-snapshot.env' <<<"$kernel_build" \
    && grep -Fq '[[ $buildroot =~ ^registry\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]]' <<<"$kernel_build" \
    && [ -n "$verify_line" ] && [ -n "$first_build_line" ] && [ "$verify_line" -lt "$first_build_line" ] \
@@ -295,10 +301,9 @@ grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   && ok 'desktop, app and OS component tags are disjoint' \
   || bad 'a component tag can accidentally release another component'
 
-! sed -n '/^  push:/,/^  workflow_dispatch:/p' "$desktop" | grep -q '^    branches:' \
+grep -Fq '    branches: [stable]' "$desktop" \
+  && ! grep -Fq 'pull_request:' "$desktop" \
   && [ "$(grep -c '      - "crates/session/shell/\*\*"' "$desktop")" -eq 1 ] \
-  && grep -Fq "if: github.event_name != 'pull_request'" "$desktop" \
-  && grep -Fq '  schedule:' "$desktop" \
   && grep -Fq 'TILO_DESKTOP_ARM64_RELEASES: "1"' "$desktop" \
   && grep -Fq '[[ ${TILO_DESKTOP_ARM64_RELEASES:-0} == 1 ]]' "$desktop" \
   && grep -Fq 'arm64_runner=runner-large-arm64' "$desktop" \
@@ -306,7 +311,7 @@ grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   && grep -Fq 'release_arches: ${{ steps.lanes.outputs.release_arches }}' "$desktop" \
   && grep -Fq 'RELEASE_ARCHES: ${{ needs.validate.outputs.release_arches }}' "$desktop" \
   && grep -Fq 'verify-release-artifacts.sh release "$version" "$RELEASE_ARCHES"' "$desktop" \
-  && ok 'desktop PRs keep preflight while native packaging is scheduled or explicit' \
+  && ok 'a desktop promotion only validates; native packaging is tagged or explicit' \
   || bad 'desktop packaging boundaries or native release lanes regressed'
 
 # Native package lanes have neither private keys nor OIDC. A separate tag-only
@@ -341,7 +346,7 @@ grep -Fq 'publish-os-payload:' "$desktop" \
   && grep -Fq 'VARIABLE_TOKEN: ${{ secrets.RELEASE_TOKEN }}' "$desktop" \
   && ! grep -Fq 'TILO_DESKTOP_RELEASE_AUDIENCE' "$desktop" \
   && grep -Fq 'CONTINUOUS_OS_RELEASE: "0"' "$desktop" \
-  && grep -Fq "if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'" "$desktop" \
+  && grep -Fq "if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/stable'" "$desktop" \
   && grep -Fq 'DESKTOP_RELEASE_ARGS=""' "$compile" \
   && ok 'OS composition reuses the install-tested native desktop payload' \
   || bad 'OS releases still rebuild the desktop component'
@@ -395,13 +400,13 @@ fi
 
 grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager" \
   && grep -Fq 'github.event.inputs.full_native' "$imager" \
-  && grep -Fq 'runner":"imager-linux-x86_64"' "$imager" \
-  && grep -Fq 'runner":"imager-linux-aarch64"' "$imager" \
+  && grep -Fq 'runner":"runner-release"' "$imager" \
+  && grep -Fq 'runner":"runner-large-arm64"' "$imager" \
   && ! grep -Fq 'pull_request:' "$imager" \
-  && awk '/^on:/ { on = 1 } on && /^  push:/ { push = 1 } push && /branches: \["main"\]/ { main = 1 }
-          main && /^    paths:/ { filtered = 1 } /^  workflow_dispatch:/ { push = 0 }
-          END { exit !(main && filtered) }' "$imager" \
-  && ok 'imager native jobs run for main pushes that touch the Installer (its signed prereleases), explicit release rehearsals and tags' \
+  && awk '/^on:/ { on = 1 } on && /^  push:/ { push = 1 } push && /branches: \["stable"\]/ { stable = 1 }
+          stable && /^    paths:/ { filtered = 1 } /^  workflow_dispatch:/ { push = 0 }
+          END { exit !(stable && filtered) }' "$imager" \
+  && ok 'imager native jobs run for promotions that touch the Installer (its signed prereleases), explicit release rehearsals and tags' \
   || bad 'ordinary commits can still allocate or misroute native imager hosts'
 
 grep -Fq 'dist/apps/app-collections.toml' "$apps" \
@@ -412,10 +417,10 @@ grep -Fq 'dist/apps/app-collections.toml' "$apps" \
   && grep -Fq 'bundle_sha=$(sha256sum "$bundle"' "$apps_publish" \
   && grep -Fq '$package_api/tilo-app-$name/$VERSION/$file' "$apps" "$apps_publish" \
   && grep -Fq 'PRIOR_X86_URL' "$apps" \
-  && grep -Fq 'if [[ $GITHUB_REF == refs/heads/main ]]; then' "$apps" \
+  && grep -Fq 'if [[ $GITHUB_REF == refs/heads/stable ]]; then' "$apps" \
   && grep -Fq 'dist/app-release/runtime/**' "$apps" \
   && grep -Fq 'update_variable TILO_APP_COLLECTION_URL' "$apps" "$apps_publish" \
-  && grep -Fq '$GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main' "$apps" \
+  && grep -Fq '$GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/stable' "$apps" \
   && grep -Fq '${REQUESTED_PUBLISH:-false} == true' "$apps" \
   && grep -Fq 'REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}' "$apps" \
   && grep -Fq 'tools/apps/app_release.py --architecture-matrix' "$apps" \

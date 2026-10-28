@@ -79,6 +79,10 @@ pub enum RowLeading<'a> {
     /// A painter for a leading mark no other kind covers (a font sample, a
     /// waveform), given the leading slot.
     Paint(&'a dyn Fn(&mut PaintCtx<'_>, Rect)),
+    /// The room an avatar takes, left empty: a row of a list whose rows show
+    /// avatars that has none (a conversation with no messages yet) keeps its
+    /// text in line with theirs.
+    AvatarSpace,
 }
 
 impl std::fmt::Debug for RowLeading<'_> {
@@ -96,6 +100,7 @@ impl std::fmt::Debug for RowLeading<'_> {
             Self::Swatch(colour) => f.debug_tuple("Swatch").field(colour).finish(),
             Self::Signal(level) => f.debug_tuple("Signal").field(level).finish(),
             Self::Paint(_) => f.write_str("Paint"),
+            Self::AvatarSpace => f.write_str("AvatarSpace"),
         }
     }
 }
@@ -816,9 +821,12 @@ impl<'a> ListRowFace<'a> {
                 | RowLeading::Swatch(_)
                 | RowLeading::Signal(_),
             ) => (m.icon, m.icon),
-            Some(RowLeading::Avatar(_) | RowLeading::Thumbnail(_) | RowLeading::Paint(_)) => {
-                (avatar, avatar)
-            }
+            Some(
+                RowLeading::Avatar(_)
+                | RowLeading::Thumbnail(_)
+                | RowLeading::Paint(_)
+                | RowLeading::AvatarSpace,
+            ) => (avatar, avatar),
             Some(RowLeading::Media(_, aspect)) => ((avatar * aspect.ratio()).ceil(), avatar),
             Some(RowLeading::Badge(badge)) => {
                 let width = badge_column_width(text, theme, &[badge]);
@@ -843,7 +851,12 @@ impl<'a> ListRowFace<'a> {
         };
         let big_leading = matches!(
             self.leading,
-            Some(RowLeading::Avatar(_) | RowLeading::Thumbnail(_) | RowLeading::Media(..))
+            Some(
+                RowLeading::Avatar(_)
+                    | RowLeading::Thumbnail(_)
+                    | RowLeading::Media(..)
+                    | RowLeading::AvatarSpace
+            )
         );
         let min = RowMetrics::min_height_for(theme, self.extra_lines() > 0, big_leading)
             .max(m.min_height);
@@ -1578,6 +1591,7 @@ impl<'a> ListRowFace<'a> {
                 );
             }
             RowLeading::Paint(painter) => painter(ctx, slot),
+            RowLeading::AvatarSpace => {}
         }
     }
 
@@ -1755,6 +1769,7 @@ enum Leading {
         on_toggle: Box<dyn FnMut(bool)>,
     },
     Swatch(Color),
+    AvatarSpace,
     Signal(crate::widget::SignalLevel),
 }
 
@@ -2112,6 +2127,14 @@ impl ListRow {
             square: false,
             glyph: None,
         });
+        self
+    }
+
+    /// The room an avatar takes, left empty ([`RowLeading::AvatarSpace`]): for
+    /// a row without one in a list whose rows show avatars.
+    #[must_use]
+    pub fn avatar_space(mut self) -> Self {
+        self.leading = Some(Leading::AvatarSpace);
         self
     }
 
@@ -2758,6 +2781,7 @@ impl ListRow {
                 ),
                 Leading::Checkbox { checked, .. } => RowLeading::Checkbox { checked: *checked },
                 Leading::Swatch(colour) => RowLeading::Swatch(*colour),
+                Leading::AvatarSpace => RowLeading::AvatarSpace,
                 Leading::Signal(level) => RowLeading::Signal(*level),
             });
         }
@@ -3960,3 +3984,6 @@ mod control_row_tests {
         assert_eq!(node.name.as_deref(), Some("Ink"));
     }
 }
+
+mod component;
+pub use component::{ListRowProps, SwipeActionProps};

@@ -58,8 +58,8 @@ mode = "host"
 open-uri = "via-host"
 
 [sandbox.services]
-collab = "optional@10"
-tilo-fs = "optional@10"
+collab = "optional@11"
+tilo-fs = "optional@11"
 
 [entrypoint]
 bin             = "bin/calendar"

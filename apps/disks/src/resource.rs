@@ -233,13 +233,13 @@ fn row_operation(
 ) -> ui::tilo_actions::ActionSpec {
     let mut spec = DisksEffect::operation(kind, device).bound();
     if kind.is_delete() {
-        spec.contract.confirmation = ConfirmationPolicy::Phrase {
+        spec.type_mut().contract.confirmation = ConfirmationPolicy::Phrase {
             phrase: device.to_owned(),
         };
-        spec.description = Some(lost());
+        spec.type_mut().description = Some(lost());
     }
     if let Offer::Unavailable(reason) = offer {
-        spec.contract.availability = ui::tilo_actions::Availability::Unavailable {
+        spec.type_mut().contract.availability = ui::tilo_actions::Availability::Unavailable {
             code: "disks_target_in_use".into(),
             reason: reason.into(),
         };
@@ -312,7 +312,7 @@ fn partition_row(drive: &Drive, part: &Partition) -> LiveRow {
 /// changes nothing on the machine.
 fn row_view_operation(effect: &DisksEffect, label: &str) -> ui::tilo_actions::ActionSpec {
     let mut spec = effect.bound();
-    spec.label.clone_from(&label.to_owned());
+    spec.type_mut().label.clone_from(&label.to_owned());
     spec
 }
 

@@ -249,7 +249,7 @@ pub struct ChordMods {
 }
 
 impl ChordMods {
-    /// The mask carried by an xkbcommon-style bitfield — the encoding the peer-sync wire protocol uses for [`crate::network::streaming::InputEvent::Key`].
+    /// The mask carried by an xkbcommon-style bitfield — the encoding the peer-sync wire protocol uses for [`tilo_window_share::streaming::InputEvent::Key`].
     pub fn from_xkb_bits(bits: u32) -> Self {
         Self {
             shift: bits & 0x1 != 0,
@@ -735,7 +735,7 @@ impl InputCapture {
 
 /// What the shell holds back from client windows this frame. A modal
 /// overlay, the palette, a prompt and the like hold all input
-/// ([`chrome_takes_all_input`]); a file chooser's sheet holds the keyboard
+/// (`chrome_takes_all_input`); a file chooser's sheet holds the keyboard
 /// while the window that asked for it is focused and the pointer over
 /// itself and that window, so a click on another window reaches it.
 pub fn input_capture(fb: &FrameBuilder) -> InputCapture {
@@ -1084,6 +1084,15 @@ impl SuperTap {
         }
     }
 
+    /// The keyboard let go of every key without reporting the releases (a
+    /// nested session's host took keyboard focus from its window): a held
+    /// Super is up. It is no tap, since nobody saw it come up, and a peek it
+    /// held closes as at its release.
+    pub fn let_go(&mut self) -> Option<SuperGesture> {
+        self.armed = None;
+        self.end_peek().then_some(SuperGesture::PeekReleased)
+    }
+
     /// Forget the peek; whether there was one.
     fn end_peek(&mut self) -> bool {
         self.full = false;
@@ -1333,6 +1342,33 @@ mod super_tap_tests {
         tap.observe(&super_key(ElementState::Pressed), t0);
         tap.observe(&ui::synthetic_input::mouse_wheel(0.0, 1.0), t0);
         assert_eq!(tap.observe(&super_key(ElementState::Released), t0), None);
+    }
+
+    /// A nested session's host takes the keyboard while Super is held in
+    /// its window (Super was the first key of a host chord) and the release
+    /// goes to another window. The Super surface neither grows in from a
+    /// hold that ended nor stays up for a release that never comes.
+    #[test]
+    fn letting_go_of_the_keyboard_ends_a_held_super_without_a_tap() {
+        let t0 = Instant::now();
+        let mut tap = SuperTap::default();
+        tap.observe(&super_key(ElementState::Pressed), t0);
+        assert_eq!(tap.let_go(), None, "no tap, and nothing was shown");
+        assert_eq!(tap.deadline(), None);
+        assert_eq!(tap.poll(t0 + SUPER_FULL), None, "no peek after it");
+
+        tap.observe(&super_key(ElementState::Pressed), ms(t0, 1000));
+        assert_eq!(
+            tap.poll(ms(t0, 1000) + SUPER_HOLD),
+            Some(SuperGesture::Peek)
+        );
+        assert_eq!(tap.let_go(), Some(SuperGesture::PeekReleased));
+        assert_eq!(tap.poll(ms(t0, 1000) + SUPER_FULL), None);
+        assert_eq!(
+            tap.observe(&super_key(ElementState::Released), ms(t0, 1800)),
+            None,
+            "a late release is nothing"
+        );
     }
 
     #[test]
@@ -2509,6 +2545,31 @@ pub fn is_mouse_keys_toggle(event: &WindowEvent, modifiers: Modifiers) -> bool {
             chord_key_for_logical(&key.logical_key),
             ChordMods::from(&modifiers),
         ) == Some(crate::shell::fixed_chords::FixedChordAction::ToggleMouseKeys)
+}
+
+/// Feed `event` to the screen reader chord: `true` when it turns the screen
+/// reader on or off. Keys held when the seat loses focus are forgotten.
+pub fn screen_reader_chord_toggles(
+    chord: &mut ui::screen_reader_chord::ScreenReaderChord,
+    event: &WindowEvent,
+    modifiers: Modifiers,
+    now: std::time::Instant,
+) -> bool {
+    use ui::screen_reader_chord::{ChordEvent, ChordKey, ChordModifiers};
+    match event {
+        WindowEvent::KeyboardInput { event: key, .. } => chord.key(ChordEvent {
+            key: ChordKey::from_winit(key),
+            modifiers: ChordModifiers::from_winit(modifiers.state()),
+            pressed: key.state == ElementState::Pressed,
+            repeat: key.repeat,
+            at: now,
+        }),
+        WindowEvent::Focused(false) => {
+            chord.reset();
+            false
+        }
+        _ => false,
+    }
 }
 
 /// Is `event` a press of the configured session-lock binding?

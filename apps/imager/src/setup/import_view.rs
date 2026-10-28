@@ -1123,10 +1123,24 @@ impl ImportApp {
                 }
                 ImportCommand::PickContinuedDestination(index)
             }
-            ImportEffect::SetFolderCopy { folder_id } => {
+            ImportEffect::SetFolderMode { folder_id, mode } => {
                 let Some(index) = self.folder_index(&folder_id) else {
                     return self
                         .refuse_semantic(super::strings::t("imager-import-error-stale-folder"));
+                };
+                let mode = match mode.as_str() {
+                    import_actions::FOLDER_COPY => ChoiceMode::Copy,
+                    import_actions::FOLDER_LATER => ChoiceMode::Later,
+                    "connected" => {
+                        return self.refuse_semantic(super::strings::t(
+                            "imager-import-error-connected-unavailable",
+                        ));
+                    }
+                    _ => {
+                        return self.refuse_semantic(super::strings::t(
+                            "imager-import-error-folder-mode-unknown",
+                        ));
+                    }
                 };
                 if self.worker.is_some()
                     || self.review_request.is_some()
@@ -1136,31 +1150,7 @@ impl ImportApp {
                         "imager-import-error-folder-mode-unavailable",
                     ));
                 }
-                ImportCommand::ContinuedMode(index, ChoiceMode::Copy)
-            }
-            ImportEffect::SetFolderLater { folder_id } => {
-                let Some(index) = self.folder_index(&folder_id) else {
-                    return self
-                        .refuse_semantic(super::strings::t("imager-import-error-stale-folder"));
-                };
-                if self.worker.is_some()
-                    || self.review_request.is_some()
-                    || self.gate_request.is_some()
-                {
-                    return self.refuse_semantic(super::strings::t(
-                        "imager-import-error-folder-mode-unavailable",
-                    ));
-                }
-                ImportCommand::ContinuedMode(index, ChoiceMode::Later)
-            }
-            ImportEffect::SetFolderConnected { folder_id } => {
-                if self.folder_index(&folder_id).is_none() {
-                    return self
-                        .refuse_semantic(super::strings::t("imager-import-error-stale-folder"));
-                }
-                return self.refuse_semantic(super::strings::t(
-                    "imager-import-error-connected-unavailable",
-                ));
+                ImportCommand::ContinuedMode(index, mode)
             }
         };
         self.apply_semantic_command(command)?;
@@ -2479,27 +2469,31 @@ impl ImportApp {
                             | OperationState::Cancelled
                     )
                 });
-            let sink = Rc::clone(&self.commands);
-            let modes = [ChoiceMode::Copy, ChoiceMode::Later];
             // How the folder comes over and where it goes sit under it, on
             // the page's edge, so a long path is never cut short.
-            let mut controls =
-                Row::new()
-                    .with_align_items(taffy::AlignItems::Center)
-                    .push(Box::new(
-                        ToggleGroup::new(
-                            vec![Segment::new("Copy"), Segment::new("Later")],
-                            usize::from(f.mode != ChoiceMode::Copy),
-                        )
-                        .with_id(format!("import.continued.{index}.mode"))
-                        .control_size(ControlSize::Small)
-                        .on_change(move |chosen| {
-                            if idle && let Some(mode) = modes.get(chosen) {
-                                sink.borrow_mut()
-                                    .push(ImportCommand::ContinuedMode(index, *mode));
-                            }
-                        }),
-                    ));
+            let mode = ToggleGroup::new(
+                vec![Segment::new("Copy"), Segment::new("Later")],
+                usize::from(f.mode != ChoiceMode::Copy),
+            )
+            .with_id(format!("import.continued.{index}.mode"))
+            .control_size(ControlSize::Small);
+            let folder_id = c.operation_id(index);
+            let mode = match &self.actions {
+                Some(actions) if idle => actions.bind_effect(
+                    mode,
+                    ImportEffect::SET_FOLDER_MODE.map(move |chosen: usize| {
+                        let mode = [import_actions::FOLDER_COPY, import_actions::FOLDER_LATER]
+                            .get(chosen)
+                            .copied()
+                            .unwrap_or_default();
+                        (folder_id.clone(), mode.to_owned())
+                    }),
+                ),
+                _ => mode.with_enabled(false),
+            };
+            let mut controls = Row::new()
+                .with_align_items(taffy::AlignItems::Center)
+                .push(Box::new(mode));
             if can_review && f.mode == ChoiceMode::Copy {
                 let enabled = self.identity_ready && idle;
                 controls = controls
@@ -3280,8 +3274,15 @@ mod tests {
 
     /// The effect a published action invokes with no further arguments.
     fn effect_of(action: &tilo_actions::ActionSpec) -> Result<ImportEffect, String> {
+        effect_with(action, &serde_json::Map::new())
+    }
+
+    fn effect_with(
+        action: &tilo_actions::ActionSpec,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ImportEffect, String> {
         let encoded = action
-            .build_json(&serde_json::Map::new())
+            .build_json(arguments)
             .map_err(|error| error.to_string())?;
         ImportEffect::from_payload(&encoded.payload)
     }
@@ -3303,6 +3304,21 @@ mod tests {
             return Err(format!("`{}` is unavailable", action.id));
         }
         start_import(app, effect_of(action)?)
+    }
+
+    /// [`invoke_action`] with the arguments the action asks for.
+    fn invoke_action_with(
+        app: &mut ImportApp,
+        action: &tilo_actions::ActionSpec,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        if !action.contract.availability.is_available() {
+            return Err(format!("`{}` is unavailable", action.id));
+        }
+        let serde_json::Value::Object(arguments) = arguments else {
+            return Err("arguments are an object".into());
+        };
+        start_import(app, effect_with(action, &arguments)?)
     }
 
     fn invoke_import_raw(
@@ -3932,13 +3948,9 @@ mod tests {
                 .into_iter()
                 .filter(|resource| resource.kind == "imager.import.folder")
                 .collect::<Vec<_>>();
-            let retained_second_later = action(&folders[1], "set-folder-later");
-            let connected = action(&folders[0], "set-folder-connected");
-            assert!(matches!(
-                connected.contract.availability,
-                tilo_actions::Availability::Unavailable { .. }
-            ));
-            invoke_action(&mut app, &action(&folders[0], "set-folder-later")).unwrap();
+            let retained_second_later = action(&folders[1], "set-folder-mode");
+            let later = || serde_json::json!({"mode": "later"});
+            invoke_action_with(&mut app, &action(&folders[0], "set-folder-mode"), later()).unwrap();
             assert_eq!(
                 [
                     app.continuation.as_ref().unwrap().operation_id(0),
@@ -3953,8 +3965,9 @@ mod tests {
             assert!(
                 invoke_import_raw(
                     &mut app,
-                    &ImportEffect::SetFolderConnected {
+                    &ImportEffect::SetFolderMode {
                         folder_id: original_ids[0].clone(),
+                        mode: "connected".into(),
                     },
                 )
                 .unwrap_err()
@@ -3968,7 +3981,7 @@ mod tests {
                 Some(Continuation::capture(&[continuation_choice(&replacement_source)]).unwrap());
             let replacement_id = app.continuation.as_ref().unwrap().operation_id(0);
             assert!(!original_ids.contains(&replacement_id));
-            let error = invoke_action(&mut app, &retained_second_later).unwrap_err();
+            let error = invoke_action_with(&mut app, &retained_second_later, later()).unwrap_err();
             assert!(error.contains("no longer available"), "{error}");
             assert_eq!(
                 app.continuation.as_ref().unwrap().folders[0].mode,

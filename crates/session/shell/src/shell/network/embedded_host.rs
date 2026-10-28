@@ -35,6 +35,7 @@ use tilo_relay_session::rooms::{
 use super::{
     NetCmd, RoomId, ShellNetwork, personal_continuity_topic_id, relay_rooms, room_topic_id,
 };
+use crate::network::actor::room_governance;
 use crate::network::local_host::LocalHost;
 use crate::shell::state::WorkspaceId;
 
@@ -324,10 +325,16 @@ impl ShellNetwork {
                 .insert(entry)
                 .map_err(|error| error.to_string())?;
         }
+        let mut config = HostConfig::new(root, HostMode::Device);
+        config.persons_hosts = Some(Arc::new(DeviceSessions {
+            cmd_tx: self.cmd_tx.clone(),
+            event_tx: self.event_tx.clone(),
+            user: certificate.user_public_key,
+        }));
         Ok(HostOpening {
             handle,
             lock: Arc::clone(&self.embedded_host.opening),
-            config: HostConfig::new(root, HostMode::Device),
+            config,
             identity: room_host::HostIdentity {
                 user_public_key: certificate.user_public_key,
                 device_signing_key: identity.device_signing_key.clone(),
@@ -783,6 +790,70 @@ impl ShellNetwork {
     ) -> Result<(u64, super::RegisteredHomePeer), String> {
         self.home_relay_of(room)?
             .ok_or_else(|| "this person has no home relay".into())
+    }
+}
+
+/// This device's sessions with its person's other hosts, as its network
+/// keeps them: what this device's host asks those hosts goes on them
+/// ([`room_host::PersonsHostSessions`]).
+struct DeviceSessions {
+    cmd_tx: tokio::sync::mpsc::Sender<NetCmd>,
+    event_tx: tokio::sync::mpsc::Sender<crate::network::actor::NetEvent>,
+    user: [u8; 32],
+}
+
+impl room_host::PersonsHostSessions for DeviceSessions {
+    fn ask(
+        &self,
+        device: [u8; 32],
+        addr: iroh::EndpointAddr,
+        invoke: tilo_actions::remote::InvokeRequest,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<tilo_actions::remote::ReceiptStatus, String>>
+                + Send,
+        >,
+    > {
+        let ws = personal_continuity_topic_id(&self.user);
+        let host = addr.id;
+        let (reply, answer) = std::sync::mpsc::sync_channel(1);
+        // The network dials each host it knows with each topic it joined,
+        // the person's own among them; neither is done twice. The request
+        // waits for that session to be subscribed.
+        let queued = self
+            .cmd_tx
+            .try_send(NetCmd::ConnectHost {
+                addr,
+                expectation: Some(crate::network::actor::HomePeerExpectation {
+                    user_public_key: self.user,
+                    device_public_key: device,
+                }),
+            })
+            .and_then(|()| {
+                self.cmd_tx.try_send(NetCmd::JoinPersonalTopic {
+                    ws,
+                    on_event: self.event_tx.clone(),
+                })
+            })
+            .and_then(|()| {
+                self.cmd_tx
+                    .try_send(NetCmd::RoomGovernance(Box::new(room_governance::Request {
+                        ws,
+                        to: room_governance::Addressee::Host(host),
+                        invoke,
+                        reply,
+                    })))
+            })
+            .is_ok();
+        Box::pin(async move {
+            if !queued {
+                return Err("the network queue is unavailable".into());
+            }
+            tokio::task::spawn_blocking(move || answer.recv())
+                .await
+                .map_err(|error| error.to_string())?
+                .map_err(|_| "the host's session closed before it answered".to_string())?
+        })
     }
 }
 

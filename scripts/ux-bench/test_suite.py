@@ -6,12 +6,12 @@ import unittest
 
 
 class SuiteTests(unittest.TestCase):
-    def test_all_eight_goals_execute_all_six_variants_without_budget_changes(self):
+    def test_all_nine_goals_execute_all_six_variants_without_budget_changes(self):
         spec = importlib.util.spec_from_file_location("suite", Path(__file__).with_name("run-suite.py"))
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         sources = sorted(Path(__file__).parent.glob("*.json"))
-        self.assertEqual(len(sources), 8)
+        self.assertEqual(len(sources), 9)
         for source in sources:
             scenario = json.loads(source.read_text())
             cases = list(module.variants(scenario, True))

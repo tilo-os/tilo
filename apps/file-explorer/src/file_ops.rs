@@ -502,7 +502,7 @@ fn move_into(
 }
 
 /// Register `transfer` as running until the returned guard drops.
-struct Running(std::sync::Arc<LocalTransfer>);
+pub struct Running(std::sync::Arc<LocalTransfer>);
 
 impl Running {
     fn start(transfer: LocalTransfer) -> Self {
@@ -520,11 +520,13 @@ impl Drop for Running {
     }
 }
 
-/// Show `transfer` as running for the rest of the process: a capture's
-/// staged transfer, followed by the window like any other.
+/// Show `transfer` as running while the returned guard lives: a capture's
+/// staged transfer, followed by the window like any other, gone with the
+/// window that staged it rather than shown by every window after it.
 #[doc(hidden)]
-pub fn run_for_capture(transfer: LocalTransfer) {
-    ACTIVE.lock_recover().push(std::sync::Arc::new(transfer));
+#[must_use = "the transfer stops showing once the guard drops"]
+pub fn run_for_capture(transfer: LocalTransfer) -> Running {
+    Running::start(transfer)
 }
 
 /// Free space an extraction always leaves on the disk it writes to.

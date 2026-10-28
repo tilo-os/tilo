@@ -155,6 +155,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
                 host_cert: node.clone(),
                 revocations: RevocationList::new(),
                 watching: false,
+                background: false,
             },
             Arc::new(browser_key),
             Arc::new(MemoryPeerStore::default()),
@@ -435,8 +436,8 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
             .find(|workspace| workspace.room() == room)?
             .shortcuts
             .iter()
-            .find(|shortcut| shortcut.id == "standup")
-            .cloned()
+            .find(|shortcut| shortcut.id() == "standup")
+            .and_then(|shortcut| shortcut.decode().ok())
     });
     assert_eq!(
         tilo_peer_state::room::proven_saver(

@@ -76,6 +76,23 @@ image. Run them from the checkout on Linux, in the builder image
 `scripts/ci-run.sh` and `tools/ci/measure.sh`, which wrap some check commands,
 only label and time a command; leave them out locally.
 
+## Main and `stable`
+
+`main` is an unstable integration branch: many agents push to it directly, no
+pull request gates it, and a commit that fails is fixed by a later one rather
+than reverted. `stable` is the release branch: it is moved by hand when a
+release is cut (it requires signed commits), and it is the only ref
+publications build from.
+
+- `check.yml` runs after every push to `main` and plans what that push added,
+  relative to the main commit it was pushed onto (`github.event.before`). Every
+  push gets its own run; none is cancelled by a later push, so every commit is
+  planned exactly once.
+- Release and artifact workflows (`release-*.yml`, `build-*.yml`) trigger on a
+  push to `stable` or on a version tag, never on `main`. `ci-nightly.yml` runs
+  the full suite on both native architectures as the coverage backstop, and the
+  artifact builds carry their own nightly schedule.
+
 ## Forks on GitHub Actions or stock Forgejo
 
 Workflows live in `.forgejo/workflows/` and use only GitHub-compatible syntax
@@ -102,9 +119,11 @@ run them on a Forgejo instance with stock runners. They need:
   `Cargo.lock` under `$CARGO_HOME`. `tools/ci/sccache.sh` enables a compiler
   cache only when the runner provides one; without it jobs compile cold. Neither
   changes a result.
-- **Secrets, only for publication.** Pull-request jobs need no secret beyond the
-  job token. Image, package and release publication on main need registry,
-  signing and release credentials and are not expected to run in a fork.
+- **Secrets, only for publication.** Jobs that only test need no secret beyond
+  the job token. Image, package and release publication on `stable` need
+  registry, signing and release credentials and are not expected to run in a
+  fork; moving `stable` needs `STABLE_PUSH_TOKEN` (see
+  [Main and `stable`](#main-and-stable)).
 
 Jobs that need more than an unprivileged container:
 

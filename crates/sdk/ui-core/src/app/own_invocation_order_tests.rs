@@ -51,7 +51,7 @@ fn probe_keeping_beside(beside: bool) -> Probe {
     let temp = tempfile::tempdir().unwrap();
     let room = uuid::Uuid::new_v4().to_string();
     let mut owners = crate::record::RecordOwners::new(temp.path().into());
-    let records = owners.open(definition.app_id, &room).unwrap();
+    let records = owners.open(&definition.app_id, &room).unwrap();
     let views = Rc::new(
         crate::application_view::InstanceViewStore::new(
             temp.path().into(),

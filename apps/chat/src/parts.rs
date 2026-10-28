@@ -91,7 +91,7 @@ pub struct ChatPart {
     pub messages: Collection<Message>,
     /// For each part before this one (by its number, in decimal), how many
     /// top-level messages each channel (by its id) has there, as whoever
-    /// started this part saw it ([`crate::messages::ChatPart::carry_counts`]).
+    /// started this part saw it (`crate::messages::ChatPart::carry_counts`).
     /// A post that reached a part after the next one started is counted
     /// where that part is held: its own messages count, not this.
     #[model(readonly)]

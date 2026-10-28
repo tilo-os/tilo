@@ -139,15 +139,18 @@ fn deactivate_adapter(entry: &mut AdapterEntry) {
     }
 }
 
+async fn status_after_change(change: Option<PropertyChanged<'_, bool>>) -> zbus::Result<bool> {
+    match change {
+        Some(change) => change.get().await,
+        None => Ok(false),
+    }
+}
+
 async fn bus_after_status_change(
-    change: Option<PropertyChanged<'_, bool>>,
+    enabled: bool,
     session_bus: &Connection,
     executor: &Executor<'_>,
 ) -> zbus::Result<Option<Bus>> {
-    let enabled = match change {
-        Some(change) => change.get().await?,
-        None => false,
-    };
     if enabled {
         map_or_ignoring_recoverable_error(Bus::new(session_bus, executor).await, None, Some)
     } else {
@@ -197,9 +200,16 @@ async fn run_event_loop(
     loop {
         select! {
             change = changes.next() => {
-                atspi_bus = bus_after_status_change(change, &session_bus, executor).await?;
-                sync_adapters(&mut adapters, &atspi_bus);
-
+                let enabled = status_after_change(change).await?;
+                // `PropertyChanged::get` reads the proxy's latest cached value, not the
+                // one the notification carried, so an off-and-on toggle seen late
+                // arrives as a second `true`. Keep the live bus then: replacing it
+                // would drop the connection that holds the active adapters' interfaces,
+                // and an already active adapter never registers them on the new one.
+                if !(enabled && atspi_bus.is_some()) {
+                    atspi_bus = bus_after_status_change(enabled, &session_bus, executor).await?;
+                    sync_adapters(&mut adapters, &atspi_bus);
+                }
             }
             message = messages.next() => {
                 if let Some(message) = message {

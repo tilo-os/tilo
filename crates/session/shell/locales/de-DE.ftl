@@ -139,6 +139,7 @@ shortcut-explore-workspace-history = Arbeitsbereichsverlauf erkunden
 shortcut-guide = Tastenkürzel
 shortcut-stop-remote-input = Alle Ferneingaben beenden
 shortcut-toggle-mouse-keys = Maustasten umschalten
+shortcut-toggle-screen-reader = Bildschirmleser ein- oder ausschalten
 shortcut-vim-navigation = Vim-Navigation
 shortcut-dismiss = Schließen
 
@@ -278,132 +279,25 @@ guide-a11y-description = Fenster fokussieren mit { $window-back } oder { $window
 # Geräte und Medien, die Detailansicht der Schnelleinstellungen
 
 # Schnelleinstellungen
-qs-title = Schnelleinstellungen
-qs-a11y-description = Häufig verwendete Systemsteuerungen
-qs-on = An
-qs-off = Aus
-qs-connected = Verbunden
 qs-connecting = Wird verbunden …
 qs-not-connected = Nicht verbunden
-qs-tile-settings = Einstellungen
-qs-tile-settings-description = Geräteeinstellungen öffnen
-qs-tile-power = Ein/Aus
-qs-tile-power-description = Sperren, abmelden, neu starten oder herunterfahren
-qs-volume = Lautstärke
-qs-brightness = Helligkeit
-qs-brightness-display = Helligkeit, { $display }
-qs-slider-a11y-description = Mit Pfeil links und rechts anpassen
-qs-network = Netzwerk
-qs-wired-network = Kabelnetzwerk
-qs-cable-unplugged = Kabel nicht angeschlossen
-qs-bluetooth = Bluetooth
-qs-vpn = VPN
-qs-night-light = Nachtlicht
-qs-airplane-mode = Flugmodus
-qs-mobile-data = Mobile Daten
-qs-do-not-disturb = Bitte nicht stören
-qs-do-not-disturb-on = Benachrichtigungen zurückgehalten
-qs-rotation-lock = Drehsperre
-qs-rotation-locked = Gesperrt
-qs-rotation-unlocked = Dreht sich mit dem Gerät
 qs-devices = Geräte
-qs-devices-count = { $count ->
-    [one] 1 Gerät
-   *[other] { $count } Geräte
-}
-qs-devices-a11y-description = Persönliche Geräte, Audioausgänge und Medienziele
 qs-clipboard = Zwischenablage
-qs-clipboard-empty = Leer
-qs-clipboard-count = { $count ->
-    [one] 1 Eintrag
-   *[other] { $count } Einträge
-}
-qs-clipboard-a11y-description = Privater Verlauf der Zwischenablage
-qs-power-saver = Energiesparen
-qs-power-balanced = Ausgewogen
-qs-power-performance = Leistung
-qs-power-ac = Netzbetrieb
 
 # Schnelleinstellungen: Steuerungen bearbeiten
-qs-edit-controls = Steuerungen bearbeiten
-qs-edit-help = Ziehen oder Strg + Auf/Ab drücken zum Anordnen
-qs-edit-a11y-description = Steuerungen bearbeiten; zum Anordnen ziehen oder Strg plus Pfeiltasten verwenden
-qs-edit-active-heading = Aktive Steuerungen
-qs-edit-available-heading = Verfügbar
-qs-edit-reset = Standard wiederherstellen
-qs-edit-reset-a11y = Standard der Schnelleinstellungen wiederherstellen
-qs-edit-done = Fertig
-qs-edit-done-a11y = Bearbeiten der Schnelleinstellungen beenden
-qs-edit-required-a11y = Erforderliche Steuerung der Schnelleinstellungen
-qs-edit-remove-a11y = Steuerung aus den Schnelleinstellungen entfernen
-qs-edit-add-a11y = Steuerung zu den Schnelleinstellungen hinzufügen
-qs-edit-required-control-a11y = Erforderlich; mit Strg plus Pfeiltasten anordnen
-qs-edit-optional-control-a11y = Fügt dieses Steuerelement hinzu oder entfernt es. Strg plus Pfeiltasten ordnen es an.
 
 # Schnelleinstellungen: WLAN
 qs-wifi = WLAN
 qs-wifi-off = WLAN ist aus
 qs-wifi-scanning = Netzwerke werden gesucht …
-qs-wifi-scan-failed = Netzwerksuche fehlgeschlagen
-qs-wifi-none = Keine Netzwerke gefunden
-qs-wifi-secured = Gesichert
-qs-wifi-open = Offen
-qs-wifi-turn-on = WLAN einschalten
-qs-turning-on = Wird eingeschaltet …
-qs-turning-off = Wird ausgeschaltet …
-qs-wifi-problem-hardware-switch = Mit dem Hardwareschalter aus
-qs-wifi-problem-stayed-off = Ließ sich nicht einschalten
-qs-wifi-problem-failed = WLAN ließ sich nicht ändern
 qs-power-mode = Energiemodus
-qs-power-mode-unavailable = Dieser Computer bietet keine Energiemodi an
-qs-power = Energiemodus
-qs-lock-description = Bildschirm sperren; Apps laufen weiter
-qs-notifications = Benachrichtigungen
-qs-notifications-none = Keine
-qs-notifications-count = { $count }
 qs-battery = Akku
-qs-battery-charging = Wird geladen
-qs-battery-full = Voll geladen
-qs-battery-not-charging = Angeschlossen, lädt nicht
-qs-battery-on-battery = Im Akkubetrieb
-qs-battery-time-left = { $hours ->
-    [0] Noch { $minutes } min
-   *[other] Noch { $hours } h { $minutes } min
-}
-qs-battery-time-to-full = { $hours ->
-    [0] Voll in { $minutes } min
-   *[other] Voll in { $hours } h { $minutes } min
-}
-qs-battery-settings = Akku-Einstellungen
-qs-power-settings = Energie-Einstellungen
-qs-awake-app = { $app } hält den Bildschirm an
-qs-awake-apps = { $count } Apps halten den Bildschirm an
-qs-wifi-settings = WLAN-Einstellungen
-qs-wifi-known = Bekannt
 qs-wifi-password-for = Gib das Passwort des Netzwerks ein
-qs-bluetooth-off = Bluetooth ist aus
-qs-bluetooth-turn-on = Bluetooth einschalten
-qs-bluetooth-pair = Neues Gerät koppeln
-qs-bluetooth-paired = Gekoppelt
-qs-bluetooth-use-elsewhere = Auf einem anderen Gerät nutzen
-qs-vpn-settings = VPN-Einstellungen
-qs-vpn-details = VPN-Profile
-qs-sound-output = Tonausgabe
-qs-volume-mute = Stummschalten
-qs-sound-settings = Ton-Einstellungen
-qs-devices-settings = Einstellungen für Geräte & Sync
-qs-clipboard-clear-history = Verlauf leeren
 qs-clipboard-copied = { $age }, von { $source }
-qs-hosted-row-a11y = { $title }. { $detail }
-qs-hosted-row-action-a11y = { $title }. { $detail }. { $action }
 
 # Schnelleinstellungen: Bluetooth
-qs-bluetooth-empty = Keine Geräte gefunden
-qs-bluetooth-device-connected-a11y = Verbunden; Geräteaktionen öffnen
-qs-bluetooth-device-paired-a11y = Gekoppelt; zum Verbinden aktivieren
 
 # Schnelleinstellungen: VPN
-qs-vpn-empty = Keine VPN-Profile. Füge eines in den Einstellungen hinzu.
 qs-device-vpn-through = Über { $device }
 qs-device-vpn-unnamed = dein anderes Gerät
 
@@ -875,8 +769,6 @@ qs-bluetooth-move-here = Hierher verschieben, sobald die lokale Kopplung bestät
 qs-devices-showing = { $first }–{ $last } von { $total }
 
 # Schnelleinstellungen: Bereich Geräte und Medien
-qs-devices-no-identity = Richte deine persönliche Identität ein, um Geräte zu verbinden
-qs-devices-empty = Keine Ausgänge oder Geräte
 qs-devices-place = { $display } { $side ->
         [left] links
         [right] rechts
@@ -977,14 +869,12 @@ qs-clipboard-search-matches = { $count ->
         [one] Ein Eintrag passt zu „{ $query }“
        *[other] { $count } Einträge passen zu „{ $query }“
     }
-qs-clipboard-empty-hint = Noch nichts kopiert
 qs-clipboard-no-matches = Nichts passt zu „{ $query }“
 qs-clipboard-search-range = { $first } bis { $last } von { $total } Einträgen. Zum Suchen tippen.
 qs-clipboard-search-count = { $count ->
         [one] Ein Eintrag. Zum Suchen tippen.
        *[other] { $count } Einträge. Zum Suchen tippen.
     }
-qs-clipboard-clear-a11y = Nicht angeheftete Einträge der Zwischenablage löschen
 qs-clipboard-mime-bytes = { $mime } · { $bytes } Byte
 qs-clipboard-remove-a11y = Eintrag der Zwischenablage entfernen
 
@@ -1026,18 +916,10 @@ osd-pointer-held = Die App hält den Zeiger. { $chord } gibt ihn frei.
 osd-pointer-released = Zeiger freigegeben
 osd-mouse-keys-on = Maustasten an
 osd-mouse-keys-off = Maustasten aus
+osd-screen-reader-on = Bildschirmleser an
+osd-screen-reader-off = Bildschirmleser aus
 
 # System status, the tray's accessible summary
-status-wired = Kabelgebunden
-status-wired-named = Kabelgebunden: { $name }
-status-wifi = WLAN
-status-wifi-named = WLAN: { $name }
-status-offline = Offline
-status-muted = Stummgeschaltet
-status-volume = Lautstärke { $percent } %
-status-battery-charging = Akku { $percent } %, wird geladen
-status-battery = Akku { $percent } %
-status-summary-empty = Systemstatus
 status-other-displays-a11y = Weitere Bildschirme
 
 # Notification toasts
@@ -1462,6 +1344,8 @@ search-session-not-offered = Diese Sitzung teilt den Computer mit einem anderen 
 
 # Suche: Kurzbefehle
 search-shortcut-run-on = Auf { $resource } anwenden
+search-shortcut-continue-needs-step = Läuft ab einem Schritt erneut: Benenne ihn so, wie der letzte Lauf ihn gemeldet hat
+search-shortcut-continue-needs-run = Läuft ab einem Schritt erneut: Benenne den Lauf, der ihn gemeldet hat
 
 # Suche: Elemente im Statusbereich
 search-tray-open = { $item } öffnen
@@ -1624,6 +1508,8 @@ search-action-group-move-to-display-previous = Fenstergruppe auf den vorherigen 
 search-action-group-move-to-display-previous-subtitle = Die fokussierte Fenstergruppe auf den linken Bildschirm verschieben
 search-action-group-move-to-display-next = Fenstergruppe auf den nächsten Bildschirm verschieben
 search-action-group-move-to-display-next-subtitle = Die fokussierte Fenstergruppe auf den rechten Bildschirm verschieben
+search-action-group-toggle-maximize = Fenstergruppe maximieren oder wiederherstellen
+search-action-group-toggle-maximize-subtitle = Die ganze Leiste, oder zurück auf die vorherige Größe
 search-action-group-maximize = Fenstergruppe maximieren
 search-action-group-maximize-subtitle = Die fokussierte Fenstergruppe auf ihren Bildschirm vergrößern
 search-action-group-restore = Fenstergruppe wiederherstellen
@@ -2803,6 +2689,12 @@ dictation-action-finish-detail = Mikrofon anhalten und den korrigierten Text ins
 dictation-action-cancel-detail = Diktat anhalten und den privaten Entwurf verwerfen.
 dictation-stopping-microphone = Mikrofon wird angehalten…
 
+search-action-magnifier-toggle = Bildschirmlupe einschalten
+search-action-magnifier-toggle-subtitle = Den Bildschirm um den Zeiger vergrößern oder wieder ausschalten
+search-action-magnifier-zoom-in = Vergrößern
+search-action-magnifier-zoom-in-subtitle = Einen Schritt näher; der Zeiger verschiebt den vergrößerten Ausschnitt
+search-action-magnifier-zoom-out = Verkleinern
+search-action-magnifier-zoom-out-subtitle = Einen Schritt weiter weg, bis aus
 search-action-axis-enable = Experimentelle Achsennavigation aktivieren
 search-action-axis-enable-subtitle = In dieser Sitzung zwischen Gruppen wechseln und den Fokus sichtbar machen
 search-action-axis-disable = Experimentelle Achsennavigation deaktivieren
@@ -3059,8 +2951,15 @@ agent-quick-agent = Agent
 agent-quick-model = Modell
 agent-quick-model-own = Das eigene Modell des Agenten
 agent-quick-model-of = { $model } ({ $provider })
+agent-quick-mode = Was zu tun ist
+agent-quick-mode-decides = Entscheiden lassen
+agent-quick-mode-answer = Hier antworten
+agent-quick-mode-task = Als Aufgabe ausführen
+agent-quick-mode-answer-line = An Ort und Stelle antworten
+agent-quick-mode-task-line = Das als Aufgabe ausführen
 agent-quick-about-selection = Zu deiner Auswahl in { $app }: „{ $selection }“
 agent-quick-about-window = Zu { $app }; nichts ist ausgewählt
+agent-quick-about-resource = Zu { $resource } in { $app }
 agent-quick-accessible-name = Agent-Verfasser
 agent-quick-shots-context = Zu deiner Auswahl in Notes: „[tilo OS](search for the tilo homepage)“
 agent-quick-shots-draft = Wohin führt dieser Link?
@@ -3174,6 +3073,10 @@ search-kw-group-move-to-strip-next = fenster nach unten, in leiste darunter
 search-kw-group-move-to-display-previous = auf anderen bildschirm, monitor wechseln, vorheriger monitor
 search-kw-group-move-to-display-next = auf anderen bildschirm, monitor wechseln, nächster monitor
 search-kw-group-maximize = maximieren, wiederherstellen, vergrößern, fenster füllen
+search-kw-group-toggle-maximize = maximieren oder wiederherstellen, maximierung umschalten, fenster füllen
+search-kw-magnifier-toggle = bildschirmlupe, lupe, vergrößern, zoom, sehschwäche
+search-kw-magnifier-zoom-in = bildschirmlupe, vergrößern, näher, größer heranzoomen
+search-kw-magnifier-zoom-out = bildschirmlupe, verkleinern, weiter weg, herauszoomen
 search-kw-group-fullscreen = vollbild, ganzer bildschirm
 search-kw-group-narrower = schmaler, verkleinern, größe ändern
 search-kw-group-wider = breiter, vergrößern, größe ändern

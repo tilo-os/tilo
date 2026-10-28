@@ -308,6 +308,8 @@ pub struct Badge {
     moved_drawn: bool,
     /// The content changed since the last layout.
     layout_dirty: bool,
+    /// The badge has been placed by a layout.
+    laid_out: bool,
     /// The layout keeps room for a leaving badge until it has gone.
     laid_out_leaving: bool,
     /// The motion the person allows, as last drawn.
@@ -350,6 +352,7 @@ impl Badge {
             drawing: false,
             moved_drawn: false,
             layout_dirty: false,
+            laid_out: false,
             laid_out_leaving: false,
             motion: None,
             hand_on: crate::motion::HandOn::default(),
@@ -642,6 +645,7 @@ impl Widget for Badge {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.laid_out = true;
         // A badge has no name of its own: it goes on from the one that stood
         // where it stands, its box centred on the same line and starting,
         // ending or centred where that one's did (a count's width changes).
@@ -754,8 +758,12 @@ impl Widget for Badge {
         self.is_moving(crate::motion::frame_now())
     }
 
+    /// Placed once, a badge needs a layout again only for what changes its
+    /// box, never for whether it was painted: one scrolled out of view, or
+    /// a count of none, is never drawn, and asking again for it laid the
+    /// whole window out (and repainted all of it) on every frame.
     fn is_layout_dirty(&self) -> bool {
-        self.cache_rect == Rect::ZERO
+        !self.laid_out
             || self.layout_dirty
             // The room a leaving badge kept is given back once it has gone.
             || self.laid_out_leaving && !self.presence.is_visible(crate::motion::frame_now())
@@ -818,6 +826,24 @@ mod tests {
             .iter()
             .filter(|t| **t == DrawTag::COLOR)
             .count()
+    }
+
+    #[test]
+    fn a_badge_laid_out_but_never_drawn_asks_for_no_layout() {
+        for mut badge in [Badge::count(3), Badge::count(0)] {
+            let mut taffy = TaffyTree::new();
+            let mut node_map = std::collections::HashMap::new();
+            assert!(badge.is_layout_dirty(), "not placed yet");
+            let node = badge.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+            taffy
+                .compute_layout(node, taffy::Size::max_content())
+                .unwrap();
+            badge.apply_layout(&taffy, node, Point::new(40.0, 6_000.0));
+            assert!(
+                !badge.is_layout_dirty(),
+                "out of view or empty, it is still laid out"
+            );
+        }
     }
 
     #[test]

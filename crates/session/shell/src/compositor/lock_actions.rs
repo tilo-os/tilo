@@ -30,7 +30,7 @@ fn resources(locked: bool, lock: &LockController) -> Vec<Resource> {
         },
     );
     if !locked || lock.is_verifying() {
-        action.contract.availability = Availability::Unavailable {
+        action.type_mut().contract.availability = Availability::Unavailable {
             code: if locked {
                 "authentication_busy"
             } else {

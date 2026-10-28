@@ -81,8 +81,14 @@ try {
     await sleep(50);
   }
   stage('first-seen', seen);
-  // The page may read back as it settles; reading on is the reader's.
-  stage('head-shown-alone', {alone: !holds(shown, '1.0')});
+  // Nothing earlier is asked for before the reader scrolls, however long
+  // the page settles: no part 1, and nothing said to be on its way.
+  await sleep(3_000);
+  shown = await semantics();
+  assert.equal(seen.part1, undefined, 'part 1 arrived before any scroll');
+  assert.equal(seen.arriving, undefined, 'an earlier part was asked for before any scroll');
+  assert.ok(!holds(shown, '1.0') && !shown.includes(ARRIVING), 'nothing earlier asked for while the page settled');
+  stage('head-shown-alone');
   writeFileSync(join(evidence, 'head.png'), await tab.screenshot());
 
   // Over the timeline: where the page says a message of the head is drawn.

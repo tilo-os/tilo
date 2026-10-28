@@ -53,6 +53,9 @@ struct State {
     reaction_presses: Vec<String>,
     /// Whether its person may only look ([`crate::window_toolbar::show_view_only`]).
     view_only: bool,
+    /// Whether its document has work not yet saved
+    /// ([`crate::window_toolbar::show_edited`]).
+    edited: bool,
     /// Bumped by every declaration that changed the slots.
     revision: u64,
     events: VecDeque<ToolbarEvent>,
@@ -198,6 +201,28 @@ impl HostedWindow {
         self.state().view_only
     }
 
+    /// Mark the window's document as having work not yet saved. Said when
+    /// a save stalls, fails or lands, which may be outside any sync of the
+    /// app: the host is woken to read the bar again.
+    pub fn show_edited(&self, edited: bool) {
+        let wake = {
+            let mut state = self.state();
+            if state.edited == edited {
+                return;
+            }
+            state.edited = edited;
+            state.revision = state.revision.wrapping_add(1);
+            state.wake.clone()
+        };
+        Self::wake(wake);
+    }
+
+    /// Whether the window marks its document as not yet saved.
+    #[must_use]
+    pub fn edited(&self) -> bool {
+        self.state().edited
+    }
+
     /// The reactions shown.
     #[must_use]
     pub fn reactions(&self) -> Option<crate::window_toolbar::ToolbarReactions> {
@@ -265,6 +290,7 @@ impl HostedWindow {
             state.notice.clone(),
             state.reactions.clone(),
             state.view_only,
+            state.edited,
         )
     }
 

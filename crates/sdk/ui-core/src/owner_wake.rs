@@ -17,6 +17,10 @@ use uuid::Uuid;
 #[derive(Debug)]
 pub struct OwnerModelServiceReport {
     pub attempted: bool,
+    /// A save-status-only service changed what an owner shows (its window
+    /// bar's notice or unsaved mark): the next frame draws it. A save that
+    /// landed in time shows nothing and asks for no frame.
+    pub presented: bool,
     pub completed: usize,
     pub result: Result<(), BoundDispatchError>,
 }
@@ -35,6 +39,8 @@ struct Packet {
     token: Weak<Token>,
     event: WakeEvent,
     requires_sync: bool,
+    /// Every wake coalesced here said only that a save moved on.
+    save_progress_only: bool,
 }
 #[derive(Default)]
 struct PendingState {
@@ -45,7 +51,13 @@ struct PendingState {
 #[derive(Default)]
 struct Pending(Mutex<PendingState>, Condvar);
 impl Pending {
-    fn push(&self, token: &Arc<Token>, event: WakeEvent, requires_sync: bool) -> bool {
+    fn push(
+        &self,
+        token: &Arc<Token>,
+        event: WakeEvent,
+        requires_sync: bool,
+        save_progress_only: bool,
+    ) -> bool {
         let mut pending = self.0.lock_recover();
         // Close may race a Send sink. Recheck while holding only the queue loan.
         if !token.accepts(&event) {
@@ -57,13 +69,17 @@ impl Pending {
                 if !Weak::ptr_eq(&slot.get().token, &weak) {
                     return false;
                 }
-                slot.get_mut().requires_sync |= requires_sync;
+                let packet = slot.get_mut();
+                packet.requires_sync |= requires_sync;
+                // Any other wake asks for the owner's whole service.
+                packet.save_progress_only &= save_progress_only;
             }
             std::collections::hash_map::Entry::Vacant(slot) => {
                 slot.insert(Packet {
                     token: weak,
                     event,
                     requires_sync,
+                    save_progress_only,
                 });
                 pending.order.push(token.id);
             }
@@ -127,7 +143,8 @@ impl OwnerWakeSink {
             return false;
         };
         let requires_sync = event.requires_sync();
-        pending.push(&token, event, requires_sync)
+        let save_progress_only = event.save_progress();
+        pending.push(&token, event, requires_sync, save_progress_only)
     }
 }
 
@@ -137,6 +154,7 @@ pub struct OwnerWakeRequest {
     key: OwnerWakeKey,
     event: WakeEvent,
     requires_sync: bool,
+    save_progress_only: bool,
     binding: CallbackBinding,
 }
 impl OwnerWakeRequest {
@@ -149,6 +167,12 @@ impl OwnerWakeRequest {
     /// Aggregate OR, independent of the representative event's original reason.
     pub const fn requires_sync(&self) -> bool {
         self.requires_sync
+    }
+    /// Every wake taken here said only that the owner's record's save moved
+    /// on ([`crate::wake::WakeHandle::wake_save_progress`]): its service
+    /// shows the save status, and runs no model callback.
+    pub const fn save_progress_only(&self) -> bool {
+        self.save_progress_only
     }
     /// Check current exact component/root/registry custody afresh. This is not a
     /// document loan, and cannot authorize any later opaque model callback.
@@ -268,6 +292,7 @@ impl OwnerWakeQueue {
                     },
                     event: packet.event,
                     requires_sync: packet.requires_sync,
+                    save_progress_only: packet.save_progress_only,
                     binding: entry.binding.clone(),
                 })
             })
@@ -288,12 +313,28 @@ impl OwnerWakeQueue {
                 return false;
             }
         }
-        self.pending
-            .push(&token, request.event, request.requires_sync)
+        self.pending.push(
+            &token,
+            request.event,
+            request.requires_sync,
+            request.save_progress_only,
+        )
     }
     /// Queue presence only, not current-owner custody or model purity.
     pub fn has_pending(&self) -> bool {
         !self.pending.0.lock_recover().entries.is_empty()
+    }
+    /// Whether a queued wake asks for an owner's model, not only for its
+    /// save status: what a frame may have to show. A save that moved on
+    /// is serviced without asking for a frame; its service asks for one
+    /// only when the owner shows something new.
+    pub fn has_pending_model_work(&self) -> bool {
+        self.pending
+            .0
+            .lock_recover()
+            .entries
+            .values()
+            .any(|packet| !packet.save_progress_only)
     }
     /// Park the calling thread, as an idle host's event loop does, until a
     /// wake is queued or `deadline` passes. Whether one is queued.
@@ -329,6 +370,12 @@ impl OwnerWakeBatch {
     pub(crate) fn complete_front(&mut self) {
         self.requests.pop_front();
     }
+    /// Every owner in the batch was woken only because its save moved on.
+    pub(crate) fn all_save_progress_only(&self) -> bool {
+        self.requests
+            .iter()
+            .all(OwnerWakeRequest::save_progress_only)
+    }
 }
 impl Drop for OwnerWakeBatch {
     fn drop(&mut self) {
@@ -360,13 +407,16 @@ impl OwnerWakeQueue {
                     if !Weak::ptr_eq(&slot.get().token, &request.key.token) {
                         continue;
                     }
-                    slot.get_mut().requires_sync |= request.requires_sync;
+                    let packet = slot.get_mut();
+                    packet.requires_sync |= request.requires_sync;
+                    packet.save_progress_only &= request.save_progress_only;
                 }
                 std::collections::hash_map::Entry::Vacant(slot) => {
                     slot.insert(Packet {
                         token: request.key.token,
                         event: request.event,
                         requires_sync: request.requires_sync,
+                        save_progress_only: request.save_progress_only,
                     });
                 }
             }

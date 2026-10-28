@@ -11,6 +11,11 @@ homepage.workspace = true
 # Builds on the portable `tilo-ui` build so the browser desktop and the native
 # shell rank, group and present search results with one implementation.
 
+[features]
+# Leave the search's code out of what the program starts with: it fetches
+# it on first use (`DESKTOP_SEARCH`).
+lazy-search = []
+
 [dependencies]
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }

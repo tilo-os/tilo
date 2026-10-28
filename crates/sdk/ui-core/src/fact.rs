@@ -21,9 +21,8 @@
 //! [`Measured::is_stale`] to dim the provenance rather than the value.
 //!
 //! ```
-//! use std::time::Duration;
 //! use tilo_ui::fact::{Measure, Measured};
-//! use tilo_ui::time::{SystemTime, UNIX_EPOCH};
+//! use tilo_ui::time::{Duration, UNIX_EPOCH};
 //!
 //! let at = UNIX_EPOCH + Duration::from_secs(120);
 //! let memory = Measured::known(
@@ -31,7 +30,7 @@
 //!     "8.6",
 //!     "this device",
 //!     at,
-//!     Duration::from_secs(5),
+//!     Some(Duration::from_secs(5)),
 //! );
 //! assert_eq!(memory.value_or_dash(), "8.6");
 //! assert!(!memory.is_stale(at + Duration::from_secs(2)));

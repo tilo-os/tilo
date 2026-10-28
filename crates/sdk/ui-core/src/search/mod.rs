@@ -35,6 +35,7 @@
 //! ```
 
 mod body;
+mod button_component;
 pub mod capability;
 pub mod index_publication;
 mod ordinals;
@@ -49,6 +50,7 @@ mod row;
 pub mod testing;
 
 pub use body::{BodyPiece, SearchBody, SearchBodySource};
+pub use button_component::{SearchButton, SearchButtonProps};
 pub use preview::{PREVIEW_BODY_LINES, PREVIEW_LINES, SearchPreview};
 pub use provider::{
     CatalogSearchProvider, DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_INDEX_LIMIT,

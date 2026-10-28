@@ -565,7 +565,8 @@ impl FrameHarness {
                         root,
                     )
                 } else {
-                    widget.perform_semantic_action(
+                    crate::a11y_child_route::perform(
+                        widget,
                         &semantic_target,
                         verb,
                         &mut crate::widget::Edits::lend(doc),

@@ -74,7 +74,10 @@ impl Context {
             .as_ref()
             .ok_or("external moderation committed report owner unavailable")?;
         service.authorize(&self.document)?;
-        let _reservation = state.committed_read_budget.reserve()?;
+        let _reservation = state
+            .committed_read_budget
+            .try_reserve()
+            .ok_or("committed document capture capacity exhausted")?;
         let captured = service.capture(&self.document, None, MAX_DOCUMENT_BYTES)?;
         let NativeDocumentRead::Captured { body, .. } = captured else {
             return Err("external moderation committed report unavailable".into());

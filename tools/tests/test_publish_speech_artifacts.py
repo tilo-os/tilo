@@ -120,7 +120,7 @@ class PublicationCredentialContract(unittest.TestCase):
         # the dev package token, never a release secret.
         for arch in ("x86_64", "aarch64"):
             self.assertFalse(checks[f"model-catalog-dev-{arch}"].get("secrets"))
-            self.assertEqual(checks[f"publish-model-runtimes-{arch}"]["secrets"], ["TILO_PACKAGES_TOKEN"])
+            self.assertEqual(checks[f"publish-model-runtime-llama-cpp-cpu-{arch}"]["secrets"], ["TILO_PACKAGES_TOKEN"])
         script = (root / "tools/release/local-model-catalog.sh").read_text()
         step = script.split("\n  publish)\n", 1)[1].split("\n    ;;", 1)[0]
         self.assertIn('PACKAGE_TOKEN=$REGISTRY_TOKEN python3 -I tools/release/publish_speech_artifacts.py', step)

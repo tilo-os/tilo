@@ -54,6 +54,10 @@ default = ["iroh"]
 # without it, so the wasm bundle links no iroh.
 iroh = ["dep:iroh", "dep:iroh-base", "dep:tilo-relay-session", "tilo-relay-client/iroh"]
 toolkit = ["dep:ui"]
+# Leave the stewarding code out of what the page starts with: it fetches it
+# the first time it takes up a channel of the person's own room
+# (`STEWARDS`).
+lazy-stewards = ["toolkit"]
 
 [dev-dependencies]
 # A test that must hold the wall clock of its whole process (and the
@@ -95,6 +99,12 @@ tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 chat = { path = "../../../apps/chat", default-features = false }
 # A refused commit reaches the app that made it, mounted headlessly.
 tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
+# Messages on the web: the page's messaging service over a page's session,
+# lent to the real Messages app (tests/messages_over_https.rs).
+messages = { path = "../../../apps/messages" }
+tilo-messaging = { path = "../../platform/tilo-messaging", features = ["room"] }
+tilo-contact-directory = { path = "../../platform/tilo-contact-directory" }
+uuid.workspace = true
 
 [lints]
 workspace = true

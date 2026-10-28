@@ -229,7 +229,7 @@ impl tilo_desktop::resolver::ComponentContextSource for WakingApps {
     > {
         let records = self
             .owners
-            .open(definition.app_id, "room")
+            .open(definition.app_id(), "room")
             .map_err(ui::launch::LaunchError::Record)?;
         let context = ui::application::HostContext::prepare(
             definition,
@@ -264,7 +264,7 @@ fn a_kept_workspace_does_its_apps_woken_work_while_another_is_shown() {
         let mut tree = state.tree_mut();
         let mut group = stub_group(910);
         group.tabs[0].tile = TileContent::AppPlaceholder {
-            kind: AppKind::Other(notes.app_id.into()),
+            kind: AppKind::Other(notes.app_id.to_string()),
             label: "Notes".into(),
         };
         tree.desktop
@@ -283,9 +283,9 @@ fn a_kept_workspace_does_its_apps_woken_work_while_another_is_shown() {
     // Keep a home workspace whose Notes is a mounted app that can be woken.
     let cache = ui::portable_storage::PortableStorage::new("profile", "device").expect("a cache");
     let mut owners = ui::record::RecordOwners::portable(cache.clone());
-    let records = owners.open(notes.app_id, "room").expect("Notes' records");
+    let records = owners.open(notes.app_id(), "room").expect("Notes' records");
     let checkout =
-        tilo_desktop::records::component_record(notes.app_id, tab, notes.record_kind.clone());
+        tilo_desktop::records::component_record(notes.app_id(), tab, notes.record_kind.clone());
     records.create_record(&checkout).expect("a notebook");
     records.with(&checkout.id, notes::read::initialize);
     let mut catalog = ui::application::ApplicationCatalog::new();

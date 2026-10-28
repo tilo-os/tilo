@@ -3,6 +3,7 @@ use crate::resource::PrintCentreShell;
 use ui::framework::ResourceApp;
 use ui::prelude::TestApp;
 use ui::theme::Theme;
+use ui::tilo_resource::Atom;
 use vello::kurbo::Rect;
 
 fn registry() -> ui::tilo_actions::ActionRegistry {
@@ -242,20 +243,22 @@ fn scenarios_and_resources_expose_real_navigation_and_backend_states() {
     {
         let mut app = live_with_studio();
         app.effect(&PrintCentreEffect::ScanDocument).unwrap();
-        app.call_on(
-            "tilo.control:print-centre.scan.resolution.select",
-            "select",
-            ui::serde_json::json!({ "index": 2 }),
-        )
-        .unwrap();
+        app.harness()
+            .perform_semantic_named(
+                "print-centre.scan.resolution",
+                Some("print-centre.scan.resolution:segment:2"),
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap();
         app.settle();
         assert_eq!(app.state().scan_resolution, 600);
-        app.call_on(
-            "tilo.control:print-centre.scan.language.select",
-            "select",
-            ui::serde_json::json!({ "index": 1 }),
-        )
-        .unwrap();
+        app.harness()
+            .perform_semantic_named(
+                "print-centre.scan.language",
+                Some("print-centre.scan.language:segment:1"),
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap();
         app.settle();
         assert_eq!(app.state().ocr_language.0, "deu");
     }

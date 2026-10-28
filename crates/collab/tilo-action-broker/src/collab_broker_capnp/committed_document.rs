@@ -352,12 +352,79 @@ pub(super) struct Slot {
     /// The last revision this channel handed out whole or as changes (its
     /// last piece acknowledged), when its owner named the heads.
     delivered: Option<HeldRevision>,
+    /// This channel's place in the byte budget's queue, after an Open found
+    /// the budget held and answered `Busy`.
+    queued: Option<Queued>,
+    /// The record another device prepared for an Open that then answered
+    /// `Busy`: the next Open answers with it, so a creation is never lost.
+    prepared: Option<PreparedElsewhere>,
     /// Whether the last Open without a revision answered [`Reply::Absent`]
     /// rather than [`Reply::Unavailable`]: what a held `Await` for `None`
     /// holds.
     absent: bool,
 }
+/// A channel's turn in the byte budget's queue: a task on the broker's local
+/// set that waits for the reservation, keeps it for the channel's next Open
+/// and wakes the channel's held `Await`. Dropped with the channel (or once
+/// the Open took the reservation), which takes it out of the queue or
+/// releases what it was granted.
+struct Queued {
+    granted: Rc<std::cell::RefCell<Option<capture::Reservation>>>,
+    wake: Rc<tokio::sync::Notify>,
+    task: tokio::task::AbortHandle,
+}
+impl Queued {
+    fn start(budget: &Arc<Budget>) -> Self {
+        let granted = Rc::new(std::cell::RefCell::new(None));
+        let wake = Rc::new(tokio::sync::Notify::new());
+        let turn = budget.wait();
+        let task = {
+            let granted = Rc::clone(&granted);
+            let wake = Rc::clone(&wake);
+            tokio::task::spawn_local(async move {
+                if let Some(reservation) = turn.await {
+                    *granted.borrow_mut() = Some(reservation);
+                    wake.notify_one();
+                }
+            })
+            .abort_handle()
+        };
+        Self {
+            granted,
+            wake,
+            task,
+        }
+    }
+}
+impl Drop for Queued {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
 impl Slot {
+    /// The reservation an Open captures under: the one this channel's turn
+    /// was granted, or one taken now when nobody waits ahead. `None` puts
+    /// the channel in the queue (or keeps its place) and the Open answers
+    /// `Busy`.
+    fn admit(&mut self, budget: &Arc<Budget>) -> Option<capture::Reservation> {
+        if let Some(queued) = &self.queued {
+            let granted = queued.granted.borrow_mut().take();
+            if granted.is_some() {
+                self.queued = None;
+            }
+            return granted;
+        }
+        let reservation = budget.try_reserve();
+        if reservation.is_none() {
+            self.queued = Some(Queued::start(budget));
+        }
+        reservation
+    }
+    /// The reader reads no more on this channel: give up its place in the
+    /// byte budget's queue, or the room its turn was granted.
+    fn leave(&mut self) {
+        self.queued = None;
+    }
     /// Close the channel once an unacknowledged capture outlived its
     /// deadline; refuse every request on a closed channel.
     fn expire(&mut self) -> Result<(), String> {
@@ -371,6 +438,7 @@ impl Slot {
         }
         if self.closed {
             self.active = None;
+            self.queued = None;
             return Err("committed read channel expired".into());
         }
         Ok(())
@@ -752,6 +820,10 @@ impl CapnpChannelHandle {
                     .commit(*token, *revision, kind, document)
             }
             Request::Cancel { capture, token } => slot.acknowledge(*capture, *token),
+            Request::Leave => {
+                slot.leave();
+                Ok(Reply::Cancelled)
+            }
             Request::Open { known_revision } => {
                 self.open_committed_document(&mut slot, *known_revision, None, prepared)
             }
@@ -782,14 +854,19 @@ impl CapnpChannelHandle {
         let Some(service) = self.state.services.committed_documents.clone() else {
             return Ok(Reply::Unavailable);
         };
-        let reading = Reading {
-            context: self.own_record_context()?,
-            service,
-            budget: &self.state.committed_read_budget,
-            ids: &self.state.committed_read_id,
-            prepared,
-        };
-        let (reply, capture) = open_read(slot, reading, known_revision, held)?;
+        let opened = self.own_record_context().and_then(|context| {
+            let reading = Reading {
+                context,
+                service,
+                budget: &self.state.committed_read_budget,
+                ids: &self.state.committed_read_id,
+                prepared,
+            };
+            open_read(slot, reading, known_revision, held)
+        });
+        // A refusal is final: a read refused while it waited in the byte
+        // budget's queue gives up its place, so reads behind it are served.
+        let (reply, capture) = opened.inspect_err(|_| slot.queued = None)?;
         if let Some(id) = capture {
             self.arm_capture_deadline(id);
         }
@@ -842,9 +919,23 @@ fn open_read(
     if slot.active.is_some() {
         return Err("committed read requires previous response acknowledgement".into());
     }
+    // Custody and admission first: a reader that may no longer read is
+    // refused, never queued. Then capacity: a read that must wait its turn
+    // has done nothing yet, and a record prepared elsewhere for it is kept
+    // for its next Open.
+    if let Err(refused) = context.revalidate() {
+        slot.queued = None;
+        return Err(refused);
+    }
+    let Some(reservation) = slot.admit(budget) else {
+        if let Some(prepared) = prepared {
+            slot.prepared = Some(prepared);
+        }
+        return Ok((Reply::Busy, None));
+    };
+    let prepared = prepared.or_else(|| slot.prepared.take());
     let created = context.prepare_application(service.as_ref(), prepared)?;
     service.authorize(&context)?;
-    let reservation = budget.reserve()?;
     let read = match held {
         Some(held) => service.capture_since(&context, held, MAX_DOCUMENT_BYTES)?,
         None => service.capture(&context, known_revision, MAX_DOCUMENT_BYTES)?,
@@ -936,7 +1027,7 @@ fn captured_unchanged(
     known_revision: Option<[u8; 32]>,
     absent: bool,
 ) -> Option<bool> {
-    let _reservation = budget.reserve().ok()?;
+    let _reservation = budget.try_reserve()?;
     Some(
         match service
             .capture(context, known_revision, MAX_DOCUMENT_BYTES)
@@ -1049,8 +1140,13 @@ impl CapnpChannelHandle {
                 generation,
                 wake: Arc::clone(&wake),
             });
-            generation
+            let turn = slot
+                .queued
+                .as_ref()
+                .map(|queued| (Rc::clone(&queued.granted), Rc::clone(&queued.wake)));
+            (generation, turn)
         };
+        let (generation, turn) = generation;
         let _guard = WaitGuard {
             handle: &self,
             generation,
@@ -1059,6 +1155,30 @@ impl CapnpChannelHandle {
             let wake = Arc::clone(&wake);
             tilo_identity_host::policy_change::Watch::new(move || wake.notify_one())
         };
+        if let Some((granted, turn)) = turn {
+            // A read waiting in the budget's queue: what changes its Open's
+            // answer is its turn coming, announced by the queue itself, or
+            // its custody or admission ending, announced as any policy
+            // change is. Either way its next Open decides.
+            loop {
+                if !self.holds_wait(generation) {
+                    return Err("committed read wait was replaced".into());
+                }
+                let _ = watch.arm();
+                if granted.borrow().is_some()
+                    || self
+                        .document_read_context()
+                        .and_then(|context| context.revalidate())
+                        .is_err()
+                {
+                    return Ok(Reply::Stale);
+                }
+                tokio::select! {
+                    () = turn.notified() => {}
+                    () = wake.notified() => {}
+                }
+            }
+        }
         hold_until_stale(
             &wake,
             || {

@@ -139,6 +139,7 @@ impl App {
         let _entry = self.enter_wake_scope();
         match (enabled, self.accessibility.screen_reader.is_some()) {
             (true, false) => {
+                self.accessibility.parting_screen_reader = None;
                 self.accessibility.screen_reader = Some(Self::configured_screen_reader());
                 self.announce_current_focus();
             }
@@ -147,14 +148,132 @@ impl App {
                     sr.stop();
                 }
                 self.accessibility.screen_reader = None;
+                self.accessibility.touch_explorer.reset();
                 self.accessibility.live_region_last.clear();
             }
             _ => {}
         }
     }
 
+    /// Turn the screen reader on or off at `settings`' rate and voice, for a
+    /// host that keeps them itself: the login screen, from the device's
+    /// sign-in comforts.
+    pub fn apply_screen_reader_settings(
+        &mut self,
+        settings: &settings_store::accessibility::ScreenReaderSettings,
+    ) {
+        self.set_screen_reader_enabled(settings.enabled);
+        if let Some(reader) = self.accessibility.screen_reader.as_mut() {
+            reader.configure(settings);
+        }
+    }
+
     pub fn screen_reader_enabled(&self) -> bool {
         self.accessibility.screen_reader.is_some()
+    }
+
+    /// Let the host keep the screen reader state the chord sets (a login
+    /// screen keeps the device's, not a person's). Without one, the chord
+    /// writes the person's `accessibility.screen_reader` setting when this
+    /// window follows the settings file, so the chord and Settings agree.
+    pub fn on_screen_reader_chord(&mut self, observer: impl FnMut(bool) + 'static) {
+        self.accessibility.on_screen_reader_chord = Some(Box::new(observer));
+    }
+
+    /// Feed a key event to the screen reader chord. `true` when it toggled
+    /// the screen reader, which then consumes the event.
+    #[cfg(feature = "native")]
+    fn handle_screen_reader_chord(&mut self, event: &WindowEvent) -> bool {
+        use crate::screen_reader_chord::{ChordEvent, ChordKey, ChordModifiers};
+        match event {
+            WindowEvent::Focused(false) => {
+                // Releases arrive at whoever has focus next.
+                self.accessibility.screen_reader_chord.reset();
+                false
+            }
+            WindowEvent::KeyboardInput { event: key, .. } => {
+                let toggled = self.accessibility.screen_reader_chord.key(ChordEvent {
+                    key: ChordKey::from_winit(key),
+                    modifiers: ChordModifiers::from_winit(self.input.modifiers.state()),
+                    pressed: key.state == winit::event::ElementState::Pressed,
+                    repeat: key.repeat,
+                    at: crate::time::now(),
+                });
+                if toggled {
+                    self.toggle_screen_reader_by_chord();
+                }
+                toggled
+            }
+            _ => false,
+        }
+    }
+
+    /// When the screen reader next has something to do with no input to
+    /// bring it: the volume-key hold toggles it if both keys stay down, or
+    /// a finger resting on the screen is read (`App::explore_by_touch`).
+    /// The runner wakes then and calls [`Self::tick_screen_reader`].
+    pub fn screen_reader_deadline(&self) -> Option<crate::time::Instant> {
+        let touch = self
+            .accessibility
+            .screen_reader
+            .as_ref()
+            .and(self.accessibility.touch_explorer.deadline());
+        self.accessibility
+            .screen_reader_chord
+            .deadline()
+            .into_iter()
+            .chain(touch)
+            .min()
+    }
+
+    /// Toggle the screen reader when the volume-key hold is due, and read
+    /// what a finger's timing completed by `now`. `true` when either
+    /// happened.
+    pub fn tick_screen_reader(&mut self, now: crate::time::Instant) -> bool {
+        let toggled = self.accessibility.screen_reader_chord.tick(now);
+        if toggled {
+            self.toggle_screen_reader_by_chord();
+        }
+        let explored = self.tick_touch_exploration(now);
+        toggled || explored
+    }
+
+    /// Turn the screen reader on or off as the chord does, saying which.
+    /// Turning it off is heard too: the narrator that says so is kept, not
+    /// stopped, until the reader is turned on again.
+    pub fn toggle_screen_reader_by_chord(&mut self) {
+        let _entry = self.enter_wake_scope();
+        let on = !self.screen_reader_enabled();
+        if on {
+            // The new state first, then what has focus.
+            let mut reader = Self::configured_screen_reader();
+            reader.announce(
+                crate::screen_reader_chord::state_words(true),
+                tts::Priority::Important,
+                true,
+            );
+            self.accessibility.parting_screen_reader = None;
+            self.accessibility.screen_reader = Some(reader);
+            self.announce_current_focus();
+        } else if let Some(mut reader) = self.accessibility.screen_reader.take() {
+            reader.announce(
+                crate::screen_reader_chord::state_words(false),
+                tts::Priority::Important,
+                true,
+            );
+            self.accessibility.parting_screen_reader = Some(reader);
+            self.accessibility.touch_explorer.reset();
+            self.accessibility.live_region_last.clear();
+        }
+        self.accessibility.a11y.screen_reader = on;
+        if let Some(observer) = self.accessibility.on_screen_reader_chord.as_mut() {
+            observer(on);
+        } else if self.watch_system_settings {
+            let origin = settings_store::ChangeOrigin::local(SCREEN_READER_CHORD_ORIGIN);
+            if let Err(error) = settings_store::accessibility::SCREEN_READER.set_by(on, &origin) {
+                tracing::warn!(%error, "the screen reader chord could not save its setting");
+            }
+        }
     }
 
     /// Installs a caller-provided reader (e.g. over a test `NullSpeaker` so
@@ -224,23 +343,25 @@ impl App {
             let shift = self.input.modifiers.state().shift_key();
             match c.to_ascii_lowercase().as_str() {
                 "h" => {
-                    if let Some(sr) = self.accessibility.screen_reader.as_mut() {
+                    self.with_screen_reader_order(|sr, order| {
+                        let is_heading = crate::screen_reader::is_heading;
                         if shift {
-                            sr.read_prev_heading(self.root_widget.as_ref());
+                            sr.read_prev_matching_in(order, is_heading);
                         } else {
-                            sr.read_next_heading(self.root_widget.as_ref());
+                            sr.read_next_matching_in(order, is_heading);
                         }
-                    }
+                    });
                     return true;
                 }
                 "f" => {
-                    if let Some(sr) = self.accessibility.screen_reader.as_mut() {
+                    self.with_screen_reader_order(|sr, order| {
+                        let is_field = crate::screen_reader::is_form_field;
                         if shift {
-                            sr.read_prev_control(self.root_widget.as_ref());
+                            sr.read_prev_matching_in(order, is_field);
                         } else {
-                            sr.read_next_control(self.root_widget.as_ref());
+                            sr.read_next_matching_in(order, is_field);
                         }
-                    }
+                    });
                     return true;
                 }
                 _ => {}
@@ -252,21 +373,19 @@ impl App {
         };
         match named {
             NamedKey::ArrowDown => {
-                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
-                    sr.read_all(self.root_widget.as_ref());
-                }
+                self.with_screen_reader_order(|sr, order| sr.read_all_in(order));
                 true
             }
             NamedKey::ArrowRight => {
-                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
-                    sr.read_next(self.root_widget.as_ref());
-                }
+                self.with_screen_reader_order(|sr, order| {
+                    sr.read_next_in(order);
+                });
                 true
             }
             NamedKey::ArrowLeft => {
-                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
-                    sr.read_prev(self.root_widget.as_ref());
-                }
+                self.with_screen_reader_order(|sr, order| {
+                    sr.read_prev_in(order);
+                });
                 true
             }
             NamedKey::ArrowUp => {
@@ -1322,7 +1441,8 @@ impl App {
         let handled = self
             .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
-                    widget.perform_semantic_action(
+                    crate::a11y_child_route::perform(
+                        widget,
                         target,
                         action,
                         &mut crate::widget::Edits::lend(doc),
@@ -1404,7 +1524,18 @@ impl App {
                 None
             }
             Action::Activate | Action::ToggleCheck => {
-                let rect = if synthetic {
+                // A widget reached through its painting ancestor is pressed
+                // where it stands.
+                let routed = semantic_target.as_deref().and_then(|target| {
+                    self.inspect_node(taffy_id, |widget| {
+                        crate::a11y_child_route::rect(widget, target)
+                    })
+                    .ok()
+                    .flatten()
+                });
+                let rect = if let Some(rect) = routed {
+                    rect
+                } else if synthetic {
                     self.inspect_node(taffy_id, |widget| {
                         widget.synthetic_accessibility_rect(&ordinal_path)
                     })
@@ -1430,7 +1561,7 @@ impl App {
     /// target has already resolved to this exact point; routing the usual
     /// move/press/release sequence through the widget tree preserves the same
     /// behavior as hardware input instead of reporting a false success.
-    fn dispatch_semantic_click(&mut self, x: f64, y: f64) -> bool {
+    pub(super) fn dispatch_semantic_click(&mut self, x: f64, y: f64) -> bool {
         self.mark_semantic_tree_stale();
         self.refresh_control_action_availability();
         if self.layout.root_node.is_none() {
@@ -1603,6 +1734,10 @@ impl App {
                 )
             });
         self.accessibility.semantic_tree = tree;
+        if !delta.is_empty() {
+            self.accessibility.semantic_tree_revision =
+                self.accessibility.semantic_tree_revision.wrapping_add(1);
+        }
         delta
     }
     pub fn semantic_tree(&self) -> &crate::a11y_tree::SemanticTree {
@@ -1783,7 +1918,8 @@ impl App {
                                     root,
                                 )
                             } else {
-                                widget.perform_semantic_action(
+                                crate::a11y_child_route::perform(
+                                    widget,
                                     &semantic_target,
                                     &verb,
                                     &mut crate::widget::Edits::lend(doc),
@@ -1849,6 +1985,9 @@ impl App {
         Ok(true)
     }
 }
+
+/// The change origin the screen reader chord records in the settings file.
+const SCREEN_READER_CHORD_ORIGIN: &str = "screen-reader-chord";
 
 /// What a handled input asks [`App::commit_action_with`] to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

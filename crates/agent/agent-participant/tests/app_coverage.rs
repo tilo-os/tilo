@@ -56,13 +56,13 @@ fn every_web_app_takes_an_edit_through_its_published_operations() {
     for definition in catalogue.iter() {
         let app = Replica::open(
             &catalogue,
-            definition.app_id,
+            definition.app_id(),
             ROOM,
             "coverage-agent",
             tilo_agent_participant::ReplicaActor::Agent,
             Seed::New,
         )
-        .unwrap_or_else(|error| panic!("{} did not open: {error}", definition.app_id));
+        .unwrap_or_else(|error| panic!("{} did not open: {error}", definition.app_id()));
         let mut app = Held(app);
         let _ = app.0.take_mutation();
         let operations = app.survey().len();
@@ -73,20 +73,20 @@ fn every_web_app_takes_an_edit_through_its_published_operations() {
         let _ = writeln!(
             table,
             "| {} | {operations} | `{label}` |",
-            definition.app_id
+            definition.app_id()
         );
         let local = LOCAL_STATE
             .iter()
-            .find(|(app, _)| *app == definition.app_id);
+            .find(|(app, _)| *app == definition.app_id());
         if let (None, Some((_, why))) = (&edit, local) {
             let _ = writeln!(table, "|   ↳ local state | | {why} |");
         } else if edit.is_none() {
-            gaps.push(format!("{}: {refused:#?}", definition.app_id));
+            gaps.push(format!("{}: {refused:#?}", definition.app_id()));
         } else {
             assert!(
                 app.0.take_mutation().is_some(),
                 "{}: an edit leaves a change to publish",
-                definition.app_id
+                definition.app_id()
             );
         }
     }

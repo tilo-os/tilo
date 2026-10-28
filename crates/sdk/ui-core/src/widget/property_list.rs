@@ -1473,3 +1473,6 @@ impl Widget for PropertyValue {
 #[cfg(test)]
 #[path = "property_list_tests.rs"]
 mod tests;
+
+mod component;
+pub use component::{PropertyListProps, PropertyProps};

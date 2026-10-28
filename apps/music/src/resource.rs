@@ -345,6 +345,7 @@ impl ResourceSurface<Library, MusicEffect> for MusicApp {
 
     fn attach(&mut self, cx: SurfaceCx<Library>) {
         self.attach_dispatcher(cx.dispatcher());
+        self.attach_actions(cx.actions());
         // The person's kept views follow them; the search wakes this window
         // when the catalogue answers.
         self.attach_views(cx.settings::<ui::framework::views::KeptViews>(), cx.waker());

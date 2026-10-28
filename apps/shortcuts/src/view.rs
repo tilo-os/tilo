@@ -201,8 +201,13 @@ struct Ui {
     selected: LocalState<Option<String>>,
     /// The front screen of a narrow window.
     pane: LocalState<NavPane>,
+    /// The steps the person folded away, by draft and path; they keep their
+    /// place in the program and only their drawing goes.
+    folded: LocalState<Vec<(Id, Id)>>,
     picker: LocalState<Option<String>>,
     sheet: LocalState<bool>,
+    /// Whether the open draft is edited as blocks or as its program text.
+    as_text: LocalState<bool>,
 }
 
 impl Ui {
@@ -300,6 +305,8 @@ pub(crate) fn root(cx: &ViewCx<Workbench>) -> Element {
         pane: LocalState::new(NavPane::Sidebar),
         picker: LocalState::new(None),
         sheet: LocalState::new(false),
+        as_text: LocalState::new(false),
+        folded: LocalState::new(Vec::new()),
     };
     // A past version or a capture shows the door as staged, never the
     // session's.
@@ -1064,6 +1071,8 @@ fn saved_facts(ui: &Ui, shortcut: &Shortcut) -> Element {
 fn editor_pane(ui: &Ui, follow: Rc<RefCell<Box<dyn FnMut()>>>) -> Element {
     let builder = ui.clone();
     let editor = ui.editor.clone();
+    let as_text = ui.as_text.clone();
+    let folded = ui.folded.clone();
     let body = Keyed::new(
         move || {
             // Derive before keying, so a frame that only synchronizes (a
@@ -1071,7 +1080,14 @@ fn editor_pane(ui: &Ui, follow: Rc<RefCell<Box<dyn FnMut()>>>) -> Element {
             if let Ok(mut follow) = follow.try_borrow_mut() {
                 follow();
             }
-            editor.with(EditorInput::structure)
+            // Reading the program as text, and which steps are folded, are
+            // part of how the page is built, so they key the pane too.
+            format!(
+                "{}|{}|{:?}",
+                editor.with(EditorInput::structure),
+                as_text.get(),
+                folded.get()
+            )
         },
         move || {
             let content = builder.editor.with(|input| build_page(&builder, input));
@@ -1311,6 +1327,12 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
         Box::new(labeled_field("shortcuts-name", name)),
         Box::new(problems),
     ];
+    if ui.as_text.get() {
+        items.push(text_view(ui, draft_id.clone()));
+        items.push(Box::new(caption("shortcuts-steps-read-only")));
+        items.push(grant_section(input));
+        return page(ui, items);
+    }
     if let Arrival::Failed(reason) = &input.catalogue {
         items.push(Box::new(
             Banner::warning(ui::i18n!("shortcuts-catalogue-unavailable"))
@@ -1324,7 +1346,61 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
         vec![block(ui, input, &draft_id, draft, "", 0)],
     )));
     items.push(output_section(ui, input, &draft_id, draft));
+    items.push(grant_section(input));
     page(ui, items)
+}
+
+/// What saving the draft would let it do, kept in front of the person while
+/// they build it: the same least-privilege list the save sheet reviews, so a
+/// step that reaches into another app says so the moment it is added.
+fn grant_section(input: &EditorInput) -> Element {
+    let Some((_, draft)) = &input.draft else {
+        return ui::widget::optional(None);
+    };
+    let permissions: Vec<Permission> =
+        grant::least_privilege(&draft.program().steps, &input.catalog);
+    let mut lines: Vec<Element> = permissions
+        .iter()
+        .enumerate()
+        .map(|(index, permission)| {
+            Box::new(
+                Text::new(&format!(
+                    "{} ({})",
+                    permission.label,
+                    permission.kind.phrase()
+                ))
+                .with_id(format!("grant-summary-{index}")),
+            ) as Element
+        })
+        .collect();
+    if lines.is_empty() {
+        lines.push(Box::new(
+            caption("shortcuts-grant-none").with_id("shortcuts-grant-summary-none"),
+        ));
+    }
+    Box::new(Section::titled(
+        ui::i18n!("shortcuts-grant"),
+        vec![Box::new(Section::new(lines))],
+    ))
+}
+
+/// The draft's program as the text language writes it: the same steps, in
+/// the same order, each with what it does and where its values come from.
+/// Reading it is how a person checks the blocks against the text they can
+/// share, and the toggle beside it goes back to the blocks.
+fn text_view(ui: &Ui, draft_id: Id) -> Element {
+    let lines = Text::from_state(&ui.editor, move |input| {
+        let Some((_, draft)) = input.draft.as_ref().filter(|(id, _)| *id == draft_id) else {
+            return String::new();
+        };
+        editor::program_text(&draft.program(), &input.catalog)
+    })
+    .with_id("draft-text")
+    .with_role(TextRole::Code);
+    Box::new(Section::titled(
+        ui::i18n!("shortcuts-text-view"),
+        vec![Box::new(lines)],
+    ))
 }
 
 /// Why the open draft cannot be saved yet besides what the checker finds:
@@ -1852,7 +1928,8 @@ fn action_picker_body(
 }
 
 /// One step: a card holding what it does, with its own actions in the
-/// header, and the blocks inside it indented below.
+/// header, the blocks inside it indented below, and, once it is folded, only
+/// its header until the person opens it again.
 fn step_card(
     ui: &Ui,
     input: &EditorInput,
@@ -1873,16 +1950,69 @@ fn step_card(
     };
     let number = editor::step_number(steps, &step.id).unwrap_or(0);
     let title = format!("{number}. {}", editor::title(step, &input.catalog, steps));
-    let actions = step_actions(ui, draft_id, path, (index, count));
+    let is_folded = folded(ui, draft_id, path);
+    let actions = step_actions(ui, draft_id, path, (index, count), steps, !is_folded);
     let (body, nested) = step_fields(&at, step);
-    let card = Card::new(Box::new(body)).with_title_action(title, Box::new(actions));
+    // A folded step keeps its header, without the fields under it: its
+    // fields and the steps inside it come back when it is opened.
+    let card = if is_folded {
+        Card::new(Box::new(
+            Column::new().with_intrinsic_height().with_no_padding(),
+        ))
+        .with_title_action(title, Box::new(fold_button(ui, draft_id, path, false)))
+    } else {
+        Card::new(Box::new(body)).with_title_action(title, Box::new(actions))
+    };
     let mut items: Vec<Element> = vec![Box::new(card)];
-    items.extend(nested);
+    if !is_folded {
+        items.extend(nested);
+    }
     Box::new(Section::new(items))
 }
 
+/// The control that folds a step's contents away, or opens them again: the
+/// step's header stays either way.
+fn fold_button(ui: &Ui, draft_id: &Id, path: &str, shutting: bool) -> Button {
+    let folded = ui.folded.clone();
+    let (id, icon, name) = if shutting {
+        (
+            "step-fold",
+            Icon::ChevronDown,
+            ui::i18n!("shortcuts-fold-step"),
+        )
+    } else {
+        (
+            "step-open",
+            Icon::ChevronRight,
+            ui::i18n!("shortcuts-open-step"),
+        )
+    };
+    let draft = draft_id.clone();
+    let key = Id::from_raw(path);
+    Button::icon_only(&format!("{id}-{path}"), icon, &name)
+        .control_size(ControlSize::Small)
+        .on_view(move || {
+            let mut steps = folded.get();
+            steps.retain(|(folding, step)| !(folding == &draft && step == &key));
+            if shutting {
+                steps.push((draft.clone(), key.clone()));
+            }
+            folded.set(steps);
+        })
+}
+
+/// `path` of `draft` is folded: what it does is shown, the steps inside it
+/// are not drawn until it is opened.
+fn folded(ui: &Ui, draft_id: &Id, path: &str) -> bool {
+    let key = Id::from_raw(path);
+    ui.folded
+        .get()
+        .iter()
+        .any(|(draft, step)| draft == draft_id && step == &key)
+}
+
 /// The steps inside a step, indented under it and named by what they are
-/// for.
+/// for, folded away while the step is folded.
 fn branch(title: String, block: Element) -> Element {
     Box::new(
         Row::new()
@@ -2307,11 +2437,55 @@ fn grant_body(_ui: &Ui, input: &EditorInput) -> Element {
     Box::new(body)
 }
 
-/// A step's own actions: move it up or down its block, or remove it.
-fn step_actions(ui: &Ui, draft_id: &Id, path: &str, (index, count): (usize, usize)) -> ActionGroup {
+/// A step's own actions: fold it away, remove it, nest it or lift it out,
+/// and move it up or down its block. The fold leads the header, the moves
+/// trail it, and both nest controls are disabled where the step has nowhere
+/// to go.
+fn step_actions(
+    ui: &Ui,
+    draft_id: &Id,
+    path: &str,
+    (index, count): (usize, usize),
+    steps: &[Step],
+    folded: bool,
+) -> ActionGroup {
+    let fold = fold_button(ui, draft_id, path, folded);
     let step_button = |id: &str, icon: Icon, name: &str| {
         Button::icon_only(&format!("{id}-{path}"), icon, name).control_size(ControlSize::Small)
     };
+    let nesting = |id: &str, icon: Icon, name: &str, place: Option<editor::Nesting>| {
+        let draft = draft_id.clone();
+        let path = path.to_owned();
+        let button = step_button(id, icon, name);
+        let placed = place.is_some();
+        let button = match place {
+            Some(place) => ui.bind(
+                button,
+                Workbench::SET_NESTED.map(move |()| {
+                    (
+                        draft.clone(),
+                        path.clone(),
+                        place.block.clone(),
+                        place.index,
+                    )
+                }),
+            ),
+            None => button,
+        };
+        button.with_enabled(placed)
+    };
+    let deeper = nesting(
+        "step-nest",
+        Icon::ArrowRight,
+        &ui::i18n!("shortcuts-nest-step"),
+        editor::nest_into(steps, path),
+    );
+    let shallower = nesting(
+        "step-lift",
+        Icon::ArrowLeft,
+        &ui::i18n!("shortcuts-lift-step"),
+        editor::lift_out(path),
+    );
     let up = ui
         .bind(
             step_button("step-up", Icon::ChevronUp, &ui::i18n!("shortcuts-move-up")),
@@ -2344,7 +2518,12 @@ fn step_actions(ui: &Ui, draft_id: &Id, path: &str, (index, count): (usize, usiz
             move |()| (draft.clone(), path.clone())
         }),
     );
-    ActionGroup::new(remove).secondary(up).secondary(down)
+    ActionGroup::new(fold)
+        .secondary(remove)
+        .secondary(shallower)
+        .secondary(deeper)
+        .secondary(up)
+        .secondary(down)
 }
 
 /// What a step is made of: its fields in a column, and the blocks inside it.

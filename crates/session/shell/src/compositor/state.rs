@@ -374,9 +374,9 @@ impl DeclaredOpacity {
     ) -> crate::compositor::foreign::DmabufCommit {
         let colorimetry = states
             .data_map
-            .get::<crate::wayland::color_management::ColorManagementSurfaceData>()
+            .get::<tilo_wayland_ext::color_management::ColorManagementSurfaceData>()
             .and_then(
-                crate::wayland::color_management::ColorManagementSurfaceData::current_colorimetry,
+                tilo_wayland_ext::color_management::ColorManagementSurfaceData::current_colorimetry,
             )
             .map(|(colorimetry, _)| colorimetry);
         let viewport = *states
@@ -485,7 +485,6 @@ use smithay::{
     delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell,
 };
 
-use crate::collab::flatpak_share::SharedFlatpakSession;
 use crate::compositor::output_management::OutputManagementState;
 use crate::compositor::remote_seat::RemoteSeats;
 use crate::compositor::render_node::{ProbeError, RenderNode};
@@ -494,8 +493,9 @@ use crate::compositor::surface_readback::SurfaceTracker;
 use crate::compositor::tab_binding;
 use crate::network::input_firewall::{Denial, RemoteInputFirewall};
 use crate::network::protocol::{PeerId as MsgPeerId, SurfaceId};
-use crate::network::streaming::{InputEvent, RemoteAction, RemoteInputSink, ShareRegistry};
-use crate::wayland::color_management::ColorManagerState;
+use tilo_wayland_ext::color_management::ColorManagerState;
+use tilo_window_share::flatpak_share::SharedFlatpakSession;
+use tilo_window_share::streaming::{InputEvent, RemoteAction, RemoteInputSink, ShareRegistry};
 
 use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
 use smithay::backend::input::KeyState;
@@ -1083,7 +1083,7 @@ pub struct State {
     /// commit — when the surface is in the map, `encode_next_frame` is
     /// pumped the same tick a fresh buffer lands, avoiding a per-frame
     /// stall waiting on the next damage pass. Held as `Arc` since
-    /// [`crate::collab::flatpak_share::SharedFlatpakSession`]'s `encode_next_frame` takes `&self`.
+    /// [`tilo_window_share::flatpak_share::SharedFlatpakSession`]'s `encode_next_frame` takes `&self`.
     pub active_sessions: HashMap<SurfaceId, Arc<SharedFlatpakSession>>,
     /// Apps that can stream their window's page as a display list, by app
     /// id (`shell-ui`'s `PaintCapable`). Their windows reach web members as
@@ -1128,7 +1128,7 @@ pub struct State {
     /// `wp_color_manager_v1` state — advertised primaries/transfers/features
     /// plus the registered global id. HDR clients bind it, query
     /// capabilities, and attach parametric image descriptions; the
-    /// flatpak-share encoder reads the current per-surface description through [`crate::wayland::color_management::surface_current_colorimetry`].
+    /// flatpak-share encoder reads the current per-surface description through [`tilo_wayland_ext::color_management::surface_current_colorimetry`].
     pub color_manager: ColorManagerState,
     /// `wp_fractional_scale_manager_v1` state — lets `HiDPI` clients ask the
     /// compositor for their surface's preferred fractional scale (a
@@ -3510,6 +3510,30 @@ impl State {
         }
     }
 
+    /// `surface`'s stream could not start for `receivers` at `size`: it
+    /// waits for them (or the size) to change, and the stream it was to
+    /// replace ends.
+    fn legacy_share_failed(
+        &mut self,
+        surface: SurfaceId,
+        receivers: Vec<media::realtime::CodecCapabilities>,
+        size: (u32, u32),
+        replaced: Option<Arc<SharedFlatpakSession>>,
+    ) {
+        self.legacy_share_failures.insert(
+            surface,
+            LegacyShareFailure {
+                receivers,
+                size,
+                at: std::time::Instant::now(),
+            },
+        );
+        if let Some(replaced) = replaced {
+            self.active_sessions.insert(surface, replaced);
+            self.unregister_share_session(surface);
+        }
+    }
+
     /// Reconcile encoder lifetimes and viewer permissions with the windows
     /// that have viewers: shares in the active workspace's replicated
     /// `shared_surfaces` map, and windows the person's other devices show. A
@@ -3520,7 +3544,7 @@ impl State {
         &mut self,
         host_peer: MsgPeerId,
         desired: &HashMap<SurfaceId, LegacyShare>,
-        config: &crate::config::FlatpakShareConfig,
+        config: &tilo_window_share::config::FlatpakShareConfig,
     ) {
         let stale = self
             .active_sessions
@@ -3585,10 +3609,17 @@ impl State {
                 continue;
             }
 
+            // What this machine encodes is read off the frame loop once; the
+            // stream starts when it is known (a worker wakes the loop then).
+            if !paint
+                && !tilo_window_share::flatpak_share::encoders_known(crate::shell::wake_compositor)
+            {
+                continue;
+            }
             // The window is still shared: its stream is replaced, not ended,
             // unless the new one cannot start.
             let replaced = self.active_sessions.remove(&surface);
-            let config = &crate::config::FlatpakShareConfig {
+            let config = &tilo_window_share::config::FlatpakShareConfig {
                 target_fps: self.share_rate_hz(surface).unwrap_or(config.target_fps),
                 ..config.clone()
             };
@@ -3603,18 +3634,7 @@ impl State {
                 Ok(session) => session,
                 Err(error) => {
                     log_share_failure(surface, app_id, (width, height), &error, &receivers);
-                    self.legacy_share_failures.insert(
-                        surface,
-                        LegacyShareFailure {
-                            receivers,
-                            size: (width, height),
-                            at: std::time::Instant::now(),
-                        },
-                    );
-                    if let Some(replaced) = replaced {
-                        self.active_sessions.insert(surface, replaced);
-                        self.unregister_share_session(surface);
-                    }
+                    self.legacy_share_failed(surface, receivers, (width, height), replaced);
                     continue;
                 }
             };
@@ -4829,13 +4849,13 @@ fn log_share_failure(
     surface: SurfaceId,
     app_id: &str,
     (width, height): (u32, u32),
-    error: &crate::collab::flatpak_share::ShareError,
+    error: &tilo_window_share::flatpak_share::ShareError,
     receivers: &[media::realtime::CodecCapabilities],
 ) {
     use media::realtime::CodecCapabilities;
     if !matches!(
         error,
-        crate::collab::flatpak_share::ShareError::EncoderUnavailable { .. }
+        tilo_window_share::flatpak_share::ShareError::EncoderUnavailable { .. }
     ) {
         tracing::warn!(surface, app_id, width, height, %error, "legacy share encoder failed to start");
         return;
@@ -5794,7 +5814,7 @@ impl CompositorHandler for State {
         // `wp_color_management_surface_v1.set_image_description` becomes
         // the wire-tagged colorimetry the share session reports on stream_start; unset clears the override so the config-driven default wins again.
         if let Some(session) = self.active_sessions.get(&surface_id).cloned() {
-            match crate::wayland::color_management::surface_current_colorimetry(surface) {
+            match tilo_wayland_ext::color_management::surface_current_colorimetry(surface) {
                 Some((color, hdr)) => session.set_color_override(color, hdr),
                 None => session.clear_color_override(),
             }
@@ -8518,7 +8538,7 @@ impl AsRef<ColorManagerState> for State {
 }
 
 // `wp_color_manager_v1` + friends live outside smithay's delegate wrappers, hand-rolled in `wayland::color_management`; this macro wires their `Dispatch`/`GlobalDispatch`.
-crate::delegate_color_management!(State);
+tilo_wayland_ext::delegate_color_management!(State);
 
 #[cfg(test)]
 mod popup_geometry_tests;
@@ -8774,11 +8794,11 @@ mod tick_hook_tests {
         state.drop_paint_connection(5);
         assert!(state.paint_apps.is_empty());
     }
-    use crate::collab::flatpak_share::SharedFlatpakSession;
-    use crate::config::{EncoderChoice, FlatpakShareConfig};
     use crate::network::protocol::{PeerId, SurfaceId};
     use smithay::reexports::calloop::EventLoop;
     use smithay::reexports::wayland_server::Display;
+    use tilo_window_share::config::{EncoderChoice, FlatpakShareConfig};
+    use tilo_window_share::flatpak_share::SharedFlatpakSession;
 
     fn make_state() -> State {
         let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
@@ -9224,6 +9244,9 @@ mod tick_hook_tests {
         const HOST: PeerId = 0xAAAA;
         const MEMBER: PeerId = 0xCCCC;
         const SURFACE: SurfaceId = 0x7e57_0000_0093;
+        // A share starts once what this machine encodes is known, which the
+        // compositor reads on a worker; read it here first.
+        tilo_window_share::flatpak_share::read_encoders();
         let mut state = make_state();
         let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = Arc::clone(&sent);
@@ -9288,6 +9311,9 @@ mod tick_hook_tests {
         const HOST: PeerId = 0xAAAA;
         const VIEWER: PeerId = 0xBBBB;
         const SURFACE: SurfaceId = 0x7e57_0000_0091;
+        // A share starts once what this machine encodes is known, which the
+        // compositor reads on a worker; read it here first.
+        tilo_window_share::flatpak_share::read_encoders();
         let mut state = make_state();
         let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = Arc::clone(&sent);
@@ -9357,6 +9383,9 @@ mod tick_hook_tests {
         const HOST: PeerId = 0xAAAA;
         const VIEWER: PeerId = 0x5eed_1017;
         const SURFACE: SurfaceId = 0x7e57_0000_1017;
+        // A share starts once what this machine encodes is known, which the
+        // compositor reads on a worker; read it here first.
+        tilo_window_share::flatpak_share::read_encoders();
         let mut state = make_state();
         let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = Arc::clone(&sent);
@@ -9417,7 +9446,7 @@ mod tick_hook_tests {
     #[test]
     fn delayed_blur_of_previous_stream_preserves_current_remote_focus() {
         use crate::network::input_firewall::ShellView;
-        use crate::network::streaming::StreamingShare;
+        use tilo_window_share::streaming::StreamingShare;
         use vello::kurbo::Rect;
 
         const PEER: PeerId = 9;

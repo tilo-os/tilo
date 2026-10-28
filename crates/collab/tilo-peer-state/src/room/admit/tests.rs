@@ -5,8 +5,6 @@ use automerge::transaction::Transactable;
 use automerge::{ObjType, ROOT, ReadDoc, ScalarValue};
 use std::collections::BTreeMap;
 use tilo_action_policy::{Role, Subject, roles};
-use tilo_desktop_model::ownership::SharedDesktop;
-use tilo_desktop_model::{DesktopTree, Strip, StripId, Workspace, WorkspaceId, shared_record};
 
 const ROOM: &str = "0b5c3f1e-7d2a-4c1b-9e8f-6a5d4c3b2a19";
 const OWNER: [u8; 32] = [0x11; 32];
@@ -22,8 +20,7 @@ fn person_id(root: [u8; 32]) -> String {
     hex::encode(root)
 }
 
-/// A room the owner governs, with an editor and a viewer, one strip the
-/// owner made and one the editor made.
+/// A room the owner governs, with an editor and a viewer.
 fn governed() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "room", ROOM).unwrap();
@@ -51,33 +48,9 @@ fn governed() -> AutoCommit {
         )
         .unwrap();
     }
-    let mut workspace = Workspace::new(WorkspaceId(1), "Room");
-    workspace.strips = vec![
-        Strip::new(StripId(OWNERS_STRIP), "Strip"),
-        Strip::new(StripId(EDITORS_STRIP), "Strip"),
-    ];
-    shared_record::write(
-        &mut doc,
-        &SharedDesktop {
-            tree: DesktopTree {
-                active: workspace.id,
-                workspaces: vec![workspace],
-                ..DesktopTree::default()
-            },
-            authors: BTreeMap::from([
-                (OWNERS_STRIP, person_id(OWNER)),
-                (EDITORS_STRIP, person_id(EDITOR)),
-            ]),
-            ..SharedDesktop::default()
-        },
-    )
-    .unwrap();
     doc.commit();
     doc
 }
-
-const OWNERS_STRIP: u64 = 0x0001_0000_0000_0001;
-const EDITORS_STRIP: u64 = 0x0002_0000_0000_0001;
 
 /// The changes `edit` makes on top of `before`.
 fn changes_after(before: &AutoCommit, edit: impl FnOnce(&mut AutoCommit)) -> Vec<Vec<u8>> {
@@ -128,28 +101,13 @@ fn admit(
     )
 }
 
-fn strip_name(doc: &mut AutoCommit, id: u64, name: &str) {
-    let mut desktop = shared_record::read(&*doc, None).unwrap();
-    for strip in desktop
-        .tree
-        .workspaces
-        .iter_mut()
-        .flat_map(|w| &mut w.strips)
-    {
-        if strip.id.0 == id {
-            strip.name = name.into();
-        }
-    }
-    shared_record::write(doc, &desktop).unwrap();
-}
-
-/// A strip nobody is named as having made.
-fn add_strip(doc: &mut AutoCommit, id: u64) {
-    let mut desktop = shared_record::read(&*doc, None).unwrap();
-    desktop.tree.workspaces[0]
-        .strips
-        .push(Strip::new(StripId(id), "New"));
-    shared_record::write(doc, &desktop).unwrap();
+/// A record the room holds, as any member writes it.
+fn hold_record(doc: &mut AutoCommit, record: &str) {
+    tilo_desktop_model::projection::project_room_records(
+        doc,
+        &BTreeMap::from([(record.to_owned(), "document".to_owned())]),
+    )
+    .unwrap();
 }
 
 fn take_ownership(doc: &mut AutoCommit, root: [u8; 32]) {
@@ -198,7 +156,7 @@ fn a_base_keeps_the_room_s_authority_and_an_editor_writes_on_it() {
     );
     let authority = key(0xA0);
     let writer = key(0x02);
-    let edit = changes_after(&based, |doc| strip_name(doc, EDITORS_STRIP, "Edited"));
+    let edit = changes_after(&based, |doc| hold_record(doc, "file:/plan.md"));
     assert!(
         admit(
             Some(&based),
@@ -214,9 +172,7 @@ fn a_base_keeps_the_room_s_authority_and_an_editor_writes_on_it() {
     ungranted.commit();
     let policy = tilo_desktop_model::projection::room_policy_of(&ungranted, ROOM);
     assert_eq!(policy.active_role(&person_id(EDITOR)), Some(Role::Editor));
-    let edit = changes_after(&ungranted, |doc| {
-        strip_name(doc, EDITORS_STRIP, "Edited");
-    });
+    let edit = changes_after(&ungranted, |doc| hold_record(doc, "file:/plan.md"));
     assert_eq!(
         admit(
             Some(&ungranted),
@@ -232,7 +188,7 @@ fn a_base_keeps_the_room_s_authority_and_an_editor_writes_on_it() {
 #[test]
 fn sender_needs_write_on_the_room_it_already_governs() {
     let before = governed();
-    let edit = changes_after(&before, |doc| strip_name(doc, EDITORS_STRIP, "Edited"));
+    let edit = changes_after(&before, |doc| hold_record(doc, "file:/plan.md"));
     let authority = key(0xA0);
     let writer = key(0x02);
     assert_eq!(
@@ -266,7 +222,7 @@ fn sender_needs_write_on_the_room_it_already_governs() {
         )
         .is_ok()
     );
-    let added = changes_after(&before, |doc| add_strip(doc, 0x0003_0000_0000_0001));
+    let added = changes_after(&before, |doc| hold_record(doc, "file:/notes.md"));
     assert!(
         admit(
             Some(&before),
@@ -404,56 +360,6 @@ fn durable_and_import_governance_count_as_governance() {
 }
 
 #[test]
-fn what_someone_else_made_changes_only_with_the_rooms_leave() {
-    let before = governed();
-    let authority = key(0xA0);
-    let editor = key(0x02);
-    let theirs = changes_after(&before, |doc| strip_name(doc, OWNERS_STRIP, "Stolen"));
-    for pin in [AuthorityPin::Device(&authority), AuthorityPin::Local] {
-        let refused = admit(Some(&before), member(&editor, EDITOR), pin, &theirs);
-        assert!(
-            matches!(refused, Err(RoomRefusal::NotTheirs(_))),
-            "{pin:?}: {refused:?}"
-        );
-    }
-    let own = changes_after(&before, |doc| strip_name(doc, EDITORS_STRIP, "Mine"));
-    assert!(
-        admit(
-            Some(&before),
-            member(&editor, EDITOR),
-            AuthorityPin::Device(&authority),
-            &own,
-        )
-        .is_ok(),
-        "a person's own strip is theirs from any device"
-    );
-    // The owner, from a device that does not govern the room, moderates it.
-    let moderated = changes_after(&before, |doc| strip_name(doc, EDITORS_STRIP, "Tidied"));
-    assert!(
-        admit(
-            Some(&before),
-            member(&key(0x07), OWNER),
-            AuthorityPin::Device(&authority),
-            &moderated,
-        )
-        .is_ok()
-    );
-    // A sender whose person is not known may change nothing a person made.
-    assert!(matches!(
-        admit(
-            Some(&before),
-            Writer {
-                key: &editor,
-                standing: Standing::TransportAuthorized,
-            },
-            AuthorityPin::Local,
-            &own,
-        ),
-        Err(RoomRefusal::NotTheirs(_))
-    ));
-}
-
-#[test]
 fn effect_receipts_are_immutable_even_for_the_governor() {
     let mut before = governed();
     let receipts = before
@@ -586,9 +492,13 @@ fn refusals_keep_the_peer_state_messages() {
 }
 
 /// The changes saving `shortcut` makes on top of `before`.
-fn saving(before: &AutoCommit, shortcut: tilo_automation::Shortcut) -> Vec<Vec<u8>> {
+fn saving(before: &AutoCommit, shortcut: &tilo_automation::Shortcut) -> Vec<Vec<u8>> {
     changes_after(before, |doc| {
-        tilo_desktop_model::projection::project_workspace_shortcuts(doc, &[shortcut]).unwrap();
+        tilo_desktop_model::projection::project_workspace_shortcuts(
+            doc,
+            &[tilo_automation::SavedShortcut::encode(shortcut)],
+        )
+        .unwrap();
     })
 }
 
@@ -604,7 +514,7 @@ fn a_shortcut_saved_with_a_certificate_issued_this_second_is_proven() {
     let mut editor = device(0x22, 0x02);
     editor.cert.issued_at_ns = NOW_NS + 400_000_000;
     tilo_user_identity::sign_device_cert(&mut editor.cert, &editor.root).unwrap();
-    let batch = saving(&before, editor.saves(ROOM, shortcut("water")));
+    let batch = saving(&before, &editor.saves(ROOM, shortcut("water")));
     admit_room_changes(
         RoomAdmission {
             before: Some(&before),
@@ -639,7 +549,7 @@ fn a_shortcut_names_as_its_saver_only_whose_device_signed_it() {
     forged.saved_by = Some(owner.person());
     let mut unproven = shortcut("water");
     unproven.saved_by = Some(owner.person());
-    for batch in [saving(&before, forged), saving(&before, unproven)] {
+    for batch in [saving(&before, &forged), saving(&before, &unproven)] {
         assert_eq!(
             admit(Some(&before), as_editor(), governor, &batch).unwrap_err(),
             RoomRefusal::ShortcutAuthorship("water".into()),
@@ -653,7 +563,7 @@ fn a_shortcut_names_as_its_saver_only_whose_device_signed_it() {
     forged.saved_by = Some(editor.person());
     let mut unproven = shortcut("ferns");
     unproven.saved_by = Some(editor.person());
-    for batch in [saving(&before, forged), saving(&before, unproven)] {
+    for batch in [saving(&before, &forged), saving(&before, &unproven)] {
         assert_eq!(
             admit(Some(&before), as_governor(), governor, &batch).unwrap_err(),
             RoomRefusal::ShortcutAuthorship("ferns".into()),
@@ -664,7 +574,7 @@ fn a_shortcut_names_as_its_saver_only_whose_device_signed_it() {
     // A proof from another room does not move with the shortcut.
     let copied = saving(
         &before,
-        editor.saves("5e1d9a40-3c2b-4f6e-8a7d-1b2c3d4e5f60", shortcut("lamp")),
+        &editor.saves("5e1d9a40-3c2b-4f6e-8a7d-1b2c3d4e5f60", shortcut("lamp")),
     );
     assert_eq!(
         admit(Some(&before), as_editor(), governor, &copied).unwrap_err(),
@@ -673,7 +583,7 @@ fn a_shortcut_names_as_its_saver_only_whose_device_signed_it() {
 
     // The person's own device saves it; the governor relaying that change is
     // judged by the device that signed it, not by itself.
-    let own = saving(&before, editor.saves(ROOM, shortcut("water")));
+    let own = saving(&before, &editor.saves(ROOM, shortcut("water")));
     admit(Some(&before), as_editor(), governor, &own)
         .expect("the editor's own device saves as the editor");
     let relayed = admit(Some(&before), as_governor(), governor, &own)
@@ -684,7 +594,7 @@ fn a_shortcut_names_as_its_saver_only_whose_device_signed_it() {
             Some(&before),
             as_editor(),
             governor,
-            &saving(&before, shortcut("nobody")),
+            &saving(&before, &shortcut("nobody")),
         )
         .is_ok(),
         "a shortcut that names no saver arms nowhere"
@@ -697,11 +607,14 @@ fn a_shortcut_names_as_its_saver_only_whose_device_signed_it() {
     let mut held = relayed;
     tilo_desktop_model::projection::project_workspace_shortcuts(
         &mut held,
-        &[editor.saves(ROOM, shortcut("water")), legacy],
+        &[
+            tilo_automation::SavedShortcut::encode(&editor.saves(ROOM, shortcut("water"))),
+            tilo_automation::SavedShortcut::encode(&legacy),
+        ],
     )
     .unwrap();
     held.commit();
-    let edit = changes_after(&held, |doc| strip_name(doc, EDITORS_STRIP, "Edited"));
+    let edit = changes_after(&held, |doc| hold_record(doc, "file:/plan.md"));
     assert!(
         admit(Some(&held), as_editor(), governor, &edit).is_ok(),
         "a shortcut held unchanged is not a write"

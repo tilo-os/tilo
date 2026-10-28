@@ -24,12 +24,14 @@ use vello::kurbo::Point;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use shell::shell::chrome_state::{ChromeState, WsTab};
-use shell::shell::quick_settings::QsLevel;
 use shell::shell::state::StripId;
+use tilo_quick_settings::QsLevel;
 use ui::widget::GroupRow;
 
 use super::driver::ShellDriver;
 
+#[cfg(feature = "test-support")]
+mod catch_up;
 mod file_chooser;
 pub mod film;
 mod keyboard;
@@ -467,6 +469,12 @@ pub enum Action {
     /// wants reviewing. This writes the same `ChromeState::osd` the key
     /// handler writes.
     SeedOsd(&'static str),
+    /// Publish Clocks' running timer with its floating overlay, the panel
+    /// the bar's clock opens: an app's own live activity, which a `--shots`
+    /// render has no app to publish.
+    SeedTimerOverlay,
+    /// Withdraw that activity, so a later scenario starts with no timer.
+    EndTimerOverlay,
     /// Open quick settings on the Wi-Fi pane with a passphrase prompt
     /// up, by preset name (`empty`, `typed`, `rejected`).
     SeedWifiPrompt(&'static str),
@@ -595,6 +603,20 @@ pub enum Action {
         app: OwnApp,
         width: u32,
     },
+    /// Click `target` inside the app running as a window of its own on
+    /// `surface`.
+    #[cfg(feature = "test-support")]
+    OwnProcessClick {
+        surface: u64,
+        target: &'static str,
+    },
+    /// Turn the wheel `dy` notches in the app running as a window of its
+    /// own on `surface`.
+    #[cfg(feature = "test-support")]
+    OwnProcessScroll {
+        surface: u64,
+        dy: f32,
+    },
 }
 
 /// An app [`Action::OwnProcessWindow`] runs as a window of its own.
@@ -605,6 +627,10 @@ pub enum OwnApp {
     Notes,
     /// Files at the shell's starting place, with a few files in it.
     Files,
+    /// The workspace's activity: what changed since this device last
+    /// looked, as the workspace's own history records it.
+    #[cfg(feature = "test-support")]
+    Activity,
 }
 
 /// The field [`Action::ShowKeyboard`] rises over, for a flow whose field is
@@ -668,7 +694,7 @@ pub enum MotionCue {
     CloseQuickSettings,
     /// A Quick Settings section opens in place (or, with `None`, the open
     /// one closes), as a press on a tile's chevron does.
-    QuickSettingsSection(Option<shell::shell::quick_settings::QsSection>),
+    QuickSettingsSection(Option<tilo_quick_settings::QsSection>),
     /// Click at this point.
     ClickAt(Point),
     /// The overview opens (`true`) or closes, as `source` asks: Super+Tab is
@@ -830,6 +856,15 @@ const OWN_FILES: BarTab = BarTab {
     slots: None,
 };
 
+/// The window [`Action::OwnProcessWindow`] opens for Activity.
+#[cfg(feature = "test-support")]
+const OWN_ACTIVITY: BarTab = BarTab {
+    app_id: "so.tilo.activity",
+    title: "Activity",
+    surface_id: 9_303,
+    slots: None,
+};
+
 /// `Action::OwnProcessWindow` — split out of [`apply`] to keep that
 /// dispatcher short.
 fn apply_own_process_window(driver: &mut ShellDriver, action: &Action) {
@@ -839,6 +874,8 @@ fn apply_own_process_window(driver: &mut ShellDriver, action: &Action) {
     let window: &'static [BarTab] = match app {
         OwnApp::Notes => &[OWN_NOTES],
         OwnApp::Files => &[OWN_FILES],
+        #[cfg(feature = "test-support")]
+        OwnApp::Activity => &[OWN_ACTIVITY],
     };
     // The window is placed and adopted as a client's toplevel is.
     apply_seed_window_bar(
@@ -906,6 +943,8 @@ fn run_own_process_app(
             }
             inputs.mount_files(&room, tab)
         }
+        #[cfg(feature = "test-support")]
+        OwnApp::Activity => inputs.mount_activity(&room, tab, Some("whats-new")),
     }
     .ok_or("this host mounts no apps")?
     .map_err(|error| error.to_string())?;
@@ -1207,6 +1246,10 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::SetLockVisual(state) => driver.set_lock_visual_state(*state),
         Action::ReduceTransparency(on) => driver.set_reduce_transparency(*on),
         Action::SeedRoomHistory => driver.seed_room_history_for_shots(),
+        #[cfg(feature = "test-support")]
+        Action::OwnProcessClick { surface, target } => catch_up::click(driver, *surface, target),
+        #[cfg(feature = "test-support")]
+        Action::OwnProcessScroll { surface, dy } => catch_up::scroll(driver, *surface, *dy),
         Action::SeedSharedWorkspace => driver.seed_shared_workspace_for_shots(),
         Action::SeedLauncherFresh => driver.seed_launcher_fresh_for_shots(),
         Action::SeedLauncherBusy => driver.seed_launcher_busy_for_shots(),
@@ -1914,6 +1957,29 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
             });
         }
         Action::SeedFilePicker(mode) => file_chooser::seed(driver, mode),
+        Action::SeedTimerOverlay => {
+            shell::shell::live_activities::board().show(
+                "so.tilo.clocks",
+                Some(serde_json::json!({
+                    "active": true,
+                    "activity_id": "timer-launch",
+                    "label": "Tea",
+                    "remaining_secs": 125,
+                    "stopwatch": false,
+                    "overlay": true,
+                })),
+            );
+            // The bar reads the activity board every
+            // `CLOCK_ACTIVITY_REFRESH` (250 ms of wall time), so the frames
+            // after this one are what puts it on screen.
+            driver.step_frames(24);
+            driver.relayout();
+        }
+        Action::EndTimerOverlay => {
+            shell::shell::live_activities::board().show("so.tilo.clocks", None);
+            driver.step_frames(24);
+            driver.relayout();
+        }
         _ => {}
     }
 }
@@ -1966,9 +2032,7 @@ fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
         Action::SeedWifiPrompt(preset) => {
             let preset = *preset;
             driver.with_chrome(|st: &mut ChromeState| {
-                use shell::shell::quick_settings::{
-                    QsLevel, QsSection, WifiNetwork, WifiPasswordPrompt,
-                };
+                use tilo_quick_settings::{QsLevel, QsSection, WifiNetwork, WifiPasswordPrompt};
                 st.overlays.quick_settings = true;
                 st.quick_settings.nav_stack = vec![QsLevel::Root];
                 st.quick_settings.section = Some(QsSection::Wifi);
@@ -2329,10 +2393,10 @@ const PLACEMENT_SETTLE_FRAMES: u32 = 8;
 /// "nothing known yet", the same as a machine whose first poll has not
 /// landed. A typo therefore shows up as a visibly empty tray in the
 /// capture rather than as a silently wrong one.
-fn status_preset(name: &str) -> shell::shell::status::SystemStatus {
+fn status_preset(name: &str) -> tilo_quick_settings::SystemStatus {
     use os_actions::{LinkKind, LinkStatus, VolumeState};
-    use shell::shell::status::SystemStatus;
     use tilo_power_mgmt::{BatterySnapshot, BatteryState};
+    use tilo_quick_settings::SystemStatus;
 
     let wifi = |signal: u8| LinkStatus {
         kind: LinkKind::Wifi,
@@ -2524,9 +2588,7 @@ fn motion_quick_settings_scenario() -> Scenario {
             },
             Action::MotionFrames {
                 prefix: "qs-expand",
-                cue: MotionCue::QuickSettingsSection(Some(
-                    shell::shell::quick_settings::QsSection::Wifi,
-                )),
+                cue: MotionCue::QuickSettingsSection(Some(tilo_quick_settings::QsSection::Wifi)),
                 frames: 30,
                 every_ms: 11,
             },
@@ -3973,6 +4035,21 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
+            name: "clock_overlay",
+            description: "Clocks' running timer floats over the desktop: the panel the bar's clock opens, drawn without a scenario until now.",
+            actions: vec![
+                Action::Wait(4),
+                Action::Relayout,
+                Action::Snapshot("00-desktop"),
+                Action::SeedTimerOverlay,
+                Action::Wait(4),
+                Action::Snapshot("01-timer-overlay"),
+                Action::EndTimerOverlay,
+                Action::Wait(4),
+                Action::Snapshot("02-timer-gone"),
+            ],
+        },
+        Scenario {
             name: "overlay_edges",
             description: "Open every top-bar chip and hover its affordances so the popovers and tooltips are reviewed anchored at the top, left and right screen edges.",
             actions: vec![
@@ -4309,6 +4386,8 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("01-history-panel"),
             ],
         },
+        #[cfg(feature = "test-support")]
+        catch_up::scenario(),
         window_search::own_process_files_search(),
         Scenario {
             name: "own_process_files_history",

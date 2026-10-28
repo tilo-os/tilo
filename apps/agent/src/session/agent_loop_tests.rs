@@ -1353,6 +1353,7 @@ fn execution_fixture(
         broker_surfaces: surfaces,
         next_broker_request: 1,
         awaiting_companions: Vec::new(),
+        held_turn: None,
         broker_revision: 0,
         catalogue_cache: None,
         turn: None,
@@ -2662,5 +2663,80 @@ fn tool_results(body: &Value) -> Vec<(String, Value)> {
         })
         .collect()
 }
+/// A run's issue lists what it looked up, and only that: a read of a
+/// resource the request did not name, listed once. Changing something is not
+/// a lookup, the resource the request is about was given rather than found,
+/// and reading again what is already listed adds nothing.
+#[test]
+fn only_a_first_read_of_a_resource_past_the_request_is_listed_as_a_lookup() {
+    let descriptor = |resource: &str| tilo_actions::ActionDescriptor {
+        semantic_identity: None,
+        address: tilo_actions::ActionAddress::new(resource, "read"),
+        resource_kind: "notes.page".into(),
+        resource_label: "Release notes".into(),
+        action_label: "Read".into(),
+        keywords: Vec::new(),
+        icon: None,
+        description: None,
+        locus: tilo_actions::ExecutionLocus::ClientLocal,
+        kind: tilo_actions::OperationKind::View,
+        contract: tilo_actions::ActionContract::default(),
+        params: Vec::new(),
+        input: tilo_actions::InputSpec::None,
+        view: None,
+    };
+    let mut run = runtime_collab::TaskRunEnvelope {
+        paused: None,
+        model: None,
+        version: 1,
+        task_id: "tasks.tracker/issues/loop".into(),
+        title: "Say what changed".into(),
+        instruction: None,
+        subject: Some(tilo_actions::SelectionSubject {
+            app_id: "so.tilo.notes".into(),
+            app_label: "Notes".into(),
+            resource: tilo_actions::ActionResource {
+                id: "notes.page:given".into(),
+                kind: "notes.page".into(),
+                label: "The page asked about".into(),
+            },
+            anchor: tilo_actions::selection::SelectionAnchor::default(),
+        }),
+        run_id: 7,
+        lease: "native:00000000000000000000000000000000:0".into(),
+        planning: runtime_collab::TaskRunPlanning::Model,
+        presentation_version: Some(1),
+        execution_budget: None,
+        action_context: serde_json::Value::Null,
+    };
+    let empty: Vec<String> = Vec::new();
+    assert!(
+        looked_up(&run, &descriptor("notes.page:release"), true, &empty),
+        "a first read past the request is a lookup"
+    );
+    assert!(
+        !looked_up(&run, &descriptor("notes.page:release"), false, &empty),
+        "an operation that is not a read looks nothing up"
+    );
+    assert!(
+        !looked_up(&run, &descriptor("notes.page:given"), true, &empty),
+        "what the person gave the run was not found"
+    );
+    let already = ["notes.page:release".to_owned()];
+    assert!(
+        !looked_up(&run, &descriptor("notes.page:release"), true, &already),
+        "a resource it already listed is not listed again"
+    );
+    // An empty subject (a task asked in words alone) leaves every read a
+    // lookup; there is no given resource to exclude.
+    run.subject = None;
+    assert!(looked_up(
+        &run,
+        &descriptor("notes.page:release"),
+        true,
+        &empty
+    ));
+}
+
 #[path = "agent_loop_run_tests.rs"]
 mod run;

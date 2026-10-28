@@ -330,6 +330,38 @@ pub fn is_synthetic_id(id: AkNodeId) -> bool {
     id.0 & SYNTHETIC_ID_BIT != 0
 }
 
+/// What a child index is hashed with on the way down to a retained widget
+/// with no layout node of its own, so it never meets a synthetic child's key.
+const CHILD_ROUTE_KEY: u64 = 0x7469_6c6f_2e63_6800;
+
+/// The id of the retained widget at child `path` below the node `owner`
+/// when the window's layout gave it no node: chained from `owner` like a
+/// synthetic node's, so it is as stable as the path and resolves back to
+/// `owner` and the path ([`crate::a11y_child_route`]).
+fn child_route_node_id(owner: AkNodeId, path: &[usize]) -> AkNodeId {
+    path.iter().fold(owner, |id, &index| {
+        synthetic_node_id(id, CHILD_ROUTE_KEY ^ index as u64)
+    })
+}
+
+/// The address of `w` on its way down from the nearest widget with a layout
+/// node: that node's id, and the child indices from it to `w`.
+type ChildRoute = (AkNodeId, Vec<usize>);
+
+/// The route of the child at `index` below a widget whose own route, or
+/// node `own`, is given.
+fn child_route(
+    own: Option<AkNodeId>,
+    route: Option<&ChildRoute>,
+    index: usize,
+) -> Option<ChildRoute> {
+    match (own, route) {
+        (Some(owner), _) => Some((owner, vec![index])),
+        (None, Some((owner, path))) => Some((*owner, [path.as_slice(), &[index]].concat())),
+        (None, None) => None,
+    }
+}
+
 /// The AccessKit id of the widget laid out at `taffy_id`, or `None` when that
 /// taffy node holds no live widget.
 ///
@@ -442,32 +474,79 @@ fn search_synthetic<const BOUND: bool>(
     ptr_to_taffy: &WidgetNodeMap,
     wanted: AkNodeId,
 ) -> Option<A11yTarget> {
+    search_synthetic_routed::<BOUND>(w, ptr_to_taffy, wanted, None)
+}
+
+/// [`search_synthetic`] below a widget with no layout node of its own,
+/// reached through `route`: the nearest laid-out widget and the child
+/// indices from it ([`child_route_node_id`]).
+fn search_synthetic_routed<const BOUND: bool>(
+    w: &dyn Widget,
+    ptr_to_taffy: &WidgetNodeMap,
+    wanted: AkNodeId,
+    route: Option<(TaffyNodeId, Vec<usize>)>,
+) -> Option<A11yTarget> {
     let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
         return None;
     };
-    for child in w.children() {
-        if let Some(hit) = search_synthetic::<BOUND>(child, ptr_to_taffy, wanted) {
+    let taffy = ptr_to_taffy.get(w);
+    let route = if taffy.is_some() { None } else { route };
+    for (index, child) in w.children().into_iter().enumerate() {
+        let child_route = match (taffy, &route) {
+            (Some(owner), _) if w.lays_out_child(index) => Some((owner, vec![index])),
+            (None, Some((owner, path))) => Some((*owner, [path.as_slice(), &[index]].concat())),
+            (Some(_), _) | (None, None) => None,
+        };
+        if let Some(hit) =
+            search_synthetic_routed::<BOUND>(child, ptr_to_taffy, wanted, child_route)
+        {
             return Some(hit);
         }
     }
     // A presentational widget emits no node, so it owns no synthetic subtree;
-    // and only a laid-out widget's subtree is addressable at all.
+    // and only a laid-out widget's subtree, or a routed one's, is addressable.
     let access_node = w.accessibility()?;
-    let owner = ptr_to_taffy.get(w)?;
-    let owner_id = widget_node_id(Some(owner), 0);
+    let (owner, owner_id, path) = match (taffy, route) {
+        (Some(owner), _) => (owner, widget_node_id(Some(owner), 0), None),
+        (None, Some((owner, path))) => {
+            let id = child_route_node_id(widget_node_id(Some(owner), 0), &path);
+            if id == wanted || text_run_node_id(id) == wanted {
+                return Some(A11yTarget::Synthetic {
+                    owner,
+                    key_path: Vec::new(),
+                    ordinal_path: Vec::new(),
+                    semantic_target: Some(crate::a11y_child_route::encode(&path, None)),
+                });
+            }
+            (owner, id, Some(path))
+        }
+        (None, None) => return None,
+    };
 
     let mut key_path = Vec::new();
     let mut ordinal_path = Vec::new();
     let mut semantic_target = None;
-    find_synthetic_path(
+    if !find_synthetic_path(
         &access_node.children,
         owner_id,
         wanted,
         &mut key_path,
         &mut ordinal_path,
         &mut semantic_target,
-    )
-    .then_some(A11yTarget::Synthetic {
+    ) {
+        return None;
+    }
+    // A routed widget's own synthetic node is reached through the widget.
+    if let Some(path) = path {
+        let inner = semantic_target.unwrap_or_else(|| crate::a11y_child_route::keys(&key_path));
+        return Some(A11yTarget::Synthetic {
+            owner,
+            key_path: Vec::new(),
+            ordinal_path: Vec::new(),
+            semantic_target: Some(crate::a11y_child_route::encode(&path, Some(&inner))),
+        });
+    }
+    Some(A11yTarget::Synthetic {
         owner,
         key_path,
         ordinal_path,
@@ -712,6 +791,7 @@ fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
         nodes: Vec::new(),
         active_descendant: None,
         owned_active_descendant: None,
+        routes: HashMap::new(),
     };
 
     // The synthetic window root gathers the top-level accessible nodes.
@@ -797,7 +877,7 @@ fn append_resource_nodes(
             let mut action_node = AkNode::new(AkRole::Button);
             action_node.set_label(action.label.clone());
             let operation = action.kind.as_str();
-            match &action.input {
+            match action.input() {
                 tilo_actions::ActionInput::Immediate(_)
                 | tilo_actions::ActionInput::Deferred { .. } => {
                     action_node.add_action(AkAction::Click);
@@ -842,6 +922,9 @@ struct TreeWalk<'m> {
     /// [`active_descendant`](crate::a11y::AccessState::active_descendant):
     /// the focused widget's node points at it, keeping the focus itself.
     owned_active_descendant: Option<AkNodeId>,
+    /// The route of each retained widget with no layout node of its own,
+    /// set by its parent before it is visited ([`child_route_node_id`]).
+    routes: HashMap<*const (), ChildRoute>,
 }
 
 /// Where a synthetic node sits under its parent: the parent's id, the widget
@@ -871,9 +954,28 @@ impl TreeWalk<'_> {
             node.description = described;
         }
         let taffy_id = self.ptr_to_taffy.get(w);
+        // A retained widget the window's layout gave no node is reached
+        // through the nearest widget that has one; every child is routed
+        // from here before any is visited, hosted ones included.
+        let route = if taffy_id.is_some() {
+            None
+        } else {
+            self.routes.remove(&std::ptr::from_ref(w).cast::<()>())
+        };
+        let own = taffy_id.map(|id| widget_node_id(Some(id), 0));
+        for (index, child) in w.children().into_iter().enumerate() {
+            let own = own.filter(|_| w.lays_out_child(index));
+            if let Some(child_route) = child_route(own, route.as_ref(), index) {
+                self.routes
+                    .insert(std::ptr::from_ref(child).cast::<()>(), child_route);
+            }
+        }
 
         if let Some(access_node) = access {
-            let id = widget_node_id(taffy_id, self.walk_counter);
+            let id = match (&route, taffy_id) {
+                (Some((owner, path)), None) => child_route_node_id(*owner, path),
+                _ => widget_node_id(taffy_id, self.walk_counter),
+            };
             self.walk_counter = self.walk_counter.saturating_add(1);
 
             let mut ak = AkNode::new(map_role(access_node.role));

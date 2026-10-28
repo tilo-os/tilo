@@ -139,7 +139,9 @@ impl InstallerPreview {
                     .push(Box::new(self.choice("fresh", j.migrate == Some(false))));
             }
             Page::Target => {
-                body = body.push(Box::new(self.target.page(&self.commands)));
+                body = body.push(Box::new(
+                    self.target.page(&self.commands, self.actions.as_ref()),
+                ));
             }
             Page::Identity => {
                 body = body
@@ -287,28 +289,10 @@ impl InstallerPreview {
             }
             Page::Belongings => {
                 if self.sessions_review {
-                    let individual = self.commands.clone();
-                    let group = self.commands.clone();
                     let expand = self.commands.clone();
                     return body.push(self.belongings.sessions.logins_view(
                         j.categories[2],
-                        move |source_id, service, included| {
-                            individual.borrow_mut().push(
-                                InstallerPreviewEffect::SetPreviewServiceSession {
-                                    source_id,
-                                    service: service.as_str().into(),
-                                    included,
-                                },
-                            )
-                        },
-                        move |source_id, included| {
-                            group.borrow_mut().push(
-                                InstallerPreviewEffect::SetPreviewServiceSessionGroup {
-                                    source_id,
-                                    included,
-                                },
-                            )
-                        },
+                        self.actions.as_ref(),
                         move |source_id, expanded| {
                             expand.borrow_mut().push(
                                 InstallerPreviewEffect::ExpandServiceSessionGroup {
@@ -458,21 +442,17 @@ impl InstallerPreview {
                         };
                         if j.details {
                             let checked = ui::LocalState::new(j.categories[index]);
-                            let commands = self.commands.clone();
                             let category = key.to_string();
                             let mut category_group = page::related()
                                 .push(Box::new(
-                                    Checkbox::from_state(&checked)
-                                        .with_id(&format!("installer.category.{key}"))
-                                        .with_label(title)
-                                        .on_change(move |included| {
-                                            commands.borrow_mut().push(
-                                                InstallerPreviewEffect::SetPreviewCategory {
-                                                    category: category.clone(),
-                                                    included,
-                                                },
-                                            )
-                                        }),
+                                    self.bound(
+                                        Checkbox::from_state(&checked)
+                                            .with_id(&format!("installer.category.{key}"))
+                                            .with_label(title),
+                                        InstallerPreviewEffect::SET_PREVIEW_CATEGORY.map(
+                                            move |included: bool| (category.clone(), included),
+                                        ),
+                                    ),
                                 ))
                                 .push(Box::new(Text::new(&subtitle)));
                             if self.live
@@ -535,21 +515,17 @@ impl InstallerPreview {
                             for (index, app) in apps.iter().enumerate() {
                                 if app.selectable {
                                     let checked = ui::LocalState::new(app.included);
-                                    let commands = self.commands.clone();
                                     let app_id = app.id.clone();
                                     app_group = app_group.push(Box::new(
-                                        Checkbox::from_state(&checked)
-                                            .with_id(&format!("installer.flatpak.app.{index}"))
-                                            .with_label(&app.name)
-                                            .with_enabled(j.categories[1])
-                                            .on_change(move |included| {
-                                                commands.borrow_mut().push(
-                                                    InstallerPreviewEffect::SetPreviewFlatpakApp {
-                                                        app: app_id.clone(),
-                                                        included,
-                                                    },
-                                                );
-                                            }),
+                                        self.bound(
+                                            Checkbox::from_state(&checked)
+                                                .with_id(&format!("installer.flatpak.app.{index}"))
+                                                .with_label(&app.name)
+                                                .with_enabled(j.categories[1]),
+                                            InstallerPreviewEffect::SET_PREVIEW_FLATPAK_APP.map(
+                                                move |included: bool| (app_id.clone(), included),
+                                            ),
+                                        ),
                                     ));
                                 } else {
                                     app_group = app_group.push(Box::new(
@@ -638,20 +614,7 @@ impl InstallerPreview {
                         && (j.details || j.browser_domains.iter().any(|included| *included))
                     {
                         if j.details {
-                            let commands = self.commands.clone();
-                            body =
-                                body.push(self.belongings.browser.view(move |domain, included| {
-                                    let category = match domain {
-                                        browser::Domain::Bookmarks => "bookmarks",
-                                        browser::Domain::History => "history",
-                                    };
-                                    commands.borrow_mut().push(
-                                        InstallerPreviewEffect::SetPreviewCategory {
-                                            category: category.into(),
-                                            included,
-                                        },
-                                    );
-                                }));
+                            body = body.push(self.belongings.browser.view(self.actions.as_ref()));
                         } else {
                             body = body.push(Box::new(
                                 ListRow::new(
@@ -676,18 +639,11 @@ impl InstallerPreview {
                     if self.live && self.belongings.sessions.available() {
                         let commands = self.commands.clone();
                         if j.details {
-                            body = body.push(self.belongings.sessions.view(
-                                j.categories[2],
-                                move |source_id, service, included| {
-                                    commands.borrow_mut().push(
-                                        InstallerPreviewEffect::SetPreviewServiceSession {
-                                            source_id,
-                                            service: service.as_str().into(),
-                                            included,
-                                        },
-                                    );
-                                },
-                            ));
+                            body = body.push(
+                                self.belongings
+                                    .sessions
+                                    .view(j.categories[2], self.actions.as_ref()),
+                            );
                         } else {
                             body = body.push(Box::new(
                                 ListRow::new(
@@ -832,7 +788,6 @@ impl InstallerPreview {
             }
             Page::Accounts => {
                 let commands = self.commands.clone();
-                let edits = self.commands.clone();
                 body = body.push(Box::new(self.accounts.view(
                     Rc::new(move |request| {
                         let (step, selection) = request.parts();
@@ -845,14 +800,7 @@ impl InstallerPreview {
                             });
                         }
                     }),
-                    Rc::new(move |field, value| {
-                        edits
-                            .borrow_mut()
-                            .push(InstallerPreviewEffect::SetAccountField {
-                                field: field.to_string(),
-                                value,
-                            });
-                    }),
+                    self.actions.as_ref(),
                 )));
             }
             Page::Storage => {

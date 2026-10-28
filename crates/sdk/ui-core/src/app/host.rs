@@ -738,7 +738,7 @@ fn lay_out_window(
     if !app.layout.layout_dirty && !viewport_changed {
         // A sync that moved nothing (a worker's answer, a timer) can still
         // have changed what the app publishes.
-        publish_changed_action_surface(app, false);
+        owe_changed_action_surface(app, false);
         return Some((false, 0, 0));
     }
     // Bounds, and what the widgets lay out, may move.
@@ -981,8 +981,10 @@ fn lay_out_window(
         }
     }
     // Initial redraws and programmatic changes need the same semantic door
-    // as input. Publish only after the retained control tree has settled.
-    publish_changed_action_surface(app, structure_rebuilt || recomposed || remounted);
+    // as input. Published once the retained control tree has settled, and
+    // after the frame is handed to the render thread
+    // (`App::publish_owed_action_surface`): no frame waits on it.
+    owe_changed_action_surface(app, structure_rebuilt || recomposed || remounted);
     let geometry_changed = recomposed
         || remounted
         || viewport_changed
@@ -992,23 +994,19 @@ fn lay_out_window(
     Some((geometry_changed, t_compute_us, t_apply_us))
 }
 
-/// Publish what the app offers when it may have changed since it was last
-/// published: the widget tree was `rebuilt`, or the model, permissions or
-/// route it is derived from moved on ([`App::publication_current`]). A frame
-/// that only moved, resized or repainted the widgets it had (a glide, a pane
-/// gliding open, a spinner) publishes nothing. The publisher diffs the
-/// surface and checks broker connectivity.
+/// Owe a publication of what the app offers when it may have changed since
+/// it was last published: the widget tree was `rebuilt`, or the model,
+/// permissions or route it is derived from moved on
+/// ([`App::publication_current`]). A frame that only moved, resized or
+/// repainted the widgets it had (a glide, a pane gliding open, a spinner)
+/// owes nothing. The frame pays it once it is handed to the render thread
+/// (`App::publish_owed_action_surface`); the publisher diffs the surface and
+/// checks broker connectivity.
 #[cfg(feature = "native")]
-fn publish_changed_action_surface(app: &mut App, rebuilt: bool) {
-    if !rebuilt
-        && (app.publication_current() || !app.collaboration.manager.is_connected())
-        && !app.actions.action_surface_owed
-    {
-        return;
+fn owe_changed_action_surface(app: &mut App, rebuilt: bool) {
+    if rebuilt || (!app.publication_current() && app.collaboration.manager.is_connected()) {
+        app.actions.action_surface_owed = true;
     }
-    #[cfg(test)]
-    let _publish = crate::profiling::frame_probe::span("layout.publish");
-    app.publish_action_surface();
 }
 
 impl App {
@@ -1195,6 +1193,8 @@ pub(crate) fn draw_prepared_component_test_frame(app: &mut App) {
     run_layout_pass(app, root, 800, 600, 1.0, true, None).unwrap();
     let mut scene = Scene::new();
     draw_frame_content(app, &mut scene, 800, 600, 1.0, None);
+    // As the window does once it handed the frame to its render thread.
+    app.publish_owed_action_surface();
 }
 
 #[cfg(test)]

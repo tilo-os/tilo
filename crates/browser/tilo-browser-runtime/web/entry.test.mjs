@@ -544,6 +544,55 @@ test('the home workspace sends reports to the channel its entry names, without h
   assert.equal(asked.length, 1, 'only the home workspace asks');
 });
 
+test('reports from another room reach the home workspace’s channel through its peer there', async () => {
+  const home = {name: 'Lounge', room: 'LOUNGE', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/',
+    feedback: {channel: 'c_feedback'}};
+  const page = roomPage({href: 'https://tilo.example/', hash: '', parse: () => { throw new Error('a chosen room needs no parse'); }});
+  const through = [];
+  const asked = [];
+  let configured;
+  const done = new Promise(resolve => { configured = resolve; });
+  const lounge = {origin: 'https://rooms.example', room: 'LOUNGE', configureFeedback: async destination => {
+    asked.push(destination);
+    configured();
+  }};
+  const peer = {origin: 'https://acme.example', room: 'A', whenReady: async () => {},
+    configureFeedback: async () => { throw new Error('the room in front has no such channel'); },
+    sendFeedbackThrough: carrier => through.push(carrier),
+    mountDesktop: async (element, options) => { options.onNavigation?.(page.navigation); return {navigation: page.navigation}; }};
+  const homes = [];
+  const deps = {
+    loadRuntime: async () => page.runtime,
+    fetch: async () => ({ok: true, json: async () => ({home})}),
+    chosenWorkspace: () => ({origin: 'https://acme.example', room: 'A'}),
+    readAccounts: async origin => [{userPublicKey: 'ab', origin}],
+    connectMember: async () => peer,
+    homePeer: async workspace => { homes.push(workspace.host.origin); return lounge; },
+  };
+  const shown = await boot({mode: 'desktop', window: page.window, deps});
+  await done;
+  assert.deepEqual(homes, ['https://rooms.example'], 'the home workspace’s peer is asked for once');
+  assert.deepEqual(through, [lounge], 'the desktop’s reports go through it');
+  assert.deepEqual(asked, [{room: 'LOUNGE', provider: 'record:so.tilo.chat:', channel: 'c_feedback'}],
+    'to the home workspace’s own channel, not the room in front');
+  shown.router.stop();
+});
+
+test('without a peer in the home workspace, another room sends no reports anywhere', async () => {
+  const home = {host: {origin: 'https://lounge.example'}, feedback: {channel: 'c_feedback'}};
+  const asked = [];
+  const peer = {origin: 'https://lounge.example', room: 'own', configureFeedback: async destination => { asked.push(destination); },
+    sendFeedbackThrough: () => asked.push('through')};
+  let disposed = 0;
+  const watching = {origin: 'https://lounge.example', room: null, dispose: async () => { disposed++; }};
+  configureFeedback(peer, home, null, {homePeer: async () => null});
+  configureFeedback(peer, home, null, {homePeer: async () => watching});
+  configureFeedback({...peer, sendFeedbackThrough: undefined}, home, null, {homePeer: async () => { throw new Error('not asked'); }});
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(asked, []);
+  assert.equal(disposed, 1, 'a peer that cannot carry reports is let go');
+});
+
 test('a second room on the home’s host goes by no name or count of the home’s', async () => {
   const {listedAt} = await import('./workspaces.mjs');
   const home = {name: 'Lounge', host: {origin: 'https://lounge.example'}};

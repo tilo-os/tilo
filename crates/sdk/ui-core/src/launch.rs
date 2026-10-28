@@ -221,7 +221,7 @@ impl LaunchSpec {
             component_host: None,
             component_capture_scenario: None,
             component_native_services: false,
-            app_id: definition.app_id,
+            app_id: definition.app_id(),
             shot_viewport: |_| DEFAULT_VIEWPORT,
             command_handler: None,
             headless_enabled: true,
@@ -1120,7 +1120,7 @@ fn identity_step(spec: &LaunchSpec) -> IdentityStep {
 /// identity selected: who works here, and the button to choose.
 #[cfg(any(feature = "native", test))]
 fn identity_window_root(spec: &LaunchSpec) -> crate::widget::Scrollable {
-    crate::workspace_identity::required_state(spec.definition.title).into_scrollable()
+    crate::workspace_identity::required_state(spec.definition.title()).into_scrollable()
 }
 
 #[cfg(feature = "native")]
@@ -1304,7 +1304,34 @@ fn native_launch_manager(
     if !(spec.runtime_attachment)(args) {
         return Ok(crate::collaboration::CollaborationManager::disabled());
     }
-    crate::collaboration::CollaborationManager::for_native_launch(&spec.definition.record_kind)
+    crate::collaboration::CollaborationManager::for_native_launch(
+        &spec.definition.record_kind,
+        native_connection(),
+    )
+    .map_err(LaunchError::from)
+}
+
+/// The connection a native launch's manager joins on: a window the shell
+/// opened in this running process has one of its own
+/// ([`crate::window_door`]); the one the launcher handed the process is its
+/// first window's.
+#[cfg(feature = "native")]
+fn native_connection() -> crate::collaboration::NativeConnection {
+    if crate::window_door::is_building() {
+        crate::collaboration::NativeConnection::Window(crate::window_door::take_collaboration())
+    } else {
+        crate::collaboration::NativeConnection::Launch
+    }
+}
+
+#[cfg(feature = "native")]
+impl From<crate::collaboration::NativeLaunchError> for LaunchError {
+    fn from(error: crate::collaboration::NativeLaunchError) -> Self {
+        match error {
+            crate::collaboration::NativeLaunchError::IdentityRequired => Self::IdentityRequired,
+            crate::collaboration::NativeLaunchError::Operation(message) => Self::Operation(message),
+        }
+    }
 }
 
 fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), LaunchError> {
@@ -2402,7 +2429,7 @@ mod tests {
             let want = crate::record::RecordCheckout::new(id, definition.record_kind.clone());
             let mut owners = crate::record::RecordOwners::new(root.clone());
             let records = owners
-                .open(definition.app_id, room)
+                .open(definition.app_id(), room)
                 .map_err(LaunchError::Record)?;
             let views = std::rc::Rc::new(
                 crate::application_view::InstanceViewStore::new(root, probe::DEVICE, room)
@@ -2551,7 +2578,7 @@ mod tests {
                 crate::record::RecordId::parse(args.value("--fixture-record").unwrap()).unwrap();
             let mut owners = crate::record::RecordOwners::new(root.clone());
             let records = owners
-                .open(definition.app_id, room)
+                .open(definition.app_id(), room)
                 .map_err(LaunchError::Record)?;
             let views = std::rc::Rc::new(
                 crate::application_view::InstanceViewStore::new(root, probe::DEVICE, room)
@@ -2744,6 +2771,7 @@ mod tests {
         env_override.set("TILO_SVC_COLLAB_FD", "-1");
         let manager = crate::collaboration::CollaborationManager::for_native_launch(
             &crate::record::RecordKind::new("launch-fixture.document"),
+            crate::collaboration::NativeConnection::Launch,
         );
         drop(env_override);
         assert!(

@@ -84,7 +84,7 @@ impl AddressLookupBuilder for Watchonly {
 /// record the endpoint last handed over published as soon as one arrives.
 ///
 /// Opening is the endpoint's own report of its home relay: it turns true when
-/// [`tilo_endpoint_reachability::Reachability`] adds a relay, and false when
+/// `tilo_endpoint_reachability::Reachability` adds a relay, and false when
 /// it takes the last one back. The gate task ends with the endpoint, so a
 /// desktop whose endpoint is closed keeps no timer.
 #[derive(Clone, Debug, Default)]
@@ -202,7 +202,7 @@ mod tests {
     use iroh::{RelayMap, RelayMode, SecretKey};
 
     use super::{Gate, Watchonly, collaborating};
-    use crate::Reachability;
+    use crate::{Need, Reachability};
 
     /// A session endpoint as the shell binds one: number 0's lookups behind
     /// the gate, its relays held back until woken. The relay handed back is
@@ -255,11 +255,16 @@ mod tests {
             "a held record is not a reason to sign the device in"
         );
 
-        reachability.wake("a test");
+        // An open invitation holds the relays up while the endpoint picks
+        // its home relay: a bare wake rests them after the 300 ms delay,
+        // which a loaded runner's net report can outlast, and an endpoint
+        // whose relays rested before it picked one never opens the gate.
+        reachability.need(Need::Session, Some("an invitation is open"));
         until("the gate to open on the first home relay", || {
             gate.is_open()
         })
         .await;
+        reachability.need(Need::Session, None);
     }
 
     /// Resting again takes the device off the directory: the gate is the
@@ -268,12 +273,15 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_rested_desktop_closes_the_gate_again() {
         let (gate, reachability, _relay) = session().await;
-        reachability.wake("a test");
+        // Held up until the gate opens (a bare wake could rest the relays
+        // before a loaded runner picks a home relay), then let go to rest.
+        reachability.need(Need::Session, Some("an invitation is open"));
         until("the gate to open", || gate.is_open()).await;
         assert!(
             !reachability.is_dormant(),
             "the gate opened on a relay, not before one"
         );
+        reachability.need(Need::Session, None);
         until("the gate to close with the relays", || !gate.is_open()).await;
         assert!(
             reachability.is_dormant(),

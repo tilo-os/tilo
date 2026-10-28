@@ -1,13 +1,12 @@
-//! The room's layout scope, which its governor alone writes, and what a
-//! room whose layout is personal never holds: its members' windows.
+//! The room's layout scope, which its governor alone writes.
 //!
 //! In a personal room each member's strips and windows stay on their device;
 //! the room shares its apps' records and its people
 //! ([`tilo_desktop_model::projection::RoomLayout`]). Its governor records the
 //! scope ([`tilo_desktop_model::projection::ROOM_LAYOUT_KEY`]) for every
-//! member to read, admits no member's change to the room's layout
-//! ([`crate::room::admit::RoomRefusal::PersonalLayout`]), and removes the
-//! windows it committed of them while the room still shared its layout.
+//! member to read. The layout itself is the room's shared desktop record; a
+//! room document still holds the windows devices from before put there, and
+//! the governor of a personal room removes them.
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{ROOT, SystemTime, err};
 use automerge::transaction::Transactable as _;
@@ -183,15 +182,14 @@ mod tests {
             })
     }
 
-    /// The governor makes a room personal: the windows it committed of a
-    /// member before go, and from then on the room admits no member's
-    /// window.
+    /// The governor makes a room personal: the windows a member's device
+    /// put into the room document before go.
     #[test]
     #[expect(
         clippy::panic_in_result_fn,
         reason = "the regression returns setup errors and asserts actual production outcomes"
     )]
-    fn a_personal_room_drops_and_refuses_its_members_windows() -> TestResult {
+    fn a_personal_room_drops_its_members_windows() -> TestResult {
         let (mut peer, governor, _, caller, now) = crate::admission_tests::seeded();
         assert_eq!(peer.governance().room_layout(), RoomLayout::Shared);
         // While the room shares its layout, the member's window is admitted.
@@ -199,10 +197,7 @@ mod tests {
         let changes = member_windows(&peer, &caller, "~/private")?;
         peer.receive_from(
             crate::TransportOrigin::RetainedRelayDelta(caller.device_public_key),
-            crate::NeighbourMsg::SyncResp {
-                changes,
-                room: room.clone(),
-            },
+            crate::NeighbourMsg::SyncResp { changes, room },
             now,
         )?;
         assert_eq!(windows(&peer), 1);
@@ -221,16 +216,6 @@ mod tests {
         assert!(peer.governance_mut().drop_member_windows(&governor, now)?);
         assert_eq!(windows(&peer), 0);
         assert!(!peer.governance_mut().drop_member_windows(&governor, now)?);
-
-        // The member's device publishes another window: refused.
-        let changes = member_windows(&peer, &caller, "ssh prod-db")?;
-        let refused = peer.receive_from(
-            crate::TransportOrigin::RetainedRelayDelta(caller.device_public_key),
-            crate::NeighbourMsg::SyncResp { changes, room },
-            now,
-        );
-        assert!(refused.is_err(), "{refused:?}");
-        assert_eq!(windows(&peer), 0);
         Ok(())
     }
 

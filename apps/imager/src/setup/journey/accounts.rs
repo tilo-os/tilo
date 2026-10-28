@@ -1694,7 +1694,7 @@ impl Accounts {
     pub fn view(
         &self,
         dispatch: Rc<dyn Fn(AccountRequest)>,
-        edit: Rc<dyn Fn(&str, String)>,
+        actions: Option<&ui::framework::Actions<crate::resource::Imager>>,
     ) -> Container {
         let mut body = page::stack().with_rhythm(Rhythm::Sibling);
         for key in self.source_review_keys() {
@@ -1702,7 +1702,7 @@ impl Accounts {
         }
         match &self.step {
             Step::ICloud(flow) => {
-                body = body.push(flow.view(dispatch.clone(), edit));
+                body = body.push(flow.view(dispatch.clone(), actions));
             }
             Step::ConfirmRemoval(_) => {
                 body = body
@@ -1723,7 +1723,7 @@ impl Accounts {
                     )));
             }
             Step::ReviewSaved => {
-                body = self.saved_review_view(body, dispatch.clone());
+                body = self.saved_review_view(body, actions);
             }
             Step::Overview if self.saved.running() => {
                 body = body.push(Box::new(Text::new(&t("installer-accounts-bulk-working"))));
@@ -1740,7 +1740,7 @@ impl Accounts {
                         )
                         .secondary(t("installer-accounts-included"))
                         .icon(Icon::CircleCheck)
-                        .on_activate(move || choose(AccountRequest::Remove(id.clone()))),
+                        .on_effect(move || choose(AccountRequest::Remove(id.clone()))),
                     ));
                 }
                 for candidate in self.inventory.candidates.iter().filter(|c| {
@@ -1781,7 +1781,7 @@ impl Accounts {
                         .secondary(t(message))
                         .with_enabled(available)
                         .icon(Icon::Cloud)
-                        .on_activate(move || choose(AccountRequest::Source(id.clone()))),
+                        .on_effect(move || choose(AccountRequest::Source(id.clone()))),
                     ));
                 }
                 body = body.push(Box::new(action_button(
@@ -1876,7 +1876,6 @@ impl Accounts {
                 ));
             }
             Step::Dav { field, .. } => {
-                let submit = dispatch.clone();
                 let (key, label, kind) = match *field {
                     0 => (
                         "server",
@@ -1897,12 +1896,18 @@ impl Accounts {
                 body = body.push(Box::new(
                     Field::new(
                         t(label),
-                        TextInput::from_state(&self.dav_fields[*field])
-                            .with_id(&format!("installer.account.dav.{key}"))
-                            .with_kind(kind)
-                            .with_secret(*field == 2)
-                            .on_change(move |value| edit(key, value.to_string()))
-                            .on_submit(move |_| submit(AccountRequest::Confirm)),
+                        super::submits(
+                            actions,
+                            super::bound(
+                                actions,
+                                TextInput::from_state(&self.dav_fields[*field])
+                                    .with_id(&format!("installer.account.dav.{key}"))
+                                    .with_kind(kind)
+                                    .with_secret(*field == 2),
+                                field_effect(key),
+                            ),
+                            step_effect(AccountRequest::Confirm),
+                        ),
                     )
                     .with_label_placement(Some(LabelPlacement::Above)),
                 ));
@@ -1958,18 +1963,22 @@ impl Accounts {
                 }
             }
             Step::PastedCode(_) => {
-                let edit = edit.clone();
-                let submit = dispatch.clone();
                 body = body
                     .push(Box::new(
                         Field::new(
                             t("installer-accounts-code-label"),
-                            TextInput::from_state(&self.dav_fields[2])
-                                .with_id("installer.account.oauth-code")
-                                .with_kind(TextInputKind::Secret)
-                                .with_secret(true)
-                                .on_change(move |value| edit("oauth-code", value.to_string()))
-                                .on_submit(move |_| submit(AccountRequest::SubmitCode)),
+                            super::submits(
+                                actions,
+                                super::bound(
+                                    actions,
+                                    TextInput::from_state(&self.dav_fields[2])
+                                        .with_id("installer.account.oauth-code")
+                                        .with_kind(TextInputKind::Secret)
+                                        .with_secret(true),
+                                    field_effect("oauth-code"),
+                                ),
+                                step_effect(AccountRequest::SubmitCode),
+                            ),
                         )
                         .with_label_placement(Some(LabelPlacement::Above)),
                     ))
@@ -2099,6 +2108,24 @@ impl Drop for Accounts {
             self.actions.cancel_job(&work.job);
         }
     }
+}
+
+/// The account field `key`'s published edit, given what is typed: kept in
+/// this device's memory, never in shared state.
+pub(super) fn field_effect(
+    key: &'static str,
+) -> impl ui::tilo_resource::Binds<super::InstallerPreviewEffect, String> {
+    super::InstallerPreviewEffect::SET_ACCOUNT_FIELD
+        .map(move |value: String| (key.to_owned(), value))
+}
+
+/// The account step `request`, as Enter in a field of the step asks for it.
+pub(super) fn step_effect(
+    request: AccountRequest,
+) -> impl ui::tilo_resource::Binds<super::InstallerPreviewEffect, String> {
+    let (step, selection) = request.parts();
+    super::InstallerPreviewEffect::ACCOUNT_STEP
+        .map(move |_: String| (step.to_owned(), selection.clone()))
 }
 
 fn action_button(

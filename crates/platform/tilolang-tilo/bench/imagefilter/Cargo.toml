@@ -1,0 +1,18 @@
+[package]
+name = "tilolang-bench-imagefilter"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "A small image filter compiled to wasm32-unknown-unknown: the wasm library `tilolang bench --library` runs on each engine."
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = 3
+panic = "abort"
+codegen-units = 1
+
+# Not a member of the repository's workspace: built only for wasm32 (`build.sh`).
+[workspace]

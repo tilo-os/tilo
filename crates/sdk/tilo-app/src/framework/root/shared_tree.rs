@@ -774,9 +774,10 @@ pub(super) fn mark_document_jobs(resource: &mut tilo_actions::Resource) {
         let outside = spec.contract.kind == tilo_actions::ActionKind::Outside;
         let queues = outside || OWN_JOB.contains(&spec.id.as_str());
         if spec.kind == tilo_actions::OperationKind::Document && queues {
-            spec.contract.execution = tilo_actions::ExecutionMode::Background { cancellable: true };
+            spec.type_mut().contract.execution =
+                tilo_actions::ExecutionMode::Background { cancellable: true };
             if matches!(spec.contract.result, tilo_actions::ResultSpec::None) {
-                spec.contract.result = tilo_actions::ResultSpec::Job;
+                spec.type_mut().contract.result = tilo_actions::ResultSpec::Job;
             }
         }
     }

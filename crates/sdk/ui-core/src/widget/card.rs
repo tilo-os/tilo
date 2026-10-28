@@ -452,6 +452,14 @@ impl Card {
         )
     }
 
+    /// A section header as the card's head: its title with a count pill or a trailing action,
+    /// as a dashboard card that lists things shows how many.
+    #[must_use]
+    pub fn with_section_header(mut self, header: super::SectionHeader) -> Self {
+        self.title = Some(header.title().to_owned());
+        self.with_header_parts(header.into_element(), None)
+    }
+
     fn with_header_parts(mut self, title: Element, action: Option<Element>) -> Self {
         let mut children = vec![title];
         if let Some(action) = action {
@@ -515,6 +523,14 @@ impl Card {
 }
 
 impl Widget for Card {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -690,6 +706,15 @@ impl Widget for Card {
             dirty |= child.take_structure_dirty();
         }
         dirty
+    }
+
+    /// No structure of its own: what its content describes stays described.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        let mut change = crate::widget::StructureChange::None;
+        for child in &mut self.parts.children {
+            change = change.join(child.take_structure_change());
+        }
+        change
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -1046,3 +1071,6 @@ impl Widget for CardGrid {
 
 #[cfg(test)]
 mod tests;
+
+mod component;
+pub use component::CardProps;

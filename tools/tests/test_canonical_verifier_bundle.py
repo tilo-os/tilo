@@ -186,7 +186,8 @@ class BundleTests(unittest.TestCase):
             self.assertNotIn('name: canonical-verifiers-', text)
             self.assertNotIn('cp target/release/tilo-app-package target/release/tilo-runtime-bundle', text)
             self.assertEqual(text.count('python3 -I tools/ci/python.py tools/canonical_verifier_bundle.py fetch'), 2)
-            self.assertIn('    branches: [main]', text)
+            # Releases run from the promotion ref, never from main.
+            self.assertIn('    branches: [stable]', text)
 
 
 if __name__ == '__main__':

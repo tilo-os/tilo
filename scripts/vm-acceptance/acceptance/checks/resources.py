@@ -804,14 +804,15 @@ def _budget_problems(m, budgets, prefix, software=False):
     return problems
 
 
-def ush_problems(ush: dict | None, shell_s: float | None, budgets: dict) -> list[str]:
+def ush_problems(ush: dict | None, shell_s: float | None, budgets: dict) -> tuple[list[str], list[str]]:
     """Terminal's shell runtime against its idle budget: an idle Terminal,
-    its shell running and nothing typed, costs `tilo-ush` almost nothing."""
+    its shell running and nothing typed, costs `tilo-ush` almost nothing.
+    (what did not work, what went over budget)."""
     if shell_s is None:
         return [f"Terminal's shell did not run within {core.TERMINAL_SHELL_S} s, so tilo-ush "
-                "was not measured idle (its first-session import may still have been running)"]
+                "was not measured idle (its first-session import may still have been running)"], []
     if ush is None:
-        return ["no tilo-ush process of the slot user ran while Terminal was open"]
+        return ["no tilo-ush process of the slot user ran while Terminal was open"], []
     problems = []
     busiest = describe_threads(ush["thread_groups"])
     if ush["cpu_pct"] > budgets["idle_apps_ush_cpu_pct"]:
@@ -823,10 +824,10 @@ def ush_problems(ush: dict | None, shell_s: float | None, budgets: dict) -> list
                          if g["ctxt_switches_per_s"] > 0)
         problems.append(f"tilo-ush woke {ush['wakeups_per_s']}/s > "
                         f"{budgets['idle_apps_ush_wakeups_per_s']}/s ({woke})")
-    return problems
+    return [], problems
 
 
-def _ush_idle(ctx, res, m: dict, budgets: dict) -> list[str]:
+def _ush_idle(ctx, res, m: dict, budgets: dict) -> tuple[list[str], list[str]]:
     """Record and judge tilo-ush in R02's window, once Terminal's shell has run."""
     ush, shell_s = m["ush"], m["terminal_shell_s"]
     if shell_s is not None and ush is not None:
@@ -846,7 +847,8 @@ def idle_empty(ctx, res):
     ctx.write("R01-idle-empty.json", json.dumps(m, indent=1))
     if m["shell_cpu_pct"] is not None:
         _record_idle(ctx, m, m["guest_ram_used_mib"])
-    problems = _budget_problems(m, ctx.config["budgets"], "idle", software_renderer(ctx))
+    problems = []
+    over = _budget_problems(m, ctx.config["budgets"], "idle", software_renderer(ctx))
     # The compositor's own memory with no window open: R03's figure less this one is
     # what four windows cost.
     try:
@@ -858,7 +860,7 @@ def idle_empty(ctx, res):
         res.metrics["shell_anon_rss_mib"] = smaps["anon_rss_mib"]
         ctx.record("memory.shell_anon_mib.empty", "MiB", [smaps["anon_rss_mib"]])
         _record_shell_shm(ctx, res, smaps)
-        problems += shell_idle_anon_problems(smaps["anon_rss_mib"], ctx.config["budgets"])
+        over += shell_idle_anon_problems(smaps["anon_rss_mib"], ctx.config["budgets"])
     # What the idle RAM is made of, every user's processes and cgroups.
     try:
         fp = footprint(ctx)
@@ -876,12 +878,12 @@ def idle_empty(ctx, res):
         ctx.write("R01-shell-memory-map.json", json.dumps(report, indent=1))
         record_shell_parts(ctx, report)
         res.metrics["shell_parts_mib"] = shell_parts_mib(report)
-        if any(p.startswith("idle compositor anonymous RSS") for p in problems):
-            problems.append(f"compositor memory by kind: {describe_shell_parts(report)}")
+        if any(p.startswith("idle compositor anonymous RSS") for p in over):
+            over.append(f"compositor memory by kind: {describe_shell_parts(report)}")
             timeline = heap_timeline(ctx)
             if timeline:
-                problems.append(f"compositor heap in use/free MiB over time: {timeline}")
-    expect(not problems, "; ".join(problems))
+                over.append(f"compositor heap in use/free MiB over time: {timeline}")
+    core.judge(problems, over)
 
 
 def _record_shell_shm(ctx, res, smaps: dict, variant: str = "") -> None:
@@ -926,9 +928,12 @@ def idle_apps(ctx, res):
     if m["shell_cpu_pct"] is not None and len(opened) == 4:
         _record_idle(ctx, m, m["guest_ram_used_mib"], "four_apps")
     ctx.facts["apps_open_for_memory"] = opened
-    problems = _budget_problems(m, ctx.config["budgets"], "idle_apps", software_renderer(ctx))
+    problems = []
+    over = _budget_problems(m, ctx.config["budgets"], "idle_apps", software_renderer(ctx))
     if "so.tilo.terminal" in opened:
-        problems += _ush_idle(ctx, res, m, ctx.config["budgets"])
+        ush_problems_, ush_over = _ush_idle(ctx, res, m, ctx.config["budgets"])
+        problems += ush_problems_
+        over += ush_over
     try:
         fp = footprint(ctx)
     except core.Unobservable as e:
@@ -944,7 +949,7 @@ def idle_apps(ctx, res):
                         "(see R-apps-closed-after-open.log)")
     if len(opened) + len(closed) < 4:
         problems.append(f"only {len(opened) + len(closed)} of 4 apps opened ({opened + closed})")
-    expect(not problems, "; ".join(problems))
+    core.judge(problems, over)
 
 
 def _record_memory(ctx, m: dict) -> None:
@@ -1187,7 +1192,7 @@ def frame_work(ctx, res):
     where = f" [renderer: {ctx.facts.get('renderer')}]"
     if problems:
         where += core.frame_pacing_evidence(ctx, "R04", evidence_mark, cpu_before)
-    expect(not problems, "; ".join(problems) + where)
+    core.judge([], problems, where)
 
 
 # -- the installed-desktop gates of os-acceptance-{arch}, on this run's VM ---------
@@ -1242,10 +1247,17 @@ def boot(ctx, res):
     ctx.record("boot.to_greeter_s", "s", [gate["to_greeter_s"]], what="kernel+userspace, firmware excluded")
     for phase in ("kernel", "initrd", "userspace"):
         ctx.record(f"boot.{phase}_s", "s", [gate.get(f"{phase}_s")])
-    problems = [] if gate["exit"] == 0 else [f"the boot gate failed: {said}"]
-    problems += boot_attribution(ctx, res)
+    problems, over = [], []
+    if gate["exit"] != 0:
+        # The gate's budget is its last judgement and the only one after which it names the
+        # time to the greeter as over it; every other refusal is the boot's.
+        late = gate["to_greeter_s"] > budget and "rebuilt caches" not in text
+        (over if late else problems).append(f"the boot gate failed: {said}")
+    wrong, slow = boot_attribution(ctx, res)
+    problems += wrong
+    over += slow
     boot_kernel_log(ctx, res)
-    expect(not problems, "; ".join(problems))
+    core.judge(problems, over)
 
 
 # The kernel's own log of this boot, written whole, and the boots the persistent journal
@@ -1383,9 +1395,10 @@ def parse_boot_analysis(text: str) -> dict:
     return out
 
 
-def boot_attribution(ctx, res) -> list[str]:
+def boot_attribution(ctx, res) -> tuple[list[str], list[str]]:
     """Write the boot's attribution as evidence, record greetd's start, and name what has no
-    business on the greeter's critical chain or holds the greeter past its userspace budget."""
+    business on the greeter's critical chain, and what holds the greeter past its userspace
+    budget: (what is wrong, what went over budget)."""
     text = ctx.vm.root_exec(BOOT_ANALYSIS, timeout=120)
     ctx.write("R06-boot-analysis.txt", text)
     ctx.write("R06-boot-plot.svg", ctx.vm.root_exec("systemd-analyze plot", timeout=120))
@@ -1399,12 +1412,13 @@ def boot_attribution(ctx, res) -> list[str]:
     budget = ctx.config["budgets"]["userspace_to_greeter_s"]
     problems = [f"{unit} is on the greeter's critical chain" for unit in analysis["greeter_chain"]
                 if unit in GREETER_NEEDS_NO]
+    over = []
     if analysis.get("userspace_to_greeter_s", 0) > budget:
         steal = analysis.get("boot_steal_pct")
-        problems.append(f"userspace took {analysis['userspace_to_greeter_s']} s to the greeter > {budget} s "
+        over.append(f"userspace took {analysis['userspace_to_greeter_s']} s to the greeter > {budget} s "
                         f"(chain: {' <- '.join(analysis['greeter_chain_timed'][:8])}"
                         + (f"; guest CPU steal since boot {steal}%" if steal is not None else "") + ")")
-    return problems
+    return problems, over
 
 
 RENDER_REPORT = "/usr/libexec/tilo-session-report"
@@ -1547,7 +1561,7 @@ def sign_in_to_desktop(ctx, res):
         if steps["usable_s"] > budget:
             problems.append(f"{label} sign-in took {steps['usable_s']} s to a usable desktop > {budget} s "
                             f"({steps})")
-    expect(not problems, "; ".join(problems) + f" [renderer: {ctx.facts.get('renderer')}]")
+    core.judge([], problems, f" [renderer: {ctx.facts.get('renderer')}]")
 
 
 # -- an idle shared workspace (R09) ------------------------------------------

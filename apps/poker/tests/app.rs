@@ -284,8 +284,21 @@ fn taking_a_seat_waits_for_the_table_to_arrive() {
         "no seat is offered at a table that has not arrived"
     );
 
-    ui::room_sync::set(told(ui::room_sync::RoomSyncState::Synced));
-    let _ = app.harness().poll_frame();
+    assert!(
+        ui::room_sync::set(told(ui::room_sync::RoomSyncState::Synced)),
+        "the first sync changes what the window shows"
+    );
+    // A wait that outlasted its grace showed a skeleton, which stays its
+    // least time before the table fades in: a busy machine sees the table
+    // only after that, as a person does before taking a seat.
+    assert!(
+        app.harness()
+            .wait_until(ui::time::Duration::from_secs(30), |harness| {
+                harness.a11y_node_named("Take a seat").is_some()
+                    && !harness.frame_output().needs_animation_frame
+            }),
+        "the table arrives once the room synced"
+    );
     assert!(take_a_seat_enabled(&mut app), "the table has arrived");
     take_a_seat(&mut app);
     assert_eq!(app.state().seat_of("ada"), Some(0));

@@ -1,7 +1,7 @@
 //! The real source inventory behind **Your data**: recognizable folders, Steam
 //! libraries and the games whose saves live in them.
 //!
-//! This adapts the existing [`Belongings`] inventory into the backend's typed
+//! This adapts the existing `Belongings` inventory into the backend's typed
 //! source tree and keeps the person's selection beside it. Discovery runs on
 //! the consented belongings worker because it reads a real inventory; toggling
 //! a source only touches the selection, so a click never rebuilds the tree.
@@ -19,7 +19,7 @@ use imager_backend::setup::source_tree::{
 use std::path::PathBuf;
 
 /// The discovered inventories the tree is built from. Implemented by the
-/// existing [`Belongings`] review so discovery stays one path; a caller can
+/// existing `Belongings` review so discovery stays one path; a caller can
 /// also supply a pre-reviewed set.
 pub trait Sources {
     /// The Windows sources, when Windows roots were reviewed.

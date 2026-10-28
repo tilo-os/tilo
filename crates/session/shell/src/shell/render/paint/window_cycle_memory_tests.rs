@@ -294,7 +294,7 @@ fn closed_windows_device_memory_goes_back_to_the_kernel() {
     for _ in 0..IDLE_PAINTS {
         paint(&mut bridge, &wallpaper, None);
     }
-    if crate::shell::render::software_gpu_memory::device_allocated_bytes(&device).is_none() {
+    if tilo_output_passes::software_gpu_memory::device_allocated_bytes(&device).is_none() {
         let info = bridge.adapter_info().expect("the bridge's adapter");
         assert_ne!(
             info.driver, "llvmpipe",
@@ -306,7 +306,7 @@ fn closed_windows_device_memory_goes_back_to_the_kernel() {
     // Only the trimmer releases anything below: the bridge registered its
     // device with it, or the windows' memory stays.
     let allocated_mib = || {
-        crate::shell::render::software_gpu_memory::device_allocated_bytes(&device)
+        tilo_output_passes::software_gpu_memory::device_allocated_bytes(&device)
             .expect("still lavapipe")
             >> 20
     };

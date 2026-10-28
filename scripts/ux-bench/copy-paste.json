@@ -1,0 +1,43 @@
+{
+  "name": "Copy a document's text into another one",
+  "goal": "Copy all of Document-000.txt and paste it into Document-001.txt, keeping the pasted text",
+  "fixture": "files",
+  "viewport": [1280, 800],
+  "budget": {"clicks": 4, "keys": 8},
+  "steps": [
+    {"op": "checkpoint", "name": "files", "checks": [
+      {"kind": "state", "pointer": "/tab_titles/0", "equals": "Files"},
+      {"kind": "visible", "target": "semantic:Document-000.txt"}
+    ]},
+    {"op": "input", "action": {"click_named": "semantic:Document-000.txt"}},
+    {"op": "input", "action": {"key": "Enter"}},
+    {"op": "wait_state", "pointer": "/tab_titles/1", "equals": "Document-000.txt", "timeout_ms": 2000},
+    {"op": "input", "action": {"click_named": "semantic:Document-000.txt"}},
+    {"op": "input", "action": {"modifiers": ["ctrl"]}},
+    {"op": "input", "action": {"key": "a"}},
+    {"op": "checkpoint", "name": "select-all", "checks": [
+      {"kind": "semantic", "expectation": {
+        "target": "editor_view",
+        "value": "Fixture document 0\n",
+        "text_selection": [0, 19]
+      }}
+    ]},
+    {"op": "input", "action": {"key": "c"}},
+    {"op": "input", "action": {"modifiers": []}},
+    {"op": "input", "action": {"click_named": "semantic:Document-001.txt"}},
+    {"op": "input", "action": {"key": "Enter"}},
+    {"op": "wait_state", "pointer": "/tab_titles/1", "equals": "Document-001.txt", "timeout_ms": 2000},
+    {"op": "input", "action": {"click_named": "semantic:Document-001.txt"}},
+    {"op": "input", "action": {"modifiers": ["ctrl"]}},
+    {"op": "input", "action": {"key": "v"}},
+    {"op": "input", "action": {"modifiers": []}},
+    {"op": "checkpoint", "name": "pasted", "checks": [
+      {"kind": "state", "pointer": "/tab_titles/1", "equals": "Document-001.txt"},
+      {"kind": "state", "pointer": "/active_tabs/1/content/AppPlaceholder/kind/Other", "equals": "Editor"},
+      {"kind": "semantic", "expectation": {
+        "target": "editor_view",
+        "value_contains": "Fixture document 0\n"
+      }}
+    ]}
+  ]
+}

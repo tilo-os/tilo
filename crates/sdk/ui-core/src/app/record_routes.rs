@@ -131,7 +131,7 @@ impl RecordRouteParticipant {
             .or_else(|| self.manager.primary_route().cloned());
         #[cfg(not(test))]
         let witness = self.manager.primary_route().cloned();
-        let primary = witness.as_ref().map(|witness| witness.route.clone());
+        let primary = witness.as_ref().map(|witness| witness.route().clone());
         let joins = self.routes.reconcile_owners(owners, witness, outer);
         let routes: Vec<RouteSpec> = primary
             .iter()

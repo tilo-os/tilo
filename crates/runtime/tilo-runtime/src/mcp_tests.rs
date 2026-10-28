@@ -379,6 +379,71 @@ fn every_word_of_a_needle_begins_a_word_of_the_row() {
     ));
 }
 
+/// A page action row as the Browser publishes one: its label and its
+/// description are the words an agent describes the gesture with.
+fn described_row(action: &str, label: &str, description: &str) -> CatalogueRow {
+    let mut row = action_row("page:1", action, Vec::new());
+    let descriptor = row.action.as_mut().expect("an action row");
+    descriptor.resource_kind = "browser.page".into();
+    descriptor.resource_label = "Page".into();
+    descriptor.action_label = label.into();
+    descriptor.description = Some(description.into());
+    row.resource.kind = "browser.page".into();
+    row.resource.label = "Page".into();
+    row
+}
+
+#[test]
+fn an_inflected_needle_finds_the_word_a_description_spells() {
+    let pointer_path = described_row(
+        "pointer-path",
+        "Draw a pointer path on a page element",
+        "Presses the pointer at the first point, moves it through the rest and releases \
+         it at the last, as drawing a signature on a canvas does.",
+    );
+    let drag = described_row(
+        "drag-page",
+        "Drag a page element or point",
+        "Carries the element it presses onto the one it releases on.",
+    );
+    let press = described_row(
+        "press-page",
+        "Press key on page",
+        "Scrolls the page too, with the keys that scroll it: PageDown, PageUp, Home, End, \
+         ArrowDown and ArrowUp, or Space for a screenful.",
+    );
+    let rows = [pointer_path, drag, press];
+    let found = |needle: &str| {
+        let words = page::needle_words(needle);
+        rows.iter()
+            .filter(|row| page::matches_words(row, &words))
+            .map(|row| {
+                row.action
+                    .as_ref()
+                    .expect("an action")
+                    .address
+                    .action
+                    .clone()
+            })
+            .collect::<Vec<_>>()
+    };
+    // The word as an agent types it, and its inflections: the description
+    // spells one of them and the caller the other.
+    assert_eq!(found("draw"), ["pointer-path"]);
+    assert_eq!(found("drawing"), ["pointer-path"]);
+    assert_eq!(found("canvas draw"), ["pointer-path"]);
+    assert_eq!(found("drag"), ["drag-page"]);
+    assert_eq!(found("dragging"), ["drag-page"]);
+    assert_eq!(found("scroll"), ["press-page"]);
+    assert_eq!(found("scrolling"), ["press-page"]);
+    assert_eq!(found("sign"), ["pointer-path"]);
+    // A word the description spells in another inflection is the same word
+    // to a caller: it signs on the canvas, and the row says drawing.
+    assert!(found("subscribe").is_empty());
+    // A word nothing offers still finds nothing, rather than any row.
+    assert!(found("printing").is_empty());
+}
+
 #[test]
 fn a_running_app_is_named_by_its_id_or_its_last_part() {
     let running = [
@@ -438,4 +503,34 @@ fn a_succeeded_batch_step_is_its_output_alone() {
         json!({"invocation_id": "b", "update": {"state": "succeeded", "invocation": "b", "output": {}}}),
     );
     assert_eq!(empty, json!({}));
+}
+
+#[test]
+fn a_stale_revision_says_what_happened_and_what_to_do() {
+    let refusal = String::from(BridgeError::Host(
+        tilo_actions::remote::ActionHostError::StaleRevision,
+    ));
+    for said in [
+        "changed since the revision",
+        "tilo_query",
+        "omit revision",
+        // The bare code the caller used to be left with is gone.
+    ] {
+        assert!(refusal.contains(said), "{refusal}");
+    }
+    assert_ne!(refusal, "StaleRevision");
+    let mut moved = stale_revision_error("v5:old", "v5:new");
+    assert!(
+        moved.contains("v5:old") && moved.contains("v5:new"),
+        "{moved}"
+    );
+    // Another refusal keeps the wording it always had.
+    assert_eq!(
+        String::from(BridgeError::Host(
+            tilo_actions::remote::ActionHostError::NotPermitted
+        )),
+        tilo_actions::remote::ActionHostError::NotPermitted.to_string()
+    );
+    moved.clear();
+    assert!(moved.is_empty());
 }

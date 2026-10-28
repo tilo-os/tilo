@@ -40,11 +40,25 @@ if [[ $(uname -s) == Linux ]]; then
     export CHROME="${CHROME:-/usr/lib64/chromium-browser/chromium-browser}"
 fi
 
+# A crashing test leaves no core file: it lands in the package's directory, where rcargo copies it
+# back into the worktree (hundreds of MB each); nextest's report already names the signal.
+ulimit -c 0
+
 tested=" "
 explicit=0
 nextest=0
 [[ ${1:-} == cargo && ${2:-} == nextest ]] && nextest=1
 arguments=("$@")
+# What follows `--` goes to the test binaries (`rcargo test -p NAME -- FILTER`): every option this
+# wrapper adds goes before it.
+tail=()
+for (( index = 0; index < ${#arguments[@]}; index++ )); do
+    if [[ ${arguments[index]} == -- ]]; then
+        tail=("${arguments[@]:index}")
+        arguments=("${arguments[@]:0:index}")
+        break
+    fi
+done
 for (( index = 0; index < ${#arguments[@]}; index++ )); do
     case ${arguments[index]} in
         -p|--package) tested+="${arguments[index + 1]:-} " ;;
@@ -179,9 +193,11 @@ for (( index = 0; index < ${#arguments[@]}; index++ )); do
         --test|--exact|--test-threads=*|--run-ignored=*|--retries=*) timed=0 ;;
     esac
 done
+# A name filter for the test binaries selects by hand too.
+(( ${#tail[@]} > 1 )) && timed=0
 
 if (( ! timed )); then
-    exec bash "$root/tools/test-env.sh" "${arguments[@]}"
+    exec bash "$root/tools/test-env.sh" "${arguments[@]}" "${tail[@]}"
 fi
 # nextest's output and libtest's JSON events stay the log's own, as they were
 # written: the events pass through as t's log already carries them, and the times
@@ -193,7 +209,7 @@ fi
 format=(--message-format json-pretty)
 [[ " $* " == *" --message-format "* || " $* " == *" --message-format="* ]] && format=()
 status=0
-bash "$root/tools/test-env.sh" "${arguments[@]}" "${format[@]}" 2>&1 \
+bash "$root/tools/test-env.sh" "${arguments[@]}" "${format[@]}" "${tail[@]}" 2>&1 \
     | python3 -u "$root/tools/ci/ci_test_timings.py" record --json "$timings" || status=$?
 # The run's own verdict, not the recording's.
 exit "$status"

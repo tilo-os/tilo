@@ -32,7 +32,9 @@ use crate::window::{
     ResizeDirection, Theme, UserAttentionType, WindowAttributes, WindowButtons, WindowLevel,
 };
 
-pub(crate) use self::common::xkb::{physicalkey_to_scancode, scancode_to_physicalkey};
+pub(crate) use self::common::xkb::{
+    keysym_location, keysym_to_key, physicalkey_to_scancode, scancode_to_physicalkey,
+};
 pub(crate) use crate::cursor::OnlyCursorImageSource as PlatformCustomCursorSource;
 pub(crate) use crate::icon::RgbaIcon as PlatformIcon;
 pub(crate) use crate::platform_impl::Fullscreen;

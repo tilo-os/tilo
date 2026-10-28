@@ -11,8 +11,10 @@ fail=0
 ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
-if grep -Fq "printf -- '-machine q35,smm=on'" "$common" \
-  && grep -Fq "printf -- '-machine q35'" "$common" \
+# The machine string may carry the touch keyboard suffix (%s), so match the
+# prefix; what matters is that no machine string picks an accelerator.
+if grep -Fq "printf -- '-machine q35,smm=on%s'" "$common" \
+  && grep -Fq "printf -- '-machine q35%s'" "$common" \
   && grep -Fq "printf -- '-machine virt,gic-version=max'" "$common" \
   && ! grep -Eq -- '-machine q35[^[:space:]'\"']*accel=kvm' "$common" \
   && grep -Fq -- '-accel tcg,thread=multi -cpu max' "$common"; then

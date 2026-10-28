@@ -2418,8 +2418,10 @@ impl Widget for ToggleGroup {
 
     /// Fixed intrinsic size until a segment, the style, the size or the
     /// caption changes; `Rect::ZERO` covers the pre-`apply_layout` state.
+    /// Not yet placed, or changed since: whether it was painted is not a
+    /// layout's business (one scrolled out of view is never drawn).
     fn is_layout_dirty(&self) -> bool {
-        self.cache_rect == Rect::ZERO || self.layout_dirty
+        self.rect == Rect::ZERO || self.layout_dirty
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

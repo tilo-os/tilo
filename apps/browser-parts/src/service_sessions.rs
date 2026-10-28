@@ -32,17 +32,17 @@ impl Selection {
             session_id: self.id.clone(),
         }
         .bound();
-        forget.label = CATALOG.t("browser-service-forget");
+        forget.type_mut().label = CATALOG.t("browser-service-forget");
         let mut retry = crate::effects::BrowserEffect::RetryForgetServiceSession {
             session_id: self.id.clone(),
         }
         .bound();
-        retry.label = CATALOG.t("browser-service-forget-retry");
+        retry.type_mut().label = CATALOG.t("browser-service-forget-retry");
         let mut open = crate::effects::BrowserEffect::OpenServiceSession {
             session_id: self.id.clone(),
         }
         .bound();
-        open.label = format!("Open {}", self.label());
+        open.type_mut().label = format!("Open {}", self.label());
         tilo_actions::Resource::new(
             format!("browser.service.{}", self.id),
             "browser.service",
@@ -860,6 +860,12 @@ mod lifecycle_tests {
             r#"#!/usr/bin/python3
 import json,struct,sys,pathlib,os,time
 profile=pathlib.Path(next(a[10:] for a in sys.argv[1:] if a.startswith('--profile=')))
+# The test polls for these files, so each appears whole: written beside its
+# name and renamed into place, never seen empty while it is being written.
+def mark(name,text):
+    staged=profile.joinpath(name+'.partial')
+    staged.write_text(text)
+    os.replace(staged,profile.joinpath(name))
 def send(value):
     data=b'\x01'+json.dumps(value).encode()
     sys.stdout.buffer.write(struct.pack('<I',len(data))+data);sys.stdout.buffer.flush()
@@ -873,11 +879,11 @@ while True:
         # The test holds the child here while it checks the caller went on.
         while profile.parent.joinpath('test-hold-shutdown').exists():
             time.sleep(0.01)
-        profile.joinpath('reaped-first').write_text(str(os.getpid()))
+        mark('reaped-first',str(os.getpid()))
         break
     if command['op']=='navigate':
         assert profile.joinpath('verification-process').exists()
-        profile.joinpath('observed-navigation').write_text(command['url'])
+        mark('observed-navigation',command['url'])
     if command['op']=='service_session_import':
         verify=command.get('verify_only',False)
         if command['service']=='slack':
@@ -889,10 +895,10 @@ while True:
         if verify:
             assert command['request_id']==2 and profile.joinpath('reaped-first').exists()
             assert profile.joinpath('first-process').read_text()!=str(os.getpid())
-            profile.joinpath('verification-process').write_text(str(os.getpid()))
+            mark('verification-process',str(os.getpid()))
         else:
             assert command['request_id']==1
-            profile.joinpath('first-process').write_text(str(os.getpid()))
+            mark('first-process',str(os.getpid()))
         send({'event':'service_session_result','tab':1,'request_id':command['request_id'],
             'session_id':command['session_id'],'service':command['service'],
             'imported':not (verify and profile.parent.joinpath('test-verify-refusal').exists()),

@@ -153,7 +153,7 @@ fn is_shortcode_char(character: char) -> bool {
 }
 
 /// The `:shortcode` ending at `caret`, if the caret sits in one: a `:` that
-/// opens a token, followed by at most [`MAX_SHORTCODE_LEN`] shortcode
+/// opens a token, followed by at most `MAX_SHORTCODE_LEN` shortcode
 /// characters. `None` inside a word (`10:30`, `a:smile`) and for a token
 /// that already has its closing `:` after the typed part.
 #[must_use]

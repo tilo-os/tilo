@@ -420,6 +420,7 @@ fn page(
             host_cert: host_cert.clone(),
             revocations: tilo_user_identity::RevocationList::new(),
             watching,
+            background: false,
         },
         std::sync::Arc::new(key),
         std::sync::Arc::new(tilo_browser_peer::MemoryPeerStore::default()),

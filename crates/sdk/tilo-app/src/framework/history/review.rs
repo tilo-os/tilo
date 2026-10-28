@@ -104,7 +104,7 @@ pub(super) fn specs() -> Vec<ActionSpec> {
     // It answers a review object for `restore-reviewed` to take back: a
     // step an agent or script takes. A person restores in the app itself.
     .for_audience(tilo_actions::Audience::Agents);
-    review.contract.result = tilo_actions::ResultSpec::Json {
+    review.type_mut().contract.result = tilo_actions::ResultSpec::Json {
         schema: json!({"type": "object"}),
     };
     let restore = edit(

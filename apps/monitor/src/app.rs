@@ -2149,7 +2149,7 @@ mod tests {
         press(&mut harness, window_bar::KERNEL_THREADS);
         assert!(harness.root::<MonitorApp>().prefs.show_kernel_threads);
 
-        ui::widget::apply_filter(harness.root_mut::<MonitorApp>(), "cargo");
+        ui::widget::apply_filter(&mut *harness.root_mut::<MonitorApp>(), "cargo");
         harness.relayout();
         assert_eq!(harness.root::<MonitorApp>().filter, "cargo");
         assert!(

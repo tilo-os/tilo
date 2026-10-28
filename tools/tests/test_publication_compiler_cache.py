@@ -67,7 +67,7 @@ class KernelPublicationTests(unittest.TestCase):
     """t's image-kernel-<arch> (tools/ci/publish/kernel.sh build) compiles the kernel t signs.
 
     It compiles through one compiler cache only: the ccache directory image-kernel-cache-<arch>
-    (kernel.sh compile-cache) filled from empty, handed over as that check's output. In a trusted
+    (kernel-compile-cache.sh) filled from empty, handed over as that check's output. In a trusted
     run t serves both only from trusted runs, so nothing an untrusted build wrote reaches a signed
     kernel, and no remote cache, credential or other job's writes reach either.
     """
@@ -75,7 +75,7 @@ class KernelPublicationTests(unittest.TestCase):
     def setUp(self):
         self.script = KERNEL_BUILD.read_text()
         self.build = self.script.split("  build)\n", 1)[1].split("\n    ;;", 1)[0]
-        self.compile_cache = self.script.split("  compile-cache)\n", 1)[1].split("\n    ;;", 1)[0]
+        self.compile_cache = (ROOT / "tools/ci/publish/kernel-compile-cache.sh").read_text()
         checks = tomllib.loads((ROOT / "t.toml").read_text())["check"]
         self.checks = {c["name"]: c for c in checks}
 
@@ -91,7 +91,7 @@ class KernelPublicationTests(unittest.TestCase):
         with self.subTest(phase='the cache is compiled from empty by a check that takes no other'):
             cache = self.checks["image-kernel-cache-{arch}"]
             self.assertEqual(cache["run"],
-                             "bash tools/ci/publish/kernel.sh compile-cache {arch} /target/publish/kernel-cache/{arch}")
+                             "bash tools/ci/publish/kernel-compile-cache.sh {arch} /target/publish/kernel-cache/{arch}")
             self.assertEqual(set(cache["needs"]), {"os-assets", "signing-tools"})
             for field in ("secrets", "id_token", "reads_pointers", "env"):
                 self.assertNotIn(field, cache)
@@ -99,12 +99,16 @@ class KernelPublicationTests(unittest.TestCase):
         with self.subTest(phase='the cache outlives patch and configuration changes, not the toolchain'):
             inputs = self.checks["image-kernel-cache-{arch}"]["inputs"]
             for kept in ("os/kernel-buildroot-snapshot.env", "os/kernel/cc-wrapper.sh",
-                         "tools/ci/publish/kernel.sh"):
+                         "tools/ci/publish/kernel-env.sh", "tools/ci/publish/kernel-compile-cache.sh"):
                 self.assertIn(kept, inputs)
+            # kernel.sh's publishing, pinning and provenance steps change no object.
+            self.assertNotIn("tools/ci/publish/kernel.sh", inputs)
             self.assertFalse([i for i in inputs if "patches" in i or "config" in i or i == "os/kernel/**"],
                              inputs)
         with self.subTest(phase='no remote cache or credential reaches a kernel build'):
-            for path in ("tools/ci/publish/kernel.sh", "os/kernel/Containerfile", "os/kernel/build-support.sh"):
+            for path in ("tools/ci/publish/kernel.sh", "tools/ci/publish/kernel-env.sh",
+                         "tools/ci/publish/kernel-compile-cache.sh", "os/kernel/Containerfile",
+                         "os/kernel/build-support.sh"):
                 text = (ROOT / path).read_text()
                 for forbidden in ("--secret", "ACTIONS_CACHE_URL", "ACTIONS_RUNTIME_TOKEN", "SCCACHE_",
                                   "CCACHE_REMOTE", "remote_storage", "aws_access_key_id",
@@ -112,7 +116,7 @@ class KernelPublicationTests(unittest.TestCase):
                     self.assertNotIn(forbidden, text, path)
         with self.subTest(phase='both share one compile stage and its arguments'):
             joined = (self.compile_cache + "\n" + self.build).replace("\\\n", " ")
-            builds = re.findall(r'^    +b build .*', joined, re.M)
+            builds = re.findall(r'^ *b build .*', joined, re.M)
             self.assertEqual(len(builds), 5, builds)
             for build in builds:
                 if "--target publish-cross" not in build:
@@ -164,7 +168,7 @@ class DesktopPayloadPublicationTests(unittest.TestCase):
                 build = workflow_steps[name]
                 self.assertIn(
                     "TILO_ENABLE_REMOTE_CACHE: ${{ github.event_name == 'workflow_dispatch' && "
-                    "github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') "
+                    "github.ref != 'refs/heads/stable' && !startsWith(github.ref, 'refs/tags/') "
                     "&& '1' || '0' }}", build)
         # One unchanged cache predicate now covers both tag and candidate builds.
         # Signing has a separate job and cannot start a second compilation graph.

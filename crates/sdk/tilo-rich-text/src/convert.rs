@@ -96,7 +96,7 @@ pub(crate) const PAGE_LINK_PREFIX: &str = "#page-";
 
 /// The scheme a resource link is written with in a `link` mark's target, in
 /// the one form every document codec already round-trips: `tilo://open#…`,
-/// the native link [`tilo_reference::link::Link::to_native`] makes. A link
+/// the native link `tilo_reference::link::Link::to_native` makes. A link
 /// mark whose target starts with this scheme names a resource, so it is
 /// shown as a [`Mark::ResourceLink`] rather than an external URL.
 pub const RESOURCE_LINK_SCHEME: &str = "tilo://open#";

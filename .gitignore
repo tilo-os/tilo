@@ -97,3 +97,6 @@ __pycache__/
 .claude/
 !.claude/settings.json
 .pi/
+
+# `tilolang build` output next to a package's sources.
+/apps/tl/*/app.wasm

@@ -47,7 +47,7 @@ pub enum LinkEvent {
     Joined { attempt: u64 },
     /// Connection `attempt` ended for good, for `reason`.
     Refused { attempt: u64, reason: String },
-    /// Join `attempt` has waited [`JOIN_TIMEOUT`].
+    /// Join `attempt` has waited `JOIN_TIMEOUT`.
     Timeout { attempt: u64 },
 }
 

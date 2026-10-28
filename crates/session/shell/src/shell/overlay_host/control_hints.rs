@@ -98,13 +98,13 @@ impl ShellOverlayHost {
         busy.then_some(Quiet::Busy)
     }
 
-    /// Fold in what the person's other devices learned, when it is time to
-    /// read their kept record again. On the compositor tick, so painting
-    /// never reads the settings file.
-    pub(super) fn reread_control_hints(&mut self, now: Instant) {
-        if self.control_hints.reread_due(now) {
-            self.control_hints.merge(&LEARNED.get(), now);
-        }
+    /// Fold in the person's record as `document`, the session's settings,
+    /// now holds it: what their other devices learned, or the switch turned
+    /// in Settings. The compositor calls this when the record's section
+    /// changed, so painting never reads the settings.
+    pub fn follow_control_hints(&mut self, document: &serde_json::Map<String, serde_json::Value>) {
+        self.control_hints
+            .merge(&LEARNED.from_document(document), Instant::now());
     }
 
     /// Advance the hints to `now`, and keep what the person learned.
@@ -121,7 +121,16 @@ impl ShellOverlayHost {
         self.keep_control_hints();
     }
 
-    pub(super) fn control_hints_enabled(&self) -> bool {
+    /// Keep every hint away, the person's record untouched: for tests that
+    /// count what something other than the hints costs. Only a change of the
+    /// record in the settings turns them back on.
+    #[cfg(test)]
+    pub(crate) fn rest_control_hints(&mut self) {
+        self.control_hints.set_enabled(false, Instant::now());
+        let _ = self.control_hints.take_changed();
+    }
+
+    pub(crate) fn control_hints_enabled(&self) -> bool {
         self.control_hints.enabled()
     }
 

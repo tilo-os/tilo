@@ -64,7 +64,7 @@ use crate::bottom_panel::{BottomPanel, HitRow, PanelTab, SearchState};
 use crate::commands::Command;
 use crate::disk;
 use crate::doc::EditorDoc;
-use crate::editor_view::{EditorView, LspAsk};
+use crate::editor_view::{EditorView, LspAsk, SyncText};
 use crate::explorer::{ExplorerEvent, ExplorerEvents, ExplorerFeed};
 use crate::lint;
 use crate::model::{Language, NodeId as TreeId, NodeKind, Project, Session};
@@ -1302,8 +1302,12 @@ impl CodeApp {
             .collect()
     }
 
-    fn refresh_search_symbols(&mut self, doc: &AutoCommit) -> bool {
-        use automerge::transaction::Transactable;
+    fn refresh_search_symbols<'doc>(
+        &mut self,
+        doc: &'doc AutoCommit,
+        observed: &mut Option<SyncText<'doc>>,
+    ) -> bool {
+        use automerge::{ReadDoc, transaction::Transactable};
         let mut files = self.search_file_entries();
         files.sort_by(|a, b| a.resource_id.cmp(&b.resource_id).then(a.path.cmp(&b.path)));
         // Pending transaction counts do not identify their content. Rebuild
@@ -1327,13 +1331,29 @@ impl CodeApp {
                 .buffer_reads
                 .saturating_add(files.len());
         }
+        let active = self.active_file_node().map(|node| self.buffer_key(node));
         self.search_symbols = files
             .into_iter()
             .flat_map(|file| {
-                EditorDoc::read_buffer_key(doc, &self.buffer_key(file.node))
-                    .map_or_else(Vec::new, |text| {
-                        crate::search_entries::symbols_in(&file.resource_id, &file.path, &text)
-                    })
+                let key = self.buffer_key(file.node);
+                let Some(object) = EditorDoc::buffer_text_key(doc, &key) else {
+                    return Vec::new();
+                };
+                let Ok(text) = doc.text(&object) else {
+                    return Vec::new();
+                };
+                let symbols =
+                    crate::search_entries::symbols_in(&file.resource_id, &file.path, &text);
+                if active.as_ref() == Some(&key) {
+                    // The editor syncs against this same immutable document
+                    // next. Move the text instead of walking its CRDT twice.
+                    *observed = Some(SyncText {
+                        document: doc,
+                        object,
+                        text,
+                    });
+                }
+                symbols
             })
             .collect();
         self.symbol_projection_revision = revision;
@@ -1351,7 +1371,16 @@ impl CodeApp {
     /// document or a local project/result generation changed. This is
     /// intentionally separate from `search_providers`: opening the palette,
     /// typing, and unchanged frames do no filesystem, document, or LSP work.
+    #[cfg(test)]
     fn refresh_search_entries(&mut self, doc: &AutoCommit) {
+        self.refresh_search_entries_observed(doc, &mut None);
+    }
+
+    fn refresh_search_entries_observed<'doc>(
+        &mut self,
+        doc: &'doc AutoCommit,
+        observed: &mut Option<SyncText<'doc>>,
+    ) {
         let revision = SearchProjectionRevision {
             document_heads: doc.committed_heads(),
             pending_ops: doc.pending_ops(),
@@ -1371,7 +1400,7 @@ impl CodeApp {
             }
             return;
         }
-        let changed = self.refresh_search_symbols(doc);
+        let changed = self.refresh_search_symbols(doc, observed);
         let started = std::time::Instant::now();
         let results = self.search_result_refs();
         if changed
@@ -2356,8 +2385,9 @@ impl Widget for CodeApp {
         self.ensure_buffers(state);
         self.demand_open_buffers(state);
         self.continue_staging(state);
-        self.refresh_search_entries(state);
-        self.editor.sync(state, path);
+        let mut observed = None;
+        self.refresh_search_entries_observed(state, &mut observed);
+        self.editor.sync_observed(state, path, observed.as_ref());
         self.run_window_toolbar();
         self.restore_pending_continuation(state);
 

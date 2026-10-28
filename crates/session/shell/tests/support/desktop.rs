@@ -26,9 +26,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use serde_json::{Value, json};
-use shell::compositor::liveness::{Answer, render};
 use threshold_identity::ThresholdIdentity;
 use tilo_identity_ceremony::IdentityRecord;
+use tilo_liveness::{Answer, render};
 
 /// How long the compositor's main loop may go without acknowledging a wake
 /// before the desktop counts as frozen. A user sees a freeze at a fraction of
@@ -434,7 +434,7 @@ impl Desktop {
 
     /// One request on the liveness socket, answered off the main loop.
     fn liveness(&self, request: &str) -> Result<Answer, String> {
-        let path = shell::compositor::liveness::socket_path(&self.control);
+        let path = tilo_liveness::socket_path(&self.control);
         let mut stream = UnixStream::connect(path).map_err(|e| e.to_string())?;
         stream
             .set_read_timeout(Some(STALL_REPORT_DEADLINE))
@@ -450,7 +450,7 @@ impl Desktop {
     }
 
     /// From now on, record every path the compositor's main thread walks
-    /// (`compositor::liveness::main_thread_files`). Startup is over: the
+    /// (`tilo_liveness::main_thread_files`). Startup is over: the
     /// main loop opens, stats and lists nothing by path after it.
     ///
     /// # Panics
@@ -468,7 +468,7 @@ impl Desktop {
     /// Every path the main thread walked since
     /// [`Self::forbid_main_thread_files`], with where it was.
     #[track_caller]
-    pub fn main_thread_files(&self) -> Vec<shell::compositor::liveness::FileWalk> {
+    pub fn main_thread_files(&self) -> Vec<tilo_liveness::FileWalk> {
         match self.liveness(r#"{"op":"main_thread_files"}"#) {
             Ok(Answer::MainThreadFiles(walks)) => walks,
             other => panic!("reading the main-thread file audit: {other:?}"),
@@ -476,7 +476,7 @@ impl Desktop {
     }
 
     fn liveness_threads(&self) -> Result<String, String> {
-        let path = shell::compositor::liveness::socket_path(&self.control);
+        let path = tilo_liveness::socket_path(&self.control);
         let mut stream = UnixStream::connect(path).map_err(|e| e.to_string())?;
         stream
             .set_read_timeout(Some(STALL_REPORT_DEADLINE))

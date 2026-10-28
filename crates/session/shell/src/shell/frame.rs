@@ -126,7 +126,7 @@ pub struct FramePaint {
     /// HDR surfaces drawn in `scene`, in scene pixels. A presenter driving an
     /// HDR output composites them at full precision; any other rendering of
     /// `scene` shows their tone-mapped SDR rendition.
-    pub hdr_layers: Vec<crate::shell::hdr_surface::HdrLayer>,
+    pub hdr_layers: Vec<tilo_color_pipeline::hdr_surface::HdrLayer>,
     /// What `scene`'s floating surfaces are drawn over. A renderer that
     /// composites materials blurs these before rendering the scene; any
     /// other shows the surfaces opaque.
@@ -453,7 +453,10 @@ impl FramePaint {
 
     /// The same frame, with `layers` composited where HDR is shown.
     #[must_use]
-    pub fn with_hdr_layers(mut self, layers: Vec<crate::shell::hdr_surface::HdrLayer>) -> Self {
+    pub fn with_hdr_layers(
+        mut self,
+        layers: Vec<tilo_color_pipeline::hdr_surface::HdrLayer>,
+    ) -> Self {
         if !layers.is_empty() {
             self.cache = None;
             self.repaint_copies();
@@ -796,6 +799,8 @@ pub struct FrameBuilder {
     keyboard_focus_rect: Option<Rect>,
     /// Speaks the chrome when the screen reader is on; silent otherwise.
     narrator: crate::shell::shell_narrator::ShellNarrator,
+    /// Carries the comforts the person turns on to the login screens.
+    sign_in_comforts: crate::shell::sign_in_comforts::SignInMirror,
     /// The logical desktop the shell lays out in: the bounding box of every
     /// display's logical rectangle.
     viewport: (f64, f64),
@@ -893,6 +898,10 @@ pub struct FrameBuilder {
     frame_only_moved: bool,
     /// Scene builds so far, numbering each for [`ui::retained_present::PanReplay`].
     scene_builds: u64,
+    /// Frames drawn since this builder was made, dense and retained alike:
+    /// a test that waits for the desktop to come to rest counts repaints
+    /// with it rather than wall-clock time, which a busy runner stretches.
+    frames_drawn: u64,
     /// A frame changed the desktop since the presenter's layers were last
     /// drawn ([`Self::layers_stale`]).
     layers_stale: bool,
@@ -915,7 +924,7 @@ pub struct FrameBuilder {
     /// copies; it keeps glyph outlines between frames.
     draw_bounds: std::cell::RefCell<tilo_cpu_raster::DrawBounds>,
     /// HDR layers of the latest [`Self::paint`], until taken.
-    painted_hdr_layers: Vec<crate::shell::hdr_surface::HdrLayer>,
+    painted_hdr_layers: Vec<tilo_color_pipeline::hdr_surface::HdrLayer>,
     /// The backdrops the latest [`Self::paint`] drew floating surfaces over.
     painted_backdrop: Option<Arc<BackdropFrame>>,
     /// What the pointer shows right now, so captures draw the same image.
@@ -1213,6 +1222,7 @@ impl FrameBuilder {
             magnifier_focus: crate::shell::magnifier::FocusTracker::default(),
             keyboard_focus_rect: None,
             narrator: crate::shell::shell_narrator::ShellNarrator::default(),
+            sign_in_comforts: crate::shell::sign_in_comforts::SignInMirror::default(),
             viewport: (f64::from(viewport.0), f64::from(viewport.1)),
             scene_size: (f64::from(viewport.0), f64::from(viewport.1)),
             outputs: None,
@@ -1255,6 +1265,7 @@ impl FrameBuilder {
             drawing_layers_at_rest: false,
             frame_only_moved: false,
             scene_builds: 0,
+            frames_drawn: 0,
             layers_stale: false,
             layers_generation: 0,
             layers_off: None,
@@ -1765,18 +1776,21 @@ impl FrameBuilder {
         if self.active_tile_is_terminal() {
             return self.active_terminal_node();
         }
-        // Overflowing scroll regions are keyboard targets too, but an
-        // unnamed container must not take the initial focus from the setup
-        // form's first control. Keep it in the Tab order for keyboard scrolling.
+        // Overflowing scroll regions are keyboard targets too, but a scroll
+        // region (named or not) or an unnamed container must not take the
+        // initial focus from the setup form's first control. Keep them in the
+        // Tab order for keyboard scrolling.
         order
             .iter()
             .copied()
             .find(|id| {
                 self.node_map.get(id).is_some_and(|&widget| {
                     // SAFETY: this map belongs to the current, live layout tree.
-                    unsafe { (*widget).accessibility() }.is_none_or(|node| {
-                        node.role != ui::a11y::Role::Group || node.name.is_some()
-                    })
+                    let widget = unsafe { &*widget };
+                    widget.name() != "Scrollable"
+                        && widget.accessibility().is_none_or(|node| {
+                            node.role != ui::a11y::Role::Group || node.name.is_some()
+                        })
                 })
             })
             .or_else(|| order.first().copied())
@@ -2005,7 +2019,7 @@ impl FrameBuilder {
     /// Lay the desktop out for the frame about to be painted, when anything
     /// it lays out changed since it was last laid out: its structure, the
     /// tree (a window opened or closed, a strip or tab change, a display
-    /// added: [`TreeRevisions`]), what an input or the session changed
+    /// added: `TreeRevisions`), what an input or the session changed
     /// ([`Self::owe_layout`]), or what a widget's animation moved
     /// ([`ui::widget::note_layout_moved`], in its update or as it was laid
     /// out). A frame nothing of that changed for (a client's new buffer,
@@ -2098,11 +2112,7 @@ impl FrameBuilder {
         let started = std::time::Instant::now();
         let layout_result = unsafe {
             admitted.rebuild(self.host.as_ref(), &self.taffy, child, measure_map);
-            crate::compositor::metrics::profile::record_phase(
-                "layout/admit",
-                started.elapsed(),
-                None,
-            );
+            tilo_frame_metrics::profile::record_phase("layout/admit", started.elapsed(), None);
             ui::widget::compute_widget_layout(
                 &mut self.taffy,
                 outer,
@@ -2121,13 +2131,13 @@ impl FrameBuilder {
             return false;
         }
         let solved = std::time::Instant::now();
-        crate::compositor::metrics::profile::record_phase(
+        tilo_frame_metrics::profile::record_phase(
             "layout/solve",
             solved.duration_since(started),
             None,
         );
         self.host.apply_layout(&self.taffy, child, Point::ORIGIN);
-        crate::compositor::metrics::profile::record_phase("layout/apply", solved.elapsed(), None);
+        tilo_frame_metrics::profile::record_phase("layout/apply", solved.elapsed(), None);
         // Semantic search can open during the pump, before input dispatch
         // attaches the external cursor. Settle its owner before painting.
         if let Some(palette) = self.palette_focus_target() {
@@ -2187,6 +2197,14 @@ impl FrameBuilder {
         frame.node_map.clear();
         *frame.host = ShellOverlayHost::with_fixture_content(content);
         frame.rebuild_layout_tree();
+        // Laid out as a desktop's first frames lay it out: the palette sizes
+        // against the host's first rect, then asks for one more pass.
+        for _ in 0..4 {
+            frame.relayout();
+            if !frame.host.structure_dirty() {
+                break;
+            }
+        }
         frame
     }
 
@@ -2260,7 +2278,7 @@ impl FrameBuilder {
                 update_done.duration_since(settle_done),
             ),
         ] {
-            crate::compositor::metrics::profile::record_phase(phase, took, None);
+            tilo_frame_metrics::profile::record_phase(phase, took, None);
         }
         if total >= std::time::Duration::from_millis(50) {
             tracing::warn!(
@@ -2377,11 +2395,11 @@ impl FrameBuilder {
         let _dense_scope = ui::retained_present::RetainedScene::begin(false);
         let recording = self
             .hdr_layers_composited()
-            .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
+            .then(tilo_color_pipeline::hdr_surface::HdrLayerRecording::begin);
         let backdrop = BackdropRecording::begin();
         let (logical, sections) = self.paint_logical();
         let surfaces = backdrop.finish();
-        let layers = recording.map(crate::shell::hdr_surface::HdrLayerRecording::finish);
+        let layers = recording.map(tilo_color_pipeline::hdr_surface::HdrLayerRecording::finish);
         self.painted_hdr_layers = self.hdr_layers_to_scene(layers.unwrap_or_default());
         // A surface drawn into a section sits over the sections below it;
         // one drawn over them all, into the scene itself (layer 0), over
@@ -2392,7 +2410,7 @@ impl FrameBuilder {
     }
 
     /// The HDR layers the latest [`Self::paint`] drew, in scene pixels.
-    pub fn take_hdr_layers(&mut self) -> Vec<crate::shell::hdr_surface::HdrLayer> {
+    pub fn take_hdr_layers(&mut self) -> Vec<tilo_color_pipeline::hdr_surface::HdrLayer> {
         std::mem::take(&mut self.painted_hdr_layers)
     }
 
@@ -2471,8 +2489,8 @@ impl FrameBuilder {
     /// the scene they were drawn in: once per display, magnified and clipped.
     fn hdr_layers_to_scene(
         &self,
-        layers: Vec<crate::shell::hdr_surface::HdrLayer>,
-    ) -> Vec<crate::shell::hdr_surface::HdrLayer> {
+        layers: Vec<tilo_color_pipeline::hdr_surface::HdrLayer>,
+    ) -> Vec<tilo_color_pipeline::hdr_surface::HdrLayer> {
         match &self.outputs {
             Some(outputs) if !output_scene::is_identity(outputs) => outputs
                 .iter()
@@ -2632,6 +2650,11 @@ impl FrameBuilder {
         self.frame_only_moved = only_moved;
     }
 
+    /// How many frames this builder has drawn, dense and retained alike.
+    pub fn frames_drawn(&self) -> u64 {
+        self.frames_drawn
+    }
+
     /// Produce the same ordered shell composition as [`paint`](Self::paint), together with
     /// retained-damage metadata for the DRM bridge. Both draw the host's sections
     /// ([`crate::shell::overlay_host::ShellOverlayHost::draw_scene_sections`]).
@@ -2684,7 +2707,7 @@ impl FrameBuilder {
         // they would be recorded in canvas coordinates.
         let recording = self
             .hdr_layers_composited()
-            .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
+            .then(tilo_color_pipeline::hdr_surface::HdrLayerRecording::begin);
         // Layers drawn at rest are no frame: they leave the pans' motion as
         // the frames noted it.
         let panning = self.drawing_layers_at_rest
@@ -2813,7 +2836,7 @@ impl FrameBuilder {
         });
         drop(retained_scope);
         phases.mark("scene/draw-sections");
-        crate::compositor::metrics::profile::record_phase(
+        tilo_frame_metrics::profile::record_phase(
             "scene/replayed-windows",
             std::time::Duration::ZERO,
             Some(ui::retained_present::take_replayed()),
@@ -2824,7 +2847,7 @@ impl FrameBuilder {
         let foreign_images = foreign_recording.finish();
         let hdr_layers = self.hdr_layers_to_scene(
             recording
-                .map(crate::shell::hdr_surface::HdrLayerRecording::finish)
+                .map(tilo_color_pipeline::hdr_surface::HdrLayerRecording::finish)
                 .unwrap_or_default(),
         );
         let panned = std::mem::take(&mut sections.panned);
@@ -4181,6 +4204,7 @@ impl FrameBuilder {
                 .screen_reader()
                 .enabled,
         );
+        self.sign_in_comforts.observe();
     }
 
     /// Speak what changed in the chrome since the last frame (focus moves in
@@ -4200,6 +4224,12 @@ impl FrameBuilder {
 
     pub fn narrator_enabled(&self) -> bool {
         self.narrator.enabled()
+    }
+
+    /// The screen reader chord turned the reader `on` or off: say so now,
+    /// ahead of the settings poll that follows the saved change.
+    pub fn screen_reader_turned(&mut self, on: bool) {
+        self.narrator.turned_by_chord(on);
     }
 
     fn refresh_configured_theme(&mut self) {
@@ -4413,7 +4443,27 @@ impl FrameBuilder {
     /// document, rather than from the file.
     pub fn follow_settings(&mut self, settings: settings_store::live::LiveSettings) {
         self.theme_store_stamp = Some(settings.generation());
+        self.follow_settings_sections(&settings.snapshot().document, true, true);
         self.live_settings = Some(settings);
+    }
+
+    /// Hand the chrome what `document`, the followed settings, now says of
+    /// the person's control-hint record and notification policy, as their
+    /// sections changed: no frame reads them again on a schedule.
+    pub fn follow_settings_sections(
+        &mut self,
+        document: &serde_json::Map<String, serde_json::Value>,
+        control_hints: bool,
+        notifications: bool,
+    ) {
+        if control_hints {
+            self.host.follow_control_hints(document);
+        }
+        if notifications {
+            let policy =
+                settings_store::notification_policy::NotificationPolicy::from_document(document);
+            self.with_chrome(|st| st.follow_notification_policy(policy));
+        }
     }
 
     /// The generation of the settings paint follows.
@@ -4914,6 +4964,7 @@ impl FrameBuilder {
     /// the window groups' once-per-drawn-frame motion is told the frame
     /// turned. Every paint says it here, whoever asked for the paint.
     fn frame_drawn(&mut self, motions_at: Instant) {
+        self.frames_drawn = self.frames_drawn.wrapping_add(1);
         ui::motion::frame_drawn(motions_at);
         self.host.frame_presented();
         // The scene this frame issued has just landed. The list is a window,
@@ -7635,14 +7686,18 @@ mod tests {
     fn hdr_surfaces_are_recorded_as_frame_layers() {
         const SURFACE: u64 = 9_900_702;
         let _env_lock = tilo_test_env::lock();
-        let signal = crate::shell::hdr_surface::SurfaceSignal::for_colorimetry(
-            crate::collab::colorimetry::Colorimetry::hdr10(),
-            crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
+        let signal = tilo_color_pipeline::hdr_surface::SurfaceSignal::for_colorimetry(
+            neighbour_wire::colorimetry::Colorimetry::hdr10(),
+            tilo_color_pipeline::hdr_tonemap::HdrTonemapConfig::default(),
         )
         .expect("PQ");
-        let plane =
-            crate::shell::hdr_surface::HdrPlane::from_signal_rgb(2, 2, [[0.6; 3]; 4], signal)
-                .expect("plane");
+        let plane = tilo_color_pipeline::hdr_surface::HdrPlane::from_signal_rgb(
+            2,
+            2,
+            [[0.6; 3]; 4],
+            signal,
+        )
+        .expect("plane");
         let plane_id = plane.id();
         crate::shell::foreign::store().publish_hdr_frame(SURFACE, &[40; 16], plane);
         let mut fb = FrameBuilder::new((1600, 900));
@@ -10591,6 +10646,14 @@ mod layout_owed_tests;
 #[cfg(test)]
 #[allow(
     clippy::significant_drop_tightening,
+    reason = "the frame builder is the test's subject from its first layout to its last assertion"
+)]
+#[path = "frame_ready_focus_tests.rs"]
+mod ready_focus_tests;
+
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 #[path = "frame_native_field_tests.rs"]
@@ -10737,7 +10800,7 @@ impl ScenePhases {
     fn mark(&mut self, phase: &'static str) {
         let now = std::time::Instant::now();
         let took = now.duration_since(self.last);
-        crate::compositor::metrics::profile::record_phase(phase, took, None);
+        tilo_frame_metrics::profile::record_phase(phase, took, None);
         self.spans.push((phase, took));
         self.last = now;
     }

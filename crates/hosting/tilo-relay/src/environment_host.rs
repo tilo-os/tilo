@@ -976,6 +976,7 @@ where
     S: AsyncWrite + Unpin + Send,
     R: AsyncRead + Unpin + Send,
 {
+    let mut receive = MessageReader::new(receive);
     loop {
         tokio::select! {
             frame = frames.recv() => {
@@ -986,7 +987,7 @@ where
                     return Ok(());
                 }
             }
-            incoming = read_message::<_, ClientFrame>(receive) => {
+            incoming = receive.next::<ClientFrame>() => {
                 match incoming? {
                     None | Some(ClientFrame::Detach) => return Ok(()),
                     Some(ClientFrame::Input(bytes)) => {
@@ -1025,6 +1026,32 @@ where
     }
     write_frame(writer, &bytes).await?;
     Ok(())
+}
+
+/// The postcard frames of one stream, within the environment frame bound,
+/// for a loop that waits on other things beside them. A `select!` that
+/// drops [`Self::next`] for another branch loses nothing: the bytes of a
+/// partly read frame stay here and the next call resumes it, where
+/// [`read_message`] would drop them and misread the rest of the stream.
+pub(crate) struct MessageReader<R>(wire_frame::FrameReader<R>);
+
+impl<R: AsyncRead + Unpin + Send> MessageReader<R> {
+    pub(crate) const fn new(reader: R) -> Self {
+        Self(wire_frame::FrameReader::new(
+            reader,
+            wire_frame::Framing::little_endian(MAX_ENVIRONMENT_FRAME_BYTES).reject_empty(),
+        ))
+    }
+
+    /// The next message, or `None` at a clean end of stream.
+    pub(crate) async fn next<T: DeserializeOwned>(
+        &mut self,
+    ) -> Result<Option<T>, EnvironmentStreamError> {
+        let Some(bytes) = self.0.read_frame_async().await? else {
+            return Ok(None);
+        };
+        Ok(Some(postcard::from_bytes(bytes)?))
+    }
 }
 
 /// Read one postcard frame, or `None` at a clean end of stream.

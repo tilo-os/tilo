@@ -6,11 +6,12 @@ use ui::tilo_reference::ResourceAt;
 use ui::tilo_resource::{self, ActionCx, Collection, Counter, Id, Model, Refusal, Set, resource};
 
 use crate::model::issue::{
-    AgentRequest, Imported, Issue, Link, MAX_MESSAGE_CHARS, Message, MessageKind, Status,
+    AgentRequest, Imported, Issue, Link, MAX_MESSAGE_CHARS, MAX_READ_RESOURCE_CHARS, Message,
+    MessageKind, Status,
 };
 use crate::model::run::{
-    Area, Budget, Confirmation, ConfirmationState, ModelChoice, PausedRun, Question, Run,
-    RunOutcome, RunPhase,
+    Area, Budget, Confirmation, ConfirmationState, MAX_TOTAL_MS, MAX_TURN_MS, ModelChoice,
+    PausedRun, Question, Run, RunOutcome, RunPhase, Spend, SpendLimits, StepSpend, money,
 };
 use crate::model::tracker_area::{Kind, Person, TrackerArea};
 
@@ -96,6 +97,71 @@ impl Tracker {
 
     fn issue_mut(&mut self, issue: &Id) -> Result<&mut Issue, Refusal> {
         self.issues.get_mut(issue).ok_or_else(no_issue)
+    }
+
+    /// The issue and every issue under it, each with the last run's ledger
+    /// folded in.
+    fn subtree_spend(&self, issue: &Id) -> Spend {
+        let mut total = Spend::default();
+        for (id, child) in self.issues.iter() {
+            if !self.is_under(id, issue) {
+                continue;
+            }
+            let Some(run) = child.run.as_ref().and_then(|run| run.spend.as_ref()) else {
+                continue;
+            };
+            total.steps_taken = total.steps_taken.saturating_add(run.steps_taken);
+            total.input_tokens = total.input_tokens.saturating_add(run.input_tokens);
+            total.output_tokens = total.output_tokens.saturating_add(run.output_tokens);
+            total.priced_calls = total.priced_calls.saturating_add(run.priced_calls);
+            total.cost_micros = total.cost_micros.saturating_add(run.cost_micros);
+            total.held_tokens = total.held_tokens.saturating_add(run.held_tokens);
+            total.held_cost_micros = total.held_cost_micros.saturating_add(run.held_cost_micros);
+            if total.currency.is_empty() {
+                total.currency.clone_from(&run.currency);
+            }
+        }
+        total
+    }
+
+    /// What the issue and its sub-issues have spent, held steps included.
+    fn spent_by(&self, issue: &Id) -> Spend {
+        self.subtree_spend(issue)
+    }
+
+    /// Every spend limit over the issue: its own and each ancestor's, which
+    /// its work draws from.
+    fn limits_over(&self, issue: &Id) -> Vec<Budget> {
+        let mut limits = Vec::new();
+        let mut at = Some(issue.clone());
+        for _ in 0..=self.issues.len() {
+            let Some(id) = at.clone() else { break };
+            let Some(found) = self.issues.get(&id) else {
+                break;
+            };
+            if let Some(budget) = found.budget.as_ref()
+                && !budget.spends_freely()
+            {
+                limits.push(budget.clone());
+            }
+            at.clone_from(&found.parent);
+        }
+        limits
+    }
+
+    /// Write the issue's money total, and every ancestor's, from the ledger:
+    /// a subtask's spend counts towards its parent's, to the top.
+    fn roll_up_spend(&mut self, issue: &Id) {
+        let mut at = Some(issue.clone());
+        for _ in 0..=self.issues.len() {
+            let Some(id) = at.clone() else { break };
+            let total = self.subtree_spend(&id);
+            let Some(found) = self.issues.get_mut(&id) else {
+                break;
+            };
+            found.spend = (total.cost_micros > 0).then_some(total.cost_micros);
+            at.clone_from(&found.parent);
+        }
     }
 
     fn no_area() -> Refusal {
@@ -191,6 +257,46 @@ fn at_boundary(run: &Run) -> Result<(), Refusal> {
         return Err(Refusal::new("The run is paused: no step until it goes on"));
     }
     Ok(())
+}
+
+/// Why the step `next`, after `spent`, crosses one of `limits`; `None` when
+/// every limit admits it. The reason names the limit it crosses.
+fn over(limits: &[Budget], spent: &Spend, next: &StepSpend) -> Option<String> {
+    let mut after = spent.clone();
+    after.held_tokens = after.held_tokens.saturating_add(next.tokens());
+    after.held_cost_micros = after.held_cost_micros.saturating_add(next.cost_micros);
+    after.priced_calls = after.priced_calls.saturating_add(next.priced_calls);
+    limits.iter().find_map(|limit| {
+        let reached = limit.reached(&after);
+        if reached.is_some() {
+            return reached;
+        }
+        let tokens_over = limit.max_tokens.is_some_and(|max| after.tokens() > max);
+        if tokens_over {
+            return Some(format!(
+                "The step would take this task past its budget of {} tokens",
+                limit.max_tokens.unwrap_or_default()
+            ));
+        }
+        let calls_over = limit
+            .max_priced_calls
+            .is_some_and(|max| after.priced_calls > max);
+        if calls_over {
+            return Some(format!(
+                "The step would take this task past its budget of {} priced calls",
+                limit.max_priced_calls.unwrap_or_default()
+            ));
+        }
+        let cost_over = limit.max_cost_micros.is_some_and(|max| after.cost() > max);
+        cost_over.then(|| {
+            let named = limit.currency.trim();
+            format!(
+                "The step would take this task past its budget of {} {named}",
+                money(limit.max_cost_micros.unwrap_or_default())
+            )
+            .replace("  ", " ")
+        })
+    })
 }
 
 fn push_message(issue: &mut Issue, cx: &mut ActionCx, message: Message) {
@@ -450,6 +556,7 @@ impl Tracker {
                 updated_ms: now,
                 confirmation: None,
                 paused: None,
+                spend: None,
             }),
             ..Issue::default()
         };
@@ -637,6 +744,7 @@ impl Tracker {
             updated_ms: now,
             confirmation: None,
             paused: None,
+            spend: None,
         });
         target.status = Status::InProgress;
         Ok(())
@@ -681,6 +789,50 @@ impl Tracker {
         // Only the boundary is written: the run stays in the step it was in,
         // so a step its agent reports meanwhile merges rather than being
         // overwritten by a step a person never moved it out of.
+        run.paused = Some(paused.because(""));
+        Ok(())
+    }
+
+    /// Pause the issue's run because it reached a budget: it waits in the
+    /// step it was in, for a person to raise the limit or let it go on, and
+    /// `reason` says which limit it reached.
+    ///
+    /// # Errors
+    /// Refuses anyone but the run's own agent, an ended or paused run, or a
+    /// reason that names nothing.
+    #[action(item = issues, audience = "agents", writes = issues)]
+    pub fn pause_run_for_budget(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("Why it stopped: the limit it reached")] reason: String,
+    ) -> Result<(), Refusal> {
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err(Refusal::new("Name the limit the run reached"));
+        }
+        let now = cx.now_ms();
+        let target = self.issue_mut(issue)?;
+        let epoch = own_run(cx, target)?.epoch;
+        if target.run.as_ref().is_some_and(|run| run.paused.is_some()) {
+            return Err(Refusal::new("The run is paused already"));
+        }
+        let through = target
+            .comments
+            .values()
+            .filter(|message| message.kind == MessageKind::ToRun && message.run == epoch)
+            .count();
+        let paused = PausedRun::of(
+            RunPhase::Executing,
+            u64::try_from(through).unwrap_or(u64::MAX),
+            now,
+        )
+        .ok_or_else(|| Refusal::new("This step is not one a pause can hold"))?
+        .because(reason);
+        let run = target
+            .run
+            .as_mut()
+            .ok_or_else(|| Refusal::new("No run of this issue is going"))?;
         run.paused = Some(paused);
         Ok(())
     }
@@ -770,11 +922,12 @@ impl Tracker {
         Ok(())
     }
 
-    /// Set how long the issue's runs may take; clear both to use the
-    /// defaults.
+    /// Set how long the issue's runs may take and what they may spend;
+    /// clear every ceiling to use the defaults.
     ///
     /// # Errors
-    /// Refuses while a run is going, or ceilings out of range.
+    /// Refuses while a run is going, time ceilings out of range, or a spend
+    /// limit no run can work under.
     #[action(item = issues, audience = "people", writes = issues)]
     pub fn set_execution_budget(
         &mut self,
@@ -786,23 +939,42 @@ impl Tracker {
         #[param("The longest the run may take, in milliseconds (up to 7200000)")] total_ms: Option<
             u64,
         >,
+        #[param("The most its runs may spend: tokens, priced calls and money")] limits: Option<
+            SpendLimits,
+        >,
     ) -> Result<(), Refusal> {
         person(cx)?;
         let target = self.issue_mut(issue)?;
         if target.active_run().is_some() {
             return Err(Refusal::new("Change the budget when no run is going"));
         }
-        target.budget = match (turn_ms, total_ms) {
+        let ceilings = match (turn_ms, total_ms) {
             (None, None) => None,
             (Some(turn_ms), Some(total_ms)) if Budget::admits(turn_ms, total_ms) => {
-                Some(Budget { turn_ms, total_ms })
+                Some((turn_ms, total_ms))
             }
             _ => {
                 return Err(Refusal::new(
-                    "A budget gives both ceilings, a turn no longer than the run",
+                    "A budget gives both time ceilings, a turn no longer than the run",
                 ));
             }
         };
+        let limits = limits.map(SpendLimits::checked).transpose()?;
+        target.budget =
+            if ceilings.is_none() && limits.as_ref().is_none_or(SpendLimits::is_unlimited) {
+                None
+            } else {
+                let (turn_ms, total_ms) = ceilings.unwrap_or((MAX_TURN_MS, MAX_TOTAL_MS));
+                let limits = limits.unwrap_or_default();
+                Some(Budget {
+                    turn_ms,
+                    total_ms,
+                    max_tokens: limits.max_tokens,
+                    max_priced_calls: limits.max_priced_calls,
+                    max_cost_micros: limits.max_cost_micros,
+                    currency: limits.currency,
+                })
+            };
         Ok(())
     }
 
@@ -882,6 +1054,7 @@ impl Tracker {
                 kind,
                 run,
                 incorporated,
+                ..Message::default()
             },
         );
         Ok(())
@@ -925,7 +1098,7 @@ impl Tracker {
                     text,
                     kind: MessageKind::FromRun,
                     run: epoch,
-                    incorporated: false,
+                    ..Message::default()
                 },
             );
         }
@@ -1106,7 +1279,7 @@ impl Tracker {
                     text,
                     kind: MessageKind::FromRun,
                     run: epoch,
-                    incorporated: false,
+                    ..Message::default()
                 },
             );
         }
@@ -1137,22 +1310,124 @@ impl Tracker {
         Ok(())
     }
 
-    /// Record what the run has spent so far, in the workspace's units: what
-    /// its person reads of the cost, and what its budget is measured
-    /// against.
+    /// Hold what the next step is expected to cost, until the step settles.
+    /// A hold is measured against the issue's budget, so a step that would
+    /// take it past a limit never starts: the refusal names the limit.
     ///
     /// # Errors
-    /// Refuses anyone but the run's own agent, or an ended run.
+    /// Refuses anyone but the run's own agent, an ended run, a step whose
+    /// hold is still out, or a hold that would take the issue's budget, or
+    /// its parents', past a limit.
     #[action(item = issues, audience = "agents", writes = issues)]
-    pub fn record_spend(
+    pub fn hold_spend(
         &mut self,
         cx: &mut ActionCx,
         issue: &Id,
-        #[param("What its runs have spent so far, in the workspace's units")] spent: u64,
+        #[param("The tokens the step is expected to use")] tokens: u64,
+        #[param("The money the step is expected to cost, in millionths")] cost_micros: u64,
     ) -> Result<(), Refusal> {
+        if tokens == 0 && cost_micros == 0 {
+            return Ok(());
+        }
+        let spent_so_far = self.spent_by(issue);
+        let limits = self.limits_over(issue);
+        let next = StepSpend {
+            input_tokens: tokens,
+            cost_micros,
+            ..StepSpend::default()
+        };
         let target = self.issue_mut(issue)?;
-        own_run(cx, target)?;
-        target.spend = Some(spent);
+        let epoch = own_run(cx, target)?.epoch;
+        if let Some(reason) = over(&limits, &spent_so_far, &next) {
+            return Err(Refusal::new(reason));
+        }
+        if let Some(run) = target.run.as_mut().filter(|run| run.epoch == epoch) {
+            run.spend
+                .get_or_insert_with(Spend::default)
+                .hold(tokens, cost_micros)?;
+        }
+        Ok(())
+    }
+
+    /// Settle the step in flight with the receipt its provider gave: the
+    /// model that answered it, the device it ran on, the tokens and calls it
+    /// spent and what was priced. A step whose provider answered with an
+    /// error settles at nothing.
+    ///
+    /// # Errors
+    /// Refuses anyone but the run's own agent, an ended run, a receipt in
+    /// another currency than the run's, or one that takes the issue's budget
+    /// past a limit.
+    #[action(item = issues, audience = "agents", writes = issues)]
+    pub fn settle_spend(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("The step's receipt")] step: StepSpend,
+    ) -> Result<(), Refusal> {
+        let spent_so_far = self.spent_by(issue);
+        let limits = self.limits_over(issue);
+        let target = self.issue_mut(issue)?;
+        let epoch = own_run(cx, target)?.epoch;
+        if let Some(reason) = over(&limits, &spent_so_far, &step) {
+            return Err(Refusal::new(reason));
+        }
+        if let Some(run) = target.run.as_mut().filter(|run| run.epoch == epoch) {
+            run.spend.get_or_insert_with(Spend::default).settle(&step)?;
+        }
+        self.roll_up_spend(issue);
+        Ok(())
+    }
+
+    /// Record what the run read: a resource it looked up through system
+    /// search, as the hit it took reads. The task lists it, so its person
+    /// sees every resource the run pulled in after the one the request named,
+    /// and the person who keeps that resource sees a run reach it.
+    ///
+    /// Reading it is not a permission: the resource was already read through
+    /// the search under the run's own grants, and a hit the run may not read
+    /// is never found.
+    ///
+    /// # Errors
+    /// Refuses anyone but the run's own agent, or a read of nothing.
+    #[action(item = issues, audience = "agents", writes = issues)]
+    pub fn record_read(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("The resource it read")] resource: ResourceAt,
+    ) -> Result<(), Refusal> {
+        if resource.reference.id.trim().is_empty()
+            || resource.reference.id.chars().count() > MAX_READ_RESOURCE_CHARS
+            || resource.app.trim().is_empty()
+        {
+            return Err(Refusal::new("A read names one resource it may reach"));
+        }
+        let label = message_text(&resource.reference.label)?;
+        let reference = serde_json::to_string(&resource)
+            .map_err(|_| Refusal::new("A read names one resource it may reach"))?;
+        let at_ms = cx.now_ms();
+        let author = author(cx)?;
+        let target = self.issue_mut(issue)?;
+        let run = own_run(cx, target)?;
+        at_boundary(run)?;
+        let epoch = run.epoch;
+        push_message(
+            target,
+            cx,
+            Message {
+                author,
+                by_agent: true,
+                at_ms,
+                // The resource's own name: the history entry says what kind of
+                // step this was, and the thread row reads as the lookup it is.
+                text: label,
+                kind: MessageKind::Lookup,
+                lookup: reference,
+                run: epoch,
+                incorporated: false,
+            },
+        );
         Ok(())
     }
 

@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tilo_actions::{
-    ActionArgs, ActionError, ActionNeed, ActionParam, ActionRegistry, ActionSpec, EncodedAction,
-    ExecutionLocus, OperationKind, ParamType,
+    ActionArgs, ActionError, ActionNeed, ActionParam, ActionRegistry, ActionSpec, ActionType,
+    EncodedAction, ExecutionLocus, OperationKind, ParamType, Target,
 };
 
 use crate::action::ActionKind;
@@ -954,7 +954,7 @@ pub(crate) fn field_edit_spec(
     .unwrap_or_else(|| Arc::new(edit_schema(vocabulary)));
     rooted_edit_spec(
         vocabulary,
-        (Vec::new(), (vocabulary.shape)()),
+        (vocabulary.shape)(),
         schema,
         format!("Edit a {} field", vocabulary.label),
         "The path of the field from the record's root, and the operation",
@@ -1066,12 +1066,28 @@ pub(crate) fn field_edit_spec_at_of(
     if shape.fields().is_empty() || readonly {
         return None;
     }
-    // The same for every item: built once per type and path.
-    let schema = per_type_at(vocabulary, TypeSchema::Edit, &dotted, &|| {
+    // The same for every item: kept once per type and path, bound to the
+    // item's.
+    thread_local! {
+        static KEPT: std::cell::RefCell<crate::kept::KeptByPath> = std::cell::RefCell::default();
+    }
+    let key = ((vocabulary.type_id)(), dotted.clone());
+    crate::kept::kept_type(&KEPT, key, || item_edit_type(vocabulary, shape, &dotted))
+        .map(|ty| ty.bind(Target::new(prefix)))
+}
+
+/// The type of the field edit of the items at the dotted path `dotted`, of
+/// shape `shape`, or `None` when nothing there is editable.
+fn item_edit_type(
+    vocabulary: &'static Vocabulary,
+    shape: crate::Shape,
+    dotted: &str,
+) -> Option<Arc<ActionType>> {
+    let schema = per_type_at(vocabulary, TypeSchema::Edit, dotted, &|| {
         let ops: Vec<(String, serde_json::Value)> = (vocabulary.op_schemas)()
             .into_iter()
             .filter_map(|(path, schema)| {
-                path.strip_prefix(&dotted)
+                path.strip_prefix(dotted)
                     .map(|rest| (rest.to_owned(), schema))
             })
             .collect();
@@ -1079,14 +1095,15 @@ pub(crate) fn field_edit_spec_at_of(
         edit_paths(shape, &[], "", &ops, &mut alternatives);
         (!alternatives.is_empty()).then(|| described_edit(&alternatives, &ops))
     })?;
-    Some(rooted_edit_spec(
+    let spec = rooted_edit_spec(
         vocabulary,
-        (prefix, Some(shape)),
+        Some(shape),
         schema,
         "Edit a field of this item".to_owned(),
         "The path of the field from the item, and the operation",
         Vec::new(),
-    ))
+    );
+    Some(Arc::clone(spec.action_type()))
 }
 
 /// The edits of a resource whose document holds nothing. An app whose data
@@ -1993,26 +2010,38 @@ pub fn declaration_spec<D: AsRef<Declaration> + ?Sized>(decl: &D) -> ActionSpec 
 /// [`declaration_spec`] of a declaration of whichever resource.
 fn spec_of_declaration(decl: &Declaration) -> ActionSpec {
     let build = Arc::clone(&decl.build);
-    let encoded = move |args: &tilo_actions::ActionArgs| encode_built(build(args, origin_now_ms()));
+    spec_of_declaration_on(decl, move |_, args, now_ms| build(args, now_ms))
+}
+
+/// The spec of `decl` as a type whose target `build` reads: what every item
+/// offering the declared action shares ([`Target`]).
+pub(crate) fn spec_of_declaration_on(
+    decl: &Declaration,
+    build: impl Fn(&Target, &ActionArgs, i64) -> Result<Built, String> + Send + Sync + 'static,
+) -> ActionSpec {
+    let build = Arc::new(build);
+    let encoded = move |target: &Target, args: &tilo_actions::ActionArgs| {
+        encode_built(build(target, args, origin_now_ms()))
+    };
     let spec = if let Some(prompt) = &decl.content {
         let param = ActionParam::required_owned(
             tilo_actions::PROMPTED_PARAM,
             ParamType::Text,
             prompt.clone(),
         );
-        ActionSpec::prompted_content(
+        ActionSpec::prompted_content_on(
             decl.id,
             decl.label.clone(),
             prompt.clone(),
             "content hash",
             ExecutionLocus::ClientLocal,
-            move |hash| {
+            move |target, hash| {
                 let supplied = [(
                     tilo_actions::PROMPTED_PARAM.to_owned(),
                     tilo_actions::ArgValue::Text(hash.to_owned()),
                 )];
                 match ActionArgs::bind(std::slice::from_ref(&param), supplied) {
-                    Ok(args) => encoded(&args),
+                    Ok(args) => encoded(target, &args),
                     Err(error) => refused(&error.to_string()),
                 }
             },
@@ -2023,12 +2052,12 @@ fn spec_of_declaration(decl: &Declaration) -> ActionSpec {
         // same kind of record.
         let domain = format!("{}#{}", decl.resource, decl.id);
         let action_type = decl.action_type;
-        ActionSpec::deferred(
+        ActionSpec::deferred_on(
             decl.id,
             decl.label.clone(),
             ExecutionLocus::ClientLocal,
             action_type,
-            move || encoded(&tilo_actions::ActionArgs::none()),
+            move |target| encoded(target, &tilo_actions::ActionArgs::none()),
         )
         .with_continuation_identity(move |query| match query {
             tilo_actions::ContinuationQuery::Draft => {
@@ -2046,7 +2075,7 @@ fn spec_of_declaration(decl: &Declaration) -> ActionSpec {
             tilo_actions::ContinuationQuery::Exact(_) => None,
         })
     } else {
-        ActionSpec::typed(
+        ActionSpec::typed_on(
             decl.id,
             decl.label.clone(),
             decl.label.clone(),
@@ -2081,17 +2110,18 @@ fn spec_of_declaration(decl: &Declaration) -> ActionSpec {
     if decl.destructive {
         spec = spec.destructive();
     }
+    let contract = &mut spec.type_mut().contract;
     if let Some(result) = &decl.result {
-        spec.contract.result = result.clone();
+        contract.result = result.clone();
     }
     for tag in &decl.tags {
-        if !spec.contract.tags.contains(tag) {
-            spec.contract.tags.push(tag.clone());
+        if !contract.tags.contains(tag) {
+            contract.tags.push(tag.clone());
         }
     }
     // A compensated undo arrives as a tag: once it is there, a deletion it
     // takes back is no longer asked about.
-    spec.contract.settle_confirmation();
+    contract.settle_confirmation();
     spec
 }
 
@@ -2661,7 +2691,7 @@ fn publish_own(
         let _phase = crate::profiling::Phase::start("resource.declaration_spec");
         let mut spec = spec_of_declaration(decl);
         if let Some(availability) = own.availability {
-            spec.contract.availability = availability(decl.id);
+            spec.type_mut().contract.availability = availability(decl.id);
         }
         // Offered on the items it acts on, with some of its arguments bound
         // ([`items::bound`](crate::items::bound)), it stays published here
@@ -2901,47 +2931,7 @@ pub fn scope_contains(scope: &str, anchor: &str) -> bool {
 }
 
 #[cfg(test)]
-mod schema_sharing_tests {
-    use super::*;
-
-    #[test]
-    fn shared_schema_reloads_do_not_retain_or_repopulate_stale_generation() {
-        let cache = Mutex::new(CompiledSchemas::default());
-        let key = (TypeId::of::<()>(), TypeSchema::Apply, String::new());
-        let first = cached_schema(&cache, key.clone(), &|| {
-            Some(serde_json::json!({"minimum":1}))
-        })
-        .unwrap();
-        let reused = cached_schema(&cache, key.clone(), &|| {
-            panic!("cached type must not rebuild")
-        })
-        .unwrap();
-        assert!(Arc::ptr_eq(&first, &reused));
-        {
-            let mut store = cache.lock().unwrap();
-            store.epoch += 1;
-            store.entries.clear();
-        }
-        let old_build = cached_schema(&cache, key.clone(), &|| {
-            let mut store = cache.lock().unwrap();
-            store.epoch += 1;
-            store.entries.clear();
-            drop(store);
-            Some(serde_json::json!({"minimum":2}))
-        })
-        .unwrap();
-        assert!(
-            cache.lock().unwrap().entries.is_empty(),
-            "old build cannot repopulate new generation"
-        );
-        let current =
-            cached_schema(&cache, key, &|| Some(serde_json::json!({"minimum":3}))).unwrap();
-        assert_eq!(first["minimum"], 1);
-        assert_eq!(old_build["minimum"], 2);
-        assert_eq!(current["minimum"], 3);
-        assert!(!Arc::ptr_eq(&first, &current));
-    }
-}
+mod schema_sharing_tests;
 
 #[cfg(test)]
 mod selection_place_tests {

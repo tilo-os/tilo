@@ -30,9 +30,9 @@ use crate::shell::network::{
 use tilo_action_broker::collab_inbound::validate_route as validate_document_route;
 
 mod personal_session;
-pub(crate) use personal_session::{
-    NativePersonalSession, NativePersonalSource, RetainedProofRecipient,
-};
+#[cfg(target_os = "linux")]
+pub(crate) use personal_session::RetainedProofRecipient;
+pub(crate) use personal_session::{NativePersonalSession, NativePersonalSource};
 
 pub use crate::shell::peer_presence::PeerLabels;
 
@@ -1409,6 +1409,35 @@ pub(crate) fn answer_remote_actions(
         .ok()
         .map(tokio::runtime::Runtime::enter);
     for request in requests {
+        // A question is the person's to answer, on the device they are at;
+        // an action host has no word for it.
+        if let tilo_actions::remote::RemoteActionMessage::ConfirmationRequest {
+            correlation,
+            question,
+        } = &request.message
+        {
+            let asked = crate::shell::foreign_ask::ask_here(net, &request.caller, question)
+                .unwrap_or_else(|| {
+                    tilo_actions::remote::Pending::ready(Err(
+                        tilo_actions::remote::ActionHostError::ConfirmationRequired,
+                    ))
+                });
+            let net = Arc::clone(net);
+            let (correlation, topic, from) = (*correlation, request.workspace_topic, request.from);
+            asked.then(move |reply| {
+                net.send_remote_action(
+                    topic,
+                    from,
+                    tilo_actions::remote::RemoteActionMessage::ConfirmationResponse {
+                        correlation,
+                        result: reply.unwrap_or(Err(
+                            tilo_actions::remote::ActionHostError::ConfirmationRequired,
+                        )),
+                    },
+                );
+            });
+            continue;
+        }
         // A record is read from where this device keeps it, by the device
         // itself; no action host is asked.
         if let tilo_actions::remote::RemoteActionMessage::RecordRequest { correlation, query } =

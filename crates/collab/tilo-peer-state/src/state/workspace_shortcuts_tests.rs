@@ -28,7 +28,9 @@ fn signed(
 }
 
 fn saved(peer: &crate::StatePeer) -> Vec<Shortcut> {
-    tilo_desktop_model::projection::workspace_shortcuts_of(peer.admitted_room().unwrap())
+    tilo_automation::decode_saved(&tilo_desktop_model::projection::workspace_shortcuts_of(
+        peer.admitted_room().unwrap(),
+    ))
 }
 
 #[test]
@@ -158,7 +160,10 @@ fn a_member_sees_a_saved_shortcut_and_never_the_governors_forgery() {
     let mut document = governor.admitted_room().unwrap().clone();
     tilo_desktop_model::projection::project_workspace_shortcuts(
         &mut document,
-        &[own.clone(), forged],
+        &[
+            tilo_automation::SavedShortcut::encode(&own),
+            tilo_automation::SavedShortcut::encode(&forged),
+        ],
     )
     .unwrap();
     document.commit();

@@ -481,6 +481,7 @@ decorator_trait! {
         fn accessibility_child_parent(child_index: usize) -> Option<usize>;
         fn accessibility_child_path(child_index: usize) -> Option<Vec<usize>>;
         fn accessibility_represents_child(child_index: usize) -> bool;
+        fn lays_out_child(child_index: usize) -> bool;
         fn accessibility_child_description(child_index: usize) -> Option<String>;
         fn is_enabled() -> bool;
         fn ime_requires_deferred_ack() -> bool;
@@ -497,6 +498,7 @@ decorator_trait! {
         fn dev_route() -> Option<crate::widget::router::RouteSnapshot>;
         fn appearance_intent() -> Option<crate::theme::AppearanceIntent>;
         fn minimum_window_width() -> Option<f64>;
+        fn preferred_window_size() -> Option<(f64, f64)>;
         fn needs_idle_sync() -> bool;
         fn wants_pointer_capture() -> bool;
         fn disclosing() -> Option<crate::widget::Disclosing>;

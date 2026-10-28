@@ -131,6 +131,9 @@ pub struct Scrollable {
     /// ([`Self::with_content_min_viewport_height`]).
     content_fills_viewport: bool,
     child: Option<Element>,
+    /// A content shown in place of another since the host last read it
+    /// ([`Self::replace_child`]): described.
+    structure: crate::widget::StructureChange,
     /// Retained Taffy identity for `child`; refreshed with the layout tree so
     /// event and scroll-layout paths never allocate `taffy.children()`.
     child_node: Option<NodeId>,
@@ -234,11 +237,17 @@ pub struct Scrollable {
     /// follows its layout node, so no control inside it has a durable
     /// identity and none is published as an action resource.
     semantic_key: Option<String>,
+    /// What a screen reader calls the scroll region. An overflowing region
+    /// is a keyboard stop (Tab reaches it to scroll by keyboard), so one
+    /// without a name is announced as an unnamed control.
+    label: Option<String>,
     /// What the frame being drawn shows of the content, and what the last
     /// frame the host presented showed: a scroll between the two that moved
     /// nothing else is offered to the host as a copy
     /// ([`crate::scroll_copy::offer`]).
     shown: crate::scroll_copy::ShownFrames<Shown>,
+    /// See [`Scrollable::following_end`].
+    follow_end: bool,
 }
 
 /// Where a frame shows the content: its offset, the clip it paints into,
@@ -306,6 +315,7 @@ impl Scrollable {
             fill_parent_height: false,
             content_fills_viewport: false,
             child: None,
+            structure: crate::widget::StructureChange::None,
             child_node: None,
             rect: Rect::ZERO,
             scroll_dirty: false,
@@ -343,7 +353,9 @@ impl Scrollable {
             bottom_content_inset: 0.0,
             compact_bottom_content_inset: None,
             semantic_key: None,
+            label: None,
             shown: crate::scroll_copy::ShownFrames::default(),
+            follow_end: false,
         }
     }
     pub fn new_vertical() -> Self {
@@ -352,14 +364,40 @@ impl Scrollable {
     pub fn new_horizontal() -> Self {
         Self::new(ScrollAxis::Horizontal)
     }
+    /// Open at the end of the content and stay there while it grows, unless the person scrolled
+    /// away from the end: a conversation's transcript, whose newest message is last.
+    #[must_use]
+    pub fn following_end(mut self) -> Self {
+        self.follow_end = true;
+        self
+    }
+    /// The content, to change it in place and keep the scroll position.
+    pub fn child_mut(&mut self) -> Option<&mut Element> {
+        self.child.as_mut()
+    }
     #[must_use]
     pub fn with_child(mut self, c: Element) -> Self {
-        self.child = Some(if self.content_fills_viewport {
+        self.child = Some(self.content(c));
+        self
+    }
+    /// Show `c` instead of the content, which it returns, keeping the scroll position. A
+    /// change the frame's damage describes: the new content draws itself whole, and the host
+    /// repaints where the boxes it moved were and are.
+    pub fn replace_child(&mut self, c: Element) -> Option<Element> {
+        let c = self.content(c);
+        self.structure = self
+            .structure
+            .join(crate::widget::StructureChange::Described);
+        self.child.replace(c)
+    }
+    /// `c` as the child, in the wrapper that keeps it at least the viewport's height when the
+    /// view asks for one.
+    fn content(&self, c: Element) -> Element {
+        if self.content_fills_viewport {
             Box::new(ViewportContent::new(c))
         } else {
             c
-        });
-        self
+        }
     }
     /// Let auto-height content fill at least the measured viewport height,
     /// retaining its intrinsic height when it overflows. This does not change
@@ -386,6 +424,14 @@ impl Scrollable {
     #[must_use]
     pub fn with_semantic_key(mut self, key: impl Into<String>) -> Self {
         self.semantic_key = Some(key.into());
+        self
+    }
+
+    /// Name the scroll region for assistive technology: what Tab announces
+    /// when the region overflows and becomes a keyboard stop.
+    #[must_use]
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
         self
     }
 
@@ -1214,6 +1260,8 @@ impl Widget for Scrollable {
         self.lanes_needed = (false, false);
         let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = crate::widget::placed(&l, origin);
+        // At the end before this layout: a transcript that follows its end stays there.
+        let at_end = self.follow_end && self.max_offset_y() - self.offset_y <= FIT_EPS;
         self.viewport_w = l.size.width;
         self.viewport_h = l.size.height;
         // Measure the solved content, including descendant overflow, before
@@ -1257,6 +1305,9 @@ impl Widget for Scrollable {
                     self.content_h = self.walked_h;
                 }
             }
+        }
+        if at_end {
+            self.offset_y = self.max_offset_y();
         }
         self.clamp();
         let origin = self.content_origin();
@@ -1750,10 +1801,14 @@ impl Widget for Scrollable {
         true
     }
 
-    /// The meaningful label belongs to whatever it wraps.
+    /// The meaningful label belongs to whatever it wraps; a region that
+    /// becomes a keyboard stop carries its own ([`Self::with_label`]).
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        let node = AccessNode::new(Role::Group);
+        let mut node = AccessNode::new(Role::Group);
+        if let Some(label) = &self.label {
+            node = node.with_name(label.clone());
+        }
         Some(match &self.semantic_key {
             Some(key) => node.with_semantic_key(key.clone()),
             None => node,
@@ -1761,20 +1816,21 @@ impl Widget for Scrollable {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
+        let own = std::mem::take(&mut self.structure).rebuilds();
         self.child
             .as_mut()
             .is_some_and(|c| c.take_structure_dirty())
+            | own
     }
 
-    /// The view adds no structure of its own: a change its content can
-    /// describe (a long list mounting the rows a scroll brought near) stays
-    /// described.
+    /// The view adds no structure of its own but a content replaced in place,
+    /// which is described: a change its content can describe (a long list
+    /// mounting the rows a scroll brought near) stays described.
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        let own = std::mem::take(&mut self.structure);
         self.child
             .as_mut()
-            .map_or(crate::widget::StructureChange::None, |child| {
-                child.take_structure_change()
-            })
+            .map_or(own, |child| own.join(child.take_structure_change()))
     }
 }
 
@@ -1794,3 +1850,6 @@ mod tests;
 #[cfg(test)]
 #[path = "scrollable_lane_tests.rs"]
 mod lane_tests;
+
+mod component;
+pub use component::ScrollProps;

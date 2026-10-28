@@ -33,6 +33,8 @@ tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional 
 # Directory watch behind `watch_settings`; only long-lived readers opt in.
 watch = ["tilo-files/watch"]
 model = ["dep:tilo-resource"]
+# Faults a test injects into the store's own writes (`faults`).
+test-support = []
 
 [dev-dependencies]
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }

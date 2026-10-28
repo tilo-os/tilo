@@ -34,8 +34,14 @@
 //! - **Hosting.** [`AgentHost`] runs each agent on its own thread, keeps
 //!   grants and agents under a state directory, resumes them when the host
 //!   restarts and settles expired grants ([`host`]).
+//! - **Memory.** There is none of its own. What an agent learns it reads
+//!   from the room's records, and what it keeps it writes there through an
+//!   app's operations; the only state this crate holds is the task's own
+//!   working record and, in the host's state directory, the agents'
+//!   credentials and each room's content bytes ([`host`]).
 //!
-//! See `docs/architecture/browser-runtime.md`, "Agents".
+//! See `docs/architecture/browser-runtime.md`, "Agents", and
+//! `docs/architecture/agent-memory.md`.
 
 #![deny(rust_2018_idioms)]
 

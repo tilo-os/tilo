@@ -229,7 +229,7 @@ if [ -z "${TILO_COMPILED_DEV:-}" ]; then
   podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile" --target builder-base -t "$builder" \
     --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
     --build-arg "BASE_REF=$dev_compile_base" --build-arg "RPMS_REF=$rpms_ref" "$TILO_REPO"
-  podman run --rm --security-opt label=disable --userns=keep-id -v "$TILO_REPO:/src" -w /src \
+  podman run --rm --security-opt label=disable $(keep_id_args) -v "$TILO_REPO:/src" -w /src \
     -v "$cache/cargo-home:/cargo-home" -v "$cache/dev-target:/build-target" -v "$cache/sccache:/sccache" \
     -v "$TILO_OUTPUT/compiled-dev:/compiled-dev" \
     -e CARGO_HOME=/cargo-home -e CARGO_TARGET_DIR=/build-target -e SCCACHE_DIR=/sccache -e RUSTC_WRAPPER=sccache \
@@ -240,6 +240,17 @@ if [ -z "${TILO_COMPILED_DEV:-}" ]; then
 fi
 
 # The env-runtime the dev image ships when its base ships none; an empty directory gives none.
+# With none published for this checkout's os/Containerfile.env-runtime and none given, it is
+# built here from the RPM snapshot the base was built from, as t's env-runtime-dev does, with
+# the packer the base's compile left (a base built elsewhere needs TILO_DEV_ENV_RUNTIME).
+if [ -z "${TILO_DEV_ENV_RUNTIME:-}" ] && [ -n "$rpms_ref" ] \
+    && ! "$TILO_OS_DIR/dev/resolve-env-runtime.sh" --exists >/dev/null 2>&1 \
+    && [ -x "$TILO_OUTPUT/compiled/tilo-app-package" ]; then
+  msg "no env-runtime published for this checkout: building one from $rpms_ref"
+  bash "$TILO_REPO/tools/ci/publish/env-runtime.sh" local-dev "$(uname -m)" "$rpms_ref" \
+    "$TILO_OUTPUT/compiled" "$TILO_OUTPUT/env-runtime"
+  TILO_DEV_ENV_RUNTIME="$TILO_OUTPUT/env-runtime"
+fi
 if [ -n "${TILO_DEV_ENV_RUNTIME:-}" ]; then
   dev_env_runtime="$(realpath "$TILO_DEV_ENV_RUNTIME")"
 else

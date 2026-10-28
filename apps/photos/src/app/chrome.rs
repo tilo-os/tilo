@@ -865,16 +865,19 @@ impl PhotosApp {
         }
     }
 
-    /// Open the inspector while an editor is open, close it after.
-    pub(super) fn sync_inspector(&mut self) {
+    /// Open the inspector while an editor is open, close it after; whether
+    /// it opened or closed, which the layout gives a column or a sheet.
+    pub(super) fn sync_inspector(&mut self) -> bool {
         let wanted = self.library_mode && (self.album_editor || self.metadata_editor);
-        if wanted != self.chrome.inspector.is_open() {
-            if wanted {
-                self.chrome.inspector.open();
-            } else {
-                self.chrome.inspector.close();
-            }
+        if wanted == self.chrome.inspector.is_open() {
+            return false;
         }
+        if wanted {
+            self.chrome.inspector.open();
+        } else {
+            self.chrome.inspector.close();
+        }
+        true
     }
 
     /// Paint the inspector's panel and return where its parts are, with the

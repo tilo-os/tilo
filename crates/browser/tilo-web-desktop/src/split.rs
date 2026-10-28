@@ -111,12 +111,53 @@ pub(crate) async fn load(module: LoadModule) -> bool {
     Load { module, slot: None }.await
 }
 
-/// Load an app's module, then ask it for the app's definition.
+/// Code that comes with an app: fetched beside the app's own module, and
+/// in before its first window mounts.
+pub(crate) type Companion = fn() -> Pin<Box<dyn Future<Output = ()> + Send>>;
+
+/// Each app's companion, by app id.
+static COMPANIONS: Mutex<Vec<(&'static str, Companion)>> = Mutex::new(Vec::new());
+
+/// Fetch `companion` whenever the app `app_id` loads: for code the page
+/// lends the app's windows as they mount (`tilo_browser_runtime::lend_on_mount`),
+/// which only that app uses and the start module therefore need not carry.
+pub(crate) fn with_app(app_id: &'static str, companion: Companion) {
+    COMPANIONS.lock_recover().push((app_id, companion));
+}
+
+/// Load the app `app_id`'s module and its companion, then ask the module
+/// for the app's definition.
 pub(crate) async fn definition(
+    app_id: &'static str,
     module: LoadModule,
     definition: Definition,
 ) -> Option<&'static ApplicationDefinition> {
-    if !load(module).await {
+    let mut companion = COMPANIONS
+        .lock_recover()
+        .iter()
+        .find(|(id, _)| *id == app_id)
+        .map(|(_, companion)| companion());
+    // Both fetches run at once; the app is ready when both are in.
+    let mut app = Box::pin(load(module));
+    let mut app_loaded = None;
+    let loaded = std::future::poll_fn(|context| {
+        if let Some(mut pending) = companion.take()
+            && pending.as_mut().poll(context).is_pending()
+        {
+            companion = Some(pending);
+        }
+        if app_loaded.is_none()
+            && let Poll::Ready(loaded) = app.as_mut().poll(context)
+        {
+            app_loaded = Some(loaded);
+        }
+        match (&companion, app_loaded) {
+            (None, Some(loaded)) => Poll::Ready(loaded),
+            _ => Poll::Pending,
+        }
+    })
+    .await;
+    if !loaded {
         return None;
     }
     // SAFETY: the module that defines `definition` is loaded; it returns a

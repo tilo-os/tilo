@@ -1,5 +1,4 @@
 [ratchets.closure_action_button]
-"apps/db-client/src/connect_modal.rs" = 4
 "apps/db-client/src/navigator.rs" = 1
 
 [ratchets.closure_control]

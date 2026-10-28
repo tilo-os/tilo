@@ -51,7 +51,7 @@ pub fn register_feedback_startup(
     peer: u32,
     startup: tilo_desktop::feedback::transport::Startup,
 ) -> Result<(), String> {
-    feedback_delivery::register_feedback_startup(peer, startup)
+    feedback_code::register_feedback_startup(peer, startup)
 }
 /// Prepare the runtime before anything runs in it; the module's start
 /// function calls it first.
@@ -94,15 +94,26 @@ mod crash;
 #[cfg(target_arch = "wasm32")]
 mod desktop;
 #[cfg(target_arch = "wasm32")]
+mod feedback_code;
+#[cfg(target_arch = "wasm32")]
 mod feedback_composer;
 #[cfg(target_arch = "wasm32")]
 mod feedback_crops;
+#[cfg(target_arch = "wasm32")]
+pub use feedback_code::{
+    FEEDBACK, FeedbackCode, builtin_feedback, code_arrived as feedback_arrived,
+};
 #[cfg(target_arch = "wasm32")]
 mod feedback_delivery;
 #[cfg(target_arch = "wasm32")]
 mod feedback_pick;
 #[cfg(target_arch = "wasm32")]
 mod feedback_review;
+// Which peer carries a desktop's reports: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+mod feedback_route;
+#[cfg(any(target_arch = "wasm32", test))]
+mod peer_windows;
 #[cfg(all(target_arch = "wasm32", feature = "deferred-feedback-composer"))]
 pub use feedback_composer::install_feedback_composer;
 #[cfg(target_arch = "wasm32")]
@@ -133,6 +144,9 @@ mod link;
 mod mount_service_custody;
 #[cfg(target_arch = "wasm32")]
 mod page_authors;
+// The page's theme from settings and the browser: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+mod page_theme;
 // Which peer speaks for the page's person: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 mod page_person;
@@ -140,6 +154,12 @@ mod page_person;
 mod peer;
 #[cfg(target_arch = "wasm32")]
 mod person_chat;
+#[cfg(target_arch = "wasm32")]
+pub use person_chat::{PrivateAnswer, ask_private};
+#[cfg(target_arch = "wasm32")]
+mod app_loans;
+#[cfg(target_arch = "wasm32")]
+pub use app_loans::{Lend, lend_on_mount};
 // The person's own records each window holds: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 mod person_records;

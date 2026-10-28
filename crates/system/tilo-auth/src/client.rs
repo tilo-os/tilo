@@ -45,6 +45,15 @@ impl Client {
         serde_json::from_slice(&reply).map_err(io::Error::other)
     }
 
+    /// The device's sign-in comforts as the daemon keeps them; `None` before
+    /// any were chosen.
+    pub fn sign_in_comforts(
+        &mut self,
+    ) -> io::Result<Option<serde_json::Map<String, serde_json::Value>>> {
+        let reply = self.exchange(&Request::SignInComforts)?;
+        serde_json::from_slice(&reply).map_err(io::Error::other)
+    }
+
     pub fn pending_sign_in(&mut self) -> io::Result<Option<String>> {
         let reply = self.exchange(&Request::PendingSignIn)?;
         serde_json::from_slice::<Option<PendingSignIn>>(&reply)

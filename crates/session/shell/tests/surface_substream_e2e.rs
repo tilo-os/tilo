@@ -11,10 +11,10 @@
 
 use std::time::Instant;
 
-use shell::collab::flatpak_share::SharedFlatpakSession;
-use shell::config::{EncoderChoice, FlatpakShareConfig};
 use shell::network::protocol::{NeighbourMsg, PeerId, SurfaceId};
 use shell::network::surface_stream::{ReceiverEvent, SurfaceStreamReceiver};
+use tilo_window_share::config::{EncoderChoice, FlatpakShareConfig};
+use tilo_window_share::flatpak_share::SharedFlatpakSession;
 
 const HOST: PeerId = 0xAAAA;
 const VIEWER_A: PeerId = 0xBBBB;

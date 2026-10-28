@@ -784,6 +784,25 @@ export async function startEntryPage({mode}) {
       }
     },
     memberOf: workspace => Boolean(remembering(() => keptMembership(workspace))),
+    // A peer in the home workspace while the page is in another room, which
+    // carries the desktop's problem reports to the home's channel. Only for
+    // a person the home already let in, as themselves (a paired device's
+    // person approves new devices elsewhere): nobody joins the home just to
+    // report. It connects with this tab's device key for the home's host (a
+    // second one where the room's peer holds the first), as a background
+    // session (the home counts nobody online by it: no seat, face or count),
+    // without calls or a live plane, gives up rather than waiting at the
+    // door, and is kept while the page is.
+    homePeer: async home => {
+      const kept = remembering(() => keptMembership(home));
+      if (!kept || kept.paired) return null;
+      const identity = currentIdentity() ?? await browserIdentity({create: false}).catch(() => null);
+      if (!identity || identity.userPublicKey !== kept.userPublicKey) return null;
+      runtime ??= await loadRuntime();
+      const name = chosenDisplayName(identity.userPublicKey) ?? defaultDisplayName(identity.userPublicKey);
+      return joinViaHost({workspace: home, identity, displayName: name, runtime, live: false, voice: false, background: true,
+        wait: () => Promise.reject(new Error('the home workspace did not let this device in'))});
+    },
     // The person's own room, on the host that let them in through `home`'s
     // door: the room their root names (`ownRoom`), which that host carries
     // for them alone. A device paired to a person kept elsewhere connects

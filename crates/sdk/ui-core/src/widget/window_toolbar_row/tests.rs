@@ -321,7 +321,7 @@ fn a_view_only_window_says_so_after_its_label() {
         location: Some(location),
         ..Default::default()
     };
-    let shown = crate::window_toolbar::with_window_owned(Some(toolbar), None, None, true)
+    let shown = crate::window_toolbar::with_window_owned(Some(toolbar), None, None, true, false)
         .and_then(|toolbar| toolbar.location)
         .expect("the location stays");
     assert!(shown.view_only);

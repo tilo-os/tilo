@@ -9,6 +9,10 @@ use std::ops::RangeInclusive;
 
 pub const SECTION: &str = "accessibility";
 
+/// Whether the screen reader is on: what Settings, the screen reader chord
+/// (Ctrl+Super+Enter) and every app's narrator read and write.
+pub const SCREEN_READER: crate::Key<bool> = crate::Key::new(SECTION, "screen_reader", || false);
+
 /// Normalised speech rate, where 100 is the engine default.
 pub const DEFAULT_SCREEN_READER_RATE: u16 = 100;
 /// The speech rates reading clamps to.
@@ -115,7 +119,7 @@ impl ScreenReaderSettings {
                 .and_then(|value| T::deserialize(value).ok())
         }
         Self::new(
-            key(section, "screen_reader").unwrap_or(false),
+            SCREEN_READER.from_section(section),
             key(section, "screen_reader_rate").unwrap_or(DEFAULT_SCREEN_READER_RATE),
             key(section, "screen_reader_voice").unwrap_or_default(),
         )

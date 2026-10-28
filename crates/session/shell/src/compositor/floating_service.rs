@@ -195,6 +195,13 @@ impl FloatingSurfaceService {
             return;
         };
         frame.push(b'\n');
+        if tracing::enabled!(target: "tilo::shell_ui", tracing::Level::DEBUG) {
+            // What the shell tells an app, by the message's own tag: an app
+            // woken often names who wakes it.
+            let head =
+                String::from_utf8_lossy(frame.get(..frame.len().min(48)).unwrap_or_default());
+            tracing::debug!(target: "tilo::shell_ui", connection, %head, "shell-ui message sent");
+        }
         let writer = self
             .writers
             .lock()

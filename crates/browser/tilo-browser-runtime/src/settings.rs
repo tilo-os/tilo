@@ -49,7 +49,10 @@ fn persist(doc: &Map<String, Value>) -> std::io::Result<()> {
     store
         .write(&key(), WriteOp::Replace(bytes), None)
         .map(drop)
-        .map_err(std::io::Error::other)
+        .map_err(std::io::Error::other)?;
+    // The theme, contrast or motion may be what changed.
+    crate::page_theme::changed();
+    Ok(())
 }
 
 /// Seed the profile's settings with the host's `json` object unless it has a

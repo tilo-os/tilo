@@ -245,6 +245,11 @@ impl CopyAccess {
     }
 
     fn write_copy(&self, paths: &SessionPaths, state: &mut State) -> std::io::Result<()> {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(error) = crate::faults::copy_write_refused(&paths.copy) {
+            state.copy_identity = None;
+            return Err(error);
+        }
         match self {
             Self::Legacy(_) => write_copy(paths, state),
             Self::Checked(copy) => {

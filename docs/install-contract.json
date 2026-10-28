@@ -6,22 +6,55 @@
       {
         "os": "Linux",
         "architectures": ["x86_64", "aarch64"],
-        "downloads": ["Flatpak bundle", "AppImage", "portable tarball"],
+        "downloads": [
+          { "name": "Flatpak bundle", "asset": "tilo-imager-linux-{arch}.flatpak", "pageKey": "linux{archKey}Flatpak" },
+          { "name": "AppImage", "asset": "tilo-imager-linux-{arch}.AppImage", "pageKey": "linux{archKey}AppImage" },
+          { "name": "portable tarball", "asset": "tilo-imager-linux-{arch}.tar.gz", "pageKey": "linux{archKey}Portable" }
+        ],
         "packageManager": "Homebrew formula"
       },
       {
         "os": "Windows 10 or 11",
         "architectures": ["x86_64", "aarch64"],
-        "downloads": ["setup EXE", "standalone EXE", "portable zip"],
+        "downloads": [
+          { "name": "setup EXE", "asset": "tilo-imager-setup-windows-{arch}.exe", "pageKey": "windows{archKey}Setup" },
+          { "name": "standalone EXE", "asset": "tilo-imager-windows-{arch}.exe", "pageKey": "windows{archKey}Standalone" },
+          { "name": "portable zip", "asset": "tilo-imager-windows-{arch}.zip", "pageKey": "windows{archKey}Portable" }
+        ],
         "packageManager": "WinGet"
       },
       {
         "os": "macOS",
         "architectures": ["x86_64", "aarch64"],
-        "downloads": ["notarized DMG", "app zip"],
+        "downloads": [
+          { "name": "notarized DMG", "asset": "tilo-imager-macos-{arch}.dmg", "pageKey": "macos{archKey}Dmg" },
+          { "name": "app zip", "asset": "tilo-imager-macos-{arch}.zip", "pageKey": "macos{archKey}Portable" }
+        ],
         "packageManager": "Homebrew cask"
       }
-    ]
+    ],
+    "homebrew": {
+      "tap": {
+        "name": "tilo/tilo",
+        "repository": "tilo-os/homebrew-tilo",
+        "url": "https://github.com/tilo-os/homebrew-tilo.git",
+        "command": "brew tap tilo/tilo https://github.com/tilo-os/homebrew-tilo.git"
+      },
+      "formula": {
+        "host": "Linux",
+        "name": "tilo-imager",
+        "install": "brew install tilo-imager",
+        "upgrade": "brew upgrade tilo-imager",
+        "uninstall": "brew uninstall tilo-imager"
+      },
+      "cask": {
+        "host": "macOS",
+        "name": "tilo-imager",
+        "install": "brew install --cask tilo-imager",
+        "upgrade": "brew upgrade --cask tilo-imager",
+        "uninstall": "brew uninstall --cask tilo-imager"
+      }
+    }
   },
   "completeSystem": {
     "architectures": ["x86_64", "aarch64"],
@@ -39,6 +72,7 @@
       "resizesExistingFilesystems": false
     },
     "stagedLiveInstaller": {
+      "classification": "development",
       "liveInstallerModes": ["guided-alongside"],
       "targetMinimumGiB": 34,
       "reclaimsStagingAfterFirstSession": true,
@@ -46,16 +80,17 @@
     }
   },
   "desktopSession": [
-    { "distribution": "Ubuntu", "versions": ["24.04"], "architectures": ["amd64"], "plannedArchitectures": ["arm64"], "package": "tilo-session" },
-    { "distribution": "Debian", "versions": ["13"], "architectures": ["amd64"], "plannedArchitectures": ["arm64"], "package": "tilo-session" },
-    { "distribution": "Fedora", "versions": ["44"], "architectures": ["x86_64"], "plannedArchitectures": ["aarch64"], "package": "tilo-session" },
-    { "distribution": "Arch Linux", "versions": ["rolling"], "architectures": ["x86_64"], "plannedArchitectures": ["aarch64"], "package": "tilo-session" },
-    { "distribution": "NixOS", "versions": ["flake"], "architectures": ["x86_64-linux"], "plannedArchitectures": ["aarch64-linux"], "package": "tilo-session" }
+    { "distribution": "Ubuntu", "versions": ["24.04"], "architectures": ["amd64"], "plannedArchitectures": ["arm64"], "package": "tilo-session", "classification": "development" },
+    { "distribution": "Debian", "versions": ["13"], "architectures": ["amd64"], "plannedArchitectures": ["arm64"], "package": "tilo-session", "classification": "development" },
+    { "distribution": "Fedora", "versions": ["44"], "architectures": ["x86_64"], "plannedArchitectures": ["aarch64"], "package": "tilo-session", "classification": "development" },
+    { "distribution": "Arch Linux", "versions": ["rolling"], "architectures": ["x86_64"], "plannedArchitectures": ["aarch64"], "package": "tilo-session", "classification": "development" },
+    { "distribution": "NixOS", "versions": ["flake"], "architectures": ["x86_64-linux"], "plannedArchitectures": ["aarch64-linux"], "package": "tilo-session", "classification": "development" }
   ],
   "principles": [
     "Tilo Imager authenticates the selected installer before writing and verifies the medium after writing.",
     "The media-writing route carries only secret-free setup choices and does not migrate files or resize an internal disk.",
     "The development guided-import route copies explicitly selected local folders where native durability is supported, preserves originals, and does not authorize synchronization or sharing.",
+    "Development routes are under development: they are not a public support claim, and each stays until its platform path has passed the release walkthrough.",
     "The live installer never resizes an existing filesystem.",
     "A complete-system installation keeps recovery-key setup and destructive disk confirmation on the target computer."
   ]

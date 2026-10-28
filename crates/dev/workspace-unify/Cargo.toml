@@ -185,10 +185,12 @@ doc = false
 "cms-0_2_3" = { package = "cms", version = "^0.2.3", default-features = false, features = [] }
 "cobs-0_3_0" = { package = "cobs", version = "^0.3.0", default-features = false, features = [] }
 "code-editor" = { path = "../../../apps/code-editor", default-features = false, features = [] }
+"codebase-qualification" = { path = "../../../crates/dev/codebase-qualification", default-features = false, features = ["default", "filesystem"] }
 "codespan-reporting-0_13_1" = { package = "codespan-reporting", version = "^0.13.1", default-features = false, features = [] }
 "codex-0_3_0" = { package = "codex", version = "^0.3.0", default-features = false, features = ["default", "numeral-systems", "styling"] }
 "collab-fixtures" = { path = "../../../crates/collab/collab-fixtures", default-features = false, features = [] }
 "collab-types" = { path = "../../../crates/collab/collab-types", default-features = false, features = [] }
+"collaboration" = { path = "../../../crates/collab/collaboration", default-features = false, features = ["broker-transport", "default", "local-daemons", "native", "test-support"] }
 "color-0_3_3" = { package = "color", version = "^0.3.3", default-features = false, features = ["bytemuck", "std"] }
 "color_quant-1_1_0" = { package = "color_quant", version = "^1.1.0", default-features = false, features = [] }
 "colorchoice-1_0_4" = { package = "colorchoice", version = "^1.0.4", default-features = false, features = [] }
@@ -245,7 +247,7 @@ doc = false
 "der-0_8_1" = { package = "der", version = "^0.8.1", default-features = false, features = ["alloc", "oid", "pem", "std", "zeroize"] }
 "der-parser-10_0_0" = { package = "der-parser", version = "^10.0.0", default-features = false, features = ["bigint", "default", "num-bigint", "std"] }
 "deranged-0_5_6" = { package = "deranged", version = "^0.5.6", default-features = false, features = ["default", "powerfmt", "serde"] }
-"derive_more-2_1_1" = { package = "derive_more", version = "^2.1.1", default-features = false, features = ["add", "add_assign", "debug", "default", "deref", "deref_mut", "display", "from", "from_str", "into", "into_iterator", "std", "try_from", "try_into"] }
+"derive_more-2_1_1" = { package = "derive_more", version = "^2.1.1", default-features = false, features = ["add", "add_assign", "as_ref", "debug", "default", "deref", "deref_mut", "display", "from", "from_str", "into", "into_iterator", "std", "try_from", "try_into"] }
 "des-0_9_0" = { package = "des", version = "^0.9.0", default-features = false, features = [] }
 "desktop-policy" = { path = "../../../crates/system/desktop-policy", default-features = false, features = ["default", "host-storage"] }
 "diatomic-waker-0_2_3" = { package = "diatomic-waker", version = "^0.2.3", default-features = false, features = ["alloc", "default"] }
@@ -267,6 +269,7 @@ doc = false
 "drm-ffi-0_9_0" = { package = "drm-ffi", version = "^0.9.0", default-features = false, features = [] }
 "drm-fourcc-2_2_0" = { package = "drm-fourcc", version = "^2.2.0", default-features = false, features = ["default", "std"] }
 "drm-sys-0_8_0" = { package = "drm-sys", version = "^0.8.0", default-features = false, features = ["default"] }
+"dtoa-1_0_11" = { package = "dtoa", version = "^1.0.11", default-features = false, features = [] }
 "durable-store" = { path = "../../../crates/system/durable-store", default-features = false, features = ["conformance"] }
 "dyn-clone-1_0_20" = { package = "dyn-clone", version = "^1.0.20", default-features = false, features = [] }
 "ebook" = { path = "../../../apps/ebook", default-features = false, features = [] }
@@ -478,6 +481,8 @@ doc = false
 "i_overlay-9_0_0" = { package = "i_overlay", version = "^9.0.0", default-features = false, features = [] }
 "i_shape-5_0_0" = { package = "i_shape", version = "^5.0.0", default-features = false, features = [] }
 "i_tree-0_19_0" = { package = "i_tree", version = "^0.19.0", default-features = false, features = [] }
+"iai-callgrind-0_16_1" = { package = "iai-callgrind", version = "^0.16.1", default-features = false, features = ["benchmark", "default", "iai-callgrind-runner"] }
+"iai-callgrind-runner-0_16_1" = { package = "iai-callgrind-runner", version = "^0.16.1", default-features = false, features = ["api"] }
 "iana-time-zone-0_1_65" = { package = "iana-time-zone", version = "^0.1.65", default-features = false, features = ["fallback"] }
 "icu_collator-2_3_1" = { package = "icu_collator", version = "^2.3.1", default-features = false, features = ["compiled_data", "default"] }
 "icu_collator_data-2_3_0" = { package = "icu_collator_data", version = "^2.3.0", default-features = false, features = [] }
@@ -672,14 +677,15 @@ doc = false
 "notify-8_2_0" = { package = "notify", version = "^8.2.0", default-features = false, features = ["default", "fsevent-sys", "macos_fsevent"] }
 "notify-types-2_1_0" = { package = "notify-types", version = "^2.1.0", default-features = false, features = [] }
 "nu-ansi-term-0_50_3" = { package = "nu-ansi-term", version = "^0.50.3", default-features = false, features = ["default", "std"] }
+"num-0_4_3" = { package = "num", version = "^0.4.3", default-features = false, features = ["default", "num-bigint", "std"] }
 "num-bigint-0_4_6" = { package = "num-bigint", version = "^0.4.6", default-features = false, features = ["default", "std"] }
 "num-bigint-0_5_1" = { package = "num-bigint", version = "^0.5.1", default-features = false, features = ["default", "rand_0_10", "rand_core_0_10", "std"] }
 "num-bigint-dig-0_8_6" = { package = "num-bigint-dig", version = "^0.8.6", default-features = false, features = ["i128", "prime", "rand", "u64_digit", "zeroize"] }
 "num-complex-0_4_6" = { package = "num-complex", version = "^0.4.6", default-features = false, features = ["default", "std"] }
 "num-conv-0_2_0" = { package = "num-conv", version = "^0.2.0", default-features = false, features = [] }
 "num-integer-0_1_46" = { package = "num-integer", version = "^0.1.46", default-features = false, features = ["default", "i128", "std"] }
-"num-iter-0_1_46" = { package = "num-iter", version = "^0.1.46", default-features = false, features = [] }
-"num-rational-0_4_2" = { package = "num-rational", version = "^0.4.2", default-features = false, features = [] }
+"num-iter-0_1_46" = { package = "num-iter", version = "^0.1.46", default-features = false, features = ["i128", "std"] }
+"num-rational-0_4_2" = { package = "num-rational", version = "^0.4.2", default-features = false, features = ["num-bigint", "num-bigint-std", "std"] }
 "num-traits-0_2_19" = { package = "num-traits", version = "^0.2.19", default-features = false, features = ["default", "i128", "libm", "std"] }
 "num_cpus-1_17_0" = { package = "num_cpus", version = "^1.17.0", default-features = false, features = [] }
 "num_enum-0_7_5" = { package = "num_enum", version = "^0.7.5", default-features = false, features = ["default", "std"] }
@@ -776,6 +782,7 @@ doc = false
 "postgres-types-0_2_14" = { package = "postgres-types", version = "^0.2.14", default-features = false, features = ["chrono-04", "serde-1", "serde_json-1", "uuid-1", "with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
 "potential_utf-0_1_4" = { package = "potential_utf", version = "^0.1.4", default-features = false, features = ["alloc", "serde", "writeable", "zerovec"] }
 "powerfmt-0_2_0" = { package = "powerfmt", version = "^0.2.0", default-features = false, features = [] }
+"pprof-alloc-0_6_0" = { package = "pprof-alloc", version = "^0.6.0", default-features = false, features = ["default", "frame-pointer"] }
 "ppv-lite86-0_2_21" = { package = "ppv-lite86", version = "^0.2.21", default-features = false, features = ["simd", "std"] }
 "precomputed-hash-0_1_1" = { package = "precomputed-hash", version = "^0.1.1", default-features = false, features = [] }
 "prefix-trie-0_8_4" = { package = "prefix-trie", version = "^0.8.4", default-features = false, features = ["default", "ipnet"] }
@@ -789,6 +796,7 @@ doc = false
 "priority-queue-2_7_0" = { package = "priority-queue", version = "^2.7.0", default-features = false, features = ["default", "std"] }
 "proc-macro2-1_0_106" = { package = "proc-macro2", version = "^1.0.106", default-features = false, features = ["default", "proc-macro", "span-locations"] }
 "profiling-1_0_17" = { package = "profiling", version = "^1.0.17", default-features = false, features = ["default", "procmacros", "profiling-procmacros"] }
+"prometheus-client-0_25_1" = { package = "prometheus-client", version = "^0.25.1", default-features = false, features = ["default"] }
 "proptest-1_11_0" = { package = "proptest", version = "^1.11.0", default-features = false, features = ["bit-set", "default", "fork", "regex-syntax", "rusty-fork", "std", "tempfile", "timeout"] }
 "prost-0_14_4" = { package = "prost", version = "^0.14.4", default-features = false, features = ["default", "derive", "std"] }
 "protobuf-3_7_2" = { package = "protobuf", version = "^3.7.2", default-features = false, features = ["default"] }
@@ -895,7 +903,7 @@ doc = false
 "rustfft-6_4_1" = { package = "rustfft", version = "^6.4.1", default-features = false, features = ["avx", "default", "neon", "sse"] }
 "rusticata-macros-4_1_0" = { package = "rusticata-macros", version = "^4.1.0", default-features = false, features = [] }
 "rustix-0_38_44" = { package = "rustix", version = "^0.38.44", default-features = false, features = ["alloc", "default", "event", "fs", "libc-extra-traits", "mm", "pipe", "process", "std", "system", "thread", "use-libc-auxv"] }
-"rustix-1_1_4" = { package = "rustix", version = "^1.1.4", default-features = false, features = ["alloc", "default", "event", "fs", "mm", "net", "pipe", "process", "shm", "std", "stdio", "system", "termios", "time"] }
+"rustix-1_1_4" = { package = "rustix", version = "^1.1.4", default-features = false, features = ["alloc", "default", "event", "fs", "mm", "net", "pipe", "process", "shm", "std", "stdio", "system", "termios", "thread", "time"] }
 "rustix-linux-procfs-0_1_1" = { package = "rustix-linux-procfs", version = "^0.1.1", default-features = false, features = ["default", "std"] }
 "rustls-0_23_46" = { package = "rustls", version = "^0.23.46", default-features = false, features = ["log", "logging", "ring", "std", "tls12"] }
 "rustls-cert-file-reader-0_4_2" = { package = "rustls-cert-file-reader", version = "^0.4.2", default-features = false, features = [] }
@@ -1107,6 +1115,7 @@ doc = false
 "tilo-clipboard" = { path = "../../../crates/platform/tilo-clipboard", default-features = false, features = [] }
 "tilo-clock" = { path = "../../../crates/platform/tilo-clock", default-features = false, features = ["test-support"] }
 "tilo-cloud-files" = { path = "../../../crates/platform/tilo-cloud-files", default-features = false, features = [] }
+"tilo-color-pipeline" = { path = "../../../crates/session/color-pipeline", default-features = false, features = [] }
 "tilo-connector" = { path = "../../../crates/agent/connector", default-features = false, features = [] }
 "tilo-contact-directory" = { path = "../../../crates/platform/tilo-contact-directory", default-features = false, features = [] }
 "tilo-content" = { path = "../../../crates/system/content", default-features = false, features = ["default", "dir"] }
@@ -1146,6 +1155,7 @@ doc = false
 "tilo-files" = { path = "../../../crates/platform/tilo-files", default-features = false, features = ["json", "test-support", "watch"] }
 "tilo-firstboot-files" = { path = "../../../crates/system/firstboot-files", default-features = false, features = [] }
 "tilo-font-catalog" = { path = "../../../crates/sdk/font-catalog", default-features = false, features = ["faces"] }
+"tilo-frame-metrics" = { path = "../../../crates/session/frame-metrics", default-features = false, features = [] }
 "tilo-fs" = { path = "../../../crates/system/fs", default-features = false, features = ["default", "document-media", "filesystem"] }
 "tilo-fs-client" = { path = "../../../crates/runtime/tilo-fs-client", default-features = false, features = [] }
 "tilo-governor" = { path = "../../../crates/collab/tilo-governor", default-features = false, features = [] }
@@ -1170,12 +1180,13 @@ doc = false
 "tilo-keyboard-map" = { path = "../../../crates/platform/tilo-keyboard-map", default-features = false, features = [] }
 "tilo-lan-discovery" = { path = "../../../crates/collab/tilo-lan-discovery", default-features = false, features = [] }
 "tilo-libvirt-domain" = { path = "../../../crates/system/libvirt-domain", default-features = false, features = [] }
+"tilo-liveness" = { path = "../../../crates/session/liveness", default-features = false, features = [] }
 "tilo-locale" = { path = "../../../crates/platform/tilo-locale", default-features = false, features = [] }
 "tilo-location" = { path = "../../../crates/platform/tilo-location", default-features = false, features = [] }
 "tilo-lock" = { path = "../../../crates/platform/tilo-lock", default-features = false, features = [] }
 "tilo-lockdown-policy" = { path = "../../../crates/session/tilo-lockdown-policy", default-features = false, features = [] }
 "tilo-media" = { path = "../../../crates/platform/tilo-media", default-features = false, features = ["decode", "default", "encode", "pipewire", "realtime", "test-support", "voice"] }
-"tilo-messaging" = { path = "../../../crates/platform/tilo-messaging", default-features = false, features = [] }
+"tilo-messaging" = { path = "../../../crates/platform/tilo-messaging", default-features = false, features = ["room"] }
 "tilo-messaging-protocol" = { path = "../../../crates/system/messaging-protocol", default-features = false, features = ["default", "signal-broker", "sms-dbus", "whatsapp-sdk"] }
 "tilo-mime" = { path = "../../../crates/platform/tilo-mime", default-features = false, features = [] }
 "tilo-model-client" = { path = "../../../crates/agent/model-client", default-features = false, features = ["default", "runtime-client"] }
@@ -1195,6 +1206,7 @@ doc = false
 "tilo-oci-images" = { path = "../../../crates/packaging/oci-images", default-features = false, features = [] }
 "tilo-ocr" = { path = "../../../crates/media/ocr", default-features = false, features = [] }
 "tilo-os-search" = { path = "../../../crates/runtime/os-search", default-features = false, features = [] }
+"tilo-output-passes" = { path = "../../../crates/session/output-passes", default-features = false, features = ["test-support"] }
 "tilo-owner-commit" = { path = "../../../crates/collab/owner-commit", default-features = false, features = [] }
 "tilo-page-raster" = { path = "../../../crates/sdk/tilo-page-raster", default-features = false, features = [] }
 "tilo-paint-stream" = { path = "../../../crates/browser/paint-stream", default-features = false, features = ["svg"] }
@@ -1206,9 +1218,10 @@ doc = false
 "tilo-polkit-agent" = { path = "../../../crates/session/polkit-agent", default-features = false, features = [] }
 "tilo-power-mgmt" = { path = "../../../crates/system/power", default-features = false, features = ["default", "service"] }
 "tilo-presentation" = { path = "../../../crates/platform/tilo-presentation", default-features = false, features = ["gpu-damage"] }
-"tilo-process" = { path = "../../../crates/platform/tilo-process", default-features = false, features = ["jobs", "native-editor"] }
+"tilo-process" = { path = "../../../crates/platform/tilo-process", default-features = false, features = ["jobs", "native", "native-editor"] }
 "tilo-projector" = { path = "../../../crates/system/projector", default-features = false, features = ["default", "miracast"] }
 "tilo-pycompat" = { path = "../../../crates/system/tilo-pycompat", default-features = false, features = [] }
+"tilo-quick-settings" = { path = "../../../crates/session/quick-settings", default-features = false, features = ["test-support"] }
 "tilo-reference" = { path = "../../../crates/collab/reference", default-features = false, features = [] }
 "tilo-relay" = { path = "../../../crates/hosting/tilo-relay", default-features = false, features = ["agents", "test-support", "web"] }
 "tilo-relay-client" = { path = "../../../crates/hosting/tilo-relay-client", default-features = false, features = ["default", "iroh"] }
@@ -1252,6 +1265,8 @@ doc = false
 "tilo-typst-fonts" = { path = "../../../crates/platform/tilo-typst-fonts", default-features = false, features = [] }
 "tilo-ui" = { path = "../../../crates/sdk/ui-core", default-features = false, features = ["broker-transport", "default", "dmabuf-import", "gpu-video", "local-daemons", "mpris", "native", "portal", "priority-contacts", "realtime-video", "syntax-definitions", "test-support", "ux-bench", "webview-adblock"] }
 "tilo-ui-graph" = { path = "../../../crates/dev/ui-graph", default-features = false, features = [] }
+"tilo-ui-host" = { path = "../../../crates/platform/tilo-ui-host", default-features = false, features = [] }
+"tilo-ui-kms" = { path = "../../../crates/sdk/ui-kms", default-features = false, features = [] }
 "tilo-ui-paint" = { path = "../../../crates/sdk/ui-paint", default-features = false, features = [] }
 "tilo-unicode-emoji" = { path = "../../../crates/platform/tilo-unicode-emoji", default-features = false, features = [] }
 "tilo-unlock-protocol" = { path = "../../../crates/collab/tilo-unlock-protocol", default-features = false, features = [] }
@@ -1266,14 +1281,21 @@ doc = false
 "tilo-vmd" = { path = "../../../crates/dev/tilo-vmd", default-features = false, features = [] }
 "tilo-wake" = { path = "../../../crates/platform/tilo-wake", default-features = false, features = [] }
 "tilo-wallpapers" = { path = "../../../crates/platform/tilo-wallpapers", default-features = false, features = [] }
+"tilo-wayland-ext" = { path = "../../../crates/session/wayland-ext", default-features = false, features = [] }
 "tilo-web-desktop" = { path = "../../../crates/browser/tilo-web-desktop", default-features = false, features = [] }
 "tilo-web-search" = { path = "../../../crates/platform/tilo-web-search", default-features = false, features = [] }
 "tilo-wet-media" = { path = "../../../crates/media/wet-media", default-features = false, features = [] }
+"tilo-window-share" = { path = "../../../crates/session/window-share", default-features = false, features = [] }
 "tilo-winit-0_30_13" = { package = "tilo-winit", path = "../../../vendor/winit", default-features = false, features = ["ahash", "bytemuck", "memmap2", "percent-encoding", "rwh_06", "sctk", "sctk-adwaita", "wayland", "wayland-backend", "wayland-client", "wayland-csd-adwaita-notitle", "wayland-dlopen", "wayland-protocols", "wayland-protocols-plasma", "wayland-scanner", "x11", "x11-dl", "x11rb"] }
 "tilo-winit-x11" = { path = "../../../crates/sdk/winit-x11", default-features = false, features = [] }
 "tilo-workspace-emoji" = { path = "../../../crates/platform/tilo-workspace-emoji", default-features = false, features = [] }
 "tilo-workspace-join" = { path = "../../../crates/collab/workspace-join", default-features = false, features = [] }
 "tilo-zone-globe" = { path = "../../../crates/platform/zone-globe", default-features = false, features = [] }
+"tilolang" = { path = "../../../crates/lang/tilolang", default-features = false, features = [] }
+"tilolang-app" = { path = "../../../apps/tilolang", default-features = false, features = [] }
+"tilolang-cli" = { path = "../../../crates/lang/tilolang-cli", default-features = false, features = [] }
+"tilolang-runtime" = { path = "../../../crates/lang/tilolang-runtime", default-features = false, features = [] }
+"tilolang-tilo" = { path = "../../../crates/platform/tilolang-tilo", default-features = false, features = [] }
 "time-0_3_47" = { package = "time", version = "^0.3.47", default-features = false, features = ["alloc", "default", "formatting", "local-offset", "macros", "parsing", "serde", "serde-human-readable", "serde-well-known", "std"] }
 "time-core-0_1_8" = { package = "time-core", version = "^0.1.8", default-features = false, features = [] }
 "tinker" = { path = "../../../crates/system/tinker", default-features = false, features = [] }
@@ -1389,12 +1411,13 @@ doc = false
 "walkdir-2_5_0" = { package = "walkdir", version = "^2.5.0", default-features = false, features = [] }
 "want-0_3_1" = { package = "want", version = "^0.3.1", default-features = false, features = [] }
 "waproto-0_7_0" = { package = "waproto", version = "^0.7.0", default-features = false, features = ["default"] }
-"wasm-encoder-0_252_0" = { package = "wasm-encoder", version = "^0.252.0", default-features = false, features = ["component-model", "std"] }
+"wasm-encoder-0_252_0" = { package = "wasm-encoder", version = "^0.252.0", default-features = false, features = ["component-model", "default", "std"] }
 "wasmi-1_1_0" = { package = "wasmi", version = "^1.1.0", default-features = false, features = ["simd", "std"] }
 "wasmi_collections-1_1_0" = { package = "wasmi_collections", version = "^1.1.0", default-features = false, features = ["std"] }
 "wasmi_core-1_1_0" = { package = "wasmi_core", version = "^1.1.0", default-features = false, features = ["simd", "std"] }
 "wasmi_ir-1_1_0" = { package = "wasmi_ir", version = "^1.1.0", default-features = false, features = ["simd"] }
 "wasmparser-0_239_0" = { package = "wasmparser", version = "^0.239.0", default-features = false, features = ["features", "simd", "std", "validate"] }
+"wasmparser-0_252_0" = { package = "wasmparser", version = "^0.252.0", default-features = false, features = ["features", "simd", "std", "validate"] }
 "wast-252_0_0" = { package = "wast", version = "^252.0.0", default-features = false, features = ["component-model", "wasm-module"] }
 "wat-1_252_0" = { package = "wat", version = "^1.252.0", default-features = false, features = ["component-model", "default"] }
 "wayland-backend-0_3_15" = { package = "wayland-backend", path = "../../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
@@ -1651,7 +1674,7 @@ doc = false
 "derive_builder_core-0_20_2" = { package = "derive_builder_core", version = "^0.20.2", default-features = false, features = ["lib_has_std"] }
 "derive_builder_macro-0_20_2" = { package = "derive_builder_macro", version = "^0.20.2", default-features = false, features = ["lib_has_std"] }
 "derive_more-2_1_1" = { package = "derive_more", version = "^2.1.1", default-features = false, features = ["add", "add_assign", "debug", "default", "deref", "deref_mut", "display", "from", "from_str", "into", "into_iterator", "std", "try_from", "try_into"] }
-"derive_more-impl-2_1_1" = { package = "derive_more-impl", version = "^2.1.1", default-features = false, features = ["add", "add_assign", "debug", "default", "deref", "deref_mut", "display", "from", "from_str", "into", "into_iterator", "try_from", "try_into"] }
+"derive_more-impl-2_1_1" = { package = "derive_more-impl", version = "^2.1.1", default-features = false, features = ["add", "add_assign", "as_ref", "debug", "default", "deref", "deref_mut", "display", "from", "from_str", "into", "into_iterator", "try_from", "try_into"] }
 "derive_utils-0_15_1" = { package = "derive_utils", version = "^0.15.1", default-features = false, features = [] }
 "diatomic-waker-0_2_3" = { package = "diatomic-waker", version = "^0.2.3", default-features = false, features = ["alloc", "default"] }
 "digest-0_10_7" = { package = "digest", version = "^0.10.7", default-features = false, features = ["alloc", "block-buffer", "const-oid", "core-api", "default", "mac", "oid", "std", "subtle"] }
@@ -1802,6 +1825,7 @@ doc = false
 "hyper-rustls-0_27_7" = { package = "hyper-rustls", version = "^0.27.7", default-features = false, features = ["http1", "http2", "log", "logging", "native-tokio", "ring", "rustls-native-certs", "tls12", "webpki-roots", "webpki-tokio"] }
 "hyper-util-0_1_20" = { package = "hyper-util", version = "^0.1.20", default-features = false, features = ["client", "client-legacy", "client-proxy", "client-proxy-system", "default", "http1", "http2", "server", "server-auto", "server-graceful", "service", "tokio"] }
 "hypher-0_1_7" = { package = "hypher", version = "^0.1.7", default-features = false, features = ["afrikaans", "albanian", "alloc", "assamese", "belarusian", "bengali", "bulgarian", "catalan", "croatian", "czech", "danish", "default", "dutch", "english", "estonian", "finnish", "french", "full", "galician", "georgian", "german", "greek", "gujarati", "hindi", "hungarian", "icelandic", "italian", "kannada", "kurmanji", "latin", "lithuanian", "malayalam", "marathi", "mongolian", "norwegian", "oriya", "panjabi", "polish", "portuguese", "russian", "sanskrit", "serbian", "slovak", "slovenian", "spanish", "swedish", "tamil", "telugu", "turkish", "turkmen", "ukrainian"] }
+"iai-callgrind-macros-0_6_1" = { package = "iai-callgrind-macros", version = "^0.6.1", default-features = false, features = [] }
 "iana-time-zone-0_1_65" = { package = "iana-time-zone", version = "^0.1.65", default-features = false, features = ["fallback"] }
 "icu_collections-2_3_0" = { package = "icu_collections", version = "^2.3.0", default-features = false, features = ["alloc", "serde"] }
 "icu_locale_core-2_3_0" = { package = "icu_locale_core", version = "^2.3.0", default-features = false, features = ["alloc", "serde", "zerovec"] }
@@ -1864,6 +1888,7 @@ doc = false
 "launcher" = { path = "../../../crates/packaging/launcher", default-features = false, features = [] }
 "lazy_static-1_5_0" = { package = "lazy_static", version = "^1.5.0", default-features = false, features = ["spin", "spin_no_std"] }
 "leb128-0_2_5" = { package = "leb128", version = "^0.2.5", default-features = false, features = [] }
+"leb128fmt-0_1_0" = { package = "leb128fmt", version = "^0.1.0", default-features = false, features = [] }
 "levenshtein_automata-0_2_1" = { package = "levenshtein_automata", version = "^0.2.1", default-features = false, features = [] }
 "libc-0_2_189" = { package = "libc", version = "^0.2.189", default-features = false, features = ["default", "extra_traits", "std"] }
 "libcrux-intrinsics-0_0_8" = { package = "libcrux-intrinsics", version = "^0.0.8", default-features = false, features = [] }
@@ -2003,10 +2028,13 @@ doc = false
 "primeorder-0_13_6" = { package = "primeorder", version = "^0.13.6", default-features = false, features = [] }
 "primeorder-0_14_0" = { package = "primeorder", version = "^0.14.0", default-features = false, features = ["alloc", "basepoint-table", "std"] }
 "proc-macro-crate-3_4_0" = { package = "proc-macro-crate", version = "^3.4.0", default-features = false, features = [] }
+"proc-macro-error-attr2-2_0_0" = { package = "proc-macro-error-attr2", version = "^2.0.0", default-features = false, features = [] }
+"proc-macro-error2-2_0_1" = { package = "proc-macro-error2", version = "^2.0.1", default-features = false, features = ["default", "syn-error"] }
 "proc-macro-hack-0_5_20_deprecated" = { package = "proc-macro-hack", version = "^0.5.20+deprecated", default-features = false, features = [] }
 "proc-macro2-1_0_106" = { package = "proc-macro2", version = "^1.0.106", default-features = false, features = ["default", "proc-macro", "span-locations"] }
-"profiling-1_0_17" = { package = "profiling", version = "^1.0.17", default-features = false, features = ["default", "procmacros", "profiling-procmacros"] }
+"profiling-1_0_17" = { package = "profiling", version = "^1.0.17", default-features = false, features = [] }
 "profiling-procmacros-1_0_17" = { package = "profiling-procmacros", version = "^1.0.17", default-features = false, features = [] }
+"prometheus-client-derive-encode-0_5_1" = { package = "prometheus-client-derive-encode", version = "^0.5.1", default-features = false, features = [] }
 "prost-derive-0_14_4" = { package = "prost-derive", version = "^0.14.4", default-features = false, features = [] }
 "protobuf-3_7_2" = { package = "protobuf", version = "^3.7.2", default-features = false, features = ["default"] }
 "protobuf-codegen-3_7_2" = { package = "protobuf-codegen", version = "^3.7.2", default-features = false, features = [] }
@@ -2161,7 +2189,7 @@ doc = false
 "svg_fmt-0_4_5" = { package = "svg_fmt", version = "^0.4.5", default-features = false, features = [] }
 "svgtypes-0_16_1" = { package = "svgtypes", version = "^0.16.1", default-features = false, features = ["default", "std"] }
 "syn-2_0_117" = { package = "syn", version = "^2.0.117", default-features = false, features = ["clone-impls", "default", "derive", "extra-traits", "fold", "full", "parsing", "printing", "proc-macro", "visit", "visit-mut"] }
-"syn-3_0_4" = { package = "syn", version = "^3.0.4", default-features = false, features = ["clone-impls", "default", "derive", "extra-traits", "full", "parsing", "printing", "proc-macro", "visit", "visit-mut"] }
+"syn-3_0_9" = { package = "syn", version = "^3.0.9", default-features = false, features = ["clone-impls", "default", "derive", "extra-traits", "full", "parsing", "printing", "proc-macro", "visit", "visit-mut"] }
 "sync_wrapper-1_0_2" = { package = "sync_wrapper", version = "^1.0.2", default-features = false, features = ["futures", "futures-core"] }
 "synstructure-0_13_2" = { package = "synstructure", version = "^0.13.2", default-features = false, features = ["default", "proc-macro"] }
 "syntect-5_3_0" = { package = "syntect", version = "^5.3.0", default-features = false, features = ["bincode", "dump-create", "dump-load", "fancy-regex", "flate2", "fnv", "parsing", "plist", "plist-load", "regex-fancy", "regex-syntax", "yaml-load", "yaml-rust"] }
@@ -2196,14 +2224,14 @@ doc = false
 "tilo-automerge" = { path = "../../../crates/doc/tilo-automerge", default-features = false, features = ["heap-probe"] }
 "tilo-automerge-fork-0_12_0" = { package = "tilo-automerge-fork", path = "../../../vendor/automerge", default-features = false, features = [] }
 "tilo-caps" = { path = "../../../crates/sdk/tilo-caps", default-features = false, features = [] }
-"tilo-clock" = { path = "../../../crates/platform/tilo-clock", default-features = false, features = [] }
-"tilo-content" = { path = "../../../crates/system/content", default-features = false, features = [] }
+"tilo-clock" = { path = "../../../crates/platform/tilo-clock", default-features = false, features = ["test-support"] }
+"tilo-content" = { path = "../../../crates/system/content", default-features = false, features = ["default", "dir"] }
 "tilo-content-types" = { path = "../../../crates/system/content-types", default-features = false, features = [] }
 "tilo-delivery-protocol" = { path = "../../../crates/hosting/tilo-delivery-protocol", default-features = false, features = [] }
 "tilo-desktop-entry" = { path = "../../../crates/system/desktop-entry", default-features = false, features = [] }
 "tilo-documents" = { path = "../../../crates/system/documents", default-features = false, features = [] }
 "tilo-face" = { path = "../../../crates/platform/tilo-face", default-features = false, features = [] }
-"tilo-files" = { path = "../../../crates/platform/tilo-files", default-features = false, features = ["test-support", "watch"] }
+"tilo-files" = { path = "../../../crates/platform/tilo-files", default-features = false, features = ["json", "test-support", "watch"] }
 "tilo-font-catalog" = { path = "../../../crates/sdk/font-catalog", default-features = false, features = ["faces"] }
 "tilo-fs" = { path = "../../../crates/system/fs", default-features = false, features = [] }
 "tilo-headless-schema" = { path = "../../../crates/dev/headless-schema", default-features = false, features = [] }
@@ -2213,12 +2241,12 @@ doc = false
 "tilo-net" = { path = "../../../crates/platform/tilo-net", default-features = false, features = ["blocking", "default", "http"] }
 "tilo-paths" = { path = "../../../crates/platform/tilo-paths", default-features = false, features = [] }
 "tilo-platform-caps" = { path = "../../../crates/platform/tilo-platform-caps", default-features = false, features = [] }
-"tilo-process" = { path = "../../../crates/platform/tilo-process", default-features = false, features = [] }
+"tilo-process" = { path = "../../../crates/platform/tilo-process", default-features = false, features = ["native"] }
 "tilo-relay-client" = { path = "../../../crates/hosting/tilo-relay-client", default-features = false, features = ["default", "iroh"] }
 "tilo-relay-protocol" = { path = "../../../crates/hosting/tilo-relay-protocol", default-features = false, features = [] }
 "tilo-relay-session" = { path = "../../../crates/hosting/tilo-relay-session", default-features = false, features = [] }
 "tilo-render-protocol" = { path = "../../../crates/platform/tilo-render-protocol", default-features = false, features = [] }
-"tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = [] }
+"tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = ["test-support"] }
 "tilo-resource-macros" = { path = "../../../crates/sdk/tilo-resource-macros", default-features = false, features = [] }
 "tilo-rt" = { path = "../../../crates/platform/tilo-rt", default-features = false, features = [] }
 "tilo-sandbox-core" = { path = "../../../crates/system/sandbox-core", default-features = false, features = ["test-support"] }
@@ -2229,6 +2257,7 @@ doc = false
 "tilo-startup-metrics" = { path = "../../../crates/system/tilo-startup-metrics", default-features = false, features = [] }
 "tilo-system-stats" = { path = "../../../crates/system/system-stats", default-features = false, features = [] }
 "tilo-ui-graph" = { path = "../../../crates/dev/ui-graph", default-features = false, features = [] }
+"tilo-ui-macros" = { path = "../../../crates/sdk/ui-macros", default-features = false, features = [] }
 "tilo-user-identity" = { path = "../../../crates/collab/tilo-user-identity", default-features = false, features = [] }
 "tilo-vello-encoding-0_9_0" = { package = "tilo-vello-encoding", path = "../../../vendor/vello_encoding", default-features = false, features = ["bump_estimate"] }
 "tilo-wake" = { path = "../../../crates/platform/tilo-wake", default-features = false, features = [] }
@@ -2316,6 +2345,7 @@ doc = false
 "wacore-derive-0_7_0" = { package = "wacore-derive", version = "^0.7.0", default-features = false, features = [] }
 "walkdir-2_5_0" = { package = "walkdir", version = "^2.5.0", default-features = false, features = [] }
 "want-0_3_1" = { package = "want", version = "^0.3.1", default-features = false, features = [] }
+"wasm-encoder-0_252_0" = { package = "wasm-encoder", version = "^0.252.0", default-features = false, features = ["component-model", "default", "std"] }
 "wasmi-1_1_0" = { package = "wasmi", version = "^1.1.0", default-features = false, features = ["simd", "std"] }
 "wasmi_collections-1_1_0" = { package = "wasmi_collections", version = "^1.1.0", default-features = false, features = ["std"] }
 "wasmi_core-1_1_0" = { package = "wasmi_core", version = "^1.1.0", default-features = false, features = ["simd", "std"] }
@@ -2543,6 +2573,7 @@ doc = false
 "cms-0_2_3" = { package = "cms", version = "^0.2.3", default-features = false, features = [] }
 "cobs-0_3_0" = { package = "cobs", version = "^0.3.0", default-features = false, features = [] }
 "code-editor" = { path = "../../../apps/code-editor", default-features = false, features = [] }
+"codebase-qualification" = { path = "../../../crates/dev/codebase-qualification", default-features = false, features = ["default", "filesystem"] }
 "codespan-reporting-0_13_1" = { package = "codespan-reporting", version = "^0.13.1", default-features = false, features = [] }
 "codex-0_3_0" = { package = "codex", version = "^0.3.0", default-features = false, features = ["default", "numeral-systems", "styling"] }
 "collab-fixtures" = { path = "../../../crates/collab/collab-fixtures", default-features = false, features = [] }
@@ -2625,6 +2656,7 @@ doc = false
 "drm-ffi-0_9_0" = { package = "drm-ffi", version = "^0.9.0", default-features = false, features = [] }
 "drm-fourcc-2_2_0" = { package = "drm-fourcc", version = "^2.2.0", default-features = false, features = ["default", "std"] }
 "drm-sys-0_8_0" = { package = "drm-sys", version = "^0.8.0", default-features = false, features = ["default"] }
+"dtoa-1_0_11" = { package = "dtoa", version = "^1.0.11", default-features = false, features = [] }
 "durable-store" = { path = "../../../crates/system/durable-store", default-features = false, features = ["conformance"] }
 "dyn-clone-1_0_20" = { package = "dyn-clone", version = "^1.0.20", default-features = false, features = [] }
 "ebook" = { path = "../../../apps/ebook", default-features = false, features = [] }
@@ -3030,14 +3062,15 @@ doc = false
 "notify-8_2_0" = { package = "notify", version = "^8.2.0", default-features = false, features = ["default", "fsevent-sys", "macos_fsevent"] }
 "notify-types-2_1_0" = { package = "notify-types", version = "^2.1.0", default-features = false, features = [] }
 "nu-ansi-term-0_50_3" = { package = "nu-ansi-term", version = "^0.50.3", default-features = false, features = ["default", "std"] }
+"num-0_4_3" = { package = "num", version = "^0.4.3", default-features = false, features = ["default", "num-bigint", "std"] }
 "num-bigint-0_4_6" = { package = "num-bigint", version = "^0.4.6", default-features = false, features = ["default", "std"] }
 "num-bigint-0_5_1" = { package = "num-bigint", version = "^0.5.1", default-features = false, features = ["default", "rand_0_10", "rand_core_0_10", "std"] }
 "num-bigint-dig-0_8_6" = { package = "num-bigint-dig", version = "^0.8.6", default-features = false, features = ["i128", "prime", "rand", "u64_digit", "zeroize"] }
 "num-complex-0_4_6" = { package = "num-complex", version = "^0.4.6", default-features = false, features = ["default", "std"] }
 "num-conv-0_2_0" = { package = "num-conv", version = "^0.2.0", default-features = false, features = [] }
 "num-integer-0_1_46" = { package = "num-integer", version = "^0.1.46", default-features = false, features = ["default", "i128", "std"] }
-"num-iter-0_1_46" = { package = "num-iter", version = "^0.1.46", default-features = false, features = [] }
-"num-rational-0_4_2" = { package = "num-rational", version = "^0.4.2", default-features = false, features = [] }
+"num-iter-0_1_46" = { package = "num-iter", version = "^0.1.46", default-features = false, features = ["i128", "std"] }
+"num-rational-0_4_2" = { package = "num-rational", version = "^0.4.2", default-features = false, features = ["num-bigint", "num-bigint-std", "std"] }
 "num-traits-0_2_19" = { package = "num-traits", version = "^0.2.19", default-features = false, features = ["default", "i128", "libm", "std"] }
 "num_cpus-1_17_0" = { package = "num_cpus", version = "^1.17.0", default-features = false, features = [] }
 "num_enum-0_7_5" = { package = "num_enum", version = "^0.7.5", default-features = false, features = ["default", "std"] }
@@ -3134,6 +3167,7 @@ doc = false
 "postgres-types-0_2_14" = { package = "postgres-types", version = "^0.2.14", default-features = false, features = ["chrono-04", "serde-1", "serde_json-1", "uuid-1", "with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
 "potential_utf-0_1_4" = { package = "potential_utf", version = "^0.1.4", default-features = false, features = ["alloc", "serde", "writeable", "zerovec"] }
 "powerfmt-0_2_0" = { package = "powerfmt", version = "^0.2.0", default-features = false, features = [] }
+"pprof-alloc-0_6_0" = { package = "pprof-alloc", version = "^0.6.0", default-features = false, features = ["default", "frame-pointer"] }
 "ppv-lite86-0_2_21" = { package = "ppv-lite86", version = "^0.2.21", default-features = false, features = ["simd", "std"] }
 "precomputed-hash-0_1_1" = { package = "precomputed-hash", version = "^0.1.1", default-features = false, features = [] }
 "prefix-trie-0_8_4" = { package = "prefix-trie", version = "^0.8.4", default-features = false, features = ["default", "ipnet"] }
@@ -3147,6 +3181,7 @@ doc = false
 "priority-queue-2_7_0" = { package = "priority-queue", version = "^2.7.0", default-features = false, features = ["default", "std"] }
 "proc-macro2-1_0_106" = { package = "proc-macro2", version = "^1.0.106", default-features = false, features = ["default", "proc-macro", "span-locations"] }
 "profiling-1_0_17" = { package = "profiling", version = "^1.0.17", default-features = false, features = ["default", "procmacros", "profiling-procmacros"] }
+"prometheus-client-0_25_1" = { package = "prometheus-client", version = "^0.25.1", default-features = false, features = ["default"] }
 "proptest-1_11_0" = { package = "proptest", version = "^1.11.0", default-features = false, features = ["bit-set", "default", "fork", "regex-syntax", "rusty-fork", "std", "tempfile", "timeout"] }
 "prost-0_14_4" = { package = "prost", version = "^0.14.4", default-features = false, features = ["default", "derive", "std"] }
 "protobuf-3_7_2" = { package = "protobuf", version = "^3.7.2", default-features = false, features = ["default"] }
@@ -3567,6 +3602,7 @@ doc = false
 "tilo-process" = { path = "../../../crates/platform/tilo-process", default-features = false, features = ["jobs", "native-editor"] }
 "tilo-projector" = { path = "../../../crates/system/projector", default-features = false, features = ["default", "miracast"] }
 "tilo-pycompat" = { path = "../../../crates/system/tilo-pycompat", default-features = false, features = [] }
+"tilo-quick-settings" = { path = "../../../crates/session/quick-settings", default-features = false, features = ["test-support"] }
 "tilo-reference" = { path = "../../../crates/collab/reference", default-features = false, features = [] }
 "tilo-relay" = { path = "../../../crates/hosting/tilo-relay", default-features = false, features = ["agents", "test-support", "web"] }
 "tilo-relay-client" = { path = "../../../crates/hosting/tilo-relay-client", default-features = false, features = ["default", "iroh"] }
@@ -3624,14 +3660,21 @@ doc = false
 "tilo-vmd" = { path = "../../../crates/dev/tilo-vmd", default-features = false, features = [] }
 "tilo-wake" = { path = "../../../crates/platform/tilo-wake", default-features = false, features = [] }
 "tilo-wallpapers" = { path = "../../../crates/platform/tilo-wallpapers", default-features = false, features = [] }
+"tilo-wayland-ext" = { path = "../../../crates/session/wayland-ext", default-features = false, features = [] }
 "tilo-web-desktop" = { path = "../../../crates/browser/tilo-web-desktop", default-features = false, features = [] }
 "tilo-web-search" = { path = "../../../crates/platform/tilo-web-search", default-features = false, features = [] }
 "tilo-wet-media" = { path = "../../../crates/media/wet-media", default-features = false, features = [] }
+"tilo-window-share" = { path = "../../../crates/session/window-share", default-features = false, features = [] }
 "tilo-winit-0_30_13" = { package = "tilo-winit", path = "../../../vendor/winit", default-features = false, features = ["ahash", "bytemuck", "memmap2", "percent-encoding", "rwh_06", "sctk", "sctk-adwaita", "wayland", "wayland-backend", "wayland-client", "wayland-csd-adwaita-notitle", "wayland-dlopen", "wayland-protocols", "wayland-protocols-plasma", "wayland-scanner", "x11", "x11-dl", "x11rb"] }
 "tilo-winit-x11" = { path = "../../../crates/sdk/winit-x11", default-features = false, features = [] }
 "tilo-workspace-emoji" = { path = "../../../crates/platform/tilo-workspace-emoji", default-features = false, features = [] }
 "tilo-workspace-join" = { path = "../../../crates/collab/workspace-join", default-features = false, features = [] }
 "tilo-zone-globe" = { path = "../../../crates/platform/zone-globe", default-features = false, features = [] }
+"tilolang" = { path = "../../../crates/lang/tilolang", default-features = false, features = [] }
+"tilolang-app" = { path = "../../../apps/tilolang", default-features = false, features = [] }
+"tilolang-cli" = { path = "../../../crates/lang/tilolang-cli", default-features = false, features = [] }
+"tilolang-runtime" = { path = "../../../crates/lang/tilolang-runtime", default-features = false, features = [] }
+"tilolang-tilo" = { path = "../../../crates/platform/tilolang-tilo", default-features = false, features = [] }
 "time-0_3_47" = { package = "time", version = "^0.3.47", default-features = false, features = ["alloc", "default", "formatting", "local-offset", "macros", "parsing", "serde", "serde-human-readable", "serde-well-known", "std"] }
 "time-core-0_1_8" = { package = "time-core", version = "^0.1.8", default-features = false, features = [] }
 "tinker" = { path = "../../../crates/system/tinker", default-features = false, features = [] }
@@ -3747,12 +3790,13 @@ doc = false
 "walkdir-2_5_0" = { package = "walkdir", version = "^2.5.0", default-features = false, features = [] }
 "want-0_3_1" = { package = "want", version = "^0.3.1", default-features = false, features = [] }
 "waproto-0_7_0" = { package = "waproto", version = "^0.7.0", default-features = false, features = ["default"] }
-"wasm-encoder-0_252_0" = { package = "wasm-encoder", version = "^0.252.0", default-features = false, features = ["component-model", "std"] }
+"wasm-encoder-0_252_0" = { package = "wasm-encoder", version = "^0.252.0", default-features = false, features = ["component-model", "default", "std"] }
 "wasmi-1_1_0" = { package = "wasmi", version = "^1.1.0", default-features = false, features = ["simd", "std"] }
 "wasmi_collections-1_1_0" = { package = "wasmi_collections", version = "^1.1.0", default-features = false, features = ["std"] }
 "wasmi_core-1_1_0" = { package = "wasmi_core", version = "^1.1.0", default-features = false, features = ["simd", "std"] }
 "wasmi_ir-1_1_0" = { package = "wasmi_ir", version = "^1.1.0", default-features = false, features = ["simd"] }
 "wasmparser-0_239_0" = { package = "wasmparser", version = "^0.239.0", default-features = false, features = ["features", "simd", "std", "validate"] }
+"wasmparser-0_252_0" = { package = "wasmparser", version = "^0.252.0", default-features = false, features = ["features", "simd", "std", "validate"] }
 "wast-252_0_0" = { package = "wast", version = "^252.0.0", default-features = false, features = ["component-model", "wasm-module"] }
 "wat-1_252_0" = { package = "wat", version = "^1.252.0", default-features = false, features = ["component-model", "default"] }
 "wayland-backend-0_3_15" = { package = "wayland-backend", path = "../../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
@@ -4221,6 +4265,7 @@ doc = false
 "launcher" = { path = "../../../crates/packaging/launcher", default-features = false, features = [] }
 "lazy_static-1_5_0" = { package = "lazy_static", version = "^1.5.0", default-features = false, features = ["spin", "spin_no_std"] }
 "leb128-0_2_5" = { package = "leb128", version = "^0.2.5", default-features = false, features = [] }
+"leb128fmt-0_1_0" = { package = "leb128fmt", version = "^0.1.0", default-features = false, features = [] }
 "levenshtein_automata-0_2_1" = { package = "levenshtein_automata", version = "^0.2.1", default-features = false, features = [] }
 "libc-0_2_189" = { package = "libc", version = "^0.2.189", default-features = false, features = ["default", "extra_traits", "std"] }
 "libcrux-intrinsics-0_0_8" = { package = "libcrux-intrinsics", version = "^0.0.8", default-features = false, features = [] }
@@ -4362,8 +4407,9 @@ doc = false
 "proc-macro-crate-3_4_0" = { package = "proc-macro-crate", version = "^3.4.0", default-features = false, features = [] }
 "proc-macro-hack-0_5_20_deprecated" = { package = "proc-macro-hack", version = "^0.5.20+deprecated", default-features = false, features = [] }
 "proc-macro2-1_0_106" = { package = "proc-macro2", version = "^1.0.106", default-features = false, features = ["default", "proc-macro", "span-locations"] }
-"profiling-1_0_17" = { package = "profiling", version = "^1.0.17", default-features = false, features = ["default", "procmacros", "profiling-procmacros"] }
+"profiling-1_0_17" = { package = "profiling", version = "^1.0.17", default-features = false, features = [] }
 "profiling-procmacros-1_0_17" = { package = "profiling-procmacros", version = "^1.0.17", default-features = false, features = [] }
+"prometheus-client-derive-encode-0_5_1" = { package = "prometheus-client-derive-encode", version = "^0.5.1", default-features = false, features = [] }
 "prost-derive-0_14_4" = { package = "prost-derive", version = "^0.14.4", default-features = false, features = [] }
 "protobuf-3_7_2" = { package = "protobuf", version = "^3.7.2", default-features = false, features = ["default"] }
 "protobuf-codegen-3_7_2" = { package = "protobuf-codegen", version = "^3.7.2", default-features = false, features = [] }
@@ -4518,7 +4564,6 @@ doc = false
 "svg_fmt-0_4_5" = { package = "svg_fmt", version = "^0.4.5", default-features = false, features = [] }
 "svgtypes-0_16_1" = { package = "svgtypes", version = "^0.16.1", default-features = false, features = ["default", "std"] }
 "syn-2_0_117" = { package = "syn", version = "^2.0.117", default-features = false, features = ["clone-impls", "default", "derive", "extra-traits", "fold", "full", "parsing", "printing", "proc-macro", "visit", "visit-mut"] }
-"syn-3_0_4" = { package = "syn", version = "^3.0.4", default-features = false, features = ["clone-impls", "default", "derive", "extra-traits", "full", "parsing", "printing", "proc-macro", "visit", "visit-mut"] }
 "sync_wrapper-1_0_2" = { package = "sync_wrapper", version = "^1.0.2", default-features = false, features = ["futures", "futures-core"] }
 "synstructure-0_13_2" = { package = "synstructure", version = "^0.13.2", default-features = false, features = ["default", "proc-macro"] }
 "syntect-5_3_0" = { package = "syntect", version = "^5.3.0", default-features = false, features = ["bincode", "dump-create", "dump-load", "fancy-regex", "flate2", "fnv", "parsing", "plist", "plist-load", "regex-fancy", "regex-syntax", "yaml-load", "yaml-rust"] }
@@ -4553,14 +4598,14 @@ doc = false
 "tilo-automerge" = { path = "../../../crates/doc/tilo-automerge", default-features = false, features = ["heap-probe"] }
 "tilo-automerge-fork-0_12_0" = { package = "tilo-automerge-fork", path = "../../../vendor/automerge", default-features = false, features = [] }
 "tilo-caps" = { path = "../../../crates/sdk/tilo-caps", default-features = false, features = [] }
-"tilo-clock" = { path = "../../../crates/platform/tilo-clock", default-features = false, features = [] }
-"tilo-content" = { path = "../../../crates/system/content", default-features = false, features = [] }
+"tilo-clock" = { path = "../../../crates/platform/tilo-clock", default-features = false, features = ["test-support"] }
+"tilo-content" = { path = "../../../crates/system/content", default-features = false, features = ["default", "dir"] }
 "tilo-content-types" = { path = "../../../crates/system/content-types", default-features = false, features = [] }
 "tilo-delivery-protocol" = { path = "../../../crates/hosting/tilo-delivery-protocol", default-features = false, features = [] }
 "tilo-desktop-entry" = { path = "../../../crates/system/desktop-entry", default-features = false, features = [] }
 "tilo-documents" = { path = "../../../crates/system/documents", default-features = false, features = [] }
 "tilo-face" = { path = "../../../crates/platform/tilo-face", default-features = false, features = [] }
-"tilo-files" = { path = "../../../crates/platform/tilo-files", default-features = false, features = ["test-support", "watch"] }
+"tilo-files" = { path = "../../../crates/platform/tilo-files", default-features = false, features = ["json", "test-support", "watch"] }
 "tilo-font-catalog" = { path = "../../../crates/sdk/font-catalog", default-features = false, features = ["faces"] }
 "tilo-fs" = { path = "../../../crates/system/fs", default-features = false, features = [] }
 "tilo-headless-schema" = { path = "../../../crates/dev/headless-schema", default-features = false, features = [] }
@@ -4575,7 +4620,7 @@ doc = false
 "tilo-relay-protocol" = { path = "../../../crates/hosting/tilo-relay-protocol", default-features = false, features = [] }
 "tilo-relay-session" = { path = "../../../crates/hosting/tilo-relay-session", default-features = false, features = [] }
 "tilo-render-protocol" = { path = "../../../crates/platform/tilo-render-protocol", default-features = false, features = [] }
-"tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = [] }
+"tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = ["test-support"] }
 "tilo-resource-macros" = { path = "../../../crates/sdk/tilo-resource-macros", default-features = false, features = [] }
 "tilo-rt" = { path = "../../../crates/platform/tilo-rt", default-features = false, features = [] }
 "tilo-sandbox-core" = { path = "../../../crates/system/sandbox-core", default-features = false, features = ["test-support"] }
@@ -4586,6 +4631,7 @@ doc = false
 "tilo-startup-metrics" = { path = "../../../crates/system/tilo-startup-metrics", default-features = false, features = [] }
 "tilo-system-stats" = { path = "../../../crates/system/system-stats", default-features = false, features = [] }
 "tilo-ui-graph" = { path = "../../../crates/dev/ui-graph", default-features = false, features = [] }
+"tilo-ui-macros" = { path = "../../../crates/sdk/ui-macros", default-features = false, features = [] }
 "tilo-user-identity" = { path = "../../../crates/collab/tilo-user-identity", default-features = false, features = [] }
 "tilo-vello-encoding-0_9_0" = { package = "tilo-vello-encoding", path = "../../../vendor/vello_encoding", default-features = false, features = ["bump_estimate"] }
 "tilo-wake" = { path = "../../../crates/platform/tilo-wake", default-features = false, features = [] }
@@ -4673,6 +4719,7 @@ doc = false
 "wacore-derive-0_7_0" = { package = "wacore-derive", version = "^0.7.0", default-features = false, features = [] }
 "walkdir-2_5_0" = { package = "walkdir", version = "^2.5.0", default-features = false, features = [] }
 "want-0_3_1" = { package = "want", version = "^0.3.1", default-features = false, features = [] }
+"wasm-encoder-0_252_0" = { package = "wasm-encoder", version = "^0.252.0", default-features = false, features = ["component-model", "default", "std"] }
 "wasmi-1_1_0" = { package = "wasmi", version = "^1.1.0", default-features = false, features = ["simd", "std"] }
 "wasmi_collections-1_1_0" = { package = "wasmi_collections", version = "^1.1.0", default-features = false, features = ["std"] }
 "wasmi_core-1_1_0" = { package = "wasmi_core", version = "^1.1.0", default-features = false, features = ["simd", "std"] }

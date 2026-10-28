@@ -39,6 +39,7 @@ pub const APPLICATION_ACTIVATE_TYPE: &str = "tilo.app.activate-window";
 pub const APPLICATION_OPEN_TYPE: &str = "tilo.app.open";
 
 mod catalogue;
+mod confirmation;
 mod content_put;
 pub mod crash_records;
 pub mod feedback;
@@ -46,9 +47,17 @@ pub mod home_relay_hosting;
 mod nodes;
 pub mod own_device;
 mod pending;
+mod providers;
+mod search;
 mod wait;
 mod within;
 pub mod workspace_activity;
+
+pub use confirmation::{Confirmation, ConfirmationQuestion, ConfirmationReply};
+pub use providers::{
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_KIND, APPLICATION_RESOURCE_PREFIX, OWN_PROVIDER,
+    WORKSPACE_PROVIDER,
+};
 
 pub use catalogue::{
     CanonicalActionRoute, CatalogueLimits, CataloguePage, CatalogueProvider, CatalogueQuery,
@@ -62,6 +71,7 @@ pub use nodes::{
     NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
 };
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
+pub use search::stem_word;
 pub use wait::{MAX_REMOTE_WAIT, UpdateMark, settle_with};
 
 use crate::context::ActionContext;
@@ -725,37 +735,6 @@ impl InvokeRequest {
     }
 }
 
-/// Explicit confirmation carried with an invocation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Confirmation {
-    Confirmed,
-    /// The caller typed the phrase the contract asks for.
-    Phrase(String),
-    /// The person the caller acts for confirmed this very invocation on
-    /// their own device: the host hands the caller this token, which names
-    /// that answer. Only a person acting themselves confirms by their own
-    /// word; anyone acting for them carries the person's answer.
-    Witnessed(String),
-}
-
-/// Provider token naming the calling application's own connection, for an
-/// app that routes one of its own actions through the host.
-pub const OWN_PROVIDER: &str = "self";
-
-/// Prefix of the provider token for actions a workspace itself offers
-/// rather than an application; see [`workspace_provider`].
-pub const WORKSPACE_PROVIDER: &str = "workspace";
-
-/// Resource prefix of a workspace's "open this application" actions.
-pub const APPLICATION_RESOURCE_PREFIX: &str = "app.";
-
-/// Resource kind of an installed Tilo application a workspace lists, which
-/// a catalogue query's `resource_name` answers whole.
-pub const APPLICATION_RESOURCE_KIND: &str = "applications.app";
-
-/// Action id that opens an application into a workspace.
-pub const APPLICATION_OPEN_ACTION: &str = "open";
-
 /// Action id that closes a running application's windows in a workspace.
 pub const APPLICATION_CLOSE_ACTION: &str = "close";
 
@@ -933,7 +912,10 @@ impl ApplicationLaunch {
     /// desktop: it opens a window of their own and reaches no one else, so
     /// a room's grants have nothing to consent to ([`crate::OWN_DEVICE_SCOPE`]).
     fn launched_here(mut spec: crate::ActionSpec) -> crate::ActionSpec {
-        spec.contract.tags.push(crate::OWN_DEVICE_SCOPE.to_owned());
+        spec.type_mut()
+            .contract
+            .tags
+            .push(crate::OWN_DEVICE_SCOPE.to_owned());
         spec
     }
 
@@ -1461,6 +1443,16 @@ pub enum RemoteActionMessage {
         correlation: u64,
         result: Result<RecordPiece, ActionHostError>,
     },
+    /// Ask the person, on one of their own devices ([`ConfirmationQuestion`]).
+    ConfirmationRequest {
+        correlation: u64,
+        question: ConfirmationQuestion,
+    },
+    /// Answer to [`Self::ConfirmationRequest`], same correlation.
+    ConfirmationResponse {
+        correlation: u64,
+        result: Result<ConfirmationReply, ActionHostError>,
+    },
 }
 
 /// Largest piece of a record one answer carries, before encoding.
@@ -1560,6 +1552,7 @@ impl RemoteActionMessage {
                 | Self::Cancel { .. }
                 | Self::RecordRequest { .. }
                 | Self::FeedbackRequest { .. }
+                | Self::ConfirmationRequest { .. }
         )
     }
 }
@@ -1711,12 +1704,17 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
                 }),
             })
         }
+        // A question is the person's to answer, on the device they are at.
+        RemoteActionMessage::ConfirmationRequest { correlation, .. } => Pending::ready(
+            confirmation::unanswered(correlation, ActionHostError::ConfirmationRequired),
+        ),
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
         | RemoteActionMessage::CancelResponse { .. }
         | RemoteActionMessage::RecordResponse { .. }
-        | RemoteActionMessage::FeedbackResponse { .. } => return None,
+        | RemoteActionMessage::FeedbackResponse { .. }
+        | RemoteActionMessage::ConfirmationResponse { .. } => return None,
     };
     // An abandoned answer still answers: the caller hears a refusal.
     let (completer, answered) = pending();
@@ -1763,12 +1761,16 @@ pub fn refuse(
                 result: Err(error),
             }
         }
+        RemoteActionMessage::ConfirmationRequest { correlation, .. } => {
+            confirmation::unanswered(*correlation, error)
+        }
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
         | RemoteActionMessage::CancelResponse { .. }
         | RemoteActionMessage::RecordResponse { .. }
-        | RemoteActionMessage::FeedbackResponse { .. } => return None,
+        | RemoteActionMessage::FeedbackResponse { .. }
+        | RemoteActionMessage::ConfirmationResponse { .. } => return None,
     })
 }
 
