@@ -438,6 +438,10 @@ export async function mountDesktop(target,options={}) {
     // none (Firefox on Linux ships it off), which draws the same scene into
     // this canvas and presents it (`cpu-present.mjs`).
     const {renderer,reason}=await pageRenderer();
+    // The code the CPU renderer draws with is its own module, fetched by a
+    // page that draws on the CPU and by no other: a visitor whose browser has
+    // WebGPU never downloads it (`lazy-cpu-raster`).
+    if(renderer==='cpu'&&!await runtime.load_cpu_raster())throw Error('the desktop could not load the code it draws with on the CPU');
     const presenter=renderer==='cpu'?createCpuPresenter(canvas):null;
     if(presenter){status.show(reason,{again:true});console.info(`Tilo: ${reason}`);}
     const startupFonts=fonts();void startupFonts.catch(()=>{});

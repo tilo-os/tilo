@@ -1750,7 +1750,7 @@ mod retained_damage_tests {
         let gpu = crate::offscreen::shared_gpu().expect("GPU context for CPU upload oracle");
         let (retained, _) = target(&gpu.device);
         let (oracle, _) = target(&gpu.device);
-        let mut canvas = crate::cpu_canvas::CpuCanvas::new();
+        let mut canvas = crate::cpu_canvas::CpuCanvas::new().expect("the CPU raster is linked in");
         let first = [Item {
             rect: Rect::new(30.0, 25.0, 75.0, 60.0),
             color: [220, 60, 30],
@@ -1771,7 +1771,7 @@ mod retained_damage_tests {
             ))
             .expect("damaged CPU frame");
         canvas.upload(&gpu.queue, &retained);
-        let mut full = crate::cpu_canvas::CpuCanvas::new();
+        let mut full = crate::cpu_canvas::CpuCanvas::new().expect("the CPU raster is linked in");
         full.rasterize(&content(&scene_of(&next), Color::TRANSPARENT, &[], true))
             .expect("full CPU oracle");
         full.upload(&gpu.queue, &oracle);
@@ -1902,7 +1902,7 @@ mod retained_damage_tests {
             "GPU: the copied frame differs from a full render"
         );
 
-        let mut canvas = crate::cpu_canvas::CpuCanvas::new();
+        let mut canvas = crate::cpu_canvas::CpuCanvas::new().expect("the CPU raster is linked in");
         let (cpu_texture, _) = target(device);
         canvas
             .rasterize(&frame(&before, &[], &[], true))
@@ -1912,7 +1912,7 @@ mod retained_damage_tests {
             .rasterize(&frame(&after, &exposed, &copies, false))
             .expect("scrolled CPU frame");
         canvas.upload(queue, &cpu_texture);
-        let mut full = crate::cpu_canvas::CpuCanvas::new();
+        let mut full = crate::cpu_canvas::CpuCanvas::new().expect("the CPU raster is linked in");
         let (cpu_oracle, _) = target(device);
         full.rasterize(&frame(&after, &[], &[], true))
             .expect("full CPU oracle");

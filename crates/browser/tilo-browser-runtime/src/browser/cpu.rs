@@ -33,13 +33,15 @@ pub(super) struct Cpu {
 }
 
 impl Cpu {
-    pub(super) fn new(presenter: JsValue) -> Self {
-        Self {
-            canvas: CpuCanvas::new(),
+    /// The canvas this mount draws on, or `None` when the code it draws with
+    /// is not in yet (`load_cpu_raster`).
+    pub(super) fn new(presenter: JsValue) -> Option<Self> {
+        Some(Self {
+            canvas: CpuCanvas::new()?,
             presenter,
             size: (0, 0),
             region: Vec::new(),
-        }
+        })
     }
 
     /// The canvas no longer holds the last presented frame: repaint all of

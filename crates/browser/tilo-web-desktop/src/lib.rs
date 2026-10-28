@@ -14,6 +14,7 @@ extern crate tilo_browser_runtime;
 
 mod activity;
 mod apps;
+mod cpu_raster;
 mod feedback;
 mod lazy;
 mod split;
@@ -22,6 +23,7 @@ mod split;
 fn start() {
     tilo_browser_runtime::start();
     activity::register();
+    cpu_raster::register();
     lazy::register();
     apps::register();
     // After the apps: the composer stays last in launcher order.

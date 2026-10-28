@@ -83,6 +83,12 @@ lazy-image-decode = []
 # over (`emoji_catalogue::CATALOGUE`, `emoji_catalogue::builtin_catalogue`).
 # The browser desktop uses this to keep it out of its start module.
 lazy-emoji = []
+# The CPU rasterizer is not linked: the program fetches the code that draws
+# frames on the CPU the first time a host has none of its own to draw with
+# (`cpu_canvas::defer_cpu_raster`, `install_cpu_raster`). The browser desktop
+# uses this to keep `vello_cpu` out of the start module every visitor
+# downloads, for a page that only needs it when its browser has no WebGPU.
+lazy-cpu-raster = []
 # A window's History (its timeline, review, restore and file versions) is
 # not linked into the windows that register it: the program fetches its
 # code the first time one does and hands it over

@@ -3,13 +3,147 @@
 //! native render worker draws on it for an adapter that rasterizes on the
 //! CPU and uploads the pixels to its texture; a page whose browser offers no
 //! WebGPU draws on it and presents the pixels to its canvas.
+//!
+//! The rasterizer itself is a seam: a host that links `tilo-cpu-raster`
+//! (`cpu_raster`) draws with it directly, and one that ships it as code the
+//! page fetches first ([`defer_cpu_raster`], `lazy-cpu-raster`) hands over a
+//! [`MakeRaster`] once it is in. The canvas — its pixels, damage and scroll
+//! copies — is here either way.
 
-use tilo_cpu_raster::{CpuRasterizer, Options, Region, Target};
+use std::cell::RefCell;
+use std::future::Future;
+use std::pin::Pin;
+
+use vello::peniko::Color;
+use vello_encoding::Encoding;
 
 use crate::retained_raster::{DAMAGE_ONLY_REFUSED, FrameContent, bounded_present_damage};
 
+/// Integer device-pixel rectangle: a damaged region of the target, and where
+/// a scroll copy landed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Region {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Region {
+    pub const fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    pub const fn pixels(&self) -> u64 {
+        (self.width as u64) * (self.height as u64)
+    }
+}
+
+/// One frame for [`Raster::paint`].
+pub struct Paint<'a> {
+    /// The frame's scene, already scaled into target pixels.
+    pub encoding: &'a Encoding,
+    /// The target's pixels: premultiplied RGBA8, rows of `stride` bytes.
+    pub pixels: &'a mut [u8],
+    pub width: u32,
+    pub height: u32,
+    pub stride: usize,
+    /// What to repaint; every pixel when empty.
+    pub regions: &'a [Region],
+    /// What the frame has under it: the colour a region starts from.
+    pub base_color: Color,
+}
+
+/// A CPU rasterizer: what [`CpuCanvas`] draws through.
+pub trait Raster {
+    fn paint(&mut self, paint: Paint<'_>);
+}
+
+/// A function that makes a rasterizer once its code is loaded.
+pub type MakeRaster = fn() -> Box<dyn Raster>;
+
+thread_local! {
+    static RASTER: RefCell<RasterState> = RefCell::new(RasterState {
+        make: None,
+        fetch: None,
+        loading: None,
+    });
+}
+
+struct RasterState {
+    /// The rasterizer's code, once the host holding it handed it over.
+    make: Option<MakeRaster>,
+    /// Where it fetches that code from (`lazy-cpu-raster`), and the load in
+    /// flight.
+    fetch: Option<fn() -> Pin<Box<dyn Future<Output = bool>>>>,
+    loading: Option<Pin<Box<dyn Future<Output = bool>>>>,
+}
+
+/// Whether the rasterizer's code is in and a canvas can be made.
+pub fn cpu_raster_loaded() -> bool {
+    RASTER.with_borrow(|state| state.make.is_some())
+}
+
+/// The host hands over where to fetch the rasterizer's code from: the first
+/// canvas asked for fetches it ([`Self::load_cpu_raster`]).
+#[cfg(feature = "lazy-cpu-raster")]
+pub fn defer_cpu_raster(fetch: fn() -> Pin<Box<dyn Future<Output = bool>>>) {
+    RASTER.with_borrow_mut(|state| state.fetch = Some(fetch));
+}
+
+/// The rasterizer's code arrived: draw through `make` from now on.
+pub fn install_cpu_raster(make: MakeRaster) {
+    RASTER.with_borrow_mut(|state| state.make = Some(make));
+}
+
+/// Start fetching the rasterizer's code (once) and answer when it is in;
+/// `false` when no host supplied a way to fetch it or it did not arrive.
+#[allow(
+    clippy::future_not_send,
+    reason = "the page awaits this on its own thread, as every host without a raster to draw with does"
+)]
+pub async fn load_cpu_raster() -> bool {
+    let load = RASTER.with_borrow_mut(|state| {
+        if state.make.is_some() {
+            return None;
+        }
+        if state.loading.is_none() {
+            state.loading = state.fetch.map(|fetch| fetch());
+        }
+        state.loading.take()
+    });
+    match load {
+        Some(load) => load.await,
+        None => cpu_raster_loaded(),
+    }
+}
+
+/// The rasterizer to draw with, once its code is in.
+fn make_raster() -> Option<Box<dyn Raster>> {
+    if let Some(make) = RASTER.with_borrow(|state| state.make) {
+        return Some(make());
+    }
+    #[cfg(not(feature = "lazy-cpu-raster"))]
+    {
+        Some(Box::new(cpu_raster::Rasterizer::new()))
+    }
+    #[cfg(feature = "lazy-cpu-raster")]
+    {
+        None
+    }
+}
+
+/// Worker threads a frame is rasterized on: `vello_cpu` spawns none on
+/// `wasm32`, where it draws on the calling thread.
+pub(crate) const THREADS: u16 = if cfg!(target_arch = "wasm32") { 0 } else { 4 };
+
 pub struct CpuCanvas {
-    rasterizer: CpuRasterizer,
+    rasterizer: Box<dyn Raster>,
     pixels: Vec<u8>,
     size: (u32, u32),
     valid: bool,
@@ -22,36 +156,26 @@ pub struct CpuCanvas {
     damage_only: bool,
 }
 
-/// Worker threads a frame is rasterized on: `vello_cpu` spawns none on
-/// `wasm32`, where it draws on the calling thread.
-pub(crate) const THREADS: u16 = if cfg!(target_arch = "wasm32") { 0 } else { 4 };
-
 /// A canvas to rasterize frames into when they are rasterized on the CPU
-/// (`on_cpu`), else none.
+/// (`on_cpu`), else none; also none when that host's rasterizer's code is
+/// not in yet.
 pub(crate) fn canvas(on_cpu: bool) -> Option<CpuCanvas> {
-    on_cpu.then(CpuCanvas::new)
-}
-
-impl Default for CpuCanvas {
-    fn default() -> Self {
-        Self::new()
-    }
+    on_cpu.then(CpuCanvas::new).flatten()
 }
 
 impl CpuCanvas {
-    pub fn new() -> Self {
-        Self {
-            rasterizer: CpuRasterizer::new(Options {
-                threads: THREADS,
-                ..Options::default()
-            }),
+    /// The canvas, or `None` when this host's rasterizer is not in
+    /// ([`install_cpu_raster`]; the page fetches it first, `lazy-cpu-raster`).
+    pub fn new() -> Option<Self> {
+        make_raster().map(|rasterizer| Self {
+            rasterizer,
             pixels: Vec::new(),
             size: (0, 0),
             valid: false,
             regions: Vec::new(),
             uploads: Vec::new(),
             damage_only: false,
-        }
+        })
     }
 
     /// Whether the frames' scenes hold only what their damage needs
@@ -115,14 +239,15 @@ impl CpuCanvas {
                 })
                 .unwrap_or_else(|| vec![Region::new(0, 0, frame.width, frame.height)])
         };
-        let mut target = Target::new(&mut self.pixels, frame.width, frame.height, stride as usize)
-            .map_err(|error| error.to_string())?;
-        self.rasterizer.prepare(frame.scene.encoding());
-        self.rasterizer.render_prepared(
-            &mut target,
-            Some(&self.regions),
-            tilo_cpu_raster::color::AlphaColor::new(frame.base_color.components),
-        );
+        self.rasterizer.paint(Paint {
+            encoding: frame.scene.encoding(),
+            pixels: &mut self.pixels,
+            width: frame.width,
+            height: frame.height,
+            stride: stride as usize,
+            regions: &self.regions,
+            base_color: frame.base_color,
+        });
         self.valid = true;
         self.uploads.clone_from(&self.regions);
         if !whole {
@@ -132,11 +257,7 @@ impl CpuCanvas {
                     Some(Region::new(x, y, copy.width, copy.height))
                 }));
         }
-        Ok(self
-            .regions
-            .iter()
-            .map(|r| u64::from(r.width) * u64::from(r.height))
-            .sum())
+        Ok(self.regions.iter().map(Region::pixels).sum())
     }
 
     /// The canvas: premultiplied RGBA8, rows of `width * 4` bytes.
@@ -188,6 +309,54 @@ impl CpuCanvas {
     }
 }
 
+#[cfg(not(feature = "lazy-cpu-raster"))]
+mod cpu_raster {
+    //! `tilo-cpu-raster`, drawn through [`super::Raster`].
+
+    use tilo_cpu_raster::{CpuRasterizer, Options, Region as RasterRegion, Target};
+
+    use super::{Paint, Raster};
+
+    pub(super) struct Rasterizer {
+        rasterizer: CpuRasterizer,
+        regions: Vec<RasterRegion>,
+    }
+
+    impl Rasterizer {
+        pub(super) fn new() -> Self {
+            Self {
+                rasterizer: CpuRasterizer::new(Options {
+                    threads: super::THREADS,
+                    ..Options::default()
+                }),
+                regions: Vec::new(),
+            }
+        }
+    }
+
+    impl Raster for Rasterizer {
+        fn paint(&mut self, paint: Paint<'_>) {
+            self.regions.clear();
+            self.regions.extend(
+                paint
+                    .regions
+                    .iter()
+                    .map(|r| RasterRegion::new(r.x, r.y, r.width, r.height)),
+            );
+            let Ok(mut target) = Target::new(paint.pixels, paint.width, paint.height, paint.stride)
+            else {
+                return;
+            };
+            self.rasterizer.prepare(paint.encoding);
+            self.rasterizer.render_prepared(
+                &mut target,
+                Some(&self.regions),
+                tilo_cpu_raster::color::AlphaColor::new(paint.base_color.components),
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,9 +393,13 @@ mod tests {
             .expect("valid CPU frame");
     }
 
+    fn canvas() -> CpuCanvas {
+        CpuCanvas::new().expect("a canvas to draw on")
+    }
+
     #[test]
     fn damaged_move_erases_old_pixels_and_matches_full_render() {
-        let mut canvas = CpuCanvas::new();
+        let mut canvas = canvas();
         render(
             &mut canvas,
             &scene(Rect::new(1.0, 1.0, 5.0, 5.0)),
@@ -236,7 +409,7 @@ mod tests {
         assert_eq!(&canvas.pixels[136..140], &[128, 0, 0, 128]);
         let next = scene(Rect::new(6.0, 1.0, 10.0, 5.0));
         render(&mut canvas, &next, &[Rect::new(1.0, 1.0, 10.0, 5.0)], false);
-        let mut oracle = CpuCanvas::new();
+        let mut oracle = CpuCanvas::new().expect("a canvas to draw on");
         render(&mut oracle, &next, &[], true);
         assert_eq!(canvas.pixels, oracle.pixels);
         assert_eq!(canvas.regions, vec![Region::new(1, 1, 9, 4)]);
@@ -244,7 +417,7 @@ mod tests {
 
     #[test]
     fn gpu_handoff_invalidates_cpu_damage_history() {
-        let mut canvas = CpuCanvas::new();
+        let mut canvas = canvas();
         render(
             &mut canvas,
             &scene(Rect::new(1.0, 1.0, 5.0, 5.0)),
@@ -254,9 +427,75 @@ mod tests {
         canvas.invalidate();
         let next = scene(Rect::new(6.0, 1.0, 10.0, 5.0));
         render(&mut canvas, &next, &[Rect::new(6.0, 1.0, 10.0, 5.0)], false);
-        let mut oracle = CpuCanvas::new();
+        let mut oracle = CpuCanvas::new().expect("a canvas to draw on");
         render(&mut oracle, &next, &[], true);
         assert_eq!(canvas.pixels, oracle.pixels);
         assert_eq!(canvas.regions, vec![Region::new(0, 0, 16, 16)]);
+    }
+}
+
+/// The seam a host without `tilo-cpu-raster` linked draws through: the canvas
+/// keeps the pixels and the damage, the host's own rasterizer paints them.
+#[cfg(test)]
+mod seam_tests {
+    use super::*;
+
+    thread_local! {
+        /// Frames the installed rasterizer painted, and the regions each was
+        /// asked for.
+        static PAINTED: RefCell<Vec<Vec<Region>>> = const { RefCell::new(Vec::new()) };
+    }
+
+    struct Blot;
+    impl Raster for Blot {
+        fn paint(&mut self, paint: Paint<'_>) {
+            // Opaque red over what it was asked for, so the test can see the
+            // regions the canvas worked out arrive here.
+            for region in paint.regions {
+                for y in region.y..region.y.saturating_add(region.height) {
+                    for x in region.x..region.x.saturating_add(region.width) {
+                        let at = (y as usize) * paint.stride + (x as usize) * 4;
+                        paint.pixels[at..at + 4].copy_from_slice(&[255, 0, 0, 255]);
+                    }
+                }
+            }
+            PAINTED.with_borrow_mut(|painted| painted.push(paint.regions.to_vec()));
+        }
+    }
+
+    #[test]
+    fn an_installed_rasterizer_paints_the_canvas_and_its_damage() {
+        install_cpu_raster(|| Box::new(Blot));
+        assert!(cpu_raster_loaded());
+        PAINTED.with_borrow_mut(Vec::clear);
+        let mut canvas = CpuCanvas::new().expect("the rasterizer is installed");
+        let scene = vello::Scene::new();
+        let backdrop = crate::backdrop::BackdropFrame::default();
+        let whole = FrameContent {
+            scene: &scene,
+            width: 8,
+            height: 4,
+            base_color: Color::TRANSPARENT,
+            damage_regions: &[],
+            scroll_copies: &[],
+            full_redraw: true,
+            backdrop: &backdrop,
+        };
+        canvas.rasterize(&whole).expect("a full frame");
+        let damaged = FrameContent {
+            damage_regions: &[vello::kurbo::Rect::new(2.0, 1.0, 6.0, 3.0)],
+            full_redraw: false,
+            ..whole
+        };
+        canvas.rasterize(&damaged).expect("a damaged frame");
+        let painted = PAINTED.with_borrow(Clone::clone);
+        assert_eq!(
+            painted,
+            vec![vec![Region::new(0, 0, 8, 4)], vec![Region::new(2, 1, 4, 2)],],
+            "the first frame is whole, the second only its damage"
+        );
+        // The pixels the rasterizer painted are the canvas the host presents.
+        assert_eq!(&canvas.pixels()[..4], &[255, 0, 0, 255]);
+        assert_eq!(canvas.drawn(), &[Region::new(2, 1, 4, 2)]);
     }
 }

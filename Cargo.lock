@@ -20868,6 +20868,7 @@ dependencies = [
  "themes",
  "tilo-app",
  "tilo-browser-runtime",
+ "tilo-cpu-raster",
  "tilo-desktop-surface",
  "tilo-lock",
  "tilo-search",
