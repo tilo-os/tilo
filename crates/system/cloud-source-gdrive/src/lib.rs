@@ -359,8 +359,8 @@ impl Inner {
     }
 
     pub(crate) fn json<T: DeserializeOwned>(response: Response) -> Result<T> {
-        let bytes = read_bounded(response, JSON_LIMIT)?;
-        serde_json::from_slice(&bytes).map_err(|_| Error::InvalidResponse("json"))
+        let declared = response.content_length();
+        http::read_json(response, declared, JSON_LIMIT)
     }
 
     pub(crate) fn get_file(&self, id: &str, fields: &str) -> Result<File> {

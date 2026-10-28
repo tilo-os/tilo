@@ -57,7 +57,6 @@ pub mod graph;
 mod http;
 pub mod paths;
 pub mod quickxor;
-pub mod time;
 mod upload;
 
 use graph::{Drive, DriveItem, DriveType, Page, Permission, Version};

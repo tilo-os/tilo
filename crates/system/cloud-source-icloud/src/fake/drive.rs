@@ -126,9 +126,9 @@ fn item_json(state: &State, doc: &str) -> Value {
         "name": name,
         "etag": node.etag,
         "type": if node.folder { "FOLDER" } else { "FILE" },
-        "dateCreated": crate::time::format(node.created),
-        "dateModified": crate::time::format(node.modified),
-        "dateChanged": crate::time::format(node.modified),
+        "dateCreated": cloud_source::http::format_rfc3339(node.created),
+        "dateModified": cloud_source::http::format_rfc3339(node.modified),
+        "dateChanged": cloud_source::http::format_rfc3339(node.modified),
     });
     if let Value::Object(map) = &mut value {
         if let Some(extension) = extension {

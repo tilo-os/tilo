@@ -51,7 +51,6 @@ pub mod content_hash;
 #[cfg(feature = "fake-server")]
 pub mod fake;
 mod metadata;
-mod time;
 mod upload;
 
 pub use api::Endpoints;
@@ -295,7 +294,10 @@ impl DropboxSource {
                 ItemKind::Folder
             },
             size: if file { entry.size } else { None },
-            modified: entry.server_modified.as_deref().and_then(time::parse),
+            modified: entry
+                .server_modified
+                .as_deref()
+                .and_then(http::parse_rfc3339),
             revision: entry.rev.clone().filter(|_| file).map(Revision::new),
             hashes: entry
                 .content_hash
@@ -850,7 +852,10 @@ impl CloudSource for DropboxSource {
             .filter_map(|entry| {
                 Some(RevisionInfo {
                     revision: Revision::new(entry.rev?),
-                    modified: entry.server_modified.as_deref().and_then(time::parse),
+                    modified: entry
+                        .server_modified
+                        .as_deref()
+                        .and_then(http::parse_rfc3339),
                     size: entry.size,
                     author: None,
                 })

@@ -16,7 +16,8 @@ use reqwest::blocking::Body;
 use serde_json::{Value, json};
 
 use crate::api::{self, split_id};
-use crate::{ICloudDrive, Service, is_icloud_host, now_millis, read_json, valid_name};
+use crate::http::read_json;
+use crate::{ICloudDrive, Service, is_icloud_host, now_millis, valid_name};
 
 pub struct Upload {
     source: ICloudDrive,

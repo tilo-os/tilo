@@ -18,6 +18,8 @@ description = "The provider interface behind mounted cloud accounts: items, chan
 # `http::parse_http_date`), as every provider reads them.
 chrono = { workspace = true, features = ["std"] }
 serde.workspace = true
+# Bounded JSON bodies (`http::read_json`).
+serde_json.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true
 # Endpoint checks for mount configurations (`is_secure_endpoint`).
@@ -30,7 +32,6 @@ url.workspace = true
 conformance = []
 
 [dev-dependencies]
-serde_json.workspace = true
 
 [lints]
 workspace = true
