@@ -279,9 +279,6 @@ pub(super) struct Slot {
     /// This channel's place in the byte budget's queue, after an Open found
     /// the budget held and answered `Busy`.
     queued: Option<Queued>,
-    /// The record another device prepared for an Open that then answered
-    /// `Busy`: the next Open answers with it, so a creation is never lost.
-    prepared: Option<PreparedElsewhere>,
     /// Whether the last Open without a revision answered [`Reply::Absent`]
     /// rather than [`Reply::Unavailable`]: what a held `Await` for `None`
     /// holds.
