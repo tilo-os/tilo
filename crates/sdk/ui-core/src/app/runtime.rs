@@ -665,6 +665,10 @@ pub(super) struct CollaborationRuntime {
     /// retire departed certified members without touching unrelated local
     /// presentation state.
     pub(super) context_participants: std::collections::HashSet<crate::permissions::UserId>,
+    /// What the window's status line last said about the connection: a
+    /// join held up, refused or lost changes it without changing the
+    /// window's model.
+    pub(super) shown_sync_status: Option<String>,
 }
 
 impl CollaborationRuntime {
@@ -681,6 +685,7 @@ impl CollaborationRuntime {
             history: crate::collaboration::DocumentHistory::default(),
             channel_access: None,
             context_participants: std::collections::HashSet::new(),
+            shown_sync_status: None,
         }
     }
 }

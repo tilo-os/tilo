@@ -897,6 +897,43 @@ mod tests {
         assert!(!read.merged.load(Ordering::Acquire));
     }
 
+    /// A route's join reads its first capture for as long as the broker
+    /// takes: a minute on this paused clock, past every reader deadline,
+    /// and the capture still arrives.
+    #[tokio::test(start_paused = true)]
+    async fn a_joins_first_capture_waits_for_a_late_broker() {
+        let (read, revision) = join_capture_using(
+            Reply::Chunk {
+                capture: 1,
+                revision: [5; 32],
+                total: 2,
+                offset: 0,
+                bytes: vec![1],
+                token: [6; 16],
+            },
+            &ByteBudget::new(),
+            async |request| {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                Ok(match request {
+                    Request::Next { capture: 1, .. } => Reply::Chunk {
+                        capture: 1,
+                        revision: [5; 32],
+                        total: 2,
+                        offset: 1,
+                        bytes: vec![2],
+                        token: [6; 16],
+                    },
+                    Request::Cancel { capture: 1, .. } => Reply::Cancelled,
+                    other => panic!("unexpected request {other:?}"),
+                })
+            },
+        )
+        .await
+        .expect("a join's capture waits for the broker's answers");
+        assert_eq!(revision, [5; 32]);
+        assert!(!read.merged.load(Ordering::Acquire));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn an_unanswered_acknowledgement_still_fails_the_capture() {
         let result = read_capture_using(
@@ -1244,6 +1281,36 @@ fn capture_budget() -> &'static ByteBudget {
 /// acknowledgement; equal to the polling Open deadline.
 const ACKNOWLEDGEMENT_DEADLINE: Duration = Duration::from_secs(2);
 
+/// Who waits for a capture, and so whether a clock may end it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CaptureWait {
+    /// The route's join reads its first capture: the join waits for the
+    /// broker's answers, however long they take, and fails only with the
+    /// broker's reason or the connection's end. There is nothing to renew
+    /// yet: a join that fails is joined again by the next read.
+    Join,
+    /// A joined route's reader re-reads a changed record: a deadline
+    /// retires the capture and renews the read on the original root.
+    Renewing,
+}
+
+impl CaptureWait {
+    /// `future`, ended by `bound` with `deadline` only for a renewing reader.
+    async fn within<T>(
+        self,
+        bound: Duration,
+        deadline: &'static str,
+        future: impl std::future::Future<Output = T>,
+    ) -> Result<T, CaptureFailure> {
+        match self {
+            Self::Join => Ok(future.await),
+            Self::Renewing => tokio::time::timeout(bound, future)
+                .await
+                .map_err(|_| CaptureFailure::Deadline(deadline)),
+        }
+    }
+}
+
 /// Only local deadlines permit retiring a capture and renewing its read epoch,
 /// or retrying a renewal, and only a full local budget makes a read wait and
 /// Open again. Broker refusals, invalid replies and authority failures remain
@@ -1284,8 +1351,9 @@ impl From<&str> for CaptureFailure {
 async fn read_capture(
     channel: &runtime_collab::ChannelHandle,
     first: Reply,
+    wait: CaptureWait,
 ) -> Result<(CommittedDocument, [u8; 32]), CaptureFailure> {
-    capture_using(first, capture_budget(), async |request| {
+    capture_using(first, capture_budget(), wait, async |request| {
         channel
             .committed_document(&request)
             .await
@@ -1299,13 +1367,25 @@ pub(super) async fn read_capture_using(
     budget: &ByteBudget,
     send: impl AsyncFnMut(Request) -> Result<Reply, String>,
 ) -> Result<(CommittedDocument, [u8; 32]), String> {
-    capture_using(first, budget, send)
+    capture_using(first, budget, CaptureWait::Renewing, send)
+        .await
+        .map_err(|error| error.to_string())
+}
+/// [`read_capture_using`] as a route's join reads its first capture.
+#[cfg(test)]
+pub(super) async fn join_capture_using(
+    first: Reply,
+    budget: &ByteBudget,
+    send: impl AsyncFnMut(Request) -> Result<Reply, String>,
+) -> Result<(CommittedDocument, [u8; 32]), String> {
+    capture_using(first, budget, CaptureWait::Join, send)
         .await
         .map_err(|error| error.to_string())
 }
 async fn capture_using(
     first: Reply,
     budget: &ByteBudget,
+    wait: CaptureWait,
     mut send: impl AsyncFnMut(Request) -> Result<Reply, String>,
 ) -> Result<(CommittedDocument, [u8; 32]), CaptureFailure> {
     let (first, creation) = match first {
@@ -1356,21 +1436,21 @@ async fn capture_using(
         }
     };
     let id = assembly.id;
-    let result = tokio::time::timeout(Duration::from_secs(3), async {
-        while assembly.bytes.len() < assembly.total {
-            let reply = send(Request::Next {
-                capture: id,
-                offset: assembly.bytes.len() as u32,
-                token: assembly.token,
-            })
-            .await?;
-            assembly.append(reply)?;
-        }
-        Ok::<_, String>(())
-    })
-    .await
-    .map_err(|_| CaptureFailure::Deadline("committed read timed out"))
-    .and_then(|result| result.map_err(CaptureFailure::Rejected));
+    let result = wait
+        .within(Duration::from_secs(3), "committed read timed out", async {
+            while assembly.bytes.len() < assembly.total {
+                let reply = send(Request::Next {
+                    capture: id,
+                    offset: assembly.bytes.len() as u32,
+                    token: assembly.token,
+                })
+                .await?;
+                assembly.append(reply)?;
+            }
+            Ok::<_, String>(())
+        })
+        .await
+        .and_then(|result| result.map_err(CaptureFailure::Rejected));
     if let Err(error) = result {
         let _ = tokio::time::timeout(
             Duration::from_millis(200),
@@ -1386,16 +1466,18 @@ async fn capture_using(
     // The acknowledgement is an ordinary broker round trip, so it gets the
     // same deadline as the Open that produced the capture. A shorter one
     // fails a complete, verified capture closed whenever the broker answers
-    // slowly, which permanently disables the route (#4001).
-    let acknowledgement = tokio::time::timeout(
-        ACKNOWLEDGEMENT_DEADLINE,
-        send(Request::Cancel {
-            capture: id,
-            token: assembly.token,
-        }),
-    )
-    .await
-    .map_err(|_| CaptureFailure::Deadline("committed read acknowledgement timed out"))??;
+    // slowly, which permanently disables the route (#4001). A join waits
+    // for it as for every other answer.
+    let acknowledgement = wait
+        .within(
+            ACKNOWLEDGEMENT_DEADLINE,
+            "committed read acknowledgement timed out",
+            send(Request::Cancel {
+                capture: id,
+                token: assembly.token,
+            }),
+        )
+        .await??;
     if acknowledgement != Reply::Cancelled {
         return Err("committed read acknowledgement invalid".into());
     }
@@ -1605,14 +1687,16 @@ pub(super) async fn install(
     // unavailable, said once each time it becomes so.
     let mut absent = false;
     let (initial, revision) = match first {
-        Reply::Chunk { .. } | Reply::Created { .. } => match read_capture(channel, first).await {
-            Ok((read, revision)) => (Some(read), Some(revision)),
-            Err(CaptureFailure::Capacity(bytes)) => {
-                waiting = Some(Waiting::Room(bytes));
-                (None, None)
+        Reply::Chunk { .. } | Reply::Created { .. } => {
+            match read_capture(channel, first, CaptureWait::Join).await {
+                Ok((read, revision)) => (Some(read), Some(revision)),
+                Err(CaptureFailure::Capacity(bytes)) => {
+                    waiting = Some(Waiting::Room(bytes));
+                    (None, None)
+                }
+                Err(error) => return Err(error.to_string()),
             }
-            Err(error) => return Err(error.to_string()),
-        },
+        }
         Reply::Unavailable => (None, None),
         Reply::Busy => {
             waiting = Some(Waiting::Turn);
@@ -1739,7 +1823,7 @@ pub(super) async fn install(
                 {
                     set_read_ready(&inbound, &ready, false);
                     absent = false;
-                    match read_capture(&channel, reply).await {
+                    match read_capture(&channel, reply, CaptureWait::Renewing).await {
                         Ok((read, next)) => {
                             current = Some(read);
                             revision = Some(next);

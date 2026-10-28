@@ -2784,6 +2784,10 @@ mod responsive_nav_publication_tests;
 #[path = "own_invocation_order_tests.rs"]
 mod own_invocation_order_tests;
 
+#[cfg(unix)]
+#[path = "local_first_join_tests.rs"]
+mod local_first_join_tests;
+
 fn hosted_behaviour(
     create: crate::application::ComponentFactory,
 ) -> crate::application::ComponentBehaviour {

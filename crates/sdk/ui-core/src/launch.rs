@@ -24,6 +24,14 @@ pub use capture_settings::capture_appearance;
 mod capture;
 #[cfg(feature = "native")]
 use capture::{capture_directory, capture_font_gate, first_frame};
+#[cfg(feature = "native")]
+mod window_join;
+#[cfg(feature = "native")]
+pub(crate) use window_join::{
+    Arriving, WindowBuild, dispatch_window, dispatch_window_arrived, window_gives_place,
+};
+#[cfg(feature = "native")]
+use window_join::{Unbuilt, construct_native, dispatch_live, live_native, native_connection};
 mod scenario;
 pub use scenario::HostSource;
 mod shot_frame;
@@ -431,6 +439,10 @@ pub enum LaunchError {
     /// it cannot join it. A live launch shows the window asking who is
     /// working there ([`crate::workspace_identity`]) instead of ending.
     IdentityRequired,
+    /// The record the launch opens is not on this device yet, and the
+    /// workspace's join, still under way, brings it: the launch builds
+    /// once the join is over instead of creating a copy here.
+    RecordNotHere,
 }
 
 impl fmt::Display for LaunchError {
@@ -478,6 +490,9 @@ impl fmt::Display for LaunchError {
             Self::Scenario(message) | Self::Operation(message) => f.write_str(message),
             Self::SubstituteFont(problem) => write!(f, "refusing to capture: {problem}"),
             Self::IdentityRequired => f.write_str("no identity selected for this workspace"),
+            Self::RecordNotHere => {
+                f.write_str("the record is not on this device yet; it arrives with the workspace")
+            }
         }
     }
 }
@@ -532,6 +547,7 @@ impl fmt::Debug for LaunchError {
             }
             Self::BindingMismatch => f.write_str("BindingMismatch"),
             Self::IdentityRequired => f.write_str("IdentityRequired"),
+            Self::RecordNotHere => f.write_str("RecordNotHere"),
             Self::SubstituteFont(_) => f.write_str("SubstituteFont"),
         }
     }
@@ -910,7 +926,20 @@ fn run_parsed(
         let dispatched = if without_identity {
             dispatch_definition_without_identity(spec, &args)
         } else {
-            dispatch_definition(spec, &args)
+            // The app opens at once on what this device holds and joins its
+            // workspace in the background. A record not on this device yet
+            // arrives with the join: the window shows its loading state
+            // until it is told the join is over.
+            #[cfg(any(windows, target_os = "linux"))]
+            let dispatched = dispatch_live(spec, &args, |window| {
+                window.with_startup_renderer(renderer.take())
+            });
+            #[cfg(not(any(windows, target_os = "linux")))]
+            let dispatched = dispatch_live(spec, &args, |window| window);
+            let Some(dispatched) = dispatched else {
+                return Ok(());
+            };
+            dispatched
         };
         let (app, waits) = match dispatched {
             Ok(DefinitionDispatch::Native(app)) => (app, without_identity),
@@ -980,21 +1009,6 @@ fn run_parsed(
     Ok(())
 }
 
-/// The live app `args` launch, built as the process's first window was
-/// (`crate::window_door`); `None` when they launch no live window.
-#[cfg(feature = "native")]
-pub(crate) fn dispatch_window(
-    spec: &LaunchSpec,
-    args: &LaunchArgs,
-) -> Result<Option<App>, LaunchError> {
-    let mut args = args.clone();
-    args.positionals.clear();
-    dispatch_definition(spec, &args).map(|dispatched| match dispatched {
-        DefinitionDispatch::Native(app) => Some(*app),
-        _ => None,
-    })
-}
-
 /// Start building the process's font database in the background
 /// (`text_render::prepare_font_database`): only the database, so it neither
 /// shapes text nor touches the GPU the renderer preparation is opening. Where
@@ -1047,7 +1061,7 @@ fn finish_component_audit(driver: &mut FrameHarness, app_id: &str) -> Result<(),
 }
 
 #[cfg(feature = "native")]
-enum DefinitionDispatch {
+pub(crate) enum DefinitionDispatch {
     Native(Box<App>),
     Headless(i32),
     Rendered(Box<FrameHarness>),
@@ -1060,14 +1074,8 @@ fn dispatch_definition(
     spec: &LaunchSpec,
     args: &LaunchArgs,
 ) -> Result<DefinitionDispatch, LaunchError> {
-    dispatch_definition_with_native(spec, args, |component, inputs, native_services| {
-        tilo_startup_metrics::span("app-construct", || {
-            if native_services {
-                App::from_component_with_native_services(component, inputs)
-            } else {
-                App::from_component(component, inputs)
-            }
-        })
+    dispatch_definition_with_manager(spec, args, construct_native, || {
+        native_launch_manager(spec, args)
     })
 }
 
@@ -1079,20 +1087,9 @@ fn dispatch_definition_without_identity(
     spec: &LaunchSpec,
     args: &LaunchArgs,
 ) -> Result<DefinitionDispatch, LaunchError> {
-    dispatch_definition_with_manager(
-        spec,
-        args,
-        |component, inputs, native_services| {
-            tilo_startup_metrics::span("app-construct", || {
-                if native_services {
-                    App::from_component_with_native_services(component, inputs)
-                } else {
-                    App::from_component(component, inputs)
-                }
-            })
-        },
-        || Ok(crate::collaboration::CollaborationManager::disabled()),
-    )
+    dispatch_definition_with_manager(spec, args, construct_native, || {
+        Ok(crate::collaboration::CollaborationManager::disabled())
+    })
 }
 
 /// What a live launch does while its workspace has no identity selected.
@@ -1128,7 +1125,7 @@ fn identity_window(spec: &LaunchSpec) -> App {
     App::without_workspace(|| Box::new(identity_window_root(spec)))
 }
 
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", test))]
 fn dispatch_definition_with_native(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -1152,6 +1149,22 @@ fn dispatch_definition_with_manager(
     ) -> Result<App, LaunchError>,
     manager: impl FnOnce() -> Result<crate::collaboration::CollaborationManager, LaunchError>,
 ) -> Result<DefinitionDispatch, LaunchError> {
+    let scope = live_native(spec, args).then(crate::wake::WakeScope::new);
+    dispatch_definition_with(spec, args, native, scope, manager).map_err(Unbuilt::into_error)
+}
+
+#[cfg(feature = "native")]
+fn dispatch_definition_with(
+    spec: &LaunchSpec,
+    args: &LaunchArgs,
+    native: impl FnOnce(
+        crate::application::AppComponent,
+        crate::application::ComponentRunnerInputs,
+        bool,
+    ) -> Result<App, LaunchError>,
+    scope: Option<crate::wake::WakeScope>,
+    manager: impl FnOnce() -> Result<crate::collaboration::CollaborationManager, LaunchError>,
+) -> Result<DefinitionDispatch, Unbuilt> {
     validate_spec_args(args, spec)?;
     let _selected_local = (args.headless.is_some()
         || args.shots.is_some()
@@ -1160,13 +1173,6 @@ fn dispatch_definition_with_manager(
         || args.first_frame)
         .then(selected_local_construction)
         .transpose()?;
-    let live_native = spec.component_native_services
-        && args.headless.is_none()
-        && args.shots.is_none()
-        && args.responsive_matrix.is_none()
-        && !args.native_audit
-        && !args.first_frame;
-    let scope = live_native.then(crate::wake::WakeScope::new);
     let _wake_entry = scope.as_ref().map(crate::wake::WakeScope::enter);
     let construction = scope
         .map(|scope| {
@@ -1187,7 +1193,16 @@ fn dispatch_definition_with_manager(
                 eprintln!("headless: state open failed: {error}");
                 return Ok(DefinitionDispatch::Headless(3));
             }
-            Err(error) => return Err(error),
+            // The record arrives with the workspace's join: hand back the
+            // joining manager and its scope to build in once it is over.
+            Err(LaunchError::RecordNotHere) => {
+                let parts = construction.map(|construction| construction.into_parts());
+                return Err(match parts {
+                    Some((Some(manager), Some(scope))) => Unbuilt::NotHere { manager, scope },
+                    _ => Unbuilt::Failed(LaunchError::RecordNotHere),
+                });
+            }
+            Err(error) => return Err(error.into()),
         };
     if let Some(scale) = args.text_scale {
         prepared.runner_inputs.text_renderer.set_text_scale(scale);
@@ -1234,7 +1249,8 @@ fn dispatch_definition_with_manager(
             return Err(LaunchError::ComponentCapture {
                 source: Box::new(source),
                 recovery: LaunchRecovery::reports(driver.take_component_close_reports()),
-            });
+            }
+            .into());
         }
         driver.enable_document_history_chrome();
         if !args.native_audit
@@ -1244,7 +1260,8 @@ fn dispatch_definition_with_manager(
             return Err(LaunchError::ComponentCapture {
                 source: Box::new(source),
                 recovery: LaunchRecovery::reports(driver.take_component_close_reports()),
-            });
+            }
+            .into());
         }
         return Ok(if args.native_audit {
             DefinitionDispatch::Audit(driver)
@@ -1309,19 +1326,6 @@ fn native_launch_manager(
         native_connection(),
     )
     .map_err(LaunchError::from)
-}
-
-/// The connection a native launch's manager joins on: a window the shell
-/// opened in this running process has one of its own
-/// ([`crate::window_door`]); the one the launcher handed the process is its
-/// first window's.
-#[cfg(feature = "native")]
-fn native_connection() -> crate::collaboration::NativeConnection {
-    if crate::window_door::is_building() {
-        crate::collaboration::NativeConnection::Window(crate::window_door::take_collaboration())
-    } else {
-        crate::collaboration::NativeConnection::Launch
-    }
 }
 
 #[cfg(feature = "native")]
