@@ -158,7 +158,7 @@ impl QuickFS {
 
     /// Publishes `attrs` for the record at `ino` when they differ from what
     /// it has.
-    fn set_posix(&self, ino: u64, attrs: PosixAttrs, dir: bool) -> Result<(), i32> {
+    pub(super) fn set_posix(&self, ino: u64, attrs: PosixAttrs, dir: bool) -> Result<(), i32> {
         let delta = {
             let mut ns = self.ns();
             let record = ns.record_id_for(ino).ok_or(EIO)?;
