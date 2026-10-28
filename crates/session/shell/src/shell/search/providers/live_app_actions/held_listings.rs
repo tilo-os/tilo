@@ -7,7 +7,8 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{
-    AuxiliaryResume, AuxiliarySnapshot, ID_SEPARATOR, LiveAppActionsProvider, SurfaceSnapshot,
+    AuxiliaryResume, AuxiliarySnapshot, ID_SEPARATOR, LiveAppActionsProvider, PendingPoll,
+    SurfaceSnapshot,
 };
 use crate::shell::search::SearchContext;
 
@@ -45,6 +46,46 @@ impl LiveAppActionsProvider {
             format!("{}{ID_SEPARATOR}enumerating", Self::surface_scope(ctx))
         } else {
             Self::surface_scope(ctx)
+        }
+    }
+
+    /// Take in the continuation pages that have arrived, and nothing else:
+    /// what a listing's continuation may read beyond its first page. Such
+    /// a page appends behind the cursor waiting on it, moving no revision,
+    /// so the cursor resumes at it. First pages, failures and publication
+    /// changes wait for the next query's first page. Projections built while
+    /// one of those pages was owed are let go, so they are built again with
+    /// it.
+    pub(super) fn poll_appended_pages(&self) {
+        let mut landed = Vec::new();
+        self.directory_pending.borrow_mut().retain(|key, pending| {
+            if pending.initial_page {
+                return true;
+            }
+            match crate::shell::search::invocation_wake::poll(
+                &mut pending.receiver,
+                &crate::shell::search::invocation_wake::waker(),
+            ) {
+                PendingPoll::Ready(Ok(page)) if !page.stale_cursor => {
+                    landed.push((key.clone(), page, false));
+                    false
+                }
+                // A failed or stale reply is the next first page's to judge.
+                PendingPoll::Ready(answer) => {
+                    pending.receiver = tilo_actions::remote::Pending::ready(answer);
+                    true
+                }
+                PendingPoll::Waiting | PendingPoll::Abandoned => true,
+            }
+        });
+        if landed.is_empty() {
+            return;
+        }
+        self.land_directory_pages(landed);
+        for listing in self.held.borrow_mut().iter_mut() {
+            listing
+                .projections
+                .retain(|projection| projection.pending_directory.is_empty());
         }
     }
 

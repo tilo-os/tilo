@@ -3264,6 +3264,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 (revision, surface)
             }
             Some(cursor) => {
+                self.poll_appended_pages();
                 // The local index the cursor's listing pages through, if it
                 // is still held.
                 let held = self

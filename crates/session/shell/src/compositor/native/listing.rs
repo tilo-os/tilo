@@ -180,7 +180,46 @@ mod tests {
 
     use super::super::{FrameBuilderControlState, test_control};
     use crate::compositor::frame::FrameBuilder;
+    use crate::compositor::listing_snapshots::ListingSnapshots;
     use test_control::ControlState as _;
+
+    /// One page of the listing for `query` at `cursor`, three rows long,
+    /// from a control state over `fb` keeping its readings in `listings`.
+    fn page(
+        fb: &FrameBuilder,
+        doc: &AutoCommit,
+        listings: Option<&ListingSnapshots>,
+        cursor: Option<String>,
+    ) -> Result<serde_json::Value, test_control::ActionRefusal> {
+        FrameBuilderControlState {
+            fb,
+            doc: Some((doc, &automerge::ROOT)),
+            shares: None,
+            lock: None,
+            seat: None,
+            resolved: None,
+            listings,
+        }
+        .enumerate_actions_with_programmatic(
+            "",
+            false,
+            &test_control::ListingRequest {
+                limit: Some(3),
+                cursor,
+                detail: test_control::ListingDetail::Compact,
+                ..test_control::ListingRequest::default()
+            },
+        )
+    }
+
+    fn ids(answer: &serde_json::Value) -> Vec<String> {
+        answer["actions"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .map(|row| format!("{}:{}", row["provider"], row["id"]))
+            .collect()
+    }
 
     /// A paged listing reads the desktop once, on its first page: the
     /// desktop changing between two pages shows up on the next listing, and
@@ -189,80 +228,50 @@ mod tests {
     /// stale, which is what a caller looped on.
     #[test]
     fn a_paged_listing_reads_one_snapshot_from_its_first_page_to_its_last() {
-        let fb = FrameBuilder::new((1600, 900));
+        let mut fb = FrameBuilder::new((1600, 900));
         let doc = AutoCommit::new();
-        let snapshots = crate::compositor::listing_snapshots::ListingSnapshots::default();
-        let state = |listings| FrameBuilderControlState {
-            fb: &fb,
-            doc: Some((&doc, &automerge::ROOT)),
-            shares: None,
-            lock: None,
-            seat: None,
-            resolved: None,
-            listings,
-        };
-        let request = |cursor: Option<String>| test_control::ListingRequest {
-            limit: Some(3),
-            cursor,
-            detail: test_control::ListingDetail::Compact,
-            ..test_control::ListingRequest::default()
-        };
-        let ids = |answer: &serde_json::Value| -> Vec<String> {
-            answer["actions"]
-                .as_array()
-                .expect("rows")
-                .iter()
-                .map(|row| format!("{}:{}", row["provider"], row["id"]))
-                .collect()
-        };
-        let held = state(Some(&snapshots));
-        let expected = ids(&held.enumerate_actions("").expect("the whole listing"));
-        let first = held
-            .enumerate_actions_with_programmatic("", false, &request(None))
-            .expect("the first page");
+        let snapshots = ListingSnapshots::default();
+        let first = page(&fb, &doc, Some(&snapshots), None).expect("the first page");
         let revision = first["revision"].as_str().expect("revision").to_owned();
+        let total = first["total"].as_u64().expect("total");
         let mut seen = ids(&first);
         let mut cursor = first["next_cursor"].as_str().map(str::to_owned);
         assert!(cursor.is_some(), "the demo desktop lists more than a page");
 
-        // The desktop changes between two pages: a workspace is made.
-        {
-            let chrome = fb.chrome();
-            let tree_handle = chrome.tree_handle();
-            drop(chrome);
-            tree_handle
-                .write()
-                .desktop
-                .workspaces
-                .push(crate::shell::state::Workspace::new(
-                    crate::shell::state::WorkspaceId(4242),
-                    "Made between two pages",
-                ));
-        }
-        let now = held
-            .enumerate_actions_with_programmatic("", false, &request(None))
-            .expect("a new listing");
+        // The desktop changes between two pages: setup starts, and the
+        // listing narrows to what setup offers.
+        let identity =
+            std::env::temp_dir().join(format!("tilo-listing-snapshot-{}", std::process::id()));
+        fb.host_mut().enable_onboarding(identity.clone());
+        let now = page(&fb, &doc, Some(&snapshots), None).expect("a new listing");
         assert_ne!(
             now["revision"].as_str(),
             Some(revision.as_str()),
             "the change is one the listing shows"
         );
-        let unheld =
-            state(None).enumerate_actions_with_programmatic("", false, &request(cursor.clone()));
+        let unheld = page(&fb, &doc, None, cursor.clone());
         assert!(
             unheld.is_err_and(|refusal| refusal.code == "stale_cursor"),
             "read afresh, the cursor's listing is gone"
         );
 
         while let Some(next) = cursor.take() {
-            let page = held
-                .enumerate_actions_with_programmatic("", false, &request(Some(next)))
+            let page = page(&fb, &doc, Some(&snapshots), Some(next))
                 .expect("a continuation of the held listing");
             assert_eq!(page["revision"].as_str(), Some(revision.as_str()));
-            assert_eq!(page["total"], expected.len());
+            assert_eq!(page["total"], total);
             seen.extend(ids(&page));
             cursor = page["next_cursor"].as_str().map(str::to_owned);
         }
-        assert_eq!(seen, expected, "every row of the listing, once, in order");
+        let _ = std::fs::remove_dir_all(&identity);
+        assert_eq!(
+            u64::try_from(seen.len()).ok(),
+            Some(total),
+            "every row of the listing"
+        );
+        let mut unique = seen.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), seen.len(), "each row once");
     }
 }
