@@ -1458,6 +1458,8 @@ search-session-not-offered = Diese Sitzung teilt den Computer mit einem anderen 
 
 # Suche: Kurzbefehle
 search-shortcut-run-on = Auf { $resource } anwenden
+search-shortcut-continue-needs-step = Läuft ab einem Schritt erneut: Benenne ihn so, wie der letzte Lauf ihn gemeldet hat
+search-shortcut-continue-needs-run = Läuft ab einem Schritt erneut: Benenne den Lauf, der ihn gemeldet hat
 
 # Suche: Elemente im Statusbereich
 search-tray-open = { $item } öffnen

@@ -38,7 +38,7 @@ use tilo_actions::{ExecutionLocus, OperationKind};
 use tilo_automation::{
     ActionCatalog, AskRequest, Binding, ConfirmationRequest, FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE,
     RunHooks, RunId, RunMode, RunOutcome, RunReport, RunTrigger, SHORTCUT_RESOURCE_KIND,
-    SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule, Shortcut, StopWatch, TriggerSpec,
+    SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule, Shortcut, StepPath, StopWatch, TriggerSpec,
     shortcut_id_of, shortcut_resource_id,
 };
 use tilo_desktop_model::Workspace;
@@ -697,6 +697,14 @@ pub struct RunLedger {
 /// The runs this broker has going, by the room and the shortcut each runs.
 ///
 /// A run registers itself before its first step and leaves when it ends;
+/// A run of a shortcut going on from where an earlier one got to: the run
+/// that happened, and the step of it to go on from.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Continued {
+    pub report: RunReport,
+    pub from: StepPath,
+}
+
 /// stopping one marks it, and the interpreter asks before every step that
 /// would invoke something. What a stopped run already did stands, and is
 /// recorded and undone like a completed run's.
@@ -1113,16 +1121,36 @@ pub struct FinishedShortcutRun {
 #[derive(Default)]
 pub struct ShortcutRuns {
     finished: Mutex<VecDeque<FinishedShortcutRun>>,
+    /// The same runs, kept by id after they were taken, newest last.
+    kept: Mutex<VecDeque<FinishedShortcutRun>>,
 }
 
 impl ShortcutRuns {
     pub fn push(&self, run: FinishedShortcutRun) {
+        if let Ok(mut kept) = self.kept.lock() {
+            kept.push_back(run.clone());
+            while kept.len() > MAX_FINISHED_RUNS {
+                kept.pop_front();
+            }
+        }
         if let Ok(mut finished) = self.finished.lock() {
             finished.push_back(run);
             while finished.len() > MAX_FINISHED_RUNS {
                 finished.pop_front();
             }
         }
+    }
+
+    /// The run `run` produced of `shortcut`, when it is one this broker kept.
+    #[must_use]
+    pub fn report(&self, run: RunId, shortcut: &str) -> Option<RunReport> {
+        self.kept
+            .lock()
+            .ok()?
+            .iter()
+            .rev()
+            .find(|finished| finished.report.run == run && finished.shortcut.id == shortcut)
+            .map(|finished| finished.report.clone())
     }
 
     /// Whether a finished run is waiting to be taken.

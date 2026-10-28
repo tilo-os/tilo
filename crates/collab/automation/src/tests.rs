@@ -28,12 +28,12 @@ use crate::{
     shortcut_resource_id,
 };
 
-const NOTES: &str = "so.tilo.notes";
-const MAIL: &str = "so.tilo.mail";
-const INBOX: &str = "notes.folder:inbox";
+pub(crate) const NOTES: &str = "so.tilo.notes";
+pub(crate) const MAIL: &str = "so.tilo.mail";
+pub(crate) const INBOX: &str = "notes.folder:inbox";
 const NOTE: &str = "notes.note:1";
 
-fn row(
+pub(crate) fn row(
     app: &str,
     resource: &str,
     kind: &str,
@@ -129,7 +129,7 @@ fn list_schema() -> Value {
 /// A host offering a notes app, a mail app, the agent's summariser and the
 /// shortcuts app. It runs whatever it is asked, as long as it offers it: the
 /// caller's own authority is not what these tests are about.
-struct FakeHost {
+pub(crate) struct FakeHost {
     rows: Vec<CatalogueRow>,
     /// Actions that are unavailable while they still have refusals left:
     /// the name and how many invocations the host turns away.
@@ -144,7 +144,7 @@ struct HostState {
 }
 
 impl FakeHost {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let delete = ActionContract {
             risk: RiskLevel::Destructive,
             confirmation: ConfirmationPolicy::Confirm,
@@ -253,11 +253,11 @@ impl FakeHost {
             .is_some()
     }
 
-    fn catalog(&self) -> ActionCatalog {
+    pub(crate) fn catalog(&self) -> ActionCatalog {
         ActionCatalog::new(self.rows.clone())
     }
 
-    fn started(&self) -> Vec<InvokeRequest> {
+    pub(crate) fn started(&self) -> Vec<InvokeRequest> {
         self.state.lock().unwrap().started.clone()
     }
 
@@ -375,7 +375,7 @@ impl ActionHost for FakeHost {
 }
 
 #[derive(Debug, Default)]
-struct Hooks {
+pub(crate) struct Hooks {
     confirmation: Option<Confirmation>,
     answer: Option<Value>,
     confirmations: Mutex<Vec<ConfirmationRequest>>,
@@ -402,7 +402,7 @@ impl RunHooks for Hooks {
 /// Drive a future to its answer: every host answer is already known, so only
 /// a wait on the clock (a step's backoff) can leave it pending, and that ends
 /// on its own.
-fn block_on<F: Future>(future: F) -> F::Output {
+pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
     let mut future = std::pin::pin!(future);
     let waker = Waker::noop();
     let mut cx = Context::from_waker(waker);
@@ -414,11 +414,11 @@ fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
-fn caller() -> Caller {
+pub(crate) fn caller() -> Caller {
     Caller::local_person("ada")
 }
 
-fn app_rule(app: &str) -> Rule {
+pub(crate) fn app_rule(app: &str) -> Rule {
     Rule::new(
         TreePath::root().any(Level::Room).app(app),
         KindSet::ALL,
@@ -430,7 +430,7 @@ fn notes_grant() -> Vec<Rule> {
     vec![app_rule(NOTES)]
 }
 
-fn shortcut(id: &str, steps: Vec<Step>) -> Shortcut {
+pub(crate) fn shortcut(id: &str, steps: Vec<Step>) -> Shortcut {
     Shortcut {
         id: id.into(),
         name: "Tidy inbox".into(),
@@ -446,7 +446,13 @@ fn shortcut(id: &str, steps: Vec<Step>) -> Shortcut {
 
 /// A step invoking `action` of `app` on the resource `resource` selects. Its
 /// key names the app's root kind, so it reaches any kind the app publishes.
-fn invoke(id: &str, app: &str, resource: Selector, action: &str, args: &[(&str, Binding)]) -> Step {
+pub(crate) fn invoke(
+    id: &str,
+    app: &str,
+    resource: Selector,
+    action: &str,
+    args: &[(&str, Binding)],
+) -> Step {
     let kind = app.rsplit('.').next().unwrap_or(app);
     Step::new(
         id,
@@ -462,11 +468,11 @@ fn invoke(id: &str, app: &str, resource: Selector, action: &str, args: &[(&str, 
     )
 }
 
-fn list() -> Step {
+pub(crate) fn list() -> Step {
     invoke("list", NOTES, Selector::Fixed(INBOX.into()), "list", &[])
 }
 
-fn run_with(
+pub(crate) fn run_with(
     host: &FakeHost,
     hooks: &Hooks,
     shortcut: &Shortcut,
@@ -499,6 +505,8 @@ fn run_chained(
             caused_by: None,
             parent: None,
             chain,
+            resume: None,
+            from: None,
         },
     ))
 }
@@ -729,7 +737,7 @@ fn a_fallback_runs_in_the_failed_steps_place_and_marks_the_run_degraded() {
     assert!(summary.contains("unavailable"), "{summary}");
 }
 
-fn failure(report: &RunReport) -> Option<(&StepPath, &StepFailure)> {
+pub(crate) fn failure(report: &RunReport) -> Option<(&StepPath, &StepFailure)> {
     match &report.outcome {
         RunOutcome::Completed | RunOutcome::Cancelled { .. } => None,
         RunOutcome::Failed { path, failure } => Some((path, failure)),
@@ -890,6 +898,8 @@ fn a_run_a_task_asked_for_stamps_its_steps_with_that_tasks_group() {
             caused_by: None,
             parent: Some(parent.clone()),
             chain: Vec::new(),
+            resume: None,
+            from: None,
         },
     ));
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
@@ -1313,6 +1323,8 @@ fn bindings_address_into_an_object_input_and_a_loop_item() {
             caused_by: None,
             parent: None,
             chain: Vec::new(),
+            resume: None,
+            from: None,
         },
     ));
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
@@ -1427,6 +1439,8 @@ fn an_invoke_step_carries_the_appearance_it_binds_and_refuses_a_bad_one() {
                 caused_by: None,
                 parent: None,
                 chain: Vec::new(),
+                resume: None,
+                from: None,
             },
         ))
     };
@@ -1854,6 +1868,8 @@ fn an_ai_step_never_reads_a_secret() {
             caused_by: None,
             parent: None,
             chain: Vec::new(),
+            resume: None,
+            from: None,
         },
     ));
     assert!(
@@ -2273,6 +2289,8 @@ fn archive_run<'a, K: RunHooks>(
             caused_by: None,
             parent: None,
             chain: Vec::new(),
+            resume: None,
+            from: None,
         },
     )
 }
@@ -2502,6 +2520,8 @@ fn a_run_reports_the_version_of_the_shortcut_it_ran() {
             caused_by: None,
             parent: None,
             chain: Vec::new(),
+            resume: None,
+            from: None,
         },
     ));
     let edited = edit("Tidy the inbox");
@@ -2685,6 +2705,8 @@ fn every_step_of_a_caused_run_records_the_cause() {
             caused_by: Some(cause.clone()),
             parent: None,
             chain: Vec::new(),
+            resume: None,
+            from: None,
         },
     ));
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
