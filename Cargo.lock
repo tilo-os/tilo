@@ -13586,12 +13586,10 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-files",
  "tilo-fs-client",
- "tilo-paths",
  "tilo-test-env",
  "tokio",
  "tokio-util",
  "uuid",
- "wire-frame",
  "workspace-hack",
 ]
 
@@ -13619,7 +13617,6 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "libc",
- "postcard",
  "rand_core 0.10.0",
  "runtime-portal",
  "serde",
@@ -13637,7 +13634,6 @@ dependencies = [
  "tilo-secrets",
  "tilo-test-env",
  "tokio",
- "wire-frame",
  "workspace-hack",
  "zeroize",
 ]
@@ -18278,7 +18274,6 @@ dependencies = [
  "runtime-portal",
  "serde",
  "serde_json",
- "tempfile",
  "tilo-advisory-lock",
  "tilo-paths",
  "tilo-test-env",
