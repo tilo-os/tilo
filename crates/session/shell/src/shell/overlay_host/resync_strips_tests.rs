@@ -1100,16 +1100,16 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
         assert!(peer.reorder_group_for_tests(remote_strip, remote_id(4), 0));
         assert!(peer.reorder_tab_for_tests(remote_group, 2, 0));
         {
-            let mut state = chrome.borrow_mut();
-            state
+            let mut chrome_state = chrome.borrow_mut();
+            chrome_state
                 .tree_mut()
                 .hear_layout(&mut peer, room, device)
                 .expect("the reorder merges");
-            state
+            chrome_state
                 .tree_mut()
                 .receive_layout(room, device, &stale)
                 .expect("an older copy of the layout is no news");
-            state.bump();
+            chrome_state.bump();
         }
         assert!(host.take_structure_dirty());
         let row = host

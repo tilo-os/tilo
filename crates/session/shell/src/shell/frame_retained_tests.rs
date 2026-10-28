@@ -2588,13 +2588,13 @@ fn assert_pan_from_warmed_rest(desktop: PanDesktop, theme_name: &str, theme: The
     // frame), so one oracle serves both warms.
     let mut dense = gpu_target(size);
     {
-        for stopped in [false, true] {
+        for (stopped, theme) in [(false, theme.clone()), (true, theme)] {
             let name = format!(
                 "{}, {theme_name}{}",
                 desktop.name,
                 if stopped { ", warm stopped" } else { "" }
             );
-            let mut frame = pan_fixture(desktop, theme.clone());
+            let mut frame = pan_fixture(desktop, theme);
             frame.set_strip_pan_presenter(false, true);
             let _ = acknowledged_notes_canvas_of(&mut frame, desktop.notes());
             rest_as_the_session_does(&mut frame);
