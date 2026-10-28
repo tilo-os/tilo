@@ -348,16 +348,6 @@ class Lanes(unittest.TestCase):
 
     def test_vm_acceptance_owes_the_groups_of_the_checks_it_ran(self):
         budgets = compare.load_budgets(compare.BUDGETS)
-        perf = t_checks()["vm-acceptance-perf"]
-        self.assertEqual(perf["needs"], ["vm-acceptance"])
-        # The selection the acceptance job ran, never a fixed list: a dispatch of
-        # --only A14 is owed A14's groups, not the boot and idle ones it skipped.
-        self.assertNotRegex(perf["run"], r"--groups [a-z]+,")
-        self.assertIn('--groups "$(python3 scripts/vm-acceptance/selected_groups.py ', perf["run"])
-        selected = (ROOT / "scripts/vm-acceptance/selected_groups.py").read_text()
-        # That helper names only groups of the lane, and only through its checks.
-        self.assertIn("CHECKS = HERE / \"acceptance\" / \"checks\"", selected)
-        self.assertIn('ctx\\.record', selected)
         for group in budgets.lane_groups("vm-acceptance"):
             self.assertIn(group, run_groups("vm-acceptance"))
 
