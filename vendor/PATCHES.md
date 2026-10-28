@@ -226,7 +226,8 @@ one, as it always has, and its process is restarted.
 
 ## Accessibility and YouTube manifests
 
-Four crates differ from their crates.io release in `Cargo.toml`, and
+Four crates differ from their crates.io release in `Cargo.toml`, `rustypipe`
+also in its Android player client, and
 `accesskit_unix` also in its source (the read-only tree below, and keeping
 the connected AT-SPI bus when assistive technology is switched off and on
 quickly). Each
@@ -238,7 +239,7 @@ that host was down. Now they are path crates here:
 |---|---|---|---|
 | `vendor/accesskit_unix` | accesskit_unix 0.23.0 | `zbus/async-io` only with the crate's `async-io` feature, `zbus/tokio` with `tokio` | [accesskit-optional-async-io](https://code.tilo.so/tilo/upstream-contribs/src/branch/main/accesskit-optional-async-io) |
 | `vendor/atspi`, `vendor/atspi-common`, `vendor/atspi-proxies` | atspi 0.29.0, atspi-common 0.13.0, atspi-proxies 0.13.0 | `async-io`/`tokio` features select zbus's backend instead of async-io always | [atspi-optional-async-io](https://code.tilo.so/tilo/upstream-contribs/src/branch/main/atspi-optional-async-io) |
-| `vendor/rustypipe` | rustypipe 0.11.4 | reqwest 0.13 and fancy-regex 0.16 | [rustypipe-reqwest-0.13](https://code.tilo.so/tilo/upstream-contribs/src/branch/main/rustypipe-reqwest-0.13) |
+| `vendor/rustypipe` | rustypipe 0.11.4 | reqwest 0.13 and fancy-regex 0.16; an Android player client that needs no deobfuscation | [rustypipe-reqwest-0.13](https://code.tilo.so/tilo/upstream-contribs/src/branch/main/rustypipe-reqwest-0.13) |
 
 accesskit, accesskit_consumer and accesskit_atspi_common are the unchanged
 crates.io releases. `vendor/miracast` is Tilo's own Miracast crate at a pinned

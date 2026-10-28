@@ -22,6 +22,11 @@ the platform verifier. One source line differs: `Frameset::urls` in
 `src/model/frameset.rs` names its iterator's lifetime (`FramesetUrls<'_>`),
 which current rustc's `mismatched_lifetime_syntaxes` lint requires under
 `-D warnings` now that the crate builds as a path dependency, whose lints
-Cargo does not cap; the signature means the same. Every other source file
-is the release's. The archive's `Cargo.lock` is omitted. 0.11.4 is the newest release (checked 2026-10-22). See
+Cargo does not cap; the signature means the same. The Android client
+(`src/client/mod.rs`) asks as app version 20.10.38 instead of 19.44.38 and
+needs no deobfuscation data: that version's player answers carry plain
+stream URLs, and its progressive streams serve every byte range of the file
+without a PoToken, where the release's player clients either fail to
+deobfuscate the current player script or are refused past the first segment.
+Every other source file is the release's. The archive's `Cargo.lock` is omitted. 0.11.4 is the newest release (checked 2026-10-22). See
 `vendor/PATCHES.md`, "Accessibility and YouTube manifests".

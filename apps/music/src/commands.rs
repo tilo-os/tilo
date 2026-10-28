@@ -384,13 +384,7 @@ fn probe_stream(
         .resolve_audio(&top.video_id)
         .map_err(|e| format!("stream resolution failed: {e}"))?;
     let mib = stream.size_bytes as f64 / (1024.0 * 1024.0);
-    println!(
-        "   itag={}  codec={}  container={}  ~{} kbps",
-        stream.itag,
-        stream.codec,
-        stream.format,
-        stream.bitrate / 1000
-    );
+    println!("   itag={}  ~{} kbps", stream.itag, stream.bitrate / 1000);
     println!("   mime: {}", stream.mime);
     println!(
         // format: machine (a diagnostic command's own output)

@@ -2671,13 +2671,10 @@ fn stream_operations_settle_exactly_once_for_their_request() {
                 video_id: "yt_tk_g1".into(),
                 url: "https://example.invalid/late-audio".into(),
                 mime: "audio/mp4".into(),
-                codec: "mp4a".into(),
-                format: "m4a".into(),
                 bitrate: 128_000,
                 itag: 140,
                 size_bytes: 1,
                 duration_ms: 1,
-                fallback_url: None,
             },
         );
         assert!(
@@ -2721,13 +2718,10 @@ fn stream_operations_settle_exactly_once_for_their_request() {
                 video_id: "yt_tk_g1".into(),
                 url: "https://example.invalid/late-audio".into(),
                 mime: "audio/mp4".into(),
-                codec: "mp4a".into(),
-                format: "m4a".into(),
                 bitrate: 128_000,
                 itag: 140,
                 size_bytes: 1,
                 duration_ms: 1,
-                fallback_url: None,
             },
         );
         assert_eq!(app.active_resolve_request, Some(second_request));
@@ -2758,13 +2752,10 @@ fn stream_operations_settle_exactly_once_for_their_request() {
             video_id: "yt_tk_g1".into(),
             url: "https://example.invalid/audio".into(),
             mime: "audio/mp4".into(),
-            codec: "mp4a".into(),
-            format: "m4a".into(),
             bitrate: 128_000,
             itag: 140,
             size_bytes: 1,
             duration_ms: 1,
-            fallback_url: None,
         };
         app.apply_resolved_stream("tk_g1", request_id, &stream);
         #[cfg(not(feature = "audio"))]
@@ -2949,13 +2940,8 @@ fn live_play_and_resolve_stream(app: &mut MusicApp, doc: &mut AutoCommit, first:
 
     // Pump until the resolved URL is loaded into the audio engine.
     let mut loaded_url = None;
-    // The resolved audio URL is a fully-rangeable source: an Invidious
-    // `local` proxy (`…/latest_version?…&itag=…&local=true`) that serves the
-    // whole track over arbitrary byte ranges, or the direct googlevideo URL
-    // as a fallback. Either carries an `itag`.
-    let is_streamable = |u: &str| {
-        u.contains("itag=") && (u.contains("local=true") || u.contains("googlevideo.com"))
-    };
+    // The resolved URL is a whole-file googlevideo stream carrying an `itag`.
+    let is_streamable = |u: &str| u.contains("itag=") && u.contains("googlevideo.com");
     for _ in 0..2000 {
         app.drain_worker();
         if let Some(uri) = app.audio.current_uri()
@@ -3117,9 +3103,9 @@ fn decode_plugins_present() -> bool {
 /// resolve a real `YouTube` track, stage it, and prove what the staged bytes
 /// actually support.
 ///
-/// The Rust-native resolver asks `InnerTube` for an `ANDROID_VR` URL because that client is
-/// meant to serve arbitrary byte ranges over the whole file, where
-/// rustypipe's iOS/TV URL is SABR-gated to its first ~1 minute. Whether the
+/// The resolver picks a whole-file stream because it is meant to serve
+/// arbitrary byte ranges over the whole file, where the adaptive streams are
+/// refused past their first segment. Whether the
 /// source honours that on the day is the source's decision, and the two
 /// outcomes are different claims — so this reads the staging byte counts and
 /// proves the one that happened:

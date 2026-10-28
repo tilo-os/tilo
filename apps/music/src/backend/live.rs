@@ -12,21 +12,17 @@
 //! * construct: `RustyPipe::builder()…build()?`, then `rp.query()`
 //! * `query.music_search_tracks(q).await` → `MusicSearchResult<TrackItem>`
 //!   (`YouTube` Music song search — titles, artists, album, duration, id)
-//! * `query.player(id).await` → `VideoPlayer` whose `audio_streams` carry
-//!   directly-playable googlevideo URLs. With no `BotGuard` configured rustypipe
-//!   uses the iOS/TV player clients, which return stream URLs **without a
-//!   `PoToken`**, so the client is built with `no_botguard`.
-//!
-//! Search and metadata stay pure Rust through rustypipe. Stream resolution
-//! first queries the keyless Android VR `InnerTube` client directly, then falls
-//! back to rustypipe's direct player response.
+//! * [`tilo_innertube::player`] → `VideoPlayer`, whose whole-file stream
+//!   ([`tilo_innertube::whole_file_stream`]) is the URL Music plays. Its
+//!   player client needs no `PoToken`, so the client is built with
+//!   `no_botguard`.
 
 #![cfg(feature = "live")]
 
 use rustypipe::client::RustyPipe;
 use rustypipe::model::{
-    AlbumItem, AlbumType, ArtistId, ArtistItem, AudioCodec, AudioFormat, AudioStream, MusicItem,
-    MusicPlaylistItem, Thumbnail, TrackItem,
+    AlbumItem, AlbumType, ArtistId, ArtistItem, MusicItem, MusicPlaylistItem, Thumbnail, TrackItem,
+    VideoStream,
 };
 use tilo_innertube as innertube;
 
@@ -55,8 +51,9 @@ pub struct RustyPipeBackend {
 }
 
 impl RustyPipeBackend {
-    /// Audio resolves via the iOS/TV player clients, which need no `PoToken`,
-    /// so rustypipe's `BotGuard` path stays disabled.
+    /// Audio resolves through a player client that needs no `PoToken`
+    /// ([`tilo_innertube::PLAYER_CLIENT`]), so rustypipe's `BotGuard` path
+    /// stays disabled.
     pub fn new() -> Result<Self, BackendError> {
         let rt = ui::rt::try_app().map_err(|e| BackendError(format!("tokio runtime: {e}")))?;
         // rustypipe's reqwest client takes the process-default TLS provider.
@@ -301,91 +298,19 @@ fn artist_home_item(a: ArtistItem) -> HomeItem {
     }
 }
 
-fn codec_str(c: AudioCodec) -> &'static str {
-    match c {
-        AudioCodec::Mp4a => "mp4a",
-        AudioCodec::Opus => "opus",
-        AudioCodec::Ac3 => "ac-3",
-        AudioCodec::Ec3 => "ec-3",
-        _ => "unknown",
-    }
-}
-
-fn format_str(f: AudioFormat) -> &'static str {
-    match f {
-        AudioFormat::M4a => "m4a",
-        AudioFormat::Webm => "webm",
-        _ => "unknown",
-    }
-}
-
-/// Pick the best audio stream to actually play.
-///
-/// Preference order:
-///   1. Non-DRM streams only (DRM tracks aren't playable without a license).
-///   2. Prefer the M4A/AAC container — the most broadly decodable by a stock
-///      `GStreamer` install; Opus/WebM is the fallback.
-///   3. Within the chosen container, the highest average bitrate.
-///
-/// Returns `None` only if there are no non-DRM audio streams at all.
-pub fn best_audio(streams: &[AudioStream]) -> Option<&AudioStream> {
-    let playable = || streams.iter().filter(|s| s.drm_systems.is_empty());
-    let by_bitrate = |a: &&AudioStream, b: &&AudioStream| a.average_bitrate.cmp(&b.average_bitrate);
-
-    playable()
-        .filter(|s| s.format == AudioFormat::M4a)
-        .max_by(by_bitrate)
-        .or_else(|| playable().max_by(by_bitrate))
-}
-
-fn map_stream(video_id: &str, s: &AudioStream) -> ResolvedStream {
+/// Music plays the sound of the smallest whole-file stream: only those serve
+/// the whole track (see [`tilo_innertube::whole_file_stream`]), and the
+/// picture it also carries is never decoded.
+fn map_stream(video_id: &str, s: &VideoStream) -> ResolvedStream {
     ResolvedStream {
         video_id: video_id.to_string(),
         url: s.url.clone(),
         mime: s.mime.clone(),
-        codec: codec_str(s.codec).to_string(),
-        format: format_str(s.format).to_string(),
         bitrate: s.average_bitrate,
         itag: s.itag,
-        size_bytes: s.size,
+        size_bytes: s.size.unwrap_or(0),
         duration_ms: u64::from(s.duration_ms.unwrap_or(0)),
-        fallback_url: None,
     }
-}
-
-/// Standard `YouTube` audio itags, best-decodable first: m4a/AAC 128k (any
-/// stock `GStreamer` decodes it), then webm/opus 160k. Present for effectively
-/// every track, so the proxy is probed directly without first asking the
-/// (often Cloudflare-gated) metadata endpoint for the itag list.
-const KNOWN_AUDIO_ITAGS: &[(u32, &str, &str, &str, u32)] = &[
-    // (itag, mime, codec, format, bitrate)
-    (
-        140,
-        "audio/mp4; codecs=\"mp4a.40.2\"",
-        "mp4a",
-        "m4a",
-        128_000,
-    ),
-    (251, "audio/webm; codecs=\"opus\"", "opus", "webm", 160_000),
-];
-
-/// A fully-rangeable Invidious-proxied audio stream for `video_id`, when an
-/// instance's proxy serves real media within the budget.
-async fn resolve_rangeable(video_id: &str) -> Option<ResolvedStream> {
-    let (url, &(itag, mime, codec, format, bitrate)) =
-        tilo_invidious::first_serving(video_id, KNOWN_AUDIO_ITAGS, |f| f.0).await?;
-    Some(ResolvedStream {
-        video_id: video_id.to_string(),
-        url,
-        mime: mime.to_string(),
-        codec: codec.to_string(),
-        format: format.to_string(),
-        bitrate,
-        itag,
-        size_bytes: 0,
-        duration_ms: 0,
-        fallback_url: None,
-    })
 }
 
 /// The catalogue's items as a bundle: the first item is the hero card, the
@@ -477,55 +402,25 @@ impl MusicBackend for RustyPipeBackend {
     }
 
     fn resolve_audio(&self, video_id: &str) -> ResolveOutcome {
-        // Prefer the independent full-track resolver before asking InnerTube's
-        // player endpoint. YouTube can reject rustypipe's iOS/TV player client
-        // while the Android VR client still works; resolving the fallback
-        // first used to turn that recoverable condition into a hard failure.
-        // An Android VR URL is already fully rangeable, so it needs no truncating
-        // direct-stream fallback.
-        if let Some(full) = crate::backend::android_vr::resolve_full_audio(video_id) {
-            tracing::info!(target: "music::resolve", itag = full.itag, "using Rust-native Android VR full-track URL");
-            return Ok(full);
-        }
-
-        // Fallback base: rustypipe's direct iOS/TV googlevideo URL. It renders
-        // when the player endpoint accepts this client, but is PoToken/SABR-
-        // gated and may only serve the first ~1-minute segment.
         let q = self.rp.query();
         let player = self.block("player", innertube::player(&q, video_id))?;
-        let best = best_audio(&player.audio_streams)
-            .ok_or_else(|| BackendError("no playable audio streams".to_string()))?;
+        let best = innertube::whole_file_stream(&player, Some(0))
+            .ok_or_else(|| BackendError("no playable stream".to_string()))?;
         if !crate::backend::trusted_googlevideo_url(&best.url) {
             return Err(BackendError(
                 "player returned an untrusted media origin".to_string(),
             ));
         }
-        let direct = map_stream(video_id, best);
+        let stream = map_stream(video_id, best);
         tracing::info!(
             target: "music::resolve",
             video_id,
-            itag = direct.itag,
-            codec = %direct.codec,
-            bitrate = direct.bitrate,
-            size_bytes = direct.size_bytes,
-            "resolved direct googlevideo audio stream"
+            itag = stream.itag,
+            bitrate = stream.bitrate,
+            size_bytes = stream.size_bytes,
+            "resolved audio stream"
         );
-
-        // Otherwise try a fully-rangeable Invidious `local` proxy, but only if that
-        // proxy genuinely serves media (validated). Public instances are mostly
-        // dead / anti-bot-gated, so this usually returns `None`.
-        // The direct URL is always carried as the engine's fallback too.
-        if let Some(mut proxy) = self.rt.block_on(resolve_rangeable(video_id)).ok().flatten() {
-            proxy.duration_ms = direct.duration_ms;
-            if proxy.size_bytes == 0 {
-                proxy.size_bytes = direct.size_bytes;
-            }
-            proxy.fallback_url = Some(direct.url);
-            tracing::info!(target: "music::resolve", "using rangeable proxy (direct URL as fallback)");
-            return Ok(proxy);
-        }
-        tracing::info!(target: "music::resolve", "no working proxy — playing direct googlevideo URL");
-        Ok(direct)
+        Ok(stream)
     }
 
     fn home(&self) -> Result<HomeContent, BackendError> {

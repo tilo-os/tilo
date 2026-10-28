@@ -16,7 +16,6 @@
 //! picks live-or-offline at *runtime*, falling back to offline if live init
 //! or the network fails.
 
-pub mod android_vr;
 #[cfg(feature = "live")]
 pub mod live;
 pub mod offline;
@@ -269,26 +268,16 @@ pub struct AlbumPage {
 pub struct ResolvedStream {
     pub video_id: String,
     pub url: String,
-    /// Full MIME (e.g. `audio/mp4; codecs="mp4a.40.2"`).
+    /// Full MIME (e.g. `video/mp4; codecs="avc1.42001E, mp4a.40.2"`).
     pub mime: String,
-    /// Short codec name (`mp4a`, `opus`, …).
-    pub codec: String,
-    /// Container format (`m4a`, `webm`).
-    pub format: String,
     /// Average bitrate in bits/second (higher = better).
     pub bitrate: u32,
-    /// `YouTube` stream format id (itag) — e.g. 140 (m4a 128k), 251 (opus 160k).
+    /// `YouTube` stream format id (itag) — e.g. 18 (360p H.264 + AAC).
     pub itag: u32,
     /// Content length in bytes as reported by the player response.
     pub size_bytes: u64,
     /// Stream duration in milliseconds, when known.
     pub duration_ms: u64,
-    /// A secondary source the audio engine falls back to when [`Self::url`]
-    /// yields no bytes. Set when `url` is a (fully-rangeable but sometimes-down)
-    /// Invidious proxy: the fallback is the direct googlevideo URL, which always
-    /// renders at least the first segment. `None` when `url` is already the
-    /// last-resort direct URL.
-    pub fallback_url: Option<String>,
 }
 
 /// Error surfaced by a backend. Stringly-typed on purpose — the UI only shows

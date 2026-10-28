@@ -16,13 +16,13 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use rustypipe::client::RustyPipeQuery;
+use rustypipe::client::{ClientType, RustyPipeQuery};
 use rustypipe::error::Error;
 use rustypipe::model::paginator::Paginator;
 use rustypipe::model::{
     AlbumItem, Channel, Comment, MusicAlbum, MusicArtist, MusicCharts, MusicItem, MusicPlaylist,
     MusicSearchResult, MusicSearchSuggestion, Playlist, SearchResult, TrackItem, VideoDetails,
-    VideoItem, VideoPlayer, YouTubeItem,
+    VideoItem, VideoPlayer, VideoStream, YouTubeItem,
 };
 use rustypipe::param::Country;
 use rustypipe::param::search_filter::SearchFilter;
@@ -61,11 +61,20 @@ pub fn music_search_suggestion<'a>(
     Box::pin(q.music_search_suggestion(query))
 }
 
-/// The player response of a video: its streams and their URLs.
+/// The client the player is asked as. Its stream URLs need neither the
+/// player script (whose signature code rustypipe's deobfuscator has to keep
+/// up with) nor a `PoToken`, and they serve every byte range of the whole
+/// file, open-ended ones included, so a plain HTTP source can stream, seek
+/// and reach the end. The iOS, TV and Android VR clients' URLs are refused
+/// past the first segment without a `PoToken`.
+pub const PLAYER_CLIENT: ClientType = ClientType::Android;
+
+/// The player response of a video: its streams, their URLs and its
+/// captions, asked as [`PLAYER_CLIENT`].
 #[must_use]
 #[inline(never)]
 pub fn player<'a>(q: &'a RustyPipeQuery, video_id: &'a str) -> Query<'a, VideoPlayer> {
-    Box::pin(q.player(video_id))
+    Box::pin(q.player_from_client(video_id, PLAYER_CLIENT))
 }
 
 /// `YouTube` Music's charts, for `country` or the query's own.
@@ -166,4 +175,31 @@ pub fn next_comments<'a>(
     q: &'a RustyPipeQuery,
 ) -> Query<'a, Option<Paginator<Comment>>> {
     Box::pin(page.next(q))
+}
+
+/// The stream to play from `player`: one URL carrying picture and sound
+/// together, no taller than `max_height` when one is (`None` takes the
+/// tallest).
+///
+/// Only these progressive streams serve every byte range of the file
+/// without a `PoToken`; the adaptive audio-only and video-only streams are
+/// refused past their first segment, so a player handed one stops after a
+/// few seconds. Music plays the sound of the smallest one. DRM streams are
+/// never picked.
+#[must_use]
+pub fn whole_file_stream(player: &VideoPlayer, max_height: Option<u32>) -> Option<&VideoStream> {
+    let playable = || {
+        player
+            .video_streams
+            .iter()
+            .filter(|stream| stream.drm_systems.is_empty())
+    };
+    let size = |stream: &&VideoStream| (stream.height, stream.bitrate);
+    match max_height {
+        None => playable().max_by_key(size),
+        Some(cap) => playable()
+            .filter(|stream| stream.height <= cap)
+            .max_by_key(size)
+            .or_else(|| playable().min_by_key(size)),
+    }
 }

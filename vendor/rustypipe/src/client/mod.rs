@@ -82,7 +82,7 @@ pub enum ClientType {
     Tv,
     /// Client used by the Android app
     ///
-    /// - no obfuscated stream URLs
+    /// - no obfuscated stream URLs, no player script needed
     /// - includes lower resolution audio streams
     Android,
     /// Client used by the iOS app
@@ -100,7 +100,7 @@ impl ClientType {
     }
 
     fn needs_deobf(self) -> bool {
-        !matches!(self, ClientType::Ios)
+        !matches!(self, ClientType::Ios | ClientType::Android)
     }
 
     fn needs_po_token(self) -> bool {
@@ -357,7 +357,7 @@ const IOS_CLIENT_VERSION: &str = "20.03.02";
 const IOS_VERSION: &str = "18_2_1";
 const IOS_VERSION_BUILD: &str = "18.2.1.22C161";
 const IOS_DEVICE_MODEL: &str = "iPhone16,2";
-const ANDROID_CLIENT_VERSION: &str = "19.44.38";
+const ANDROID_CLIENT_VERSION: &str = "20.10.38";
 const ANDROID_VERSION: &str = "11";
 
 const OAUTH_CLIENT_ID: &str =
