@@ -24,6 +24,8 @@
 //! (`default_backends`): without OpenGL whenever OpenGL could not be
 //! chosen anyway, because wgpu initialises every backend it is asked for.
 
+mod loss;
+
 use std::sync::{Arc, Mutex};
 
 use tilo_lock::MutexRecover as _;
@@ -49,7 +51,13 @@ pub struct DeviceHandle {
     shader_cache: Option<crate::dx12_shader_cache::CacheSession>,
 }
 
-/// Shared, read-only observation of the context-owned device loss callback.
+pub use loss::{
+    LossWatch, NOT_PROGRESSING_AFTER, Recovery, SubmittedWork, recover,
+    reset_software_fallback_for_test, software_fallback,
+};
+
+/// Shared observation of the context-owned device loss callback, and of a loss
+/// declared for a GPU that stopped finishing work ([`LossWatch`]).
 #[derive(Clone, Default)]
 pub struct DeviceLossMonitor(Arc<Mutex<Option<String>>>);
 
@@ -167,6 +175,15 @@ fn create_targets(width: u32, height: u32, device: &Device) -> (Texture, Texture
     });
     let target_view = target_texture.create_view(&wgpu::TextureViewDescriptor::default());
     (target_texture, target_view)
+}
+
+/// The largest texture edge of every device this module opens: wgpu's
+/// default, which `required_limits` keeps. A window's frame is fitted under
+/// it before it is drawn (`crate::scale::fit_to_texture_limit`), since a
+/// surface target past it fails validation and the window stops.
+#[must_use]
+pub fn requested_texture_limit() -> u32 {
+    Limits::default().max_texture_dimension_2d
 }
 
 /// wgpu's defaults, except the two a renderer's scratch buffers are bound
@@ -348,6 +365,12 @@ impl RenderContext {
         &mut self,
         compatible_surface: Option<&Surface<'_>>,
     ) -> Option<wgpu::Adapter> {
+        // The GPU could not be brought back after a loss: whatever the
+        // environment names, only a software rasteriser draws now.
+        if software_fallback().is_some() {
+            self.settle_backends().await;
+            return loss::software_adapter(&self.instance).await;
+        }
         if self.fallback.is_some()
             && self.devices.is_empty()
             && !adapter_named_by_env()
@@ -559,6 +582,16 @@ impl RenderContext {
         let direct_copy = format == TextureFormat::Rgba8Unorm
             && capabilities.usages.contains(wgpu::TextureUsages::COPY_DST);
         tilo_startup_metrics::mark("surface-capabilities-done");
+        // The window's size now is only where the surface starts: each frame
+        // resizes it to the extent it was drawn at, which fits the device.
+        // Start inside the device's limit too, so a window wider than any
+        // texture (a kiosk over several displays) gets a surface at all.
+        let start = crate::scale::fit_to_texture_limit(
+            (width, height),
+            1.0,
+            handle.device.limits().max_texture_dimension_2d,
+        );
+        let (width, height) = (start.width, start.height);
 
         let config = SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
@@ -596,8 +629,6 @@ impl RenderContext {
         Ok(surface)
     }
 
-    /// # Panics
-    /// If `width` or `height` is zero.
     pub fn resize_surface(&self, surface: &mut RenderSurface<'_>, width: u32, height: u32) {
         let Some(handle) = self.devices.get(surface.dev_id) else {
             return;
@@ -657,6 +688,21 @@ pub fn draw_target_to_surface(
             },
         ),
     }
+}
+
+/// [`draw_target_to_surface`], submitted on its own. With nothing drawn into
+/// the target since, this shows the last frame again: a host that acquired
+/// `texture` for a frame it then skipped presents that frame rather than a
+/// cleared texture.
+pub fn submit_target_to_surface(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    surface: &RenderSurface<'_>,
+    texture: &Texture,
+) {
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    draw_target_to_surface(device, &mut encoder, surface, texture);
+    queue.submit([encoder.finish()]);
 }
 
 /// Prefix of every line a window prints about the adapter it renders on.
@@ -816,9 +862,46 @@ mod tests {
         );
     }
 
+    /// The reported kiosk window, 4864x1840 logical at scale 2 over a panel
+    /// and a monitor: its surface target failed validation ("Dimension X
+    /// value 9728 exceeds the limit of 8192") and the login screen exited.
+    /// Fitted to the device's own limit, the same window gets its target.
+    #[test]
+    fn a_window_wider_than_any_texture_gets_a_surface_target_at_its_fitted_extent() {
+        let mut context = super::RenderContext::new();
+        let index = pollster::block_on(context.device(None)).expect("real GPU adapter");
+        let device = &context.devices[index].device;
+        let limit = device.limits().max_texture_dimension_2d;
+        assert_eq!(
+            limit,
+            super::requested_texture_limit(),
+            "windows fit their frames to the limit every device is opened with"
+        );
+        let window = (limit + limit / 4, 3680);
+
+        // Unfitted, the target is refused: the check observes the failure.
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let (refused, _) = create_targets(window.0, window.1, device);
+        assert!(
+            pollster::block_on(scope.pop()).is_some(),
+            "a {}-wide target must exceed the device limit {limit}",
+            window.0
+        );
+        refused.destroy();
+
+        let extent = crate::scale::fit_to_texture_limit(window, 2.0, limit);
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let (target, _) = create_targets(extent.width, extent.height, device);
+        let error = pollster::block_on(scope.pop());
+        target.destroy();
+        assert!(
+            error.is_none(),
+            "fitted target {extent:?} refused: {error:?}"
+        );
+    }
+
     #[test]
     fn gpu_context_shares_device_loss_callbacks_and_accepts_native_damage() {
-        // Case `device_loss_observers_share_the_context_callback`.
         {
             let mut context = super::RenderContext::new();
             let index = pollster::block_on(context.device(None)).expect("real GPU adapter");
@@ -835,7 +918,6 @@ mod tests {
             assert_eq!(first.reason(), second.reason());
         }
 
-        // Case `live_retained_target_accepts_native_damage_copy`.
         {
             let gpu = shared_gpu().expect("shared GPU context for live-target copy test");
             let (target, _) = create_targets(4, 4, &gpu.device);

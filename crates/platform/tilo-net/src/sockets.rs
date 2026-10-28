@@ -39,7 +39,6 @@ pub struct TlsStream(imp::Tls);
 /// A listening TCP socket.
 pub struct TcpListener(imp::Listener);
 
-/// A UDP socket.
 pub struct UdpSocket(imp::Udp);
 
 macro_rules! opaque_debug {
@@ -106,10 +105,6 @@ impl TcpStream {
     }
 
     /// The remote address.
-    ///
-    /// # Errors
-    ///
-    /// When the socket is no longer connected.
     pub fn peer_addr(&self) -> Result<SocketAddr, NetError> {
         self.0.peer_addr()
     }
@@ -215,10 +210,6 @@ impl TcpListener {
     }
 
     /// The bound address (with the port the system chose for port 0).
-    ///
-    /// # Errors
-    ///
-    /// When the socket has no local address.
     pub fn local_addr(&self) -> Result<SocketAddr, NetError> {
         self.0.local_addr()
     }
@@ -280,10 +271,6 @@ impl UdpSocket {
     }
 
     /// The bound address.
-    ///
-    /// # Errors
-    ///
-    /// When the socket has no local address.
     pub fn local_addr(&self) -> Result<SocketAddr, NetError> {
         self.0.local_addr()
     }

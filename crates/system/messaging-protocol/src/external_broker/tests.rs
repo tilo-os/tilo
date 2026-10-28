@@ -2,6 +2,15 @@ use super::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use ui::prelude::Id;
 
+/// Whether an accessible `label` says `text`: the whole label, or one part of
+/// a conversation line. The shared conversation list speaks each line as who
+/// said it, when, whether it arrived and what it says
+/// (`ui::widget::ConversationList`), so a message body or a delivery word is
+/// one comma-separated part of its list item's name.
+pub(crate) fn speaks(label: Option<&str>, text: &str) -> bool {
+    label.is_some_and(|label| label == text || label.split(", ").any(|part| part == text))
+}
+
 pub(super) fn owner(service: crate::Service) -> Owner {
     Owner {
         principal: "11".repeat(32),
@@ -212,7 +221,7 @@ async fn authority_revoked_during_native_submission_keeps_uncertain_reservation_
         assert_eq!(wakes.load(Ordering::SeqCst), 0);
         assert!(!client.supports(&route(service)));
         revoked.store(false, Ordering::SeqCst);
-        let page = client.history().read(route(service)).await.unwrap();
+        let page = client.history().read(route(service), None).await.unwrap();
         assert_eq!(page.messages.len(), 1);
         assert_eq!(
             page.messages.first().unwrap().delivery,
@@ -289,7 +298,7 @@ async fn native_whatsapp_and_sms_submit_through_private_client_without_false_del
             client.send(request(service)).await.unwrap().delivery,
             Delivery::Submitted
         );
-        let page = client.history().read(route(service)).await.unwrap();
+        let page = client.history().read(route(service), None).await.unwrap();
         assert_eq!(page.messages.len(), 1);
         assert_eq!(
             page.messages.first().unwrap().delivery,
@@ -307,7 +316,7 @@ async fn native_whatsapp_and_sms_submit_through_private_client_without_false_del
         revoked.store(true, Ordering::SeqCst);
         assert!(!client.supports(&route(service)));
         assert_eq!(
-            client.history().read(route(service)).await,
+            client.history().read(route(service), None).await,
             Err(HistoryError::Revoked)
         );
         drop(client);
@@ -424,7 +433,7 @@ fn messages_actions_use_hosted_whatsapp_and_sms_and_keep_text_outside_shared_sta
             app.harness()
                 .a11y_nodes()
                 .iter()
-                .any(|(_, node)| node.label() == Some("private fixture message"))
+                .any(|(_, node)| speaks(node.label(), "private fixture message"))
         );
         assert!(
             !app.harness()

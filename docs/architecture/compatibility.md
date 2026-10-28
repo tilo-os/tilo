@@ -29,7 +29,7 @@ behaviour. The one thing that survives every change is the person's data.
 
 `tilo-live-update.service` (`tilo-extension live:system`,
 `crates/system/extension-helper/src/live.rs`) runs after every staging, with
-the machinery `tilo-vm swap` uses on a development machine:
+the machinery `tilo device swap` uses on a development machine:
 
 1. It opens the staged and the booted deployment read-only: on the sealed
    layout each is mounted from its composefs image with the fs-verity digest

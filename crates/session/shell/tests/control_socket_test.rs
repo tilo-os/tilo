@@ -255,7 +255,6 @@ fn control_socket_lists_targets_and_answers_clicks_and_bad_commands() {
             "click_named on a known target should respond `ok`; got {resp:?}"
         );
 
-        // Proves the command pump survived an actual click dispatch.
         let after = round_trip(&mut stream, r#"{"op":"list_targets"}"#);
         let after_count = after
             .get("targets")
@@ -352,7 +351,6 @@ fn control_socket_drags_types_snapshots_and_dumps_state() {
 
         let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
 
-        // Ctrl modifier on, then the 'k' key.
         let resp = round_trip(
             &mut stream,
             r#"{"op":"modifiers","ctrl":true,"shift":false,"alt":false,"logo":false}"#,
@@ -371,7 +369,6 @@ fn control_socket_drags_types_snapshots_and_dumps_state() {
         let resp = round_trip(&mut stream, r#"{"op":"type","text":"hello"}"#);
         assert!(resp.get("ok").is_some(), "type Ok; got {resp:?}");
 
-        // Proves the executor's pump survived all four commands.
         let listed = round_trip(&mut stream, r#"{"op":"list_targets"}"#);
         assert!(
             listed.get("targets").is_some(),

@@ -64,7 +64,7 @@ impl Shelf {
     }
 
     /// Archive a card.
-    #[action(item = cards)]
+    #[action(item = cards, icon = "archive")]
     pub fn archive_card(&mut self, card: &Id) -> Result<(), Refusal> {
         let taken = self.cards.remove(card).ok_or("no such card")?;
         self.archive.push(card.clone(), taken);
@@ -262,7 +262,16 @@ fn item_verbs_are_offered_on_the_items_of_their_collection() {
         .find(|child| child.id.as_str() == format!("test.shelf/cards/{id}"))
         .unwrap();
     assert_eq!(card.label, "Tea");
-    assert!(card.actions.iter().any(|spec| spec.id == "archive-card"));
+    let archive = card
+        .actions
+        .iter()
+        .find(|spec| spec.id == "archive-card")
+        .expect("the card offers its archiving");
+    assert_eq!(
+        archive.icon.as_deref(),
+        Some("archive"),
+        "on its item the verb wears its own icon"
+    );
     assert!(card.actions.iter().all(|spec| spec.id != "restore"));
     shelf.apply(Shelf::ARCHIVE_CARD.with(id.clone())).unwrap();
     let tree = published(&shelf);
@@ -297,9 +306,18 @@ fn a_verb_with_an_outbox_reaches_outside() {
     assert_eq!(Shelf::kind_of(&rename), ActionKind::Undoable);
     let tree = published(&shelf);
     let spec = |id: &str| tree.actions.iter().find(|spec| spec.id == id).unwrap();
-    assert!(!spec("mail-to").contract.reversible);
-    assert!(spec("retitle").contract.reversible);
-    assert!(spec(tilo_resource::APPLY).contract.reversible);
+    // The kind follows from what each action is able to do: a verb that
+    // queues reaches outside, one that only edits the document is undoable,
+    // and so is the generic `apply`.
+    assert_eq!(spec("mail-to").contract.kind, ActionKind::Outside);
+    assert_eq!(spec("retitle").contract.kind, ActionKind::Undoable);
+    assert_eq!(
+        spec(tilo_resource::APPLY).contract.kind,
+        ActionKind::Undoable
+    );
+    assert!(!spec("mail-to").contract.can_be_undone());
+    assert!(spec("retitle").contract.can_be_undone());
+    assert!(spec(tilo_resource::APPLY).contract.can_be_undone());
     assert_eq!(
         tilo_resource::spec_kind(spec("mail-to")),
         ActionKind::Outside
@@ -371,8 +389,11 @@ fn seed_availability_children_and_content() {
 #[test]
 fn an_input_that_does_not_bind_refuses_where_it_is_submitted() {
     // A hand-written reference whose names do not match its input.
-    let wrong: tilo_resource::ActionRef<Shelf, (String,)> =
-        tilo_resource::ActionRef::new("add", &["title", "colour"]);
+    let wrong: tilo_resource::ActionRef<Shelf, (String,)> = tilo_resource::ActionRef::new(
+        "add",
+        &["title", "colour"],
+        tilo_resource::ResourceKind::of::<Shelf>(),
+    );
     let invoke = wrong.with(("a".to_owned(),));
     assert!(invoke.refusal().is_some());
     assert!(invoke.arguments.is_empty());
@@ -471,7 +492,7 @@ fn content_inputs_nested_derived_places_and_edit_effects() {
         .find(|spec| spec.id == "place-picture")
         .unwrap();
     assert!(matches!(
-        place.input,
+        place.input(),
         tilo_actions::ActionInput::Prompted {
             collects: tilo_actions::Collects::Content,
             ..
@@ -549,6 +570,79 @@ fn an_effect_parameter_publishes_what_its_type_is_written_as() {
             ("colour".to_owned(), tilo_actions::ParamType::Object),
             ("opaque".to_owned(), tilo_actions::ParamType::Object),
         ]
+    );
+}
+
+/// A tag a test host treats an effect by.
+const PRINTED_TAG: &str = "test:printed";
+
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "test.shelf.press")]
+pub enum PressEffect {
+    /// Print the shelf.
+    #[effect(job, returns, host_render, tag = PRINTED_TAG)]
+    Print,
+    /// Count the cards.
+    #[effect(returns)]
+    Count,
+    /// Export the shelf.
+    #[effect(returns, kind = "read", outside_with = "path")]
+    Export {
+        #[param("Where to write it; kept as content when absent")]
+        path: Option<String>,
+    },
+}
+
+#[test]
+fn an_export_reaches_outside_only_when_told_where_to_write() {
+    use tilo_resource::Effect as _;
+    let export = PressEffect::specs()
+        .into_iter()
+        .find(|spec| spec.id == "export")
+        .unwrap();
+    assert_eq!(
+        export.contract.kind,
+        ActionKind::Read,
+        "offered as the least it does"
+    );
+    let need = |arguments: serde_json::Value| {
+        export
+            .need_for(Some(arguments.as_object().unwrap()), None)
+            .kind
+    };
+    assert_eq!(need(serde_json::json!({})), ActionKind::Read);
+    assert_eq!(need(serde_json::json!({ "path": null })), ActionKind::Read);
+    assert_eq!(
+        need(serde_json::json!({ "path": "/tmp/shelf.json" })),
+        ActionKind::Outside
+    );
+}
+
+#[test]
+fn an_effect_carries_the_tags_its_host_treats_it_by() {
+    use tilo_resource::Effect as _;
+    let specs = PressEffect::specs();
+    let tags = |id: &str| {
+        specs
+            .iter()
+            .find(|spec| spec.id == id)
+            .unwrap()
+            .contract
+            .tags
+            .clone()
+    };
+    let print = tags("print");
+    assert!(
+        print.iter().any(|tag| tag == tilo_actions::HOST_RENDER_TAG),
+        "a host-rendered effect says so: {print:?}"
+    );
+    assert!(print.iter().any(|tag| tag == PRINTED_TAG), "{print:?}");
+    let count = tags("count");
+    assert!(
+        count
+            .iter()
+            .all(|tag| tag != tilo_actions::HOST_RENDER_TAG && tag != PRINTED_TAG),
+        "an untagged effect carries neither: {count:?}"
     );
 }
 
@@ -631,6 +725,66 @@ fn an_item_label_is_made_of_several_fields() {
     let edit = Book::edit_action(Book::paths().people.item(ada).last.replace("Byron")).unwrap();
     let entry = book.apply_action(&edit).unwrap().context.clone().unwrap();
     assert_eq!(entry.item.unwrap().label, "Ada Lovelace");
+}
+
+/// A pinned folder, kept as a place every device resolves (`std:docs`) and
+/// named as a person knows it.
+#[derive(tilo_resource::Model, Default, Debug, Clone, PartialEq)]
+#[model(label = Pin::name)]
+pub struct Pin {
+    pub place: tilo_resource::Atom,
+}
+
+impl Pin {
+    fn name(&self) -> String {
+        match self.place.0.as_str() {
+            "std:docs" => "Documents".to_owned(),
+            other => other.rsplit('/').next().unwrap_or(other).to_owned(),
+        }
+    }
+}
+
+#[derive(tilo_resource::Model, Default, Debug, Clone, PartialEq)]
+pub struct Pins {
+    pub pins: Collection<Pin>,
+}
+
+#[resource(kind = "test.pins", label = "Pins", params = pins)]
+impl Pins {
+    /// Pin a place.
+    #[action]
+    pub fn pin(&mut self, cx: &mut ActionCx, place: String) {
+        self.pins.push(
+            cx.id(),
+            Pin {
+                place: tilo_resource::Atom(place),
+            },
+        );
+    }
+}
+
+/// A label that is not a field's text as stored is what the type's
+/// `label = path` names it: the value, its item resource and its search
+/// entry all read so.
+#[test]
+fn an_item_label_can_be_named_by_a_function() {
+    let mut pins = Replica::<Pins>::new();
+    pins.apply(Pins::PIN.with("std:docs".to_owned())).unwrap();
+    pins.apply(Pins::PIN.with("/srv/media".to_owned())).unwrap();
+    let state = pins.state().unwrap();
+    let labels: Vec<Option<String>> = state.pins.values().map(Model::label).collect();
+    assert_eq!(
+        labels,
+        [Some("Documents".to_owned()), Some("media".to_owned())]
+    );
+    let tree = pins.published().unwrap();
+    let mut items: Vec<&str> = tree
+        .children
+        .iter()
+        .map(|child| child.label.as_str())
+        .collect();
+    items.sort_unstable();
+    assert_eq!(items, ["Documents", "media"]);
 }
 
 /// A report, kept under the id of the app it is about.
@@ -868,17 +1022,77 @@ fn a_place_not_loaded_still_resolves_by_id() {
     assert_eq!(child.label, "Chapter one");
 }
 
+fn three_pages() -> Replica<Pages> {
+    let mut pages = Replica::<Pages>::new();
+    for title in ["Cover", "Contents", "Chapter one"] {
+        pages.apply(Pages::ADD_PAGE.with(title.to_owned())).unwrap();
+    }
+    pages
+}
+
+#[test]
+fn places_as_they_were_are_the_publication_they_were() {
+    let pages = three_pages();
+    let mut state = Pages::read(pages.doc()).unwrap();
+    state.loaded = vec![0, 1];
+    let first = tilo_resource::derived::published::<Pages>(state.places());
+    let again = tilo_resource::derived::published::<Pages>(state.places());
+    assert!(std::rc::Rc::ptr_eq(&first, &again));
+
+    state.loaded = vec![0, 1, 2];
+    let more = tilo_resource::derived::published::<Pages>(state.places());
+    assert!(!std::rc::Rc::ptr_eq(&first, &more));
+    let labels: Vec<&str> = more
+        .resources()
+        .iter()
+        .map(|place| place.label.as_str())
+        .collect();
+    assert_eq!(labels, ["Cover", "Contents", "Chapter one"]);
+    for (was, now) in first.resources().iter().zip(more.resources().iter()) {
+        assert!(
+            std::rc::Rc::ptr_eq(was, now),
+            "{} is published again",
+            was.label
+        );
+    }
+}
+
+#[test]
+fn reading_more_of_a_document_is_no_revision() {
+    let mut pages = three_pages();
+    let mut reader = tilo_resource::Reader::<Pages>::open(pages.doc_mut()).unwrap();
+    let revision = reader.revision();
+    let demand = tilo_resource::Demand::none().with_keys(["p0", "p2"]);
+    assert!(reader.demand(pages.doc(), demand).unwrap());
+    assert_eq!(reader.state().loaded, [0, 2]);
+    assert_eq!(reader.revision(), revision);
+    assert_eq!(reader.loads(), 1);
+
+    pages
+        .apply(Pages::ADD_PAGE.with("Index".to_owned()))
+        .unwrap();
+    assert!(reader.sync(pages.doc()).unwrap());
+    assert_ne!(reader.revision(), revision);
+}
+
 /// An absent option given positionally is left out, as a parameter not
 /// given, rather than sent as `null` the door refuses.
 #[test]
 fn an_absent_positional_option_is_not_sent() {
     let add: tilo_resource::ActionRef<Shelf, (String, Option<Colour>)> =
-        tilo_resource::ActionRef::new("add", &["title", "colour"]);
+        tilo_resource::ActionRef::new(
+            "add",
+            &["title", "colour"],
+            tilo_resource::ResourceKind::of::<Shelf>(),
+        );
     let arguments = add.arguments(&("Tea".to_owned(), None)).unwrap();
     assert_eq!(arguments.len(), 1);
     assert_eq!(arguments["title"], "Tea");
-    let single: tilo_resource::ActionRef<Shelf, Option<String>> =
-        tilo_resource::ActionRef::new("retitle", &["title"]);
+    let single: tilo_resource::ActionRef<Shelf, Option<String>> = tilo_resource::ActionRef::new(
+        "retitle",
+        &["title"],
+        tilo_resource::ResourceKind::of::<Shelf>(),
+    );
     assert!(single.arguments(&None).unwrap().is_empty());
     let mut shelf = Replica::<Shelf>::new();
     shelf.apply(add.with(("Tea".to_owned(), None))).unwrap();

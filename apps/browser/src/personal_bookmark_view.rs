@@ -67,7 +67,7 @@ pub struct LocalizedLabels {
     pub unnamed_folder: String,
 }
 
-pub type Bindings = Rc<dyn Fn(ViewRequest) -> Option<tilo_actions::ActionBinding<()>>>;
+pub type Bindings = Rc<dyn Fn(ViewRequest) -> Option<ui::tilo_actions::ActionBinding<()>>>;
 
 enum Entry<'a> {
     Flat(&'a Bookmark),
@@ -387,7 +387,10 @@ mod tests {
     fn labels() -> LocalizedLabels {
         static CATALOG: ui::i18n::EmbeddedCatalog = ui::i18n::EmbeddedCatalog::new(
             "en-US",
-            &[("en-US", include_str!("../locales/en-US.ftl"))],
+            &[(
+                "en-US",
+                include_str!("../../browser-parts/locales/en-US.ftl"),
+            )],
         );
         LocalizedLabels {
             back: CATALOG.t("browser-personal-bookmarks-back"),
@@ -483,7 +486,7 @@ mod tests {
             let resource =
                 crate::browser_widget::personal::request_resource(&binding_state, request)?;
             let action = resource.actions.first()?;
-            tilo_actions::ActionBinding::unit_for(&resource, &action.id).ok()
+            ui::tilo_actions::ActionBinding::unit_for(&resource, &action.id).ok()
         });
         let adapter = ViewState {
             bookmarks: &state.bookmarks,

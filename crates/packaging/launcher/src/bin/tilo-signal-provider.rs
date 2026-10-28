@@ -112,10 +112,12 @@ fn run() -> io::Result<bool> {
             .stdin(std::process::Stdio::null())
             .spawn()?,
     );
-    supervise(java, wake)
+    supervise(java, wake, STOP_GRACE)
 }
+/// How long Java gets to run its shutdown hooks after SIGTERM before it is killed.
+const STOP_GRACE: Duration = Duration::from_secs(2);
 /// Sleep until Java exits, SIGTERM rings `wake`, or the stop grace ends.
-fn supervise(mut java: Java, wake: &bounded_command::WakeFd) -> io::Result<bool> {
+fn supervise(mut java: Java, wake: &bounded_command::WakeFd, grace: Duration) -> io::Result<bool> {
     let mut stopping = None;
     let mut forced = false;
     // The first wait only probes: STOP may already be set.
@@ -144,7 +146,7 @@ fn supervise(mut java: Java, wake: &bounded_command::WakeFd) -> io::Result<bool>
             }
             stopping = Some(
                 Instant::now()
-                    .checked_add(Duration::from_secs(2))
+                    .checked_add(grace)
                     .ok_or(io::ErrorKind::InvalidData)?,
             );
         }
@@ -246,26 +248,20 @@ mod tests {
             .spawn()
             .unwrap();
         let child = Java(child);
-        let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
-        while !ready.exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(
-            ready.exists(),
-            "fixture must observe the actual live child before shutdown"
-        );
+        tilo_test_env::wait_until("the fixture to observe the live child", || ready.exists());
         (root, child)
     }
     #[test]
     fn actual_child_normal_hooks_and_forced_shutdown_produce_different_checkpoints() {
-        // One test owns the process-wide STOP flag and SIGTERM handler.
         let wake = install_stop().unwrap();
         let (_root, child) =
             live("trap 'exit 143' TERM; touch \"$1\"; while :; do sleep 0.02; done");
         STOP.store(true, Ordering::Relaxed);
-        assert!(supervise(child, wake).unwrap());
+        // A child that honours TERM exits by itself: the grace only bounds a hang,
+        // so a loaded machine that delays its trap cannot turn it into a kill.
+        assert!(supervise(child, wake, tilo_test_env::hang_bound()).unwrap());
         let (_root, child) = live("trap '' TERM; touch \"$1\"; while :; do sleep 0.02; done");
-        assert!(!supervise(child, wake).unwrap());
+        assert!(!supervise(child, wake, STOP_GRACE).unwrap());
         STOP.store(false, Ordering::Relaxed);
         let child = Java(
             Command::new("/bin/sh")
@@ -274,7 +270,7 @@ mod tests {
                 .unwrap(),
         );
         assert!(
-            !supervise(child, wake).unwrap(),
+            !supervise(child, wake, STOP_GRACE).unwrap(),
             "unsolicited 143 exit is never clean"
         );
         let child = Java(
@@ -284,7 +280,7 @@ mod tests {
                 .unwrap(),
         );
         assert!(
-            !supervise(child, wake).unwrap(),
+            !supervise(child, wake, STOP_GRACE).unwrap(),
             "kernel signal termination is never a normal Java shutdown"
         );
         // Phase `sigterm_wakes_the_sleeping_supervisor`: the supervisor waits
@@ -297,7 +293,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
             // SAFETY: raises SIGTERM in this process, whose handler is installed.
             assert_eq!(unsafe { libc::raise(libc::SIGTERM) }, 0);
-            let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
+            let deadline = tilo_test_env::hang_deadline();
             while !stopped.exists() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(5));
             }
@@ -307,13 +303,11 @@ mod tests {
                 unsafe { libc::kill(pid, libc::SIGKILL) };
             }
         });
-        let began = Instant::now();
-        let clean = supervise(child, wake).unwrap();
+        let clean = supervise(child, wake, tilo_test_env::hang_bound()).unwrap();
         std::fs::write(root.path().join("stopped"), b"").unwrap();
         watchdog.join().unwrap();
         assert!(clean, "SIGTERM must reach the sleeping supervisor");
         assert!(STOP.load(Ordering::Relaxed));
-        assert!(began.elapsed() < Duration::from_secs(2));
         STOP.store(false, Ordering::Relaxed);
     }
 }

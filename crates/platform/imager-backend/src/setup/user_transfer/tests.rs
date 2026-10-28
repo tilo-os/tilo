@@ -885,7 +885,7 @@ fn partial_adoption_revalidates_relocated_signed_apps_original_objects_and_userd
             .any(|args| args.first().map(String::as_str) == Some("install"))
     );
     let mut worker = recovered.start(true).unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Some(event) = worker.try_next() {
             match event {
@@ -1024,7 +1024,7 @@ fn app_only_partial_adoption_recovers_moved_data_without_copying_personal_home_o
     let (_, recovered) =
         recover_promotion_with_runner(&runner, request.clone(), &active, &journal).unwrap();
     let mut worker = recovered.start(true).unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Some(event) = worker.try_next() {
             match event {
@@ -1140,7 +1140,7 @@ fn app_only_partial_adoption_revalidates_signed_output_and_original_subtree_rece
             .any(|args| args.first().map(String::as_str) == Some("install"))
     );
     let mut worker = recovered.start(true).unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Some(event) = worker.try_next() {
             match event {

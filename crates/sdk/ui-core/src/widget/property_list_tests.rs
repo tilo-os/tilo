@@ -249,6 +249,93 @@ fn a_narrow_list_stacks_labels_above_values() {
     assert!(face.height(&mut text, &big, 640.0) > face.height(&mut text, &theme, 640.0) * 1.5);
 }
 
+/// Where `row`'s label and value are painted in `laid`, as rects.
+fn painted(
+    text: &mut TextRenderer,
+    m: &ListMetrics,
+    laid: &ListLayout,
+    index: usize,
+    row: &PropertyRow<'_>,
+) -> (Rect, Rect) {
+    let geo = &laid.rows[index];
+    let label_style = if laid.stacked {
+        &m.stacked_label
+    } else {
+        &m.label
+    };
+    let (w, h) = text.measure_style(
+        row.label,
+        geo.label_wrap.map(crate::num::f32_of_f64),
+        label_style,
+    );
+    let label = Rect::from_origin_size(geo.label, (f64::from(w), f64::from(h)));
+    let (w, h) = text.measure_style(
+        row.value,
+        Some(crate::num::f32_of_f64(geo.value_width)),
+        &m.value_style(row),
+    );
+    let value = Rect::from_origin_size(geo.value, (f64::from(w), f64::from(h)));
+    (label, value)
+}
+
+#[test]
+fn a_label_wider_than_its_column_wraps_and_never_runs_into_its_value() {
+    let theme = Theme::dark();
+    let m = regular(&theme);
+    let mut text = TextRenderer::new();
+    let rows = vec![
+        PropertyRow::new("Printers responding", "1 of 1"),
+        PropertyRow::new("Reporting ink or toner levels", "1 printer"),
+        PropertyRow::new("Scanners available", "1"),
+    ];
+    // A phone-wide window: the labels' column is capped below the longest.
+    let width = 380.0;
+    let laid = layout(&mut text, &theme, &rows, width);
+    assert!(!laid.stacked, "the labels wrap beside their values");
+    for (index, row) in rows.iter().enumerate() {
+        let (label, value) = painted(&mut text, &m, &laid, index, row);
+        let geo = &laid.rows[index];
+        assert!(
+            label.x1 <= value.x0 && label.intersect(value).area() <= 0.0,
+            "{:?}'s label {label:?} runs into its value {value:?}",
+            row.label
+        );
+        assert!(
+            label.y0 >= geo.rect.y0 && label.y1 <= geo.rect.y1 && label.x1 <= geo.rect.x1,
+            "{:?}'s label {label:?} is cut off by its row {:?}",
+            row.label,
+            geo.rect
+        );
+    }
+    assert!(
+        laid.rows[1].label_wrap.is_some(),
+        "the longest label wraps within its column"
+    );
+
+    // A word wider than the column cannot wrap: the labels stand over the
+    // values, each shown whole.
+    let rows = vec![
+        PropertyRow::new("Interoperability", "Yes"),
+        PropertyRow::new("Scanners", "1"),
+    ];
+    let narrow = 200.0;
+    let laid = layout(&mut text, &theme, &rows, narrow);
+    assert!(laid.stacked);
+    for (index, row) in rows.iter().enumerate() {
+        let (label, value) = painted(&mut text, &m, &laid, index, row);
+        assert!(
+            label.y1 <= value.y0,
+            "{:?} stands over its value",
+            row.label
+        );
+        assert!(
+            label.x1 <= laid.rows[index].rect.x1,
+            "{:?} is whole",
+            row.label
+        );
+    }
+}
+
 #[test]
 fn up_to_two_actions_sit_at_the_trailing_edge_of_their_row() {
     let theme = Theme::dark();

@@ -74,8 +74,11 @@ fn body_editor(dispatcher: Option<&Dispatcher<Mail>>) -> BodyEditor {
         None => RichTextField::view_only(draft_body_object),
     };
     RichTextSurface::field(field).with_editor(
+        // A message is prose: its lines and list items sit at the text's
+        // own line height, not each padded like a form field.
         BlockEditor::new()
             .with_wrap_lines(true)
+            .with_compact_paragraph_spacing(true)
             .with_empty_hint("Write your message"),
     )
 }
@@ -94,15 +97,39 @@ struct BodyLayout {
     content_h: f64,
 }
 
+/// Whether `next` continues `previous` line by line in plain text: items of
+/// one list, lines of one quote, and a quote under the line of text that
+/// introduces it ("On Jun 30, Maya wrote:").
+fn runs_on(previous: &BlockKind, next: &BlockKind) -> bool {
+    let list = |kind: &BlockKind| {
+        matches!(
+            kind,
+            BlockKind::Bullet { .. } | BlockKind::Checklist { .. } | BlockKind::Numbered { .. }
+        )
+    };
+    (list(previous) && list(next))
+        || matches!(
+            (previous, next),
+            (BlockKind::Paragraph | BlockKind::Quote, BlockKind::Quote)
+        )
+}
+
 /// The body as the `text/plain` alternative: a line per paragraph, list
 /// items and quotes marked as a reader of plain text expects.
 fn plain_of(blocks: &[BlockContent]) -> String {
     let mut out = String::new();
     let mut number = 1_usize;
-    for (index, block) in blocks.iter().enumerate() {
-        if index > 0 {
+    let mut previous: Option<&BlockKind> = None;
+    for block in blocks {
+        if let Some(previous) = previous {
             out.push('\n');
+            // Paragraphs stand apart by a blank line, as plain-text mail
+            // writes them; a list's items and a quote's lines run on.
+            if !runs_on(previous, &block.kind) {
+                out.push('\n');
+            }
         }
+        previous = Some(&block.kind);
         match block.kind {
             BlockKind::Bullet { .. } | BlockKind::Checklist { .. } => out.push_str("• "),
             BlockKind::Numbered { .. } => {
@@ -271,8 +298,6 @@ struct ComposeMetrics {
     pad: f64,
     /// Gap between related rows and controls.
     gap: f64,
-    /// The title bar.
-    title_h: f64,
     /// The column the field labels stand in.
     label_w: f64,
     /// A field, the toolbar row and a footer button.
@@ -320,12 +345,10 @@ impl ComposeMetrics {
         };
         let control_h = ControlSize::Regular.height(theme);
         let pad = f64::from(spacing.s4);
-        let title_h = f64::from(metrics.bar_height).max(control_h + 2.0 * f64::from(spacing.s1));
         let default_w = f64::from(metrics.panel_width_sheet) * f64::from(theme.text_growth());
         Self {
             pad,
             gap: f64::from(spacing.s2),
-            title_h,
             label_w,
             control_h,
             icon_button: f64::from(metrics.min_pointer_target),
@@ -338,7 +361,7 @@ impl ComposeMetrics {
             // The narrowest window that still holds the footer's buttons
             // and a few lines of body.
             min_w: f64::from(metrics.panel_width_utility),
-            min_h: title_h + 6.0 * control_h + 2.0 * pad,
+            min_h: 6.0 * control_h + 3.0 * pad,
             default_w,
             default_h: default_w,
         }
@@ -406,7 +429,6 @@ enum Field {
 /// An interactive region inside the window, resolved during layout.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ComposeHit {
-    TitleBar,
     Send,
     Discard,
     SaveDraft,
@@ -455,12 +477,15 @@ pub enum ComposeAction {
     Discard,
 }
 
-/// A drag in progress on the window itself (move or resize).
+/// A drag in progress on the window's edge.
+///
+/// A floating composer is not moved: it is placed by the layout and clamped
+/// into the window, and it sits over a scrim, so there is nothing to look at
+/// behind it. Its band is the formatting toolbar, and its name, Discard draft
+/// and Close are the window bar's — the composer draws no title bar of its
+/// own in any presentation.
 #[derive(Clone, Copy)]
 enum Drag {
-    Move {
-        grab: Point,
-    },
     Resize {
         edge: Edge,
         start: Rect,
@@ -489,6 +514,8 @@ pub struct ComposeWindow {
     /// the open one: a reply goes from the account the answered mail came
     /// to.
     sending_from: Option<String>,
+    /// Whether the person has an account to send from; Send waits for one.
+    has_account: bool,
     /// Whether the person typed, attached or formatted anything since the
     /// window opened: closing such a message keeps it as a draft.
     touched: bool,
@@ -568,6 +595,11 @@ pub struct ComposeWindow {
 }
 
 impl ComposeWindow {
+    /// What the window is writing ("New message", "Reply", …).
+    pub fn heading(&self) -> &'static str {
+        self.heading
+    }
+
     pub fn new(format: ComposeFormat) -> Self {
         // Recipients are addresses and names: no spell check, identifier
         // text.
@@ -577,6 +609,7 @@ impl ComposeWindow {
             open: false,
             replying_to: None,
             sending_from: None,
+            has_account: false,
             touched: false,
             book: None,
             completions: ui::widget::SuggestionList::new(),
@@ -785,6 +818,7 @@ impl ComposeWindow {
                     .with_state(AccessState {
                         focusable: true,
                         checked,
+                        disabled: hit == ComposeHit::Send && !self.can_send(),
                         ..Default::default()
                     }),
             );
@@ -912,7 +946,9 @@ impl ComposeWindow {
                 }
                 _ => return None,
             },
-            "send" if matches!(action, Action::Activate) => return Some(ComposeAction::Send),
+            "send" if matches!(action, Action::Activate) && self.can_send() => {
+                return Some(ComposeAction::Send);
+            }
             "save" if matches!(action, Action::Activate) => return Some(ComposeAction::SaveDraft),
             "discard" if matches!(action, Action::Activate) => {
                 self.close();
@@ -1011,10 +1047,11 @@ impl ComposeWindow {
         }
     }
 
-    /// Seed the window to pass a message on: the subject and the forwarded
-    /// message as the body, with no recipient yet.
-    pub fn open_forward(&mut self, subject: &str, quoted: &str) {
+    /// Seed the window to pass a message on: the subject, the forwarded
+    /// message as the body and its `files` attached, with no recipient yet.
+    pub fn open_forward(&mut self, subject: &str, quoted: &str, files: &[DraftAttachment]) {
         self.open_reply("", subject, quoted);
+        self.attachments = crate::attachment_store::bounded(files);
         self.heading = "Forward";
     }
 
@@ -1171,7 +1208,6 @@ impl ComposeWindow {
         true
     }
 
-    /// Send from the account at `address`.
     pub fn send_from(&mut self, address: String) {
         self.sending_from = Some(address);
     }
@@ -1179,6 +1215,30 @@ impl ComposeWindow {
     /// The address of the account the message goes from, when chosen.
     pub fn sending_from(&self) -> Option<&str> {
         self.sending_from.as_deref()
+    }
+
+    /// Type `to` into the To field, as a person would.
+    #[cfg(test)]
+    pub(crate) fn type_recipient(&mut self, to: &str) {
+        self.to.set_text(to);
+    }
+
+    /// Tell the composer whether there is an account to send from.
+    pub fn set_has_account(&mut self, has_account: bool) {
+        if self.has_account != has_account {
+            self.has_account = has_account;
+            self.dirty = true;
+        }
+    }
+
+    /// Whether Send does anything: there is an account to send from and a
+    /// recipient to send to. Until then it is shown disabled, announced as
+    /// such, and inert.
+    pub fn can_send(&self) -> bool {
+        self.has_account
+            && [&self.to, &self.cc, &self.bcc]
+                .into_iter()
+                .any(|field| !crate::transport::parse_addr_list(field.value()).is_empty())
     }
 
     /// The message this one answers.
@@ -1316,10 +1376,6 @@ impl ComposeWindow {
         self.dirty = true;
         Ok(())
     }
-
-    // ---- focus ----
-
-    // ---- body ----
 
     /// Start the body afresh from `seed` when the window next reaches the
     /// document; until then the body reads as the seed's text.
@@ -1475,7 +1531,6 @@ impl ComposeWindow {
         ui::Widget::apply_layout(&mut self.editor, &layout.taffy, node, origin);
     }
 
-    /// An event for the body editor.
     fn body_event(&mut self, event: &WindowEvent, ctx: &mut ComposeEventContext<'_>) {
         self.start_pending_body(&mut ctx.state);
         if self.body_layout.node.is_none() {
@@ -1544,8 +1599,6 @@ impl ComposeWindow {
             _ => None,
         }
     }
-
-    // ---- layout ----
 
     /// Position the window for the current dock state within `bounds`, then
     /// lay out every interactive region. `bounds` is the app content rect.
@@ -1619,23 +1672,19 @@ impl ComposeWindow {
         self.rect = Rect::new(x0, y0, x0 + w, y0 + h);
     }
 
-    /// Lay out and register the title bar (drag handle and window
-    /// buttons), the To/Cc/Bcc/Subject fields and the Attach button.
-    /// Returns the y past the header, where the toolbar starts. Part of
-    /// [`Self::relayout_regions`].
+    /// Lay out and register the To/Cc/Bcc/Subject fields and the Attach
+    /// button. Returns the y past the header, where the formatting toolbar
+    /// band starts. Part of [`Self::relayout_regions`].
+    ///
+    /// There is no title bar of the composer's own in any presentation: the
+    /// window bar names the message and holds Discard draft and Close, as it
+    /// does for every other surface ([`crate::window_bar`]).
     fn layout_header_hits(&mut self, r: Rect, lx: f64, rx: f64) -> f64 {
         let m = self.metrics;
         let field_x = lx + m.label_w;
-
-        // Title bar (drag handle) and its icon buttons, centred on it.
-        let title = Rect::new(r.x0, r.y0, r.x1, r.y0 + m.title_h);
-        self.hits.push((title, ComposeHit::TitleBar));
         let side = m.icon_button;
-        let btn_y = title.center().y - side / 2.0;
-        let close = Rect::new(rx - side, btn_y, rx, btn_y + side);
-        self.hits.push((close, ComposeHit::Close));
 
-        let mut y = title.y1 + m.pad;
+        let mut y = r.y0 + m.pad;
 
         // To row, with the Cc/Bcc button at its end.
         let to_rect = Rect::new(field_x, y, rx - m.cc_bcc_w - m.gap, y + m.control_h);
@@ -1707,12 +1756,16 @@ impl ComposeWindow {
 
         // Footer: Discard at the leading edge, Send at the trailing edge.
         // What is written is kept as a draft when the composer closes, so
-        // there is no Save draft button to remember.
+        // there is no Save draft button to remember. While the window bar
+        // hosts the window, Discard draft is the bar's.
         let bh = m.control_h;
-        self.hits.push((
-            Rect::new(lx, by, lx + m.discard_w, by + bh),
-            ComposeHit::Discard,
-        ));
+        if !ui::window_toolbar::is_hosted() {
+            // window-bar: fallback, the bar discards the draft while it hosts the window
+            self.hits.push((
+                Rect::new(lx, by, lx + m.discard_w, by + bh),
+                ComposeHit::Discard,
+            ));
+        }
         let send = Rect::new(rx - m.send_w, by, rx, by + bh);
         self.hits.push((send, ComposeHit::Send));
 
@@ -1747,8 +1800,6 @@ impl ComposeWindow {
             .find(|(_, h)| *h == ComposeHit::Body)
             .map_or(Rect::ZERO, |(r, _)| *r)
     }
-
-    // ---- event handling ----
 
     /// Returns `true` if the event was consumed (so the host must NOT let it
     /// fall through to the mailbox behind the window). The contract that makes
@@ -1904,9 +1955,15 @@ impl ComposeWindow {
             self.close();
             return (true, ComposeAction::Close);
         }
-        // Ctrl+Enter sends, from any field.
+        // Ctrl+Enter sends, from any field, once there is someone to send
+        // to and an account to send from.
         if Self::is_send_press(event, ctx.modifiers) {
-            return (true, ComposeAction::Send);
+            let action = if self.can_send() {
+                ComposeAction::Send
+            } else {
+                ComposeAction::None
+            };
+            return (true, action);
         }
         // Body editor.
         if matches!(self.focus, Field::Body) {
@@ -2032,13 +2089,6 @@ impl ComposeWindow {
         ctx: &mut ComposeEventContext<'_>,
     ) -> ComposeAction {
         match hit {
-            ComposeHit::TitleBar => {
-                if !self.is_full_window_page() && !self.in_pane() {
-                    self.drag = Some(Drag::Move {
-                        grab: Point::new(pt.x - self.rect.x0, pt.y - self.rect.y0),
-                    });
-                }
-            }
             ComposeHit::Close => {
                 self.close();
                 return ComposeAction::Close;
@@ -2047,7 +2097,8 @@ impl ComposeWindow {
                 self.close();
                 return ComposeAction::Discard;
             }
-            ComposeHit::Send => return ComposeAction::Send,
+            ComposeHit::Send if self.can_send() => return ComposeAction::Send,
+            ComposeHit::Send => {}
             ComposeHit::SaveDraft => return ComposeAction::SaveDraft,
             ComposeHit::ToggleCcBcc => {
                 self.show_cc_bcc = !self.show_cc_bcc;
@@ -2222,8 +2273,6 @@ impl ComposeWindow {
         }
     }
 
-    // ---- move / resize ----
-
     fn resize_edge_at(&self, pt: Point) -> Option<Edge> {
         if self.is_full_window_page() || self.in_pane() {
             return None;
@@ -2242,7 +2291,7 @@ impl ComposeWindow {
             (_, true, true) => Some(Edge::BottomRight),
             (true, _, true) => Some(Edge::BottomLeft),
             (_, true, _) => Some(Edge::Right),
-            (true, _, _) if pt.y > r.y0 + self.metrics.title_h => Some(Edge::Left),
+            (true, _, _) => Some(Edge::Left),
             (_, _, true) => Some(Edge::Bottom),
             _ => None,
         }
@@ -2268,14 +2317,6 @@ impl ComposeWindow {
 
     fn apply_drag(&mut self, drag: Drag, pt: Point) {
         match drag {
-            Drag::Move { grab } => {
-                let w = self.rect.width();
-                let h = self.rect.height();
-                let x0 = pt.x - grab.x;
-                let y0 = pt.y - grab.y;
-                self.rect = Rect::new(x0, y0, x0 + w, y0 + h);
-                self.clamp_into_bounds();
-            }
             Drag::Resize { edge, start, from } => {
                 let (min_w, min_h) = (self.metrics.min_w, self.metrics.min_h);
                 let dx = pt.x - from.x;
@@ -2299,8 +2340,6 @@ impl ComposeWindow {
             }
         }
     }
-
-    // ---- drawing ----
 
     pub fn draw(
         &mut self,
@@ -2351,7 +2390,6 @@ impl ComposeWindow {
         }
         // What is drawn on the panel reads against the panel's ground.
         let panel = theme.on_ground(self.ground(theme));
-        self.draw_title_bar(scene, t, tr, &panel);
         self.draw_header_fields(scene, t, tr, &panel);
         self.draw_body(scene, t, tr, &panel, presence);
         self.draw_staged_attachment_chips(scene, t, tr, &panel);
@@ -2382,48 +2420,6 @@ impl ComposeWindow {
 
     fn hit_rect(&self, hit: ComposeHit) -> Option<Rect> {
         self.hits.iter().find(|(_, h)| *h == hit).map(|(r, _)| *r)
-    }
-
-    /// The title, the pop-out and close buttons, and the rule under them.
-    fn draw_title_bar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let m = self.metrics;
-        let r = self.rect;
-        let bar = Rect::new(r.x0, r.y0, r.x1, r.y0 + m.title_h);
-        let heading = self.heading;
-        let close = self.hit_rect(ComposeHit::Close).unwrap_or(Rect::ZERO);
-        let style = theme.text(TextRole::Subheading);
-        let width = (close.x0 - m.gap - (r.x0 + m.pad)).max(0.0);
-        let heading = tr.elide_to_width_style(heading, ui::num::f32_of_f64(width), &style);
-        let (_, h) = tr.measure_style(&heading, None, &style);
-        tr.draw_style(
-            scene,
-            &heading,
-            theme.text_primary,
-            t * Affine::translate((r.x0 + m.pad, bar.center().y - f64::from(h) / 2.0)),
-            None,
-            &style,
-        );
-        for (hit, icon, name) in [(ComposeHit::Close, Icon::X, "Close")] {
-            let Some(rect) = self.hit_rect(hit) else {
-                continue;
-            };
-            Button::paint(
-                scene,
-                t,
-                tr,
-                theme,
-                &ButtonFace::icon_only(rect, icon, name).hovered(rect.contains(self.last_mouse)),
-            );
-        }
-        ui::surface::separator(
-            scene,
-            t,
-            r.x0,
-            r.x1,
-            bar.y1,
-            0.0,
-            theme.tokens.colors.surfaces.content,
-        );
     }
 
     /// The field labels, the Cc/Bcc and Attach buttons, the formatting
@@ -2665,6 +2661,7 @@ impl ComposeWindow {
         let Some(rect) = self.hit_rect(hit) else {
             return;
         };
+        let enabled = hit != ComposeHit::Send || self.can_send();
         Button::paint(
             scene,
             t,
@@ -2672,7 +2669,8 @@ impl ComposeWindow {
             theme,
             &ButtonFace::new(rect, key)
                 .role(role)
-                .hovered(rect.contains(self.last_mouse)),
+                .disabled(!enabled)
+                .hovered(enabled && rect.contains(self.last_mouse)),
         );
     }
 
@@ -2713,6 +2711,28 @@ mod tests {
             text.map(SmolStr::new),
             ElementState::Pressed,
         ))
+    }
+
+    /// Paragraphs stand apart by a blank line in the plain part; a list's
+    /// items and a quote's lines run on.
+    #[test]
+    fn the_plain_part_separates_paragraphs_by_a_blank_line() {
+        let block = |kind: BlockKind, text: &str| BlockContent {
+            kind,
+            ..BlockContent::paragraph(text, text)
+        };
+        let blocks = [
+            block(BlockKind::Paragraph, "Hi Ada,"),
+            block(BlockKind::Paragraph, "The plan:"),
+            block(BlockKind::Bullet { indent: 0 }, "website"),
+            block(BlockKind::Bullet { indent: 0 }, "press kit"),
+            block(BlockKind::Quote, "one"),
+            block(BlockKind::Quote, "two"),
+        ];
+        assert_eq!(
+            plain_of(&blocks),
+            "Hi Ada,\n\nThe plan:\n\n• website\n• press kit\n\n> one\n> two"
+        );
     }
 
     fn win() -> ComposeWindow {
@@ -2763,9 +2783,41 @@ mod tests {
         }
     }
 
+    /// A reply quotes the original's blank lines as a bare `>`. Those lines
+    /// stay inside the quote: neither the formatted message nor its text
+    /// alternative shows a stray `>` paragraph between the quoted ones.
+    #[test]
+    fn a_reply_quote_keeps_its_blank_lines_inside_the_quote() {
+        let mut w = win();
+        let mut doc = crate::resource::TestMail::doc();
+        w.set_focus(Field::Body);
+        w.start_body(DraftBodySeed::text(
+            "\n\nOn Jun 30, Maya wrote:\n> Lunch at noon?\n>\n> Maya",
+        ));
+        w.to.set_text("maya@example.com");
+        let d = w.to_draft(&mut ui::widget::Edits::lend(&mut doc));
+        let html = d.html_body.expect("an HTML part");
+        assert!(
+            !html.contains("&gt;"),
+            "a quoted blank line is part of the quote, not a `>` paragraph: {html}"
+        );
+        let quoted: Vec<&str> = d
+            .body
+            .lines()
+            .skip_while(|line| !line.ends_with("wrote:"))
+            .skip(1)
+            .map(str::trim_end)
+            .collect();
+        assert_eq!(
+            quoted,
+            ["> Lunch at noon?", ">", "> Maya"],
+            "every quoted line, the blank one too, reads as quoted once: {:?}",
+            d.body
+        );
+    }
+
     #[test]
     fn composer_formats_and_drafts_round_trip_content() {
-        // Phase `format_toggle_round_trips_content`.
         {
             let mut w = win();
             let mut doc = crate::resource::TestMail::doc();
@@ -2795,7 +2847,6 @@ mod tests {
             );
         }
 
-        // Phase `draft_carries_html_in_html_mode`.
         {
             let mut w = win();
             let mut doc = crate::resource::TestMail::doc();
@@ -2810,7 +2861,6 @@ mod tests {
             assert_eq!(d.to, "a@b.example");
         }
 
-        // Phase `a_saved_html_draft_reopens_with_its_formatting`.
         {
             let mut w = win();
             let mut doc = crate::resource::TestMail::doc();
@@ -2820,13 +2870,12 @@ mod tests {
                 ..Draft::default()
             });
             let d = w.to_draft(&mut ui::widget::Edits::lend(&mut doc));
-            assert_eq!(d.body, "Plan\n• ship it");
+            assert_eq!(d.body, "Plan\n\n• ship it");
             let html = d.html_body.unwrap();
             assert!(html.contains("<h2>Plan</h2>"), "got: {html}");
             assert!(html.contains("<strong>ship</strong>"), "got: {html}");
         }
 
-        // Phase `draft_is_plain_in_text_mode`.
         {
             let mut w = ComposeWindow::new(ComposeFormat::Text);
             w.open_blank();
@@ -2886,6 +2935,8 @@ mod tests {
     #[test]
     fn ctrl_enter_sends_from_any_field() {
         let mut w = win();
+        w.set_has_account(true);
+        w.to.set_text("ana@example.org");
         let mut doc = crate::resource::TestMail::doc();
         let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
         let node = taffy::NodeId::new(0);
@@ -2921,22 +2972,23 @@ mod tests {
 
     #[test]
     fn composer_window_moves_resizes_docks_and_owns_its_input() {
-        // Phase `move_keeps_window_in_bounds`.
         {
             let mut w = win();
             let before = w.window_rect();
-            // Drag the title far past the right edge; clamp must keep it reachable.
-            w.drag = Some(Drag::Move {
-                grab: Point::new(10.0, 10.0),
-            });
-            w.apply_drag(w.drag.unwrap(), Point::new(5000.0, 5000.0));
+            // A panel placed past the window's edge is clamped back into it.
+            w.rect = Rect::new(
+                5000.0,
+                5000.0,
+                5000.0 + before.width(),
+                5000.0 + before.height(),
+            );
+            w.clamp_into_bounds();
             let r = w.window_rect();
             assert!(r.x0 < 1280.0, "window stayed reachable horizontally");
             assert!(r.y0 < 800.0, "window stayed reachable vertically");
-            assert_eq!(r.width(), before.width(), "move does not resize");
+            assert_eq!(r.width(), before.width(), "clamping does not resize");
         }
 
-        // Phase `resize_respects_minimum`.
         {
             let mut w = win();
             let start = w.window_rect();
@@ -2953,7 +3005,6 @@ mod tests {
             assert!(r.height() >= w.metrics.min_h - 0.5);
         }
 
-        // Phase `attach_button_requests_the_root_portal_boundary`.
         {
             let mut w = win();
             // The compose widget never accepts a typed path; its root owns the
@@ -2968,7 +3019,6 @@ mod tests {
             );
         }
 
-        // Phase `click_outside_window_is_consumed_not_passed_through`.
         {
             let mut w = win();
             w.last_mouse = Point::new(5.0, 5.0); // outside the centred window
@@ -3001,7 +3051,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_compose_is_a_full_window_page_and_keeps_close_and_send_reachable() {
+    fn compact_compose_is_a_full_window_page_and_keeps_send_reachable() {
         for theme in [Theme::dark(), Theme::light()] {
             for bounds in [
                 Rect::new(0.0, 0.0, 360.0, 800.0),
@@ -3021,29 +3071,29 @@ mod tests {
                 );
                 assert_eq!(window.window_rect(), bounds);
                 assert!(window.body_rect().height() > 0.0);
-                for target in [ComposeHit::Close, ComposeHit::Send, ComposeHit::Discard] {
+                for target in [ComposeHit::Send, ComposeHit::Discard] {
                     assert!(
                         bounds.contains_rect(hit_rect(&window, target)),
                         "{target:?} remains reachable"
                     );
                 }
+                // A page fills the window, so the window bar names and
+                // closes it: the composer draws no bar of its own, on any
+                // presentation.
+                assert!(
+                    window.hit_rect(ComposeHit::Close).is_none(),
+                    "the page draws no title bar: the window bar closes it"
+                );
                 assert!(window.resize_edge_at(bounds.center()).is_none());
                 assert!(
                     window
                         .resize_edge_at(Point::new(bounds.x1 - 1.0, bounds.y1 - 1.0))
                         .is_none()
                 );
-                let close = hit_rect(&window, ComposeHit::Close).center();
-                let (handled, action) = press_at(&mut window, close);
-                assert!(handled);
-                assert!(matches!(action, ComposeAction::Close));
-                assert!(!window.open);
             }
         }
     }
 
-    /// Beside the list the composer takes the message column, and the list
-    /// keeps its clicks and keys.
     #[test]
     fn in_the_message_column_the_list_keeps_its_clicks_and_keys() {
         let mut w = win();
@@ -3052,6 +3102,10 @@ mod tests {
         w.set_pane(Some(column));
         w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
         assert!(w.in_pane());
+        assert!(
+            w.hit_rect(ComposeHit::Close).is_none(),
+            "in the column the window bar names and closes the message"
+        );
         assert!(!w.is_modal(), "the list beside it stays usable");
         assert_eq!(w.window_rect(), column, "it takes the message column");
         assert!(

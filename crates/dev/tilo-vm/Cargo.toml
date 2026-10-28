@@ -18,6 +18,7 @@ quick-xml.workspace = true
 base64.workspace = true
 chrono = { workspace = true, features = ["clock", "std"] }
 clap.workspace = true
+tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-paths.workspace = true
 hex.workspace = true
@@ -32,6 +33,9 @@ tilo-vm-protocol = { path = "../tilo-vm-protocol" }
 toml.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
+
+[dev-dependencies]
+tilo-test-env = { path = "../test-env" }
 
 [lints]
 workspace = true

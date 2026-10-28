@@ -171,10 +171,6 @@ impl RegistriesConfig {
 
     /// Load + merge the global and per-workspace configs; missing files
     /// aren't an error, and if neither exists returns the built-in [`Self::default_central`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a present config file fails to read or parse.
     pub fn load(workspace_root: Option<&Path>) -> Result<Self, ConfigError> {
         Self::load_from(global_path().as_deref(), workspace_root)
     }
@@ -182,10 +178,6 @@ impl RegistriesConfig {
     /// Merge an explicit global-config path with a workspace root.
     /// [`Self::load`] calls this with the real global path; tests pass a
     /// temp path so they never read the host's ~/.config/tilo.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a present config file fails to read or parse.
     pub fn load_from(
         global: Option<&Path>,
         workspace_root: Option<&Path>,
@@ -236,10 +228,6 @@ impl RegistriesConfig {
     }
 
     /// Serialise to the `registries.toml` schema.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if TOML encoding fails.
     pub fn to_toml(&self) -> Result<String, ConfigError> {
         let file = RegistryFile {
             registries: self.registries.iter().map(RegistryRow::from_ref).collect(),
@@ -285,7 +273,6 @@ mod tests {
 
     #[test]
     fn registry_sources_round_trip_merge_workspace_overrides_and_default_to_central() {
-        // Phase `trust_roundtrip`.
         {
             let k = RegistryTrust::Key([3u8; 32]);
             assert_eq!(RegistryTrust::parse(&k.to_wire()).unwrap(), k);
@@ -295,7 +282,6 @@ mod tests {
             );
             assert!(RegistryTrust::parse("nonsense").is_err());
         }
-        // Phase `toml_roundtrip`.
         {
             let cfg = RegistriesConfig::from_registries(vec![
                 RegistryRef {
@@ -321,7 +307,6 @@ mod tests {
                 .collect();
             assert_eq!(back, cfg.registries);
         }
-        // Phase `workspace_overrides_global_by_name_and_sorts_first`.
         {
             let dir = tempfile::tempdir().unwrap();
             let global = dir.path().join("global.toml");
@@ -365,7 +350,6 @@ mod tests {
             assert_eq!(cfg.registries.first().unwrap().name, "central");
             assert_eq!(cfg.registries.len(), 2);
         }
-        // Phase `missing_files_yield_default_central`.
         {
             let dir = tempfile::tempdir().unwrap();
             let cfg =

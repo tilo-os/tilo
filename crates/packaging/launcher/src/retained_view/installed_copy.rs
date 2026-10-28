@@ -193,8 +193,6 @@ impl RootConsumerChannel {
         recipient.check(&self.peer)
     }
     /// Cleanup-only shutdown of this already authenticated private endpoint.
-    /// # Errors
-    /// Refuses a non-helper caller or returns the socket shutdown error.
     pub fn stop_installed_copy_transport(&mut self) -> io::Result<()> {
         own_helper()?;
         self.stream.shutdown(std::net::Shutdown::Both)
@@ -794,9 +792,6 @@ impl InstalledCopyStopFence {
     }
 }
 impl ReceivedInstalledCopy {
-    /// # Errors
-    /// Refuses invalid receive custody or returns errors duplicating the exact
-    /// authenticated socket and root pidfd.
     pub fn stop_fence(&self) -> io::Result<InstalledCopyStopFence> {
         self.check()?;
         Ok(InstalledCopyStopFence {
@@ -827,14 +822,10 @@ impl ReceivedInstalledCopy {
     pub fn declaration(&self) -> &CopyDeclaration {
         &self.receipt.declaration
     }
-    /// # Errors
-    /// Refuses invalid receive custody or returns the archive descriptor duplication error.
     pub fn clone_home(&self) -> io::Result<Option<File>> {
         self.check()?;
         self.home.as_ref().map(File::try_clone).transpose()
     }
-    /// # Errors
-    /// Refuses invalid receive custody or returns the archive descriptor duplication error.
     pub fn clone_applications(&self) -> io::Result<Option<File>> {
         self.check()?;
         self.applications.as_ref().map(File::try_clone).transpose()

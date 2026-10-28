@@ -45,6 +45,14 @@ class AppStartupTest(unittest.TestCase):
         self.assertEqual(app_startup.warm_open_budget_ms("so.tilo.notes", "gpu"),
                          app_startup.budget_ms("so.tilo.notes", "gpu"))
 
+    def test_a_window_the_render_service_draws_names_the_services_device(self):
+        log = ('[app so.tilo.notes stderr] tilo-gpu: window adapter "CPU rasteriser" type=Cpu '
+               'backend=Shm driver="render service" via=render-service\n'
+               '[app so.tilo.notes stderr] APP-STARTUP app=so.tilo.notes total_ms=1196 phases=\n')
+        [launch] = app_startup.parse_startups(log)
+        self.assertEqual(launch["renderer"], "cpu")
+        self.assertEqual(app_startup.over_budget([launch]), [])
+
     def test_parses_launches_phases_and_history(self):
         startups = app_startup.parse_startups(LOG)
         self.assertEqual([s["app"] for s in startups],

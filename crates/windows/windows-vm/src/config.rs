@@ -211,11 +211,9 @@ mod tests {
 
     #[test]
     fn vm_configuration_is_valid_single_domain_and_absolute() {
-        // Phase `recommended_configuration_is_valid`.
         {
             config().validate().unwrap();
         }
-        // Phase `a_caller_cannot_define_a_second_domain`.
         {
             let mut alternate = config();
             alternate.domain_name = "my-other-windows".to_string();
@@ -224,7 +222,6 @@ mod tests {
                 Err(ConfigError::NotSingleton(_))
             ));
         }
-        // Phase `paths_must_be_absolute`.
         {
             let mut relative = config();
             relative.system_disk = PathBuf::from("disk.qcow2");

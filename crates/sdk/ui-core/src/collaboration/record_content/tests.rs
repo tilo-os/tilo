@@ -9,6 +9,81 @@ fn record_store(record: &str) -> (ContentStore, Arc<ContentLane>) {
 }
 
 #[test]
+fn a_window_reads_its_record_content_on_the_lane_it_keeps() {
+    let scope = crate::WakeScope::new();
+    let _entry = scope.enter();
+    let kept = ContentLane::of("so.tilo.record-content-kept-lane-test", "a record");
+    keep_lane(&scope.handle(), Arc::clone(&kept));
+    assert!(
+        Arc::ptr_eq(&ContentLane::of_window(), &kept),
+        "the window asks on the lane it keeps, not the process's lane for the record",
+    );
+}
+
+#[test]
+fn two_windows_of_one_record_each_ask_on_their_own_lane() {
+    // A package's primary record travels as the route with no record, so a
+    // lane per record is one lane for every window showing it: what one
+    // window wants, another window would fetch.
+    let mine = crate::WakeScope::new();
+    let theirs = crate::WakeScope::new();
+    let my_lane = {
+        let _mine = mine.enter();
+        let lane = ContentLane::of_window();
+        keep_lane(&mine.handle(), Arc::clone(&lane));
+        lane
+    };
+    let their_lane = {
+        let _theirs = theirs.enter();
+        let lane = ContentLane::of_window();
+        keep_lane(&theirs.handle(), Arc::clone(&lane));
+        lane
+    };
+    assert!(
+        !Arc::ptr_eq(&my_lane, &their_lane),
+        "each window keeps its own lane, not the process's one for the record",
+    );
+    let hash = tilo_content::hash_bytes(b"a picture one window shows");
+    let my_window = RecordContent::store(ContentStore::memory(), Arc::clone(&my_lane));
+    assert_eq!(my_window.read(&hash), None);
+    assert_eq!(my_lane.take_requests().wants, vec![hash.clone()]);
+    assert!(
+        their_lane.take_requests().wants.is_empty(),
+        "the other window of the same record asked for nothing",
+    );
+}
+
+#[test]
+fn a_window_that_closed_leaves_the_next_one_its_own_lane() {
+    let mut closed = crate::WakeScope::new();
+    let closed_lane = {
+        let _entry = closed.enter();
+        let lane = ContentLane::of_window();
+        keep_lane(&closed.handle(), Arc::clone(&lane));
+        lane
+    };
+    closed.close();
+    // The lane a closed window kept is not what the next window on this
+    // thread reads its record's content on.
+    let next = crate::WakeScope::new();
+    let _entry = next.enter();
+    let next_lane = ContentLane::of_window();
+    keep_lane(&next.handle(), Arc::clone(&next_lane));
+    assert!(
+        !Arc::ptr_eq(&closed_lane, &next_lane),
+        "a closed window's lane is not the next window's lane",
+    );
+    let store = RecordContent::store(ContentStore::memory(), Arc::clone(&next_lane));
+    let hash = tilo_content::hash_bytes(b"the next window's picture");
+    assert_eq!(store.read(&hash), None);
+    assert_eq!(next_lane.take_requests().wants, vec![hash]);
+    assert!(
+        closed_lane.take_requests().wants.is_empty(),
+        "what one window wants is not another window's to fetch",
+    );
+}
+
+#[test]
 fn stored_content_is_offered_on_the_record_route() {
     let (store, lane) = record_store("offered");
     let hash = store.put(b"a picture").unwrap();
@@ -97,4 +172,76 @@ fn content_reaching_a_store_moves_the_arrival_count() {
 
     store.put(b"stored here").unwrap();
     assert!(arrivals() > arrived, "content an app stored counts");
+}
+
+#[test]
+fn a_package_primary_window_asks_on_its_own_lane() {
+    let app = "so.tilo.record-content-primary-test";
+    let window = ContentLane::of_window();
+    let store = RecordContent::store(ContentStore::memory(), Arc::clone(&window));
+    let hash = tilo_content::hash_bytes(b"a posted picture");
+    assert_eq!(store.read(&hash), None);
+    assert_eq!(window.take_requests().wants, vec![hash]);
+    assert!(
+        ContentLane::of(app, "").take_requests().wants.is_empty(),
+        "a package's primary record travels as its route, its lane is the window's",
+    );
+}
+
+#[test]
+fn missing_content_reads_where_its_host_says_the_want_stands() {
+    let (store, lane) = record_store("standing");
+    let bytes = b"bytes on a device that is offline".to_vec();
+    let hash = tilo_content::hash_bytes(&bytes);
+    assert_eq!(store.read(&hash), None);
+    let looked = arrivals();
+
+    lane.stands(hash.clone(), ContentState::Waiting);
+    assert_eq!(store.state(&hash), ContentState::Waiting);
+    assert_ne!(arrivals(), looked, "a window waiting for it looks again");
+
+    lane.stands(hash.clone(), ContentState::Pending);
+    assert_eq!(
+        store.state(&hash),
+        ContentState::Pending,
+        "a holder connected"
+    );
+
+    lane.arrive(hash.clone(), bytes.clone());
+    assert_eq!(store.read(&hash), Some(bytes));
+    assert_eq!(store.state(&hash), ContentState::Resolved);
+
+    // Content nobody here asked for has no standing.
+    let other = tilo_content::hash_bytes(b"never asked");
+    lane.stands(other.clone(), ContentState::Unavailable);
+    assert_eq!(lane.standing(&other), None);
+}
+
+#[test]
+fn content_reads_arrive_from_the_room_and_content_here_is_ready_at_once() {
+    use crate::arriving::Arrival;
+    let (store, lane) = record_store("read-as-arriving");
+    let here = store.put(b"a picture here").unwrap();
+    let reads = ContentReads::new(store);
+    assert_eq!(
+        reads.read(&here).get(),
+        Arrival::Ready(()),
+        "content on this device opens complete"
+    );
+
+    let bytes = b"bytes on another device".to_vec();
+    let away = tilo_content::hash_bytes(&bytes);
+    let read = reads.read(&away);
+    assert!(read.get().is_pending(), "on its way from the room");
+    assert!(
+        lane.take_requests().wants.contains(&away),
+        "the first read asks the room for it"
+    );
+    lane.stands(away.clone(), ContentState::Unavailable);
+    assert_eq!(reads.read(&away).get(), Arrival::Failed(ContentUnavailable));
+    lane.stands(away.clone(), ContentState::Waiting);
+    assert!(reads.read(&away).get().is_pending());
+    lane.arrive(away.clone(), bytes);
+    assert_eq!(reads.read(&away).get(), Arrival::Ready(()));
+    assert_eq!(read.get(), Arrival::Ready(()), "the one read answers");
 }

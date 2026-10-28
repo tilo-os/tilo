@@ -174,6 +174,7 @@ pub(crate) fn program_invoking(action: tilo_actions::ActionKey, grant: Vec<Rule>
                 appearance: None,
             },
         )],
+        step_timeout_secs: None,
         output: None,
         grant,
         triggers: vec![],
@@ -794,6 +795,7 @@ fn standup(version: &str) -> crate::workspace_membership::BotRequest {
         entry: "so.tilo.bots.standup".into(),
         version: version.into(),
         inputs: std::collections::BTreeMap::new(),
+        program: None,
     }
 }
 

@@ -195,7 +195,7 @@ impl RetirementHandle {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 pub(crate) use tests::allocations::allocations_only as measure_test_allocations;

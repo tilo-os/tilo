@@ -1,10 +1,8 @@
 //! The bundled offline sample library.
 //!
-//! Shipping a populated catalog means the `--shots` screenshot (and a
-//! first-run with no synced devices) shows a browsable library and a
-//! now-playing track. Every track carries a synthetic `yt_id`; the streaming
-//! path ([`crate::backend`]) would
-//! replace these with live YouTube-Music ids resolved from a search.
+//! Screenshot scenarios and tests can browse this catalogue without a
+//! network. The live app starts empty. Every track carries a synthetic
+//! `yt_id`; the streaming path replaces these with real search results.
 
 use ui::tilo_resource::{Id, Invoke};
 
@@ -496,7 +494,6 @@ pub fn sample_actions() -> Vec<Invoke<Library>> {
     actions
 }
 
-/// A document holding the sample library.
 #[cfg(test)]
 pub(crate) fn sample_document() -> automerge::AutoCommit {
     let mut doc = automerge::AutoCommit::new();
@@ -507,13 +504,11 @@ pub(crate) fn sample_document() -> automerge::AutoCommit {
     doc
 }
 
-/// The library `doc` holds.
 #[cfg(test)]
 pub(crate) fn library_of(doc: &automerge::AutoCommit) -> Library {
     <Library as ui::tilo_resource::Resource>::read(doc).expect("a music library")
 }
 
-/// A document holding a new, empty library.
 #[cfg(test)]
 pub(crate) fn empty_document() -> automerge::AutoCommit {
     let mut doc = automerge::AutoCommit::new();

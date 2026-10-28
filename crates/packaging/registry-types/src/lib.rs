@@ -58,6 +58,7 @@
 )]
 
 pub mod application;
+pub mod block;
 pub mod catalogue;
 pub mod change;
 pub mod compact;
@@ -81,6 +82,7 @@ pub mod upload;
 pub mod verify;
 pub mod version;
 
+pub use block::{Block, BlockList, Blocker, UnblockError};
 pub use change::{EntryAction, EntryChangeRequest, sign_change_request};
 pub use compact::{
     CatalogueEntry, CatalogueSnapshot, CompactRegistryEntry, CompactRegistrySnapshot,
@@ -116,9 +118,10 @@ pub use snapshot::{
     verify_snapshot, within_validity_window,
 };
 pub use target::{
-    ANDROID_PACKAGE_EXTENSIONS, ANDROID_PLATFORM, DESKTOP_PLATFORMS, LINUX_PLATFORM,
-    MACOS_PLATFORM, NATIVE_PLATFORMS, NATIVE_RUNTIME_ID_HEX_LEN, NATIVE_RUNTIME_MARKER,
-    NATIVE_RUNTIME_PACKAGE_ID, NativeRuntime, TILO_OS_PLATFORM, TargetError, WINDOWS_PLATFORM,
+    ANDROID_PACKAGE_EXTENSIONS, ANDROID_PLATFORM, ANY_ARCHITECTURE, DESKTOP_PLATFORMS,
+    LANGUAGE_PACK_PACKAGE_PREFIX, LINUX_PLATFORM, MACOS_PLATFORM, NATIVE_PLATFORMS,
+    NATIVE_RUNTIME_ID_HEX_LEN, NATIVE_RUNTIME_MARKER, NATIVE_RUNTIME_PACKAGE_ID, NativeRuntime,
+    TILO_OS_PLATFORM, TargetError, WINDOWS_PLATFORM, is_language_pack_package_id,
     is_runtime_package_id, parse_native_runtime,
 };
 pub use verify::{VerifyError, verify_change_request, verify_entry_signature};
@@ -131,8 +134,3 @@ pub use verify::{VerifyError, verify_change_request, verify_entry_signature};
 /// this number and nothing older (docs/architecture/compatibility.md);
 /// `crates/packaging/tilo-app-package/interface.toml` holds the schema.
 pub const PACKAGE_FORMAT_VERSION: u32 = 2;
-
-/// Length in bytes of an Ed25519 signature, once decoded from hex.
-pub const ED25519_SIGNATURE_BYTES: usize = 64;
-/// Length in bytes of an Ed25519 public key, once decoded from hex.
-pub const ED25519_PUBKEY_BYTES: usize = 32;

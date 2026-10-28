@@ -322,25 +322,21 @@ mod tests {
             );
             lease.revoke();
         }
-        // Phase `playback_graph_has_a_sink_but_no_source`.
         {
             let config = pipewire_dropin_contents("unix:/run/user/1000/pulse/native", false);
             assert!(config.contains("tunnel.mode = sink"));
             assert!(!config.contains("tunnel.mode = source"));
             assert!(config.contains("no WirePlumber or device-discovery"));
         }
-        // Phase `microphone_grant_is_the_only_way_to_materialize_source_tunnel`.
         {
             let config = pipewire_dropin_contents("unix:/run/user/1000/pulse/native", true);
             assert!(config.contains("tunnel.mode = sink"));
             assert!(config.contains("tunnel.mode = source"));
             assert!(config.contains("tilo.windows.compat.microphone"));
         }
-        // Phase `pulse_clients_cannot_load_a_host_facing_module`.
         {
             assert!(pulse_dropin_contents().contains("pulse.allow-module-loading = false"));
         }
-        // Phase `host_socket_is_never_a_capsule_socket_path`.
         {
             let root = Path::new("/run/tilo/windows-compat/leases/123-4");
             let proxy = root.join("audio/pulse/native");

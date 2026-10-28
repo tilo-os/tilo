@@ -65,11 +65,14 @@ impl ResourceApp for App {
         let input = cx
             .input(cx.paths().draft)
             .with_id("name-input")
-            .with_placeholder("graph-project-name");
+            .with_placeholder(crate::locales::keys::GRAPH_PROJECT_NAME);
         let preview = cx
             .text(|projects| projects.draft.clone())
             .with_id("name-preview");
-        let create = cx.button("graph-create", Projects::CREATE.invoke());
+        let create = cx.button(
+            crate::locales::keys::GRAPH_CREATE,
+            Projects::CREATE.invoke(),
+        );
         let created = cx.each(
             |projects| &projects.projects,
             |row| Box::new(row.text(|project| project.name.clone())),
@@ -77,7 +80,10 @@ impl ResourceApp for App {
         Box::new(
             Column::new()
                 .push(screens(cx))
-                .push(Box::new(labeled_field("graph-project-name", input)))
+                .push(Box::new(labeled_field(
+                    crate::locales::keys::GRAPH_PROJECT_NAME,
+                    input,
+                )))
                 .push(Box::new(preview))
                 .push(Box::new(create))
                 .push(Box::new(created)),

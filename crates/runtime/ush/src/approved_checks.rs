@@ -239,9 +239,6 @@ pub struct ApprovedChecks {
 
 impl ApprovedChecks {
     /// Construct from trusted host configuration, refusing foreign bindings.
-    ///
-    /// # Errors
-    /// Returns invalid registrations, foreign bindings or duplicate IDs.
     pub fn new(binding: ProjectBinding, checks: Vec<ApprovedCheck>) -> Result<Self, String> {
         if checks.len() > 128 {
             return Err("too many approved project checks".into());
@@ -264,9 +261,6 @@ impl ApprovedChecks {
 
     /// Run by ID only. `authority` must recheck the original `EffectCx` custody
     /// before external work and while it runs; failure cancels the owned unit.
-    ///
-    /// # Errors
-    /// Returns invalid binding, registration, authority or supervision setup.
     pub fn run(
         &self,
         binding: &ProjectBinding,

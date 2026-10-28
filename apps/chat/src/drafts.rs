@@ -25,7 +25,7 @@ impl ChatDrafts {
     ///
     /// The empty draft a composer writes in, made the first time the person
     /// types in that channel or thread.
-    #[action(housekeeping)]
+    #[action(housekeeping, audience = "agents")]
     pub fn start_draft(
         &mut self,
         #[param("The channel, or the channel and thread, it is written in")] key: String,
@@ -36,6 +36,13 @@ impl ChatDrafts {
         self.drafts.entry(key).or_default();
         Ok(())
     }
+}
+
+/// The line a conversation's row carries for unsent words ("Draft: see you at
+/// 8"): the toolkit's, the same one Messages shows under a person, so a draft
+/// is found the same way in both apps.
+pub(crate) fn line(text: &str) -> Option<String> {
+    ui::widget::conversation::draft::line(text)
 }
 
 #[cfg(test)]

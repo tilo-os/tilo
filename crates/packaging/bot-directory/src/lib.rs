@@ -59,10 +59,6 @@ fn not_listed(entry: &str, version: &str) -> DirectoryError {
 /// Check `program_bytes` against `version` of the bot `entry` in `entries`.
 /// The registry checked this at review. A client checks again, because the
 /// bytes it installs are the ones that count.
-///
-/// # Errors
-/// [`DirectoryError`] when the version is not listed, the entry is an app,
-/// or the bytes or their requirements differ from what the entry signs.
 pub fn verify_listed_bot(
     entries: &[VerifiedEntry],
     registry_owner: &str,
@@ -134,9 +130,6 @@ pub fn verify_listed_bot(
 
 /// Fetch the signed listing of `entry` (every retained version) and the
 /// program `version` binds, then verify both.
-///
-/// # Errors
-/// Registry transport or proof failures, or any [`verify_listed_bot`] error.
 pub fn fetch_listed_bot(
     reg: &RegistryConfig,
     entry: &str,

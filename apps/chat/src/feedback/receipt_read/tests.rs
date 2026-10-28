@@ -24,6 +24,7 @@ fn submitted_as(author: &str) -> (automerge::AutoCommit, Submission, Resource) {
             text: "The page loses my position".into(),
             context: Vec::new(),
             screenshot: None,
+            ..Default::default()
         },
     };
     crate::testing::apply_as(
@@ -123,6 +124,7 @@ fn fixture_submission(room: &str) -> Submission {
             text: "The reader loses my position".into(),
             context: Vec::new(),
             screenshot: None,
+            ..Default::default()
         },
     }
 }
@@ -131,12 +133,12 @@ struct MountedFixture {
     _temp: tempfile::TempDir,
     submission: Submission,
     frame: ui::headless::FrameHarness,
-    permissions: std::rc::Rc<std::cell::RefCell<ui::permissions::PermissionContext>>,
+    permissions: ui::permissions::SharedPermissions,
     records: ui::record::RecordStore,
 }
 
 fn mounted_fixture(author: &str) -> MountedFixture {
-    use std::{cell::RefCell, rc::Rc};
+    use std::rc::Rc;
     use ui::application::{
         ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
     };
@@ -145,7 +147,7 @@ fn mounted_fixture(author: &str) -> MountedFixture {
     let room = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
     let temp = tempfile::tempdir().unwrap();
     let mut owners = RecordOwners::new(temp.path().join("profile"));
-    let records = owners.open(crate::definition().app_id, room).unwrap();
+    let records = owners.open(crate::definition().app_id(), room).unwrap();
     let checkout = RecordCheckout::package_primary(RecordKind::new("chat.workspace"));
     let submission = fixture_submission(room);
     records
@@ -183,10 +185,9 @@ fn mounted_fixture(author: &str) -> MountedFixture {
         checkout,
         reveal: None,
     };
-    let permissions = Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
-        author,
-        ui::permissions::Role::Owner,
-    )));
+    let permissions = ui::permissions::SharedPermissions::new(
+        ui::permissions::PermissionContext::member(author, ui::permissions::Role::Owner),
+    );
     let context = HostContext::prepare(
         crate::definition(),
         HostContextInputs {
@@ -236,7 +237,7 @@ fn mounted_chat_reader_returns_the_actual_primary_route_stamp() {
         .expect("the registered read must complete immediately");
     let value = output.value.unwrap();
     assert_eq!(value["record"]["roomId"], submission.destination.room);
-    assert_eq!(value["record"]["appId"], crate::definition().app_id);
+    assert_eq!(value["record"]["appId"], crate::definition().app_id());
     assert_eq!(value["record"]["recordId"], "");
     let receipt: Receipt = serde_json::from_value(value["content"].clone()).unwrap();
     assert_eq!(receipt.digest, submission.digest().unwrap());
@@ -244,8 +245,12 @@ fn mounted_chat_reader_returns_the_actual_primary_route_stamp() {
 }
 
 fn maintainer_role(fixture: &MountedFixture, role: ui::permissions::Role) {
-    *fixture.permissions.borrow_mut() =
-        ui::permissions::PermissionContext::member("maintainer", role);
+    fixture
+        .permissions
+        .set(ui::permissions::PermissionContext::member(
+            "maintainer",
+            role,
+        ));
 }
 
 #[test]

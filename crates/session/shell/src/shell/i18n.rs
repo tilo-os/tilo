@@ -30,6 +30,9 @@ pub fn ensure() {
     CATALOG.ensure();
     SETTINGS_INDEX.ensure();
     ui::i18n::I18nManager::register_widget_messages();
+    // The window bars' reaction pickers (the toolkit's shared picker, drawn
+    // here for every app's window) pick from the whole catalogue.
+    tilo_desktop::emoji_picker::offer_catalogue();
 }
 
 /// Resolve a shell string key.
@@ -50,10 +53,27 @@ pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
 /// and phrases, returned trimmed and lowercased; a language without the
 /// message adds none. Search matches actions and settings pages by these.
 pub fn words_in_every_locale(key: &str) -> Vec<String> {
+    search_words().get(key).cloned().unwrap_or_default()
+}
+
+/// Read every language's search words on a thread of its own, started at
+/// startup. The words come from installed language packs as well as the
+/// embedded catalogues, and finding and reading a pack waits on the disk,
+/// which the main loop (searching as the palette is typed in) must not. A
+/// search before this finishes waits for its answer.
+pub fn prepare_search_words_in_background() {
+    let _ = std::thread::Builder::new()
+        .name("tilo-search-words".into())
+        .spawn(|| {
+            search_words();
+        });
+}
+
+fn search_words() -> &'static std::collections::HashMap<String, Vec<String>> {
     use std::collections::HashMap;
     use std::sync::OnceLock;
     static WORDS: OnceLock<HashMap<String, Vec<String>>> = OnceLock::new();
-    let words = WORDS.get_or_init(|| {
+    WORDS.get_or_init(|| {
         let mut words: HashMap<String, Vec<String>> = HashMap::new();
         for (_, catalogue) in CATALOG.every_source() {
             for line in catalogue.lines() {
@@ -72,8 +92,7 @@ pub fn words_in_every_locale(key: &str) -> Vec<String> {
             }
         }
         words
-    });
-    words.get(key).cloned().unwrap_or_default()
+    })
 }
 
 /// Messages whose value is a list of search words; see
@@ -94,6 +113,9 @@ pub fn apply_configured_locale() {
     if let Some(language) =
         settings_store::str_at(&settings_store::load(), "appearance", "language")
     {
+        // The pack of a language chosen just after it was installed is read
+        // now.
+        ui::i18n::refresh_language_packs();
         CATALOG.set_locale(language);
     }
 }

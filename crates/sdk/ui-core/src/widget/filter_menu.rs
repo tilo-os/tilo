@@ -24,6 +24,7 @@
 //! last" convention as [`ContextMenu`](crate::widget::context_menu::ContextMenu).
 
 use std::collections::HashMap;
+use tilo_sort::CompactSort as _;
 
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -54,7 +55,6 @@ pub(super) struct MenuSpec {
     pub row_height: f64,
     /// Rows painted at once; the window scrolls with the cursor.
     pub max_rows: usize,
-    /// Fluent key of the filter field's placeholder.
     pub placeholder: &'static str,
     /// Fluent key of the menu's accessible name.
     pub access_name: &'static str,
@@ -406,7 +406,7 @@ impl<T: Clone> FilterMenu<T> {
             .filter_map(|(i, entry)| entry.rank(&needle).map(|rank| (rank, i)))
             .collect();
         // Stable: within a rank, the menu's own order.
-        ranked.sort_by_key(|&(rank, _)| rank);
+        ranked.compact_sort_by_key(|&(rank, _)| rank);
         self.visible.clear();
         self.visible.extend(ranked.into_iter().map(|(_, i)| i));
         if self.cursor >= self.visible.len() {
@@ -787,12 +787,16 @@ impl<T: Clone + 'static> Widget for FilterMenu<T> {
         Some(crate::ime::InputContent::TEXT)
     }
 
+    // A closed menu is hidden so it collapses out of the focus/reading order.
+    fn accessibility_hidden(&self) -> bool {
+        !self.visible_flag
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         // Rows are drawn, not child widgets, so each visible row is a
-        // synthetic `MenuItem` selected at the highlight cursor. A closed
-        // menu is hidden so it collapses out of the focus/reading order.
-        if !self.visible_flag {
+        // synthetic `MenuItem` selected at the highlight cursor.
+        if self.accessibility_hidden() {
             return Some(
                 AccessNode::new(Role::Menu)
                     .with_name(crate::i18n!(self.spec.access_name))

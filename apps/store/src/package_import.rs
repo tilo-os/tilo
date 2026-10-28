@@ -20,10 +20,6 @@ pub struct ImportedPackage {
 }
 
 /// Review a package without installing or trusting anything it says about itself.
-///
-/// # Errors
-/// Returns a bounded human-readable refusal for malformed, unsigned, unlisted,
-/// mismatched or non-application packages.
 pub fn review(bytes: Vec<u8>, offers: &[StoreItem]) -> Result<ImportedPackage, String> {
     if bytes.is_empty() || bytes.len() > MAX_IMPORT_BYTES {
         return Err(ui::i18n!("store-package-size-refused"));
@@ -160,9 +156,6 @@ pub enum Input {
 
 impl Input {
     /// Read bounded bytes without granting access beyond the app's file policy.
-    ///
-    /// # Errors
-    /// Returns why the handed file is unavailable or too large.
     pub fn read(self) -> Result<Vec<u8>, String> {
         use std::io::Read as _;
         let mut reader: Box<dyn std::io::Read> = match self {

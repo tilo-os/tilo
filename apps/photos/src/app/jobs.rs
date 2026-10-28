@@ -634,7 +634,9 @@ impl PhotosApp {
                 old.library.photo(id).is_some() && current.library.photo(id).is_none()
             });
             if shown_removed {
+                // Back to the library rather than an empty "No photo open".
                 self.open_photo = None;
+                self.library_mode = true;
             }
             if metadata_changed {
                 self.cancel_metadata_editor();

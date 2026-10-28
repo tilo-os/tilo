@@ -16,7 +16,6 @@ mod steward;
 mod support;
 
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use collab_types::DocumentMutation;
 use tilo_browser_peer::{Host, PeerEvent, PeerHandle, PeerSnapshot};
@@ -45,17 +44,35 @@ async fn receive(peer: &PeerHandle, count: usize) -> Vec<DocumentMutation> {
     received
 }
 
-/// Wait for `peer` to be ready on a fresh session and settle; return the
-/// documents it received meanwhile.
-async fn resumed(peer: &PeerHandle) -> Vec<DocumentMutation> {
+/// Wait for `peer` to be ready on a fresh session.
+async fn resumed(peer: &PeerHandle) {
     wait_for("the new session", || {
         let ready = PeerSnapshot::from_status(&peer.status()).phase == "ready"
             && peer.status().rooms.values().all(|ready| *ready);
         async move { ready.then_some(()) }
     })
     .await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    documents(peer)
+}
+
+/// Have `author` publish `marker` and return what `peer` received before
+/// it: the room delivers in commit order, so anything replayed on the new
+/// session arrives ahead of the marker.
+async fn before_marker(
+    peer: &PeerHandle,
+    author: &PeerHandle,
+    marker: &[u8],
+) -> Vec<DocumentMutation> {
+    let marker = DocumentMutation::Incremental(marker.to_vec());
+    author.publish(route(), &marker).unwrap();
+    let mut received = Vec::new();
+    wait_for("the marker", || {
+        received.extend(documents(peer));
+        let done = received.contains(&marker);
+        async move { done.then_some(()) }
+    })
+    .await;
+    assert_eq!(received.pop(), Some(marker), "the marker arrives last");
+    received
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -111,16 +128,10 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     // A new session: nothing retained is replayed.
     let before = traffic.load(Ordering::Relaxed);
     observer.reconnect().unwrap();
-    let replayed = resumed(&observer).await;
+    resumed(&observer).await;
     let resume_bytes = traffic.load(Ordering::Relaxed) - before;
+    let replayed = before_marker(&observer, &author, b"after").await;
     assert!(replayed.is_empty(), "replayed {} documents", replayed.len());
-    author
-        .publish(route(), &DocumentMutation::Incremental(b"after".to_vec()))
-        .unwrap();
-    assert_eq!(
-        receive(&observer, 1).await,
-        vec![DocumentMutation::Incremental(b"after".to_vec())]
-    );
 
     // A restarted host honours positions it issued before, and replays what
     // was committed while the observer was away.
@@ -140,7 +151,8 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     .await
     .unwrap();
     observer.reconnect().unwrap();
-    let replayed = resumed(&observer).await;
+    resumed(&observer).await;
+    let replayed = before_marker(&observer, &author, b"back").await;
     assert_eq!(
         replayed,
         vec![DocumentMutation::Incremental(b"missed".to_vec())],
@@ -159,7 +171,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     );
     fresh.join(workspace()).unwrap();
     fresh.open_route(route()).unwrap();
-    assert_eq!(receive(&fresh, HISTORY + 3).await.len(), HISTORY + 3);
+    assert_eq!(receive(&fresh, HISTORY + 4).await.len(), HISTORY + 4);
     eprintln!(
         "reconnect: {resume_bytes} bytes of /events resuming, {} bytes replaying the history",
         full_replay.load(Ordering::Relaxed)

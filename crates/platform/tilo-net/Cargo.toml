@@ -3,7 +3,7 @@ name = "tilo-net"
 version = "0.1.0"
 edition = "2024"
 publish = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
 description = "The network capability on Linux, macOS and the web: async HTTP with streaming bodies, WebSocket, WebTransport, network status, raw sockets on the desktop, and Tilo's one TLS provider and trust source."
@@ -42,9 +42,13 @@ tokio-rustls = { workspace = true, optional = true }
 tokio-websockets = { version = "0.13.3", default-features = false, optional = true, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector"] }
 futures-util = { workspace = true, optional = true, features = ["sink"] }
 web-transport-quinn = { version = "0.12.1", default-features = false, optional = true, features = ["ring"] }
-# Peer-to-peer frame streams: iroh QUIC, length-prefixed frames.
-iroh = { workspace = true, optional = true }
-wire-frame = { version = "0.1.0", path = "../../system/wire-frame", optional = true, features = ["tokio"] }
+# The host side of the fetch proxy (`proxy-host`) and its development
+# program (`proxy-dev-server`).
+http-body = { version = "1", optional = true }
+http-body-util = { version = "0.1", optional = true }
+tracing = { workspace = true, optional = true }
+hyper = { version = "1", features = ["server", "http1"], optional = true }
+hyper-util = { version = "0.1", features = ["tokio"], optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { workspace = true, features = ["tokio", "p2p"] }
@@ -71,6 +75,7 @@ web-sys = { version = "=0.3.85", features = [
     "MessageEvent",
     "ReadableStream",
     "ReadableStreamDefaultReader",
+    "ReferrerPolicy",
     "Request",
     "RequestCredentials",
     "RequestInit",
@@ -96,8 +101,16 @@ ws = ["dep:tokio-websockets", "dep:tokio-rustls", "dep:futures-util"]
 webtransport = ["dep:web-transport-quinn"]
 # Raw TCP and UDP (and TLS over TCP) on the desktop; `Unsupported` on the web.
 sockets = ["dep:tokio-rustls"]
-# Peer-to-peer frame streams (`p2p`) on the desktop; `Unsupported` on the web.
-p2p = ["dep:iroh", "dep:wire-frame", "dep:serde_json"]
+# The fetch proxy a workspace host serves to its pages (`proxy::host`).
+proxy-host = ["http", "dep:http-body", "dep:http-body-util", "dep:futures-util", "dep:tracing"]
+# `tilo-fetch-proxy`: that proxy on loopback, unauthenticated, for the
+# development server (`tilo-web-desktop/scripts/serve.mjs --fetch-proxy`).
+proxy-dev-server = ["proxy-host", "dep:hyper", "dep:hyper-util", "tokio/rt-multi-thread", "tokio/signal"]
+
+[[bin]]
+name = "tilo-fetch-proxy"
+path = "src/bin/tilo-fetch-proxy.rs"
+required-features = ["proxy-dev-server"]
 
 # The loopback tests exercise every backend.
 [[test]]
@@ -108,6 +121,10 @@ required-features = ["http", "json", "ws", "webtransport"]
 name = "live"
 required-features = ["http", "ws", "sockets"]
 
+[[test]]
+name = "proxy_host"
+required-features = ["proxy-host"]
+
 [dev-dependencies]
 test-http = { path = "../../dev/test-http" }
 tokio-websockets = { version = "0.13.3", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
@@ -116,8 +133,11 @@ futures-util = { workspace = true, features = ["sink"] }
 web-transport-quinn = { version = "0.12.1", default-features = false, features = ["ring"] }
 rcgen.workspace = true
 sha2.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
 serde = { workspace = true, features = ["derive"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

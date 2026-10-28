@@ -11,6 +11,16 @@ ExecCondition=/usr/libexec/tilo-update-policy-check
 # installed or updated, and a device without Flathub skips it. First,
 # so an app update that fails does not leave the catalogue stale.
 ExecStart=-/usr/bin/flatpak update --appstream --noninteractive
+# Flathub's x86_64 app list too, on a device with another processor: the
+# hundreds of apps built only for x86_64 (Steam, Spotify) are then found by
+# search and say they are not available for this device, rather than
+# vanishing. Flatpak keeps AppStream metadata for this processor only, so
+# search reads these from the summary this listing keeps (shell catalogue).
+ExecStart=-/bin/sh -c '[ "$$(uname -m)" = x86_64 ] || exec /usr/bin/flatpak remote-ls --system --app --arch=x86_64 --columns=application -- flathub >/dev/null'
+# The Flatpak apps you installed (the App Store installs into your own
+# Flatpak installation) and their runtimes to their newest builds, like every
+# other app. The device's own Flatpaks are its administrator's to update.
+ExecStart=-/usr/bin/flatpak update --user --noninteractive
 # Every installed app to the newest build this system can run; a build for
 # other interface versions is never offered (docs/architecture/compatibility.md).
 ExecStart=/usr/bin/app update

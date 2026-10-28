@@ -61,7 +61,45 @@ done
 greeter_record_dir="${TILO_GREETER_RECORD_DIR:-/run/tilo-greeter}"
 if [[ ${1##*/} == tilo-greeter && -z ${TILO_STARTUP_METRICS_PATH:-} && -d $greeter_record_dir ]]; then
   export TILO_STARTUP_METRICS_PATH="$greeter_record_dir/startup-metrics.json"
+  # And which keyboard or touch screen the kiosk gives it, once it has one
+  # (crates/session/greeter/src/seat_input.rs).
+  export TILO_GREETER_INPUT_RECORD="$greeter_record_dir/input"
   umask 0022
 fi
 
-exec "${TILO_CAGE:-/usr/bin/cage}" -s -- "$@"
+cage="${TILO_CAGE:-/usr/bin/cage}"
+if [[ ${1##*/} != tilo-greeter ]]; then
+  exec "$cage" -s -- "$@"
+fi
+
+# The sign-in screen is the only way into the machine, so a greeter that
+# cannot start must not leave the person at a bare console. Run it in cage as
+# above; it exits 0 once greetd has started the chosen session. Anything else
+# (it crashed, its GPU refused it, cage could not open a display) falls back to
+# greetd's own text greeter on the same VT, with one line saying why the
+# screen looks different. greetd keeps running throughout, so it never
+# restarts the graphical greeter into systemd's start limit, and the boot
+# assessment still sees that no greeter presented a frame.
+status=0
+"$cage" -s -- "$@" || status=$?
+(( status == 0 )) && exit 0
+echo "the graphical sign-in exited with status $status; offering the text sign-in" >&2
+
+text_greeter="${TILO_TEXT_GREETER:-/usr/bin/agreety}"
+# greetd made the login VT this session's controlling terminal; the journal
+# took stdout and stderr above.
+tty="${TILO_GREETER_TTY:-/dev/tty}"
+if [[ ! -x $text_greeter ]] || ! { : <"$tty" >"$tty"; } 2>/dev/null; then
+  echo "no text sign-in is available (${text_greeter} on ${tty})" >&2
+  exit "$status"
+fi
+# The session the graphical greeter offers, in the environment it starts it
+# with (GreeterApp::session_env): the text greeter passes none of its own.
+session_entry="${TILO_SESSION_ENTRY:-/usr/share/wayland-sessions/shell.desktop}"
+session_exec="$(sed -n 's/^Exec=//p' "$session_entry" 2>/dev/null | head -n 1 || true)"
+session="env XDG_SESSION_TYPE=wayland XDG_SESSION_DESKTOP=tilo XDG_CURRENT_DESKTOP=tilo ${session_exec:-/usr/libexec/tilo-session --backend drm}"
+exec <"$tty" >"$tty" 2>&1
+printf '\033[2J\033[H'
+printf 'The sign-in screen could not start, so you can sign in here instead.\n'
+printf 'Your desktop opens as usual afterwards.\n\n'
+exec "$text_greeter" --cmd "$session"

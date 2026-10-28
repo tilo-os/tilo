@@ -10,7 +10,6 @@
     reason = "a capture treats a failed setup as fatal"
 )]
 
-use std::cell::RefCell;
 use std::error::Error;
 use std::path::Path;
 use std::rc::Rc;
@@ -20,7 +19,7 @@ use ui::application::{
 };
 use ui::application_view::InstanceViewStore;
 use ui::headless::FrameHarness;
-use ui::permissions::{PermissionContext, UserId};
+use ui::permissions::{PermissionContext, SharedPermissions, UserId};
 use ui::record::{RecordCheckout, RecordOwners};
 use ui::theme::Theme;
 use ui::time::Duration;
@@ -39,7 +38,7 @@ fn tile(
     seed: impl FnOnce(&mut ui::automerge::AutoCommit),
 ) -> TileHost {
     let mut owners = RecordOwners::new(profile.to_owned());
-    let records = owners.open(definition.app_id, ROOM).unwrap();
+    let records = owners.open(definition.app_id(), ROOM).unwrap();
     let checkout = RecordCheckout::package_primary(definition.record_kind.clone());
     if records.try_open_record(&checkout).is_err() {
         records
@@ -63,10 +62,10 @@ fn tile(
             views,
             device_id: "device".into(),
             instance_id: instance,
-            permissions: Rc::new(RefCell::new(PermissionContext::member(
+            permissions: SharedPermissions::new(PermissionContext::member(
                 AUTHOR,
                 ui::permissions::Role::Owner,
-            ))),
+            )),
             author: UserId(AUTHOR.into()),
             action_context: ui::tilo_actions::ActionContext::default(),
         },
@@ -171,6 +170,7 @@ fn desktop(out: &Path, profile: &Path) {
             label: "Chat".into(),
             note: String::new(),
         },
+        app_title: None,
     };
     let tree = tilo_desktop_surface::seed_tree(&mut minter, "Desk", vec![tab]);
     let (surface, _handle) =

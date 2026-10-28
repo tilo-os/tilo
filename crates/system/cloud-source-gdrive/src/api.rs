@@ -483,7 +483,6 @@ mod tests {
             Some("Ada Lovelace")
         );
         assert!(list.revisions[1].keep_forever);
-        // The same instant written with an offset.
         assert_eq!(
             http::parse_rfc3339("2024-01-03T03:04:05+01:00"),
             http::parse_rfc3339("2024-01-03T02:04:05Z")
@@ -499,7 +498,6 @@ mod tests {
         assert_eq!(unlimited.storage_quota.limit, None);
     }
 
-    /// Error bodies as the Drive guide "Resolve errors" documents them.
     #[test]
     fn documented_error_bodies_classify() {
         let user_rate = r#"{"error":{"errors":[{"domain":"usageLimits","reason":"userRateLimitExceeded","message":"User Rate Limit Exceeded"}],"code":403,"message":"User Rate Limit Exceeded"}}"#;

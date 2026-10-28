@@ -211,15 +211,26 @@ impl ContentBackend for DeviceBackend {
     fn shared(&self) -> bool {
         true
     }
+
+    /// The capability is the window's (room, app) scope: the daemon serves an
+    /// address only when that room references it.
+    fn room_scoped(&self) -> bool {
+        true
+    }
 }
 
 /// The one launcher-granted device connection shared by stores in this process.
+/// The process's one connection to the daemon, over the descriptor the launcher handed it.
+pub(crate) fn client() -> Option<&'static BlobClient> {
+    static CLIENT: OnceLock<Option<BlobClient>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| BlobClient::from_environment().ok())
+        .as_ref()
+}
+
 pub(crate) fn store() -> Option<ContentStore> {
     static DEVICE: OnceLock<Option<Arc<DeviceBackend>>> = OnceLock::new();
-    let backend = DEVICE.get_or_init(|| {
-        let client = BlobClient::from_environment().ok()?;
-        Some(Arc::new(DeviceBackend::new(client)))
-    });
+    let backend = DEVICE.get_or_init(|| Some(Arc::new(DeviceBackend::new(client()?.clone()))));
     backend
         .as_ref()
         .map(|backend| ContentStore::from_backend(Arc::clone(backend) as Arc<dyn ContentBackend>))
@@ -238,7 +249,6 @@ mod tests {
         let mut cache = Cache::new(10);
         cache.insert("a", item(1));
         cache.insert("b", item(2));
-        // Touching `a` makes `b` the least recently used.
         assert_eq!(cache.get("a").as_deref(), Some([1; 4].as_slice()));
         cache.insert("c", item(3));
         assert!(

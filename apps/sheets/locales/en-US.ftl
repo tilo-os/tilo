@@ -11,6 +11,9 @@ sheets-delete-rows = Deleted rows
 sheets-insert-columns = Inserted columns left of column { $at }
 sheets-delete-columns = Deleted columns
 sheets-import-sheets = Imported sheets
+sheets-set-title = Named the workbook { $title }
+sheets-set-records = Wrote records
+sheets-upsert-item = Updated or added a row
 sheets-add-chart = Charted { $range }
 sheets-edit-chart = Edited the chart { $title }
 sheets-edit-comment = Edited a comment: { $body }
@@ -27,7 +30,12 @@ sheets-cell-bold = { $new ->
 sheets-sheet-name = Renamed { $item } to { $new }
 sheets-sheet-color = Changed the tab colour of { $item }
 sheets-sheet-cells = Edited the cells of { $item }
+sheets-sheet-hidden = { $new ->
+    [true] Hid { $item }
+   *[false] Showed { $item }
+}
 sheets-workbook-sheets = Rearranged the sheets
+sheets-workbook-title = Named the workbook { $new }
 sheets-chart-title = Retitled a chart to { $new }
 sheets-chart-kind = Changed a chart's type
 sheets-chart-area = Charted other cells
@@ -40,3 +48,21 @@ sheets-reply-body = Edited a reply
 sheets-doc-settings-currency = Set the workbook's currency
 sheets-doc-settings-date-format = Set the workbook's date format
 sheets-doc-settings-time-format = Set the workbook's time format
+
+# Importing a Notion export.
+sheets-notion-import-title = Import Notion export
+sheets-notion-files = Notion export
+sheets-notion-json-files = Notion database listing
+sheets-notion-imported =
+    { $tables ->
+        [one] Imported one table
+       *[other] Imported { $tables } tables
+    }
+sheets-notion-imported-table = Imported table
+sheets-notion-no-tables = No table in this export to import
+sheets-notion-too-big = The export is too large to import
+sheets-notion-too-many-tables = The export holds more than { $limit } tables
+sheets-notion-archive-invalid = The export archive cannot be read
+sheets-notion-unreadable = This file is not a Notion export
+sheets-notion-yes = Yes
+sheets-notion-no = No

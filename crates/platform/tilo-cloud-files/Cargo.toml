@@ -14,7 +14,7 @@ serde.workspace = true
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
-runtime-fs = { path = "../../runtime/runtime-fs" }
+runtime-fs = { package = "tilo-fs-client", path = "../../runtime/tilo-fs-client" }
 host-fs = { path = "../../system/host-fs" }
 cap-std = "3.4.6"
 cap-fs-ext = "3.4.6"

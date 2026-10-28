@@ -108,6 +108,11 @@ fn current_personal_and_review_raster_matrix() {
                 evidence(app.harness(), &format!("profile-{tag}"));
                 app.effect(&InstallerPreviewEffect::ContinuePreview)
                     .unwrap();
+                app.with_widget::<InstallerPreview, _>(|preview| {
+                    preview.journey.page = Page::Password;
+                    preview.dirty = true;
+                })
+                .unwrap();
                 app.harness()
                     .perform_named("installer.password", &ui::a11y::Action::Focus)
                     .unwrap();

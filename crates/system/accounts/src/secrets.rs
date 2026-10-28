@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now;
 use zeroize::Zeroizing;
 
-use crate::{AccountId, Secret, SecretCustody, SecretVault};
+use crate::{AccountId, Saved, Secret, SecretCustody, SecretVault};
 
 const ITEM_PREFIX: &str = "tilo-secret-item:";
 const GRANT_PREFIX: &str = "tilo-secret-grant:";
@@ -99,6 +99,16 @@ impl std::fmt::Debug for SecretItem {
 }
 
 impl SecretItem {
+    /// A list of items from its JSON form (a backup's), read by code the
+    /// runtime holds once rather than every app that reads such a list.
+    ///
+    /// # Errors
+    /// When `bytes` is not a list of items.
+    #[inline(never)]
+    pub fn list_from_json(bytes: &[u8]) -> serde_json::Result<Vec<Self>> {
+        serde_json::from_slice(bytes)
+    }
+
     pub fn login(
         title: impl Into<String>,
         username: impl Into<String>,
@@ -141,6 +151,24 @@ impl SecretStore {
         Self {
             vault: SecretVault::open_in(root),
         }
+    }
+
+    /// The store of a vault in browser page storage; see
+    /// [`SecretVault::open_page`].
+    pub fn open_page(page: tilo_files::Dir) -> Self {
+        Self {
+            vault: SecretVault::open_page(page),
+        }
+    }
+
+    /// Finish writing the edits [`Self::put`] and [`Self::remove`] left in
+    /// flight: [`Saved::Pending`] while the browser is still writing them.
+    ///
+    /// # Errors
+    ///
+    /// The write failed; the edits stay to be written again.
+    pub fn flush(&self) -> Result<Saved, BrokerError> {
+        self.vault.commit().map_err(BrokerError::Storage)
     }
 
     /// Describe where the vault encryption key is currently held.
@@ -199,7 +227,9 @@ impl SecretStore {
                 token: Some(payload.to_string()),
             },
         );
-        if let Err(error) = self.vault.try_save() {
+        // A browser write still in flight keeps the edit: undoing it would
+        // queue its removal behind the write and lose the item.
+        if let Err(error) = self.vault.commit() {
             if let Some(previous) = previous {
                 self.vault.put(&key, &previous);
             } else {
@@ -227,7 +257,7 @@ impl SecretStore {
             .collect::<Vec<_>>();
         self.vault.remove(&key);
         self.remove_grants_matching(|grant| grant.item_id == *id);
-        if let Err(error) = self.vault.try_save() {
+        if let Err(error) = self.vault.commit() {
             self.vault.put(&key, &previous);
             for (key, secret) in grants {
                 self.vault.put(&key, &secret);
@@ -435,6 +465,30 @@ pub enum BrokerError {
     Storage(String),
     Randomness,
 }
+
+impl std::fmt::Display for BrokerError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Denied => {
+                formatter.write_str("the credential belongs to another service or purpose")
+            }
+            Self::NotFound => formatter.write_str("no such credential is stored"),
+            Self::OriginMismatch => formatter.write_str("the credential belongs to another origin"),
+            Self::InvalidOrigin => formatter.write_str("the credential's origin is not valid"),
+            Self::InvalidAppId => formatter.write_str("the credential's id is not valid"),
+            Self::InvalidPurpose => {
+                formatter.write_str("the credential or its purpose is not valid")
+            }
+            Self::CorruptItem => formatter.write_str("the stored credential is damaged"),
+            Self::Storage(reason) => {
+                write!(formatter, "the credential vault is unavailable: {reason}")
+            }
+            Self::Randomness => formatter.write_str("the system could not provide randomness"),
+        }
+    }
+}
+
+impl std::error::Error for BrokerError {}
 
 /// Session broker. The UI/portal supplies the decision callback; only a user
 /// gesture can create a grant. `AllowOnce` is consumed immediately.
@@ -897,7 +951,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn broker_consent_is_scoped_to_the_exact_origin_and_revocable() {
-        // Phase `broker_blocks_lookalike_origins_and_remembers_only_session_consent`.
         {
             let root = root();
             let mut store = SecretStore::open_in(&root);
@@ -944,7 +997,6 @@ mod tests {
             std::fs::remove_dir_all(root).ok();
         }
 
-        // Phase `durable_consent_survives_restart_but_is_scoped_to_the_exact_origin`.
         {
             let root = root();
             let mut store = SecretStore::open_in(&root);
@@ -990,7 +1042,6 @@ mod tests {
             std::fs::remove_dir_all(root).ok();
         }
 
-        // Phase `durable_access_can_be_inspected_and_revoked_by_app_or_item`.
         {
             let root = root();
             let mut store = SecretStore::open_in(&root);
@@ -1036,7 +1087,6 @@ mod tests {
 
     #[test]
     fn broker_accepts_only_canonical_origins_and_trusted_prompt_metadata() {
-        // Phase `origins_use_web_origin_rules_and_reject_credential_or_control_injection`.
         {
             assert_eq!(
                 canonical_origin(" HTTPS://BÜCHER.example:443/path?q=1 ").unwrap(),
@@ -1056,7 +1106,6 @@ mod tests {
             }
         }
 
-        // Phase `broker_rejects_untrusted_prompt_metadata_before_consulting_the_user`.
         {
             let root = root();
             let mut store = SecretStore::open_in(&root);

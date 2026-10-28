@@ -6,7 +6,10 @@ use std::collections::BTreeMap;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{Durability, Lease, Revision, SharedLease, StorageKey, StoreError, Stored, WriteOp};
+use crate::{
+    Durability, Lease, ReadyWake, Revision, SettleWatch, SharedLease, StorageKey, StoreError,
+    Stored, WriteOp,
+};
 
 /// One write a host must commit, coalescing everything accepted for its key
 /// since the previous [`MemoryStore::drain`].
@@ -34,6 +37,8 @@ pub struct MemoryStore {
     leases: Rc<RefCell<BTreeMap<StorageKey, Held>>>,
     claims: RefCell<BTreeMap<StorageKey, String>>,
     write_hook: RefCell<Option<Rc<dyn Fn()>>>,
+    /// Wakes to call once a key's writes are all acknowledged.
+    settle_wakes: RefCell<BTreeMap<StorageKey, Vec<ReadyWake>>>,
 }
 
 /// Who holds one key: an exclusive owner, or shared writers.
@@ -147,6 +152,7 @@ impl MemoryStore {
             leases: Rc::default(),
             claims: RefCell::default(),
             write_hook: RefCell::default(),
+            settle_wakes: RefCell::default(),
         }
     }
 
@@ -221,21 +227,18 @@ impl MemoryStore {
     }
 
     /// Report the host's outcome for a drained write.
-    ///
-    /// # Errors
-    /// Refuses a revision that is not awaiting acknowledgement from this store.
     pub fn acknowledge(
         &self,
         revision: Revision,
         result: Result<(), String>,
     ) -> Result<(), StoreError> {
         let mut state = self.state.borrow_mut();
-        let (slot, index) = state
+        let (key, slot, index) = state
             .slots
-            .values_mut()
-            .find_map(|slot| {
+            .iter_mut()
+            .find_map(|(key, slot)| {
                 let index = slot.in_flight.iter().position(|b| b.last == revision.0)?;
-                Some((slot, index))
+                Some((key, slot, index))
             })
             .ok_or(StoreError::UnknownRevision(revision.0))?;
         let batch = slot.in_flight.remove(index);
@@ -250,6 +253,14 @@ impl MemoryStore {
             Err(message) => {
                 slot.failed.push((batch.first, batch.last, message));
                 slot.replace_required = true;
+            }
+        }
+        let settled = (!slot.pending()).then(|| key.clone());
+        drop(state);
+        if let Some(key) = settled {
+            let wakes = self.settle_wakes.borrow_mut().remove(&key);
+            for wake in wakes.into_iter().flatten() {
+                wake();
             }
         }
         Ok(())
@@ -381,6 +392,27 @@ impl crate::DurableStore for MemoryStore {
         Ok(())
     }
 
+    fn wake_when_settled(&self, key: &StorageKey, wake: ReadyWake) -> SettleWatch {
+        if !self
+            .state
+            .borrow()
+            .slots
+            .get(key)
+            .is_some_and(Slot::pending)
+        {
+            return SettleWatch::Settled;
+        }
+        let mut wakes = self.settle_wakes.borrow_mut();
+        let waiting = wakes.entry(key.clone()).or_default();
+        if !waiting
+            .iter()
+            .any(|armed| crate::waiting::same_wake(armed, &wake))
+        {
+            waiting.push(wake);
+        }
+        SettleWatch::Armed
+    }
+
     fn lease(&self, key: &StorageKey) -> Result<Lease, StoreError> {
         let mut leases = self.leases.borrow_mut();
         let held = leases.entry(key.clone()).or_default();
@@ -457,7 +489,6 @@ mod tests {
 
     #[test]
     fn memory_stores_pass_conformance_with_unique_namespaces() {
-        // Phase `immediate_store_passes_conformance`.
         {
             let store = MemoryStore::new();
             crate::conformance::run(&crate::conformance::Subject {
@@ -465,7 +496,6 @@ mod tests {
                 settle: &|| {},
             });
         }
-        // Phase `queued_store_passes_conformance_with_a_committing_host`.
         {
             let store = MemoryStore::queued();
             let settle = || {
@@ -478,7 +508,6 @@ mod tests {
                 settle: &settle,
             });
         }
-        // Phase `default_namespaces_are_unique_per_store`.
         {
             assert_ne!(
                 MemoryStore::new().namespace(),
@@ -493,7 +522,6 @@ mod tests {
 
     #[test]
     fn queued_writes_are_durable_only_after_acknowledgement_and_survive_hydration() {
-        // Phase `queued_writes_are_durable_only_after_their_acknowledgement`.
         {
             let store = MemoryStore::queued();
             let first = store
@@ -527,7 +555,6 @@ mod tests {
                 Err(StoreError::UnknownRevision(_))
             ));
         }
-        // Phase `failed_acknowledgement_widens_the_next_write_to_a_replacement`.
         {
             let store = MemoryStore::queued();
             let base = store
@@ -556,7 +583,6 @@ mod tests {
             assert!(store.flush(None).is_ok());
             assert_eq!(store.read(&key()).unwrap().unwrap().bytes, b"base+1+2");
         }
-        // Phase `hydration_never_discards_unacknowledged_writes`.
         {
             let store = MemoryStore::queued();
             let stored = Stored {

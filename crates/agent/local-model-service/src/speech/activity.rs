@@ -43,8 +43,6 @@ pub struct SileroEvidence {
 
 /// Observe neural acoustic evidence from the pinned MIT review object.
 /// This is not a trusted-catalogue loader and cannot activate a normal worker.
-/// # Errors
-/// Fails on a changed review model, invalid input or native detector failure.
 pub fn observe_silero(
     model: &[u8],
     samples: &[f32],
@@ -140,8 +138,6 @@ impl SpeechActivity {
     }
     /// Earliest acoustic activity in either original or normalized analysis.
     /// This changes neither recognition samples nor decoder confidence.
-    /// # Errors
-    /// Rejects invalid PCM and fails closed on native graph execution failure.
     pub fn first_sample(&mut self, samples: &[f32]) -> Result<Option<usize>, SpeechError> {
         if samples.len() > MAX_SAMPLES || samples.iter().any(|s| !s.is_finite() || s.abs() > 1.0) {
             return Err(SpeechError::Protocol);

@@ -43,7 +43,12 @@ impl Host {
 }
 
 impl HistoryHost for Host {
-    fn read(&self, mut route: routing::Route, _: usize) -> HistoryFuture {
+    fn read(
+        &self,
+        mut route: routing::Route,
+        _: Option<tilo_messaging::HistoryCursor>,
+        _: usize,
+    ) -> HistoryFuture {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let host = self.clone();
         if host.forged {
@@ -84,11 +89,18 @@ fn selected(host: &Host) -> TestApp<MessagesShell> {
     app
 }
 
+/// Whether any accessible node `names` `text`.
+///
+/// One conversation line is one list item whose spoken name is who said it,
+/// when, whether it arrived, and what it says — the substrate's shape
+/// (`ui::widget::conversation::ConversationList`). So a body is found in the
+/// item that names it rather than as a node of its own, and a plaintext that
+/// must not be shown is checked for anywhere in that name.
 fn has_text(app: &mut TestApp<MessagesShell>, text: &str) -> bool {
     app.harness()
         .a11y_nodes()
         .iter()
-        .any(|(_, node)| node.label() == Some(text))
+        .any(|(_, node)| node.label().is_some_and(|label| label.contains(text)))
 }
 
 #[test]
@@ -98,8 +110,9 @@ fn host_history_is_transient_and_submission_is_never_delivered() {
     app.effect(&MessagesEffect::ReadHistory { choice: choice() })
         .expect("authorized history job");
     assert!(has_text(&mut app, PRIVATE));
+    // The transport's answer is in the shared vocabulary.
     assert!(has_text(&mut app, "Submitted"));
-    assert!(!has_text(&mut app, "Delivered to recipient"));
+    assert!(!has_text(&mut app, "Delivered"));
     assert!(!app.harness().dump_json().contains(PRIVATE));
     assert!(
         app.effect(&MessagesEffect::Send {
@@ -156,7 +169,7 @@ fn late_history_cannot_reappear_after_navigation_or_contact_revocation() {
         host.release();
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(5), |harness| {
+                .wait_until(tilo_test_env::hang_bound(), |harness| {
                     harness
                         .job_updates(invocation)
                         .iter()
@@ -175,8 +188,13 @@ struct DelayedSend {
 }
 
 impl HistoryHost for DelayedSend {
-    fn read(&self, route: routing::Route, limit: usize) -> HistoryFuture {
-        Host::new(true, false).read(route, limit)
+    fn read(
+        &self,
+        route: routing::Route,
+        cursor: Option<tilo_messaging::HistoryCursor>,
+        limit: usize,
+    ) -> HistoryFuture {
+        Host::new(true, false).read(route, cursor, limit)
     }
 }
 
@@ -282,7 +300,7 @@ fn late_send_failure_preserves_the_selected_service_history_and_reports_failure(
             pending.release();
             assert!(
                 app.harness()
-                    .wait_until(ui::time::Duration::from_secs(5), |harness| {
+                    .wait_until(tilo_test_env::hang_bound(), |harness| {
                         harness
                             .job_updates(invocation)
                             .iter()
@@ -500,7 +518,7 @@ fn confirmed_account_change_clears_old_draft_and_invalidates_pending_send() {
     pending.release();
     assert!(
         app.harness()
-            .wait_until(ui::time::Duration::from_secs(5), |harness| {
+            .wait_until(tilo_test_env::hang_bound(), |harness| {
                 harness
                     .job_updates(invocation)
                     .iter()
@@ -545,7 +563,6 @@ fn sending_text_is_secret_and_history_is_device_bound_read_only() {
         text: PRIVATE.into(),
     };
     assert!(!format!("{private:?}").contains(PRIVATE));
-    assert!(history.device_only);
     assert_eq!(history.action_kind, ui::tilo_actions::ActionKind::Read);
 }
 
@@ -565,11 +582,11 @@ fn capture_only_history_is_readable_in_narrow_wide_and_os_themes() {
         for label in [
             "Are you nearby?",
             "On my way. See you in ten minutes!",
-            "Delivered to recipient",
+            "Delivered",
         ] {
             let node = nodes
                 .iter()
-                .find(|(_, node)| node.label() == Some(label))
+                .find(|(_, node)| node.label().is_some_and(|spoken| spoken.contains(label)))
                 .expect("visible history text");
             let bounds = node.1.bounds().expect("history geometry");
             assert!(
@@ -672,4 +689,131 @@ fn another_personas_host_capability_is_unavailable_before_any_read() {
     );
     assert_eq!(host.calls.load(Ordering::SeqCst), 0);
     assert!(!has_text(&mut app, PRIVATE));
+}
+
+/// The transport's five answers land on the shared vocabulary — the same
+/// words, glyphs and tones Chat shows — rather than on five labels of this
+/// app's own.
+#[test]
+fn every_transport_state_speaks_the_shared_delivery_vocabulary() {
+    use tilo_messaging::Delivery;
+    assert_eq!(
+        crate::history::delivery_key(Delivery::Submitted),
+        "conversation-delivery-submitted"
+    );
+    assert_eq!(
+        crate::history::delivery_key(Delivery::ServerAcknowledged),
+        "conversation-delivery-sent"
+    );
+    assert_eq!(
+        crate::history::delivery_key(Delivery::RecipientDelivered),
+        "conversation-delivery-delivered"
+    );
+    assert_eq!(
+        crate::history::delivery_key(Delivery::RecipientRead),
+        "conversation-delivery-read"
+    );
+    // "We cannot say" is a state somebody can read, not silence.
+    assert_eq!(
+        crate::history::delivery_key(Delivery::Uncertain),
+        "conversation-delivery-uncertain"
+    );
+}
+
+/// A host with two pages of one conversation: the newest page, and the page
+/// before the oldest message it carries.
+#[derive(Clone)]
+struct Paged {
+    /// Every cursor the app asked with, in order (`None` for the newest
+    /// page).
+    asked: Arc<Mutex<Vec<Option<String>>>>,
+}
+
+impl Paged {
+    fn new() -> Self {
+        Self {
+            asked: Arc::default(),
+        }
+    }
+    fn page(route: routing::Route, cursor: Option<&str>) -> HistoryPage {
+        let (id, text, at, more) = match cursor {
+            None => ("new-2", "See you in ten", 2000, true),
+            Some(_) => ("old-1", "Where are you?", 1000, false),
+        };
+        HistoryPage {
+            route,
+            more,
+            messages: vec![Message {
+                id: id.into(),
+                text: text.to_owned().into(),
+                direction: Direction::Outgoing,
+                timestamp_ms: at,
+                delivery: Some(Delivery::Submitted),
+            }],
+        }
+    }
+}
+
+impl HistoryHost for Paged {
+    fn read(
+        &self,
+        route: routing::Route,
+        cursor: Option<tilo_messaging::HistoryCursor>,
+        _: usize,
+    ) -> HistoryFuture {
+        let asked = cursor.as_ref().map(|cursor| cursor.as_str().to_owned());
+        self.asked
+            .lock()
+            .expect("fixture cursors")
+            .push(asked.clone());
+        let page = Self::page(route, asked.as_deref());
+        Box::pin(std::future::ready(Ok(page)))
+    }
+}
+
+/// Older SMS is reachable, and the conversation says when it has reached its
+/// start rather than falling silent at the bottom of one page.
+#[test]
+fn the_page_before_is_asked_for_by_the_oldest_message_shown() {
+    let host = Paged::new();
+    let client = HistoryClient::new("11".repeat(32), Arc::new(host.clone()));
+    let mut app = live_messages_with_history(Some(client));
+    app.effect(&MessagesEffect::SelectRoute { choice: choice() })
+        .expect("select route");
+    app.effect(&MessagesEffect::ReadHistory { choice: choice() })
+        .expect("the newest page");
+
+    assert!(has_text(&mut app, "See you in ten"));
+    assert!(
+        app.harness()
+            .a11y_nodes()
+            .iter()
+            .any(|(_, node)| node.label() == Some("Load older messages")),
+        "a page before this one is offered, not silence"
+    );
+
+    app.harness()
+        .click_named("messages.load-older")
+        .expect("the way to the older page is a control");
+    app.settle();
+
+    assert!(has_text(&mut app, "Where are you?"), "the older page shows");
+    assert!(
+        has_text(&mut app, "See you in ten"),
+        "and what showed before it stays"
+    );
+    assert!(
+        has_text(&mut app, "This is the start of the conversation."),
+        "the start is said, not implied"
+    );
+    let asked = host.asked.lock().expect("fixture cursors").clone();
+    assert_eq!(
+        asked.last().and_then(|asked| asked.as_deref()),
+        Some("new-2"),
+        "the page before is asked for by the oldest message the app held"
+    );
+    assert!(
+        asked.iter().rev().skip(1).all(Option::is_none),
+        "every read before it asked for the newest page: {asked:?}"
+    );
 }

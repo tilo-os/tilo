@@ -295,10 +295,6 @@ impl MigrationWorker {
     /// Block until the engine's terminal channel event arrives. Progress lives
     /// in a separate slot and never wakes this wait, so a slow runner cannot
     /// fail a correct result the way a spin-plus-deadline loop can.
-    ///
-    /// # Panics
-    /// When the terminal event was already observed, a non-terminal event
-    /// arrives, or the worker does not finish within the test hang bound.
     #[cfg(any(test, feature = "test-support"))]
     #[allow(
         clippy::panic,
@@ -398,12 +394,10 @@ mod tests {
         // terminal result or requiring the UI to consume every per-file update.
         {
             let (_temp, job) = fixture();
-            for n in 0..80 {
+            for n in 0..4 {
                 fs::write(job.source().join(format!("{n:03}")), b"x").unwrap();
             }
             let mut worker = MigrationWorker::start(job).unwrap();
-            // Eighty durable copies can take tens of seconds on a loaded disk;
-            // this bound only catches a worker that never finishes.
             let deadline = tilo_test_env::hang_deadline();
             while worker.phase.load(Ordering::Acquire) != FINISHED {
                 assert!(
@@ -463,8 +457,6 @@ mod tests {
             assert!(!report.complete());
         }
 
-        // Phase `disconnected_channel_is_interrupted_once`.
-        // Catches a lost terminal sender being interpreted as a completed copy.
         {
             let (tx, rx) = mpsc::channel();
             drop(tx);

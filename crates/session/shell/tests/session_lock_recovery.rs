@@ -1,5 +1,3 @@
-//! Real native-loop restart, reconnect and crash regression in a private login.
-
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -31,7 +29,7 @@ impl Session {
         let socket = root.join("ctl");
         let _ = fs::remove_file(&socket);
         let log = fs::File::create(root.join("child.log")).unwrap();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_shell"));
+        let mut command = Command::new(tilo_test_env::package_binary!("shell"));
         command
             .args(["--mode", "native", "--backend", "headless"])
             .env("TILO_TEST_CONTROL", &socket)
@@ -41,6 +39,7 @@ impl Session {
             .env("TILO_IDLE_BLANK_SECS", "0")
             .env("TILO_IDLE_SUSPEND_SECS", "0")
             .env("TILO_HEADLESS_SIZE", "640x480")
+            .env("HOME", crate::support::desktop::private_home(root))
             .env("XDG_RUNTIME_DIR", root)
             .env("XDG_CONFIG_HOME", root.join("config"))
             .env("XDG_DATA_HOME", root.join("data"))

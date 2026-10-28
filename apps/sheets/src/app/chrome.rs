@@ -1,49 +1,30 @@
-//! The window chrome around the grid: the command bar, the formula bar and the
-//! sheet tabs, plus the transient status bubble.
+//! The window chrome around the grid: the formula bar and the sheet tabs.
+//! The commands are the window bar's slots ([`super::window_bar`]), and its
+//! notice says the sheet's status.
 //!
-//! The command bar is the toolkit's `Toolbar` in the window's header row
-//! (`HeaderRowFace`), with the window's History control in its corner.
-//! Everything else is laid out from measured role line boxes and spacing
-//! tokens, and painted through the toolkit's faces (`ButtonFace`,
-//! `SegmentedFace`, `FieldFace`), so a control looks and sizes like its
-//! retained twin. The bars stand on the window ground; the command bar is
-//! separated from the formula bar by one hairline and the sheet tabs from the
-//! grid by another.
+//! Everything is laid out from measured role line boxes and spacing tokens,
+//! and painted through the toolkit's faces (`ButtonFace`, `SegmentedFace`,
+//! `FieldFace`), so a control looks and sizes like its retained twin. The
+//! bars stand on the window ground; the sheet tabs are separated from the
+//! grid by one hairline.
 
 use super::annotations::CardMetrics;
 use super::{
     Affine, BlendMode, Button, Fill, GridMetrics, HashMap, MenuItem, Point, PresenceCtx,
     PresenceKey, Rect, RoundedRect, Scene, SheetsApp, TextRenderer, TextRole, TextStyle, Theme,
-    Widget, WindowEvent, tab_palette_color,
+    Widget, tab_palette_color,
 };
-use ui::chrome::HeaderRowFace;
 use ui::icons::Icon;
 use ui::num::f64_of_usize;
 use ui::surface::separator;
-use ui::widget::toolbar;
-use ui::widget::toolbar::Orientation;
+use ui::widget::paint_damage::PaintParts;
 use ui::widget::{
-    ButtonFace, ColorSwatchFace, ControlSize, FieldFace, SegmentedFace, SegmentedStyle, Toolbar,
+    ButtonFace, ColorSwatchFace, ControlSize, FieldFace, SegmentedFace, SegmentedStyle,
 };
 
 /// Reference label the name box is sized for, so it never resizes with the
 /// selection and always fits a two-corner range reference.
 const NAME_BOX_REFERENCE: &str = "ZZ999:ZZ999";
-
-/// Where each command stands in the command bar's [`Toolbar`]: File and
-/// Format open menus and never leave the bar; the rest move into the
-/// toolbar's More menu, from the end, when the window is too narrow.
-pub(super) mod bar {
-    pub const FILE: usize = 0;
-    pub const FORMAT: usize = 1;
-    pub const BOLD: usize = 3;
-    #[cfg(test)]
-    pub const SETTINGS: usize = 6;
-    /// Every command, without the separator.
-    #[cfg(test)]
-    pub const COMMANDS: [usize; 6] = [FILE, FORMAT, BOLD, 4, FORMULAS, SETTINGS];
-    pub const FORMULAS: usize = 5;
-}
 
 /// Chrome metrics resolved once per frame from the renderer that paints the
 /// chrome.
@@ -211,7 +192,6 @@ impl ChromeMetrics {
         (label + 2.0 * self.s3 + dot).clamp(self.s16 * g, self.s16 * 3.0 * g)
     }
 
-    /// Top of a line box centred in `rect`.
     pub(super) fn centred_top(rect: Rect, line_h: f64) -> f64 {
         rect.y0 + (rect.height() - line_h) / 2.0
     }
@@ -222,7 +202,6 @@ impl SheetsApp {
     /// change re-runs `relayout` immediately, so the frame that follows paints
     /// (and later hit-tests) the measured geometry rather than the fallback.
     pub(super) fn refresh_chrome_metrics(&mut self, tr: &mut TextRenderer, theme: &Theme) {
-        self.sync_command_bar();
         self.chrome_theme = theme.clone();
         let metrics = ChromeMetrics::resolve(tr, theme, &self.sheet_names);
         // The tab being renamed grows with the name typed into it.
@@ -239,40 +218,33 @@ impl SheetsApp {
                 rename_moved = true;
             }
         }
-        if metrics == self.metrics && !rename_moved {
-            return;
+        if metrics != self.metrics || rename_moved {
+            self.grid.set_metrics(metrics.grid);
+            self.metrics = metrics;
+            self.relayout();
         }
-        self.grid.set_metrics(metrics.grid);
-        self.metrics = metrics;
-        self.relayout();
     }
 
     /// Lay out the bars, the grid and the sheet tabs inside the window.
     pub(super) fn relayout(&mut self) {
         let r = self.rect;
-        self.lay_out_command_bar();
         let m = &self.metrics;
-        self.formula_rect = Rect::new(
-            r.x0,
-            self.toolbar_rect.y1,
-            r.x1,
-            self.toolbar_rect.y1 + m.formula_h(),
-        );
+        // The formula bar leads: the commands are the window bar's.
+        self.formula_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + m.formula_h());
         self.tabs_rect = Rect::new(r.x0, r.y1 - m.tabs_h(), r.x1, r.y1);
+        // Find is the window bar's, over the top of the grid: the grid gives
+        // no band of its own to it.
+        let content_top = self.formula_rect.y1;
         // The annotation dock stands between the grid and the tabs, so the
         // grid gives up the height instead of a card covering its cells.
-        let (dock_h, dock_cards, dock_w) = self.dock_layout(Rect::new(
-            r.x0,
-            self.formula_rect.y1,
-            r.x1,
-            self.tabs_rect.y0,
-        ));
+        let (dock_h, dock_cards, dock_w) =
+            self.dock_layout(Rect::new(r.x0, content_top, r.x1, self.tabs_rect.y0));
         self.dock_cards = dock_cards;
         self.dock_rect = Rect::new(r.x0, self.tabs_rect.y0 - dock_h, r.x1, self.tabs_rect.y0);
         self.dock_scroll
             .set_viewport(self.dock_rect, &self.chrome_theme);
         self.dock_scroll.set_content_size(dock_w, dock_h);
-        self.grid_rect = Rect::new(r.x0, self.formula_rect.y1, r.x1, self.dock_rect.y0);
+        self.grid_rect = Rect::new(r.x0, content_top, r.x1, self.dock_rect.y0);
         self.grid.rect = self.grid_rect;
 
         // Formula bar: name box, fx, field, all on one centre line at one
@@ -321,113 +293,6 @@ impl SheetsApp {
         self.relayout_overlays();
     }
 
-    /// The header row across the top of the window: the command bar in its
-    /// actions band and, when the host offers it, the window's History
-    /// control in the trailing corner. What does not fit moves into the
-    /// toolbar's own More menu.
-    fn lay_out_command_bar(&mut self) {
-        let theme = &self.chrome_theme;
-        let face = HeaderRowFace::new(self.rect, theme)
-            .with_inset_title()
-            .with_history_if(self.history.is_shown());
-        self.toolbar_rect = face.row;
-        self.history_rect = face.history_rect();
-        let chip = face.metrics().chip;
-        let band = face.actions;
-        let y0 = band.center().y - chip / 2.0;
-        self.toolbar
-            .lay_out_at(Rect::new(band.x0, y0, band.x1, y0 + chip), theme);
-    }
-
-    /// The command bar: File and Format open their menus, Bold and Formulas
-    /// are toggles, and each command reports what it runs through `slot`.
-    pub(super) fn build_command_bar(slot: &CommandSlot) -> Toolbar {
-        let file = menu_rows(slot, Self::file_menu_rows());
-        let run = |item: MenuItem| {
-            let slot = std::sync::Arc::clone(slot);
-            move || post(&slot, item.clone())
-        };
-        Toolbar::new(Orientation::Horizontal)
-            .push_menu("File", file)
-            .with_priority(1)
-            .push_menu("Format", Vec::new())
-            .with_priority(1)
-            .push_separator()
-            .push_icon_toggle(Icon::Bold, "Bold", false, run(MenuItem::ToggleBold))
-            .push_button("AutoSum", run(MenuItem::AutoSum))
-            .push_toggle("Formulas", false, run(MenuItem::ToggleFormulaView))
-            .with_accessible_name("Show formulas")
-            .push_icon(
-                Icon::Settings,
-                "Document settings",
-                run(MenuItem::OpenDocSettings),
-            )
-    }
-
-    /// Bring the bar's toggles and the Format menu's check marks in line
-    /// with the sheet.
-    pub(super) fn sync_command_bar(&mut self) {
-        let formulas = self.grid.formula_view();
-        self.toolbar.set_active(bar::BOLD, self.active_cell_bold);
-        self.toolbar.set_active(bar::FORMULAS, formulas);
-        self.toolbar.set_accessible_name(
-            bar::FORMULAS,
-            if formulas {
-                "Show calculated results"
-            } else {
-                "Show formulas"
-            },
-        );
-        let rows = self.format_menu_rows();
-        if self.format_rows_shown.as_ref() != Some(&rows) {
-            self.toolbar
-                .set_menu(bar::FORMAT, menu_rows(&self.command_slot, rows.clone()));
-            self.format_rows_shown = Some(rows);
-        }
-    }
-
-    /// Route an event to the header row: the History control, then the
-    /// command bar. While one of the bar's menus is open the bar takes every
-    /// event; otherwise it keeps the presses that land on it and lets the
-    /// pointer's motion through to the sheet as well. Returns whether the
-    /// event was consumed.
-    pub(super) fn route_command_bar(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) -> bool {
-        let hovered = self.history.is_hovered();
-        let took = self
-            .history
-            .handle_event(event, self.history_rect, ctx.scale_factor);
-        if hovered != self.history.is_hovered() {
-            self.pending.redraw = true;
-        }
-        if took {
-            *ctx.handled = true;
-            self.pending.redraw = true;
-            return true;
-        }
-        let modal = self.toolbar.wants_pointer_capture();
-        let before = *ctx.handled;
-        self.toolbar
-            .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
-        let ran = self.drain_command_bar(&mut ctx.state);
-        let consumed = *ctx.handled && !before;
-        if consumed || ran {
-            self.pending.redraw = true;
-        }
-        if modal || self.toolbar.wants_pointer_capture() {
-            *ctx.handled = true;
-            return true;
-        }
-        if matches!(event, WindowEvent::CursorMoved { .. }) {
-            *ctx.handled = before;
-            return false;
-        }
-        consumed || ran
-    }
-
     /// Run the command the bar or one of its menus reported, if any.
     pub(super) fn drain_command_bar(&mut self, doc: &mut ui::widget::Edits<'_>) -> bool {
         let item = self
@@ -443,41 +308,34 @@ impl SheetsApp {
         true
     }
 
-    // --- painting ------------------------------------------------------------
-
     /// The chrome, top to bottom. The bars stand on the window's own ground;
     /// the framework painted it already.
     pub(super) fn draw_chrome(
         &mut self,
+        parts: &mut PaintParts,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.draw_command_bar(scene, transform, tr, theme, presence);
-        self.draw_name_box(scene, transform, tr, theme);
-        self.draw_formula_field(scene, transform, tr, theme);
-        self.draw_sheet_tabs_strip(scene, transform, tr, theme);
-    }
-
-    /// The header row: the command bar over one hairline, and the window's
-    /// History control in its corner. The bar's menus float within the
-    /// window, so its viewport is the window while it paints.
-    fn draw_command_bar(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        toolbar::paint_band(scene, transform, theme, self.toolbar_rect);
-        let outer = presence.push_viewport(self.float_bounds());
-        self.toolbar.draw(scene, transform, tr, theme, presence);
-        presence.pop_viewport(outer);
-        self.history
-            .paint(scene, transform, tr, theme, self.history_rect);
+        let _ = presence;
+        let reach = ui::widget::focus_ring_reach(theme);
+        let name_box = self.name_box_rect.inflate(reach, reach);
+        parts.draw(scene, "sheet-name-box", name_box, |scene| {
+            self.draw_name_box(scene, transform, tr, theme);
+        });
+        let formula = self
+            .fx_rect
+            .union(self.formula_field_rect)
+            .inflate(reach, reach);
+        parts.draw(scene, "sheet-formula", formula, |scene| {
+            self.draw_formula_field(scene, transform, tr, theme);
+        });
+        let tabs = self.tabs_rect.inflate(reach, reach);
+        parts.draw(scene, "sheet-tabs", tabs, |scene| {
+            self.draw_sheet_tabs_strip(scene, transform, tr, theme);
+        });
     }
 
     /// The field face of the formula bar: its raised ground with the derived
@@ -556,7 +414,24 @@ impl SheetsApp {
         let bar = self.grid.formula_bar();
         let content = bar.text.as_str();
         let style = theme.text(TextRole::Body);
-        let text_x0 = field.x0 + self.metrics.s3;
+        let inset = self.metrics.s3;
+        let text_width = f64::from(tr.measure_style(content, None, &style).0);
+        let available = (field.width() - 2.0 * inset).max(1.0);
+        if let Some(caret) = bar.caret {
+            let prefix: String = content.chars().take(caret).collect();
+            let caret_x = f64::from(tr.measure_style(&prefix, None, &style).0);
+            // Leave a little breathing room after the caret, including at End.
+            let trailing = (available - self.metrics.s1).max(0.0);
+            self.formula_scroll_x = self
+                .formula_scroll_x
+                .max(caret_x - trailing)
+                .min(caret_x)
+                .max(0.0)
+                .min((text_width - trailing).max(0.0));
+        } else {
+            self.formula_scroll_x = 0.0;
+        }
+        let text_x0 = field.x0 + inset - self.formula_scroll_x;
         // Rebuild the per-character x boundaries for click/caret mapping. This
         // is derived from exactly the text being drawn, so a click maps to the
         // same glyph the user sees (whether it's the live edit buffer or the
@@ -571,7 +446,10 @@ impl SheetsApp {
             BlendMode::default(),
             1.0,
             transform,
-            &RoundedRect::from_rect(field, radius),
+            &RoundedRect::from_rect(
+                Rect::new(field.x0 + inset, field.y0, field.x1 - inset, field.y1),
+                radius,
+            ),
         );
         crate::grid::draw_edit_line(
             scene,
@@ -656,7 +534,7 @@ impl SheetsApp {
                 .iter()
                 .position(|(rect, _)| rect.contains(self.last_mouse));
             let face = SegmentedFace::new(&rects, &labels, selected)
-                .style(SegmentedStyle::Quiet)
+                .style(SegmentedStyle::Tabs)
                 .control_size(ControlSize::Small)
                 .hovered(hovered);
             ui::widget::ToggleGroup::paint(scene, transform, tr, theme, &face);
@@ -682,44 +560,6 @@ impl SheetsApp {
         Button::paint(scene, transform, tr, theme, &face);
     }
 
-    /// The area the status bubble floats in: the grid body, clear of the
-    /// scroll bar gutters and the sheet tabs.
-    pub(super) fn status_area(&self) -> Rect {
-        Rect::new(
-            self.grid_rect.x0,
-            self.grid_rect.y0,
-            self.grid_rect.x1 - self.grid.scrollbar_thickness(),
-            self.grid_rect.y1 - self.grid.scrollbar_thickness(),
-        )
-    }
-
-    /// Paint the transient status bubble over the grid's bottom-trailing
-    /// corner. It shows when the composed status text changes (a selection
-    /// move, a fresh action message) or while the pointer rests in its corner,
-    /// then fades.
-    pub(super) fn draw_status_bubble(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let now = ui::time::now();
-        let area = self.status_area();
-        // Resting in the bubble's corner pins it open; so does a staged
-        // capture.
-        let gutter = self.metrics.s6;
-        let zone = self
-            .status_bubble
-            .rect_in(area, tr, theme)
-            .inflate(gutter, gutter);
-        let over = !self.status_bubble.text().is_empty()
-            && (self.staged_status || zone.contains(self.last_mouse));
-        self.status_bubble.set_hover(over, now);
-        self.status_bubble
-            .paint(scene, transform, tr, theme, area, now);
-    }
-
     /// Paint per-peer "presence-in-navigation" on the sheet tabs: for each
     /// sheet tab a remote peer is currently on, wash the tab in that peer's
     /// colour. Reads the same `PresenceKey::Tab { id: sheet_name }` scope the
@@ -736,15 +576,25 @@ impl SheetsApp {
             let Some(name) = self.sheet_names.get(*idx) else {
                 continue;
             };
-            let peers = presence.peers_on(&PresenceKey::Tab { id: name.clone() });
-            if peers.is_empty() {
-                continue;
+            let mut peers = presence
+                .peers_on(&PresenceKey::Tab { id: name.clone() })
+                .to_vec();
+            if let Some(sheet) = self.sheet_ids.get(*idx) {
+                for (key, users) in &presence.here {
+                    if super::presence::CellScope::from_key(key)
+                        .is_some_and(|scope| scope.sheet == sheet.as_str())
+                    {
+                        peers.extend(users.iter().cloned());
+                    }
+                }
             }
+            peers.sort_by(|a, b| a.0.cmp(&b.0));
+            peers.dedup();
             let p0 = transform * Point::new(rect.x0, rect.y0);
             let p1 = transform * Point::new(rect.x1, rect.y1);
             let mist_rect = Rect::new(p0.x, p0.y, p1.x, p1.y);
             for user in peers {
-                presence.draw_peer_mist(scene, theme, user, mist_rect);
+                presence.draw_peer_mist(scene, theme, &user, mist_rect);
             }
         }
     }
@@ -799,32 +649,15 @@ pub(super) fn char_boundaries(
     xs
 }
 
-/// What the command bar last ran, waiting for the app to act on it with the
+/// What the window bar last ran, waiting for the app to act on it with the
 /// document in hand.
 pub(super) type CommandSlot = std::sync::Arc<std::sync::Mutex<Option<MenuItem>>>;
 
 /// Report `item` through `slot`.
-fn post(slot: &CommandSlot, item: MenuItem) {
+pub(super) fn post(slot: &CommandSlot, item: MenuItem) {
     if let Ok(mut pending) = slot.lock() {
         *pending = Some(item);
     }
-}
-
-/// A command menu's rows as toolkit menu rows that report through `slot`.
-fn menu_rows(slot: &CommandSlot, rows: Vec<MenuRow>) -> Vec<ui::widget::MenuItem> {
-    rows.into_iter()
-        .map(|(label, item, checked)| match item {
-            None => ui::widget::MenuItem::separator(),
-            Some(item) => {
-                let slot = std::sync::Arc::clone(slot);
-                let row = ui::widget::MenuItem::action(label, move || post(&slot, item.clone()));
-                match checked {
-                    Some(on) => row.with_checked(on),
-                    None => row,
-                }
-            }
-        })
-        .collect()
 }
 
 /// One row of a command menu: its label, what it runs (`None` for a

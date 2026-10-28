@@ -6,7 +6,7 @@
 //! desktop for development, `drm` the shipped session, `headless` a display-free one for CI.
 //!
 //! The legacy `--mode hosted` loop was removed; [`removed_run_mode_refusal`] refuses it rather than
-//! silently booting a different session. Its bootstrap now lives once, in [`session_bootstrap`].
+//! silently booting a different session. Its bootstrap now lives once, in `session_bootstrap`.
 
 #[cfg(target_os = "linux")]
 pub mod accessibility;
@@ -19,7 +19,6 @@ pub(crate) mod admin_control;
 pub(crate) mod agent_door;
 #[cfg(target_os = "linux")]
 pub mod agent_seats;
-#[cfg(target_os = "linux")]
 pub mod app_liveness;
 #[cfg(target_os = "linux")]
 mod audio_capture;
@@ -42,6 +41,8 @@ pub(crate) mod control_invocation;
 pub(crate) mod control_listing;
 pub mod controller_nav;
 pub mod cursor;
+#[cfg(target_os = "linux")]
+pub mod descriptor_table;
 pub mod dev_env;
 pub mod dev_test_identity;
 #[cfg(target_os = "linux")]
@@ -50,6 +51,8 @@ pub(crate) mod diagnostic_actions;
 #[cfg(target_os = "linux")]
 pub mod dictation;
 pub mod dictation_status;
+#[cfg(target_os = "linux")]
+pub mod downloaded_programs;
 pub mod drag_feedback;
 #[cfg(target_os = "linux")]
 pub mod floating_service;
@@ -70,15 +73,12 @@ pub mod input_method_service;
 pub mod key_latency;
 #[cfg(target_os = "linux")]
 pub mod launch_permissions;
-#[cfg(target_os = "linux")]
-pub mod liveness;
 pub(crate) mod lock_actions;
 pub mod lock_auth;
 pub mod lock_controller;
 pub mod lock_screen;
 #[cfg(target_os = "macos")]
 pub mod macos;
-pub mod metrics;
 #[cfg(target_os = "linux")]
 pub mod native;
 #[cfg(target_os = "linux")]
@@ -150,6 +150,10 @@ pub mod window_handles;
 pub mod window_previews;
 #[cfg(target_os = "linux")]
 mod window_provenance;
+#[cfg(target_os = "linux")]
+pub(crate) mod workspace_door;
+#[cfg(target_os = "linux")]
+pub(crate) mod x11_windows;
 #[cfg(target_os = "linux")]
 pub(crate) mod xwayland;
 #[cfg(target_os = "linux")]

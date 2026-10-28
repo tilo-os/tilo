@@ -94,11 +94,6 @@ impl ShotFrame {
 
     /// Build a fresh layout tree for the widget inside a viewport-sized root,
     /// resolve it, and apply the result.
-    ///
-    /// # Errors
-    ///
-    /// Returns the solver's error when Taffy rejects the tree or allocation
-    /// dependent styles do not settle.
     pub fn layout(&mut self, widget: &mut dyn Widget) -> Result<(), WidgetLayoutError> {
         self.layout_at(widget, self.viewport)
     }

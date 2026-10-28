@@ -269,6 +269,7 @@ impl KeyContext<'_> {
             KeyEventResults::new(self, keycode, !repeat && state == ElementState::Pressed);
         let physical_key = keymap::raw_keycode_to_physicalkey(keycode);
         let (logical_key, location) = event.key();
+        let logical_key = event.chord_key(logical_key);
         let text = event.text();
         let (key_without_modifiers, _) = event.key_without_modifiers();
         let text_with_all_modifiers = event.text_with_all_modifiers();
@@ -382,6 +383,41 @@ impl<'a, 'b> KeyEventResults<'a, 'b> {
         }
     }
 
+    /// Under Ctrl, Alt or Super, a letter outside the Latin script is named by
+    /// the Latin character another layout of the keymap puts on the key, as
+    /// GTK does: with Russian or Arabic active, Ctrl+C still copies, and on a
+    /// French or German arrangement the chord keeps that arrangement's letter
+    /// (the key labelled Z is undo, not whatever a US keyboard prints there).
+    /// Latin letters with diacritics stay: they are shortcuts of their own.
+    fn chord_key(&mut self, key: Key) -> Key {
+        let modifiers = self.context.state.modifiers();
+        if !(modifiers.ctrl || modifiers.alt || modifiers.logo) {
+            return key;
+        }
+        let Key::Character(typed) = &key else {
+            return key;
+        };
+        if !typed.chars().any(is_non_latin_letter) {
+            return key;
+        }
+        let active = self.context.state.layout(self.keycode);
+        let layouts = self.context.keymap.num_layouts_for_key(self.keycode);
+        for layout in (0..layouts).filter(|layout| *layout != active) {
+            let keysym = self
+                .context
+                .keymap
+                .first_keysym_by_level(layout, self.keycode);
+            let latin = self
+                .context
+                .keysym_to_utf8_raw(keysym)
+                .filter(|text| text.len() == 1 && text.as_bytes()[0].is_ascii_graphic());
+            if let Some(latin) = latin {
+                return Key::Character(latin);
+            }
+        }
+        key
+    }
+
     pub fn key_without_modifiers(&mut self) -> (Key, KeyLocation) {
         // This will become a pointer to an array which libxkbcommon owns, so we don't need to
         // deallocate it.
@@ -446,6 +482,13 @@ impl<'a, 'b> KeyEventResults<'a, 'b> {
             _ => Err(()),
         }
     }
+}
+
+/// A letter outside the Latin script: Basic Latin through Latin Extended-B,
+/// IPA and Latin Extended Additional are Latin; every other alphabetic
+/// character is not.
+fn is_non_latin_letter(ch: char) -> bool {
+    ch.is_alphabetic() && !matches!(ch, '\0'..='\u{2AF}' | '\u{1E00}'..='\u{1EFF}')
 }
 
 #[derive(Debug)]

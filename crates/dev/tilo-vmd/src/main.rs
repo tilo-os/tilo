@@ -147,8 +147,8 @@ struct State {
     #[arg(long, default_value = "/usr/share/tilo-vm/base.json")]
     base: PathBuf,
     /// `record` performs no side effects, `record-device` none on a
-    /// machine whose own session runs as quickuser, and `record-login` none
-    /// on a laptop quickuser is logged in to through greetd; for protocol
+    /// machine whose own session runs as tester, and `record-login` none
+    /// on a laptop tester is logged in to through greetd; for protocol
     /// tests only.
     #[arg(long, value_enum, default_value_t = Backend::Systemd)]
     apply: Backend,
@@ -178,8 +178,8 @@ impl State {
         let backend: Box<dyn Apply> = match self.apply {
             Backend::Systemd => Box::new(SystemdApply::new(&self.root)),
             Backend::Record => Box::new(RecordingApply::default()),
-            Backend::RecordDevice => Box::new(RecordingApply::with_device("quickuser")),
-            Backend::RecordLogin => Box::new(RecordingApply::with_login("quickuser")),
+            Backend::RecordDevice => Box::new(RecordingApply::with_device("tester")),
+            Backend::RecordLogin => Box::new(RecordingApply::with_login("tester")),
         };
         Daemon::new(&self.root, backend, manifest, base)
     }

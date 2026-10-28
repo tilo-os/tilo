@@ -47,11 +47,6 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(
 
 /// Read the next frame, or `None` if the stream ends cleanly before one
 /// starts.
-///
-/// # Errors
-///
-/// Returns [`FrameError`] if the stream fails or ends mid-frame, or the
-/// declared length is zero or exceeds `max`.
 pub async fn read_frame_or_eof<R: AsyncRead + Unpin>(
     reader: &mut R,
     max: usize,
@@ -92,10 +87,6 @@ pub fn encode(envelope: &Envelope) -> Result<Vec<u8>, postcard::Error> {
 }
 
 /// Decode an envelope from a frame's payload (WITHOUT the length prefix).
-///
-/// # Errors
-///
-/// Returns an error if `payload` does not decode as a valid `Envelope`.
 pub fn decode(payload: &[u8]) -> Result<Envelope, postcard::Error> {
     postcard::from_bytes(payload)
 }
@@ -127,12 +118,6 @@ impl<R> FrameReader<R> {
 
 impl<R: AsyncRead + Unpin> FrameReader<R> {
     /// Read the next envelope. Returns `Ok(None)` on clean EOF.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FrameError`] if the underlying reader errors mid-frame, the
-    /// declared length is zero or exceeds [`MAX_FRAME_BYTES`], or the frame's
-    /// bytes don't decode as a valid `Envelope`.
     pub async fn read_next(&mut self) -> Result<Option<Envelope>, FrameError> {
         self.inner.read_value_async().await
     }
@@ -160,10 +145,8 @@ mod tests {
             assert_eq!(decode(&bytes[PREFIX_BYTES..]).unwrap(), e);
         }
 
-        // The prefix is the little-endian length.
         assert_eq!(frame(&[7, 8, 9]).unwrap(), vec![3, 0, 0, 0, 7, 8, 9]);
 
-        // A reader yields consecutive frames, then a clean end.
         let mut wire = Vec::new();
         wire.extend_from_slice(&encode(&Envelope::Ping).unwrap());
         wire.extend_from_slice(&encode(&Envelope::Subscribe { workspace_id: 1 }).unwrap());
@@ -177,7 +160,6 @@ mod tests {
         assert_eq!(reader.read_next().await.unwrap().unwrap(), Envelope::Pong);
         assert!(reader.read_next().await.unwrap().is_none());
 
-        // A length over the maximum is refused.
         let mut wire = Vec::new();
         wire.extend_from_slice(
             &u32::try_from(MAX_FRAME_BYTES)

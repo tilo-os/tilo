@@ -152,8 +152,6 @@ impl fmt::Display for DocPdfError {
 
 impl std::error::Error for DocPdfError {}
 
-// ---- page geometry (US-Letter) ---------------------------------------------
-
 const PAGE_W: f32 = 612.0; // 8.5in * 72
 const PAGE_H: f32 = 792.0; // 11in * 72
 const MARGIN: f32 = 72.0; // 1in margins
@@ -166,8 +164,6 @@ const BODY_LEADING: f32 = 14.0; // line height for body text
 const PARA_GAP: f32 = 6.0; // extra space after a paragraph/heading
 const LIST_INDENT: f32 = 18.0; // per-level indent for lists
 const TABLE_PAD: f32 = 4.0; // cell text padding
-
-// ---- low-level drawing model ------------------------------------------------
 
 /// Which face of the Helvetica family a run is set in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -327,8 +323,6 @@ impl Layout {
     }
 }
 
-// ---- public entry point -----------------------------------------------------
-
 /// Render a materialized tilo-doc snapshot to PDF bytes. Always succeeds for
 /// a well-formed snapshot — undecodable image blobs degrade to a
 /// placeholder box rather than erroring; an empty document still yields
@@ -351,8 +345,6 @@ pub fn render_pdf(snap: &DocSnapshot, content: &dyn ContentSource) -> Result<Vec
 
     Ok(finish(layout))
 }
-
-// ---- block dispatch ---------------------------------------------------------
 
 fn render_block(layout: &mut Layout, content: &dyn ContentSource, block: &BlockView) {
     match ExportBlock::new(block).kind() {
@@ -547,8 +539,6 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
     layout.gap(PARA_GAP);
 }
 
-// ---- images -----------------------------------------------------------------
-
 struct DecodedImage {
     width: u32,
     height: u32,
@@ -587,7 +577,6 @@ fn place_image(layout: &mut Layout, img: &DecodedImage) {
     let top = layout.y;
     let bottom = top - h;
 
-    // Register the XObject in the writer and reference it on this page.
     let name = format!("Im{}", layout.next_img);
     // Bounded by the number of images in one document — nowhere near `usize::MAX`.
     layout.next_img = layout.next_img.saturating_add(1);
@@ -648,8 +637,6 @@ fn placeholder(layout: &mut Layout, label: &str) {
     layout.y -= h;
     layout.gap(PARA_GAP);
 }
-
-// ---- text wrapping ----------------------------------------------------------
 
 /// A run of text set in one face.
 type Run = (String, Style);
@@ -790,8 +777,6 @@ fn clip_to_width(text: &str, max_w: f32, size: f32) -> String {
     cur
 }
 
-// ---- serialization ----------------------------------------------------------
-
 /// Turn the accumulated pages into the final PDF byte stream.
 fn finish(mut layout: Layout) -> Vec<u8> {
     // Font objects (shared across pages), `/F1` … `/F4` in `FACES` order.
@@ -849,7 +834,6 @@ fn finish(mut layout: Layout) -> Vec<u8> {
         page_objs.push(layout.writer.add(page_body.into_bytes()));
     }
 
-    // Fill in the pages tree now that we have the kids.
     let kids = page_objs
         .iter()
         .map(|o| format!("{} 0 R", o.0))

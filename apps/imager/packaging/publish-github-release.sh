@@ -58,8 +58,8 @@ PY
 declare -A local_names=()
 while IFS= read -r -d '' artifact; do
   name="$(basename "$artifact")"
-  # Catalog inputs, not downloads; internal bundles are published as Forgejo packages.
-  case "$name" in catalog-x86_64.json|catalog-aarch64.json|internal-catalog-*.json|tilo-internal-installer-*.json) continue ;; esac
+  # Catalog inputs, not downloads; internal bundles and target policies are Forgejo packages.
+  case "$name" in catalog-x86_64.json|catalog-aarch64.json|internal-catalog-*.json|tilo-internal-installer-*.json|target-policy-catalog-*.json|tilo-target-policy-*.tar) continue ;; esac
   [[ ! -v "local_names[$name]" ]] \
     || { printf 'duplicate local release asset name %s\n' "$name" >&2; exit 1; }
   size="$(wc -c <"$artifact" | tr -d '[:space:]')"
@@ -145,8 +145,8 @@ processed=0
 index=0
 while IFS= read -r -d '' artifact; do
   name="$(basename "$artifact")"
-  # Catalog inputs, not downloads; internal bundles are published as Forgejo packages.
-  case "$name" in catalog-x86_64.json|catalog-aarch64.json|internal-catalog-*.json|tilo-internal-installer-*.json) continue ;; esac
+  # Catalog inputs, not downloads; internal bundles and target policies are Forgejo packages.
+  case "$name" in catalog-x86_64.json|catalog-aarch64.json|internal-catalog-*.json|tilo-internal-installer-*.json|target-policy-catalog-*.json|tilo-target-policy-*.tar) continue ;; esac
   index=$((index + 1))
   metadata="$(python3 - "$assets_json" "$name" <<'PY'
 import json, sys

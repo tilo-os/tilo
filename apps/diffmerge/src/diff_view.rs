@@ -940,7 +940,7 @@ impl DiffView {
                 &labels,
                 usize::from(self.compact_show_right),
             )
-            .style(SegmentedStyle::Segmented)
+            .style(SegmentedStyle::Tabs)
             .control_size(ControlSize::Small)
             .hovered(
                 self.compact_source_hits
@@ -1105,8 +1105,10 @@ impl DiffView {
     /// comparison is loaded.
     fn draw_empty_state(ctx: &mut PaintCtx<'_>, rect: Rect) {
         let title = t("empty-title");
+        let message = t("empty-message");
         let content = EmptyStateContent {
             icon: Some(Icon::FileText),
+            message: Some(&message),
             ..EmptyStateContent::new(&title)
         };
         EmptyState::paint(ctx, rect, &content, Point::new(-1.0, -1.0));

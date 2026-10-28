@@ -571,8 +571,6 @@ impl Library {
         self.feeds.is_empty() && self.articles.is_empty()
     }
 
-    // --- lookups ---------------------------------------------------------
-
     pub fn feed(&self, id: &Id) -> Option<Row<'_, Feed>> {
         let at = self.feeds.position(id)?;
         self.feeds.at(at).map(|(id, feed)| Row::new(id, feed))
@@ -628,8 +626,6 @@ impl Library {
         self.feed_rows().find(|feed| feed.url == url)
     }
 
-    // --- counts ----------------------------------------------------------
-
     pub fn unread_for_feed(&self, feed: &Id) -> usize {
         self.articles
             .values()
@@ -648,8 +644,6 @@ impl Library {
     pub fn total_starred(&self) -> usize {
         self.articles.values().filter(|a| a.starred).count()
     }
-
-    // --- filtering -------------------------------------------------------
 
     /// Does an article match the active filter?
     fn matches(&self, a: &Article, filter: &Filter) -> bool {
@@ -952,7 +946,6 @@ mod tests {
         // --- phase: read_settings_default_and_clamp ---
         {
             assert_eq!(ReadSettings::default().theme, ReadTheme::System);
-            // Clamp keeps font_scale inside bounds.
             let s = ReadSettings {
                 font_scale: 5.0,
                 ..Default::default()

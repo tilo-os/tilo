@@ -32,9 +32,7 @@ mod cases {
     use std::sync::{Arc, Mutex};
 
     use launcher::capture::CaptureCancellation;
-    use thumbnail::batch::{
-        BatchError, ENTRYPOINT, EXIT_UNDECODABLE, PACKAGE, output_name, thumbnail_batch,
-    };
+    use thumbnail::batch::{ENTRYPOINT, PACKAGE, output_name, thumbnail_batch};
     use tilo_app_package::{Manifest, SigningIdentity, Verification, pack, tapp, verify};
     use tilo_relay::compute::COMPUTE_JOB_SCHEMA_VERSION;
     use tilo_relay::{
@@ -65,8 +63,8 @@ mod cases {
             an_offloaded_batch_runs_in_the_launcher_sandbox_and_returns_the_local_thumbnails,
         ),
         (
-            "a_non_image_fails_the_offloaded_job_with_its_reason",
-            a_non_image_fails_the_offloaded_job_with_its_reason,
+            "a_non_image_is_named_and_the_rest_of_the_offloaded_job_completes",
+            a_non_image_is_named_and_the_rest_of_the_offloaded_job_completes,
         ),
     ];
 
@@ -158,7 +156,6 @@ mod cases {
                     .as_millis(),
             )
             .unwrap();
-            // The bounds Photos' Make thumbnails declares for its offload.
             let spec = ComputeJobSpec {
                 version: COMPUTE_JOB_SCHEMA_VERSION,
                 job_id: [job; 16],
@@ -282,7 +279,7 @@ mod cases {
         let staging = scratch.join("staging");
         std::fs::create_dir_all(staging.join("bin")).unwrap();
         std::fs::copy(
-            env!("CARGO_BIN_EXE_thumbnail-batch"),
+            tilo_test_env::package_binary!("thumbnail-batch"),
             staging.join("bin").join(ENTRYPOINT),
         )
         .unwrap();
@@ -370,7 +367,10 @@ mod cases {
         ];
         let (spec, result) = device.run(0x51, &inputs);
 
-        let expected = thumbnail_batch(&inputs).expect("the local batch thumbnails every input");
+        let expected: Vec<Vec<u8>> = thumbnail_batch(&inputs)
+            .into_iter()
+            .map(Result::unwrap)
+            .collect();
         let expected_digests: Vec<[u8; 32]> = expected
             .iter()
             .map(|thumbnail| *blake3::hash(thumbnail).as_bytes())
@@ -389,7 +389,6 @@ mod cases {
             (0..inputs.len()).map(output_name).collect::<Vec<_>>(),
             String::from_utf8_lossy(&result.stderr)
         );
-        // What the requester then fetches from the worker, byte for byte.
         for (digest, thumbnail) in expected_digests.iter().zip(&expected) {
             let returned = device
                 .worker
@@ -403,37 +402,44 @@ mod cases {
         }
     }
 
-    fn a_non_image_fails_the_offloaded_job_with_its_reason() {
+    fn a_non_image_is_named_and_the_rest_of_the_offloaded_job_completes() {
         let device = Device::new();
-        let inputs = vec![
-            picture(32, 32, 9, image::ImageFormat::Png),
-            b"not a picture".to_vec(),
-        ];
-        assert_eq!(
-            thumbnail_batch(&inputs),
-            Err(BatchError::Undecodable { index: 1 }),
-            "the local batch refuses it too"
-        );
+        let bad = b"not a picture".to_vec();
+        let inputs = vec![picture(32, 32, 9, image::ImageFormat::Png), bad];
+        let made = thumbnail_batch(&inputs);
+        assert!(made[0].is_ok(), "the local batch still makes the good one");
+        let failure = *made[1].as_ref().unwrap_err();
+        let expected = made[0].as_ref().unwrap().clone();
         let (spec, result) = device.run(0x52, &inputs);
         let stderr = String::from_utf8_lossy(&result.stderr);
+        let digest = *blake3::hash(&expected).as_bytes();
         assert_eq!(
             result.lifecycle,
             ComputeJobLifecycle {
                 job_id: spec.job_id,
                 sequence: 2,
-                phase: ComputeJobPhase::Failed {
-                    code: format!("exit_{EXIT_UNDECODABLE}"),
+                phase: ComputeJobPhase::Completed {
+                    outputs: vec![digest],
                 },
             },
-            "the batch fails whole, with the entrypoint's exit status; stderr: {stderr}"
+            "the job completes with the good picture; stderr: {stderr}"
         );
         assert!(
-            stderr.contains("input 1 is not an image"),
-            "the worker returns the reason to the requester: {stderr}"
+            stderr.contains(&hex::encode(failure.digest)),
+            "the worker names the content it could not read: {stderr}"
         );
         assert!(
-            device.outputs.is_empty(),
-            "a failed batch persists no thumbnail"
+            !stderr.contains("input 1"),
+            "the failure is never a position: {stderr}"
+        );
+        let returned = device
+            .worker
+            .retained_output(REQUESTER, WORKSPACE, spec.job_id, digest)
+            .expect("the worker reads its retained output");
+        assert_eq!(returned.as_ref(), Some(&expected));
+        assert!(
+            !device.outputs.is_empty(),
+            "the good picture's thumbnail is persisted"
         );
     }
 

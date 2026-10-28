@@ -182,10 +182,30 @@ impl Ebook {
     /// Remove from library
     ///
     /// Takes the book off the shelf. Where the reader was and what they
-    /// marked in it stay, so adding it again brings them back.
-    #[action(destructive, writes = annotations)]
+    /// marked in it stay, so adding it again brings them back. Undo puts the
+    /// row back but not this device's access to the book's file, which the
+    /// reader forgets with it, so this is asked first.
+    #[action(destructive, irreversible, writes = annotations)]
     pub fn remove_from_library(&mut self, #[param("The book's id")] book: String) {
         self.entries.remove(&Id::from_raw(book));
+    }
+
+    /// Keep the index of a book's text with its row, so that every device
+    /// finds a passage in the book before the book itself is there.
+    #[action(housekeeping)]
+    pub fn index_book(
+        &mut self,
+        #[param("The book's id")] book: String,
+        #[param("The index of its text, as a content store keeps it")] index: StoredContent,
+    ) -> Result<(), Refusal> {
+        let index = LibraryEntry::stored(&index.hash, index.size)
+            .ok_or("the index hash is not a content hash")?;
+        let entry = self
+            .entries
+            .get_mut(&Id::from_raw(book))
+            .ok_or("the book is not in the library")?;
+        entry.index = index;
+        Ok(())
     }
 
     /// Record where the reader is in a book.
@@ -479,6 +499,7 @@ impl Ebook {
                 subject,
                 added: now(cx),
                 content: content.unwrap_or_default(),
+                index: ui::tilo_resource::Bytes::Empty,
             },
         );
     }
@@ -861,6 +882,16 @@ impl ResourceApp for EbookShell {
     /// A book to open (`ebook book.epub`).
     const ARGUMENTS: usize = 1;
 
+    fn commands() -> &'static [ui::framework::Command] {
+        crate::commands::COMMANDS
+    }
+
+    /// Whether this device keeps the book catalogues: a setting of the
+    /// device's, published so search and agents reach it.
+    fn records(records: &mut ui::framework::Records<'_>) {
+        records.settings::<crate::catalogue::CatalogueCopies>();
+    }
+
     fn view(cx: &mut ViewCx<Ebook>) -> Element {
         let app = BooksApp::new(cx.dispatcher(), bundled_library());
         // A search hit, or an agent's `open`, shows the book, chapter,
@@ -941,6 +972,14 @@ pub(crate) fn shelve(entry: &LibraryEntry) -> Invoke<Ebook> {
     })
 }
 
+/// The index of `book`'s text, kept as `stored`, joining its row.
+pub(crate) fn index_book(book: &str, stored: StoredContent) -> Invoke<Ebook> {
+    Ebook::INDEX_BOOK.with(books::IndexBook {
+        book: book.to_owned(),
+        index: stored,
+    })
+}
+
 /// A book found in a watched folder joining the shelf, as the library's verb.
 pub(crate) fn shelve_found(entry: &LibraryEntry) -> Invoke<Ebook> {
     Ebook::SHELVE_FOUND.with(books::ShelveFound {
@@ -985,10 +1024,10 @@ pub enum BooksEffect {
     /// Open book
     ///
     /// Choose an EPUB through the system picker and open it.
-    #[effect(job, cancellable, device_only)]
+    #[effect(attended, job, cancellable)]
     OpenBook,
     /// Open a book the content store holds, putting it on the shelf.
-    #[effect(job, device_only)]
+    #[effect(job)]
     OpenStored {
         #[param("Content hash of the book's bytes")]
         content: String,
@@ -1089,6 +1128,16 @@ impl ResourceSurface<Ebook, BooksEffect> for BooksApp {
 
     fn attach(&mut self, cx: SurfaceCx<Ebook>) {
         self.attach_host(&cx);
+    }
+
+    const APPLIED: bool = true;
+
+    /// A removal applied here, from the shelf, the palette, a script or an
+    /// agent once the person agreed: this device forgets the book's file.
+    fn applied(&mut self, action: &<Ebook as tilo_resource::Resource>::Action) {
+        if let EbookAction::RemoveFromLibrary(removed) = &action.operation {
+            self.forget_removed(&removed.book);
+        }
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -1197,3 +1246,26 @@ pub(crate) fn read_doc(doc: &ui::automerge::AutoCommit) -> Ebook {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::EbookShell::scenarios() {
+            let mut app = TestApp::<super::EbookShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+}

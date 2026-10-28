@@ -47,6 +47,86 @@ pub type FieldRequest = ui::ime::ImeWindowState;
 pub enum NativeFieldId {
     Widget(u64),
     Palette,
+    /// A shell password prompt: the compositor's sheet or Quick Settings'
+    /// Wi-Fi prompt.
+    Prompt,
+    /// The lock screen's own password field: the one field an input method may
+    /// serve while the session is locked, so a password in a composed script
+    /// can be typed at all.
+    Lock,
+}
+
+/// Whether the session is locked, and the lock screen's own field when it
+/// has one to serve.
+#[derive(Clone, Copy, Debug)]
+pub enum SessionState {
+    Unlocked,
+    Locked {
+        lock_field: Option<ui::ime::ImeWindowState>,
+    },
+}
+
+/// Who holds the seat's keyboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyboardHolder {
+    Shell,
+    Client,
+}
+
+/// What is true of the desktop when the input method's field is chosen.
+#[derive(Clone, Copy, Debug)]
+pub struct FieldSituation {
+    pub session: SessionState,
+    pub keyboard: KeyboardHolder,
+    pub shell_prompt_up: bool,
+    pub palette_visible: bool,
+    /// A receipts-only surface has the focus and no dictation needs its
+    /// original field, so no field is served.
+    pub fields_withheld: bool,
+}
+
+/// Which field the seat's input method serves, and as what.
+///
+/// While the session is locked the only answer is the lock screen's field, and
+/// only when no client still holds the keyboard: serving a client's text input
+/// there would hand a locked machine's keystrokes to a process. A lock with no
+/// composer available serves nothing, which is the safe answer. Unlocked, the
+/// order is the palette, then a shell password prompt, then the focused field —
+/// unchanged.
+#[must_use]
+pub fn field_owner(
+    situation: FieldSituation,
+    focused_field: Option<ui::ime::ImeWindowState>,
+    focus: Option<u64>,
+) -> Option<(ui::ime::ImeWindowState, NativeFieldId)> {
+    let FieldSituation {
+        session,
+        keyboard,
+        shell_prompt_up,
+        palette_visible,
+        fields_withheld,
+    } = situation;
+    if let SessionState::Locked { lock_field } = session {
+        return match keyboard {
+            KeyboardHolder::Shell => lock_field.map(|field| (field, NativeFieldId::Lock)),
+            KeyboardHolder::Client => None,
+        };
+    }
+    if keyboard == KeyboardHolder::Client && !shell_prompt_up {
+        return None;
+    }
+    if fields_withheld {
+        return None;
+    }
+    if palette_visible {
+        return focused_field.map(|field| (field, NativeFieldId::Palette));
+    }
+    if shell_prompt_up {
+        return focused_field.map(|field| (field, NativeFieldId::Prompt));
+    }
+    focused_field
+        .zip(focus)
+        .map(|(field, node)| (field, NativeFieldId::Widget(node)))
 }
 
 /// Private opaque edit metadata, never surrounding text or a persisted hash.
@@ -93,11 +173,6 @@ pub struct ShellTextInput {
 
 impl ShellTextInput {
     /// Connect the stand-in client to the compositor's own display.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when the socket pair, the client insertion or
-    /// the Wayland connection fails.
     pub fn connect(state: &mut State) -> Result<Self, String> {
         let (link, conn) = LoopbackClient::connect(state, ClientState::new_arc())?;
         let queue = conn.new_event_queue::<ClientSide>();
@@ -200,6 +275,7 @@ impl ShellTextInput {
         }
         self.pump();
         self.update_enable();
+        state.shell_field_active = self.holds_focus(state);
         let events = std::mem::take(&mut self.state.events);
         if changed { Vec::new() } else { events }
     }
@@ -350,6 +426,23 @@ pub fn translate_key(keysym: u32, pressed: bool) -> Option<WindowEvent> {
     ))
 }
 
+/// The modifiers a virtual keyboard's `wl_keyboard.modifiers` mask holds.
+/// The on-screen keyboard's keymap keeps XKB's core modifiers, whose bits
+/// every keymap shares: Shift 0, Control 2, Mod1 (Alt) 3, Mod4 (Super) 6.
+#[must_use]
+pub fn modifiers_state(mask: u32) -> winit::keyboard::ModifiersState {
+    use winit::keyboard::ModifiersState as M;
+    [
+        (1 << 0, M::SHIFT),
+        (1 << 2, M::CONTROL),
+        (1 << 3, M::ALT),
+        (1 << 6, M::SUPER),
+    ]
+    .into_iter()
+    .filter(|(bit, _)| mask & bit != 0)
+    .fold(M::empty(), |held, (_, modifier)| held | modifier)
+}
+
 impl wayland_client::Dispatch<wl_registry::WlRegistry, ()> for ClientSide {
     fn event(
         state: &mut Self,
@@ -481,5 +574,71 @@ mod tests {
             assert_eq!(key_of(&event), (key, false), "{keysym:#x}");
         }
         assert!(translate_key(k::KEY_Shift_L, true).is_none());
+    }
+
+    /// The whole truth table of who an input method may serve. The locked rows
+    /// are the security ones: while the session is locked, only the lock
+    /// screen's own field may be served, and only when no client still holds
+    /// the keyboard — a locked machine must not hand its keystrokes to a
+    /// process, and a password in a composed script must still be typeable.
+    #[test]
+    fn only_the_lock_field_is_served_while_locked() {
+        use ui::ime::{ImeWindowState, InputContent};
+        let field =
+            || ImeWindowState::from_rect(InputContent::PASSWORD, vello::kurbo::Rect::default());
+        let owner = |locked,
+                     client_keyboard,
+                     lock_field,
+                     prompt,
+                     palette,
+                     focused: Option<ImeWindowState>| {
+            super::field_owner(
+                FieldSituation {
+                    session: if locked {
+                        SessionState::Locked { lock_field }
+                    } else {
+                        SessionState::Unlocked
+                    },
+                    keyboard: if client_keyboard {
+                        KeyboardHolder::Client
+                    } else {
+                        KeyboardHolder::Shell
+                    },
+                    shell_prompt_up: prompt,
+                    palette_visible: palette,
+                    fields_withheld: false,
+                },
+                focused,
+                Some(7),
+            )
+        };
+
+        // Locked: the lock's own field, and nothing else.
+        assert!(matches!(
+            owner(true, false, Some(field()), true, true, Some(field())),
+            Some((_, NativeFieldId::Lock))
+        ));
+        // Locked with a client still holding the keyboard: nothing at all,
+        // even though the lock has a field ready.
+        assert!(owner(true, true, Some(field()), false, false, Some(field())).is_none());
+        // Locked with no field (verifying): nothing, and no chrome field is a
+        // substitute for it.
+        assert!(owner(true, false, None, true, true, Some(field())).is_none());
+
+        // Unlocked, the order is unchanged: palette, prompt, focused widget.
+        assert!(matches!(
+            owner(false, false, None, true, true, Some(field())),
+            Some((_, NativeFieldId::Palette))
+        ));
+        assert!(matches!(
+            owner(false, false, None, true, false, Some(field())),
+            Some((_, NativeFieldId::Prompt))
+        ));
+        assert!(matches!(
+            owner(false, false, None, false, false, Some(field())),
+            Some((_, NativeFieldId::Widget(7)))
+        ));
+        // A client with the keyboard and no shell prompt keeps it.
+        assert!(owner(false, true, None, false, false, Some(field())).is_none());
     }
 }

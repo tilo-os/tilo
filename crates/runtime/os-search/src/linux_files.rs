@@ -79,10 +79,6 @@ pub fn files(
 }
 
 /// Write [`files`], leaving any already up to date alone.
-///
-/// # Errors
-///
-/// As [`files`], and I/O errors creating directories or writing.
 pub fn write(data_home: &Path, config_home: &Path, runtime: &Path) -> io::Result<()> {
     for (path, contents) in files(data_home, config_home, runtime)? {
         if std::fs::read_to_string(&path).is_ok_and(|held| held == contents) {

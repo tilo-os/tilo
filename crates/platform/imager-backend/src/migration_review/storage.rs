@@ -500,7 +500,6 @@ mod tests {
         }
         assert_eq!(inventory.summary().unwrap().files, (BUFFER * 4 + 3) as u64);
         assert_eq!(inventory.summary().unwrap().links, 1);
-        // Compare the unchanged wire revision to the previous sorted-map algorithm.
         let map: BTreeMap<_, _> = inventory.facts.iter().map(Result::unwrap).collect();
         let mut digest = Sha256::new();
         for (path, fact) in map {

@@ -1,4 +1,3 @@
-//! Google consent in Settings produces the exact shared account Mail consumes.
 #![cfg(feature = "live")]
 #![allow(
     clippy::unwrap_used,

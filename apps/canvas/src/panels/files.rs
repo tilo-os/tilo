@@ -5,13 +5,21 @@
 //! It wraps the window's content and asks nothing of it: the controls set
 //! [`Tools::files`], the desk takes the request on its next frame, and
 //! what a file brings in lands as one of the artwork's actions.
+//!
+//! Every chooser works by contents, so Files works where files have no
+//! paths (a browser page): an opened file arrives as its bytes, and a save
+//! or export goes to a destination the host keeps when there is no path to
+//! write. Where the chosen file has a path, the artwork keeps working there.
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::TryRecvError;
 use ui::tilo_resource::Invoke;
 
-use ui::framework::{Dispatcher, Live, Setting};
-use ui::portal::{FileFilter, PickRequest, PortalOutcome};
+use ui::framework::{Dispatcher, Live, RecordEnv, Setting};
+use ui::portal::{
+    ContentsChannel, ContentsOutcome, DestinationChannel, DestinationOutcome, FileFilter,
+    PickRequest, PickedContents, SaveChannel, SaveOutcome,
+};
 use ui::prelude::*;
 use ui::vello::Scene;
 use ui::vello::kurbo::Affine;
@@ -25,16 +33,39 @@ use crate::model::Artwork;
 use crate::panels::export::{self, Settings};
 use crate::tools::{FileRequest, Sheet, Tools, ViewRequest};
 
-/// What a chooser was opened for.
+/// A chooser, or a write it led to, that has not answered yet.
 enum Pending {
-    Open,
-    /// Save the artwork there and keep working on it there (`true`), or
+    /// The file to open, read by the host.
+    Open(ContentsChannel),
+    /// Where to save the artwork: keep working on it there (`follow`), or
     /// save a copy and keep working where it is.
     Save {
         follow: bool,
+        channel: DestinationChannel,
     },
-    /// Write these bytes there.
-    Export(Vec<u8>),
+    /// The artwork, or a copy, being written where the host keeps it;
+    /// `announce` names the place when saying so is news.
+    Saving {
+        follow: bool,
+        announce: Option<String>,
+        channel: SaveChannel,
+    },
+    /// An exported picture being saved under `name`.
+    Export { name: String, channel: SaveChannel },
+}
+
+/// An export whose pictures are being rendered: the save chooser opens
+/// once they are there.
+struct Exporting {
+    drawn: Drawing,
+    settings: Settings,
+    stem: String,
+}
+
+/// What an export waits for.
+enum Drawing {
+    Raster(ui::offscreen::pixels::PixelsRequest),
+    Svg(Box<export::SvgDrawing>),
 }
 
 /// The window's content with the file desk round it.
@@ -44,7 +75,13 @@ pub struct FileDesk {
     recents: Setting<RecentArtworks>,
     live: Live<Artwork>,
     dispatch: Dispatcher<Artwork>,
-    chooser: Option<(Pending, Receiver<PortalOutcome>)>,
+    /// Where the window opens another of the workspace's artworks.
+    env: RecordEnv<Artwork>,
+    chooser: Option<Pending>,
+    exporting: Option<Exporting>,
+    /// An artwork of the workspace asked to open in this window, until the
+    /// host answers.
+    reopening: Option<ui::application::ReplacementOutcome>,
     text: Option<TextRenderer>,
 }
 
@@ -54,15 +91,18 @@ impl FileDesk {
         tools: Tools,
         recents: Setting<RecentArtworks>,
         live: Live<Artwork>,
-        dispatch: Dispatcher<Artwork>,
+        env: RecordEnv<Artwork>,
     ) -> Self {
         Self {
             content,
             tools,
             recents,
             live,
-            dispatch,
+            dispatch: env.dispatcher(),
+            env,
             chooser: None,
+            exporting: None,
+            reopening: None,
             text: None,
         }
     }
@@ -111,7 +151,7 @@ impl FileDesk {
             return;
         };
         self.tools.files.set(None);
-        if self.chooser.is_some() {
+        if self.chooser.is_some() || self.exporting.is_some() {
             // One chooser at a time; the open one answers first.
             return;
         }
@@ -131,13 +171,20 @@ impl FileDesk {
                                 .glob("*.svg")
                                 .mimetype("image/svg+xml"),
                         )
-                        .thread_name("canvas-open");
-                self.chooser = Some((Pending::Open, request.send()));
+                        .max_contents_bytes(document::MAX_FILE_BYTES);
+                self.chooser = Some(Pending::Open(request.send_contents()));
             }
             FileRequest::OpenRecent(path) => self.open(&PathBuf::from(path)),
+            FileRequest::OpenWorkspace(uri) => match self.env.open_here(&[uri]) {
+                Ok(outcome) => self.reopening = Some(outcome),
+                Err(why) => self.say("canvas-open-failed", &[("why", why.into())]),
+            },
             FileRequest::Save => match self.tools.file.get() {
                 Some(path) => self.save_to(&PathBuf::from(path), true),
-                None => self.choose_save(&art, true),
+                None => match self.tools.kept.with(Clone::clone) {
+                    Some(kept) => self.write_to(&kept, true, None),
+                    None => self.choose_save(&art, true),
+                },
             },
             FileRequest::SaveAs => self.choose_save(&art, true),
             FileRequest::Duplicate => self.choose_save(&art, false),
@@ -179,36 +226,83 @@ impl FileDesk {
                 .mimetype(document::MEDIA_TYPE),
         )
         .thread_name("canvas-save");
-        self.chooser = Some((Pending::Save { follow }, request.send()));
+        self.chooser = Some(Pending::Save {
+            follow,
+            channel: request.send_save_destination(),
+        });
     }
 
     fn export(&mut self, art: &Artwork, settings: Settings) {
-        let lookup = ui::i18n::I18nManager::lookup_plain;
         let view = self.tools.visible.get();
         let selection = self.tools.selection.get();
-        let bytes =
+        let drawn =
             export::part(art, settings.area, view, &selection).and_then(|(part, region)| {
                 let text = self.text.get_or_insert_with(TextRenderer::new);
                 let mut renderer = self.tools.renderer.borrow_mut();
                 // An export shows every picture: it waits for those still
                 // decoding.
                 renderer.pictures.patient = true;
-                let encoded = export::encode(&mut renderer, text, &part, region, settings);
+                let drawn = export::draw(&mut renderer, text, &part, region, settings);
                 renderer.pictures.patient = false;
-                encoded
+                drawn
             });
-        let bytes = match bytes {
-            Ok(bytes) => bytes,
-            Err(why) => {
-                self.say("canvas-export-failed", &[("why", why.into())]);
-                return;
+        // Rendered between frames; `finish_export` takes it from there.
+        let drawn = match drawn {
+            Ok(export::Drawn::Svg(drawing)) => Drawing::Svg(drawing),
+            Ok(export::Drawn::Raster(drawing)) => Drawing::Raster(drawing.request()),
+            Err(why) => return self.say("canvas-export-failed", &[("why", why.into())]),
+        };
+        self.exporting = Some(Exporting {
+            drawn,
+            settings,
+            stem: export_stem(art),
+        });
+        self.finish_export();
+    }
+
+    /// Encode the export whose pixels came, and ask where it goes.
+    fn finish_export(&mut self) {
+        let ready = self
+            .exporting
+            .as_ref()
+            .is_some_and(|exporting| match &exporting.drawn {
+                Drawing::Raster(pixels) => !pixels.is_pending(),
+                Drawing::Svg(drawing) => drawing.ready(),
+            });
+        if !ready {
+            return;
+        }
+        let Some(Exporting {
+            drawn,
+            settings,
+            stem,
+        }) = self.exporting.take()
+        else {
+            return;
+        };
+        let bytes = match drawn {
+            Drawing::Svg(drawing) => Ok(drawing.finish().into_bytes()),
+            Drawing::Raster(pixels) => {
+                crate::view_ops::rgba_of(pixels.take()).and_then(|(rgba, width, height)| {
+                    export::encode_raster(&rgba, width, height, settings.format)
+                })
             }
         };
+        match bytes {
+            Ok(bytes) => self.choose_export(&stem, settings, bytes),
+            Err(why) => self.say("canvas-export-failed", &[("why", why.into())]),
+        }
+    }
+
+    /// Ask where the export's `bytes` go.
+    fn choose_export(&mut self, stem: &str, settings: Settings, bytes: Vec<u8>) {
+        let lookup = ui::i18n::I18nManager::lookup_plain;
         let extension = settings.format.extension();
+        let name = document::file_name(stem, extension);
         let request = PickRequest::save(
             &lookup("canvas-export-title"),
             &lookup("canvas-export"),
-            &document::file_name(&export_stem(art), extension),
+            &name,
         )
         .filter(
             FileFilter::new(settings.format.label())
@@ -221,55 +315,173 @@ impl FileDesk {
                 }),
         )
         .thread_name("canvas-export");
-        self.chooser = Some((Pending::Export(bytes), request.send()));
+        self.chooser = Some(Pending::Export {
+            name,
+            channel: request.send_save_contents(bytes),
+        });
     }
 
-    /// Hear back from an open chooser.
+    /// Hear back from an open chooser, or a write it led to.
     fn poll(&mut self) {
-        let Some((_, channel)) = &self.chooser else {
+        self.finish_export();
+        // Once opened, the artwork takes the window with a view of its own;
+        // what is left to say is why it did not.
+        if let Some(answer) = self
+            .reopening
+            .as_ref()
+            .and_then(ui::application::ReplacementOutcome::get)
+        {
+            self.reopening = None;
+            if let Err(why) = answer {
+                self.say("canvas-open-failed", &[("why", why.into())]);
+            }
+        }
+        let Some(pending) = self.chooser.take() else {
             return;
         };
-        let outcome = match channel.try_recv() {
-            Err(TryRecvError::Empty) => return,
-            Ok(outcome) => outcome,
-            Err(TryRecvError::Disconnected) => {
-                PortalOutcome::Failed(ui::i18n::I18nManager::lookup_plain("canvas-chooser-gone"))
-            }
-        };
-        let Some((pending, _)) = self.chooser.take() else {
-            return;
-        };
-        let path = match outcome {
-            PortalOutcome::Opened(path) => path,
-            PortalOutcome::Cancelled => return,
-            PortalOutcome::Failed(why) => {
-                self.say("canvas-files-failed", &[("why", why.into())]);
-                return;
-            }
-        };
+        let gone = || ui::i18n::I18nManager::lookup_plain("canvas-chooser-gone");
         match pending {
-            Pending::Open => self.open(&path),
-            Pending::Save { follow } => {
-                let path = with_extension(path, EXTENSION);
-                self.save_to(&path, follow);
-            }
-            Pending::Export(bytes) => match document::write(&path, &bytes) {
-                Ok(()) => self.say("canvas-exported", &[("name", Self::name_of(&path).into())]),
-                Err(why) => self.say("canvas-export-failed", &[("why", why.into())]),
+            Pending::Open(channel) => match channel.try_recv() {
+                Err(TryRecvError::Empty) => self.chooser = Some(Pending::Open(channel)),
+                Ok(ContentsOutcome::Picked(files)) => {
+                    if let Some(file) = files.into_iter().next() {
+                        self.open_chosen(&file);
+                    }
+                }
+                Ok(ContentsOutcome::Cancelled) => {}
+                Ok(ContentsOutcome::Failed(why)) => {
+                    self.say("canvas-files-failed", &[("why", why.into())]);
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.say("canvas-files-failed", &[("why", gone().into())]);
+                }
             },
+            Pending::Save { follow, channel } => match channel.try_recv() {
+                Err(TryRecvError::Empty) => self.chooser = Some(Pending::Save { follow, channel }),
+                Ok(DestinationOutcome::Chosen(destination)) => {
+                    self.save_to_destination(destination, follow);
+                }
+                Ok(DestinationOutcome::Cancelled) => {}
+                Ok(DestinationOutcome::Failed(why)) => {
+                    self.say("canvas-files-failed", &[("why", why.into())]);
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.say("canvas-files-failed", &[("why", gone().into())]);
+                }
+            },
+            Pending::Saving {
+                follow,
+                announce,
+                channel,
+            } => match channel.try_recv() {
+                Err(TryRecvError::Empty) => {
+                    self.chooser = Some(Pending::Saving {
+                        follow,
+                        announce,
+                        channel,
+                    });
+                }
+                Ok(SaveOutcome::Saved) => {
+                    // The host keeps it where no path reaches; the artwork
+                    // lives there now, and the first save says where.
+                    if follow {
+                        self.tools.file.set(None);
+                    }
+                    if let Some(name) = announce {
+                        self.say("canvas-duplicated", &[("name", name.into())]);
+                    }
+                }
+                Ok(SaveOutcome::Cancelled) => {}
+                Ok(SaveOutcome::Failed(why)) => {
+                    self.say("canvas-save-failed", &[("why", why.into())]);
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.say("canvas-save-failed", &[("why", gone().into())]);
+                }
+            },
+            Pending::Export { name, channel } => match channel.try_recv() {
+                Err(TryRecvError::Empty) => self.chooser = Some(Pending::Export { name, channel }),
+                Ok(SaveOutcome::Saved) => self.say("canvas-exported", &[("name", name.into())]),
+                Ok(SaveOutcome::Cancelled) => {}
+                Ok(SaveOutcome::Failed(why)) => {
+                    self.say("canvas-export-failed", &[("why", why.into())]);
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.say("canvas-export-failed", &[("why", gone().into())]);
+                }
+            },
+        }
+    }
+
+    /// Save the artwork where the person chose: in place where that has a
+    /// path on this device, else through the host, which keeps it.
+    fn save_to_destination(&mut self, destination: ui::portal::SaveDestination, follow: bool) {
+        if let Some(path) = destination.location() {
+            let path = with_extension(path.to_path_buf(), EXTENSION);
+            self.save_to(&path, follow);
+            return;
+        }
+        let name = destination.name().to_owned();
+        self.write_to(&destination, follow, Some(name));
+        if follow {
+            // Kept: the next Save writes here without asking.
+            self.tools.kept.set(Some(destination));
+        }
+    }
+
+    /// Write the artwork to `destination`, which has no path here.
+    fn write_to(
+        &mut self,
+        destination: &ui::portal::SaveDestination,
+        follow: bool,
+        announce: Option<String>,
+    ) {
+        let file = ArtworkFile::of(&self.live.get());
+        match document::pack(&file, &crate::content::store()) {
+            Ok((bytes, _missing)) => {
+                self.chooser = Some(Pending::Saving {
+                    follow,
+                    announce,
+                    channel: destination.write(bytes),
+                });
+            }
+            Err(why) => self.say("canvas-save-failed", &[("why", why.into())]),
         }
     }
 
     /// Open the artwork or SVG at `path` in place of this one.
     fn open(&self, path: &Path) {
-        let svg = path
+        let read =
+            crate::resource::read_file(&path.display().to_string(), document::MAX_FILE_BYTES);
+        match read {
+            Ok(bytes) => self.open_bytes(&Self::name_of(path), &bytes, Some(path)),
+            Err(why) => {
+                if !path.exists() {
+                    let gone = path.display().to_string();
+                    self.keep_recents(|recents| recents.forget(&gone));
+                }
+                self.say("canvas-open-failed", &[("why", why.into())]);
+            }
+        }
+    }
+
+    /// Open a file the chooser handed over: worked on where it is when it
+    /// has a path here, else brought in, so Save asks where it goes.
+    fn open_chosen(&self, file: &PickedContents) {
+        self.open_bytes(&file.name, &file.bytes, file.location.as_deref());
+    }
+
+    /// Open the artwork or SVG named `name`, whose contents are `bytes`, in
+    /// place of this one; `path` is where it is on this device, if anywhere.
+    fn open_bytes(&self, name: &str, bytes: &[u8], path: Option<&Path>) {
+        let svg = Path::new(name)
             .extension()
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("svg"));
         let opened = if svg {
-            open_svg(path).map(|actions| (actions, None))
+            open_svg(name, bytes).map(|actions| (actions, None))
         } else {
-            document::read(path).map(|artwork| {
+            document::unpack(bytes, &crate::content::store()).map(|artwork| {
                 let action = Artwork::OPEN_ARTWORK.with(OpenArtwork {
                     file: String::from_utf8_lossy(&artwork.to_json()).into_owned(),
                 });
@@ -279,10 +491,6 @@ impl FileDesk {
         let (actions, file) = match opened {
             Ok(opened) => opened,
             Err(why) => {
-                if !path.exists() {
-                    let gone = path.display().to_string();
-                    self.keep_recents(|recents| recents.forget(&gone));
-                }
                 self.say("canvas-open-failed", &[("why", why.into())]);
                 return;
             }
@@ -297,16 +505,18 @@ impl FileDesk {
         self.tools.preview.set(None);
         self.tools.welcomed.set(true);
         self.tools.view.set(Some(ViewRequest::Fit));
-        // An SVG is brought in, not worked on in place: saving asks where
-        // the artwork goes.
-        match file {
-            Some(file) => {
+        // An SVG is brought in, not worked on in place, and so is a file
+        // with no path here: saving asks where the artwork goes.
+        // Wherever the last artwork was saved is not this one's place.
+        self.tools.kept.set(None);
+        match (file, path) {
+            (Some(file), Some(path)) => {
                 self.tools.file.set(Some(path.display().to_string()));
                 self.remember(path, &file);
             }
-            None => self.tools.file.set(None),
+            _ => self.tools.file.set(None),
         }
-        self.say("canvas-opened", &[("name", Self::name_of(path).into())]);
+        self.say("canvas-opened", &[("name", name.into())]);
     }
 
     /// Save the artwork to `path`; keep working there when `follow`.
@@ -322,6 +532,7 @@ impl FileDesk {
                 // out of sight, so say where.
                 if follow {
                     self.tools.file.set(Some(path.display().to_string()));
+                    self.tools.kept.set(None);
                 } else {
                     self.say("canvas-duplicated", &[("name", Self::name_of(path).into())]);
                 }
@@ -456,14 +667,22 @@ fn with_extension(path: PathBuf, extension: &str) -> PathBuf {
     }
 }
 
-/// The SVG at `path` as a new artwork its size, with the SVG drawn on it.
-fn open_svg(path: &Path) -> Result<Vec<Invoke<Artwork>>, String> {
-    let markup = crate::svg::source(&path.display().to_string())?;
+/// The SVG file `name`, whose contents are `bytes`, as a new artwork its
+/// size, with the SVG drawn on it.
+fn open_svg(name: &str, bytes: &[u8]) -> Result<Vec<Invoke<Artwork>>, String> {
+    if bytes.len() > crate::svg::MAX_SVG_BYTES {
+        return Err(format!(
+            "the SVG is over {} bytes",
+            crate::svg::MAX_SVG_BYTES
+        ));
+    }
+    let markup = String::from_utf8(bytes.to_vec())
+        .map_err(|_| "not an SVG this can read: it is not UTF-8 text".to_owned())?;
     let tree = usvg::Tree::from_str(&markup, &usvg::Options::default())
         .map_err(|error| format!("not an SVG this can read: {error}"))?;
     let extent = tree.size();
     let side = |value: f32| f64::from(value).round().clamp(16.0, crate::model::MAX_SIDE);
-    let title = path
+    let title = Path::new(name)
         .file_stem()
         .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
     let new = Artwork::NEW_ARTWORK.with(NewArtwork {
@@ -558,7 +777,7 @@ impl ui::widget::Decorator for FileDesk {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.content.needs_animation_frame() || self.chooser.is_some()
+        self.content.needs_animation_frame() || self.chooser.is_some() || self.exporting.is_some()
     }
 }
 
@@ -573,7 +792,6 @@ mod tests {
     fn an_artwork_made_from_a_picture_is_exported_under_a_name_of_its_own() {
         use base64::Engine as _;
         crate::locales::CATALOG.ensure();
-        // The window's content store, which the opened picture is kept in.
         let window = ui::rt::wake::WakeScope::new();
         ui::tilo_resource::content::register(
             &window.handle(),

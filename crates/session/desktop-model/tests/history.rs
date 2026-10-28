@@ -20,39 +20,12 @@ fn receipt(n: u128) -> WorkspaceEffectReceipt {
     }
 }
 
-fn task(audit: usize) -> WorkspaceTask {
-    WorkspaceTask {
-        id: "task-1".into(),
-        title: "Tidy up".into(),
-        created_by: "owner".into(),
-        assigned_agent: None,
-        route: WorkspaceTaskRoute::Manual,
-        status: WorkspaceTaskStatus::Queued,
-        resource: None,
-        subject: None,
-        created_at: 1,
-        updated_at: 2,
-        audit: (0..audit)
-            .map(|at| {
-                WorkspaceTaskAuditEvent::new(
-                    i64::try_from(at).unwrap_or(i64::MAX),
-                    "owner",
-                    "retry",
-                    [],
-                )
-            })
-            .collect(),
-    }
-}
-
-/// A desktop whose one workspace has `receipts` effect receipts and a task
-/// with as many audit events.
+/// A desktop whose one workspace has `receipts` effect receipts.
 fn desktop(receipts: u128) -> DesktopTree {
     let mut workspace = Workspace::new(WorkspaceId(1), "Home");
     workspace.set_owner("owner");
     workspace.strips.push(Strip::new(StripId(7), "Main"));
     workspace.effect_receipts = (0..receipts).map(receipt).collect();
-    workspace.tasks = vec![task(usize::try_from(receipts).unwrap_or(usize::MAX))];
     DesktopTree {
         workspaces: vec![workspace],
         ..DesktopTree::default()
@@ -65,7 +38,6 @@ fn serialising_without_history_leaves_out_every_history_field() {
     let full = serde_json::to_value(&tree).unwrap();
     let workspace = &full["workspaces"][0];
     assert_eq!(workspace["effect_receipts"].as_array().unwrap().len(), 3);
-    assert_eq!(workspace["tasks"][0]["audit"].as_array().unwrap().len(), 3);
     assert!(workspace.get("ownership_transfer_audit").is_some());
     assert!(workspace.get("ownership_transfer_cancellations").is_some());
 
@@ -79,9 +51,7 @@ fn serialising_without_history_leaves_out_every_history_field() {
     ] {
         assert!(workspace.get(field).is_none(), "{field} is history");
     }
-    assert!(workspace["tasks"][0].get("audit").is_none());
     // Everything that is not history is still there.
-    assert_eq!(workspace["tasks"][0]["title"], "Tidy up");
     assert_eq!(workspace["strips"][0]["name"], "Main");
     assert_eq!(workspace["policy"]["owner"], "owner");
 
@@ -138,15 +108,14 @@ fn a_policy_view_decides_like_the_workspace_and_carries_no_layout_or_history() {
     let view = workspace.policy_view();
 
     assert!(view.strips.is_empty());
-    assert!(view.tasks.is_empty());
     assert!(view.effect_receipts.is_empty());
     assert!(view.shortcuts.is_empty());
     assert!(view.schedule_claims.is_empty());
     assert!(view.ownership_transfer_audit.is_empty());
     assert!(view.ownership_transfer_cancellations.is_empty());
     assert_eq!(
-        (view.id, &view.room, &view.name),
-        (workspace.id, &workspace.room, &workspace.name)
+        (view.id, &view.room(), &view.name),
+        (workspace.id, &workspace.room(), &workspace.name)
     );
 
     let people = ["owner", "editor", "stranger"];
@@ -178,7 +147,7 @@ fn a_policy_view_decides_like_the_workspace_and_carries_no_layout_or_history() {
             .answer
     };
     assert_eq!(app(&view), app(&workspace));
-    let code = Actor::app("so.tilo.notes").in_room(workspace.room.to_string());
+    let code = Actor::app("so.tilo.notes").in_room(workspace.room().to_string());
     let notes_files = ResourceRef::FsPath("/var/workspace/notes/a.md".into());
     assert_eq!(
         view.sandbox_decide_at(&code, &notes_files, Access::Read, NOW),

@@ -5,7 +5,7 @@ name = "collab-types"
 version = "0.1.0"
 edition = "2024"
 publish = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
 description = "The cryptographic identifiers and wire types of Tilo Spaces."
@@ -19,7 +19,7 @@ name = "collab_types"
 path = "src/lib.rs"
 
 # Cryptographic foundation for Tilo Spaces and Channels:
-# Identity, Attestation, Role/OpClass permission tables, SignedOp
+# Identity, Attestation, Role presets, SignedOp
 # envelope, ChannelEvent governance log, deterministic
 # canonical-bytes serialisation, Ed25519 signing primitives, and the
 # inbound-op validator. Pure types + pure functions — no I/O, no async,
@@ -27,6 +27,10 @@ path = "src/lib.rs"
 
 [dependencies]
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
+# Sorts without a copy of std's sort per call site (presence colours).
+tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
+# The hue someone wears until they choose one, as every surface derives it.
+tilo-face = { version = "0.1.0", path = "../../platform/tilo-face" }
 getrandom.workspace = true
 web-time = { version = "1", features = ["serde"] }
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }

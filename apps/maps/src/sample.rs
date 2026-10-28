@@ -916,7 +916,6 @@ mod tests {
     /// length, grid-following axis-aligned transit legs, and demo-base clocks.
     #[test]
     fn sample_world_is_populated_and_geometrically_sound() {
-        // Phase `basemap_is_populated`.
         {
             let b = basemap();
             assert!(
@@ -929,7 +928,6 @@ mod tests {
             assert!(b.river.len() > 5);
         }
 
-        // Phase `default_model_has_route_and_transit`.
         {
             let m = default_model();
             assert!(m.route.is_some());
@@ -938,7 +936,6 @@ mod tests {
             assert!(!m.saved_places().is_empty());
         }
 
-        // Phase `sample_route_geometry_monotonic_length`.
         {
             let r = sample_route();
             assert!(r.distance_m > 0.0);

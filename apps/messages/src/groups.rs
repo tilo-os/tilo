@@ -49,6 +49,26 @@ impl GroupsView {
         self.draft.set(String::new());
         self.operation.set(uuid::Uuid::new_v4().to_string());
     }
+    /// What the window bar names while the groups are open, and the
+    /// effect refreshing an open group's membership.
+    pub(crate) fn shown(&self) -> Option<(String, Option<MessagesEffect>)> {
+        let page = self.page.get()?;
+        Some(match page.as_ref() {
+            Page::List(_) => (CATALOG.t("messages-groups"), None),
+            Page::Members(page) => (
+                if page.group.title.is_empty() {
+                    CATALOG.t("messages-group-untitled")
+                } else {
+                    page.group.title.clone()
+                },
+                Some(MessagesEffect::ReadGroupMembership {
+                    service: page.account.service.clone(),
+                    account: page.account.account.clone(),
+                    group: page.group.id.clone(),
+                }),
+            ),
+        })
+    }
     pub(crate) fn handles(effect: &MessagesEffect) -> bool {
         matches!(
             effect,
@@ -181,7 +201,6 @@ impl GroupsView {
                 }
             }
             Page::Members(page) => {
-                body = body.push(Box::new(Text::new(&page.group.title)));
                 for member in &page.members {
                     body = body
                         .push(Box::new(Text::new(&member.address)))
@@ -190,25 +209,8 @@ impl GroupsView {
                         )));
                 }
                 body = operations::panel(self, sources, actions, page, body);
-                body = body.push(bind(
-                    actions,
-                    Button::new(
-                        "messages.group.refresh",
-                        "messages-refresh-group-membership",
-                    ),
-                    &MessagesEffect::ReadGroupMembership {
-                        service: account.service.clone(),
-                        account: account.account.clone(),
-                        group: page.group.id.clone(),
-                    },
-                ));
             }
         }
-        body = body.push(bind(
-            actions,
-            Button::new("messages.groups.close", "messages-close-groups"),
-            &MessagesEffect::CloseGroups,
-        ));
         Box::new(
             Scrollable::new_vertical()
                 .fill_parent_height()
@@ -232,8 +234,15 @@ impl GroupsView {
             self.effect(sources, request, cx)
         });
     }
-    pub(crate) fn entries(&self, sources: &Sources, actions: &Actions<Messages>) -> Element {
+    /// The accounts whose groups can be listed, one entry each; none
+    /// without such an account, so the people below keep the pane.
+    pub(crate) fn entries(
+        &self,
+        sources: &Sources,
+        actions: &Actions<Messages>,
+    ) -> Option<Element> {
         let mut body = Column::new();
+        let mut any = false;
         for (id, a) in sources
             .accounts()
             .accounts
@@ -248,6 +257,7 @@ impl GroupsView {
                     ui::i18n::ArgValue::Text(format!("{} ({id})", a.display_name)),
                 )],
             );
+            any = true;
             body = body.push(bind(
                 actions,
                 Button::new(&format!("messages.groups.account:{id}"), &label)
@@ -258,7 +268,7 @@ impl GroupsView {
                 },
             ));
         }
-        Box::new(body)
+        any.then(|| Box::new(body) as Element)
     }
 }
 fn role(role: GroupRole) -> &'static str {

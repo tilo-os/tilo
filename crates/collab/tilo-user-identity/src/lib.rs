@@ -40,6 +40,7 @@
 //! - [`APPROVAL_REQUEST_TAG`] — `tilo-device-approval-request-v1\0`
 //! - [`APPROVAL_RESPONSE_TAG`] — `tilo-device-approval-response-v1\0`
 //! - [`CERTIFICATION_REQUEST_TAG`] — `tilo-device-certification-request-v1\0`
+//! - [`SUCCESSION_PREIMAGE_TAG`] — `tilo-governor-succession-v1\0`
 //!
 //! The tag terminator (`\0`) plus a version marker (`v1`) inside the
 //! literal ensure two things: (a) prefix ambiguity is impossible
@@ -62,11 +63,11 @@
 //!   token and validates it, but does not send it.
 
 #![deny(rust_2018_idioms)]
-#![warn(missing_docs)]
 pub mod approval;
 pub mod canonical;
 pub mod cert;
 pub mod certification;
+pub mod clock;
 pub mod cloud_enrollment;
 pub mod directory;
 pub mod enrollment;
@@ -83,6 +84,7 @@ pub mod persist;
 pub mod projection;
 pub mod revocation;
 pub mod root_envelope;
+pub mod succession;
 #[cfg(unix)]
 pub mod update_lock;
 
@@ -100,6 +102,9 @@ pub use certification::{
     CertificationPolicy, CertificationRequest, MAX_CERTIFICATION_REQUEST_LIFETIME_NS,
     issue_device_cert, prepare_device_cert, verify_issued_cert,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use clock::wait_for_wall_clock;
+pub use clock::{CertificateClockError, WallClockWait};
 pub use directory::{
     DirectoryError, DirectoryUpdate, WorkspaceDirectory, WorkspaceId, WorkspaceMeta,
 };
@@ -134,6 +139,9 @@ pub use revocation::{
     REVOCATION_PREIMAGE_TAG, RevocationEntry, RevocationError, RevocationList, RevocationReason,
     revocation_signing_digest, sign_revocation_entry, verify_revocation_entry,
 };
+pub use succession::{
+    GovernorSuccession, MAX_SUCCESSIONS, SUCCESSION_PREIMAGE_TAG, SuccessionError, current_governor,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -153,7 +161,7 @@ use serde::{Deserialize, Serialize};
 pub struct UserIdentity {
     /// Ed25519 public key. 32 bytes.
     pub public_key: [u8; 32],
-    /// Human-readable label — "Quinten's identity", "Ada Lovelace",
+    /// Human-readable label — "Ada's identity", "Ada Lovelace",
     /// etc. Not authoritative; it's only for UI display and can be
     /// changed on any device without invalidating certs.
     pub label: String,
@@ -298,7 +306,6 @@ mod tests {
             assert_eq!(user.created_at_ns, 1_720_000_000_000_000_000);
             assert_eq!(user.public_key.len(), 32);
 
-            // Bytes round-trip through canonical postcard encoding.
             let bytes = canonical::canonical_bytes(&user).unwrap();
             let back: UserIdentity = canonical::from_canonical_bytes(&bytes).unwrap();
             assert_eq!(user, back);

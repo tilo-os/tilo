@@ -3,20 +3,19 @@ fn harness() -> (
     ui::record::RecordStore,
     ui::record::RecordCheckout,
 ) {
-    use std::{cell::RefCell, rc::Rc};
+    use std::rc::Rc;
     use ui::application::{
         ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
     };
     let cache = ui::portable_storage::PortableStorage::new("writer-test", "device").unwrap();
     let definition = word_processor::definition();
     let records = ui::record::RecordOwners::portable(cache.clone())
-        .open(definition.app_id, "room")
+        .open(definition.app_id(), "room")
         .unwrap();
     let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, "room").unwrap());
-    let permissions = Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
-        "author",
-        ui::permissions::Role::Owner,
-    )));
+    let permissions = ui::permissions::SharedPermissions::new(
+        ui::permissions::PermissionContext::member("author", ui::permissions::Role::Owner),
+    );
     let context = HostContext::prepare(
         definition,
         HostContextInputs {

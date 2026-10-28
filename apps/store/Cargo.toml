@@ -45,8 +45,8 @@ app-cli = { path = "../../crates/packaging/app-cli" }
 app-host = { path = "../../crates/packaging/app-host", default-features = false }
 # The installed-package row the app host lists.
 package-store = { path = "../../crates/packaging/package-store" }
-# The catalogue the Store shares with desktop search: the block list today,
-# Flathub's cached metadata and the fleet's manifest metadata for its pages.
+# Flathub's cached AppStream metadata, shared with desktop search. The block
+# list comes through `ui::registry`.
 app-catalogue = { path = "../../crates/packaging/app-catalogue" }
 blake3.workspace = true
 getrandom.workspace = true
@@ -66,8 +66,6 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
-base64.workspace = true
-flate2.workspace = true
 desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry" }
 app-host = { path = "../../crates/packaging/app-host", default-features = false, features = ["test-support", "service"] }
 runtime-bundle = { path = "../../crates/packaging/runtime-bundle" }

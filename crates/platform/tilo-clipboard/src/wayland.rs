@@ -68,6 +68,10 @@ impl RichClipboard {
 
 const CLIPBOARD_READ_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_millis(40);
 
+/// How long an explicit paste waits for the clipboard's owner to send its
+/// text.
+const EXPLICIT_READ_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_secs(2);
+
 /// How long a copy may wait for the compositor before it is refused. A copy
 /// is two compositor roundtrips (the focus check, then the selection's
 /// confirmation), and each waits for an iteration of the compositor's loop,
@@ -85,6 +89,11 @@ fn publication_deadline() -> tilo_clock::Instant {
 enum PublicationPayload {
     Text(Vec<u8>),
     SecretText(Vec<u8>),
+    /// Formatted text: its HTML and its plain-text fallback.
+    Rich {
+        html: Vec<u8>,
+        plain: Vec<u8>,
+    },
     Image(Vec<u8>),
 }
 
@@ -216,6 +225,7 @@ pub struct WaylandClipboard {
     pasted: PastedImage,
     rich: Arc<RichClipboard>,
     wake: tilo_rt::wake::WakeHandle,
+    explicit_read_budget: tilo_clock::Duration,
 }
 
 struct PublicationClipboard {
@@ -372,6 +382,7 @@ impl WaylandClipboard {
             pasted,
             rich,
             wake: tilo_rt::wake::WakeHandle::new(),
+            explicit_read_budget: EXPLICIT_READ_BUDGET,
         }
     }
 
@@ -420,14 +431,18 @@ impl WaylandClipboard {
     ) -> Self {
         let display_ptr = connection.backend().display_ptr().cast();
         // SAFETY: the worker retains the connection that owns the display.
-        unsafe {
+        let mut clipboard = unsafe {
             Self::with_publication_worker(
                 display_ptr,
                 Some(Arc::new(connection)),
                 rich_read_budget,
                 "tilo-wayland-clipboard-test",
             )
-        }
+        };
+        // An explicit paste is bounded by the longer of the two, so a
+        // test's budget also holds for its explicit pastes.
+        clipboard.explicit_read_budget = rich_read_budget.max(EXPLICIT_READ_BUDGET);
+        clipboard
     }
 }
 
@@ -513,6 +528,8 @@ mod image_worker_impl {
         /// Whether `text_contents` is a secret, offered with the markers that
         /// keep it out of clipboard histories and device sync.
         text_secret: bool,
+        /// The formatting of the text copied, when the copy was rich.
+        html_contents: Option<Arc<[u8]>>,
         pending_image: Option<Arc<[u8]>>,
         inflight_transfers: usize,
         inflight_bytes: usize,
@@ -535,6 +552,8 @@ mod image_worker_impl {
     pub(super) struct SourcePayload {
         pub(super) image: Option<Arc<[u8]>>,
         pub(super) text: Option<Arc<[u8]>>,
+        /// The formatting of a rich copy, offered as `text/html`.
+        pub(super) html: Option<Arc<[u8]>>,
         pub(super) secret: bool,
     }
 
@@ -542,6 +561,7 @@ mod image_worker_impl {
         pub(super) fn bytes_for_mime(&self, mime: &str) -> Option<Arc<[u8]>> {
             match mime {
                 "image/png" => self.image.clone(),
+                "text/html" | "text/html;charset=utf-8" => self.html.clone(),
                 "text/plain;charset=utf-8" | "text/plain" | "UTF8_STRING" | "STRING" | "TEXT" => {
                     self.text.clone()
                 }
@@ -599,6 +619,7 @@ mod image_worker_impl {
             source_payloads: HashMap::new(),
             text_contents: None,
             text_secret: false,
+            html_contents: None,
             pending_image: None,
             inflight_transfers: 0,
             inflight_bytes: 0,
@@ -783,6 +804,11 @@ mod image_worker_impl {
                         state.store_text(text, true);
                         state.publish_current()
                     }
+                    Some(PublicationPayload::Rich { html, plain }) => {
+                        state.store_text(plain, false);
+                        state.html_contents = Some(Arc::from(html));
+                        state.publish_current()
+                    }
                     Some(PublicationPayload::Image(png)) => {
                         state.store_image(png);
                         state.publish_current()
@@ -837,18 +863,18 @@ mod image_worker_impl {
         fn store_text(&mut self, text: Vec<u8>, secret: bool) {
             self.text_contents = Some(Arc::from(text));
             self.text_secret = secret;
+            self.html_contents = None;
             self.pending_image = None;
         }
 
         fn store_image(&mut self, contents: Vec<u8>) {
-            // An image keeps an earlier caption, but never a secret: the
-            // image would ride along under the secret's markers, and the
-            // secret would stay offered after the person copied something
-            // else.
-            if self.text_secret {
-                self.text_contents = None;
-                self.text_secret = false;
-            }
+            // A copy replaces what was copied before, as a text copy does.
+            // Text kept beside the image would be what every app that
+            // prefers text pastes, and a secret would ride along under its
+            // markers.
+            self.text_contents = None;
+            self.text_secret = false;
+            self.html_contents = None;
             self.pending_image = Some(Arc::from(contents));
         }
 
@@ -870,6 +896,10 @@ mod image_worker_impl {
             let mut mime_types = Vec::new();
             if image.is_some() {
                 mime_types.push("image/png");
+            }
+            // Formatting first: an app that reads it prefers it.
+            if self.html_contents.is_some() && !self.text_secret {
+                mime_types.extend(["text/html", "text/html;charset=utf-8"]);
             }
             if self.text_contents.is_some() {
                 mime_types.extend([
@@ -895,6 +925,7 @@ mod image_worker_impl {
                 SourcePayload {
                     image,
                     text: self.text_contents.clone(),
+                    html: self.html_contents.clone(),
                     secret: self.text_secret,
                 },
             );
@@ -1922,9 +1953,7 @@ impl ClipboardBackend for WaylandClipboard {
             let _ = reply.send(self.text(target));
         } else {
             let now = tilo_clock::now();
-            let deadline = now
-                .checked_add(tilo_clock::Duration::from_secs(2))
-                .unwrap_or(now);
+            let deadline = now.checked_add(self.explicit_read_budget).unwrap_or(now);
             if !self.send_publication(ClipboardCommand::ReadText(reply.clone(), deadline)) {
                 let _ = reply.send(None);
             }
@@ -1955,6 +1984,17 @@ impl ClipboardBackend for WaylandClipboard {
                 true
             }
         }
+    }
+
+    fn set_rich_text(&self, html: &str, plain: &str) -> bool {
+        let ok = self.publish(PublicationPayload::Rich {
+            html: html.as_bytes().to_vec(),
+            plain: plain.as_bytes().to_vec(),
+        });
+        if ok && let Ok(mut cache) = self.clipboard_cache.lock() {
+            *cache = Some(plain.to_owned());
+        }
+        ok
     }
 
     fn set_secret_text(&self, text: &str) -> bool {
@@ -2114,6 +2154,10 @@ impl WaylandClipboard {
             crate::CopyContent::SecretText(text) => {
                 PublicationPayload::SecretText(text.as_bytes().to_vec())
             }
+            crate::CopyContent::Rich { html, plain } => PublicationPayload::Rich {
+                html: html.as_bytes().to_vec(),
+                plain: plain.as_bytes().to_vec(),
+            },
             crate::CopyContent::Image {
                 width,
                 height,
@@ -2233,7 +2277,7 @@ mod tests {
             });
             request_tx.send(()).unwrap();
             assert_eq!(
-                recv_bounded(&rx, std::time::Duration::from_secs(30)),
+                recv_bounded(&rx, tilo_test_env::hang_bound()),
                 Some(Some("fresh".to_string()))
             );
             owner.join().unwrap();
@@ -2284,6 +2328,7 @@ mod tests {
             let payload = SourcePayload {
                 image: Some(Arc::from([1u8, 2, 3].as_slice())),
                 text: Some(Arc::from(b"caption".as_slice())),
+                html: None,
                 secret: false,
             };
             assert_eq!(

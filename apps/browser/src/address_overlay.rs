@@ -1,69 +1,52 @@
-//! `AddressSuggestions` — the address-bar autocomplete dropdown.
+//! `AddressSuggestions` — the address field's suggestions, when the window
+//! draws its own address field (outside a Tilo session).
 //!
-//! A leaf `ui` widget the browser chrome positions directly under the
-//! address [`ui::widget::TextInput`]. It renders the ranked
-//! [`Row`]s produced by
-//! [`build_rows`](crate::omnibox::build_rows) as a floating panel
-//! of list rows — each row shows the page title with its URL beneath it —
-//! and lifts the current selection.
+//! In a Tilo session the address is the window bar's location and the bar
+//! lists the suggestions (`browser_widget::window_bar`); this list then stays
+//! empty, so there is only ever one. Both are the design system's
+//! [`SuggestionList`]: a floating panel under the field, as wide as it, each
+//! row the kind's icon, its title and the line under it (a visited page's
+//! address, which engine a search goes to).
 //!
-//! Two integration styles are supported, and the browser uses both:
-//!  * **Imperative** (primary): the chrome owns the address bar's key
-//!    handling, so it calls [`AddressSuggestions::move_selection`] on
-//!    Up/Down and reads [`AddressSuggestions::selected`] on Enter to pick
-//!    the highlighted entry. The `TextInput` keeps focus throughout.
-//!  * **Self-driven** (fallback / standalone): if the widget is given the
-//!    keyboard directly its [`Widget::handle_event`] handles Up/Down
-//!    (move), Enter (choose → [`AddressSuggestions::take_chosen`]) and
-//!    Escape (dismiss), plus mouse hover + click to select a row.
+//! The chrome owns the address field's keys, so it calls
+//! [`AddressSuggestions::move_selection`] on Up/Down and lets the widget's
+//! [`Widget::handle_event`] take Enter (a chosen row, drained through
+//! [`AddressSuggestions::take_chosen`]), Escape, the pointer and touch. With
+//! no row chosen Enter is the field's: it opens what was typed.
 //!
 //! The panel paints in [`Widget::draw_overlay`] so it composites above the
-//! page surface regardless of sibling order — the same overlay contract
-//! the toolkit's `Dropdown` uses. `draw` itself is a no-op.
+//! page surface regardless of sibling order. `draw` itself is a no-op.
 
 use std::collections::HashMap;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Interaction, ListRowFace, Widget};
+use ui::widget::{Suggestion, SuggestionList, Widget};
 
 use crate::omnibox::{Row, RowKind};
 
-/// Address-bar suggestion dropdown. See the module docs.
+/// Address-field suggestion list. See the module docs.
 pub struct AddressSuggestions {
-    /// Ranked suggestions, best first (as returned by `History::suggest`).
+    /// Ranked suggestions, best first.
     items: Vec<Row>,
-    /// Index of the highlighted row. Always valid when `items` is
-    /// non-empty (clamped on every mutation); meaningless when empty.
-    selected: usize,
-    /// Row under the pointer, for hover highlight. `None` off the panel.
-    hovered: Option<usize>,
-    /// Entry the user committed via Enter/click, drained by
+    /// The shared list that lays out, paints and hit-tests them.
+    list: SuggestionList,
+    /// The search engine's name, for the line under a search row.
+    engine: String,
+    /// Entry the person committed via Enter, a click or a tap, drained by
     /// [`Self::take_chosen`].
     chosen: Option<Row>,
-    /// Panel rect in logical coordinates.
-    rect: Rect,
-    /// Caller-supplied top-left anchor (under the address bar). When set
-    /// it overrides taffy's assigned position, like `ContextMenu`.
-    anchor: Option<Point>,
-    /// Panel width in logical pixels.
-    width: f32,
     /// Last cursor position (mouse-move carries it; mouse-press doesn't).
     last_cursor: Point,
-    /// The theme the rows are measured in. The overlay is painted outside the
-    /// normal widget tree, so it keeps the theme to give its rows their
-    /// matching hit targets at every text scale.
-    theme: Theme,
-    /// Height of one two-line suggestion row in `theme`.
-    row_h: f64,
+    /// The row a touch went down on: lifting on it chooses it.
+    touched: Option<(u64, usize)>,
 }
 
 impl Default for AddressSuggestions {
@@ -73,38 +56,48 @@ impl Default for AddressSuggestions {
 }
 
 impl AddressSuggestions {
-    /// An empty, hidden suggestion overlay.
+    /// An empty, hidden suggestion list.
     pub fn new() -> Self {
         Self {
             items: Vec::new(),
-            selected: 0,
-            hovered: None,
+            list: SuggestionList::new(),
+            engine: String::new(),
             chosen: None,
-            rect: Rect::ZERO,
-            anchor: None,
-            width: Theme::dark().tokens.metrics.panel_width_sheet,
             last_cursor: Point::ZERO,
-            row_h: measured_row_height(&Theme::dark()),
-            theme: Theme::dark(),
+            touched: None,
         }
     }
 
-    /// Replace the suggestion list. Resets the highlight to the first row
-    /// (the best-ranked suggestion) and clears any stale hover.
+    /// Replace the suggestion list. Nothing is chosen in a new list: Enter
+    /// opens what was typed until an arrow chooses a row.
     pub fn set_suggestions(&mut self, items: Vec<Row>) {
+        let rows = items
+            .iter()
+            .map(|row| list_row(row, &self.engine))
+            .collect();
         self.items = items;
-        self.selected = 0;
-        self.hovered = None;
+        self.list.set_suggestions(rows);
+        self.list.set_highlight(None);
+        self.touched = None;
     }
 
-    /// Clear all suggestions — the overlay becomes hidden.
+    /// The search engine a search row runs on, by name.
+    pub fn set_search_engine(&mut self, name: &str) {
+        if self.engine != name {
+            name.clone_into(&mut self.engine);
+            let items = std::mem::take(&mut self.items);
+            self.set_suggestions(items);
+        }
+    }
+
+    /// Clear all suggestions — the list becomes hidden.
     pub fn clear(&mut self) {
         self.items.clear();
-        self.selected = 0;
-        self.hovered = None;
+        self.list.clear();
+        self.touched = None;
     }
 
-    /// Whether the overlay currently has anything to show.
+    /// Whether the list currently has anything to show.
     pub fn is_visible(&self) -> bool {
         !self.items.is_empty()
     }
@@ -114,70 +107,52 @@ impl AddressSuggestions {
         &self.items
     }
 
-    /// Index of the highlighted row, or `None` when empty.
+    /// Index of the chosen row, if an arrow chose one.
     pub fn selected_index(&self) -> Option<usize> {
-        if self.items.is_empty() {
-            None
-        } else {
-            Some(self.selected)
-        }
+        self.list.highlight()
     }
 
-    /// The highlighted entry, or `None` when there are no suggestions.
-    /// The chrome reads this on Enter to navigate to the picked page.
+    /// The chosen entry, if an arrow chose one.
     pub fn selected(&self) -> Option<&Row> {
-        self.items.get(self.selected)
+        self.selected_index()
+            .and_then(|index| self.items.get(index))
     }
 
-    /// Move the highlight by `delta` rows, wrapping at both ends (Down
-    /// from the last row lands on the first, Up from the first on the
-    /// last). No-op when there are no suggestions.
+    /// Choose the next row (`delta > 0`) or the previous one, wrapping at
+    /// both ends. No-op when there are no suggestions.
     pub fn move_selection(&mut self, delta: i32) {
-        if self.items.is_empty() {
-            return;
-        }
-        let n = self.items.len() as i32;
-        let idx = (self.selected as i32 + delta).rem_euclid(n);
-        self.selected = idx as usize;
-    }
-
-    /// Set the top-left anchor (usually the address bar's bottom-left) and
-    /// the panel width, so the overlay renders flush under the input.
-    pub fn set_anchor(&mut self, top_left: Point, width: f32) {
-        self.anchor = Some(top_left);
-        if width > 0.0 {
-            self.width = width;
-        }
-        // Recompute the panel rect now: as a floating field (not in the
-        // widget tree) this overlay's `apply_layout` never runs, so this is
-        // the only place `self.rect` gets set from the anchor.
-        self.relayout(top_left);
-    }
-
-    /// Measure the rows in the live theme. Rows are as tall as their text,
-    /// so pointer hit testing follows them at every text scale.
-    pub fn set_theme(&mut self, theme: &Theme) {
-        if self.theme.text_scale.to_bits() == theme.text_scale.to_bits()
-            && self.theme.ui_scale.to_bits() == theme.ui_scale.to_bits()
-        {
-            return;
-        }
-        self.theme = theme.clone();
-        self.row_h = measured_row_height(theme);
-        if let Some(anchor) = self.anchor {
-            self.relayout(anchor);
+        if delta != 0 {
+            self.list.move_highlight(delta > 0);
         }
     }
 
-    /// Take the entry the user committed via Enter or a row click, if any.
-    /// Returns `Some` exactly once per commit, then `None`.
+    /// Hang the list under `field` (the address field), as wide as it,
+    /// inside `window`.
+    pub fn set_anchor(&mut self, field: Rect, window: Rect) {
+        self.list.set_anchor(field);
+        if window.area() > 0.0 {
+            self.list.set_viewport(window);
+        }
+    }
+
+    /// Take the entry the person committed, if any. Returns `Some` exactly
+    /// once per commit, then `None`.
     pub fn take_chosen(&mut self) -> Option<Row> {
         self.chosen.take()
     }
 
+    fn choose(&mut self, index: usize) -> bool {
+        let Some(row) = self.items.get(index).cloned() else {
+            return false;
+        };
+        self.list.set_highlight(Some(index));
+        self.chosen = Some(row);
+        true
+    }
+
     /// Route an accessibility action addressed to a virtual suggestion row.
     ///
-    /// The overlay is painted above Browser's retained content tree, so the
+    /// The list is painted above Browser's retained content tree, so the
     /// Browser root owns the final dispatch. Keeping target resolution here
     /// makes that bridge use the same stable URL hash that this widget exports
     /// to AT-SPI, rather than trusting a stale visible-row index.
@@ -198,139 +173,90 @@ impl AddressSuggestions {
         };
         match action {
             ui::a11y::Action::Focus => {
-                self.selected = index;
+                self.list.set_highlight(Some(index));
                 true
             }
-            ui::a11y::Action::Activate => {
-                self.selected = index;
-                self.chosen = self.items.get(index).cloned();
-                true
-            }
+            ui::a11y::Action::Activate => self.choose(index),
             _ => false,
         }
     }
 
-    /// Inset of the rows inside the panel.
-    fn pad(&self) -> f64 {
-        f64::from(self.theme.tokens.spacing.s2)
-    }
-
-    /// Total panel height for the current item count (0 when hidden).
-    fn panel_height(&self) -> f64 {
+    /// The panel, while it shows.
+    fn panel(&self) -> Option<Rect> {
         if self.items.is_empty() {
-            0.0
+            None
         } else {
-            self.pad() * 2.0 + self.items.len() as f64 * self.row_height()
+            self.list.rect()
         }
-    }
-
-    fn row_height(&self) -> f64 {
-        self.row_h
-    }
-
-    /// Recompute `self.rect` from the anchor (or a fallback origin) and the
-    /// current item count.
-    fn relayout(&mut self, origin: Point) {
-        let top_left = self.anchor.unwrap_or(origin);
-        self.rect = Rect::new(
-            top_left.x,
-            top_left.y,
-            top_left.x + f64::from(self.width),
-            top_left.y + self.panel_height(),
-        );
     }
 
     /// Row index under a logical `point`, if it lands on a row.
     fn row_at(&self, point: Point) -> Option<usize> {
-        if self.items.is_empty() || !self.rect.contains(point) {
+        if self.items.is_empty() {
             return None;
         }
-        let rel = point.y - (self.rect.y0 + self.pad());
-        if rel < 0.0 {
-            return None;
-        }
-        let idx = (rel / self.row_height()) as usize;
-        (idx < self.items.len()).then_some(idx)
+        self.list.row_at(point)
     }
 
-    /// Paint the panel + rows. Shared by `draw_overlay` (the real path)
-    /// and the render test.
-    fn render(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if self.items.is_empty() {
-            return;
-        }
-        // A floating panel: its own material and shadow, its rows inked and
-        // lifted for that ground.
-        ui::widget::floating_surface::paint(scene, transform, self.rect, theme);
-        let on_panel = theme.on_ground(ui::chrome::panel_ground(theme));
-        let mut ctx = PaintCtx::new(scene, transform, text_renderer, &on_panel);
-        let pad = self.pad();
-        for (idx, entry) in self.items.iter().enumerate() {
-            let row_top = self.rect.y0 + pad + idx as f64 * self.row_height();
-            let rect = Rect::new(
-                self.rect.x0 + pad,
-                row_top,
-                self.rect.x1 - pad,
-                row_top + self.row_height(),
-            );
-            let face = ListRowFace::new(&entry.title)
-                .leading(ui::widget::RowLeading::Icon(kind_icon(entry.kind)))
-                .selected(idx == self.selected)
-                .interaction(Interaction {
-                    hovered: self.hovered == Some(idx),
-                    ..Interaction::default()
-                });
-            // How often a page was opened ranks it; it is not shown, as
-            // no browser's address list does.
-            let face = match entry.kind {
-                RowKind::History => face.secondary(&entry.detail),
-                RowKind::Go => face.secondary("Open this address"),
-                RowKind::Search => face.secondary("Search the web"),
-                RowKind::Suggestion => face,
-            };
-            face.paint(&mut ctx, rect);
-        }
+    fn over(&self, point: Point) -> bool {
+        self.panel().is_some_and(|panel| panel.contains(point))
     }
 }
 
-fn kind_icon(kind: RowKind) -> ui::icons::Icon {
+/// One omnibox row as the list shows it: the kind's icon, the title, and
+/// the line under it where it says something the title does not.
+fn list_row(row: &Row, engine: &str) -> Suggestion {
     use ui::icons::Icon;
-    match kind {
-        RowKind::Go => Icon::ArrowRight,
-        RowKind::Search | RowKind::Suggestion => Icon::Search,
-        RowKind::History => Icon::History,
+    let (icon, subtitle) = match row.kind {
+        RowKind::Go => (Icon::Globe, None),
+        RowKind::History => (Icon::History, Some(row.detail.clone())),
+        // The star is the toolbar's mark for a saved page; the line under the
+        // title names that source and the address it opens.
+        RowKind::Bookmark => (Icon::Star, Some(bookmark_detail(row))),
+        RowKind::Search => (
+            Icon::Search,
+            (!engine.is_empty()).then(|| {
+                crate::resource::CATALOG.t_args(
+                    "browser-suggestion-search",
+                    &[("engine", ui::i18n::ArgValue::Text(engine.to_owned()))],
+                )
+            }),
+        ),
+        RowKind::Suggestion => (Icon::Search, None),
+        // Which extension it goes to.
+        RowKind::Extension => (Icon::Box, Some(row.detail.clone())),
+    };
+    let suggestion = Suggestion::labelled(row.url.clone(), row.title.clone()).with_icon(icon);
+    match subtitle.filter(|line| !line.is_empty()) {
+        Some(line) => suggestion.with_subtitle(line),
+        None => suggestion,
     }
+}
+
+/// What marks a saved page's row as one, in the person's language: its source
+/// (a bookmark) and the address it opens.
+fn bookmark_detail(row: &Row) -> String {
+    crate::resource::CATALOG.t_args(
+        "browser-suggestion-bookmark",
+        &[("url", ui::i18n::ArgValue::Text(row.detail.clone()))],
+    )
 }
 
 /// Stable identity of a row across relayouts: what it is and what it opens.
 fn row_key(row: &Row) -> String {
     match row.kind {
-        RowKind::History => row.url.clone(),
+        RowKind::History | RowKind::Bookmark => row.url.clone(),
         kind => format!("{kind:?}:{}", row.url),
     }
 }
 
 fn describe(row: &Row) -> String {
     match row.kind {
-        RowKind::History => row.detail.clone(),
+        RowKind::History | RowKind::Extension => row.detail.clone(),
+        RowKind::Bookmark => bookmark_detail(row),
         RowKind::Go => format!("Open {}", row.detail),
         RowKind::Search | RowKind::Suggestion => format!("Search for {}", row.title),
     }
-}
-
-/// The height of one two-line suggestion row in `theme`.
-fn measured_row_height(theme: &Theme) -> f64 {
-    ui::text_render::with_layout_renderer(theme.text_scale, |text| {
-        ListRowFace::new("Title")
-            .secondary("https://example.test")
-            .height(text, theme)
-    })
 }
 
 impl Widget for AddressSuggestions {
@@ -340,30 +266,12 @@ impl Widget for AddressSuggestions {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
-        // cannot actually return `Err` for a fresh leaf (see
-        // `ui::widget::TaffyTreeExt`'s doc comment), and `Widget::build_layout`
-        // returns a bare `NodeId` across every implementor, so there is
-        // nowhere to surface a theoretical error.
+        // The list floats over the page; it takes no room in the layout.
         let style = Style {
-            size: Size::from_lengths(self.width, self.panel_height() as f32),
+            size: Size::from_lengths(0.0, 0.0),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // A missing layout entry for our own node would be a taffy bug, not a
-        // recoverable app condition — skip this frame's rect update rather
-        // than panic; the next frame's layout pass will have one.
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        let taffy_origin = Point::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-        );
-        self.relayout(taffy_origin);
     }
 
     fn draw_overlay(
@@ -374,8 +282,9 @@ impl Widget for AddressSuggestions {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        self.set_theme(theme);
-        self.render(scene, transform, text_renderer, theme);
+        if !self.items.is_empty() {
+            self.list.paint(scene, transform, text_renderer, theme);
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -385,7 +294,7 @@ impl Widget for AddressSuggestions {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = ctx.logical(position);
-                self.hovered = self.row_at(self.last_cursor);
+                self.list.hover_at(self.last_cursor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -393,9 +302,50 @@ impl Widget for AddressSuggestions {
                 ..
             } => {
                 if let Some(idx) = self.row_at(self.last_cursor) {
-                    self.selected = idx;
-                    self.chosen = self.items.get(idx).cloned();
+                    self.choose(idx);
                     *ctx.handled = true;
+                } else if self.over(self.last_cursor) {
+                    *ctx.handled = true;
+                }
+            }
+            WindowEvent::Touch(touch) => {
+                let p = ctx.logical(touch.location);
+                match touch.phase {
+                    TouchPhase::Started => {
+                        if let Some(index) = self.row_at(p) {
+                            self.touched = Some((touch.id, index));
+                            self.list.set_highlight(Some(index));
+                            *ctx.handled = true;
+                        } else if self.over(p) {
+                            *ctx.handled = true;
+                        }
+                    }
+                    TouchPhase::Moved => {
+                        if self.touched.is_some_and(|(id, _)| id == touch.id) {
+                            *ctx.handled = true;
+                        }
+                    }
+                    TouchPhase::Ended => {
+                        if let Some((id, index)) = self.touched.take() {
+                            if id == touch.id {
+                                // A tap lifts where it went down; a drag off
+                                // the row lets it go.
+                                if self.row_at(p) == Some(index) {
+                                    self.choose(index);
+                                } else {
+                                    self.list.set_highlight(None);
+                                }
+                                *ctx.handled = true;
+                            } else {
+                                self.touched = Some((id, index));
+                            }
+                        }
+                    }
+                    TouchPhase::Cancelled => {
+                        if self.touched.take().is_some() {
+                            self.list.set_highlight(None);
+                        }
+                    }
                 }
             }
             WindowEvent::KeyboardInput { event: key, .. } if key.state == ElementState::Pressed => {
@@ -408,9 +358,13 @@ impl Widget for AddressSuggestions {
                         self.move_selection(-1);
                         *ctx.handled = true;
                     }
+                    // A chosen row opens; with none chosen the field opens
+                    // what was typed.
                     Key::Named(NamedKey::Enter) => {
-                        self.chosen = self.selected().cloned();
-                        *ctx.handled = true;
+                        if let Some(index) = self.selected_index() {
+                            self.choose(index);
+                            *ctx.handled = true;
+                        }
                     }
                     Key::Named(NamedKey::Escape) => {
                         self.clear();
@@ -432,7 +386,21 @@ impl Widget for AddressSuggestions {
     }
 
     fn get_rect(&self) -> Rect {
-        self.rect
+        self.panel().unwrap_or(Rect::ZERO)
+    }
+
+    fn test_rects(&self) -> Vec<(String, Rect)> {
+        (0..self.items.len())
+            .filter_map(|index| {
+                self.list
+                    .row_rect(index)
+                    .map(|rect| (format!("browser.address-suggestion:{index}"), rect))
+            })
+            .collect()
+    }
+
+    fn accessibility_hidden(&self) -> bool {
+        self.items.is_empty()
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -443,36 +411,32 @@ impl Widget for AddressSuggestions {
             .iter()
             .enumerate()
             .map(|(index, entry)| {
-                let title = entry.title.as_str();
-                let row_top = self.rect.y0 + self.pad() + index as f64 * self.row_height();
-                AccessNode::new(Role::ListItem)
+                let mut node = AccessNode::new(Role::ListItem)
                     .with_action_target(format!(
                         "browser.address-suggestion:{}",
                         blake3::hash(row_key(entry).as_bytes()).to_hex()
                     ))
-                    .with_name(title)
+                    .with_name(entry.title.as_str())
                     .with_description(describe(entry))
-                    .with_bounds(Rect::new(
-                        self.rect.x0,
-                        row_top,
-                        self.rect.x1,
-                        row_top + self.row_height(),
-                    ))
                     .with_position(index.saturating_add(1), self.items.len())
                     .with_state(
                         AccessState::new()
                             .focusable(true)
-                            .focused(index == self.selected)
-                            .selected(index == self.selected),
-                    )
+                            .focused(self.selected_index() == Some(index))
+                            .selected(self.selected_index() == Some(index)),
+                    );
+                if let Some(rect) = self.list.row_rect(index) {
+                    node = node.with_bounds(rect);
+                }
+                node
             })
             .collect();
         Some(
             AccessNode::new(Role::List)
                 .with_name("Address suggestions")
-                .with_bounds(self.rect)
+                .with_bounds(self.get_rect())
                 .with_state(AccessState {
-                    hidden: self.items.is_empty(),
+                    hidden: self.accessibility_hidden(),
                     expanded: Some(!self.items.is_empty()),
                     ..Default::default()
                 })
@@ -484,10 +448,7 @@ impl Widget for AddressSuggestions {
         let [index] = path else {
             return None;
         };
-        (*index < self.items.len()).then(|| {
-            let top = self.rect.y0 + self.pad() + *index as f64 * self.row_height();
-            Rect::new(self.rect.x0, top, self.rect.x1, top + self.row_height())
-        })
+        self.list.row_rect(*index)
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
@@ -497,19 +458,15 @@ impl Widget for AddressSuggestions {
         if *index >= self.items.len() {
             return false;
         }
-        self.selected = *index;
+        self.list.set_highlight(Some(*index));
         true
     }
 
-    /// While the overlay is up it behaves like a transient popover anchored
+    /// While the list is up it behaves like a transient popover anchored
     /// over the page, so it reports its rect as a modal capture — matching
     /// the toolkit's other dropdown-style overlays.
     fn modal_capture(&self) -> Option<Rect> {
-        if self.is_visible() {
-            Some(self.rect)
-        } else {
-            None
-        }
+        self.panel()
     }
 }
 
@@ -521,7 +478,7 @@ mod tests {
         Row {
             kind: RowKind::History,
             title: title.to_string(),
-            detail: url.to_string(),
+            detail: url.trim_start_matches("https://").to_string(),
             url: url.to_string(),
         }
     }
@@ -534,236 +491,195 @@ mod tests {
         ]
     }
 
-    fn lay_out(w: &mut AddressSuggestions) {
-        let theme = Theme::dark();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = w.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(800.0),
-                    height: taffy::AvailableSpace::Definite(600.0),
-                },
-            )
-            .unwrap();
-        w.apply_layout(&taffy, node, Point::ZERO);
+    /// The field the list hangs from, and the window around it.
+    const FIELD: Rect = Rect::new(50.0, 60.0, 450.0, 92.0);
+    const WINDOW: Rect = Rect::new(0.0, 0.0, 900.0, 700.0);
+
+    fn shown() -> AddressSuggestions {
+        let mut w = AddressSuggestions::new();
+        w.set_suggestions(three());
+        w.set_anchor(FIELD, WINDOW);
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        w.draw_overlay(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        w
     }
 
-    /// Selection model of the suggestion overlay.
     #[test]
-    fn suggestion_selection_highlights_wraps_and_resets() {
-        // Phase `empty_overlay_is_hidden_with_no_selection`.
-        {
-            let w = AddressSuggestions::new();
-            assert!(!w.is_visible());
-            assert_eq!(w.selected(), None);
-            assert_eq!(w.selected_index(), None);
-        }
+    fn suggestion_selection_starts_unchosen_wraps_and_resets() {
+        let w = AddressSuggestions::new();
+        assert!(!w.is_visible());
+        assert_eq!(w.selected(), None);
 
-        // Phase `set_suggestions_highlights_first_and_move_wraps`.
-        {
-            let mut w = AddressSuggestions::new();
-            w.set_suggestions(three());
-            assert!(w.is_visible());
-            assert_eq!(
-                w.selected().unwrap().url,
-                "https://a.test",
-                "starts on the best row"
-            );
+        let mut w = AddressSuggestions::new();
+        w.set_suggestions(three());
+        assert!(w.is_visible());
+        assert_eq!(
+            w.selected(),
+            None,
+            "Enter opens what was typed until a row is chosen"
+        );
+        w.move_selection(1);
+        assert_eq!(w.selected().unwrap().url, "https://a.test");
+        w.move_selection(1);
+        w.move_selection(1);
+        assert_eq!(w.selected().unwrap().url, "https://c.test");
+        w.move_selection(1);
+        assert_eq!(
+            w.selected().unwrap().url,
+            "https://a.test",
+            "wraps to the first"
+        );
+        w.move_selection(-1);
+        assert_eq!(
+            w.selected().unwrap().url,
+            "https://c.test",
+            "and to the last"
+        );
+        w.set_suggestions(three());
+        assert_eq!(w.selected_index(), None, "a new list chooses nothing");
 
-            w.move_selection(1);
-            assert_eq!(w.selected().unwrap().url, "https://b.test");
-            w.move_selection(1);
-            assert_eq!(w.selected().unwrap().url, "https://c.test");
-            // Down from the last row wraps to the first.
-            w.move_selection(1);
-            assert_eq!(w.selected().unwrap().url, "https://a.test");
-            // Up from the first row wraps to the last.
-            w.move_selection(-1);
-            assert_eq!(w.selected().unwrap().url, "https://c.test");
-        }
-
-        // Phase `set_suggestions_resets_selection`.
-        {
-            let mut w = AddressSuggestions::new();
-            w.set_suggestions(three());
-            w.move_selection(2); // now on row 2
-            w.set_suggestions(three()); // fresh list
-            assert_eq!(w.selected_index(), Some(0), "a new list resets to the top");
-        }
-
-        // Phase `move_selection_on_empty_is_noop`.
-        {
-            let mut w = AddressSuggestions::new();
-            w.move_selection(1);
-            assert_eq!(w.selected(), None);
-        }
+        let mut empty = AddressSuggestions::new();
+        empty.move_selection(1);
+        assert_eq!(empty.selected(), None);
     }
 
-    /// Rendering, sizing and accessibility of suggestion rows.
+    /// Placement, painting, rows and accessibility.
     #[test]
-    fn suggestion_rows_render_and_expose_stable_accessible_targets() {
-        // Phase `accessibility_target_uses_the_stable_row_identity`.
-        {
-            let mut w = AddressSuggestions::new();
-            w.set_suggestions(three());
-            let target = format!(
-                "browser.address-suggestion:{}",
-                blake3::hash(b"https://c.test").to_hex()
-            );
+    fn suggestions_hang_under_the_field_and_expose_stable_rows() {
+        let w = shown();
+        let panel = w.get_rect();
+        assert!(panel.y0 >= FIELD.y1, "under the field: {panel:?}");
+        assert!(
+            (panel.x0 - FIELD.x0).abs() < 1.0 && panel.width() >= FIELD.width() - 1.0,
+            "as wide as the field: {panel:?}"
+        );
+        let rows = w.test_rects();
+        assert_eq!(rows.len(), 3);
+        assert!(
+            rows.windows(2)
+                .all(|pair| pair[0].1.y1 <= pair[1].1.y0 + 0.5)
+        );
 
-            assert!(w.perform_accessibility_action(&target, &ui::a11y::Action::Focus));
-            assert_eq!(
-                w.selected().map(|entry| entry.url.as_str()),
-                Some("https://c.test")
-            );
-            assert!(w.perform_accessibility_action(&target, &ui::a11y::Action::Activate));
-            assert_eq!(
-                w.take_chosen().map(|entry| entry.url),
-                Some("https://c.test".into())
-            );
-            assert!(
-                !w.perform_accessibility_action(
-                    "browser.address-suggestion:stale",
-                    &ui::a11y::Action::Activate
-                ),
-                "a stale AT-SPI row must never select a different suggestion"
-            );
-        }
+        let node = Widget::accessibility(&w).unwrap();
+        assert_eq!(node.children.len(), 3);
+        assert!(
+            node.children[0]
+                .action_target
+                .as_deref()
+                .is_some_and(|target| target.starts_with("browser.address-suggestion:"))
+        );
 
-        // Phase `enlarged_text_expands_rows_and_pointer_hit_targets_together`.
-        {
-            let mut w = AddressSuggestions::new();
-            w.set_suggestions(three());
-            w.set_anchor(Point::new(20.0, 40.0), 320.0);
-            let normal_height = w.rect.height();
-
-            w.set_theme(&Theme::dark().with_text_scale(1.5));
-            assert!(w.rect.height() > normal_height);
-            assert_eq!(
-                w.row_at(Point::new(40.0, w.rect.y0 + w.pad() + w.row_height() + 1.0)),
-                Some(1),
-                "hit testing follows the larger visual row"
-            );
-        }
-
-        // Phase `suggestions_expose_stable_selectable_screen_reader_rows`.
-        {
-            let mut w = AddressSuggestions::new();
-            w.set_suggestions(three());
-            w.set_anchor(Point::new(20.0, 40.0), 320.0);
-            let node = Widget::accessibility(&w).unwrap();
-            assert_eq!(node.children.len(), 3);
-            assert!(node.children[0].state.selected);
-            assert!(
-                node.children[0]
-                    .action_target
-                    .as_deref()
-                    .is_some_and(|target| target.starts_with("browser.address-suggestion:"))
-            );
-            assert!(w.focus_synthetic_accessibility(&[2]));
-            assert_eq!(w.selected_index(), Some(2));
-            assert!(w.synthetic_accessibility_rect(&[2]).is_some());
-        }
-
-        // Phase `render_emits_when_visible_and_nothing_when_hidden`.
-        {
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-
-            // Hidden: no draw ops.
-            let mut hidden = AddressSuggestions::new();
-            lay_out(&mut hidden);
-            let mut empty_scene = Scene::new();
-            hidden.render(&mut empty_scene, Affine::IDENTITY, &mut tr, &theme);
-            assert_eq!(
-                empty_scene.encoding().draw_tags.len(),
-                0,
-                "a hidden overlay paints nothing"
-            );
-
-            // Visible: the panel + rows produce draw ops.
-            let mut shown = AddressSuggestions::new();
-            shown.set_suggestions(three());
-            lay_out(&mut shown);
-            let mut scene = Scene::new();
-            shown.render(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-            assert!(
-                !scene.encoding().draw_tags.is_empty(),
-                "a visible overlay paints the panel and rows"
-            );
-        }
+        let mut hidden = AddressSuggestions::new();
+        hidden.set_anchor(FIELD, WINDOW);
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        hidden.draw_overlay(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        assert_eq!(
+            scene.encoding().draw_tags.len(),
+            0,
+            "a hidden list paints nothing"
+        );
+        assert!(hidden.modal_capture().is_none());
     }
 
-    /// Keyboard, Escape and pointer input on the overlay.
     #[test]
-    fn keyboard_escape_and_mouse_choose_or_dismiss_suggestions() {
-        // Phase `keyboard_moves_selection_and_enter_chooses`.
-        {
-            let mut w = AddressSuggestions::new();
-            w.set_suggestions(three());
+    fn accessibility_target_uses_the_stable_row_identity() {
+        let mut w = shown();
+        let target = format!(
+            "browser.address-suggestion:{}",
+            blake3::hash(b"https://c.test").to_hex()
+        );
+        assert!(w.perform_accessibility_action(&target, &ui::a11y::Action::Focus));
+        assert_eq!(
+            w.selected().map(|entry| entry.url.as_str()),
+            Some("https://c.test")
+        );
+        assert!(w.perform_accessibility_action(&target, &ui::a11y::Action::Activate));
+        assert_eq!(
+            w.take_chosen().map(|entry| entry.url),
+            Some("https://c.test".into())
+        );
+        assert!(
+            !w.perform_accessibility_action(
+                "browser.address-suggestion:stale",
+                &ui::a11y::Action::Activate
+            ),
+            "a stale AT-SPI row must never select a different suggestion"
+        );
+        assert!(w.focus_synthetic_accessibility(&[2]));
+        assert_eq!(w.selected_index(), Some(2));
+        assert!(w.synthetic_accessibility_rect(&[2]).is_some());
+    }
 
-            let send = |w: &mut AddressSuggestions, named: NamedKey| -> bool {
-                let ev =
-                    ui::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
-                let event = ui::synthetic_input::keyboard_input(ev);
-                ui::testing::dispatch(w, &event)
-            };
+    #[test]
+    fn keyboard_pointer_and_touch_choose_or_dismiss_suggestions() {
+        let send = |w: &mut AddressSuggestions, named: NamedKey| -> bool {
+            let ev = ui::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
+            ui::testing::dispatch(w, &ui::synthetic_input::keyboard_input(ev))
+        };
 
-            assert!(send(&mut w, NamedKey::ArrowDown));
-            assert_eq!(
-                w.selected().unwrap().url,
-                "https://b.test",
-                "Down advances the highlight"
-            );
-            assert!(send(&mut w, NamedKey::Enter));
-            let chosen = w
-                .take_chosen()
-                .expect("Enter commits the highlighted entry");
-            assert_eq!(chosen.url, "https://b.test");
-            assert_eq!(w.take_chosen(), None, "the choice drains exactly once");
-        }
+        let mut w = shown();
+        assert!(!send(&mut w, NamedKey::Enter), "Enter goes on to the field");
+        assert_eq!(w.take_chosen(), None);
+        assert!(send(&mut w, NamedKey::ArrowDown));
+        assert!(send(&mut w, NamedKey::ArrowDown));
+        assert!(send(&mut w, NamedKey::Enter));
+        assert_eq!(w.take_chosen().unwrap().url, "https://b.test");
+        assert_eq!(w.take_chosen(), None, "the choice drains exactly once");
+        assert!(send(&mut w, NamedKey::Escape));
+        assert!(!w.is_visible());
 
-        // Phase `escape_dismisses`.
-        {
-            let mut w = AddressSuggestions::new();
-            w.set_suggestions(three());
+        let mut w = shown();
+        let (_, row) = w.test_rects()[1].clone();
+        ui::testing::dispatch(
+            &mut w,
+            &ui::synthetic_input::cursor_moved(row.center().x, row.center().y),
+        );
+        assert!(ui::testing::dispatch(
+            &mut w,
+            &ui::synthetic_input::mouse_press()
+        ));
+        assert_eq!(w.take_chosen().unwrap().url, "https://b.test");
 
-            let ev = ui::synthetic_input::key_event(
-                Key::Named(NamedKey::Escape),
-                None,
-                ElementState::Pressed,
-            );
-            let event = ui::synthetic_input::keyboard_input(ev);
-            let handled = ui::testing::dispatch(&mut w, &event);
-            assert!(handled);
-            assert!(!w.is_visible(), "Escape clears the overlay");
-        }
-
-        // Phase `mouse_click_selects_and_chooses_row`.
-        {
-            let mut w = AddressSuggestions::new();
-            w.set_suggestions(three());
-            w.set_anchor(Point::new(50.0, 100.0), 400.0);
-            lay_out(&mut w);
-
-            // Aim at the centre of the second row (idx 1).
-            let r = w.get_rect();
-            let row1_y = r.y0 + w.pad() + w.row_height() * 1.5;
-            ui::testing::dispatch(
-                &mut w,
-                &ui::synthetic_input::cursor_moved(r.x0 + 20.0, row1_y),
-            );
-            let handled = ui::testing::dispatch(&mut w, &ui::synthetic_input::mouse_press());
-            assert!(handled, "a click on a row is consumed");
-            assert_eq!(
-                w.selected_index(),
-                Some(1),
-                "the clicked row becomes selected"
-            );
-            assert_eq!(w.take_chosen().unwrap().url, "https://b.test");
-        }
+        // A tap on a row opens it; a touch that slides off lets it go.
+        let mut w = shown();
+        let (_, row) = w.test_rects()[2].clone();
+        let touch = |phase, p: Point| {
+            WindowEvent::Touch(winit::event::Touch {
+                device_id: winit::event::DeviceId::dummy(),
+                phase,
+                location: winit::dpi::PhysicalPosition::new(p.x, p.y),
+                force: None,
+                id: 7,
+            })
+        };
+        assert!(ui::testing::dispatch(
+            &mut w,
+            &touch(TouchPhase::Started, row.center())
+        ));
+        assert!(ui::testing::dispatch(
+            &mut w,
+            &touch(TouchPhase::Ended, row.center())
+        ));
+        assert_eq!(w.take_chosen().unwrap().url, "https://c.test");
+        assert!(ui::testing::dispatch(
+            &mut w,
+            &touch(TouchPhase::Started, row.center())
+        ));
+        ui::testing::dispatch(&mut w, &touch(TouchPhase::Ended, Point::new(5.0, 5.0)));
+        assert_eq!(w.take_chosen(), None, "lifting off the row chooses nothing");
     }
 }

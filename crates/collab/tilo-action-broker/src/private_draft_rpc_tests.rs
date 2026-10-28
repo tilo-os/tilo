@@ -464,3 +464,130 @@ async fn private_editor_token_is_bounded_original_person_and_worker_scoped() {
         })
         .await;
 }
+
+/// One Chat window holding several conversations of one room: the draft
+/// belongs to the conversation its adopt action is delivered to, so that
+/// record's channel fetches it and a sibling record's channel does not.
+#[tokio::test(flavor = "current_thread")]
+async fn private_draft_belongs_to_the_record_its_adoption_targets() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            const CHAT_WINDOW: u64 = 906;
+            let mut env = Environment::new();
+            env.route.app_id = "so.tilo.chat".into();
+            env.authority =
+                CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
+            let mut services = env.membership.services();
+            services.launcher = Some(Arc::new(LaunchedHere {
+                app: env.route.app_id.clone(),
+                room: env.route.cluster_id.clone(),
+            }));
+            let rig = Rig::with_services(&env, services).await;
+            let (window, _server, _client) = launched_app_connection(
+                &rig.state,
+                &rig.directories,
+                CHAT_WINDOW,
+                &env.route.app_id,
+                &env.route.cluster_id,
+            );
+            let proof = presentation(&env.route.cluster_id, &env.cert, &env.key);
+            let record =
+                |id: &str| CrdtRoute::record("so.tilo.chat", env.route.cluster_id.clone(), id);
+            let first = window
+                .join_channel(&record("conversation-a").channel_key(), &proof)
+                .await
+                .unwrap();
+            let second = window
+                .join_channel(&record("conversation-b").channel_key(), &proof)
+                .await
+                .unwrap();
+
+            let caller = tilo_actions::remote::Caller::authenticated(
+                env.cert.user_public_key,
+                env.cert.device_public_key,
+            )
+            .in_room(&env.route.cluster_id)
+            .in_new_execution();
+            let draft = runtime_collab::private_draft::Draft {
+                workspace: env.route.cluster_id.clone(),
+                target: runtime_collab::private_draft::Target::Person {
+                    public_key: "c".repeat(64),
+                },
+                editor: runtime_collab::private_draft::Editor {
+                    text: "draft for the second conversation".into(),
+                    anchor: 0,
+                    caret: 5,
+                    preedit: String::new(),
+                    preedit_cursor: None,
+                },
+            };
+            let token = rig
+                .state
+                .stage_private_draft(&caller, &proof, draft.clone())
+                .expect("a person with Chat open across several records may stage a draft");
+
+            second
+                .publish_action_directory(
+                    "so.tilo.chat",
+                    capnp_rpc::new_client(PrivateDraftDirectory),
+                )
+                .await
+                .unwrap();
+            let stream = second.subscribe_stable_invocations().await.unwrap();
+            // The window holds each conversation as its own route hold.
+            let second_hold = rig
+                .state
+                .host_workers
+                .lock()
+                .unwrap()
+                .holder_of(&record("conversation-b"))
+                .unwrap();
+            assert_eq!(rig.state.connection_of(second_hold), CHAT_WINDOW);
+            let (_, binding) = second
+                .resolve_published_action_for_invocation(
+                    second_hold,
+                    "draft-r1",
+                    "workspace:atlas",
+                    "adopt-private-draft",
+                )
+                .await
+                .unwrap();
+            let invocation = id(0xd2af9);
+            second
+                .invoke_resolved_published_action_durable(
+                    invocation.0.as_bytes(),
+                    &binding,
+                    "draft-r1",
+                    "workspace:atlas",
+                    "adopt-private-draft",
+                    Some(&serde_json::json!({"token": token}).to_string()),
+                    "{}",
+                )
+                .await
+                .unwrap();
+            let delivered = stream.read().await.unwrap();
+            assert_eq!(delivered.invocation_uuid, *invocation.0.as_bytes());
+            let request = runtime_collab::private_draft::Request {
+                private_draft: token,
+                acknowledge: false,
+            };
+            assert!(
+                first
+                    .private_draft(&request, invocation.0.as_bytes())
+                    .await
+                    .is_err(),
+                "a sibling conversation's channel does not hold this draft"
+            );
+            let fetched: runtime_collab::private_draft::Draft = serde_json::from_slice(
+                &second
+                    .private_draft(&request, invocation.0.as_bytes())
+                    .await
+                    .expect("the conversation the adoption targets fetches its draft"),
+            )
+            .unwrap();
+            assert!(fetched.editor == draft.editor);
+            drop((first, second, window));
+            rig.stop().await;
+        })
+        .await;
+}

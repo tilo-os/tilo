@@ -4,6 +4,7 @@
 #include "include/cef_parser.h"
 #include "include/base/cef_callback.h"
 #include "include/wrapper/cef_closure_task.h"
+#include <algorithm>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -24,17 +25,44 @@ class AgentLog final : public CefDevToolsMessageObserver {
   AgentLog(CefRefPtr<CefBrowser> browser,Emit emit):browser_(browser),emit_(std::move(emit)) {}
   void Attach() { registration_=browser_->GetHost()->AddDevToolsMessageObserver(this); }
   void Detach() { registration_=nullptr;browser_=nullptr; }
-  // An agent is about to operate the tab: start recording.
+  // Whether it records: the inspector reports the page's contexts.
+  bool active() const { return active_; }
+  // An agent is about to operate the tab: start recording. A page that was
+  // already loaded is not fetched again, so its documents and frames are
+  // backfilled from the frame tree: without them an agent cannot even name the
+  // frame it needs to operate.
   void Activate() {
     if(active_ || !browser_) return;
     active_=true;
     auto host=browser_->GetHost();
+    host->ExecuteDevToolsMethod(0,"Page.getFrameTree",nullptr);
     host->ExecuteDevToolsMethod(0,"Runtime.enable",nullptr);
     host->ExecuteDevToolsMethod(0,"Log.enable",nullptr);
     auto network=CefDictionaryValue::Create();
     // Bodies are never read, so the inspector need not keep them.
     network->SetInt("maxTotalBufferSize",0);network->SetInt("maxResourceBufferSize",0);
     host->ExecuteDevToolsMethod(0,"Network.enable",network);
+    // The documents the tab already holds were fetched before the log listened,
+    // and the inspector cannot report them again: they are recorded as the
+    // documents they plainly are, arrived, so a caller reading the page's
+    // requests is told what the page is made of rather than that it is empty.
+    std::vector<CefString> ids;
+    if(browser_) browser_->GetFrameIdentifiers(ids);
+    for(const auto& id:ids) {
+      const auto held=browser_->GetFrameByIdentifier(id);
+      const auto url=held?Cut(held->GetURL().ToString(),kMaxUrl):std::string();
+      if(url.rfind("http",0)!=0 || Recorded(url)) continue;
+      auto opened=CefDictionaryValue::Create();
+      opened->SetString("method","GET");opened->SetString("url",url);
+      opened->SetString("type","Document");opened->SetString("state","done");
+      Push(network_,network_dropped_,opened);
+    }
+  }
+  // Whether the log already names a document at that address.
+  bool Recorded(const std::string& url) const {
+    for(const auto& [seq,entry]:network_)
+      if(Str(entry,"type")=="Document" && Str(entry,"url")==url) return true;
+    return false;
   }
   // {request_id, action: console|network, since} -> page_result with data
   void Request(CefRefPtr<CefDictionaryValue> d) {
@@ -58,29 +86,41 @@ class AgentLog final : public CefDevToolsMessageObserver {
     std::string message=std::to_string(count)+(console?" console entries":" requests");
     if(started) message+="; recording started now, so earlier activity is not included";
     fields->SetString("message",message);
-    fields->SetBool("navigated",false);fields->SetBool("loading",false);fields->SetNull("outline");
+    fields->SetString("navigation","none");fields->SetBool("navigated",false);fields->SetBool("loading",false);fields->SetNull("outline");
     fields->SetDictionary("data",data);fields->SetInt("request_id",d->GetInt("request_id"));
     emit_("page_result",fields);
+  }
+  // A main-frame navigation began, with or without a person's (or an
+  // action's) user activation behind it, as Chromium attributes it. Its
+  // document request is then listed as that navigation.
+  void MainNavigation(const std::string& url,bool user_gesture) {
+    if(!active_) return;
+    // The inspector lists a request's URL without its fragment.
+    navigations_.emplace_back(url.substr(0,url.find('#')),user_gesture);
+    if(navigations_.size()>kMaxNavigations) navigations_.pop_front();
   }
   void OnDevToolsEvent(CefRefPtr<CefBrowser>,const CefString& method,const void* params,size_t size) override {
     if(!active_) return;
     const std::string name=method.ToString();
     if(name!="Runtime.consoleAPICalled" && name!="Runtime.exceptionThrown" && name!="Log.entryAdded" &&
-       name.rfind("Network.",0)!=0) return;
+       name!="Page.frameNavigated" && name.rfind("Network.",0)!=0) return;
     auto parsed=CefParseJSON(std::string(static_cast<const char*>(params),size),JSON_PARSER_RFC);
     auto p=parsed && parsed->GetType()==VTYPE_DICTIONARY?parsed->GetDictionary():nullptr;
     if(!p) return;
+    if(name=="Page.frameNavigated") { Frame(p);return; }
     if(name=="Runtime.consoleAPICalled") Console(p);
     else if(name=="Runtime.exceptionThrown") Exception(p);
     else if(name=="Log.entryAdded") LogEntry(p);
     else Network(name,p);
   }
-  void OnDevToolsAgentDetached(CefRefPtr<CefBrowser>) override { active_=false; }
+  // The page's inspector went away: whatever is read next records afresh.
+  void OnDevToolsAgentDetached(CefRefPtr<CefBrowser>) override { active_=false;navigations_.clear(); }
 
  private:
   static constexpr size_t kMaxEntries=500;
   static constexpr size_t kMaxText=500;
   static constexpr size_t kMaxUrl=500;
+  static constexpr size_t kMaxNavigations=8;
   static std::string Cut(const std::string& text,size_t limit) {
     return text.size()>limit?text.substr(0,limit)+"…":text;
   }
@@ -103,6 +143,34 @@ class AgentLog final : public CefDevToolsMessageObserver {
   void Push(std::deque<std::pair<uint64_t,CefRefPtr<CefDictionaryValue>>>& to,size_t& dropped,CefRefPtr<CefDictionaryValue> e) {
     to.emplace_back(++seq_,e);
     while(to.size()>kMaxEntries) { to.pop_front();++dropped; }
+  }
+  // A document the page holds bytes for: its address, and its type as the
+  // network log spells it, so frames read as documents beside top-level ones.
+  void Frame(CefRefPtr<CefDictionaryValue> p) {
+    auto frame=p->GetDictionary("frame");if(!frame) return;
+    const auto url=Str(frame,"url");
+    if(url.empty() || url.rfind("http",0)!=0) return;
+    // A frame's document the network log opened and the page then took over is
+    // one the page holds: the request's own completion is not the document's,
+    // so the entry says the document is here rather than that it never came.
+    for(auto it=open_.begin();it!=open_.end();++it) {
+      if(Str(it->second,"type")!="Document" || Str(it->second,"url")!=url) continue;
+      it->second->SetString("state","done");
+      if(!it->second->HasKey("ms") && Num(frame,"timestamp")>0) {
+        const auto began=started_.find(it->first);
+        if(began!=started_.end()) it->second->SetInt("ms",static_cast<int>((Num(frame,"timestamp")-began->second)*1000));
+      }
+      started_.erase(it->first);
+      open_.erase(it);
+      return;
+    }
+    // The same address is one document however many frames hold it.
+    for(const auto& [seq,entry]:network_)
+      if(Str(entry,"type")=="Document" && Str(entry,"url")==url) return;
+    auto e=CefDictionaryValue::Create();
+    e->SetString("method","GET");e->SetString("url",Cut(url,kMaxUrl));
+    e->SetString("type","Document");e->SetString("state","done");
+    Push(network_,network_dropped_,e);
   }
   void Console(CefRefPtr<CefDictionaryValue> p) {
     std::string text;
@@ -136,33 +204,75 @@ class AgentLog final : public CefDevToolsMessageObserver {
   }
   void Network(const std::string& name,CefRefPtr<CefDictionaryValue> p) {
     const auto id=Str(p,"requestId");if(id.empty()) return;
+    // A request is opened where the log first speaks of it: the page announcing
+    // it, or, for one the page handed on before the log listened, its response.
+    // A request the log names without opening it is one it handed to the page:
+    // it still says whether the document arrived, which is what a caller reads
+    // a frame by. The response's own type tells a document from a script the
+    // page fetched beside it.
+    const auto known=open_.find(id);
+    if(known==open_.end() && name!="Network.requestWillBeSent") {
+      if(name!="Network.responseReceived" && name!="Network.loadingFinished" && name!="Network.loadingFailed") return;
+      auto response=p->GetDictionary("response");
+      const auto type=Str(p,"type")=="Document" || Str(response,"type")=="Document"?"Document":"other";
+      if(type!="Document") return;
+      const auto url=Cut(Str(response,"url"),kMaxUrl);
+      if(url.rfind("http",0)!=0) return;
+      auto opened=CefDictionaryValue::Create();
+      opened->SetString("method","GET");opened->SetString("url",url);
+      // It opened without being announced, so it was already on its way: it
+      // is listed as one the page holds once the log says so, never as one
+      // still to come that this record never sees arrive.
+      opened->SetString("type","Document");opened->SetString("state","pending");
+      Push(network_,network_dropped_,opened);open_[id]=opened;started_[id]=Num(p,"timestamp");
+    }
     if(name=="Network.requestWillBeSent") {
       auto request=p->GetDictionary("request");
       auto e=CefDictionaryValue::Create();
       e->SetString("method",Str(request,"method"));e->SetString("url",Cut(Str(request,"url"),kMaxUrl));
       e->SetString("type",Str(p,"type"));e->SetString("state","pending");
+      if(Str(p,"type")=="Document") {
+        const auto url=Str(request,"url");
+        const auto found=std::find_if(navigations_.begin(),navigations_.end(),[&](const auto& n){return n.first==url;});
+        if(found!=navigations_.end()) { e->SetBool("navigation",true);e->SetBool("user_gesture",found->second);navigations_.erase(found); }
+      }
       started_[id]=Num(p,"timestamp");
       Push(network_,network_dropped_,e);open_[id]=e;
       if(open_.size()>kMaxEntries) { open_.erase(open_.begin());started_.erase(started_.begin()); }
       return;
     }
-    auto found=open_.find(id);if(found==open_.end()) return;
-    auto e=found->second;
-    if(name=="Network.responseReceived") {
-      auto response=p->GetDictionary("response");
-      e->SetInt("status",static_cast<int>(Num(response,"status")));e->SetString("mime",Str(response,"mimeType"));
-      return;
-    }
+    const auto opening=open_.find(id);if(opening==open_.end()) return;
+    auto e=opening->second;
     const auto start=started_.find(id);
     const double ms=start==started_.end()?0:(Num(p,"timestamp")-start->second)*1000;
+    // A frame's document is the page's own once the page holds it, whatever
+    // its request then does: the log's own first byte is the document arriving,
+    // and a request that never finishes one is not a document still to come.
+    const bool document=Str(e,"type")=="Document";
+    if(name=="Network.responseReceived" || name=="Network.dataReceived") {
+      auto response=p->GetDictionary("response");
+      if(response) {
+        if(response->GetType("status")!=VTYPE_NULL) e->SetInt("status",static_cast<int>(Num(response,"status")));
+        if(!Str(response,"mimeType").empty()) e->SetString("mime",Str(response,"mimeType"));
+      }
+      if(document) {
+        e->SetString("state","done");
+        if(!e->HasKey("ms")) e->SetInt("ms",static_cast<int>(ms));
+      }
+      return;
+    }
     if(name=="Network.loadingFinished") {
       e->SetString("state","done");e->SetDouble("bytes",Num(p,"encodedDataLength"));e->SetInt("ms",static_cast<int>(ms));
     } else if(name=="Network.loadingFailed") {
-      e->SetString("state","failed");e->SetString("error",Cut(Str(p,"errorText"),kMaxText));
+      // A document the page has already read is not one that failed to arrive,
+      // and a cancelled one it never read is worth saying so.
+      const auto cancelled=p->GetType("canceled")==VTYPE_BOOL && p->GetBool("canceled");
+      e->SetString("state",document && cancelled?"stopped":"failed");
+      e->SetString("error",Cut(Str(p,"errorText"),kMaxText));
       if(p->GetType("blockedReason")==VTYPE_STRING) e->SetString("blocked",Str(p,"blockedReason"));
       e->SetInt("ms",static_cast<int>(ms));
     } else return;
-    open_.erase(found);if(start!=started_.end()) started_.erase(start);
+    open_.erase(opening);if(start!=started_.end()) started_.erase(start);
   }
   CefRefPtr<CefBrowser> browser_;CefRefPtr<CefRegistration> registration_;Emit emit_;
   bool active_=false;uint64_t seq_=0;
@@ -170,6 +280,7 @@ class AgentLog final : public CefDevToolsMessageObserver {
   size_t console_dropped_=0,network_dropped_=0;
   std::map<std::string,CefRefPtr<CefDictionaryValue>> open_;
   std::map<std::string,double> started_;
+  std::deque<std::pair<std::string,bool>> navigations_;
   IMPLEMENT_REFCOUNTING(AgentLog);
 };
 }

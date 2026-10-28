@@ -2,6 +2,8 @@
 # Exercise the packaged display-manager wrapper without touching the caller's
 # real user manager or graphical session.
 set -euo pipefail
+# Its steps are silent greps and tests: name the one that failed.
+trap 'status=$?; [[ $- != *e* ]] || echo "host-session-lifecycle.sh:$LINENO: \`$BASH_COMMAND\` failed with exit status $status" >&2' ERR
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 . "$repo_root/tools/desktop-isolation.sh"
@@ -215,11 +217,19 @@ cmp "$work/expected-predecessor.sorted" "$work/log.sorted"
 : >"$log"
 TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_HOLD=1 "$work/tilo-session" "$work/shell" &
 wrapper_pid=$!
-for _ in $(seq 1 100); do
+# Wait for the wrapper to have started the shell, or to have exited without it. The bound only
+# guards a hang: two seconds were not enough for the wrapper's chain of process starts on a node
+# booked ten times over its cores, and the check then failed without a word.
+for _ in $(seq 1 6000); do
     grep -Fq 'shell --host-desktop-session' "$log" 2>/dev/null && break
+    kill -0 "$wrapper_pid" 2>/dev/null || break
     sleep 0.02
 done
-grep -Fq 'shell --host-desktop-session' "$log"
+grep -Fq 'shell --host-desktop-session' "$log" || {
+    echo 'the held session never started the shell:' >&2
+    cat "$log" >&2
+    exit 1
+}
 kill -TERM "$wrapper_pid"
 wait "$wrapper_pid" || [[ $? == 143 ]]
 grep -Fqx 'shell-term' "$log"

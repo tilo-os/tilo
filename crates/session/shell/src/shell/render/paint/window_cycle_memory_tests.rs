@@ -20,7 +20,7 @@
     reason = "frame sizes and cycle counters of a few hundred, far from overflow"
 )]
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use vello::Scene;
 use vello::kurbo::Affine;
@@ -56,7 +56,6 @@ fn commit(id: SurfaceId, value: u8) {
     commit_sized(id, value, WINDOW);
 }
 
-/// [`commit`] of a `size` window.
 fn commit_sized(id: SurfaceId, value: u8, size: (u32, u32)) {
     let before = store().frame_seq(id);
     let pixels = [value, value, 0x40, 0xFF].repeat((size.0 * size.1) as usize);
@@ -64,11 +63,9 @@ fn commit_sized(id: SurfaceId, value: u8, size: (u32, u32)) {
     let generation = store()
         .prepare_shm_capture(id, frame)
         .expect("the shm worker runs");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while store().frame_seq(id) == before {
-        assert!(Instant::now() < deadline, "the shm worker never published");
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    tilo_test_env::wait_until("the shm worker to publish", || {
+        store().frame_seq(id) != before
+    });
     assert!(store().note_shm_committed(id, generation));
 }
 
@@ -106,6 +103,8 @@ fn malloc_kib() -> (usize, usize, usize, usize) {
 fn window_cycle_memory_returns_to_the_bare_desktop() {
     let mut bridge = VelloDrmBridge::new(DESKTOP.0, DESKTOP.1)
         .expect("the memory gate requires a real wgpu adapter");
+    // What these measure is memory, not how fast llvmpipe finishes a frame.
+    bridge.wait_for_gpu_completion_for_test();
     let wallpaper = image(DESKTOP.0, DESKTOP.1, 0x30);
     let wallpaper_bytes = wallpaper.data.len() as u64;
     for _ in 0..IDLE_PAINTS {
@@ -220,6 +219,8 @@ fn closed_windows_heap_goes_back_to_the_kernel() {
     }
     let mut bridge = VelloDrmBridge::new(DESKTOP.0, DESKTOP.1)
         .expect("the memory gate requires a real wgpu adapter");
+    // What these measure is memory, not how fast llvmpipe finishes a frame.
+    bridge.wait_for_gpu_completion_for_test();
     let wallpaper = image(DESKTOP.0, DESKTOP.1, 0x30);
     for _ in 0..IDLE_PAINTS {
         paint(&mut bridge, &wallpaper, None);
@@ -239,7 +240,7 @@ fn closed_windows_heap_goes_back_to_the_kernel() {
         }
     }
     assert!(
-        crate::shell::heap_trim::settle(Duration::from_secs(30)),
+        crate::shell::heap_trim::settle(tilo_test_env::hang_bound()),
         "the heap trimmer never served the closes"
     );
     let trims = crate::shell::heap_trim::trims_completed() - trims_before;
@@ -286,6 +287,8 @@ const CLOSE_PAINTS: u32 = 8;
 fn closed_windows_device_memory_goes_back_to_the_kernel() {
     let mut bridge = VelloDrmBridge::new(LARGE_DESKTOP.0, LARGE_DESKTOP.1)
         .expect("the memory gate requires a real wgpu adapter");
+    // What these measure is memory, not how fast llvmpipe finishes a frame.
+    bridge.wait_for_gpu_completion_for_test();
     let device = bridge.target.device.clone();
     let wallpaper = image(LARGE_DESKTOP.0, LARGE_DESKTOP.1, 0x30);
     for _ in 0..IDLE_PAINTS {
@@ -310,7 +313,7 @@ fn closed_windows_device_memory_goes_back_to_the_kernel() {
     let trimmed = |what: &str| {
         crate::shell::heap_trim::request();
         assert!(
-            crate::shell::heap_trim::settle(Duration::from_secs(30)),
+            crate::shell::heap_trim::settle(tilo_test_env::hang_bound()),
             "the trimmer never served {what}"
         );
     };
@@ -342,7 +345,7 @@ fn closed_windows_device_memory_goes_back_to_the_kernel() {
         let closed = allocated_mib();
         let closed_atlas = bridge.image_cache_stats().atlas_side;
         assert!(
-            crate::shell::heap_trim::settle(Duration::from_secs(30)),
+            crate::shell::heap_trim::settle(tilo_test_env::hang_bound()),
             "the trimmer never served the close"
         );
         let after = allocated_mib();
@@ -425,6 +428,8 @@ fn paint_scene(
 fn closed_windows_renderer_scratch_comes_back() {
     let mut bridge = VelloDrmBridge::new(LARGE_DESKTOP.0, LARGE_DESKTOP.1)
         .expect("the memory gate requires a real wgpu adapter");
+    // What these measure is memory, not how fast llvmpipe finishes a frame.
+    bridge.wait_for_gpu_completion_for_test();
     let wallpaper = image(LARGE_DESKTOP.0, LARGE_DESKTOP.1, 0x30);
     let mut bare_pixels = Vec::new();
     for _ in 0..IDLE_PAINTS {

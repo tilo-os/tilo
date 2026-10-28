@@ -150,36 +150,96 @@ impl App {
         }
         crate::history_mode::embedded::capture_entries(self.root_widget.as_mut(), &self.state.doc);
     }
+    /// Reconcile the document routes with the tree, and refresh History
+    /// where it needs it: the window's own, and the surfaces in the tree.
+    ///
+    /// Each walk of the whole tree here runs only when what it reads moved
+    /// since it last ran ([`super::runtime::TreeWalks`]): a frame only an
+    /// animation asked for walks nothing. What other threads deliver to a
+    /// History surface is news ([`crate::history_mode::news`]), as is a
+    /// request its controls queued.
     pub(super) fn refresh_framework_history(&mut self, width: f64) {
-        self.refresh_document_routes();
-        let status = self
-            .document_sync_status()
-            .map(std::borrow::Cow::into_owned);
+        self.restore_failed_document_publications();
+        let tree = self.tree_generation();
+        let routes = super::runtime::RouteInputs {
+            tree,
+            witness: self.bound_broker_route().cloned(),
+            autosave_generation: self.autosave_generation,
+            document: crate::doc::settle_mark(&self.state.doc),
+        };
+        if self.layout.walks.routes.as_ref() != Some(&routes) {
+            #[cfg(test)]
+            let _walk = crate::profiling::frame_probe::span("walk.routes");
+            self.reconcile_document_routes();
+            self.layout.walks.routes = Some(routes);
+        }
+        let status = self.window_status();
+        let surfaces = super::runtime::HistorySurfaceInputs {
+            news: crate::history_mode::news(),
+            document: crate::doc::settle_mark(&self.state.doc),
+            narrow: width < 600.0,
+        };
+        let mut walked = self
+            .layout
+            .walks
+            .history
+            .take()
+            .filter(|walk| walk.tree == tree && walk.status == status);
+        let embedded = walked
+            .as_ref()
+            .is_none_or(|walk| walk.surfaces_owed(&surfaces));
         // A status that only changes the text where it already shows repaints
         // that text; it is no reason to rebuild History or the app.
-        crate::history_mode::embedded::set_sync_status_in_place(
-            self.root_widget.as_mut(),
-            status.as_deref(),
-        );
-        if let Some(history) = &mut self.history
-            && !history.sync_status_matches(status.as_deref())
-        {
-            history.set_sync_status_in_place(status.as_deref(), self.root_widget.as_mut());
+        #[cfg(test)]
+        let walk = embedded.then(|| crate::profiling::frame_probe::span("walk.history"));
+        if embedded {
+            crate::history_mode::embedded::set_sync_status_in_place(
+                self.root_widget.as_mut(),
+                status.as_ref(),
+            );
         }
-        let nested = crate::history_mode::embedded::needs_refresh(
-            self.root_widget.as_ref(),
-            &self.state.doc,
-            width,
-            status.as_deref(),
-        );
-        let invalid = self
-            .history
-            .as_ref()
-            .is_some_and(|history| history.validate_root(self.root_widget.as_ref()).is_err());
+        if let Some(history) = &mut self.history
+            && !history.sync_status_matches(status.as_ref())
+        {
+            history.set_sync_status_in_place(status.as_ref(), self.root_widget.as_mut());
+        }
+        let found = if embedded {
+            crate::history_mode::embedded::surfaces_need_refresh(
+                self.root_widget.as_ref(),
+                &self.state.doc,
+                width,
+                status.as_ref(),
+            )
+        } else {
+            // Nothing they read moved since the last walk found them at rest.
+            crate::history_mode::embedded::SurfacesWalk {
+                found: walked.as_ref().is_some_and(|walk| walk.embedded),
+                due: walked.as_mut().and_then(|walk| walk.due.take()),
+                ..Default::default()
+            }
+        };
+        let nested = found.needed;
+        #[cfg(test)]
+        drop(walk);
+        // The window's own History found its root in this same tree.
+        let root_valid = self.history.as_ref().is_some_and(|history| {
+            walked.as_ref().is_some_and(|walk| walk.root_valid)
+                || history.validate_root(self.root_widget.as_ref()).is_ok()
+        });
+        let invalid = self.history.is_some() && !root_valid;
         let status_changed = self
             .history
             .as_ref()
-            .is_some_and(|history| !history.sync_status_matches(status.as_deref()));
+            .is_some_and(|history| !history.sync_status_matches(status.as_ref()));
+        self.layout.walks.history = Some(super::runtime::HistoryWalk {
+            tree,
+            status: status.clone(),
+            embedded: found.found,
+            root_valid,
+            surfaces,
+            needed: found.needed,
+            due: found.due,
+        });
         if !nested
             && !invalid
             && !status_changed
@@ -206,6 +266,7 @@ impl App {
                 history.invalidate_owner();
             } else {
                 history.set_width(width);
+                history.present_entries_of(self.root_widget.as_ref());
                 history.refresh(&self.state.doc);
             }
         }
@@ -213,7 +274,7 @@ impl App {
             self.root_widget.as_mut(),
             &self.state.doc,
             width,
-            status.as_deref(),
+            status.as_ref(),
         );
         let returning_live = self
             .history
@@ -231,6 +292,9 @@ impl App {
             if let Some(history) = &mut self.history {
                 history.finish_return_to_live();
                 history.flush_pending_toolbar();
+                if history.deliver_opened_entry(self.root_widget.as_mut()) {
+                    self.needs_sync = true;
+                }
             }
             if let Some(palette) = self.actions.action_palette.as_mut() {
                 palette.resume_after_history();
@@ -250,44 +314,33 @@ impl App {
             .as_ref()
             .and_then(|history| history.review_layout_node())
             .or(self.layout.root_node);
-        // History's owned nodes, walked once for this recomputation: both the
-        // capture filter and the History-last sort ask it of every node.
-        let owned = self
-            .history
-            .as_ref()
-            .map(|history| history.owned_nodes(&self.layout.taffy))
-            .unwrap_or_default();
-        let captures = self
-            .history
-            .as_ref()
-            .is_some_and(|history| history.captures_input());
-        let (order, app_trap) = root.map_or_else(
+        let (order, trap_active) = root.map_or_else(
             || (Vec::new(), false),
             |root| {
-                crate::focus_navigation::mapped_order(root, &self.layout.taffy, |node| {
-                    let allowed = restrictions.allows(node) && (!captures || owned.contains(&node));
-                    self.inspect_node(node, |widget| {
-                        (
-                            allowed && widget.is_focusable() && widget.is_enabled(),
-                            allowed && widget.traps_focus(),
-                            widget
-                                .accessibility_root()
-                                .is_some_and(|node| node.state.hidden),
-                        )
-                    })
-                    .unwrap_or((false, false, false))
-                })
+                // One sweep asks every mapped node, entering each
+                // component's scope once rather than once a node.
+                let sweep = std::cell::RefCell::new(crate::bound_dispatch::NodeSweep::new(
+                    &self.bindings,
+                    &self.layout.node_map,
+                ));
+                crate::focus_navigation::layout_map_order(
+                    root,
+                    &self.layout.taffy,
+                    restrictions,
+                    self.history.as_deref(),
+                    |node| {
+                        // SAFETY: App owns this stable tree and no target reference escapes.
+                        unsafe {
+                            sweep
+                                .borrow_mut()
+                                .inspect(node, crate::focus_navigation::probe)
+                        }
+                        .ok()
+                    },
+                )
             },
         );
         self.focusable_order = order;
-        if !captures {
-            self.focusable_order.sort_by_key(|id| owned.contains(id));
-        }
-        let trap_active = app_trap
-            || self
-                .history
-                .as_ref()
-                .is_some_and(|history| history.review_is_open());
         if let Some(next) = crate::focus_navigation::reconcile_trap(
             &mut self.accessibility.focus_trap_active,
             &mut self.accessibility.focus_before_trap,
@@ -561,20 +614,7 @@ impl App {
             );
             let restored = history.take_restored_source();
             if changed {
-                self.needs_sync = true;
-                self.invalidate_widget_resource_cache();
-                if matches!(
-                    restored,
-                    Some(crate::history_mode::HistorySourceRegistration::HostDocument { .. })
-                ) {
-                    self.broadcast_doc_delta();
-                }
-                if matches!(
-                    restored,
-                    Some(crate::history_mode::HistorySourceRegistration::OwnedDocument { .. })
-                ) {
-                    self.publish_owned_documents();
-                }
+                self.publish_history_write(restored.as_ref());
             }
             self.layout.request_rebuild();
             return true;
@@ -593,6 +633,45 @@ impl App {
             };
         }
         false
+    }
+
+    /// Write the descriptions the shell gave into the document, when no
+    /// edit is open, so they reach everyone in it; otherwise they wait for
+    /// the next pump.
+    #[cfg(feature = "native")]
+    pub(super) fn write_history_descriptions(&mut self) {
+        let Some(history) = self.history.as_mut() else {
+            return;
+        };
+        if history.has_unwritten_descriptions()
+            && history.service_descriptions(
+                &mut self.state,
+                &self.permission_ctx,
+                &self.collaboration.local_author,
+            )
+        {
+            let restored = history.take_restored_source();
+            self.publish_history_write(restored.as_ref());
+        }
+    }
+
+    /// Sync and publish what a History write changed in `source`.
+    #[cfg(feature = "native")]
+    fn publish_history_write(
+        &mut self,
+        source: Option<&crate::history_mode::HistorySourceRegistration>,
+    ) {
+        self.needs_sync = true;
+        self.invalidate_widget_resource_cache();
+        match source {
+            Some(crate::history_mode::HistorySourceRegistration::HostDocument { .. }) => {
+                self.broadcast_doc_delta();
+            }
+            Some(crate::history_mode::HistorySourceRegistration::OwnedDocument { .. }) => {
+                self.publish_owned_documents();
+            }
+            _ => {}
+        }
     }
 
     /// Called only after native exit layout, focus, drawing and publication.

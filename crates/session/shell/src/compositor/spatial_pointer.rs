@@ -174,7 +174,6 @@ mod tests {
                 device_point: (5.0, 448.5),
             }
         );
-        // Moving on the Pi stays on the Pi, in its coordinates.
         let moved = plan_motion(
             &layout,
             "laptop",

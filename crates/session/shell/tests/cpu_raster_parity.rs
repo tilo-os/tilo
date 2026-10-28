@@ -98,6 +98,10 @@ fn shell_scenes_match_vello_gpu() {
         scale: 1.0,
     }];
     let mut text = TextRenderer::new();
+    let typed = shell::compositor::lock_controller::LockPrompt::new();
+    if let Some(field) = typed.borrow_mut().field_mut(ui::widget::FieldRole::Secret) {
+        field.set_text("password");
+    }
     for (name, view) in [
         (
             "lock",
@@ -112,7 +116,7 @@ fn shell_scenes_match_vello_gpu() {
             LockView {
                 clock: "21:47",
                 date: "Saturday, September 5",
-                password_len: 8,
+                prompt: Some(&typed),
                 notification_count: 3,
                 ..LockView::default()
             },
@@ -126,8 +130,6 @@ fn shell_scenes_match_vello_gpu() {
     for (name, scene) in &scenes {
         let diff = parity(&mut gpu, name, scene);
         println!("{name:14} {diff}");
-        // Edge pixels of two anti-aliasing implementations, as in
-        // tilo-cpu-raster's own feature parity test.
         if diff.psnr < 33.0 || diff.over_8_ratio() > 0.02 || diff.over_32_ratio() > 0.005 {
             failures.push(format!("{name}: {diff}"));
         }

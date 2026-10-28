@@ -398,7 +398,7 @@ def main() -> int:
                     help="seconds into the boot to type the greeter login")
     ap.add_argument("--login", action="store_true",
                     help="type the login as soon as greetd reports itself up")
-    ap.add_argument("--user", default=os.environ.get("TILO_USER", "quickuser"))
+    ap.add_argument("--user", default=os.environ.get("TILO_USER", "tester"))
     ap.add_argument("--password", default=os.environ.get("TILO_PASS", "tilo"))
     ap.add_argument("--login-settle", type=float, default=6.0,
                     help="seconds to let the greeter paint before typing")

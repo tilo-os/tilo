@@ -697,7 +697,7 @@ mod tests {
     #[test]
     fn explicit_install_preferences_are_applied_and_checked_before_begin() {
         let mut requested = choices(Unlock::Passphrase);
-        requested.hostname = "tilo-yoga".into();
+        requested.hostname = "tilo-desktop".into();
         requested.keyboard_layout = Some("German (QWERTZ)".into());
         requested.timezone = Some("Europe/Berlin".into());
         requested.locale = Some("de_DE.UTF-8".into());
@@ -712,7 +712,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             fake.preferences,
-            json!({"hostname":"tilo-yoga", "layout":"German (QWERTZ)", "timezone":"Europe/Berlin", "locale":"de_DE.UTF-8"})
+            json!({"hostname":"tilo-desktop", "layout":"German (QWERTZ)", "timezone":"Europe/Berlin", "locale":"de_DE.UTF-8"})
         );
         assert!(fake.calls.contains(&"begin@installer.review".into()));
         // Preconfigured media may skip keyboard. Refuse an incompatible choice before disk writes.
@@ -812,7 +812,7 @@ mod tests {
         {
             let mut fake = FakeInstaller::new();
             let mut chosen = choices(Unlock::Passphrase);
-            chosen.username = "xaver".into();
+            chosen.username = "bob".into();
             chosen.filesystem = Some("ext4".into());
             chosen.account_secret = Secret::new("account-password-for-testing");
             chosen.disk_secret = Some(Secret::new("disk-passphrase-for-testing"));

@@ -878,12 +878,13 @@ mod tests {
     fn pending_native_reply_deadline_becomes_due_without_reading_it_forward() {
         let (guard, _controlled, _engine, _check) = checked_guard();
         let deadline = guard.deadline();
-        std::thread::sleep(Duration::from_millis(75));
-        assert!(deadline <= crate::time::now());
-        assert!(
-            guard.deadline() <= crate::time::now(),
-            "an unresolved native reply must remain due until its guard is serviced"
-        );
+        crate::time::testing::with_monotonic_time(deadline + Duration::from_millis(25), || {
+            assert!(deadline <= crate::time::now());
+            assert!(
+                guard.deadline() <= crate::time::now(),
+                "an unresolved native reply must remain due until its guard is serviced"
+            );
+        });
     }
 
     #[test]

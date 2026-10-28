@@ -65,8 +65,8 @@ class StagedSourceClosure(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'official public asset manifest'):
                 qualifier.source_assets(manifest)
         for path in ('/usr/bin', '/owned/candidate', '/run/assets', '/var/../etc',
-                     '/srv/rcargo', '/srv/rcargo/tasks', '/srv/rcargo/tasks-other/assets',
-                     '/srv/rcargo/p/source'):
+                     '/srv/tilo', '/srv/tilo/tasks', '/srv/tilo/tasks-other/assets',
+                     '/srv/tilo/p/source'):
             with self.assertRaisesRegex(ValueError, 'mount escapes'):
                 qualifier.asset_mounts({'assets': {'app': {'source_root': path}}, 'archives': {}})
 
@@ -83,7 +83,7 @@ class StagedSourceClosure(unittest.TestCase):
         helper.validate.assert_not_called()
 
     def test_durable_public_task_asset_coordinates_are_admitted(self):
-        path = '/srv/rcargo/tasks/installer-public-source/target/capture-public-assets/app'
+        path = '/srv/tilo/tasks/installer-public-source/target/capture-public-assets/app'
         self.assertEqual(qualifier.asset_mounts({
             'assets': {'app': {'source_root': path}}, 'archives': {}}),
             ['--volume', path + ':' + path + ':ro'])
@@ -228,13 +228,28 @@ class NativeQualificationBoundary(unittest.TestCase):
             self.assertEqual(log.stat().st_mode & 0o777, 0o600)
 
     def test_actual_timeout_reaps_held_process_before_return(self):
+        from unittest.mock import patch
+        import subprocess
+        started = []
+
+        class Recorded(subprocess.Popen):
+            # The pid comes from the spawn itself: a loaded machine can reach the
+            # deadline before the child's interpreter has printed anything.
+            def __init__(self, *arguments, **options):
+                super().__init__(*arguments, **options)
+                started.append(self.pid)
+
         with tempfile.TemporaryDirectory() as temporary:
             log = Path(temporary) / 'private.log'
-            with self.assertRaisesRegex(ValueError, 'deadline'):
-                qualifier.execute([sys.executable, '-u', '-c',
-                    'import os,time;print(os.getpid());time.sleep(30)'], log, .2)
-            pid = int(log.read_text().strip())
-            self.assertFalse(Path('/proc', str(pid)).exists())
+            with patch.object(qualifier.subprocess, 'Popen', Recorded):
+                with self.assertRaisesRegex(ValueError, 'deadline'):
+                    qualifier.execute([sys.executable, '-u', '-c',
+                        'import os,time;print(os.getpid());time.sleep(30)'], log, .2)
+            self.assertEqual(len(started), 1)
+            pid = started[0]
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+            self.assertIn(log.read_text(), ('', f'{pid}\n'))
 
     def test_redirected_candidate_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

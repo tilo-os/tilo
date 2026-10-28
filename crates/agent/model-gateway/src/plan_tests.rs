@@ -22,7 +22,6 @@ impl Drop for TemporaryConfig {
 struct Observed {
     response: Response,
     requests: Vec<String>,
-    elapsed: Duration,
     events: Vec<Response>,
     stderr: String,
 }
@@ -57,17 +56,21 @@ const ANTHROPIC_STREAM_REPLY: &str = concat!(
 const ERROR_BODY: &str = r#"{"error":{"message":"test instruction echoed back","type":"invalid_request_error","param":"max_tokens","code":"unsupported_parameter"}}"#;
 const QUOTA_BODY: &str = r#"{"error":{"type":"insufficient_quota","code":"insufficient_quota"}}"#;
 
-fn read_request(stream: &mut TcpStream) -> String {
+/// One request as the peer read it, or `None` when the client closed the
+/// connection before a whole request arrived.
+fn read_request(stream: &mut TcpStream) -> Option<String> {
     stream.set_nonblocking(false).unwrap();
     stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let mut reader = BufReader::new(stream);
     let mut headers = String::new();
     let mut length = None;
     loop {
         let mut line = String::new();
-        assert!(reader.read_line(&mut line).unwrap() > 0);
+        if reader.read_line(&mut line).unwrap() == 0 {
+            return None;
+        }
         if line == "\r\n" {
             break;
         }
@@ -77,9 +80,9 @@ fn read_request(stream: &mut TcpStream) -> String {
         headers.push_str(&line);
     }
     let mut body = vec![0; length.expect("Plan POST has a JSON body")];
-    reader.read_exact(&mut body).unwrap();
+    reader.read_exact(&mut body).ok()?;
     headers.push_str(&String::from_utf8(body).unwrap());
-    headers
+    Some(headers)
 }
 
 fn prepare_plan_credentials(case: &str, profile: &ProviderProfile) {
@@ -181,6 +184,7 @@ fn child_plan(case: &str) {
     ProviderConfig {
         profiles: vec![profile.clone()],
         default_profile: None,
+        ..Default::default()
     }
     .save()
     .unwrap();
@@ -224,6 +228,17 @@ fn child_plan(case: &str) {
             serde_json::json!({"model":"test-model", "messages":[{"role":"user", "content":"test instruction"}]})
         }
     };
+    if matches!(
+        case,
+        "timeout" | "limits-owner-short" | "limits-owner-caller"
+    ) {
+        // A Plan deadline runs from the call's start, and the first turn of
+        // a conversation also reads the profile and unseals its key, which
+        // takes seconds on a loaded machine. Later turns take both from
+        // `PLAN_PROFILES`. These cases are such a later turn, so their 100
+        // or 200 ms usually go to the held peer rather than the vault.
+        plan_profile("test-provider", "test-model").unwrap();
+    }
     let mut events = Vec::new();
     let http = provider_client().unwrap();
     let response = tilo_rt::block_on(handle_streaming(
@@ -474,7 +489,10 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
                 }
                 Err(error) => panic!("accept local Plan request: {error}"),
             };
-            requests.push(read_request(&mut stream));
+            let Some(request) = read_request(&mut stream) else {
+                continue;
+            };
+            requests.push(request);
             let reply = match server_case.as_str() {
                 "lost" => continue,
                 "timeout" | "limits-owner-short" | "limits-owner-caller" => {
@@ -517,7 +535,6 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
         drop(held);
         requests
     });
-    let began = Instant::now();
     let child = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -532,7 +549,6 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
         .env("PLAN_TEST_ENDPOINT", endpoint)
         .output()
         .unwrap();
-    let elapsed = began.elapsed();
     stop.store(true, Ordering::Release);
     let requests = peer.join().unwrap();
     assert!(
@@ -547,7 +563,6 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
     Some(Observed {
         response,
         requests,
-        elapsed,
         events,
         stderr: String::from_utf8(child.stderr).unwrap(),
     })
@@ -575,6 +590,36 @@ fn completion_service_preserves_typed_failures_without_replay_or_message_leaks()
         let wire = serde_json::to_string(&observed.response).unwrap();
         assert!(!wire.contains("secret-never-echo"), "{case}");
         assert_eq!(observed.response.model_error, Some(error));
+    }
+}
+
+/// How long the call took by its own log line, not timed around the child
+/// process, whose start-up on a loaded machine is not the call's.
+fn done_ms(observed: &Observed) -> u64 {
+    observed
+        .stderr
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("done_ms="))
+        .and_then(|ms| ms.parse().ok())
+        .unwrap_or_else(|| panic!("the call logs its duration: {}", observed.stderr))
+}
+
+/// A call its deadline ended, not the held peer: never answered, asked once
+/// at most, and unknown, never retried, once its POST was out. The deadline
+/// runs on the wall clock from the call's start, so whether the POST goes
+/// out within 100 or 200 ms is up to the machine's scheduler: on a loaded
+/// one the call may end before it, which is as correct.
+fn assert_ended_by_deadline(observed: Observed, case: &str) {
+    assert!(observed.requests.len() <= 1, "{case}: never retried");
+    if observed.requests.is_empty() {
+        assert!(!observed.response.ok, "{case}");
+        assert!(observed.response.output.is_none(), "{case}");
+        let error = observed.response.error.unwrap();
+        assert!(error.contains("timed out"), "{case}: {error}");
+        assert!(error.len() <= 160, "bounded error: {error}");
+        assert!(!error.contains("fabricated-test-key"));
+    } else {
+        assert_unknown(observed);
     }
 }
 
@@ -614,8 +659,9 @@ fn plan_dispatch_owner_ceiling_preserves_shorter_caller_and_transport_bounds() {
             assert!(observed.response.ok);
             assert_eq!(observed.requests.len(), 1);
         } else {
-            assert!(observed.elapsed < Duration::from_secs(5));
-            assert_unknown(observed);
+            let done_ms = done_ms(&observed);
+            assert!(done_ms < 5_000, "the call took {done_ms} ms");
+            assert_ended_by_deadline(observed, case);
         }
     }
     let Some(observed) = run_case(name, "limits-owner-invalid") else {
@@ -629,9 +675,17 @@ fn plan_dispatch_owner_ceiling_preserves_shorter_caller_and_transport_bounds() {
 fn plan_dispatch_timeout_is_unknown() {
     if let Some(observed) = run_case("plan_dispatch_timeout_is_unknown", "timeout") {
         // The peer holds the connection: only the 200 ms Plan timeout, not the
-        // 10 s one the other cases pass, ends the child before this bound.
-        assert!(observed.elapsed < Duration::from_secs(10));
-        assert_unknown(observed);
+        // 10 s one the other cases pass, ends the call before this bound.
+        // Timed by the call's own log line, not around the child process,
+        // whose start-up on a loaded machine is not the call's.
+        assert!(
+            observed.stderr.contains("timeout_ms=200"),
+            "{}",
+            observed.stderr
+        );
+        let done_ms = done_ms(&observed);
+        assert!(done_ms < 10_000, "the call took {done_ms} ms");
+        assert_ended_by_deadline(observed, "timeout");
     }
 }
 
@@ -1326,7 +1380,6 @@ fn anthropic_message() -> serde_json::Value {
     })
 }
 
-/// `text` in pieces of `cut` characters.
 fn pieces(text: &str, cut: usize) -> Vec<String> {
     let chars = text.chars().collect::<Vec<_>>();
     chars

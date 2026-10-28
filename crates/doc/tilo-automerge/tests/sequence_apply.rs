@@ -18,7 +18,6 @@
 )]
 
 use std::num::NonZeroU64;
-use std::time::{Duration, Instant};
 
 use automerge::legacy::{ElementId, Key, ObjectId, Op, OpId, OpType, SortedVec};
 use automerge::marks::{ExpandMark, Mark};
@@ -270,10 +269,11 @@ fn incoming_sequence_patches_match_upstream() {
     }
 }
 
-/// The fastest time of taking in an edit into the middle of a sequence that
-/// 20,000 edits (a quarter of them deletions) built before it, and of one
-/// into a sequence with next to no history, into the same replica.
-fn edit_costs(ty: ObjType) -> (Duration, Duration) {
+/// The most doc ops taking in an edit into the middle of a sequence that
+/// 20,000 edits (a quarter of them deletions) built before it walked one by
+/// one, and the most an edit into a sequence with next to no history walked,
+/// in the same replica.
+fn edit_costs(ty: ObjType) -> (u64, u64) {
     let mut source = AutoCommit::new();
     let busy = source.put_object(ROOT, "busy", ty).unwrap();
     let fresh = source.put_object(ROOT, "fresh", ty).unwrap();
@@ -299,14 +299,15 @@ fn edit_costs(ty: ObjType) -> (Duration, Duration) {
         .collect();
     let mut replica = AutoCommit::new();
     replica.load_incoming(&history).unwrap();
-    let (mut slow, mut quick) = (Duration::MAX, Duration::MAX);
+    let walked = |replica: &mut AutoCommit, change: &[u8]| {
+        let before = automerge::work().walked_ops;
+        replica.load_incoming(change).unwrap();
+        automerge::work().walked_ops - before
+    };
+    let (mut slow, mut quick) = (0, 0);
     for (busy, fresh) in &probes {
-        let started = Instant::now();
-        replica.load_incoming(busy).unwrap();
-        slow = slow.min(started.elapsed());
-        let started = Instant::now();
-        replica.load_incoming(fresh).unwrap();
-        quick = quick.min(started.elapsed());
+        slow = slow.max(walked(&mut replica, busy));
+        quick = quick.max(walked(&mut replica, fresh));
     }
     assert_eq!(replica.save(), source.save());
     (slow, quick)
@@ -316,13 +317,12 @@ fn edit_costs(ty: ObjType) -> (Duration, Duration) {
 fn a_remote_keystroke_costs_no_more_after_a_long_history() {
     for ty in [ObjType::Text, ObjType::List] {
         let (busy, fresh) = edit_costs(ty);
-        // The two edits cost the same but for walking the 20,000 ops of the
-        // busy sequence: about 1.8 ms in an optimised build. With debug
-        // assertions on, Automerge also re-checks the order of every op
-        // after each apply, which both pay alike.
+        // Walking the busy sequence's 20,000 ops for every edit cost about
+        // 1.8 ms in an optimised build; seeking, the busy edit walks no more
+        // than one without history.
         assert!(
-            busy <= fresh * 3 / 2 + Duration::from_micros(50),
-            "an edit into a {ty:?} with 20,000 edits of history took {busy:?}, one without {fresh:?}"
+            busy <= fresh * 3 / 2 + 16,
+            "an edit into a {ty:?} with 20,000 edits of history walked {busy} ops, one without {fresh}"
         );
     }
 }

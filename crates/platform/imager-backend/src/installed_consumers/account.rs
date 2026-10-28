@@ -227,7 +227,7 @@ pub(super) fn verify_bundle(
 ) -> io::Result<Vec<u8>> {
     runner(
         &[
-            root.join("usr/bin/tilo-runtime-bundle").into(),
+            root.join("usr/libexec/tilo/tilo-runtime-bundle").into(),
             "verify".into(),
             bundle.into(),
             "--require-publisher".into(),
@@ -407,7 +407,7 @@ pub(super) fn image_owned_tree(root: &Path) -> io::Result<()> {
 fn check_image_trust() -> io::Result<()> {
     for path in [
         "/usr/libexec/tilo-account-credential",
-        "/usr/bin/tilo-runtime-bundle",
+        "/usr/libexec/tilo/tilo-runtime-bundle",
         "/usr/share/tilo",
         "/usr/lib/tilo-runtime",
     ] {
@@ -448,7 +448,7 @@ pub fn check() -> io::Result<Value> {
     if let Some(evidence) = evidence {
         for path in [
             "/usr/libexec/tilo-service-session-qualification.py",
-            "/usr/bin/tilo-install",
+            "/usr/libexec/tilo/tilo-install",
             "/usr/share/tilo-apps/registry.toml",
         ] {
             image_owned(Path::new(path))?;

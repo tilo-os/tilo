@@ -10,7 +10,6 @@
 )]
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use serde_json::{Value, json};
 use shortcuts::{APP_ID, App, Workbench};
@@ -57,6 +56,8 @@ fn row(
             resource_kind: kind.into(),
             resource_label: "Inbox".into(),
             action_label: action.into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             locus: ExecutionLocus::default(),
             kind: OperationKind::Document,
@@ -223,8 +224,8 @@ impl ActionHost for FakeHost {
         None
     }
 
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Result<(), ActionHostError> {
-        Ok(())
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+        Pending::ready(Ok(()))
     }
 }
 
@@ -269,12 +270,26 @@ fn act(app: &mut TestApp<App>, target: &str, action: &Action) {
         .unwrap_or_else(|error| panic!("{target}: {error}"));
 }
 
+/// Press the window's action `id` in its bar, once the bar offers it.
+fn press_bar(app: &mut TestApp<App>, id: &str) {
+    app.settle();
+    let offered = ui::window_toolbar::declared().is_some_and(|bar| {
+        bar.actions
+            .iter()
+            .any(|action| action.id == id && action.enabled)
+    });
+    assert!(offered, "the window bar offers {id}");
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.to_owned() });
+    app.settle();
+}
+
 #[test]
 fn the_app_starts_empty_and_reads_the_door_as_itself() {
     let (host, _guard, mut app) = open();
     assert!(app.state().drafts.is_empty(), "no seeded drafts");
     app.harness()
-        .wait_for_named("new-shortcut", tilo_test_env::hang_bound())
+        .wait_for_named("shortcuts-library", tilo_test_env::hang_bound())
         .expect("the library shows");
     assert!(
         host.callers
@@ -291,6 +306,73 @@ fn the_app_starts_empty_and_reads_the_door_as_itself() {
 }
 
 #[test]
+fn the_window_bar_names_the_page_and_holds_its_actions() {
+    let (_host, _guard, mut app) = open();
+    app.harness()
+        .wait_for_named("shortcuts-library", tilo_test_env::hang_bound())
+        .expect("the library shows");
+    let bar = |app: &mut TestApp<App>| {
+        app.settle();
+        let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+        let location = bar.location.map(|location| location.label);
+        let actions: Vec<(String, bool)> = bar
+            .actions
+            .into_iter()
+            .map(|action| (action.id, action.enabled))
+            .collect();
+        (location, actions)
+    };
+    let (location, actions) = bar(&mut app);
+    assert_eq!(location.as_deref(), Some("Overview"));
+    assert_eq!(
+        actions,
+        [
+            ("new-shortcut".to_owned(), true),
+            ("reload".to_owned(), true)
+        ]
+    );
+    for drawn in ["new-shortcut", "reload"] {
+        assert!(
+            !app.harness().targets().contains_key(drawn),
+            "the window draws no {drawn} of its own"
+        );
+    }
+
+    press_bar(&mut app, "new-shortcut");
+    assert_eq!(app.state().drafts.len(), 1, "New shortcut starts a draft");
+    let (location, actions) = bar(&mut app);
+    assert_eq!(
+        location.as_deref(),
+        Some("New shortcut"),
+        "the draft is open"
+    );
+    assert!(
+        actions.contains(&("review-save".to_owned(), false)),
+        "a draft without steps cannot be saved yet: {actions:?}"
+    );
+    press_bar(&mut app, "discard-draft");
+    assert!(app.state().drafts.is_empty(), "Discard draft discards it");
+}
+
+#[test]
+fn the_bar_duplicates_the_open_draft() {
+    let (_host, _guard, mut app) = open();
+    app.harness()
+        .wait_for_named("shortcuts-library", tilo_test_env::hang_bound())
+        .expect("the library shows");
+    press_bar(&mut app, "new-shortcut");
+    press_bar(&mut app, "duplicate-shortcut");
+    assert_eq!(app.state().drafts.len(), 2, "Duplicate starts a variant");
+    assert!(
+        app.state()
+            .drafts
+            .values()
+            .any(|draft| draft.name == "New shortcut copy"),
+        "the copy is named after the draft"
+    );
+}
+
+#[test]
 fn every_operation_is_a_published_action() {
     let (_host, _guard, mut app) = open();
     let resources = app.harness().resources();
@@ -300,6 +382,8 @@ fn every_operation_is_a_published_action() {
         .expect("the drafts are a published resource");
     for action in [
         "new-draft",
+        "duplicate-draft",
+        "duplicate-shortcut",
         "draft-shortcut",
         "set-schedule",
         "add-step",
@@ -320,7 +404,10 @@ fn every_operation_is_a_published_action() {
         .map(|spec| spec.id.as_str())
         .collect();
     effects.sort_unstable();
-    assert_eq!(effects, ["delete", "describe", "refresh", "run", "save"]);
+    assert_eq!(
+        effects,
+        ["delete", "describe", "refine", "refresh", "run", "save"]
+    );
     assert!(
         resources
             .iter()
@@ -398,7 +485,7 @@ fn add_steps_bind_them_validate_and_save_through_the_door() {
         .expect("the draft checks");
 
     // Review what it may do, then save.
-    act(&mut app, "review-save", &Action::Activate);
+    press_bar(&mut app, "review-save");
     app.harness()
         .wait_for_named("shortcuts-save-sheet", tilo_test_env::hang_bound())
         .expect("the sheet shows");
@@ -455,7 +542,7 @@ fn with_agent() -> FakeHost {
 fn drafting_is_hidden_without_the_agent() {
     let (_host, _guard, mut app) = open();
     app.harness()
-        .wait_for_named("new-shortcut", tilo_test_env::hang_bound())
+        .wait_for_named("shortcuts-library", tilo_test_env::hang_bound())
         .expect("the library shows");
     assert!(
         !app.harness().targets().contains_key("describe-shortcut"),
@@ -507,10 +594,10 @@ fn a_described_shortcut_is_drafted_checked_and_opened_but_never_saved() {
     );
 
     act(&mut app, "open-drafted", &Action::Activate);
-    // Let the open land.
-    let _ = app
-        .harness()
-        .wait_until(Duration::from_millis(300), |_| false);
+    tilo_test_env::wait_until("the drafted shortcut to open", || {
+        app.settle();
+        !app.state().drafts.is_empty()
+    });
     let drafts: Vec<_> = app.state().drafts.values().cloned().collect();
     assert_eq!(drafts.len(), 1, "opened as a draft");
     let shortcut = drafts[0].shortcut(Vec::new());
@@ -574,9 +661,14 @@ fn a_saved_shortcut_opens_its_page_runs_with_its_inputs_and_a_run_leads_back() {
     );
     act(&mut app, "run-quick-note", &Action::Activate);
 
-    let _ = app
-        .harness()
-        .wait_until(Duration::from_millis(300), |_| false);
+    tilo_test_env::wait_until("the shortcut's run to be invoked", || {
+        app.settle();
+        host.invoked
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| request.target.address.action == "run")
+    });
     let runs: Vec<_> = host
         .invoked
         .lock()
@@ -661,7 +753,7 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
     render_morning_matrix(&mut app, &output, "draft");
     app.harness().set_theme(ui::Theme::light());
     app.harness().resize((1600, 1000)).unwrap();
-    act(&mut app, "review-save", &Action::Activate);
+    press_bar(&mut app, "review-save");
     app.harness()
         .expect(
             &SemanticExpectation::named("schedule-review-0")
@@ -754,4 +846,307 @@ fn inspection_node<'a>(
     node.children
         .iter()
         .find_map(|child| inspection_node(child, id))
+}
+
+/// The save review tells a first-time user what saving agrees to: the
+/// shortcut may use only the app actions listed, and a shortcut that lists
+/// none says plainly that it can't touch their apps.
+#[test]
+fn the_save_review_says_what_saving_allows() {
+    let (_host, _guard, mut app) = open();
+    app.invoke(Workbench::DRAFT_SHORTCUT.with(json!({
+        "id": "no-actions", "name": "Only a branch", "steps": [{"id": "branch", "step": "if", "cond": {"truthy": {"literal": true}}, "then": []}]
+    })))
+    .unwrap();
+    press_bar(&mut app, "review-save");
+    let explain = ui::i18n!("shortcuts-grant-explain");
+    assert!(
+        explain.contains("app actions listed") && explain.contains("person running it"),
+        "{explain}"
+    );
+    let none = ui::i18n!("shortcuts-grant-none");
+    assert!(none.contains("can't read or change"), "{none}");
+    for (id, text) in [
+        ("shortcuts-grant-explain", explain),
+        ("shortcuts-grant-none", none),
+    ] {
+        app.harness()
+            .expect(
+                &SemanticExpectation::named(id)
+                    .name(text)
+                    .within(tilo_test_env::hang_bound()),
+            )
+            .unwrap_or_else(|error| panic!("the review shows {id}: {error}"));
+    }
+}
+
+/// The window bar's sidebar button flips the sidebar on every click, in a
+/// window wide enough to dock it and in a narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(
+        ui::framework::testing::TestApp::<App>::new,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+}
+
+/// A draft with an `if` holding the list step in its `then` block, built the
+/// way a person does: three steps from the catalogue, one of them a
+/// condition, the last moved inside it.
+fn draft_with_a_condition() -> (Arc<FakeHost>, RemoteActionsGuard, TestApp<App>) {
+    let (host, guard, mut app) = open();
+    app.invoke(Workbench::NEW_DRAFT.with("Tidy"))
+        .expect("a new draft");
+    app.harness()
+        .wait_for_named("draft-name", tilo_test_env::hang_bound())
+        .expect("the new draft opens in the editor");
+    act(&mut app, "add-action-top", &Action::Activate);
+    act(&mut app, "offer-if", &Action::Activate);
+    act(&mut app, "add-action-top", &Action::Activate);
+    act(
+        &mut app,
+        &format!("offer-{NOTES}-{INBOX}-list"),
+        &Action::Activate,
+    );
+    act(&mut app, "add-action-top", &Action::Activate);
+    act(
+        &mut app,
+        &format!("offer-{NOTES}-{INBOX}-create"),
+        &Action::Activate,
+    );
+    (host, guard, app)
+}
+
+#[test]
+fn a_condition_holds_steps_and_a_step_folds_away() {
+    let (_host, _guard, mut app) = draft_with_a_condition();
+    let steps = |app: &mut TestApp<App>| {
+        app.state()
+            .drafts
+            .values()
+            .next()
+            .expect("the draft")
+            .program()
+            .steps
+    };
+    assert_eq!(steps(&mut app).len(), 3, "three steps at the top level");
+
+    // The third step moves into the condition's `then` block, where it is
+    // no longer one of the top level's steps.
+    let draft_id = app.state().drafts.ids().next().expect("the draft").clone();
+    app.invoke(Workbench::SET_NESTED.with((draft_id, "2".to_owned(), "0.then".to_owned(), 0)))
+        .expect("the step moves into the condition");
+    let top = steps(&mut app);
+    assert_eq!(top.len(), 2, "only the condition is left at the top");
+    let tilo_automation::StepKind::If { then, .. } = &top[0].kind else {
+        panic!("the first step is the condition: {:?}", top[0].kind);
+    };
+    assert_eq!(then.len(), 1, "the moved step is what the condition holds");
+
+    // A step keeps its place in the program while it is folded: only its
+    // drawing goes.
+    let before = steps(&mut app);
+    act(&mut app, "step-fold-0", &Action::Activate);
+    assert_eq!(steps(&mut app), before, "folding changes no step");
+    app.harness()
+        .expect(&SemanticExpectation::named("step-open-0").within(tilo_test_env::hang_bound()))
+        .expect("a folded step offers to open again");
+    assert!(
+        !app.harness().targets().contains_key("step-fold-0"),
+        "and no longer offers to fold"
+    );
+    act(&mut app, "step-open-0", &Action::Activate);
+    act(&mut app, "step-fold-0", &Action::Activate);
+    assert!(app.harness().targets().contains_key("step-open-0"));
+    assert_eq!(
+        steps(&mut app),
+        before,
+        "opening and folding change nothing"
+    );
+}
+
+#[test]
+fn the_text_view_shows_the_same_steps_in_the_same_order() {
+    let (_host, _guard, mut app) = draft_with_a_condition();
+    // A step inside the condition, so the text has a block to indent.
+    let draft_id = app.state().drafts.ids().next().expect("the draft").clone();
+    app.invoke(Workbench::SET_NESTED.with((draft_id, "2".to_owned(), "0.then".to_owned(), 0)))
+        .expect("the step moves into the condition");
+    let draft = app
+        .state()
+        .drafts
+        .values()
+        .next()
+        .expect("the draft")
+        .clone();
+    let program = draft.program();
+
+    press_bar(&mut app, "text-view");
+    app.harness()
+        .wait_for_named("draft-text", tilo_test_env::hang_bound())
+        .expect("the program text shows");
+    let snapshot = app.harness().inspection();
+    let text = inspection_node(&snapshot.root, "draft-text")
+        .or_else(|| {
+            snapshot
+                .presentation
+                .as_ref()
+                .and_then(|root| inspection_node(root, "draft-text"))
+        })
+        .and_then(|node| node.semantics.as_ref())
+        .and_then(|node| node.name.clone())
+        .expect("the text view draws its text");
+
+    // Every step the blocks hold is a line of the text, numbered by its
+    // position, and the condition's block is indented under it.
+    for number in 1..=program.steps.len() {
+        let numbered = format!("{number}. ");
+        assert!(
+            text.lines()
+                .any(|line| line.trim_start().starts_with(&numbered)),
+            "step {number} is in the text: {text}"
+        );
+    }
+    assert!(
+        text.contains("then:") && text.contains("otherwise:"),
+        "the condition names both its blocks: {text}"
+    );
+    let indented = text
+        .lines()
+        .any(|line| line.starts_with("    ") && line.trim_start().starts_with(char::is_numeric));
+    assert!(indented, "a block's steps are indented under it: {text}");
+    // The text names each step by what it does, in the same order the
+    // blocks show, and the nested step is under its block.
+    let order: Vec<usize> = ["If", "create", "list"]
+        .iter()
+        .map(|substance| {
+            text.find(substance).unwrap_or_else(|| {
+                panic!("{substance} is in the text, in order: {text}");
+            })
+        })
+        .collect();
+    assert!(
+        order.is_sorted(),
+        "the text keeps the program's order: {text}"
+    );
+    assert!(
+        text.contains("    1. create on notes.folder:inbox"),
+        "the condition's step is indented under it: {text}"
+    );
+
+    // Going back to the blocks keeps the draft exactly as it was.
+    press_bar(&mut app, "text-view");
+    let state = app.state();
+    let back = state.drafts.values().next().expect("the draft");
+    assert_eq!(back.program(), program, "the text view edits nothing");
+    assert!(
+        !app.harness().targets().contains_key("draft-text"),
+        "the text is gone"
+    );
+}
+
+/// The header of a step moves it into the step above, and out again, without
+/// anyone typing an address or a piece of JSON.
+#[test]
+fn a_step_nests_into_the_one_above_it_and_lifts_back_out() {
+    let (_host, _guard, mut app) = draft_with_a_condition();
+    let program = |app: &mut TestApp<App>| {
+        app.state()
+            .drafts
+            .values()
+            .next()
+            .expect("the draft")
+            .program()
+    };
+    let top = program(&mut app);
+    assert_eq!(top.steps.len(), 3, "three steps at the top level");
+    // Every step shows both nest controls, so they keep their place in its
+    // header; one with nowhere to go is disabled.
+    app.harness()
+        .expect(&SemanticExpectation::named("step-nest-0").enabled(false))
+        .expect("the first step has nothing above it to move into");
+    app.harness()
+        .expect(&SemanticExpectation::named("step-nest-1").enabled(true))
+        .expect("the second step can move into the condition");
+    app.harness()
+        .expect(&SemanticExpectation::named("step-lift-1").enabled(false))
+        .expect("and it is already at the top level");
+
+    act(&mut app, "step-nest-1", &Action::Activate);
+    let nested = program(&mut app);
+    assert_eq!(nested.steps.len(), 2, "the condition and the last step");
+    let tilo_automation::StepKind::If { then, .. } = &nested.steps[0].kind else {
+        panic!(
+            "the first step is the condition: {:?}",
+            nested.steps[0].kind
+        );
+    };
+    assert_eq!(
+        then.iter().map(|step| step.id.clone()).collect::<Vec<_>>(),
+        vec![top.steps[1].id.clone()],
+        "the step it held above is now inside the condition"
+    );
+
+    act(&mut app, "step-lift-0.then.0", &Action::Activate);
+    let lifted = program(&mut app);
+    assert_eq!(lifted.steps.len(), 3, "the step came back out");
+    assert_eq!(
+        lifted
+            .steps
+            .iter()
+            .map(|step| step.id.clone())
+            .collect::<Vec<_>>(),
+        top.steps
+            .iter()
+            .map(|step| step.id.clone())
+            .collect::<Vec<_>>(),
+        "and stands where it stood, after the condition"
+    );
+}
+
+/// The steps' permissions are on the page while the shortcut is being built,
+/// not only in the sheet that asks before saving it.
+#[test]
+fn the_grant_summary_stays_on_the_page_as_steps_are_added() {
+    let (_host, _guard, mut app) = open();
+    app.invoke(Workbench::NEW_DRAFT.with("Tidy"))
+        .expect("a new draft");
+    app.harness()
+        .wait_for_named("draft-name", tilo_test_env::hang_bound())
+        .expect("the new draft opens in the editor");
+    let none = ui::i18n!("shortcuts-grant-none");
+    app.harness()
+        .expect(
+            &SemanticExpectation::named("shortcuts-grant-summary-none")
+                .name(none)
+                .within(tilo_test_env::hang_bound()),
+        )
+        .expect("an empty shortcut is allowed to do nothing");
+
+    act(&mut app, "add-action-top", &Action::Activate);
+    act(
+        &mut app,
+        &format!("offer-{NOTES}-{INBOX}-list"),
+        &Action::Activate,
+    );
+    // The list step needs to read the notes app's Inbox, and the summary
+    // says so without waiting for the save sheet.
+    app.harness()
+        .expect(&SemanticExpectation::named("grant-summary-0").within(tilo_test_env::hang_bound()))
+        .expect("the summary lists what the step needs");
+    let inspection = app.harness().inspection();
+    let line = inspection_node(&inspection.root, "grant-summary-0")
+        .and_then(|node| node.semantics.as_ref())
+        .and_then(|semantics| semantics.name.clone())
+        .expect("the line says what the step is allowed to do");
+    assert!(
+        line.contains("Inbox"),
+        "the summary names the folder the step reads, as the save sheet does: {line}"
+    );
+    assert!(
+        !app.harness()
+            .targets()
+            .contains_key("shortcuts-grant-summary-none"),
+        "and no longer says it does nothing"
+    );
 }

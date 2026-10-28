@@ -5,6 +5,7 @@ use std::any::Any;
 use std::collections::BTreeSet;
 use std::ops::Range;
 use std::rc::Rc;
+use tilo_sort::CompactSort as _;
 
 use automerge::ChangeHash;
 use automerge::transaction::Transactable;
@@ -48,7 +49,6 @@ impl Demand {
         self
     }
 
-    /// Whether position `index` is demanded.
     pub fn covers(&self, index: usize) -> bool {
         self.ranges.iter().any(|range| range.contains(&index))
     }
@@ -61,7 +61,7 @@ impl Demand {
             .iter()
             .flat_map(|range| range.start.min(len)..range.end.min(len))
             .collect();
-        positions.sort_unstable();
+        positions.compact_sort();
         positions.dedup();
         positions.into_iter()
     }
@@ -91,6 +91,9 @@ struct Following {
     tracker: Tracker,
     demand: Demand,
     revision: u64,
+    /// How many times a demand read more of the document: what the state
+    /// holds of it, not what it says.
+    loads: u64,
     /// The last refresh failed part-way; the next sync reads everything.
     stale: bool,
     /// The open transaction last read: its base heads and length.
@@ -99,18 +102,46 @@ struct Following {
     last: Delta,
     /// Why the document last failed to read, until it reads again.
     unreadable: Option<crate::Unreadable>,
+    /// The committed heads the state was last read whole at: a whole read
+    /// again at the same heads would read the same state, and is not done.
+    read_at: Option<Vec<ChangeHash>>,
 }
 
 impl Following {
+    /// Following a document from `heads` (`None` when unknown: the first
+    /// sync reads everything again). Out of line, so every app's reader
+    /// calls the one copy in the runtime.
+    #[inline(never)]
+    fn at(heads: Option<Vec<ChangeHash>>) -> Self {
+        let read_at = heads.clone();
+        Self {
+            read_at,
+            ..Self::new(heads.map(Tracker::at).unwrap_or_default())
+        }
+    }
+
+    /// Following `doc` from where it stands, out of line as [`Self::at`].
+    #[inline(never)]
+    fn started(doc: &mut Doc) -> Self {
+        let mut tracker = Tracker::new();
+        tracker.start(doc);
+        Self {
+            read_at: heads_of(doc),
+            ..Self::new(tracker)
+        }
+    }
+
     fn new(tracker: Tracker) -> Self {
         Self {
             tracker,
             demand: Demand::none(),
             revision: 0,
+            loads: 0,
             stale: false,
             uncommitted: None,
             last: Delta::everything(),
             unreadable: None,
+            read_at: None,
         }
     }
 }
@@ -179,25 +210,17 @@ impl<R: Resource> StateSlot for Held<'_, R> {
 
 impl<R: Resource> Reader<R> {
     /// Read the resource from `doc` and start following its changes.
-    ///
-    /// # Errors
-    /// Returns [`ModelError`] when the document does not hold this resource.
     pub fn open(doc: &mut Doc) -> Result<Self, ModelError> {
         let mut state = R::read(doc)?;
         R::load(&mut state, doc, &Demand::none())?;
-        let mut tracker = Tracker::new();
-        tracker.start(doc);
         Ok(Self {
-            core: Following::new(tracker),
+            core: Following::started(doc),
             state: Rc::new(state),
         })
     }
 
     /// Read the resource from a document that may only be read, and follow
     /// its changes from the next [`sync`](Self::sync) on.
-    ///
-    /// # Errors
-    /// Returns [`ModelError`] when the document does not hold this resource.
     pub fn read(doc: &Doc) -> Result<Self, ModelError> {
         let mut state = R::read(doc)?;
         R::load(&mut state, doc, &Demand::none())?;
@@ -208,7 +231,7 @@ impl<R: Resource> Reader<R> {
     /// (`None` when unknown: the first sync reads everything again).
     pub fn with_state(state: R::State, heads: Option<Vec<ChangeHash>>) -> Self {
         Self {
-            core: Following::new(heads.map(Tracker::at).unwrap_or_default()),
+            core: Following::at(heads),
             state: Rc::new(state),
         }
     }
@@ -243,9 +266,17 @@ impl<R: Resource> Reader<R> {
         self.core.unreadable.as_ref()
     }
 
-    /// Increases whenever the state changes.
+    /// Increases whenever what the state says changes: the document moved,
+    /// or the state is presented again. Reading more of the same document
+    /// ([`Self::demand`]) is not a new revision.
     pub fn revision(&self) -> u64 {
         self.core.revision
+    }
+
+    /// Increases whenever a demand read parts of the document the state did
+    /// not hold yet ([`Self::demand`]).
+    pub fn loads(&self) -> u64 {
+        self.core.loads
     }
 
     /// Whether the state is `doc` as it stands: no change arrived since the
@@ -280,9 +311,6 @@ impl<R: Resource> Reader<R> {
 
     /// Ask for the parts `demand` names (replacing the previous demand) and
     /// read those not read yet. Returns whether the state changed.
-    ///
-    /// # Errors
-    /// Returns [`ModelError`] when the document does not hold this resource.
     #[inline(never)]
     pub fn demand(&mut self, doc: &Doc, demand: Demand) -> Result<bool, ModelError>
     where
@@ -293,8 +321,32 @@ impl<R: Resource> Reader<R> {
         }
         self.core.demand = demand;
         R::load(Rc::make_mut(&mut self.state), doc, &self.core.demand)?;
-        self.core.revision = self.core.revision.wrapping_add(1);
+        self.core.loads = self.core.loads.wrapping_add(1);
         Ok(true)
+    }
+
+    /// Read the state whole from `doc`, whatever the last sync saw move: so a
+    /// change this reader could not apply as a delta is reported
+    /// ([`Self::unreadable`]) rather than passed over, which a resource kept
+    /// small enough to read whole can afford on every sync. Returns whether
+    /// the state changed.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when the document no longer holds this
+    /// resource; the state is left as it was last read successfully.
+    pub fn reread_whole(&mut self, doc: &Doc) -> Result<bool, ModelError> {
+        // The state was read at exactly this document: reading it whole
+        // again would find the same, and must not present it as new.
+        if self.core.unreadable.is_none()
+            && heads_of(doc).is_some_and(|heads| self.core.read_at.as_ref() == Some(&heads))
+        {
+            return Ok(false);
+        }
+        let before = self.core.revision;
+        self.core.stale = true;
+        self.core
+            .sync(&OpsOf::<R>::OPS, &mut Held::<R>(&mut self.state), doc)?;
+        Ok(self.core.revision != before)
     }
 }
 
@@ -410,6 +462,13 @@ impl Following {
         if let Some(fresh) = replaced {
             state.set(fresh);
         }
+        // Only a whole read stands for what the document holds: one applied
+        // as a delta is still read whole once ([`Reader::reread_whole`]).
+        self.read_at = if self.last.is_everything() {
+            heads_of(doc)
+        } else {
+            None
+        };
         self.stale = false;
         self.revision = self.revision.wrapping_add(1);
         Ok(())

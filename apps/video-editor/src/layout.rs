@@ -6,16 +6,12 @@
 //! relationship always gets the same step: `S1` between a label and its
 //! control, between lanes and between the pills on a track head; `S2`
 //! between related rows (the bin's list, the two add-track buttons); `S3`
-//! between siblings of equal weight (the topbar commands, a pane's content
-//! inset). A track head is the one place the old offsets produced a touch —
+//! between siblings of equal weight, and a pane's content inset. A track head is the one place the old offsets produced a touch —
 //! the kind line sat a pixel or two off the level meter on a 46 px audio
 //! lane — so its bands are modelled here and a test asserts they clear.
 //!
-//! Compile-time, like every other chrome constant in `app.rs`: the editor's
-//! `regions()` runs in the event path with no `Theme` in hand, so these do
-//! not follow a custom theme's `spacing_px` or `ui_scale` the way the shared
-//! widgets' insets do. Threading the theme's scaled `Spacing` through the
-//! region model is the measured-controls work, not this pass's.
+//! These are reference dimensions. The editor caches the effective theme
+//! during layout and scales these bands for both painting and hit-testing.
 
 use ui::tokens::metrics::Metrics;
 use ui::tokens::spacing::Spacing;
@@ -27,8 +23,8 @@ pub(crate) const S1: f64 = Spacing::BASE.s1 as f64;
 /// `spacing.s2`: related rows that read as one group — the bin's list rows,
 /// the two add-track buttons, a row's inner inset.
 pub(crate) const S2: f64 = Spacing::BASE.s2 as f64;
-/// `spacing.s3`: siblings of equal weight — the topbar commands — and the
-/// content inset of every pane.
+/// `spacing.s3`: siblings of equal weight, and the content inset of every
+/// pane.
 pub(crate) const S3: f64 = Spacing::BASE.s3 as f64;
 /// `spacing.s4`: section padding; the master strip's readout band.
 pub(crate) const S4: f64 = Spacing::BASE.s4 as f64;
@@ -108,14 +104,14 @@ pub(crate) struct MasterStrip {
     pub meter: Rect,
 }
 
-pub(crate) fn master_strip(strip: Rect) -> MasterStrip {
-    let x0 = strip.x0 + S3;
-    let x1 = strip.x1 - S2;
-    let block = S4 + S1 + METER_H;
+pub(crate) fn master_strip(strip: Rect, scale: f64) -> MasterStrip {
+    let x0 = strip.x0 + S3 * scale;
+    let x1 = strip.x1 - S2 * scale;
+    let block = (S4 + S1 + METER_H) * scale;
     let top = strip.y0 + ((strip.height() - block) / 2.0).max(0.0);
     MasterStrip {
-        readout: Rect::new(x0, top, x1, top + S4),
-        meter: Rect::new(x0, top + S4 + S1, x1, top + S4 + S1 + METER_H),
+        readout: Rect::new(x0, top, x1, top + S4 * scale),
+        meter: Rect::new(x0, top + (S4 + S1) * scale, x1, top + block),
     }
 }
 
@@ -132,7 +128,6 @@ mod tests {
 
     #[test]
     fn lane_heads_and_master_strip_keep_token_gaps() {
-        // Case `a_head_keeps_a_token_gap_from_its_lane_stripe`.
         {
             let lane = Rect::new(128.0, 34.0, 1280.0, 96.0);
             let card = track_head_card(GUTTER, &lane);
@@ -153,7 +148,6 @@ mod tests {
                 lane.y1
             );
         }
-        // Case `the_pills_sit_one_step_apart_on_the_name_band`.
         {
             let h = head_for(62.0);
             assert!(((h.lock.x0 - h.solo.x1) - (S1)).abs() < 1e-9, "solo ↔ lock");
@@ -192,7 +186,6 @@ mod tests {
             );
             assert!(h.name.width() > 0.0, "a 128 px gutter leaves the name room");
         }
-        // Case `every_band_clears_the_next_on_the_shortest_lane`.
         {
             for lane_h in [MIN_LANE_H, 62.0] {
                 let h = head_for(lane_h);
@@ -210,10 +203,9 @@ mod tests {
                 assert!(h.card.y1 - h.meter.y1 >= S1, "{lane_h}: bottom inset");
             }
         }
-        // Case `the_master_strip_centres_its_two_bands_a_step_apart`.
         {
             let strip = Rect::new(0.0, 0.0, 128.0, 30.0);
-            let m = master_strip(strip);
+            let m = master_strip(strip, 1.0);
             assert!(
                 ((m.meter.y0 - m.readout.y1) - (S1)).abs() < 1e-9,
                 "readout ↔ meter"

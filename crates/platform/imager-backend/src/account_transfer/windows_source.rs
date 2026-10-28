@@ -46,6 +46,7 @@ pub fn discover_windows_sources(sources: &WindowsInventory) -> Inventory {
             profile: root.path.clone(),
             needs_sign_in: true,
             can_import_credentials: false,
+            services: Vec::new(),
         });
         if !root.gaps.is_empty() {
             inventory.unreadable_sources.push("OneDrive local data");

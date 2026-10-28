@@ -23,9 +23,9 @@ use tilo_actions::{HistoryOp, PathStep};
 
 use crate::claim::{ChangeClaim, ClaimedAction, FrameworkChange, UnitPath};
 
-/// The units a received change writes, as the record's unit index maps its
+/// What a received change writes, as the record's unit index maps its
 /// operations, by the change's hash.
-pub type WrittenUnits<'a> = &'a dyn Fn(&[u8; 32]) -> Vec<UnitPath>;
+pub type WrittenUnits<'a> = &'a dyn Fn(&[u8; 32]) -> crate::units::Written;
 
 /// What a record's app publishes, as a receiver reads it from the app's
 /// signed package surface.
@@ -41,6 +41,12 @@ pub trait ReceiptSurface {
     fn editable(&self, path: &[PathStep]) -> bool;
     /// The storage units `action` may write.
     fn footprint(&self, action: &ClaimedAction) -> Vec<UnitPath>;
+    /// The storage units of the record's outboxes: what a change queues
+    /// there is sent outside the document once it is delivered. None for a
+    /// record that queues nothing.
+    fn outboxes(&self) -> Vec<UnitPath> {
+        Vec::new()
+    }
 }
 
 /// The record a document op writes, as the tree names it.
@@ -260,10 +266,39 @@ pub fn check_claims(
     let Some(surface) = surface else {
         return Ok(Receipt::Hold);
     };
+    let outboxes = surface.outboxes();
     for claim in claims {
+        // What reaches outside a record that queues is what a change queued
+        // in its outboxes: one that queued something reaches outside
+        // whatever its action, and one that queued nothing did not, though
+        // its action may queue. A receiver that read the change goes by the
+        // entries it put into an outbox: an outbox made empty, as a new
+        // record makes it, or an entry settled by whoever ran it, queues
+        // nothing. One deciding a sealed op goes by its claim, and the
+        // devices that open it check what it really queued.
+        let in_outbox = |units: &[UnitPath]| {
+            units.iter().any(|unit| {
+                outboxes
+                    .iter()
+                    .any(|outbox| crate::surface::covers(outbox, unit))
+            })
+        };
+        let read = written.map(|written| written(&claim.change));
+        let queues = match &read {
+            Some(read) => in_outbox(&read.added),
+            None => in_outbox(&claim.units),
+        };
+        let queued_nothing = !queues && !outboxes.is_empty();
         let mut footprint: Vec<UnitPath> = Vec::new();
+        if queues || in_outbox(&claim.units) {
+            footprint.extend(outboxes.iter().cloned());
+        }
         for member in claim.action.members() {
-            let kind = published_kind(record, surface, member)?;
+            let kind = match published_kind(record, surface, member)? {
+                _ if queues => ActionKind::Outside,
+                ActionKind::Outside if queued_nothing => ActionKind::Undoable,
+                kind => kind,
+            };
             let node = claim_node(record, surface, member);
             if !allows(&node, kind) {
                 return Err(ReceiptRefusal::NotGranted {
@@ -283,10 +318,13 @@ pub fn check_claims(
                 unit: unit_label(unit),
             });
         }
-        if let Some(written) = written
-            && let Some(unit) = written(&claim.change)
+        // An outbox is no unit a claim must name: what a change queued there
+        // is judged above, as reaching outside, by what it wrote.
+        if let Some(read) = read
+            && let Some(unit) = read
+                .units
                 .into_iter()
-                .find(|unit| !claim.units.contains(unit))
+                .find(|unit| !claim.units.contains(unit) && !in_outbox(std::slice::from_ref(unit)))
         {
             return Err(ReceiptRefusal::UnclaimedUnit(unit_label(&unit)));
         }
@@ -346,6 +384,33 @@ impl Surfaces {
     #[must_use]
     pub fn enforced(&self) -> bool {
         self.0.is_some()
+    }
+
+    /// `claims` naming the units each action may write by `record`'s app
+    /// surface (`named`, for records of kind `kind`), as a receiver that
+    /// cannot read a sealed change checks them: a claim left on the whole
+    /// record is refused wherever the action may only write some of its
+    /// units (an entry settled in an outbox, a comment). Unchanged while the
+    /// surface is not here.
+    #[must_use]
+    pub fn with_footprints(
+        &self,
+        record: &Record<'_>,
+        kind: Option<&str>,
+        named: Option<&[u8; 32]>,
+        mut claims: Vec<ChangeClaim>,
+    ) -> Vec<ChangeClaim> {
+        let Some(source) = &self.0 else {
+            return claims;
+        };
+        let kind = kind.or_else(|| claimed_kind(&claims)).map(str::to_owned);
+        let Some(surface) = source.surface(record, kind.as_deref(), named) else {
+            return claims;
+        };
+        for claim in &mut claims {
+            claim.units = surface.footprint(&claim.action);
+        }
+        claims
     }
 }
 
@@ -498,14 +563,15 @@ pub fn decide_op_pinned(
             }
             // The units each change writes, read from the record as this
             // receiver holds it.
-            let written = held.map(|held| crate::units::units_by_change(held, &changes));
+            let reads = held.is_some();
+            let written = held.and_then(|held| crate::units::units_by_change(held, &changes));
             let claims = changes
                 .iter()
                 .map(|change| {
                     let units = written
                         .as_ref()
-                        .and_then(|written| written.get(&change.hash().0).cloned())
-                        .unwrap_or_else(|| vec![Vec::new()]);
+                        .and_then(|written| written.written.get(&change.hash().0))
+                        .map_or_else(|| vec![Vec::new()], |written| written.units.clone());
                     ChangeClaim::of_change(change.hash().0, change.message(), units)
                         .map_err(|error| ReceiptRefusal::Unnamed(error.to_string()))
                 })
@@ -520,16 +586,73 @@ pub fn decide_op_pinned(
                 return Err(ReceiptRefusal::OtherSurface);
             }
             let surface = surface_for(&claims);
+            let claims = unread_claims(surface.as_deref().filter(|_| !reads), claims);
+            // What this receiver read from the changes itself: what says a
+            // change queued nothing in an outbox. A record whose index does
+            // not name its outboxes (indexed before they were units), or a
+            // change this receiver could not apply, is taken as queueing.
+            let outboxes = surface
+                .as_deref()
+                .map(ReceiptSurface::outboxes)
+                .unwrap_or_default();
+            let told_apart = written
+                .as_ref()
+                .is_some_and(|written| outboxes.iter().all(|outbox| written.indexes(outbox)));
+            let read = |hash: &[u8; 32]| match written
+                .as_ref()
+                .and_then(|written| written.written.get(hash))
+            {
+                Some(read) if told_apart => read.clone(),
+                read => crate::units::Written {
+                    units: read.map(|read| read.units.clone()).unwrap_or_default(),
+                    added: outboxes.clone(),
+                },
+            };
+            let read: Option<WrittenUnits<'_>> =
+                written.is_some().then_some(&read as WrittenUnits<'_>);
             check_claims(
                 &claims,
                 record,
                 Some(&hashes),
-                None,
+                read,
                 surface.as_deref(),
                 allows,
             )
         }
     }
+}
+
+/// `claims` as a receiver that holds no copy of the record to read their
+/// changes against (an envelope validator) decides them: it cannot tell
+/// what they wrote, so it decides their grants, each change taken as
+/// writing what its action may, and a receiver holding the record decides
+/// their units. Nor can it tell what they queued: its outboxes are left to
+/// that receiver too, which judges a change by what it queued there.
+/// `unread` is the surface when the receiver did not read them; the claims
+/// stay as read otherwise.
+fn unread_claims(
+    unread: Option<&dyn ReceiptSurface>,
+    claims: Vec<ChangeClaim>,
+) -> Vec<ChangeClaim> {
+    let Some(surface) = unread else {
+        return claims;
+    };
+    let outboxes = surface.outboxes();
+    claims
+        .into_iter()
+        .map(|claim| ChangeClaim {
+            units: surface
+                .footprint(&claim.action)
+                .into_iter()
+                .filter(|unit| {
+                    !outboxes
+                        .iter()
+                        .any(|outbox| crate::surface::covers(outbox, unit))
+                })
+                .collect(),
+            ..claim
+        })
+        .collect()
 }
 
 /// The resource kind the claims name, for a receiver that does not know the

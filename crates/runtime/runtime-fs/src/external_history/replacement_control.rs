@@ -62,8 +62,6 @@ impl ReplacementReply {
             }
         }
     }
-    /// # Errors
-    /// Refuses invalid receipts, serialization errors, and oversized replies.
     pub fn encode(&self) -> io::Result<Vec<u8>> {
         if !self.valid() {
             return Err(refused());

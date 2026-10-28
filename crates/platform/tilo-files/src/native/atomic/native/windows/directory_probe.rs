@@ -1133,7 +1133,6 @@ fn experiment(request: &Request, log: &mut Log<'_>) -> io::Result<bool> {
         }
         success &= expected && rename_expected;
     } else if request.candidate == Candidate::Staged {
-        // Empty stage: no descendant handle is opened before this rename.
         let parent = Directory {
             file: namespace_file.try_clone()?,
         };

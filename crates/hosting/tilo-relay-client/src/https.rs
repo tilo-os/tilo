@@ -5,7 +5,7 @@
 //! only needs [`live_grant`] from here.
 //!
 //! A [`HttpsLink`] is the same session an iroh peer has: the
-//! [`auth`](tilo_relay_protocol::auth) challenge (the device signs only the
+//! [`auth`] challenge (the device signs only the
 //! host's challenge digest), then [`Envelope`]s out through batched `/send`
 //! and in through the long-polled `/events`, acknowledged by host cursor.
 
@@ -154,10 +154,6 @@ fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, LinkError> {
 
 /// What the host publishes before any session: its certificate, the
 /// WebTransport port and a development certificate's hash.
-///
-/// # Errors
-///
-/// Returns [`LinkError`] when the host is not reached or answers badly.
 pub async fn host_info(
     client: &dyn HttpClient,
 ) -> Result<tilo_relay_protocol::web::HostInfo, LinkError> {
@@ -166,10 +162,6 @@ pub async fn host_info(
 
 /// Ask the host to queue `request` for its root holder. Returns the pairing
 /// code, or the final answer when the host refused at once.
-///
-/// # Errors
-///
-/// Returns [`LinkError`] when the host is not reached.
 pub async fn certify_request(
     client: &dyn HttpClient,
     request: &CertificationRequest,
@@ -179,10 +171,6 @@ pub async fn certify_request(
 
 /// Send a member's root-signed approver command (their pending device
 /// requests, or a decision on one).
-///
-/// # Errors
-///
-/// Returns [`LinkError`] when the host is not reached or refuses a non-member.
 pub async fn certify_approve(
     client: &dyn HttpClient,
     approval: &tilo_relay_protocol::certify::MemberApproval,
@@ -191,10 +179,6 @@ pub async fn certify_approve(
 }
 
 /// Long-poll the answer to a queued request. `Pending` means poll again.
-///
-/// # Errors
-///
-/// Returns [`LinkError`] when the host is not reached.
 pub async fn certify_wait(
     client: &dyn HttpClient,
     digest: [u8; 32],
@@ -261,6 +245,33 @@ pub async fn here(
     .await
 }
 
+/// Ask the room's governor for a private operation as this session's
+/// device ([`tilo_relay_protocol::rooms::private`]): the same door a native
+/// device reaches over iroh. A watch is held by the host up to its poll
+/// bound.
+///
+/// # Errors
+///
+/// Returns [`LinkError::Refused`] when the session is gone, and
+/// [`LinkError::Malformed`] for an answer past the reply bound. A refused
+/// operation answers [`PrivateReply::Refused`](tilo_relay_protocol::rooms::private::PrivateReply::Refused).
+pub async fn private(
+    client: &dyn HttpClient,
+    session: &str,
+    request: &tilo_relay_protocol::rooms::private::PrivateCall,
+) -> Result<tilo_relay_protocol::rooms::private::PrivateReply, LinkError> {
+    use tilo_relay_protocol::rooms::private::{MAX_REPLY_BYTES, MAX_REQUEST_BYTES, PRIVATE_PATH};
+    let body = encode(request)?;
+    if body.len() > MAX_REQUEST_BYTES {
+        return Err(LinkError::Malformed("private request exceeds bound".into()));
+    }
+    let bytes = call_raw(client, PRIVATE_PATH, Some(session), body).await?;
+    if bytes.len() > MAX_REPLY_BYTES {
+        return Err(LinkError::Malformed("private reply exceeds bound".into()));
+    }
+    postcard::from_bytes(&bytes).map_err(|_| LinkError::Malformed("private reply".into()))
+}
+
 /// Take a record's channel content keys from the room's steward, as a
 /// public room's spectator, which is no channel member and asks nothing
 /// over the channel. The answer carries the keys in their encoded form.
@@ -287,11 +298,6 @@ pub async fn channel_keys(
 /// Send a member's input for a legacy window
 /// ([`tilo_relay_protocol::legacy_window`]); with no events, ask whether
 /// this device may drive it. `Ok(false)`: it may not.
-///
-/// # Errors
-///
-/// Returns [`LinkError`] when the host is not reached, the window is gone
-/// or its session is not reachable.
 pub async fn legacy_input(
     client: &dyn HttpClient,
     session: &str,
@@ -321,10 +327,6 @@ pub async fn legacy_input(
 /// Tell the host which video codecs this page decodes
 /// ([`tilo_relay_protocol::legacy_window::CodecsRequest`]), so sessions
 /// stream legacy windows in one of them. `Ok(true)` once the host took it.
-///
-/// # Errors
-///
-/// Returns [`LinkError`] when the host is not reached or refuses the advert.
 pub async fn legacy_codecs(
     client: &dyn HttpClient,
     session: &str,
@@ -351,10 +353,6 @@ pub async fn legacy_codecs(
 }
 
 /// Administer the host's rooms as this session's device (`/rooms`).
-///
-/// # Errors
-///
-/// Returns [`LinkError`] when the host is not reached or governs no rooms.
 pub async fn rooms(
     client: &dyn HttpClient,
     session: &str,
@@ -364,10 +362,6 @@ pub async fn rooms(
 }
 
 /// What the node runs beside the host (`/node`).
-///
-/// # Errors
-///
-/// Returns [`LinkError`] when the host is not reached or is no node.
 pub async fn node(
     client: &dyn HttpClient,
     session: &str,
@@ -376,10 +370,6 @@ pub async fn node(
 }
 
 /// One step of joining a room with no session (`/join`).
-///
-/// # Errors
-///
-/// Returns [`LinkError`] when the host is not reached or governs no rooms.
 pub async fn join(
     client: &dyn HttpClient,
     step: &tilo_relay_protocol::rooms::JoinStep,
@@ -391,10 +381,6 @@ pub async fn join(
 /// ([`WORKSPACE_JOIN_PATH`](tilo_relay_protocol::web::WORKSPACE_JOIN_PATH)):
 /// `request` is an encoded `JoinTransportRequest`, the answer the encoded
 /// response.
-///
-/// # Errors
-///
-/// Returns [`LinkError`] when the host is not reached or governs no rooms.
 pub async fn workspace_join(
     client: &dyn HttpClient,
     request: Vec<u8>,
@@ -417,17 +403,13 @@ pub struct HttpsLink {
     end: watch::Sender<bool>,
     features: u64,
     host: auth::AuthenticatedPeer,
+    expires_at_ns: u64,
 }
 
 impl HttpsLink {
     /// Run the handshake as the device behind `signer` and start the send
     /// and poll pumps. The host must present `host_device`, certified under
     /// any person's root.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LinkError`] when the host is unreachable or either side's
-    /// authentication fails.
     pub async fn connect(
         client: Arc<dyn HttpClient>,
         cert: &DeviceCert,
@@ -476,6 +458,7 @@ impl HttpsLink {
         )
         .map_err(|error| LinkError::Malformed(error.to_string()))?;
         let session = hex::encode(grant.token);
+        let expires_at_ns = grant.expires_at_ns;
         let (outbound, outgoing) = mpsc::unbounded_channel();
         let (incoming, inbound) = mpsc::channel(1024);
         let (end, ended) = watch::channel(false);
@@ -500,7 +483,15 @@ impl HttpsLink {
             end,
             features,
             host,
+            expires_at_ns,
         })
+    }
+
+    /// When the host ends this session however active it is (Unix
+    /// nanoseconds): a device that starts its next session before then never
+    /// learns of the end from a refused poll.
+    pub fn expires_at_ns(&self) -> u64 {
+        self.expires_at_ns
     }
 
     /// Whether the host resumes subscriptions from positions
@@ -527,11 +518,14 @@ impl HttpsLink {
         self.features & tilo_relay_protocol::web::FEATURE_ROOMS != 0
     }
 
+    /// Whether the host serves its members' pages a fetch proxy
+    /// ([`FETCH_PATH`](tilo_relay_protocol::web::FETCH_PATH)), which takes
+    /// this link's [`session`](Self::session).
+    pub fn fetch_proxy(&self) -> bool {
+        self.features & tilo_relay_protocol::web::FEATURE_FETCH_PROXY != 0
+    }
+
     /// Queue one envelope for the host, in order.
-    ///
-    /// # Errors
-    ///
-    /// Returns the envelope when the link has ended.
     pub fn send(&self, envelope: Envelope) -> Result<(), Box<Envelope>> {
         if *self.end.borrow() {
             return Err(Box::new(envelope));
@@ -557,7 +551,6 @@ impl HttpsLink {
         &self.session
     }
 
-    /// The HTTP client of this link.
     pub fn client(&self) -> &Arc<dyn HttpClient> {
         &self.client
     }
@@ -683,7 +676,6 @@ mod handshake_tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-19): "If a v6 client meets the v5 relay, the user must see a clear "update needed" state, never a silent empty room."
     #[tokio::test]
     async fn a_host_that_cannot_read_this_devices_hello_is_behind_not_unreachable() {
         // What a relay from before versioned handshakes answered a v6 hello
@@ -701,7 +693,6 @@ mod handshake_tests {
         assert!(!tilo_relay_protocol::auth::this_device_is_behind(
             tilo_relay_protocol::auth::UNVERSIONED_PEER_PROTOCOL
         ));
-        // A versioned host names its version.
         let versioned = Answers(409, postcard::to_allocvec(&5_u32).unwrap());
         assert_eq!(
             handshake_raw(&versioned, HELLO_ROUTE, Vec::new())

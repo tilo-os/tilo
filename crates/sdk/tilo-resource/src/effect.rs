@@ -37,12 +37,25 @@
 //! operation (any reader may invoke it, a collaborator may not move someone
 //! else's view, repeating it is harmless), answered by the same handler.
 //!
-//! An effect that reaches the files, hardware or services of the device it
+//! Who may run an effect is decided by its kind alone, like any action: an
+//! effect that reaches the files, hardware or services of the device it
 //! runs on — set this computer up, kill a process here, read a local
-//! folder — is `device_only`: the door runs it for the person at that
-//! device and refuses collaborators and remote participants. Mark one
-//! variant, or the whole vocabulary (`#[effect(operation = "…",
-//! device_only)]`).
+//! folder — reaches outside the record, so the person's Allow, Ask first or
+//! Deny for outside effects decides it.
+//!
+//! An effect whose whole scope is the invoking person's own device —
+//! copy to their clipboard, apply their own appearance, measure their own
+//! connection — and that touches nothing shared and no one else is
+//! `own_device`: a room's grants have nothing to consent to, so a guest
+//! invokes it as the room's owner does, and it runs only for the person at
+//! the device it acts on ([`tilo_actions::OWN_DEVICE_SCOPE`]). An effect
+//! that reaches other people (a direct message, a call) is not.
+//!
+//! An effect that needs its person attending — it opens a chooser for
+//! them, asks them for a credential or a sign-in, or shows something only
+//! they may see — is `attended`: whoever acts for the person (an agent, a
+//! bot) is always asked first, and no answer allows it unasked
+//! ([`tilo_actions::ATTENDED_TAG`]).
 //!
 //! An effect that acts on one item — open *this* snippet, connect *this*
 //! connection — is offered on the item itself with its arguments bound
@@ -66,8 +79,10 @@
 //! credential, such as copying a one-time
 //! code: asks for confirmation too), `sensitive` (discloses a copy of private
 //! data, such as exporting an address book: asks for confirmation too), `idempotent` (safe to repeat after an
-//! uncertain outcome), `device_only` (only the person at this device),
-//! `programmatic` (for programs and agents, never offered in the palette),
+//! uncertain outcome), `own_device` (its scope is the invoker's own device),
+//! `attended` (needs its person attending: anyone acting for them asks),
+//! `audience = "agents"` (listed for agents and programs, never in the
+//! palette; `"people"` lists it for people only),
 //! `untrusted` (answers with content from outside the user's data, such as a
 //! web page's text: the caller reasons about it and never follows it),
 //! `opens_path` (opens the file its `path` names in this instance, which is
@@ -76,7 +91,15 @@
 //! `participant` (a view that moves only the invoking participant's own
 //! view, such as an agent's caret, so a remote participant may invoke it),
 //! `member` (any member of a room may ask the room's host to run it for
-//! themselves on the room's record, as linking their own account elsewhere)
+//! themselves on the room's record, as linking their own account elsewhere),
+//! `host_render` (a host answers it in a render service of its own, never in
+//! the record's confined app worker: [`tilo_actions::HOST_RENDER_TAG`]),
+//! `tag = EXPR` (repeatable: a further contract tag, a `&'static str`
+//! constant, for how a host treats the effect),
+//! `outside_with = "path"` (an effect of `kind = "read"` that reaches outside
+//! the record only when that parameter is given: an export that writes the
+//! file it names, else keeps what it made as content; each invocation is
+//! admitted as what it does)
 //! and
 //! `kind = "read"` (an effect that only reads, which whoever may read may
 //! invoke; an effect reaches outside the record by default, a view reads),
@@ -90,9 +113,11 @@
 //! `#[param("…", choices = EXPR)]` names the values it takes when they are a
 //! fixed list (`EXPR` yields strings: a constant table, an array of names).
 
+use std::sync::Arc;
+
 use tilo_actions::{
-    ActionContract, ActionKind, ActionParam, ActionSpec, ConfirmationPolicy, EncodedAction,
-    ExecutionMode, OperationKind, ResultSpec, RetryPolicy, RiskLevel,
+    ActionContract, ActionKind, ActionParam, ActionSpec, ActionType, ConfirmationPolicy,
+    EncodedAction, ExecutionMode, OperationKind, ResultSpec, RetryPolicy, RiskLevel, Target,
 };
 
 /// A typed vocabulary of effects. Derive it (`#[derive(Effect)]`); see the
@@ -101,6 +126,15 @@ pub trait Effect: Sized + 'static {
     /// The operation type every effect of the vocabulary travels under:
     /// unique per vocabulary, like a resource's kind.
     const OPERATION: &'static str;
+
+    /// The app whose resource offers the vocabulary's effects, which an
+    /// effect's typed reference names its action by: defaults to none of its
+    /// own, for a vocabulary that is not an app's (a test's, a host's).
+    const APP_ID: &'static str = crate::kind::DEFAULT_APP;
+
+    /// The vocabulary's name, as its effects are labelled when they are
+    /// offered on their own.
+    const LABEL: &'static str = Self::OPERATION;
 
     /// One declaration per effect, in order.
     fn declarations() -> Vec<EffectDecl>;
@@ -114,6 +148,25 @@ pub trait Effect: Sized + 'static {
 
     /// This effect's id among the declarations.
     fn id(&self) -> &'static str;
+
+    /// The kind the vocabulary's effects are published under, which a typed
+    /// reference to one names: the operation they travel as, the vocabulary's
+    /// name, and the app that offers it.
+    fn kind() -> crate::kind::ResourceKind {
+        crate::kind::ResourceKind::of_effect::<Self>(Self::OPERATION, Self::LABEL, Self::APP_ID)
+    }
+
+    /// The key this effect is offered under: the app that offers the
+    /// vocabulary, the operation its effects travel as, and this effect's id.
+    fn key(&self) -> tilo_actions::ActionKey {
+        tilo_actions::ActionKey::new(Self::APP_ID, Self::OPERATION, self.id())
+    }
+
+    /// The spec `id` declares: what a control binding it reads, so binding one
+    /// effect costs one declaration rather than the vocabulary's.
+    fn spec(id: &str) -> Option<tilo_actions::ActionSpec> {
+        Self::declaration(id).map(|decl| decl.spec(Self::OPERATION))
+    }
 
     /// This effect's arguments, named as its declaration's parameters.
     fn arguments(&self) -> serde_json::Map<String, serde_json::Value>;
@@ -144,7 +197,12 @@ pub trait Effect: Sized + 'static {
     /// declaration.
     fn bound(&self) -> ActionSpec {
         let id = self.id();
-        bound_spec(Self::OPERATION, id, Self::declaration(id), self.arguments())
+        let arguments = self.arguments();
+        kept_type((std::any::TypeId::of::<Self>(), id, None), || {
+            bound_type(Self::OPERATION, id, Self::declaration(id))
+        })
+        .bind(Target::new(arguments.clone()))
+        .with_bound(arguments.into_iter().collect())
     }
 
     /// This effect bound to the item it acts on, as [`bound`](Self::bound),
@@ -178,7 +236,13 @@ pub trait Effect: Sized + 'static {
     /// (`#[effect(item = field)]`), each with its first parameter bound to
     /// the item and the rest still asked.
     fn item_specs(field: &str, item: &crate::Id) -> Vec<ActionSpec> {
-        item_specs(Self::declarations(), Self::OPERATION, field, item)
+        item_specs(
+            std::any::TypeId::of::<Self>(),
+            Self::OPERATION,
+            Self::declarations,
+            field,
+            item,
+        )
     }
 
     /// This effect as the published resource `resource` offers it (the
@@ -228,16 +292,21 @@ enum Bound {
     OverCaller,
 }
 
+/// The arguments an effect spec's [`Target`] binds: the ones of the item it
+/// was offered on.
+type BoundArguments = serde_json::Map<String, serde_json::Value>;
+
 /// The one encoder of every effect spec: the invocation of effect `effect`
-/// under `operation`, with its arguments made as `mode` says of `bound` and
-/// the caller's.
+/// under `operation`, with its arguments made as `mode` says of the ones its
+/// target binds ([`BoundArguments`]) and the caller's.
 fn encoder(
     operation: &'static str,
     effect: &'static str,
-    bound: serde_json::Map<String, serde_json::Value>,
     mode: Bound,
-) -> impl Fn(&tilo_actions::ActionArgs) -> EncodedAction + Send + Sync + 'static {
-    move |args| {
+) -> impl Fn(&Target, &tilo_actions::ActionArgs) -> EncodedAction + Send + Sync + 'static {
+    move |target, args| {
+        let empty = BoundArguments::new();
+        let bound = target.get::<BoundArguments>().unwrap_or(&empty);
         let args = match mode {
             Bound::None => args.to_json(),
             Bound::Only => bound.clone(),
@@ -315,21 +384,32 @@ fn offered_specs(decls: Vec<EffectDecl>, operation: &'static str) -> Vec<ActionS
     decls
         .into_iter()
         .filter(|decl| !decl.row)
-        .map(|decl| decl.spec(operation))
+        .map(|decl| {
+            let mut spec = decl.spec(operation);
+            // Offered on each item it acts on (`item = field`), its item
+            // bound, it stays published here for scripts that name the item,
+            // out of the palette's way, as an item verb does.
+            if decl.item.is_some() && spec.audience() == tilo_actions::Audience::Everyone {
+                spec.type_mut()
+                    .contract
+                    .set_audience(tilo_actions::Audience::Agents);
+            }
+            spec
+        })
         .collect()
 }
 
-/// [`Effect::bound`] of the effect `id`, declared as `decl`, with `args`.
-fn bound_spec(
+/// The type of [`Effect::bound`] of the effect `id`, declared as `decl`: its
+/// target binds every argument.
+fn bound_type(
     operation: &'static str,
     id: &'static str,
     decl: Option<EffectDecl>,
-    args: serde_json::Map<String, serde_json::Value>,
-) -> ActionSpec {
-    let build = encoder(operation, id, args, Bound::Only);
-    match decl {
+) -> Arc<ActionType> {
+    let build = encoder(operation, id, Bound::Only);
+    let spec = match decl {
         Some(decl) => decl.spec_with(operation, Vec::new(), build),
-        None => ActionSpec::typed_operation(
+        None => ActionSpec::typed_operation_on(
             id,
             id,
             id,
@@ -338,7 +418,8 @@ fn bound_spec(
             Vec::new(),
             build,
         ),
-    }
+    };
+    Arc::clone(spec.action_type())
 }
 
 /// [`Effect::bound_asking_params`] of the effect `decl` declares, bound to
@@ -347,32 +428,62 @@ fn asking_spec(
     operation: &'static str,
     decl: &EffectDecl,
     params: Vec<ActionParam>,
-    args: serde_json::Map<String, serde_json::Value>,
+    args: BoundArguments,
 ) -> ActionSpec {
-    let build = encoder(operation, decl.id, args, Bound::UnderCaller);
+    let fixed = args
+        .iter()
+        .filter(|(name, _)| !params.iter().any(|param| param.name == name.as_str()))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
+    let build = encoder(operation, decl.id, Bound::UnderCaller);
     decl.spec_with(operation, params, build)
+        .action_type()
+        .bind(Target::new(args))
+        .with_bound(fixed)
 }
 
-/// [`Effect::item_specs`] of the declarations `decls`.
+/// [`Effect::item_specs`] of the vocabulary `key`, whose declarations
+/// `declarations` are: each type is kept per field, bound here to `item`.
 fn item_specs(
-    decls: Vec<EffectDecl>,
+    key: std::any::TypeId,
     operation: &'static str,
+    declarations: fn() -> Vec<EffectDecl>,
     field: &str,
     item: &crate::Id,
 ) -> Vec<ActionSpec> {
-    decls
+    declarations()
         .into_iter()
         .filter(|decl| decl.item == Some(field))
         .filter_map(|decl| {
-            let (first, rest) = decl.params.split_first()?;
-            let bound = serde_json::Map::from_iter([(
-                first.name.to_string(),
+            let first = decl.params.first()?.name.to_string();
+            let ty = kept_type((key, decl.id, Some(decl.item?)), || {
+                let rest = decl.params.get(1..).unwrap_or_default().to_vec();
+                let build = encoder(operation, decl.id, Bound::OverCaller);
+                Arc::clone(decl.spec_with(operation, rest, build).action_type())
+            });
+            let bound = BoundArguments::from_iter([(
+                first,
                 serde_json::Value::String(item.as_str().to_owned()),
             )]);
-            let build = encoder(operation, decl.id, bound, Bound::OverCaller);
-            Some(decl.spec_with(operation, rest.to_vec(), build))
+            let fixed = bound.clone().into_iter().collect();
+            Some(ty.bind(Target::new(bound)).with_bound(fixed))
         })
         .collect()
+}
+
+/// Where a kept effect type is offered: the vocabulary, the effect, and for
+/// an item effect the collection field whose items offer it.
+type TypeKey = (std::any::TypeId, &'static str, Option<&'static str>);
+
+/// The action type `key` names, kept once per thread and generation of app
+/// code, as [`kept_specs`] keeps a vocabulary's specs: what every item
+/// offering the effect shares.
+fn kept_type(key: TypeKey, build: impl FnOnce() -> Arc<ActionType>) -> Arc<ActionType> {
+    thread_local! {
+        static KEPT: std::cell::RefCell<crate::kept::KeptTypes<TypeKey>> =
+            std::cell::RefCell::default();
+    }
+    crate::kept::kept_type(&KEPT, key, build)
 }
 
 /// One effect of a derived vocabulary, as a constant: its declaration but for
@@ -387,6 +498,11 @@ fn item_specs(
 pub struct EffectRow {
     pub id: &'static str,
     pub label: &'static str,
+    /// The other words people use for it (`keywords = "…"`), comma
+    /// separated: search finds it by them as by its label.
+    pub keywords: &'static [&'static str],
+    /// Its own picture (`icon = "…"`), by its Lucide name.
+    pub icon: Option<&'static str>,
     pub description: &'static str,
     pub params: fn() -> Vec<ActionParam>,
     pub kind: OperationKind,
@@ -395,9 +511,10 @@ pub struct EffectRow {
     pub risk: RiskLevel,
     pub idempotent: bool,
     pub action_kind: ActionKind,
-    pub device_only: bool,
+    pub own_device: bool,
+    pub attended: bool,
     pub risk_of: Option<fn(&tilo_actions::ActionArgs) -> RiskLevel>,
-    pub programmatic: bool,
+    pub audience: tilo_actions::Audience,
     pub untrusted: bool,
     pub opens: Option<&'static [&'static str]>,
     pub participant: bool,
@@ -405,6 +522,8 @@ pub struct EffectRow {
     pub member: bool,
     pub item: Option<&'static str>,
     pub offload: Option<EffectOffload>,
+    pub tags: &'static [&'static str],
+    pub outside_with: Option<&'static str>,
 }
 
 /// An effect's `#[effect(offload(...))]`: the signed package entrypoint
@@ -457,6 +576,11 @@ pub fn no_params() -> Vec<ActionParam> {
 pub struct EffectDecl {
     pub id: &'static str,
     pub label: &'static str,
+    /// The other words people use for it (`keywords = "…"`), comma
+    /// separated: search finds it by them as by its label.
+    pub keywords: &'static [&'static str],
+    /// Its own picture (`icon = "…"`), by its Lucide name.
+    pub icon: Option<&'static str>,
     pub description: &'static str,
     pub params: Vec<ActionParam>,
     /// `View` for an effect that only changes what its caller sees, else
@@ -474,18 +598,22 @@ pub struct EffectDecl {
     /// What it is able to do: reach outside the record by default, read for
     /// a view or an effect declared `kind = "read"`.
     pub action_kind: ActionKind,
-    /// Reaches files, hardware or services of the device it runs on: only
-    /// the person at that device may invoke it, never a collaborator or a
-    /// remote participant.
-    pub device_only: bool,
+    /// Its whole scope is the invoking person's own device: it touches
+    /// nothing shared and no one else, so a room's grants have nothing to
+    /// consent to ([`tilo_actions::OWN_DEVICE_SCOPE`]).
+    pub own_device: bool,
+    /// Needs its person attending: it opens a chooser, asks for a credential
+    /// or a sign-in, or shows what only they may see, so whoever acts for
+    /// them is always asked first ([`tilo_actions::ATTENDED_TAG`]).
+    pub attended: bool,
     /// How much harm one invocation can do, classified from its arguments
     /// (formatting the system disk, against any other): an invocation the
     /// classifier finds destructive asks for the confirmation a declared
     /// destructive effect does.
     pub risk_of: Option<fn(&tilo_actions::ActionArgs) -> RiskLevel>,
-    /// Invoked by programs and agents, never offered to a person picking
-    /// from the palette or a menu (an agent reading a page's structure).
-    pub programmatic: bool,
+    /// Who listings offer it to (`#[effect(audience = "agents")]`): an agent
+    /// reading a page's structure is never a person's palette row.
+    pub audience: tilo_actions::Audience,
     /// Answers with content from outside the user's own data (a web page's
     /// text and logs): data to reason about, never instructions to follow.
     pub untrusted: bool,
@@ -512,6 +640,16 @@ pub struct EffectDecl {
     /// A content transform the system may run on the invoker's best-placed
     /// device (`#[effect(offload(...))]`); the handler is its local run.
     pub offload: Option<EffectOffload>,
+    /// Further contract tags, each naming how a host treats the effect
+    /// (`#[effect(host_render)]`, `#[effect(tag = ...)]`): an agent's host
+    /// routes a [`tilo_actions::HOST_RENDER_TAG`] effect to its render
+    /// service rather than the app's worker.
+    pub tags: &'static [&'static str],
+    /// The parameter that, given, makes an invocation reach outside the
+    /// record (`#[effect(kind = "read", outside_with = "path")]`): an export
+    /// writing the file it names. Without it the invocation only reads and
+    /// keeps what it made as content, and is admitted as a read.
+    pub outside_with: Option<&'static str>,
 }
 
 /// The contract tag of an effect that submits only edits of its record
@@ -539,7 +677,7 @@ pub enum Answers {
 impl EffectDecl {
     /// The published action of this effect under `operation`.
     pub fn spec(&self, operation: &'static str) -> ActionSpec {
-        let build = encoder(operation, self.id, serde_json::Map::new(), Bound::None);
+        let build = encoder(operation, self.id, Bound::None);
         self.spec_with(operation, self.params.clone(), build)
     }
 
@@ -561,6 +699,8 @@ impl EffectDecl {
         Self {
             id: row.id,
             label: row.label,
+            keywords: row.keywords,
+            icon: row.icon,
             description: row.description,
             params: (row.params)(),
             kind: row.kind,
@@ -569,9 +709,10 @@ impl EffectDecl {
             risk: row.risk,
             idempotent: row.idempotent,
             action_kind: row.action_kind,
-            device_only: row.device_only,
+            own_device: row.own_device,
+            attended: row.attended,
             risk_of: row.risk_of,
-            programmatic: row.programmatic,
+            audience: row.audience,
             untrusted: row.untrusted,
             opens: row.opens,
             participant: row.participant,
@@ -579,6 +720,8 @@ impl EffectDecl {
             member: row.member,
             item: row.item,
             offload: row.offload,
+            tags: row.tags,
+            outside_with: row.outside_with,
         }
     }
 
@@ -601,10 +744,10 @@ impl EffectDecl {
         &self,
         operation: &'static str,
         params: Vec<ActionParam>,
-        build: impl Fn(&tilo_actions::ActionArgs) -> EncodedAction + Send + Sync + 'static,
+        build: impl Fn(&Target, &tilo_actions::ActionArgs) -> EncodedAction + Send + Sync + 'static,
     ) -> ActionSpec {
         let view = self.kind == OperationKind::View;
-        let mut spec = ActionSpec::typed_operation(
+        let mut spec = ActionSpec::typed_operation_on(
             self.id,
             self.label,
             self.label,
@@ -620,12 +763,16 @@ impl EffectDecl {
         if !self.description.is_empty() {
             spec = spec.with_description(self.description);
         }
+        if !self.keywords.is_empty() {
+            spec = spec.with_keywords(self.keywords.iter().copied());
+        }
+        spec.type_mut().icon = self.icon.map(str::to_owned);
         let base = if view {
             ActionContract::view()
         } else {
             ActionContract::default()
         };
-        spec.contract = ActionContract {
+        spec.type_mut().contract = ActionContract {
             kind: self.action_kind,
             risk: self.risk,
             confirmation: if matches!(
@@ -656,13 +803,15 @@ impl EffectDecl {
                 base.retry
             },
             tags: {
-                let mut tags = if self.device_only {
-                    ::std::vec![tilo_actions::LOCAL_DEVICE_ONLY.to_owned()]
-                } else {
-                    base.tags.clone()
-                };
-                if self.programmatic {
-                    tags.push(tilo_actions::PROGRAMMATIC_TAG.to_owned());
+                let mut tags = base.tags.clone();
+                if self.own_device {
+                    tags.push(tilo_actions::OWN_DEVICE_SCOPE.to_owned());
+                }
+                if self.attended {
+                    tags.push(tilo_actions::ATTENDED_TAG.to_owned());
+                }
+                if let Some(tag) = self.audience.tag() {
+                    tags.push(tag.to_owned());
                 }
                 if self.untrusted {
                     tags.push(tilo_actions::UNTRUSTED_CONTENT_TAG.to_owned());
@@ -682,10 +831,15 @@ impl EffectDecl {
                 if self.member {
                     tags.push(tilo_actions::MEMBER_OWN_TAG.to_owned());
                 }
+                tags.extend(self.tags.iter().map(|tag| (*tag).to_owned()));
                 tags
             },
             offload: self.offload.as_ref().map(EffectOffload::contract),
             ..base
+        };
+        let spec = match self.outside_with {
+            Some(param) => spec.with_need_of(outside_with(param, self.action_kind)),
+            None => spec,
         };
         match self.risk_of {
             Some(classify) => spec.with_risk(classify),
@@ -696,6 +850,22 @@ impl EffectDecl {
     /// Whether the effect runs in the background, reporting its result later.
     pub fn is_job(&self) -> bool {
         matches!(self.answers, Answers::Later { .. })
+    }
+}
+
+/// What one invocation of an effect declared `outside_with = param` is:
+/// reaching outside when `param` is given (the file an export writes), else
+/// the `least` it was declared as.
+fn outside_with(
+    param: &'static str,
+    least: ActionKind,
+) -> impl Fn(&tilo_actions::ActionArgs) -> tilo_actions::ActionNeed + Send + Sync + 'static {
+    move |args| {
+        let given = args
+            .to_json()
+            .get(param)
+            .is_some_and(|value| !value.is_null());
+        tilo_actions::ActionNeed::of(if given { ActionKind::Outside } else { least })
     }
 }
 
@@ -788,12 +958,15 @@ mod tests {
         Paint {
             #[param("The colour", choices = ["red", "green"])]
             colour: String,
-            #[param(choices = SHADES)]
+            // `Self` in an attribute reaches the rows' static as the enum.
+            #[param(choices = Self::SHADES)]
             shade: Option<String>,
         },
     }
 
-    const SHADES: [&str; 2] = ["light", "dark"];
+    impl Sample {
+        const SHADES: [&str; 2] = ["light", "dark"];
+    }
 
     /// A content transform declared offloadable.
     #[derive(Clone, Debug, PartialEq, Effect)]
@@ -846,7 +1019,6 @@ mod tests {
             shrink.contract.validate_declaration()
         );
         assert_eq!(specs[1].contract.offload, None, "only where declared");
-        // Its inputs are the content its list of content names.
         assert!(shrink.params()[0].is_content_list());
         assert!(specs[1].params()[0].is_content());
     }
@@ -911,8 +1083,6 @@ mod tests {
         );
         assert!(Sample::decode("wipe", &serde_json::Map::new()).is_err());
 
-        // Bound to its arguments, the effect takes none and keeps its
-        // declaration's contract.
         let bound = Sample::Wipe { passes: 3 }.bound();
         assert_eq!(bound.id, "wipe");
         assert_eq!(bound.label, "Wipe");
@@ -925,7 +1095,6 @@ mod tests {
         );
         assert!(Sample::decode("format", &serde_json::Map::new()).is_err());
 
-        // Bound to the thing it acts on, it still asks for the rest.
         let asking = Sample::RenameThing {
             thing: "a".into(),
             label: None,

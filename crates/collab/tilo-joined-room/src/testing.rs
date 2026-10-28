@@ -25,9 +25,6 @@ pub const APP: &str = "so.tilo.chat";
 
 /// Enroll an empty interactive room through the real signed join protocol.
 /// This helper neither seeds application records nor grants capabilities.
-///
-/// # Errors
-/// Returns a refusal when the genuine governor challenge or completion fails.
 pub fn enroll_interactive_governor(
     owner: &NativeWorkspaceOwner,
     key: &SigningKey,
@@ -282,6 +279,7 @@ pub fn raw_fixture_at(
         .author_media_policy(&policy, &governor_key, now)
         .unwrap();
     let messages = peer
+        .publication_mut()
         .durable_bootstrap_messages(&governor_key, now, 1)
         .unwrap();
     assert!(peer.validated_media_policy().unwrap().is_some());
@@ -361,15 +359,10 @@ pub fn projection(view: &NativeCommittedView) -> Result<Vec<Vec<u8>>, String> {
 pub fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
     publication::prepare(request)
 }
-/// # Errors
-/// `message` is not an outgoing document.
 pub fn request(message: &NeighbourMsg) -> Result<OwnerCommitRequest, String> {
     publication::request(message)
 }
 /// `(timestamp_ns, channel, incremental)` as the owner records them.
-///
-/// # Errors
-/// `message` is not an outgoing document.
 pub fn metadata(message: &NeighbourMsg) -> Result<(u64, [u8; 32], bool), String> {
     publication::metadata(message)
 }

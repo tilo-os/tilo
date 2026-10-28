@@ -48,6 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     label: title.into(),
                     note: String::new(),
                 },
+                app_title: None,
             })
             .collect();
         let tree = seed_tree(&mut minter, "Desk", tabs);

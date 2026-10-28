@@ -9,14 +9,19 @@ dates written relative to the day of the run (`${TODAY+1}`, `${MON+2}`: this
 week's Wednesday). No pointer or keyboard steps: a
 situation is reached through the app's resources and actions, the door every
 other caller uses. An app without a plan gets one situation, the window as it
-opens.
+opens. An app that shows the machine it runs on (its journal, processes,
+drives, files) is built from one of its own scenarios instead: each of its
+situations names one (`scenario`), and the app refuses a capture without.
 
 Services (`kind = "service"` in the manifest: the agent, the on-screen
 keyboard the shell draws, compute workers) have no window and are skipped.
 For every situation the app runs once, headless, in a fresh profile (its own
 HOME, XDG directories and runtime directory; no display, no session bus), and
-captures four pictures after the steps settle: dark and light, at the wide
-(1280x800) and compact (420x800) viewports. Each app's directory gets a
+captures four pictures after the steps settle, each the whole window as a
+session shows it, the desktop's window bar above the app's frame (the harness
+draws the bar and hosts the app's slots, search and History in it): dark and
+light, at the wide (1280x800) and compact (420x800) viewports, and at any
+larger size its plan names (`sizes = ["large"]`: 2560x1440). Each app's directory gets a
 `manifest.json` naming its situations and pictures, and `resources.json`, the
 published resource tree after the first situation: what a plan can invoke.
 `summary.json` at the top lists every failure; the exit status is 1 when
@@ -54,6 +59,10 @@ REPO = Path(__file__).resolve().parents[2]
 PLANS = Path(__file__).resolve().parent
 THEMES = ("dark", "light")
 VIEWPORTS = {"wide": (1280, 800), "compact": (420, 800)}
+# Sizes a plan adds for its app (`sizes = ["large"]`): a window maximised on
+# a 1440p-class display, where a page laid out for a laptop can strand a
+# narrow strip of small text in empty space.
+EXTRA_VIEWPORTS = {"large": (2560, 1440)}
 # One headless run: start, the plan's steps, four captures and the close.
 # A run past this is stuck (waiting on a service a fresh profile does not
 # have), and is reported as such rather than holding the whole runner.
@@ -86,6 +95,10 @@ class Situation:
     name: str
     title: str
     steps: list = field(default_factory=list)
+    # The app's own scenario the window is built from (`"scenario"` in the
+    # drive): an app that shows the machine it runs on refuses a capture
+    # without one, so its pictures show made-up data, never the machine's.
+    scenario: str | None = None
 
 
 @dataclass
@@ -100,6 +113,8 @@ class Plan:
     # Steps name them under `${HOME}`.
     files: list = field(default_factory=list)
     repositories: list = field(default_factory=list)
+    # Sizes beyond `VIEWPORTS` its pictures are taken at (`EXTRA_VIEWPORTS`).
+    sizes: list = field(default_factory=list)
 
 
 def catalog() -> list[dict]:
@@ -124,7 +139,7 @@ def load_plan(entry: dict) -> Plan:
     situations = []
     if path.is_file():
         data = tomllib.loads(path.read_text())
-        unknown = set(data) - {"situation", "file", "repository"}
+        unknown = set(data) - {"situation", "file", "repository", "sizes"}
         if unknown:
             raise ValueError(f"{path}: unknown keys {sorted(unknown)}")
         for raw in data.get("situation", []):
@@ -137,7 +152,10 @@ def load_plan(entry: dict) -> Plan:
                     raise ValueError(
                         f"{path}: situation {name}: a step is one of {sorted(ALLOWED_STEPS)}, got {step}"
                     )
-            situations.append(Situation(name, raw.get("title", name), steps))
+            scenario = raw.get("scenario")
+            if scenario is not None and (not isinstance(scenario, str) or not scenario):
+                raise ValueError(f"{path}: situation {name}: a scenario is a name, got {scenario!r}")
+            situations.append(Situation(name, raw.get("title", name), steps, scenario))
         if not situations:
             raise ValueError(f"{path}: no situations")
         names = [s.name for s in situations]
@@ -145,6 +163,9 @@ def load_plan(entry: dict) -> Plan:
             raise ValueError(f"{path}: situation names repeat")
     else:
         situations.append(Situation("opened", "The window as it opens"))
+    sizes = data.get("sizes", []) if path.is_file() else []
+    if not isinstance(sizes, list) or any(size not in EXTRA_VIEWPORTS for size in sizes):
+        raise ValueError(f"{path}: sizes are a list of {sorted(EXTRA_VIEWPORTS)}, got {sizes!r}")
     files = data.get("file", []) if path.is_file() else []
     repositories = data.get("repository", []) if path.is_file() else []
     for item in [*files, *repositories]:
@@ -153,7 +174,7 @@ def load_plan(entry: dict) -> Plan:
             raise ValueError(f"{path}: a home item's path is relative to the home: {item!r}")
     return Plan(
         entry["name"], entry["binary"], entry.get("id", entry["name"]), situations,
-        files, repositories,
+        files, repositories, sizes,
     )
 
 
@@ -232,10 +253,11 @@ def profile_env(root: Path, lib_dirs: list[Path]) -> dict:
     return env
 
 
-def captures(app_dir: Path, situation: Situation) -> list[dict]:
+def captures(app_dir: Path, situation: Situation, sizes: list) -> list[dict]:
+    viewports = {**VIEWPORTS, **{size: EXTRA_VIEWPORTS[size] for size in sizes}}
     shots = []
     for theme in THEMES:
-        for size, viewport in VIEWPORTS.items():
+        for size, viewport in viewports.items():
             shots.append({
                 "path": str(app_dir / f"{situation.name}-{theme}-{size}.png"),
                 "theme": theme,
@@ -247,7 +269,7 @@ def captures(app_dir: Path, situation: Situation) -> list[dict]:
 def run_situation(plan: Plan, situation: Situation, index: int, args) -> dict:
     app_dir = args.out / plan.app
     app_dir.mkdir(parents=True, exist_ok=True)
-    shots = captures(app_dir, situation)
+    shots = captures(app_dir, situation, plan.sizes)
     with tempfile.TemporaryDirectory(prefix=f"shots-{plan.app}-") as tmp:
         tmp = Path(tmp)
         env = profile_env(tmp / "profile", args.lib_dir)
@@ -260,7 +282,12 @@ def run_situation(plan: Plan, situation: Situation, index: int, args) -> dict:
             ),
             "results": str(tmp / "results.json"),
             "capture": shots,
+            # The desktop's window bar over the app, as a Tilo session draws
+            # it: the app's slots, search and History are hosted there.
+            "window_bar": True,
         }
+        if situation.scenario:
+            spec["scenario"] = situation.scenario
         if index == 0:
             spec["resources"] = str(app_dir / "resources.json")
         command = [str(args.bin_dir / plan.binary), "--headless-drive", json.dumps(spec)]

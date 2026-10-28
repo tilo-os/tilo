@@ -395,7 +395,6 @@ fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
                 "code lines must be contiguous (one visual block), gap was {gap}"
             );
         }
-        // Each code cell shapes its text in the monospace face.
         for &i in &code_idx {
             assert!(
                 blocks[i].line.inner().is_mono(),
@@ -738,7 +737,6 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
     eprintln!("phase caret_block_handle_shows_after_pointer_motion_and_follows_focus");
     {
         let mut editor = block_gesture_fixture();
-        // Isolate handle paint from the independently tested insertion caret.
         editor.suppress_caret_paint(true);
         editor.set_focus(false);
         let idle = block_scene(&mut editor).encoding().draw_tags.len();
@@ -908,7 +906,6 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         // In the top edge band: scrolls up.
         block_event(&mut editor, cursor_moved(handle, 5.0));
         assert!(editor.tick_block_drag(viewport, frame) < 0.0);
-        // Escape ends the drag, and the scrolling with it.
         block_event(&mut editor, named_key(NamedKey::Escape));
         assert!(!editor.block_drag_active());
         assert!(editor.tick_block_drag(viewport, frame).abs() < f64::EPSILON);
@@ -1134,7 +1131,6 @@ fn first_note_empty_state_and_help_shortcut_respect_focus() {
         );
         assert!(n(&mut app).shortcuts_visible_for_test());
 
-        // Escape closes it.
         dispatch(&mut app, no_mods, &named_key(NamedKey::Escape));
         assert!(
             !n(&mut app).shortcuts_visible_for_test(),
@@ -1269,8 +1265,8 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
         let handled = dispatch(&mut app, no_mods, &named_key(NamedKey::Delete));
 
         assert!(handled, "Delete must be consumed by the focused tree");
-        // Deleting a page asks first; the person confirms.
-        assert!(app.confirm_asked().is_some(), "the host asks first");
+        // Undo takes a deleted page back, so nobody is asked.
+        assert!(app.asking().is_none(), "nothing asks first");
         let pages = n(&mut app).workspace_pages_for_test();
         assert_eq!(pages.len(), 1, "Delete must remove the page");
         assert_eq!(pages[0].id, welcome);
@@ -1371,7 +1367,6 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
 
         app.harness().relayout_at((1200, 800)).unwrap();
 
-        // Focus the tree with `welcome` selected, then Alt-↓ once.
         click_row(&mut app, 0).unwrap();
         assert_eq!(n(&mut app).selected_for_test(), Some(welcome));
 
@@ -1384,7 +1379,6 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
             "Alt-↓ must move `welcome` down one slot among its siblings"
         );
 
-        // And Alt-↑ moves it back.
         dispatch(&mut app, alt, &named_key(NamedKey::ArrowUp));
         assert_eq!(
             order_ids(&mut app),
@@ -1679,7 +1673,6 @@ fn slash_commands_apply_block_kinds_and_continue_lists() {
         assert!(n(&mut app).main_panel_mut().editor_mut().is_focused());
 
         let no_mods = Modifiers::default();
-        // Open the slash menu and filter to "Numbered list".
         dispatch(&mut app, no_mods, &char_key("/"));
         assert!(
             n(&mut app).editor_slash_menu_visible_for_test(),
@@ -1741,7 +1734,6 @@ fn slash_commands_apply_block_kinds_and_continue_lists() {
             "the rendered ordinals increment down the list"
         );
 
-        // The saved markdown numbers the list sequentially.
         let md = n(&mut app).main_panel_mut().take_body_snapshot();
         assert_eq!(md, "1. one\n\n2. two\n\n3. six\n");
     }
@@ -1779,7 +1771,6 @@ fn slash_commands_apply_block_kinds_and_continue_lists() {
             "`/h1` narrows to exactly the Heading 1 row"
         );
 
-        // Click that row through the real pointer path.
         let (cx, cy) = {
             let rect = n(&mut app)
                 .main_panel_mut()

@@ -43,10 +43,11 @@ impl EncryptedBackend {
     pub(crate) async fn review_group(&self, review: Review) -> Result<String> {
         let token = uuid::Uuid::new_v4().to_string();
         let saved = token.clone();
-        self.run(move |disk| {
-            let now = tilo_clock::try_unix_now().ok_or_else(unavailable)?;
+        let now = self.now()?;
+        self.run_at(now, move |disk| {
             let mut changes = Vec::new();
             let mut active = 0usize;
+            let now = disk.now();
             for (key, old) in disk.rows::<Review>("tilo-group-review", &[])? {
                 if old.expires <= now || old.group == review.group {
                     changes.push(Change::delete(key));
@@ -74,16 +75,15 @@ impl EncryptedBackend {
     ) -> Result<bool> {
         let id = id.to_owned();
         let review = review.to_owned();
-        self.run(move |disk| {
+        let now = self.now()?;
+        self.run_at(now, move |disk| {
             let slot = key("tilo-group-operation", &[&id]);
             if disk.get::<Operation>(&slot)?.is_some() {
                 return Ok(false);
             }
             let witness = key("tilo-group-review", &[&review]);
             let reviewed = disk.get::<Review>(&witness)?.ok_or_else(unavailable)?;
-            if reviewed.group != op.group
-                || reviewed.expires <= tilo_clock::try_unix_now().ok_or_else(unavailable)?
-            {
+            if reviewed.group != op.group || reviewed.expires <= disk.now() {
                 return Err(unavailable());
             }
             disk.commit(vec![Change::put(slot, &op)?, Change::delete(witness)])?;

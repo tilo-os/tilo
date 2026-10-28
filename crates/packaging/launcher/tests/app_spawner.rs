@@ -21,8 +21,8 @@
 use std::io::Read as _;
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::process::ExitStatusExt as _;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::path::PathBuf;
+use std::time::Instant;
 
 use launcher::app_cgroup::{self, AppKind};
 use launcher::spawner::{DelegatedChild, Request, SpawnError, Spawner};
@@ -53,7 +53,7 @@ impl Tree {
             return None;
         }
         let spawner =
-            match Spawner::start(Path::new(env!("CARGO_BIN_EXE_tilo-launcher")), Some(&dir)) {
+            match Spawner::start(&tilo_test_env::package_binary!("tilo-launcher"), Some(&dir)) {
                 Ok(spawner) => spawner,
                 Err(reason) => {
                     let _ = std::fs::remove_dir(&dir);
@@ -78,7 +78,6 @@ impl Tree {
             kind: AppKind::Tilo,
             program: PathBuf::from(argv[0]),
             args: argv.iter().map(Into::into).collect(),
-            // This process's environment, as a launcher gets the compositor's.
             env: std::env::vars_os()
                 .chain(env.iter().map(|(k, v)| (k.into(), v.into())))
                 .collect(),
@@ -102,12 +101,8 @@ impl Drop for Tree {
     }
 }
 
-fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !done() {
-        assert!(Instant::now() < deadline, "timed out waiting until {what}");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+fn wait_until(what: &str, done: impl FnMut() -> bool) {
+    tilo_test_env::wait_until(what, done);
 }
 
 fn stdout_of(child: &mut DelegatedChild) -> String {

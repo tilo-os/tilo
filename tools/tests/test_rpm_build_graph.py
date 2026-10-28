@@ -158,15 +158,21 @@ class RpmBuildGraphTest(unittest.TestCase):
             driver,
         )
         spec = (ROOT / "dist/rpm/tilo-session.spec").read_text()
+        # The program lives off PATH in /usr/libexec/tilo; its old command
+        # name stays a link so existing callers keep working.
         self.assertIn(
             "install -Dpm 0755 apps/bin/tilo-model-http "
-            "%{buildroot}%{_bindir}/tilo-model-http",
+            "%{buildroot}%{_libexecdir}/tilo/tilo-model-http",
             spec,
         )
         self.assertIn(
-            "%{_bindir}/tilo-model-http",
-            spec.split("%files apps\n")[1].splitlines(),
+            "ln -s ../libexec/tilo/tilo-model-http "
+            "%{buildroot}%{_bindir}/tilo-model-http",
+            spec,
         )
+        apps_files = spec.split("%files apps\n")[1].splitlines()
+        self.assertIn("%{_libexecdir}/tilo/tilo-model-http", apps_files)
+        self.assertIn("%{_bindir}/tilo-model-http", apps_files)
 
     def test_model_gateway_component_build_and_install_plan(self):
         installer = ROOT / "os/scripts/install-components.py"
@@ -214,10 +220,22 @@ class RpmBuildGraphTest(unittest.TestCase):
                     p.relative_to(destination).as_posix()
                     for p in destination.rglob("*") if p.is_file()
                 },
-                {"usr/bin/tilo-model-gateway", "usr/bin/tilo-model-http"},
+                {
+                    "usr/libexec/tilo/tilo-model-gateway",
+                    "usr/libexec/tilo/tilo-model-http",
+                },
             )
-            for binary in (destination / "usr/bin").iterdir():
+            for binary in (destination / "usr/libexec/tilo").iterdir():
                 self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
+            # The old command names are links to tilo, which runs the program
+            # from /usr/libexec/tilo under the name it was called by.
+            self.assertEqual(
+                {
+                    link.name: os.readlink(link)
+                    for link in (destination / "usr/bin").iterdir()
+                },
+                {"tilo-model-gateway": "tilo", "tilo-model-http": "tilo"},
+            )
 
 
 if __name__ == "__main__":

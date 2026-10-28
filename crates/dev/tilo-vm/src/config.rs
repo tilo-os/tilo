@@ -136,7 +136,6 @@ pub struct VmEntry {
     /// A device's MAC on the network it was reached on, for `vm wake`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mac: Option<String>,
-    /// What can wake a device, as it reported when last reached.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wake: Option<crate::reach::WakeInfo>,
     /// A device's route over the peer network, for when it is not on this
@@ -210,8 +209,6 @@ pub fn admin_identity_root(registry: &Path) -> PathBuf {
 }
 
 impl Registry {
-    /// # Errors
-    /// Unreadable or invalid files. A missing file is an empty registry.
     pub fn load(path: &Path) -> Result<Self, CliError> {
         match std::fs::read_to_string(path) {
             Ok(text) => toml::from_str(&text).map_err(|e| CliError::Config {
@@ -403,7 +400,6 @@ mod tests {
             let rewritten = with_worktree_vm(text, "shared");
             assert_eq!(parse_worktree_file(&rewritten).as_deref(), Some("shared"));
             assert_eq!(parse_worktree_slot(&rewritten).as_deref(), Some("ux1"));
-            // A bare name is replaced by the table form.
             let bare = with_worktree_vm("dev\n", "shared");
             assert_eq!(parse_worktree_file(&bare).as_deref(), Some("shared"));
         }

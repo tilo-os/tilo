@@ -42,7 +42,6 @@ pub struct HourColumn {
     pub is_now: bool,
 }
 
-/// The styles the strip sets its text in.
 struct StripText {
     value: TextStyle,
     small: TextStyle,
@@ -75,7 +74,6 @@ pub struct StripRows {
     pub icon_edge: f64,
     /// Top of the precipitation read-out's line box.
     pub precip_y: f64,
-    /// Top of the hour label's line box.
     pub label_y: f64,
     /// Bottom of the hour label's line box — the band the strip needs.
     pub height: f64,
@@ -476,7 +474,6 @@ mod incoming_geometry_tests {
     #[test]
     fn incoming_chart_geometry_is_scrolled_and_finite() {
         let rows = strip_rows(&Theme::dark(), &mut TextRenderer::new());
-        // Case `geometry_applies_horizontal_scroll_to_every_column`.
         {
             let columns = [column(10.0), column(20.0)];
             let geometry = StripGeometry::new(
@@ -490,7 +487,6 @@ mod incoming_geometry_tests {
             assert!((geometry.x_center(0) - 110.0).abs() < f64::EPSILON);
             assert!((geometry.x_center(1) - 190.0).abs() < f64::EPSILON);
         }
-        // Case `flat_temperature_series_still_has_a_finite_curve_range`.
         {
             let columns = [column(12.0), column(12.0)];
             let geometry =

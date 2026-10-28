@@ -10,21 +10,35 @@ ok() { printf 'ok    %s\n' "$*"; }
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-for package in openssl native-tls; do
-  if RUSTC_WRAPPER= cargo tree --manifest-path "$repo/Cargo.toml" --workspace -i "$package" -e normal \
-      >/dev/null 2>&1; then
-    bad "active Rust dependency graph contains $package"
-  else
-    ok "active Rust dependency graph contains no $package crate"
+# Whether the workspace's normal dependency graph holds crate $1. cargo tree
+# -i answers a package outside the graph with an error naming it; any other
+# failure (cargo killed for memory, an unresolvable lockfile) proves nothing
+# and fails the check rather than reading as absence.
+in_rust_graph() {
+  local out
+  if out="$(RUSTC_WRAPPER= cargo tree --manifest-path "$repo/Cargo.toml" --workspace -i "$1" -e normal 2>&1)"; then
+    return 0
   fi
-done
-for package in aws-lc-rs aws-lc-sys; do
-  if RUSTC_WRAPPER= cargo tree --manifest-path "$repo/Cargo.toml" --workspace -i "$package" -e normal \
-      >/dev/null 2>&1; then
-    bad "active Rust dependency graph contains duplicate crypto provider $package"
-  else
-    ok "active Rust dependency graph uses no $package provider"
+  if grep -Fq "\`$1\` did not match any packages" <<< "$out"; then
+    return 1
   fi
+  printf 'cargo tree -i %s failed: %s\n' "$1" "$(tail -n 3 <<< "$out")" >&2
+  return 2
+}
+for package in openssl native-tls aws-lc-rs aws-lc-sys; do
+  case "$package" in
+    openssl|native-tls) what="active Rust dependency graph contains $package"
+                        none="active Rust dependency graph contains no $package crate" ;;
+    *) what="active Rust dependency graph contains duplicate crypto provider $package"
+       none="active Rust dependency graph uses no $package provider" ;;
+  esac
+  status=0
+  in_rust_graph "$package" || status=$?
+  case "$status" in
+    0) bad "$what" ;;
+    1) ok "$none" ;;
+    *) bad "could not resolve the Rust dependency graph to look for $package" ;;
+  esac
 done
 
 manifest_hits="$(find "$repo/os" "$repo/.forgejo" -type f \
@@ -153,11 +167,13 @@ inventory_cleanup() {
 runtime_wayland="$(sed -n '/# The frozen snapshot already resolves these development specs/,/FINALIZE_RPMDB/p' \
   "$repo/os/Containerfile")"
 if grep -Fq 'rpm -e --nodeps wayland-devel libxkbcommon-devel libinput-devel' <<<"$runtime_wayland" \
+  && grep -Fq "grep -Ex 'cmake-rpm-macros|ninja-build'" <<<"$runtime_wayland" \
+  && grep -Fq "! rpm -qa --qf '%{NAME}\\n' | grep -Eq '^(cmake-rpm-macros|ninja-build)\$'" <<<"$runtime_wayland" \
   && inventory_cleanup "$runtime_wayland" \
     '^(pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$' \
     'xargs -r rpm -e --nodeps' \
     '^(wayland-devel|libxkbcommon-devel|libinput-devel|pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$'; then
-  ok 'immutable runtime erases Wayland/input development and pkg-config payloads after resolving libraries'
+  ok 'immutable runtime erases Wayland/input development, pkg-config and transitive build tools after resolving libraries'
 else
   bad 'runtime rootfs retains Wayland/input development payloads'
 fi
@@ -344,7 +360,7 @@ grep -Fq 'tilo-crypto verify-efi' "$deployment" \
 elf_gate="$repo/os/scripts/verify-elf-hardening.sh"
 grep -Fq "direct OpenSSL ABI dependency (DT_NEEDED libssl/libcrypto)" "$elf_gate" \
   || bad 'final Tilo ELF artifacts are not checked for OpenSSL ABI linkage'
-grep -Fq '/build/os/scripts/verify-elf-hardening.sh /out' "$repo/os/Containerfile" \
+grep -Fq 'os/scripts/verify-elf-hardening.sh "$out"' "$repo/os/image/compile.sh" \
   || bad 'final Tilo ELF linkage verifier is not part of the image build'
 
 runtime_package_gate="$repo/os/scripts/verify-runtime-crypto-packages.sh"

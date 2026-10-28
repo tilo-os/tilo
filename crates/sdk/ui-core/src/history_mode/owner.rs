@@ -348,6 +348,14 @@ impl HistoryOwner {
             } => (store, checkout),
         }
     }
+    /// What the owner's record holds, as the checkout that opened it says.
+    /// A host that must create the record on this device's first write needs
+    /// the kind named here; a route joined without one can only be written
+    /// where the record already exists.
+    pub(crate) fn record_kind(&self) -> crate::record::RecordKind {
+        self.store_checkout().1.kind.clone()
+    }
+
     pub(crate) fn broker_route(&self) -> Option<crate::collaboration::RouteSpec> {
         self.validate().ok()?;
         match &self.0 {

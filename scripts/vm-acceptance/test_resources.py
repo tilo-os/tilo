@@ -147,6 +147,55 @@ class Parse(unittest.TestCase):
         self.assertNotIn("smaps", core.PROCESSES)
 
 
+class SpawnedApps(unittest.TestCase):
+    """Apps the session's shared spawner starts have no `tilo-launcher --app-id` of their own
+    above them: their cgroup's unit names them."""
+
+    SCOPE = f"{APPS}/tilo-apps-3093.scope"
+
+    def table(self):
+        lines = [
+            proc(3093, 1, SLOT, "tilo-launcher", f"{self.SCOPE}/spawner", 6, 1),
+            proc(4100, 3093, SLOT, "bwrap", f"{self.SCOPE}/app-so.tilo.file\\x2dexplorer-5/main", 2, 1),
+            proc(4101, 4100, SLOT, "file-explorer", f"{self.SCOPE}/app-so.tilo.file\\x2dexplorer-5/main", 40, 19),
+            proc(4200, 3093, SLOT, "terminal", f"{self.SCOPE}/app-so.tilo.terminal-4/main", 20, 14),
+            proc(4201, 1, SLOT, "bash", f"{self.SCOPE}/app-so.tilo.terminal-4/job-1", 8, 6),
+            proc(3080, 1, SLOT, "shell", SHELL_CG, 900, 600),
+        ]
+        return core.parse_processes("\n".join(lines))
+
+    def test_an_app_is_found_by_its_cgroup(self):
+        table = self.table()
+        files = core.app_cgroup(table, "so.tilo.file-explorer")
+        self.assertEqual(files["pids"], [4100, 4101])
+        self.assertEqual(files["cgroups"], [f"{self.SCOPE}/app-so.tilo.file\\x2dexplorer-5/main"])
+        self.assertEqual(files["shared_with"], {})
+        terminal = core.app_cgroup(table, "so.tilo.terminal")
+        self.assertEqual(terminal["pids"], [4200, 4201], "its shell's job is the app's too")
+
+    def test_the_spawner_and_the_compositor_are_no_app(self):
+        table = self.table()
+        self.assertIsNone(table["procs"][3093]["app"])
+        self.assertIsNone(table["procs"][3080]["app"])
+        self.assertIsNone(core.app_of_cgroup(f"{APPS}/app-dbus\\x2d:1.63\\x2dorg.a11y.atspi.Registry.slice/x"))
+
+
+class AppsStillOpen(unittest.TestCase):
+    """R03 measures R02's windows only while they are there: a session restart takes every
+    window with it."""
+
+    @staticmethod
+    def state(*gids):
+        return {"workspace_tree": {"workspaces": [{"strips": [{"window_groups": [{"id": g} for g in gids]}]}]}}
+
+    def test_every_group_must_still_be_open(self):
+        groups = {"so.tilo.notes": 7, "so.tilo.settings": 9}
+        self.assertTrue(resources.still_open(self.state(7, 9, 11), groups))
+        self.assertFalse(resources.still_open(self.state(7), groups))
+        self.assertFalse(resources.still_open(self.state(), groups))
+        self.assertFalse(resources.still_open(self.state(7, 9), None))
+
+
 class Footprint(unittest.TestCase):
     def test_buckets_cover_every_cgroup_once(self):
         fp = footprint()
@@ -297,6 +346,23 @@ class ShellMemoryMap(unittest.TestCase):
         parts = resources.shell_parts_mib(resources.parse_shell_memory_map(shell_report()))
         self.assertEqual(list(parts), ["heap_arenas", "gpu_memfd", "thread_stacks", "malloc_in_use", "malloc_free"])
         self.assertEqual((parts["heap_arenas"], parts["gpu_memfd"], parts["malloc_free"]), (80.0, 72.5, 39.1))
+
+    def test_a_failure_says_how_much_is_heap_in_use_free_and_by_kind(self):
+        text = resources.describe_shell_parts(shell_report())
+        self.assertTrue(text.startswith("heap in use "), text)
+        self.assertIn("heap free 39.1 MiB", text)
+        self.assertIn("heap_arenas 80.0 MiB, gpu_memfd 72.5 MiB", text)
+
+    def test_the_heap_timeline_keeps_every_startup_step_and_the_latest_trims(self):
+        log = "\n".join([
+            "[x] HEAP-MILESTONE what=start in_use_mib=31 free_mib=2 rss_anon_mib=40",
+            "HEAP-MILESTONE what=renderer-first-frame in_use_mib=214 free_mib=190 rss_anon_mib=420",
+        ] + [f"HEAP-MILESTONE what=trim in_use_mib={200 + i} free_mib=12 rss_anon_mib=230"
+             for i in range(9)])
+        self.assertEqual(resources.heap_milestones(log),
+                         "start 31/2, renderer-first-frame 214/190, …, trim 206/12, trim 207/12, "
+                         "trim 208/12")
+        self.assertEqual(resources.heap_milestones(""), "")
 
     def test_records_are_valid_kpis_in_one_unit(self):
         ctx = Recorder()
@@ -454,13 +520,25 @@ class SharedWorkspaceTest(unittest.TestCase):
         self.assertEqual(len(ports), 10)
         self.assertTrue(all(1024 < p < 32768 for p in ports))
 
-    def test_setup_failures_name_what_the_guest_lacked(self):
+    def test_setup_enrolls_the_relay_as_production_does_and_names_what_failed(self):
         key = '{"device_public_key": "%s", "relay_service_node_id": "%s"}' % ("ab" * 32, "cd" * 32)
 
-        def ctx_answering(setup):
+        def ctx_answering(pair="HOME-RELAY pairing\n", approve="HOME-RELAY approved\n",
+                          start="HOME-RELAY started\n"):
+            ran = []
+
             class Vm:
+                def root_exec(self, script, timeout=120):
+                    ran.append(("root", script))
+                    if " pair " in script:
+                        return key + "\n" + pair
+                    if "tilo-relay --config" in script:
+                        return start
+                    return ""
+
                 def exec(self, script, timeout=120, check=True):
-                    return key if "device-key" in script and "certify" not in script else setup
+                    ran.append(("person", script))
+                    return approve if " approve " in script else ""
 
                 def slot_uid(self):
                     return 1001
@@ -470,18 +548,29 @@ class SharedWorkspaceTest(unittest.TestCase):
 
                 def write(self, name, text):
                     pass
-            return Ctx()
+            return Ctx(), ran
 
-        cases = {"HOME-RELAY no-identity-root\n": "identity root of its own",
-                 "error: unexpected argument '--home-peer-service' found\n": "predates",
-                 "Failed to start transient service unit\n": "did not start"}
-        for out, said in cases.items():
+        cases = {"did not approve": {"approve": "Error: approval timed out\n"},
+                 "no bundle": {"start": "HOME-RELAY no-bundle\n"},
+                 "did not start": {"start": "Failed to start transient service unit\n"},
+                 "pairing did not start": {"pair": "Failed to start transient service unit\n"}}
+        for said, answers in cases.items():
+            ctx, _ = ctx_answering(**answers)
             with self.assertRaises(core.Unobservable) as raised:
-                resources.start_home_relay(ctx_answering(out))
+                resources.start_home_relay(ctx)
             self.assertIn(said, str(raised.exception))
-        relay = resources.start_home_relay(ctx_answering("HOME-RELAY started\n"))
+        ctx, ran = ctx_answering()
+        relay = resources.start_home_relay(ctx)
         self.assertEqual(relay, {"device": "ab" * 32, "service": "cd" * 32, "port": 24000 + 1001 % 8000})
-
+        # The server pairs as the relay's account, the person approves exactly that server
+        # on the machine's identity tree, and nothing is certified out of band.
+        approve = next(script for who, script in ran if who == "person" and " approve " in script)
+        self.assertIn("--identity-root /var/lib/tilo", approve)
+        self.assertIn("--expected-device " + "ab" * 32, approve)
+        self.assertIn("--expected-service " + "cd" * 32, approve)
+        self.assertFalse(any("certify" in script or "install-cert" in script for _, script in ran))
+        pair = next(script for who, script in ran if who == "root" and " pair " in script)
+        self.assertIn("--uid=tilo-relay", pair)
 
 if __name__ == "__main__":
     unittest.main()

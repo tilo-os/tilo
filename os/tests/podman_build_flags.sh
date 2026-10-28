@@ -22,6 +22,8 @@ done
 jobs="$(cargo_build_jobs 2)"
 cpus="$(nproc)"
 mem_jobs="$(awk '/^MemTotal:/ { print int($2 / 2097152) }' /proc/meminfo)"
+# Less memory than one job takes falls back to 8 jobs, as below.
+[ "$mem_jobs" -ge 1 ] || mem_jobs=8
 want=$(( cpus < mem_jobs ? cpus : mem_jobs ))
 [ "$jobs" = "$want" ] || { echo "cargo_build_jobs 2 = $jobs, want min($cpus CPUs, $mem_jobs by memory)" >&2; exit 1; }
 [ "$(cargo_build_jobs 1000000)" = $(( cpus < 8 ? cpus : 8 )) ] || { echo "no memory for one job must fall back to 8" >&2; exit 1; }

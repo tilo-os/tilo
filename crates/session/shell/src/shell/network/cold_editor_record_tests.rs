@@ -29,8 +29,8 @@ struct ColdPair {
 
 fn room_tree(room: RoomId, identity: &[u8; 32]) -> WorkspaceTree {
     let mut tree = WorkspaceTree::bootstrap_default();
+    tree.desktop.workspaces[0] = crate::shell::state::rehomed(&tree.desktop.workspaces[0], room);
     let workspace = &mut tree.desktop.workspaces[0];
-    workspace.set_room(room);
     workspace.set_owner(crate::shell::collab_broker_capnp::principal_id_for_root(
         *identity,
     ));
@@ -52,7 +52,10 @@ fn write_record(
         address.record.clone(),
         RecordKind::new(code_editor::Project::KIND),
     );
-    if !record_hydration::kept_here(address, data) {
+    if record_hydration::kept_here(address, data)
+        .flatten()
+        .is_none()
+    {
         records.create_record(&record).unwrap();
     }
     let opened = records.try_open_record(&record);
@@ -373,7 +376,9 @@ async fn certified_cold_editor_body_fetch_reconnect_and_membership_revocation() 
         !receiving_profile.exists(),
         "transport alone must not prehydrate or initialize the receiver"
     );
-    let adopted = record_hydration::keep(&pair.address, pair.receiving.path(), &bytes).unwrap();
+    let adopted = record_hydration::keep(&pair.address, pair.receiving.path(), &bytes)
+        .unwrap()
+        .expect("a thread that may wait keeps it at once");
     assert_eq!(adopted.id, pair.address.record);
     assert_eq!(
         body_of(&read_record(pair.receiving.path(), &pair.address)),

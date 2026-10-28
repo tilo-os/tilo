@@ -1,5 +1,0 @@
-reason = "Settings' storage area shows what each device holds of the person's workspaces and what only it holds: one card per device, the storage-summary, free-cache and keep-here effects and their strings. Settings crossed its x86_64 budget by 3,072 B; check run 118405 measured 5,835,776 B on x86_64"
-run = 118405
-
-[apps."so.tilo.settings"]
-x86_64 = 8192

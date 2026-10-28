@@ -6,8 +6,7 @@
 # Each argument names a pin file the pull request changed; only those pins
 # are verified, because a pin the change does not touch is main's business.
 #
-# The pin-only fast path of check.yml runs this instead of the Rust and
-# security suites: a pull request that changes only os/kernel-snapshot.env
+# t.toml's `pins` check runs this: a change to os/kernel-snapshot.env
 # changes no code, so what needs proving is that each pinned reference is the
 # one CI published and signed for this source.
 #

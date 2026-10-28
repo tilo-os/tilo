@@ -500,6 +500,7 @@ fn web_config(sessions: usize) -> anyhow::Result<WebConfig> {
             max_live_grants: sessions.saturating_mul(4),
         },
         country: None,
+        fetch_proxy: None,
     })
 }
 

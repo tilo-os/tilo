@@ -10,8 +10,9 @@ catalog keeps Desktop installation unavailable; it does not block other Imager
 features or invent a release.
 
 For a qualified Desktop release, retain the exact signed RPMs and their native
-reports from `release-desktop.yml`. Package publication waits for
-`host-session-e2e`; its report records each RPM's size and SHA-256. That basic
+reports from `release-desktop.yml`. The login test of those packages is t's
+check `host-session-e2e`, which the desktop payload's publication waits for;
+its report and `source.json` record each RPM's size and SHA-256. That basic
 session test does not by itself prove return to the prior session, selected
 folder import, or source preservation. Review the full native onboarding
 journey, including graphical login and identity setup, before asserting all
@@ -213,12 +214,22 @@ generated three-file manifest to Microsoft's public community index. See
 `docs/imager-release-operations.md` for runner labels, protected variables and
 the Forgejo OIDC design for short-lived signing access.
 
+`IMAGER_HOMEBREW_TAP_REPOSITORY` and `IMAGER_HOMEBREW_TAP_NAME` name the tap
+the release updates and the tap people are told to run. The tap README, the
+native install tests and the landing page's Homebrew commands all read that one
+destination, and `docs/install-contract.json` publishes it so the site prints
+the tap this release actually advanced instead of a name of its own.
+`publish-site-release.sh` refuses to promote a page whose rendered commands
+name any other tap, and `scripts/check-install-contract.py` fails when the
+contract, the workflow and the formula and cask templates disagree.
+
 The landing-page manifest records the public release root and package-channel
 state separately from signed download availability. Homebrew is marked available only after its native
 install matrix passes. A newly opened WinGet submission is marked `submitted`,
 so the site recommends the signed setup EXE instead of showing a command that
-cannot resolve yet. The scheduled acceptance monitor checks Microsoft's exact
-version manifest every six hours with the short-lived site credential broker.
+cannot resolve yet. The scheduled acceptance monitor (t's check
+`imager-winget-acceptance`) checks Microsoft's exact version manifest every six
+hours with the site token t's server config gives it (`TILO_SITE_TOKEN`).
 Once accepted, it runs the same idempotent site verification/build and changes
 WinGet to `available`; transient GitHub failures remain fail-safe as
 `submitted`.

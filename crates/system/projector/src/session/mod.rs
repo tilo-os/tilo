@@ -54,10 +54,6 @@ impl Helpers {
 }
 
 /// Runs one session to `device` until it is stopped (`Ok`) or fails.
-///
-/// # Errors
-///
-/// Returns why the session could not start or ended on its own.
 pub(crate) fn run(
     device: &ProjectionDevice,
     options: &ProjectionOptions,

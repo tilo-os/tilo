@@ -40,7 +40,7 @@ service = [
     "dep:tempfile",
     "dep:sd-notify",
 ]
-test-support = []
+test-support = ["dep:tilo-test-env"]
 # Honour the developer-only environment overrides (`package_store::dev_env`)
 # in a release build. Debug builds always honour them; shipped images never
 # enable this.
@@ -83,6 +83,8 @@ tracing = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"], optional = true }
 libc = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
+# Bounds the test transport's waits (`test-support`).
+tilo-test-env = { path = "../../dev/test-env", optional = true }
 
 # systemd notify (sd_notify); missing environment variables are tolerated.
 sd-notify = { workspace = true, optional = true }

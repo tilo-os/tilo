@@ -405,6 +405,30 @@ impl super::Device {
             .store(true, core::sync::atomic::Ordering::Release);
     }
 
+    /// Tilo: from now on, this device's GPU stops finishing work, as a GPU whose firmware
+    /// stopped answering does while its kernel driver cannot reset it: nothing submitted
+    /// completes, every fence wait runs out its timeout (and one without a timeout never
+    /// returns), and no error ever says so. Lets a caller exercise detecting a GPU that stopped
+    /// making progress; nothing else sets the flag.
+    pub fn simulate_hang(&self) {
+        let seen = self
+            .shared
+            .fence_value_seen
+            .load(core::sync::atomic::Ordering::Acquire);
+        self.shared
+            .hung_at
+            .store(seen, core::sync::atomic::Ordering::Release);
+    }
+
+    /// The last fence value the GPU reached before [`Self::simulate_hang`], once it was called.
+    fn simulated_hang(&self) -> Option<crate::FenceValue> {
+        let hung_at = self
+            .shared
+            .hung_at
+            .load(core::sync::atomic::Ordering::Acquire);
+        (hung_at != crate::FenceValue::MAX).then_some(hung_at)
+    }
+
     fn check_simulated_loss(&self) -> Result<(), crate::DeviceError> {
         if self
             .shared
@@ -2280,10 +2304,18 @@ impl crate::Device for super::Device {
         &self,
         fence: &super::Fence,
     ) -> Result<crate::FenceValue, crate::DeviceError> {
-        fence.get_latest(
+        self.check_simulated_loss()?;
+        let latest = fence.get_latest(
             &self.shared.raw,
             self.shared.extension_fns.timeline_semaphore.as_ref(),
-        )
+        )?;
+        if let Some(hung_at) = self.simulated_hang() {
+            return Ok(latest.min(hung_at));
+        }
+        self.shared
+            .fence_value_seen
+            .fetch_max(latest, core::sync::atomic::Ordering::AcqRel);
+        Ok(latest)
     }
     unsafe fn wait(
         &self,
@@ -2292,6 +2324,18 @@ impl crate::Device for super::Device {
         timeout: Option<Duration>,
     ) -> Result<bool, crate::DeviceError> {
         self.check_simulated_loss()?;
+        if self
+            .simulated_hang()
+            .is_some_and(|hung_at| wait_value > hung_at)
+        {
+            match timeout {
+                Some(timeout) => std::thread::sleep(timeout),
+                None => loop {
+                    std::thread::park();
+                },
+            }
+            return Ok(false);
+        }
         let timeout_ns = timeout
             .unwrap_or(Duration::MAX)
             .as_nanos()

@@ -109,8 +109,12 @@ too). The environment can only add to that evidence, never subtract. The same
 test decides which host an app launched from such a terminal attaches to.
 
 ```sh
-claude mcp add tilo -- tilo-runtime-mcp --connect
+tilo agent connect claude
 ```
+
+That registers the door, `tilo-runtime-mcp --connect`, with Claude Code for
+every directory (`claude mcp add --scope user tilo -- /usr/libexec/tilo/tilo-runtime-mcp --connect`);
+`tilo agent connect codex` does the same for Codex.
 
 The door serves this login's own processes only: same account, same user and
 mount namespaces. A sandboxed app is refused and uses its own collaboration
@@ -158,14 +162,17 @@ after the compositor restarts; the opaque ids the broker mints per publication
 (`tilo-ui-bound:v1:<uuid>:<uuid>:<hex>`) are never shown and need never be
 sent. A resource published beside its owner rather than inside it (a note's
 body) is found under the owner when its key names the owner's id; where a title
-fits two resources the owner gets it.
+fits two resources the owner gets it. Each name is asked of the app under the
+resource before it, so reading or changing one note costs the same in a
+notebook of two notes or two thousand; only a key, the start of a title or a
+title several resources share has the level listed to decide.
 
 | Tool | Answers | Example |
 | --- | --- | --- |
 | `tilo_ls` | apps; an app's resources and actions; one action's parameters | `{}` · `{path: "notes"}` · `{path: "notes/Todo#rename"}` |
-| `tilo_read` | a resource as compact text: markdown with `{#block id}`, a list of what an app holds | `{path: "notes/Todo"}` |
+| `tilo_read` | a resource as compact text: markdown whose blocks end in their id, a list of what an app holds | `{path: "notes/Todo"}` |
 | `tilo_do` | the action's result, waited for (default 5 s) | `{path: "notes/Todo/body#append-paragraph", args: {text: "Buy milk"}}` |
-| `tilo_find` | ranked one-line hits, ready to pass to `tilo_do` | `{query: "checklist add", app: "notes"}` |
+| `tilo_find` | ranked one-line hits, ready to pass to `tilo_do`; `app` narrows by name or id | `{query: "checklist add", app: "notes"}` |
 | `tilo_status` | how a pending invocation went; `cancel: true` stops it | `{invocation_id}` |
 
 ```text
@@ -179,22 +186,55 @@ Groceries/  notes.page
 
 > tilo_read {path: "notes/Todo"}
 # Todo
-- [ ] milk {#b1}
-- [x] bread {#b2}
-## Later {#b3}
+- [ ] milk ^b1
+- [x] bread ^b2
+## Later ^b3
 
 > tilo_do {path: "notes/Todo/body#append-paragraph", args: {text: "call mom"}}
 ok
 {"block":"b9"}
 ```
 
+A note's blocks end in `^id` and a Word Processor document's in `{#id}`, as
+each app writes them; a block action takes the id alone
+(`{block: "b1"}`). A read longer than `max_chars` (12,000 characters by
+default, at most 200,000) is cut at a line and ends in
+`… N more characters: cursor "read+…"`; passing that cursor back answers the
+rest, and a read the app pages itself ends in the app's own cursor. A
+directory level that changes while it is read is read again at once, then
+after a pause that doubles from 5 ms up to 200 ms, for at most 5 seconds.
+
 `tilo_do` answers `ok` with the action's result, `failed: <code>: <message>`
 (with the action's parameters after an `invalid_arguments`), or `pending <id>`
 when it ran past `wait_ms`; there is no receipt to poll for an action that
 finishes. `calls: [{path, args}, …]` runs several in order and stops at the
-first failure. `notes#open` starts an installed app and lists it. `tilo_find`
-searches apps by name, then resources, then actions named as searched, then
-actions described so; it does not search files. Listings
+first failure. `notes#open` starts an installed app and lists it.
+
+`tilo_ls {}` lists the apps running in the workspace the agent was admitted
+to, then every app installed there. The workspace answers the installed apps
+by their kind (`applications.app`), whole, so its other rows never push them
+off the page. An agent of this machine is told an app it may not open too,
+as `installed, not yours to open`: an observer may read the room but opens
+nothing until the person grants it an app, and an empty list would have told
+it there were none. Opening one says who decides instead of starting it.
+`none: …` means nothing runs and nothing is installed. When the session
+cannot answer for the agent at all (its membership was removed, the
+workspace is gone from the device, the session's workspaces or policy clock
+are not available), the broker refuses with that reason and the agent reads
+it; a list of installed apps that could not be read is named with its reason
+under the running ones.
+
+`tilo_find`
+narrows to one app by the name `tilo_ls` lists (`notes`) or its id
+(`so.tilo.notes`), and an app that is neither running nor installed is an
+error naming the apps there are, or saying the installed apps could not be
+read when they could not. It searches apps by name, then resources, then
+actions named as searched, then actions described so; it does not search
+files. A query of several words is looked for as one phrase, and its words
+apart only when the phrase names nothing, so finding a note by its title costs
+the rows that carry it. It asks every running app at once, and an app that
+does not answer is named as not searched rather than failing the search; a
+search that no app answered fails and says so. Listings
 carry names and one-line labels only; `tilo_ls path#action` gives an action's
 parameters when it is wanted. Results are text, with no structured copy beside them. Measured (the
 `mcp_agent` tests keep these in bounds): the agent tool list is 2,900 bytes of
@@ -230,7 +270,10 @@ every process and account on the machine can reach a loopback port. Requests
 without the token cannot create, use or delete a session, drive `/watch`, or
 manage viewer invitations. Local assistants can use the owner-only Unix socket
 with `--connect` instead; inside a Tilo login that still selects the desktop's
-agent door, never an accidental standalone daemon:
+agent door, never an accidental standalone daemon. Only the runtime reads
+the token file: no startup line, failure message or diagnostic repeats its
+contents, and the configuration prints the credential as `[redacted]`, so
+a session or tool log gathered while an endpoint runs never names it:
 
 ```sh
 TILO_RUNTIME_MCP_HTTP=0.0.0.0:7391 \
@@ -455,7 +498,8 @@ arguments, the action the app tagged `read:document`
 (`ActionSpec::reads_document`) and answers `{resource, action, value}`, the
 value being that action's output. That is the Word Processor's `read-text`
 (Markdown with block ids, up to 64 blocks, and its `nextCursor`), a sheet's
-`read-cells` (its used range, as `rows`, `formulas` and `bold`) and the
+`read-cells` (its used range, as `rows`, `formulas` and `bold`, plus
+`formula_errors` naming each formula that does not parse and why) and the
 deck's `read` outline. The File Explorer's `open` itself answers the folder's
 `entries` in `opened`. A value over 6 KiB is cut to fit (text at a line,
 arrays by whole elements) and says `"truncated": true`; its cursor is

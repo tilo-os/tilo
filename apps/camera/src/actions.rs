@@ -34,7 +34,7 @@ pub const MAX_PUBLISHED_CAMERA_DEVICES: usize = 16;
 /// pipeline, the code scanner and the document scanner rides the row of the
 /// same name; choosing a camera rides that camera's row.
 #[derive(Debug, Clone, PartialEq, Eq, Effect)]
-#[effect(operation = "camera.effect", device_only)]
+#[effect(operation = "camera.effect")]
 pub enum CameraEffect {
     /// Open Camera
     #[effect(view)]
@@ -141,7 +141,7 @@ pub enum CameraEffect {
     ///
     /// Asks for an image with the file chooser and decodes the QR code or
     /// barcode in it, without importing the image.
-    #[effect(row, job)]
+    #[effect(attended, row, job)]
     ImportImage,
     /// Capture document page
     #[effect(row, job, cancellable)]
@@ -158,7 +158,7 @@ pub enum CameraEffect {
     /// Export searchable PDF
     ///
     /// Asks where to save the scanned pages as one searchable PDF.
-    #[effect(row, job)]
+    #[effect(attended, row, job)]
     ExportPdf,
     /// Crop selected page
     #[effect(view, row)]
@@ -381,7 +381,7 @@ fn capture_row(ctx: &CameraResourceCtx) -> LiveRow {
                     },
                     selected.then_some(("already_selected", "This camera is already selected")),
                 );
-                spec.label = format!("Use {device}");
+                spec.type_mut().label = format!("Use {device}");
                 let label = if selected {
                     format!("{device} (selected)")
                 } else {
@@ -415,7 +415,7 @@ fn capture_row(ctx: &CameraResourceCtx) -> LiveRow {
         },
     );
     if ctx.recording {
-        record.label = "Stop recording".into();
+        record.type_mut().label = "Stop recording".into();
     }
     row.operation(record)
 }
@@ -482,7 +482,7 @@ mod tests {
     use super::*;
     use crate::app::CameraApp;
     use crate::record::Record;
-    use ui::tilo_actions::{ActionInput, OperationKind, Resource};
+    use ui::tilo_actions::{OperationKind, Resource};
 
     /// A record holding the sample recent capture.
     fn seeded() -> Record {
@@ -553,7 +553,7 @@ mod tests {
                 browse.operation_type.as_deref(),
                 Some(ApplicationLaunch::TYPE)
             );
-            let ActionInput::Immediate(encoded) = &browse.input else {
+            let Some(encoded) = browse.encode_immediate() else {
                 panic!("Photos browse is a zero-argument application handoff");
             };
             let browse_payload: serde_json::Value =
@@ -585,7 +585,7 @@ mod tests {
                     }),
                     "Camera does not publish media-library management"
                 );
-                let ActionInput::Immediate(encoded) = &action.input else {
+                let Some(encoded) = action.encode_immediate() else {
                     panic!("zero-argument handoff must be immediate");
                 };
                 let payload: serde_json::Value =
@@ -619,7 +619,6 @@ mod tests {
                     .any(|id| id.contains("gallery") || id.contains("library"))
             );
         }
-        // Phase `capture_handoff_destination_is_typed_and_kind_specific`.
         {
             assert_eq!(capture_destination(false), ("so.tilo.photos", "Photos"));
             assert_eq!(
@@ -627,7 +626,6 @@ mod tests {
                 ("so.tilo.video-player", "Video Player")
             );
         }
-        // Phase `capture_surface_exposes_at_most_one_recent_handoff`.
         {
             let ctx = CameraResourceCtx {
                 recent: Some(CaptureItem {
@@ -691,7 +689,6 @@ mod tests {
         reason = "one scenario, one labelled phase per merged case"
     )]
     fn provided_resources_are_honest_about_devices_and_expose_every_preference() {
-        // Phase `screen_reveals_are_views_on_the_camera`.
         {
             let specs = CameraEffect::specs();
             let scanner = specs
@@ -708,11 +705,10 @@ mod tests {
                 specs.iter().map(|spec| &spec.id).collect::<Vec<_>>()
             );
         }
-        // Phase `ctrl_k_exposes_every_capture_preference`.
         {
             let ids: Vec<String> = CameraEffect::specs()
                 .into_iter()
-                .map(|spec| spec.id)
+                .map(|spec| spec.id.clone())
                 .collect();
             for id in [
                 "use-mode",
@@ -733,7 +729,6 @@ mod tests {
                 );
             }
         }
-        // Phase `device_effects_are_honest_and_unverified_captures_publish_no_action`.
         {
             let resources = provide_resources(&CameraResourceCtx {
                 recent: Some(CaptureItem {
@@ -778,7 +773,6 @@ mod tests {
                 .unwrap();
             assert!(capture.contract.availability.is_available());
         }
-        // Phase `unavailable_camera_publishes_real_recovery_operations`.
         {
             let resources = provide_resources(&CameraResourceCtx {
                 camera_permission_denied: true,

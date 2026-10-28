@@ -53,9 +53,6 @@ impl ActionEnvelope {
     /// over the history budget, which the committing device keeps in its
     /// content store so receivers can resolve them to replay. Empty for an
     /// action recorded whole.
-    ///
-    /// # Errors
-    /// A payload that is not JSON.
     pub fn recorded_content(&self) -> Result<crate::content::ContentParts, crate::ActionError> {
         let named = self
             .context

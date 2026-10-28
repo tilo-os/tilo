@@ -54,6 +54,12 @@ const waiting = value => ({
   role: pageRole(value.role),
   requestedAtMs: Math.floor(value.requested_at_ns / 1e6),
 });
+const listed = value => ({
+  requestId: hex(value.request_id),
+  contact: value.contact,
+  addedAtMs: Math.floor(value.added_at_ns / 1e6),
+  invitedAtMs: value.invited_at_ns == null ? null : Math.floor(value.invited_at_ns / 1e6),
+});
 const invitation = value => ({
   inviteId: hex(value.invite_id),
   role: pageRole(value.role),
@@ -97,9 +103,11 @@ export function createMembership({rooms, room, displayName = '', preAdmit, now =
      * Issue an invitation to the room: resolves to its text, which
      * `inspectInvitation` and `joinWorkspace` take. It names this person
      * (`displayName`) as the inviter; anyone holding it may ask to join, and
-     * the owner admits them.
+     * the owner admits them. For a wait-list entry (`waitListEntry`, its
+     * `requestId` from `waitList`), the entry shows it was invited and
+     * leaves the list once someone joins with the invitation.
      */
-    async createInvitation({role = 'editor', expiresIn = DEFAULT_INVITATION_SECONDS} = {}) {
+    async createInvitation({role = 'editor', expiresIn = DEFAULT_INVITATION_SECONDS, waitListEntry = null} = {}) {
       if (!Number.isFinite(expiresIn) || expiresIn <= 0 || expiresIn > MAX_INVITATION_SECONDS) {
         throw new RangeError(`expiresIn must be 1 to ${MAX_INVITATION_SECONDS} seconds`);
       }
@@ -108,6 +116,7 @@ export function createMembership({rooms, room, displayName = '', preAdmit, now =
         room, request_id: requestId(), role: wireRole(role),
         expires_at_ns: Math.floor((now() + expiresIn * 1000)) * 1e6,
         inviter_name: name || null,
+        ...(waitListEntry ? {wait_list_entry: bytesOf(waitListEntry)} : {}),
       }}), 'Invitation');
       return encodeInvitation(issued.signed_invitation);
     },
@@ -169,6 +178,22 @@ export function createMembership({rooms, room, displayName = '', preAdmit, now =
     /** Turn a waiting person away. */
     async decline(requestIdHex) {
       expect(await ask({Decline: {room, request_id: bytesOf(requestIdHex)}}), 'Requests');
+    },
+    /** The addresses left at the room's door without an invitation, oldest
+     * first: `{requestId, contact, addedAtMs}` each, nobody to admit but an
+     * address to send an invitation to. For whoever may invite. */
+    async waitList() {
+      return expect(await ask({WaitList: {room}}), 'WaitList').map(listed);
+    },
+    /** Take an address off the wait list (`requestId` from `waitList`). */
+    async unlist(requestIdHex) {
+      expect(await ask({Unlist: {room, request_id: bytesOf(requestIdHex)}}), 'WaitList');
+    },
+    /** Have the host mail the invitation `link`, made for the wait-list
+     * entry `requestIdHex` (`createInvitation`'s `waitListEntry`), to its
+     * address; rejects where the host sends no mail. */
+    async mailInvite(requestIdHex, link) {
+      expect(await ask({MailInvite: {room, wait_list_entry: bytesOf(requestIdHex), link: String(link)}}), 'WaitList');
     },
     /** Change a member's role. */
     async setRole(userPublicKey, role) {

@@ -39,6 +39,7 @@ mod estimate;
 mod glyph;
 mod glyph_cache;
 mod image_cache;
+mod image_delta;
 mod mask;
 pub mod math;
 mod monoid;
@@ -59,6 +60,7 @@ pub use draw::{
 pub use encoding::{Encoding, Resources, StreamOffsets};
 pub use glyph::{FontEmbolden, Glyph, GlyphRun};
 pub use image_cache::ImageCacheStats;
+pub use image_delta::{ImageRect, image_delta, register_image_delta};
 pub use mask::{make_mask_lut, make_mask_lut_16};
 pub use math::Transform;
 pub use monoid::Monoid;

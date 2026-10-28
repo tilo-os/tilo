@@ -139,25 +139,6 @@ impl RecordMaterializer {
         self.apply_exact(scope.record_id, envelope, snapshot, None)
     }
 
-    /// Projects one record's durable operations, as
-    /// [`Self::reconcile_repository`] does for every record, without
-    /// replaying the rest of the repository. A mesh pull that applied a
-    /// batch to one record reconciles just that record; the full pass at the
-    /// end of the pull still heals everything else.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::reconcile_repository`].
-    pub fn reconcile_record(
-        &self,
-        repository: &RecordRepository,
-        key: crate::record_repository::RecordRepositoryKey,
-    ) -> Result<RecordReconciliationReport, RecordMaterializerError> {
-        let mut report = RecordReconciliationReport::default();
-        self.reconcile_key(repository, key, &mut report)?;
-        Ok(report)
-    }
-
     /// Projects the records `keys` just changed, plus what `scope` adds,
     /// with one durable history write and one namespace delta for all of
     /// them, then signals the change. The caller holds the repository's
@@ -597,6 +578,12 @@ impl RecordMaterializer {
                 .verify()
                 .map_err(|_| RecordMaterializerError::InvalidEnvelope)?;
         }
+        // Who caused a version lives in the signed record alone: history
+        // reads read it from there, so nothing projects into the namespace or
+        // the history store, and a record deleted since still keeps it.
+        if matches!(envelope.operation, RecordOperationV1::AttributeVersion(_)) {
+            return Ok(());
+        }
 
         // Resolve and validate liveness before either operation. History for a
         // deleted or unknown namespace record must not be guessed into place.
@@ -836,10 +823,11 @@ impl RecordMaterializer {
                 }
             }
             RecordOperationV1::PrepareTransaction(_)
-            | RecordOperationV1::CommitTransaction { .. } => {
+            | RecordOperationV1::CommitTransaction { .. }
+            | RecordOperationV1::AttributeVersion(_) => {
                 // A record-local arrival is deliberately invisible. Only the
                 // repository-wide complete-participant materializer may
-                // project a transaction.
+                // project a transaction; an attribution never projects.
                 drop(namespace);
             }
         }
@@ -1043,6 +1031,7 @@ mod tests {
                     content_revision: None,
                     versions: vec![],
                     conflicts: vec![],
+                    attributions: vec![],
                 },
                 RecordOperationV1::SetMetadata(metadata) => RecordSnapshot {
                     record_id: self.record,
@@ -1051,6 +1040,7 @@ mod tests {
                     content_revision: None,
                     versions: vec![],
                     conflicts: vec![],
+                    attributions: vec![],
                 },
                 RecordOperationV1::AppendVersion(version) => RecordSnapshot {
                     record_id: self.record,
@@ -1059,6 +1049,7 @@ mod tests {
                     content_revision: None,
                     versions: vec![version.clone()],
                     conflicts: vec![],
+                    attributions: vec![],
                 },
                 RecordOperationV1::AppendConflict(conflict) => RecordSnapshot {
                     record_id: self.record,
@@ -1067,16 +1058,19 @@ mod tests {
                     content_revision: None,
                     versions: vec![],
                     conflicts: vec![conflict.clone()],
+                    attributions: vec![],
                 },
                 RecordOperationV1::ResolveConflict { .. }
                 | RecordOperationV1::PrepareTransaction(_)
-                | RecordOperationV1::CommitTransaction { .. } => RecordSnapshot {
+                | RecordOperationV1::CommitTransaction { .. }
+                | RecordOperationV1::AttributeVersion(_) => RecordSnapshot {
                     record_id: self.record,
                     binding: None,
                     metadata: None,
                     content_revision: None,
                     versions: vec![],
                     conflicts: vec![],
+                    attributions: vec![],
                 },
                 RecordOperationV1::SetContentRevision(revision) => RecordSnapshot {
                     record_id: self.record,
@@ -1085,6 +1079,7 @@ mod tests {
                     content_revision: Some(*revision),
                     versions: vec![],
                     conflicts: vec![],
+                    attributions: vec![],
                 },
             }
         }
@@ -1096,7 +1091,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn materialization_uses_current_signed_state_and_refuses_unknown_records() {
-        // Phase `delayed_materialization_uses_current_repository_not_captured_snapshot`.
         {
             use crate::record_repository::RecordRepositoryKey;
             let fixture = Fixture::new();
@@ -1154,7 +1148,6 @@ mod tests {
             assert_eq!(namespace.getattr(fixture.ino).unwrap().size, 42);
             drop(namespace);
         }
-        // Phase `metadata_update_resolves_renamed_record_without_touching_name_or_parent`.
         {
             let fixture = Fixture::new();
             assert!(fixture.namespace.lock().unwrap().rename(
@@ -1229,6 +1222,7 @@ mod tests {
                         content_revision: None,
                         versions: vec![],
                         conflicts: vec![],
+                        attributions: vec![],
                     },
                 )
                 .unwrap();
@@ -1240,7 +1234,6 @@ mod tests {
             assert_eq!(namespace.getattr(fixture.ino).unwrap().size, 99);
             drop(namespace);
         }
-        // Phase `signed_binding_materializes_move_and_exact_replay_is_a_noop`.
         {
             let fixture = Fixture::new();
             let parent = fixture
@@ -1267,6 +1260,7 @@ mod tests {
                 content_revision: None,
                 versions: vec![],
                 conflicts: vec![],
+                attributions: vec![],
             };
             fixture
                 .materializer
@@ -1284,7 +1278,6 @@ mod tests {
             );
             drop(namespace);
         }
-        // Phase `unknown_tombstoned_and_wrong_scope_are_refused`.
         {
             let fixture = Fixture::new();
             let metadata = FileMetadataV1 {
@@ -1329,7 +1322,6 @@ mod tests {
                 ))
             );
         }
-        // Phase `immutable_history_is_exact_and_exact_replay_is_idempotent`.
         {
             let fixture = Fixture::new();
             let version = FileVersionV1 {
@@ -1382,7 +1374,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn conflicts_project_repository_resolution_into_typed_history() {
-        // Phase `delayed_open_conflict_projects_repository_resolution`.
         {
             use crate::record_repository::RecordRepositoryKey;
             let fixture = Fixture::new();
@@ -1463,7 +1454,6 @@ mod tests {
             assert_eq!(state.conflicts[0].status, ConflictStatus::Resolved);
             assert_eq!(state.conflicts[0].resolution, Some(resolution));
         }
-        // Phase `accepted_conflict_transitions_project_into_typed_history`.
         {
             let fixture = Fixture::new();
             let first = FileVersionV1 {
@@ -1543,7 +1533,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn remote_transactions_and_merges_materialize_exactly_and_heal_after_restart() {
-        // Phase `startup_reconciliation_heals_committed_but_unprojected_operations`.
         {
             use crate::record_repository::{RecordRepository, RecordRepositoryKey};
 
@@ -2144,7 +2133,6 @@ mod tests {
                 );
             }
         }
-        // Phase `remote_completed_merge_materializes_exact_revision_and_replays_after_restart`.
         {
             for codec in [
                 ConflictMergeCodecV1::PlainUtf8ThreeWayV1,

@@ -160,8 +160,8 @@ impl Receiver {
         {
             return Err(denied());
         }
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(120)))?;
-        stream.set_write_timeout(Some(std::time::Duration::from_secs(10)))?;
+        stream.set_read_timeout(Some(tilo_test_env::hang_bound()))?;
+        stream.set_write_timeout(Some(tilo_test_env::hang_bound()))?;
         let registration_main = guard
             .registration_main_sha256
             .as_ref()
@@ -241,7 +241,7 @@ impl Receiver {
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(&sealed)?;
         use std::os::unix::fs::FileExt;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let deadline = tilo_test_env::hang_deadline();
         let mut offset = 0;
         let mut bytes = [0; 65536];
         loop {

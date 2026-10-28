@@ -45,6 +45,8 @@ buffa-build = "=0.9.2"
 messages = { path = "../../../apps/messages" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
+tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
+tilo-test-env = { path = "../../dev/test-env" }
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 
 [lints]

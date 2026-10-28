@@ -1,0 +1,5 @@
+{"manifest_version": 3, "name": "Downloader", "version": "1.0",
+ "action": {"default_title": "Open the last download"},
+ "permissions": ["downloads", "downloads.open"],
+ "background": {"service_worker": "worker.js"},
+ "web_accessible_resources": [{"resources": ["frame.html"], "matches": ["http://127.0.0.1/*"]}]}

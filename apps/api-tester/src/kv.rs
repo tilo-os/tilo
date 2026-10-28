@@ -17,13 +17,11 @@ use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-use ui::LocalState;
 use ui::icons::Icon;
 use ui::tokens::{Metrics, Spacing, SpacingStep};
-use ui::widget::data_table::{
-    ColumnDef, ColumnWidth, DataTable, TableModel, TableModelChange, TableRowState,
-};
+use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable, TableModel, TableModelChange};
 use ui::widget::{Button, ButtonRole, Checkbox, Column, Element, Spacer, TextInput, TextInputKind};
+use ui::{Arrival, LocalState};
 
 use crate::commands::{Cmd, RowEdit, Sink, Table};
 use crate::model::KeyValue;
@@ -115,10 +113,10 @@ impl TableModel for KvModel {
         self.rows.iter().position(|row| identity(&row.id) == key)
     }
 
-    fn row_state(&self, index: usize) -> TableRowState<'_, KvRow> {
+    fn row_state(&self, index: usize) -> Arrival<&KvRow, &str> {
         self.rows
             .get(index)
-            .map_or(TableRowState::Loading, TableRowState::Ready)
+            .map_or_else(Arrival::local, Arrival::Ready)
     }
 
     fn poll_changes(&mut self) -> Vec<TableModelChange> {
@@ -148,11 +146,18 @@ fn text_cell(
     field: &'static str,
 ) -> Element {
     let id = ui::tilo_resource::Id::from_raw(row.id.clone());
+    // The blank row under the pairs invites a new one; repeating the
+    // column headers there read as a second header row.
+    let placeholder = if row.pending.get() {
+        format!("Add {}", name.to_lowercase())
+    } else {
+        name.to_owned()
+    };
     let input = TextInput::from_state(state)
         .with_id(&format!("api.kv.{table:?}.{id}.{field}"))
         .with_kind(TextInputKind::Code)
         .with_plain_chrome()
-        .with_placeholder(name)
+        .with_placeholder(&placeholder)
         .with_accessible_name(name);
     let rows = table.rows();
     let item = rows.item(&id);
@@ -244,11 +249,14 @@ pub(crate) fn build(
                 })
             },
         ),
-        ColumnDef::new("key", "Key", ColumnWidth::Flex(1.0)).with_widget(
-            move |row: &KvRow, _| -> Element {
+        // A pair reads across: on a wide window the key keeps to a third of
+        // the readable measure so its value starts beside it, and the value
+        // takes the rest of the panel.
+        ColumnDef::new("key", "Key", ColumnWidth::Flex(1.0))
+            .max_width(Metrics::BASE.readable_width / 3.0)
+            .with_widget(move |row: &KvRow, _| -> Element {
                 text_cell(&key_sink, table, row, &row.key, "Key", "key")
-            },
-        ),
+            }),
         ColumnDef::new("value", "Value", ColumnWidth::Flex(2.0)).with_widget(
             move |row: &KvRow, _| -> Element {
                 text_cell(&value_sink, table, row, &row.value, "Value", "value")
@@ -264,7 +272,8 @@ pub(crate) fn build(
                     Box::new(
                         Button::icon_only(&format!("api.kv-remove.{id}"), Icon::X, "Remove row")
                             .role(ButtonRole::Plain)
-                            .on_effect(move || {
+                            // The removal is an edit, decided as one.
+                            .on_own_device_effect(move || {
                                 sink.borrow_mut().push(Cmd::Edit {
                                     table,
                                     row: row.clone(),
@@ -280,9 +289,9 @@ pub(crate) fn build(
         rows: shown,
         queue: queue.clone(),
     };
-    let element = DataTable::from_model(columns, model).with_accessible_name(label);
+    let table = DataTable::from_model(columns, model).with_accessible_name(label);
     KvTable {
-        element: Box::new(element),
+        element: Box::new(table),
         queue,
     }
 }

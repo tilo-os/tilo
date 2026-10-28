@@ -66,7 +66,7 @@
         },
         {
           "kind": "target_size",
-          "target": "semantic:Night Light",
+          "target": "semantic:Night light",
           "min": [
             32,
             32
@@ -174,7 +174,7 @@
         {
           "kind": "gap",
           "first": "semantic:Volume",
-          "second": "semantic:Night Light",
+          "second": "semantic:Night light",
           "axis": "y",
           "min": 21,
           "max": 29
@@ -182,11 +182,11 @@
         {
           "kind": "no_overlap",
           "first": "semantic:Volume",
-          "second": "semantic:Night Light"
+          "second": "semantic:Night light"
         },
         {
           "kind": "gap",
-          "first": "semantic:Night Light",
+          "first": "semantic:Night light",
           "second": "semantic:Change power profile",
           "axis": "y",
           "min": 14,
@@ -194,19 +194,19 @@
         },
         {
           "kind": "no_overlap",
-          "first": "semantic:Night Light",
+          "first": "semantic:Night light",
           "second": "semantic:Change power profile"
         },
         {
           "kind": "aligned",
           "first": "semantic:Settings",
-          "second": "semantic:Night Light",
+          "second": "semantic:Night light",
           "axis": "x",
           "tolerance": 0.5
         },
         {
           "kind": "aligned",
-          "first": "semantic:Night Light",
+          "first": "semantic:Night light",
           "second": "semantic:Change power profile",
           "axis": "x",
           "tolerance": 0.5

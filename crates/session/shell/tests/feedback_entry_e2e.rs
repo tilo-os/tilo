@@ -56,7 +56,10 @@ fn feedback_opens_once_beside_the_window_in_front_through_its_action() {
         "op": "actions_invoke", "provider": "device-local", "id": review, "wait_ms": 8000,
     }));
     assert!(
-        refused.to_string().contains("feedback-unconfigured"),
+        // The refusal says the composer's sentence, not its message key.
+        refused
+            .to_string()
+            .contains("Feedback is not configured for this workspace."),
         "a desktop without a destination refuses review: {refused}"
     );
     desktop.check();
@@ -65,9 +68,7 @@ fn feedback_opens_once_beside_the_window_in_front_through_its_action() {
 /// The id of the composer's `action` among this device's private-window actions.
 fn device_local(desktop: &Desktop, action: &str) -> String {
     let suffix = format!("\u{1f}{action}");
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(10))
-        .unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let listed = desktop.call(&json!({
             "op": "actions_enumerate", "query": "device-local", "limit": 2000, "wait_ms": 2000,

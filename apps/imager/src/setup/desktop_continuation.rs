@@ -675,7 +675,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn continuation_readiness_channel_refuses_untrusted_or_full_peers() {
-        // Phase `direct_invocation_without_shell_and_fake_ready_peer_are_refused`.
         {
             use std::os::unix::fs::{MetadataExt, PermissionsExt};
             use std::os::unix::net::UnixListener;
@@ -706,7 +705,6 @@ mod tests {
             );
         }
 
-        // Phase `readiness_connection_refuses_a_full_backlog_without_hanging`.
         {
             use std::os::fd::AsRawFd;
             use std::os::unix::net::UnixListener;
@@ -729,7 +727,7 @@ mod tests {
                     "fixture backlog was unexpectedly unbounded"
                 );
             }
-            assert!(started.elapsed() < std::time::Duration::from_secs(1));
+            assert!(started.elapsed() < tilo_test_env::hang_bound());
         }
     }
 
@@ -740,7 +738,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn post_review_edits_and_swaps_never_become_the_copy_baseline() {
-        // Phase `edits_after_inventory_validation_cannot_become_the_copy_baseline`.
         {
             for edit_already_copied in [false, true] {
                 let (_temp, store, choices) = fixture();
@@ -804,7 +801,6 @@ mod tests {
             }
         }
 
-        // Phase `existing_file_edited_after_final_review_is_refused_before_publication`.
         {
             use crate::setup::migration_worker::{MigrationWorker, WorkerEvent, WorkerOutcome};
             let (_temp, store, choices) = fixture();
@@ -851,7 +847,6 @@ mod tests {
             );
         }
 
-        // Phase `source_swapped_after_review_is_rejected_by_worker_before_journal_or_output`.
         {
             use crate::setup::migration_worker::{MigrationWorker, WorkerEvent, WorkerOutcome};
             let (_temp, store, choices) = fixture();
@@ -877,7 +872,6 @@ mod tests {
             assert!(!parent.join("Documents").exists());
         }
 
-        // Phase `destination_swapped_after_review_is_rejected_before_output`.
         {
             use crate::setup::migration_worker::{MigrationWorker, WorkerEvent, WorkerOutcome};
             let (_temp, store, choices) = fixture();
@@ -900,7 +894,6 @@ mod tests {
         }
     }
 
-    /// Private round trip, native paths and malformed records.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -930,7 +923,6 @@ mod tests {
             );
         }
 
-        // Phase `private_roundtrip_retains_native_paths_revision_and_per_folder_modes`.
         {
             let (_temp, store, mut choices) = fixture();
             choices[0].mode = FolderMode::Later;
@@ -953,7 +945,6 @@ mod tests {
             );
         }
 
-        // Phase `malformed_oversized_wrong_platform_and_relative_paths_fail_closed`.
         {
             let (_temp, store, choices) = fixture();
             assert!(Continuation::decode(b"{}").is_err());
@@ -974,7 +965,6 @@ mod tests {
             );
         }
 
-        // Phase `source_substitution_or_missing_mount_never_resolves`.
         {
             let (_temp, store, choices) = fixture();
             let mut c = Continuation::capture(&choices).unwrap();
@@ -995,7 +985,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn continuation_retries_and_identity_gates_prevent_unsafe_copies() {
-        // Phase `unpublished_retry_refuses_existing_names_and_unavailable_parents`.
         {
             let (_temp, store, choices) = fixture();
             let mut c = Continuation::capture(&choices).unwrap();
@@ -1026,7 +1015,6 @@ mod tests {
             );
         }
 
-        // Phase `identity_gate_collisions_and_destination_replacement_prevent_copy`.
         {
             let (_temp, store, choices) = fixture();
             let mut c = Continuation::capture(&choices).unwrap();
@@ -1043,7 +1031,6 @@ mod tests {
             assert!(c.prepare(0, &store, &[], true).is_err());
         }
 
-        // Phase `interrupted_acknowledgement_reuses_operation_and_later_never_copies`.
         {
             let (_temp, store, choices) = fixture();
             let mut c = Continuation::capture(&choices).unwrap();

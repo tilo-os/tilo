@@ -2,6 +2,11 @@
 //! control this machine. Settings writes them and the shell enforces them,
 //! both by these keys.
 
+/// Whether a switch the person never set is on: the master switch, every
+/// facet and automatic display input alike. Continuity runs only between the
+/// person's own certified devices, so it is on until they turn it off.
+pub const ON_UNLESS_SET: bool = true;
+
 /// A separately revocable Continuity facet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "model", derive(tilo_resource::Model))]

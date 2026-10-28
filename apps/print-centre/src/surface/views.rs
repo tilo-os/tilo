@@ -2,7 +2,9 @@
 //!
 //! Every page is a column inside one vertical `Scrollable` that spans the
 //! window, so the scroll bar sits on the window edge; the column is bounded to
-//! the readable measure and centred. Nothing here picks a colour, size, radius
+//! the readable measure and centred. A page's title, the way back and the
+//! page's actions are the window bar's ([`super::window_bar`]): no page draws
+//! them. Nothing here picks a colour, size, radius
 //! or padding: text names its role, buttons their role, and the toolkit
 //! spaces what it composes.
 
@@ -13,24 +15,20 @@ use ui::widget::{
     Actions, Badge, Banner, BarGauge, Button, ButtonRole, Card, CardGrid, CardWidth, ChipStyle,
     Column, Container, ControlSize, Divider, Dropdown, Field, Form, FormSection, GaugeThresholds,
     Image, ImageCropEditor, ListRow, NumberInput, ProgressBar, Property, PropertyList, Row,
-    Scrollable, Section, SectionHeader, Spacer, Text, Toggle, ToggleGroup, Tone,
+    Scrollable, Section, SectionHeader, Spacer, Text, TextInput, Toggle, ToggleGroup, Tone,
 };
 
 use super::{
-    Door, El, OperationNotice, PrintPreview, ScanState, Snapshot, UiCommand, display_name,
+    Door, El, PrintChoice, PrintPreview, ScanState, Snapshot, UiCommand, display_name,
     failed_areas, friendly_queue_state, friendly_reason, job_title, supply_level,
 };
+use crate::resource::{
+    OCR_LANGUAGES, PrintCentreEffect, PrintDefaults, SCAN_COLORS, SCAN_RESOLUTIONS, SCAN_SOURCES,
+};
+use ui::tilo_resource::Atom;
 
 fn text(s: &str, role: TextRole) -> El {
     Box::new(Text::new(s).with_role(role))
-}
-
-fn page_title(s: &str) -> El {
-    Box::new(
-        Text::new(s)
-            .with_role(TextRole::LargeTitle)
-            .with_heading_level(1),
-    )
 }
 
 fn copy(s: &str) -> El {
@@ -58,10 +56,6 @@ fn primary(button: Button) -> Button {
 
 fn destructive(button: Button) -> Button {
     button.role(ButtonRole::Destructive)
-}
-
-fn plain(button: Button) -> Button {
-    button.role(ButtonRole::Plain)
 }
 
 /// Trailing action group: the last button leads, the others come before it.
@@ -101,13 +95,6 @@ fn group_break() -> El {
 /// The groups of a page, one group rhythm apart.
 fn groups(items: Vec<El>) -> Column {
     stack_of(column(), items)
-}
-
-/// A page of a subpage's kind: the way back and the title, then the groups of
-/// the page. The first group sits one sibling step under the title on every
-/// page; later groups are a group rhythm apart.
-fn subpage(title: &str, tx: &Door, items: Vec<El>) -> Column {
-    stack_of(column().push(subpage_header(title, tx)), items)
 }
 
 /// `items` appended to `body`, a group rhythm between neighbours.
@@ -178,15 +165,6 @@ fn page_with_footer(body: Column, footer: Option<Actions>) -> El {
     Box::new(root)
 }
 
-fn notice_banner(notice: &OperationNotice) -> El {
-    let banner = if notice.success {
-        Banner::success(&notice.title)
-    } else {
-        Banner::error(&notice.title)
-    };
-    Box::new(banner.with_message(&notice.message).dismissible())
-}
-
 /// "printers, documents or scanners"
 fn join_areas(areas: &[&str]) -> String {
     match areas.split_last() {
@@ -226,18 +204,6 @@ pub(super) fn unavailable_notice(areas: &[&str], tx: &Door) -> Option<El> {
                 .with_icon(Icon::Refresh),
             ),
     ))
-}
-
-/// A page's way back to the dashboard, then its title.
-fn subpage_header(title: &str, tx: &Door) -> El {
-    Box::new(
-        bare_column()
-            .push(Box::new(plain(
-                command_button("print-centre.back", "Back", tx, UiCommand::Dashboard)
-                    .with_icon(Icon::ArrowLeft),
-            )))
-            .push(page_title(title)),
-    )
 }
 
 pub(super) fn loading_view() -> El {
@@ -403,33 +369,13 @@ fn is_active(job: &os_actions::printing::PrintJob) -> bool {
     )
 }
 
-pub(super) fn live_view(snapshot: &Snapshot, tx: &Door, notice: Option<&OperationNotice>) -> El {
+pub(super) fn live_view(snapshot: &Snapshot, tx: &Door) -> El {
     let queues = snapshot.queues.as_deref().unwrap_or(&[]);
     let jobs = snapshot.jobs.as_deref().unwrap_or(&[]);
     let scanners = snapshot.scanners.as_deref().unwrap_or(&[]);
     let active: Vec<_> = jobs.iter().filter(|job| is_active(job)).collect();
 
     let mut items: Vec<El> = Vec::new();
-    // Adding a printer and printing both need printers: with none, or with
-    // printers that could not be read, the page offers only what applies.
-    if !queues.is_empty() {
-        items.push(button_row(vec![
-            command_button("print-centre.add", "Add printer", tx, UiCommand::Discover)
-                .with_icon(Icon::Plus),
-            primary(
-                command_button(
-                    "print-centre.print",
-                    "Print a document",
-                    tx,
-                    UiCommand::ChooseDocument,
-                )
-                .with_icon(Icon::Printer),
-            ),
-        ]));
-    }
-    if let Some(notice) = notice {
-        items.push(notice_banner(notice));
-    }
     if let Some(issue) = unavailable_notice(&failed_areas(snapshot, true, true, true), tx) {
         items.push(issue);
     }
@@ -451,14 +397,13 @@ pub(super) fn live_view(snapshot: &Snapshot, tx: &Door, notice: Option<&Operatio
                 ),
             ])
         } else {
-            let refresh = command_button("print-centre.refresh", "Refresh", tx, UiCommand::Refresh)
-                .with_icon(Icon::Refresh);
             Box::new(
                 bare_column()
                     .with_rhythm(ui::tokens::Rhythm::Section)
-                    .push(Box::new(Section::new(Vec::new()).with_header(
-                        SectionHeader::heading("Your printers").action(refresh),
-                    )))
+                    .push(Box::new(
+                        Section::new(Vec::new())
+                            .with_header(SectionHeader::heading("Your printers")),
+                    ))
                     .push(Box::new(
                         CardGrid::new(queues.iter().map(|queue| printer_card(queue, tx)).collect())
                             .with_card_width(CardWidth::Wide),
@@ -595,7 +540,7 @@ pub(super) fn history_view(snapshot: &Snapshot, tx: &Door) -> El {
             )],
         ));
     }
-    page(subpage("Print history", tx, items))
+    page(groups(items))
 }
 
 fn device_summary(
@@ -646,17 +591,7 @@ pub(super) fn diagnostics_view(snapshot: &Snapshot, tx: &Door) -> El {
         ),
         Property::new("Scanners available", scanners.len().to_string()),
     ]))])
-    .with_header(
-        SectionHeader::heading("Connection check").action(
-            command_button(
-                "print-centre.diagnostics.refresh",
-                "Check again",
-                tx,
-                UiCommand::Refresh,
-            )
-            .with_icon(Icon::Refresh),
-        ),
-    );
+    .with_header(SectionHeader::heading("Connection check"));
     let mut items: Vec<El> = Vec::new();
     if let Some(issue) = unavailable_notice(&failed_areas(snapshot, true, false, true), tx) {
         items.push(issue);
@@ -666,7 +601,7 @@ pub(super) fn diagnostics_view(snapshot: &Snapshot, tx: &Door) -> El {
         items.push(printer_check(queue, tx));
     }
     items.push(scanner_check(scanners.is_empty(), tx));
-    page(subpage("Device help", tx, items))
+    page(groups(items))
 }
 
 /// What one printer answered to the status check, in plain words.
@@ -702,15 +637,9 @@ fn printer_check(queue: &os_actions::printing::PrinterQueue, tx: &Door) -> El {
 
 fn scanner_check(none_found: bool, tx: &Door) -> El {
     let items: Vec<El> = if none_found {
-        vec![
-            copy("No scanner was found. Check its cable or network connection, then refresh."),
-            Box::new(command_button(
-                "print-centre.diagnostics.refresh",
-                "Check again",
-                tx,
-                UiCommand::Refresh,
-            )),
-        ]
+        vec![copy(
+            "No scanner was found. Check its cable or network connection, then check again.",
+        )]
     } else {
         vec![
             copy("Your scanner is available for a new document."),
@@ -794,17 +723,9 @@ fn queue_card(job: &os_actions::printing::PrintJob, pending_cancel: Option<&str>
     })
 }
 
-pub(super) fn queue_view(
-    snapshot: &Snapshot,
-    tx: &Door,
-    pending_cancel: Option<&str>,
-    notice: Option<&OperationNotice>,
-) -> El {
+pub(super) fn queue_view(snapshot: &Snapshot, tx: &Door, pending_cancel: Option<&str>) -> El {
     let jobs = snapshot.jobs.as_deref().unwrap_or(&[]);
     let mut items: Vec<El> = Vec::new();
-    if let Some(notice) = notice {
-        items.push(notice_banner(notice));
-    }
     if let Some(issue) = unavailable_notice(&failed_areas(snapshot, false, true, false), tx) {
         items.push(issue);
     }
@@ -832,7 +753,7 @@ pub(super) fn queue_view(
             )],
         ));
     }
-    page(subpage("Print queue", tx, items))
+    page(groups(items))
 }
 
 pub(super) fn device_view(queue: &os_actions::printing::PrinterQueue, tx: &Door) -> El {
@@ -887,18 +808,14 @@ pub(super) fn device_view(queue: &os_actions::printing::PrinterQueue, tx: &Door)
             "Available to your apps"
         },
     );
-    page(subpage(
-        &display_name(&queue.name),
-        tx,
-        vec![
-            titled_section(
-                "Details",
-                vec![Box::new(PropertyList::new(vec![status, availability]))],
-            ),
-            titled_section("Ink and toner", supplies),
-            titled_section("Printer controls", vec![button_row(buttons)]),
-        ],
-    ))
+    page(groups(vec![
+        titled_section(
+            "Details",
+            vec![Box::new(PropertyList::new(vec![status, availability]))],
+        ),
+        titled_section("Ink and toner", supplies),
+        titled_section("Printer controls", vec![button_row(buttons)]),
+    ]))
 }
 
 pub(super) fn discovery_view(
@@ -960,7 +877,7 @@ pub(super) fn discovery_view(
             )),
         ]),
     };
-    page(subpage("Add a printer", tx, vec![body]))
+    page(groups(vec![body]))
 }
 
 fn printer_picker(snapshot: &Snapshot, selected: Option<&str>, tx: &Door) -> Dropdown {
@@ -985,20 +902,42 @@ fn printer_picker(snapshot: &Snapshot, selected: Option<&str>, tx: &Door) -> Dro
     if let Some(selected) = selected {
         picker.set_selected(selected);
     }
-    let select_tx = tx.clone();
-    picker.on_change(move |name| {
-        let _ = select_tx.send(UiCommand::SelectPrinter(name.to_owned()));
-    })
+    match tx.1.as_ref() {
+        Some(actions) => actions.bind_effect(picker, PrintCentreEffect::CHOOSE_PRINTER),
+        None => picker,
+    }
+}
+
+/// What the print setup form is filled from: the range being typed, the
+/// options the chosen printer reports, the values chosen so far, and the page
+/// of the document under review.
+pub(super) struct PrintForm<'a> {
+    pub(super) copies: &'a ui::LocalState<f64>,
+    pub(super) two_sided: &'a ui::LocalState<bool>,
+    pub(super) range: &'a ui::LocalState<String>,
+    pub(super) options: &'a os_actions::printing::PrinterOptions,
+    pub(super) choice: &'a PrintChoice,
+    /// How many pages the document has: the range field is drawn only when
+    /// there is more than one to choose from.
+    pub(super) pages: usize,
 }
 
 /// The document being printed: its preview, which the person can check before
-/// anything is sent. The preview spans the card, so the page sits in its middle.
-fn document_card(filename: &str, preview: &PrintPreview) -> El {
+/// anything is sent, page by page for a document of more than one. A wrong
+/// page or a wrong paper size is caught here rather than on paper.
+fn document_card(filename: &str, preview: &PrintPreview, tx: &Door) -> El {
+    // How many pages the document has decides whether there is a pager at
+    // all: one page has nothing to turn.
+    let (page, pages) = match preview {
+        PrintPreview::Ready { page, pages, .. } => (*page, *pages),
+        _ => (0, 0),
+    };
     let preview_widget: El = match preview {
         PrintPreview::Ready {
             rgba,
             width,
             height,
+            ..
         } => Box::new(
             Container::new()
                 .with_height(300.0)
@@ -1018,46 +957,128 @@ fn document_card(filename: &str, preview: &PrintPreview) -> El {
                 .push(muted("The original document is unchanged.")),
         ),
     };
-    Box::new(Card::new(preview_widget).with_title(filename))
+    let body = if pages > 1 {
+        let shown = page.min(pages.saturating_sub(1));
+        // The count keeps its own line above the pager: a card this narrow
+        // would otherwise break "Page 3 of 40" into three.
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .push(preview_widget)
+                .push(Box::new(
+                    Text::new(&format!("Page {} of {}", shown.saturating_add(1), pages))
+                        .with_role(TextRole::Label),
+                ))
+                .push(Box::new(
+                    Row::new()
+                        .no_wrap()
+                        .with_align_items(taffy::AlignItems::Center)
+                        .with_gap(Spacing::BASE.s2)
+                        .push(Box::new(command_button(
+                            "print-centre.print.previous-page",
+                            "Previous",
+                            tx,
+                            UiCommand::PreviousPrintPage,
+                        )))
+                        .push(Box::new(command_button(
+                            "print-centre.print.next-page",
+                            "Next",
+                            tx,
+                            UiCommand::NextPrintPage,
+                        ))),
+                )),
+        ) as El
+    } else {
+        preview_widget
+    };
+    Box::new(Card::new(body).with_title(filename))
 }
 
-fn print_settings(
-    picker: Dropdown,
-    copies: &ui::LocalState<f64>,
-    two_sided: &ui::LocalState<bool>,
-    tx: &Door,
-) -> Form {
-    let defaults = tx.clone();
+fn print_settings(picker: Dropdown, form: &PrintForm<'_>, tx: &Door) -> Form {
+    let mut options = FormSection::new("Options").grouped().field(
+        Field::new(
+            "Copies",
+            NumberInput::from_state(form.copies)
+                .with_range(1.0, 99.0)
+                .with_step(1.0)
+                .with_id("print-centre.print.copies")
+                .compact(),
+        )
+        .with_trailing_control(),
+    );
+    // A document with one page has no pages to choose, so it is not offered a
+    // field that would change nothing. The count comes with the preview, so
+    // the form is told it.
+    if form.pages > 1 {
+        options = options.field(
+            Field::new(
+                "Pages",
+                TextInput::from_state(form.range)
+                    .with_id("print-centre.print.pages")
+                    .with_placeholder("All pages")
+                    .with_accessible_name("Pages to print"),
+            )
+            .with_help("Print some of the pages, as in 3-5 or 1, 4, 9. Leave it empty for all."),
+        );
+    }
+    // The driver's own list decides which of these fields is drawn: a paper
+    // size, a colour mode, a two-sided mode or an orientation it never
+    // reported is a field it would silently ignore.
+    for (option, key, choices, chosen) in [
+        (
+            "Paper",
+            "page-size",
+            &form.options.page_sizes,
+            form.choice.page_size.as_deref(),
+        ),
+        (
+            "Colour",
+            "colour",
+            &form.options.colour_modes,
+            form.choice.colour.as_deref(),
+        ),
+        (
+            "Two sides",
+            "two-sided",
+            &form.options.duplex_modes,
+            form.choice.duplex.as_deref(),
+        ),
+        (
+            "Orientation",
+            "orientation",
+            &form.options.orientations,
+            form.choice.orientation.as_deref(),
+        ),
+    ] {
+        if choices.len() < 2 {
+            continue;
+        }
+        options = options.field(Field::new(
+            option,
+            driver_choice(key, choices, chosen, tx).with_accessible_name(option.to_owned()),
+        ));
+    }
+    // A printer that reports no duplex mode keeps the one setting every CUPS
+    // printer reads, so a person can still ask for both sides.
+    if form.options.duplex_modes.len() < 2 {
+        let mut both_sides = Toggle::from_state(form.two_sided);
+        if let Some(binding) =
+            tx.1.as_ref()
+                .and_then(|actions| actions.field_binding(PrintDefaults::paths().two_sided))
+        {
+            both_sides = both_sides.on_action(binding);
+        }
+        options =
+            options.field(Field::new("Print on both sides", both_sides).with_trailing_control());
+    }
     Form::new()
         .section(
             FormSection::new("Printer").field(
                 Field::new("Send to", picker).with_help("Choose where to send this document."),
             ),
         )
-        .section(
-            FormSection::new("Options")
-                .grouped()
-                .field(
-                    Field::new(
-                        "Copies",
-                        NumberInput::from_state(copies)
-                            .with_range(1.0, 99.0)
-                            .with_step(1.0)
-                            .with_id("print-centre.print.copies")
-                            .compact(),
-                    )
-                    .with_trailing_control(),
-                )
-                .field(
-                    Field::new(
-                        "Print on both sides",
-                        Toggle::from_state(two_sided).on_change(move |value| {
-                            let _ = defaults.send(UiCommand::SetTwoSided(value));
-                        }),
-                    )
-                    .with_trailing_control(),
-                ),
-        )
+        .section(options)
 }
 
 pub(super) fn print_setup_view(
@@ -1067,25 +1088,29 @@ pub(super) fn print_setup_view(
     selected: Option<&str>,
     copies: &ui::LocalState<f64>,
     two_sided: &ui::LocalState<bool>,
+    form: &PrintForm<'_>,
     tx: &Door,
 ) -> El {
     let filename = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("Selected document");
-    let settings = print_settings(
-        printer_picker(snapshot, selected, tx),
+    let form = PrintForm {
         copies,
         two_sided,
-        tx,
-    );
+        range: form.range,
+        options: form.options,
+        choice: form.choice,
+        pages: form.pages,
+    };
+    let settings = print_settings(printer_picker(snapshot, selected, tx), &form, tx);
     let layout = Row::new()
         .align_start()
         .push(Box::new(
             Container::new()
                 .with_width(260.0)
                 .with_no_padding()
-                .with_child(document_card(filename, preview)),
+                .with_child(document_card(filename, preview, tx)),
         ))
         .push(Box::new(
             Container::new()
@@ -1100,7 +1125,7 @@ pub(super) fn print_setup_view(
         items.push(issue);
     }
     items.push(Box::new(layout));
-    let body = subpage("Print a document", tx, items);
+    let body = groups(items);
 
     let mut buttons = vec![command_button(
         "print-centre.print.cancel",
@@ -1119,6 +1144,37 @@ pub(super) fn print_setup_view(
     page_with_footer(body, actions(buttons))
 }
 
+/// One of the driver's own options, as the choices it reported: the values
+/// it listed, with the one the person chose standing on the selection lift.
+fn driver_choice(
+    key: &str,
+    choices: &[os_actions::printing::OptionChoice],
+    chosen: Option<&str>,
+    tx: &Door,
+) -> ToggleGroup {
+    let default = os_actions::printing::PrinterOptions::default_key(choices).unwrap_or_default();
+    let selected = choices
+        .iter()
+        .position(|choice| choice.key == chosen.unwrap_or(default))
+        .unwrap_or(0);
+    let labels: Vec<&str> = choices.iter().map(|choice| choice.label.as_str()).collect();
+    let values: Vec<String> = choices.iter().map(|choice| choice.key.clone()).collect();
+    let send = tx.clone();
+    let key = key.to_owned();
+    let id = format!("print-centre.print.{key}");
+    ToggleGroup::new(segments(&labels), selected)
+        .with_id(&id)
+        .on_view(&format!("{id}.select"), move |index| {
+            let Some(value) = values.get(index) else {
+                return;
+            };
+            let _ = send.send(UiCommand::SetPrintOption {
+                option: key.clone(),
+                value: value.clone(),
+            });
+        })
+}
+
 /// A choice with its name above it.
 fn setting(label: &str, control: ToggleGroup) -> El {
     Box::new(
@@ -1133,16 +1189,6 @@ fn setting(label: &str, control: ToggleGroup) -> El {
 
 fn segments(labels: &[&str]) -> Vec<Segment> {
     labels.iter().map(|label| Segment::new(*label)).collect()
-}
-
-/// A segmented choice that stores its index in `state` and rebuilds nothing.
-fn choice(id: &str, labels: &[&str], state: &ui::LocalState<usize>) -> ToggleGroup {
-    let state_for_change = state.clone();
-    ToggleGroup::new(segments(labels), state.get())
-        .with_id(id)
-        .on_view(&format!("{id}.select"), move |index| {
-            state_for_change.set(index);
-        })
 }
 
 /// What the scan looked like to the text reader, and what can be done to the
@@ -1262,12 +1308,7 @@ fn page_navigation(selected_page: usize, page_count: usize, tx: &Door) -> Vec<Bu
     buttons
 }
 
-fn scan_review_view(
-    page_data: &super::ScannedPage,
-    scan: &ScanState,
-    notice: Option<&OperationNotice>,
-    tx: &Door,
-) -> El {
+fn scan_review_view(page_data: &super::ScannedPage, scan: &ScanState, tx: &Door) -> El {
     let selected_page = scan.selected;
     let page_count = scan.pages.len();
     let editor = ImageCropEditor::new(
@@ -1309,9 +1350,6 @@ fn scan_review_view(
         ));
 
     let mut items: Vec<El> = Vec::new();
-    if let Some(notice) = notice {
-        items.push(notice_banner(notice));
-    }
     items.push(Box::new(review));
     items.push(titled_section(
         "Pages in this document",
@@ -1323,7 +1361,7 @@ fn scan_review_view(
             button_row(page_navigation(selected_page, page_count, tx)),
         ],
     ));
-    let body = subpage("Scanned document", tx, items);
+    let body = groups(items);
     let footer = actions(vec![
         command_button(
             "print-centre.scan.new-document",
@@ -1383,63 +1421,94 @@ fn scanner_choices(snapshot: &Snapshot, selected: Option<&str>, tx: &Door) -> Ve
     devices
 }
 
+/// A scan setting's segments, bound to the default it sets: the choice is
+/// the defaults' field edit, as the palette and an agent make it.
+fn scan_choice<V: 'static>(
+    (id, labels): (&str, &[&str]),
+    state: &ui::LocalState<usize>,
+    tx: &Door,
+    path: ui::tilo_resource::Path<PrintDefaults, V>,
+    edit: impl Fn(
+        &ui::tilo_resource::Path<PrintDefaults, V>,
+        usize,
+    ) -> Option<ui::tilo_resource::Edit<PrintDefaults>>
+    + Send
+    + Sync
+    + 'static,
+) -> ToggleGroup {
+    let group = ToggleGroup::new(segments(labels), state.get()).with_id(id);
+    match tx.1.as_ref().and_then(|actions| {
+        actions.edit_binding_with(path, move |path, index: usize| {
+            edit(path, index).ok_or_else(|| "not one of the choices".to_owned())
+        })
+    }) {
+        Some(binding) => group.on_action(binding),
+        None => group,
+    }
+}
+
 fn scan_settings(scan: &ScanState, tx: &Door) -> Vec<El> {
+    let paths = PrintDefaults::paths();
+    let atom = |values: &'static [&'static str]| {
+        move |path: &ui::tilo_resource::Path<PrintDefaults, Atom>, index: usize| {
+            values
+                .get(index)
+                .map(|value| path.set(Atom((*value).to_owned())))
+        }
+    };
     vec![
         setting(
             "Quality",
-            choice(
-                "print-centre.scan.resolution",
-                &["150 dpi", "300 dpi", "600 dpi"],
+            scan_choice(
+                (
+                    "print-centre.scan.resolution",
+                    &["150 dpi", "300 dpi", "600 dpi"],
+                ),
                 &scan.resolution,
-            )
-            .on_change({
-                let tx = tx.clone();
-                move |index| {
-                    let _ = tx.send(UiCommand::SetScanResolution(index));
-                }
-            }),
+                tx,
+                paths.scan_resolution,
+                |path, index| SCAN_RESOLUTIONS.get(index).map(|dpi| path.set(*dpi)),
+            ),
         ),
         setting(
             "Appearance",
-            choice(
-                "print-centre.scan.color",
-                &["Color", "Grayscale", "Text"],
+            scan_choice(
+                ("print-centre.scan.color", &["Color", "Grayscale", "Text"]),
                 &scan.color,
-            )
-            .on_change({
-                let tx = tx.clone();
-                move |index| {
-                    let _ = tx.send(UiCommand::SetScanColor(index));
-                }
-            }),
+                tx,
+                paths.scan_color,
+                atom(&SCAN_COLORS),
+            ),
         ),
         setting(
             "Paper source",
-            choice(
-                "print-centre.scan.source",
-                &["Flatbed", "Feeder", "Two-sided"],
+            scan_choice(
+                (
+                    "print-centre.scan.source",
+                    &["Flatbed", "Feeder", "Two-sided"],
+                ),
                 &scan.source,
-            )
-            .on_change({
-                let tx = tx.clone();
-                move |index| {
-                    let _ = tx.send(UiCommand::SetScanSource(index));
-                }
-            }),
+                tx,
+                paths.scan_source,
+                atom(&SCAN_SOURCES),
+            ),
         ),
         setting(
             "Text language",
-            choice(
-                "print-centre.scan.language",
-                &["English", "German", "French", "Spanish"],
+            scan_choice(
+                (
+                    "print-centre.scan.language",
+                    &["English", "German", "French", "Spanish"],
+                ),
                 &scan.language,
-            )
-            .on_change({
-                let tx = tx.clone();
-                move |index| {
-                    let _ = tx.send(UiCommand::SetOcrLanguage(index));
-                }
-            }),
+                tx,
+                paths.ocr_language,
+                |path, index| {
+                    OCR_LANGUAGES
+                        .get(index)
+                        .map(|(value, _)| path.set(Atom((*value).to_owned())))
+                },
+            ),
         ),
     ]
 }
@@ -1448,17 +1517,13 @@ pub(super) fn scan_setup_view(
     snapshot: &Snapshot,
     selected: Option<&str>,
     scan: &ScanState,
-    notice: Option<&OperationNotice>,
     tx: &Door,
 ) -> El {
     if let Some(page_data) = scan.result.as_ref() {
-        return scan_review_view(page_data, scan, notice, tx);
+        return scan_review_view(page_data, scan, tx);
     }
     let page_count = scan.pages.len();
     let mut items: Vec<El> = Vec::new();
-    if let Some(notice) = notice {
-        items.push(notice_banner(notice));
-    }
     if page_count > 0 {
         items.push(muted(&format!(
             "{page_count} {} captured. New scans are added to this document.",
@@ -1470,7 +1535,7 @@ pub(super) fn scan_setup_view(
         scanner_choices(snapshot, selected, tx),
     ));
     items.push(titled_section("Page settings", scan_settings(scan, tx)));
-    let body = subpage("Scan a document", tx, items);
+    let body = groups(items);
 
     let mut buttons = vec![
         command_button(

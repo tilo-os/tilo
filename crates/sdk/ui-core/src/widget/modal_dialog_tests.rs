@@ -1751,11 +1751,129 @@ fn a_dialog_arrives_from_its_centre_and_a_rebuilt_one_does_not_replay_it() {
     with_monotonic_time(at(800), || {
         let gone = present(&mut d, WINDOW, &theme);
         assert!(gone.encoding().is_empty(), "and then it has gone");
-        // A key opens it at once.
         note_source(MotionSource::Keyboard);
         d.set_open(true);
         lay_out(&mut d, WINDOW, &theme);
         let _ = present(&mut d, WINDOW, &theme);
         assert!(!d.appear.is_moving(), "a shortcut lands at once");
     });
+}
+
+/// Dismissal is the dialog's close control: a view action published while
+/// the dialog is open, under its test id, that an agent invokes as a person
+/// presses Escape, and that nothing records in history.
+#[test]
+fn dismissal_is_a_published_view_action_while_the_dialog_is_open() {
+    let (dismissed, dismiss) = counter();
+    let mut d = ModalDialog::new("Delete rule?", TestContent)
+        .on_dismiss(dismiss)
+        .with_test_id("firewall-delete");
+    let doc = AutoCommit::new();
+    assert!(
+        crate::resources::resources(&d, &doc).is_empty(),
+        "a closed dialog offers no way to close it"
+    );
+    d.set_open(true);
+    let resources = crate::resources::resources(&d, &doc);
+    let [close] = resources.as_slice() else {
+        panic!("one close control, not {}", resources.len());
+    };
+    assert_eq!(close.id.0, "tilo.control:firewall-delete.close");
+    let [action] = close.actions.as_slice() else {
+        panic!("one action, not {}", close.actions.len());
+    };
+    assert_eq!(action.id, "invoke");
+    assert_eq!(action.kind, tilo_actions::OperationKind::View);
+    assert!(
+        crate::widget::controls::control_action_bindings(&d)
+            .iter()
+            .any(|binding| matches!(
+                &binding.kind,
+                crate::widget::ControlBindingKind::Action(address)
+                    if address.resource == close.id.0
+            )),
+        "the close control is bound to the action, not a private callback"
+    );
+    // The action an agent invokes is the one Escape emits.
+    let mut doc = AutoCommit::new();
+    crate::widget::ResourceOperation::local(
+        tilo_actions::InvocationId::new(),
+        tilo_actions::OperationKind::View,
+        super::super::activation::NATIVE_INVOKE,
+        &serde_json::to_vec("firewall-delete.close").unwrap(),
+    )
+    .start(
+        &mut d,
+        &mut crate::widget::Edits::lend(&mut doc),
+        &automerge::ROOT,
+    )
+    .unwrap()
+    .expect("the open dialog answers its close control");
+    assert_eq!(dismissed.get(), 1);
+}
+
+/// An agent closes an open dialog through the host as through any published
+/// action, and the dialog's handler runs.
+#[test]
+fn an_agent_closes_a_hosted_dialog_through_its_published_close_control() {
+    let (dismissed, dismiss) = counter();
+    let dialog = ModalDialog::new("Delete rule?", TestContent)
+        .with_test_id("firewall-delete")
+        .on_dismiss(dismiss)
+        .open(true);
+    let mut h = crate::headless::FrameHarness::for_root(
+        crate::State::new(),
+        crate::widget::Column::new().push(Box::new(dialog)),
+        (800, 600),
+        Theme::dark(),
+    );
+    h.invoke_published(
+        "tilo.control:firewall-delete.close",
+        "invoke",
+        &serde_json::Map::new(),
+    )
+    .expect("the published close control is reachable");
+    assert_eq!(dismissed.get(), 1);
+}
+
+/// The footer buttons are the dialog's published controls: an agent presses
+/// Save as an effect and Cancel as a view action, as a person presses them,
+/// and a disabled primary answer is not offered.
+#[test]
+fn an_agent_presses_a_dialog_footer_through_its_published_controls() {
+    let (saved, save) = counter();
+    let (cancelled, cancel) = counter();
+    let dialog = ModalDialog::new("Rename", TestContent)
+        .with_test_id("rename")
+        .primary_action("Save", save)
+        .secondary_action("Cancel", cancel)
+        .open(true);
+    let mut h = crate::headless::FrameHarness::for_root(
+        crate::State::new(),
+        crate::widget::Column::new().push(Box::new(dialog)),
+        (800, 600),
+        Theme::dark(),
+    );
+    let resources = h.resources();
+    let kind = |id: &str| {
+        resources
+            .iter()
+            .find(|resource| resource.id.0 == id)
+            .map(|resource| resource.actions[0].kind)
+    };
+    assert_eq!(
+        kind("tilo.control:rename.primary"),
+        Some(tilo_actions::OperationKind::Effect)
+    );
+    assert_eq!(
+        kind("tilo.control:rename.secondary"),
+        Some(tilo_actions::OperationKind::View)
+    );
+    let none = serde_json::Map::new();
+    h.invoke_published("tilo.control:rename.secondary", "invoke", &none)
+        .expect("Cancel is reachable");
+    assert_eq!(cancelled.get(), 1);
+    h.invoke_published("tilo.control:rename.primary", "invoke", &none)
+        .expect("Save is reachable");
+    assert_eq!(saved.get(), 1);
 }

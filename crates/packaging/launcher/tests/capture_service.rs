@@ -1,4 +1,3 @@
-//! Actual signed runtime, signed installed service and canonical capture launch.
 use launcher::{
     owned_service::{
         CaptureAdmission, ServiceAuthority, ServiceCancellation, ServiceLaunch, ServiceLeaseKey,
@@ -49,9 +48,19 @@ impl Drop for InaccessibleAncestor {
     }
 }
 
-fn signed_runtime(root: &Path) -> (PathBuf, String) {
+/// A copy of the built launcher under `root` that the fixture may rewrite (strip).
+/// `fs::copy` keeps the source's mode, and the runner may hand the test a
+/// read-only (0555) link into its content store rather than a writable build
+/// output, so the copy is made owner-writable explicitly.
+fn writable_launcher_copy(root: &Path) -> PathBuf {
     let launcher = root.join("tilo-launcher");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilo-launcher"), &launcher).unwrap();
+    std::fs::copy(tilo_test_env::package_binary!("tilo-launcher"), &launcher).unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+    launcher
+}
+
+fn signed_runtime(root: &Path) -> (PathBuf, String) {
+    let launcher = writable_launcher_copy(root);
     // Strip only the fixture copy's debug sections; executable code is the actual built launcher.
     assert!(
         std::process::Command::new("strip")
@@ -192,20 +201,17 @@ fn inspect_peer(
 ) -> io::Result<()> {
     let custody = endpoint.custody()?;
     assert_peer_custody(&custody, &namespace_metadata(custody.init_pid)?);
-    let started = Instant::now();
+    let deadline = tilo_test_env::hang_deadline();
     let mut stream = loop {
         match endpoint.connect() {
             Ok(stream) => break stream,
-            Err(error)
-                if error.kind() == io::ErrorKind::NotFound
-                    && started.elapsed() < Duration::from_secs(10) =>
-            {
+            Err(error) if error.kind() == io::ErrorKind::NotFound && Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(10));
             }
             Err(error) => return Err(error),
         }
     };
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_read_timeout(Some(tilo_test_env::hang_bound()))?;
     stream.write_all(b"?")?;
     let mut response = [0; 9];
     stream.read_exact(&mut response)?;
@@ -237,7 +243,7 @@ fn inspect_peer(
 }
 
 fn assert_worker_reaped(receive: &std::sync::mpsc::Receiver<OwnedFd>) {
-    let pidfd = receive.recv_timeout(Duration::from_secs(1)).unwrap();
+    let pidfd = tilo_test_env::recv("the reaped worker's pidfd", receive);
     let mut poll = libc::pollfd {
         fd: pidfd.as_raw_fd(),
         events: libc::POLLIN,
@@ -563,7 +569,7 @@ fn returning_callback_retains_original_custody(
             )
         })),
     };
-    let endpoint = match receive.recv_timeout(Duration::from_secs(15)) {
+    let endpoint = match receive.recv_timeout(tilo_test_env::hang_bound()) {
         Ok(endpoint) => endpoint,
         Err(error) => {
             return Err(signed_reader_failure(
@@ -575,14 +581,11 @@ fn returning_callback_retains_original_custody(
         }
     };
     let (custody, init) = observe_retained_custody(&endpoint, &weak, context);
-    let started = Instant::now();
+    let deadline = tilo_test_env::hang_deadline();
     let stream = loop {
         match endpoint.connect() {
             Ok(stream) => break stream,
-            Err(error)
-                if error.kind() == io::ErrorKind::NotFound
-                    && started.elapsed() < Duration::from_secs(10) =>
-            {
+            Err(error) if error.kind() == io::ErrorKind::NotFound && Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(10));
             }
             Err(error) => {
@@ -652,7 +655,7 @@ fn exercise_retained_endpoint(
     } else {
         let mut stream = stream.try_clone().unwrap();
         stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         stream.write_all(b"?").unwrap();
         let mut response = [0; 9];

@@ -132,7 +132,6 @@ pub struct Request {
     pub target: String,
     /// Header names and values in wire order.
     pub headers: Vec<(String, String)>,
-    /// The request body.
     pub body: Vec<u8>,
 }
 
@@ -256,9 +255,6 @@ impl Responder {
     }
 
     /// The next recorded request.
-    ///
-    /// # Panics
-    /// If no request arrives in time.
     #[allow(
         clippy::expect_used,
         reason = "a missing request is the test failure this fixture reports"
@@ -270,9 +266,6 @@ impl Responder {
     }
 
     /// Assert that no connection is waiting on a silent responder.
-    ///
-    /// # Panics
-    /// If a client connected.
     #[allow(
         clippy::expect_used,
         clippy::panic,

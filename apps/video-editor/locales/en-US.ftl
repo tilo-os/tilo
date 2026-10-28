@@ -132,6 +132,14 @@ video-editor-mark-in = Marked in
 video-editor-mark-out = Marked out
 video-editor-clear-marks = Cleared the in and out marks
 video-editor-add-title = Added the title { $text }
+video-editor-set-title = Restyled a title
+video-editor-add-clip = Placed a clip on the timeline
+video-editor-move-clip = Moved a clip
+video-editor-set-clip = Changed a clip's fades and levels
+video-editor-remove-clip = { $ripple ->
+    [true] Removed a clip and closed the gap
+   *[other] Removed a clip
+}
 video-editor-add-marker = Added a marker
 video-editor-remove-marker = Removed a marker
 video-editor-add-track = Added a { $kind ->

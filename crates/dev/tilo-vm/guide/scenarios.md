@@ -116,7 +116,7 @@ does not itself report that digest.
 
 ### Retained installation preferences
 
-Use `--hostname tilo-yoga --keyboard-layout "German (QWERTZ)" --timezone Europe/Berlin`
+Use `--hostname tilo-desktop --keyboard-layout "German (QWERTZ)" --timezone Europe/Berlin`
 for a German keyboard and Berlin time. The keyboard argument is the installer's
 published display name. `--locale de_DE.UTF-8` is optional; without it the medium's
 language choice stays unchanged. Hostname defaults to `scenario-tilo`; omitted
@@ -169,7 +169,7 @@ through the compositor. A wrong or missing phrase is
 
 - Disposable scenarios use a fixed public unlock secret
   (`scenario-passphrase-2026`, or the PIN `804927`). For a retained install,
-  pass `--username xaver --credentials-stdin` and pipe exactly one UTF-8 JSON
+  pass `--username bob --credentials-stdin` and pipe exactly one UTF-8 JSON
   object: `{"account_password":"...","disk_passphrase":"..."}`. Both values
   must be distinct, lowercase ASCII letters and digits. Generate long random
   values (at least 24 characters each). This alphabet is exactly typable at

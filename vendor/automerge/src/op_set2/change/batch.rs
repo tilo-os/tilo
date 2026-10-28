@@ -437,6 +437,7 @@ fn walk_list<'a>(
                 continue;
             }
         }
+        crate::work::walked_op(); // TILO(work-count)
         ut.element_update(&op);
 
         if op.insert {
@@ -679,6 +680,9 @@ impl<'a, 'b> MapWalker<'a, 'b> {
     fn next_doc_op(&mut self) {
         self.pos = self.ops.pos();
         self.doc_op = self.ops.next();
+        if self.doc_op.is_some() {
+            crate::work::walked_op(); // TILO(work-count)
+        }
     }
 
     // TILO(map-apply-skip): the full walk stops at `bound`; seek to the

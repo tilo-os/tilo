@@ -524,6 +524,7 @@ impl Collaborator {
         let change = self.doc.save_after(&heads);
         let message = self
             .peer
+            .publication_mut()
             .publish_incremental(APP, RECORD, change, &self.sk, SystemTime::now())
             .map_err(|error| anyhow!("publish an edit: {error}"))?;
         let (channel, _) =
@@ -632,7 +633,6 @@ async fn act(mut collaborator: Collaborator, start: Instant, end: Instant) -> an
     Ok(())
 }
 
-/// `base + gap * n`.
 fn later(base: Instant, gap: Duration, n: u32) -> anyhow::Result<Instant> {
     base.checked_add(gap.checked_mul(n).context("duration")?)
         .context("clock")

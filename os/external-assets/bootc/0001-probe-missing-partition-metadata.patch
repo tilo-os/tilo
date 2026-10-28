@@ -1,5 +1,5 @@
 From d18d5a38d892d2ba81a96025cbd4721025ade112 Mon Sep 17 00:00:00 2001
-From: Benn1x <xaver.emmerling@tum.de>
+From: xemmerling <xaver@tilo.so>
 Date: Mon, 21 Sep 2026 02:50:50 +0200
 Subject: [PATCH] fix(blockdev): probe missing partition metadata
 

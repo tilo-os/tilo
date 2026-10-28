@@ -26,9 +26,9 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use taffy::{Style, TaffyTree};
 use tokio::sync::oneshot;
-use ui::widget::{EventCtx, TextInput, Widget as _};
+use ui::widget::{EventCtx, SecretPrompt, TextInput, Widget};
 use vello::kurbo::Rect;
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::PhysicalKey;
 
 use crate::portal::desktop_services::{
@@ -38,6 +38,11 @@ use crate::shell::app_action_consent::{AppActionConsent, AppActionConsentRequest
 use crate::shell::i18n::{t, t_args};
 
 pub mod accessibility;
+mod secret_prompts;
+#[cfg(test)]
+mod sim_tests;
+
+use secret_prompts::{authentication_prompt, network_prompt};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReviewRequest {
@@ -110,7 +115,6 @@ pub struct LauncherReviewDecision {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthenticationRequest {
     pub handle: String,
-    /// polkit's message for the action.
     pub message: String,
     pub action_id: String,
     /// User names that may authorise; more than one shows a picker.
@@ -172,6 +176,30 @@ pub struct NetworkSecretsRequest {
     /// `Some(default)` offers "Remember on this device", starting ticked
     /// or not; `None` when these secrets cannot be kept.
     pub remember: Option<bool>,
+    /// The request is for a SIM's PIN: asked as one, with what the modem
+    /// says about the SIM. `None` for every other secret.
+    pub sim: Option<SimUnlock>,
+}
+
+/// What a SIM asks for before its modem can be used.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SimUnlockStep {
+    /// Its PIN, which goes back to NetworkManager.
+    Pin,
+    /// Its PUK and a new PIN, after too many wrong PINs; the compositor
+    /// hands them to ModemManager itself.
+    Puk,
+}
+
+/// A SIM PIN request, with what ModemManager reports about the SIM.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SimUnlock {
+    pub step: SimUnlockStep,
+    /// The attempts the SIM has left for that step, when the modem says.
+    pub attempts_left: Option<u32>,
+    /// ModemManager's object path of the SIM, which a PUK is sent to;
+    /// `None` when ModemManager could not be asked.
+    pub sim_path: Option<String>,
 }
 
 /// The answer to a [`NetworkSecretsRequest`]: one value per field, in order.
@@ -180,7 +208,32 @@ pub enum NetworkSecretsDecision {
         values: Vec<zeroize::Zeroizing<String>>,
         remember: bool,
     },
+    /// The SIM was locked by its PUK and the person unlocked it with the
+    /// PUK and a new PIN: there is no secret to hand NetworkManager, the
+    /// connection is started again on the unlocked SIM.
+    UnlockedWithPuk,
     Cancelled,
+}
+
+/// Why ModemManager did not unlock a SIM with its PUK.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PukRefusal {
+    /// The PUK was wrong; the attempts the SIM has left for it, when the
+    /// modem says.
+    Wrong { attempts_left: Option<u32> },
+    /// Anything else, in the person's words.
+    Failed(String),
+}
+
+/// Unlocks a SIM with its PUK, setting a new PIN. Called off the
+/// compositor thread; blocks until the modem answered.
+pub trait SimUnlocker: Send + Sync {
+    fn send_puk(
+        &self,
+        sim_path: &str,
+        puk: zeroize::Zeroizing<String>,
+        new_pin: zeroize::Zeroizing<String>,
+    ) -> Result<(), PukRefusal>;
 }
 
 impl std::fmt::Debug for NetworkSecretsDecision {
@@ -191,6 +244,7 @@ impl std::fmt::Debug for NetworkSecretsDecision {
                 .field("values", &values.len())
                 .field("remember", remember)
                 .finish(),
+            Self::UnlockedWithPuk => f.write_str("UnlockedWithPuk"),
             Self::Cancelled => f.write_str("Cancelled"),
         }
     }
@@ -564,7 +618,7 @@ impl PortalDialogQueue {
             PendingDialog::Authentication {
                 request: Arc::new(request),
                 generation: uuid::Uuid::new_v4(),
-                owner_uid: unsafe { libc::geteuid() },
+                owner_uid: rustix::process::geteuid().as_raw(),
                 reply,
             }
         })
@@ -597,6 +651,15 @@ impl PortalDialogQueue {
             }
             other => Err(other),
         })
+    }
+
+    /// A live network-secrets sheet's request as queued.
+    fn network_request(&self, handle: &str) -> Option<NetworkSecretsRequest> {
+        let inner = self.inner.lock().ok()?;
+        match inner.pending.get(handle)? {
+            PendingDialog::NetworkSecrets { request, .. } => Some(request.clone()),
+            _ => None,
+        }
     }
 
     /// A live network-secrets sheet's fields as queued.
@@ -685,11 +748,6 @@ impl PortalDialogQueue {
 
     /// Queue the sheet asking whether, and how, to open a drive.
     /// Dismissing it answers [`DriveConsentDecision::NotNow`].
-    ///
-    /// # Errors
-    ///
-    /// When the request offers nothing to choose, or a sheet with the same
-    /// handle is already live.
     pub fn enqueue_drive_consent(
         &self,
         request: DriveConsentRequest,
@@ -749,10 +807,6 @@ impl PortalDialogQueue {
     /// Queue a sheet for a running shortcut's step; `reply` receives the
     /// answer exactly once, [`ShortcutStepDecision::Cancelled`] when the
     /// sheet is withdrawn.
-    ///
-    /// # Errors
-    ///
-    /// When a sheet with the same handle is already live.
     pub fn enqueue_shortcut_step(
         &self,
         request: ShortcutStepRequest,
@@ -911,7 +965,8 @@ impl PortalDialogQueue {
                         required: field.required,
                     })
                     .collect(),
-                remember_offered: request.remember.is_some(),
+                remember_offered: request.remember.is_some() && request.sim.is_none(),
+                sim: request.sim.clone(),
             }),
             PendingDialog::ActionGrant { request, .. } => Some(DialogView::ActionGrant {
                 handle: request.handle.clone(),
@@ -933,12 +988,18 @@ impl PortalDialogQueue {
                 // sheet names both.
                 action: format!("{} · {}", request.resource_label, request.action_label),
                 detail: action_grant_detail(request),
-                // Confirming one invocation grants nothing: it is allowed
-                // this once or not at all.
+                // Confirming one invocation grants nothing, unless the
+                // person allows it for the place it runs in as well.
                 choices: action_grant_answers(request)
-                    .iter()
-                    .map(|answer| crate::shell::app_action_consent::consent_label(*answer))
+                    .into_iter()
+                    .map(|answer| match (&request.scope, answer) {
+                        (Some(scope), AppActionConsent::Always) => {
+                            t_args("portal-confirm-scope", &[("scope", scope.clone().into())])
+                        }
+                        _ => crate::shell::app_action_consent::consent_label(answer),
+                    })
                     .collect(),
+                answers: action_grant_answers(request),
             }),
             PendingDialog::WindowTransfer { request, .. } => Some(DialogView::WindowTransfer {
                 handle: request.handle.clone(),
@@ -1318,6 +1379,8 @@ pub enum DialogView {
         action: String,
         detail: String,
         choices: Vec<String>,
+        /// What each choice answers, in the same order.
+        answers: Vec<AppActionConsent>,
     },
     /// Whether, and how, a window crosses into another workspace. The
     /// answers are the choices; Cancel leaves everything as it was.
@@ -1348,6 +1411,8 @@ pub enum DialogView {
         detail: String,
         fields: Vec<SecretFieldView>,
         remember_offered: bool,
+        /// A SIM's PIN or PUK, with what the modem says.
+        sim: Option<SimUnlock>,
     },
 }
 
@@ -1498,6 +1563,7 @@ impl DialogView {
             Self::UsbDevices { confirm_label, .. } => confirm_label.clone(),
             Self::ActionGrant { .. } => t("portal-allow"),
             Self::Authentication { .. } => t("portal-authenticate"),
+            Self::NetworkSecrets { sim: Some(_), .. } => t("portal-sim-unlock"),
             Self::NetworkSecrets { .. } => t("portal-connect"),
         }
     }
@@ -1564,14 +1630,15 @@ pub struct DialogLayout {
     pub confirm: Rect,
     pub launcher_name: Option<Rect>,
     pub launcher_icons: Vec<Rect>,
-    /// The secret field of an authentication sheet.
-    pub secret: Option<Rect>,
-    /// The fields of a network-secrets sheet, in order.
-    pub secret_fields: Vec<Rect>,
-    /// The "Remember on this device" row of a network-secrets sheet.
+    /// The drive sheet's "Remember" row.
     pub remember: Option<Rect>,
     /// Trusted disclosure navigation; never resolves the consent reply.
     pub review_back: Option<Rect>,
+    /// A sheet whose choices are its answers (the drive sheet): one button
+    /// per choice, by choice index, each answering with that choice. The
+    /// suggested one is the primary button and `confirm`; `cancel` is the
+    /// sheet's close button.
+    pub answers: Vec<Rect>,
 }
 
 pub struct PortalDialogController {
@@ -1583,21 +1650,24 @@ pub struct PortalDialogController {
     launcher_name: String,
     launcher_icon: usize,
     launcher_field: usize,
-    /// The authentication sheet's answer field; secret unless PAM echoes.
-    /// Wiped whenever the sheet closes, whichever way.
-    secret: TextInput,
-    /// One field per network-secrets field, masked ones secret; wiped like
-    /// `secret`.
-    entries: Vec<TextInput>,
+    /// The authentication or network-secrets sheet: the one password
+    /// prompt every part of Tilo asks with. Its fields zero what they held
+    /// whenever the sheet closes, whichever way.
+    prompt: Option<SecretPrompt>,
     /// A shortcut step's typed answer; secret when the step asks for one.
-    /// Wiped like `secret`.
+    /// Wiped whenever the sheet closes.
     step_field: TextInput,
-    /// The focused network-secrets field; one past the last is the
-    /// "Remember" row.
-    entry_focus: usize,
+    /// The drive sheet's "Remember" row.
     remember: bool,
-    /// Why the network-secrets sheet refused to close.
+    /// Why a shortcut step refused its answer.
     entry_error: Option<String>,
+    /// Where the on-screen keyboard covers the desktop while it is up: the
+    /// prompt stays above it.
+    keyboard_cover: Option<Rect>,
+    /// Hands a locked SIM's PUK and new PIN to the modem.
+    sim_unlocker: Arc<dyn SimUnlocker>,
+    /// The modem's answer to the PUK the sheet up sent, once it has one.
+    puk_attempt: Option<std::sync::mpsc::Receiver<Result<(), PukRefusal>>>,
 }
 
 fn small_count_as_f64(value: usize) -> f64 {
@@ -1619,13 +1689,22 @@ impl PortalDialogController {
             launcher_name: String::new(),
             launcher_icon: 0,
             launcher_field: 0,
-            secret: TextInput::local(),
-            entries: Vec::new(),
+            prompt: None,
             step_field: TextInput::local(),
-            entry_focus: 0,
             remember: false,
             entry_error: None,
+            keyboard_cover: None,
+            sim_unlocker: Arc::new(crate::network_secrets::ModemManagerUnlock),
+            puk_attempt: None,
         }
+    }
+
+    /// The same controller handing PUKs to `unlocker` instead of
+    /// ModemManager.
+    #[must_use]
+    pub fn with_sim_unlocker(mut self, unlocker: Arc<dyn SimUnlocker>) -> Self {
+        self.sim_unlocker = unlocker;
+        self
     }
     /// The queue this controller shows sheets from.
     pub fn queue(&self) -> &PortalDialogQueue {
@@ -1633,6 +1712,11 @@ impl PortalDialogController {
     }
 
     pub fn pump(&mut self) -> bool {
+        let unlocked = self.settle_puk_attempt();
+        self.pump_sheets() || unlocked
+    }
+
+    fn pump_sheets(&mut self) -> bool {
         // A sheet its requester withdrew (a portal `Close`, polkit's or
         // NetworkManager's cancel) is gone from the queue: let go of it and
         // of anything typed into it, so the next sheet can show.
@@ -1656,11 +1740,18 @@ impl PortalDialogController {
                 Some(DialogView::DriveConsent { preselect, .. }) => {
                     self.selected = preselect;
                 }
-                Some(DialogView::Authentication { identity, echo, .. }) => {
+                Some(DialogView::Authentication { identity, .. }) => {
                     self.selected = identity;
-                    self.secret = TextInput::local()
-                        .with_id("portal-authentication-secret")
-                        .with_secret(!echo);
+                    self.prompt = self
+                        .live_ticket()
+                        .map(|ticket| authentication_prompt(ticket.request()));
+                }
+                Some(DialogView::NetworkSecrets { .. }) => {
+                    self.prompt = self
+                        .active
+                        .as_deref()
+                        .and_then(|handle| self.queue.network_request(handle))
+                        .map(|request| network_prompt(&request));
                 }
                 Some(DialogView::ShortcutStep {
                     field: Some(ShortcutStepField { masked }),
@@ -1671,28 +1762,6 @@ impl PortalDialogController {
                         .with_secret(masked);
                 }
                 _ => {}
-            }
-            if let Some(handle) = self.active.clone() {
-                let (fields, remember) = self.queue.network_fields(&handle);
-                // Start on the first field still to fill in.
-                self.entry_focus = fields
-                    .iter()
-                    .position(|field| field.required && field.initial.is_empty())
-                    .or_else(|| fields.iter().position(|field| field.initial.is_empty()))
-                    .unwrap_or(0);
-                self.entries = fields
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, field)| {
-                        TextInput::local()
-                            .with_id(&format!("portal-network-secret-{index}"))
-                            .with_placeholder(&field.label)
-                            .with_accessible_name(field.label)
-                            .with_secret(field.masked)
-                            .with_initial_value(&field.initial)
-                    })
-                    .collect();
-                self.remember = remember.unwrap_or(false);
             }
             self.launcher_name = self
                 .view()
@@ -1720,19 +1789,12 @@ impl PortalDialogController {
         let Some(view) = self.view() else {
             return false;
         };
-        if let DialogView::NetworkSecrets {
-            fields,
-            remember_offered,
-            ..
-        } = &view
-        {
-            let len = fields.len() + usize::from(*remember_offered);
-            self.entry_focus = if reverse {
-                (self.entry_focus + len - 1) % len
-            } else {
-                (self.entry_focus + 1) % len
-            };
-            return true;
+        if matches!(view, DialogView::NetworkSecrets { .. }) {
+            // Between the fields and the "Remember" row, as Tab does.
+            return self
+                .prompt
+                .as_mut()
+                .is_some_and(|prompt| prompt.move_focus(!reverse));
         }
         if let Some(editor) = view.launcher_editor()
             && editor.editable_icon
@@ -1755,6 +1817,10 @@ impl PortalDialogController {
         } else {
             (self.selected + 1) % len
         };
+        if let Some(prompt) = &mut self.prompt {
+            // The identity picker is the prompt's choice row.
+            prompt.set_choice(self.selected);
+        }
         true
     }
     /// The displayed disclosure uses bounded pages, not an unbounded sheet.
@@ -1798,6 +1864,10 @@ impl PortalDialogController {
         let Some(view) = self.view() else {
             return false;
         };
+        if let Some(prompt) = &mut self.prompt {
+            prompt.submit();
+            return self.settle_prompt();
+        }
         if self.reviewing_more() {
             self.review_page += 1;
             return true;
@@ -1845,65 +1915,14 @@ impl PortalDialogController {
             DialogView::UsbDevices { .. } => self
                 .queue
                 .finish_usb_devices(view.handle(), ReviewDecision::Confirmed),
-            DialogView::ActionGrant { .. } => AppActionConsent::ALLOWING
+            DialogView::ActionGrant { answers, .. } => answers
                 .get(self.selected)
                 .is_some_and(|answer| self.queue.finish_action_grant(view.handle(), *answer)),
             DialogView::WindowTransfer { .. } => self
                 .queue
                 .finish_window_transfer(view.handle(), Some(self.selected)),
-            DialogView::Authentication {
-                identities,
-                identity,
-                ..
-            } => {
-                let identity = if identities.is_empty() {
-                    *identity
-                } else {
-                    self.selected
-                };
-                let Some(ticket) = self.queue.current_authentication().filter(|ticket| {
-                    Some(ticket.generation) == self.active_authentication_generation
-                        && self.active.as_deref() == Some(ticket.request().handle.as_str())
-                }) else {
-                    return false;
-                };
-                let Some(offered) = ticket.request().identities.get(identity) else {
-                    return false;
-                };
-                let secret = take_text(&mut self.secret);
-                self.queue.answer_authentication(&ticket, offered, secret)
-            }
-            DialogView::NetworkSecrets { .. } => {
-                let (fields, _) = self.queue.network_fields(view.handle());
-                let refusal = fields.iter().zip(&self.entries).enumerate().find_map(
-                    |(index, (field, entry))| {
-                        let value = entry.value();
-                        if value.is_empty() {
-                            field.required.then(|| (index, t("portal-secret-required")))
-                        } else if !field.rule.accepts(value) {
-                            Some((index, t("portal-secret-wifi-length")))
-                        } else {
-                            None
-                        }
-                    },
-                );
-                if let Some((index, reason)) = refusal {
-                    self.entry_focus = index;
-                    self.entry_error = Some(reason);
-                    return false;
-                }
-                let values = self
-                    .entries
-                    .iter()
-                    .map(|entry| zeroize::Zeroizing::new(entry.value().to_owned()))
-                    .collect();
-                let remember = self.remember;
-                self.forget_secret();
-                self.queue.finish_network_secrets(
-                    view.handle(),
-                    NetworkSecretsDecision::Answered { values, remember },
-                )
-            }
+            // Answered through the prompt, above.
+            DialogView::Authentication { .. } | DialogView::NetworkSecrets { .. } => false,
         };
         if done {
             self.active = None;
@@ -1914,6 +1933,10 @@ impl PortalDialogController {
         let Some(view) = self.view() else {
             return false;
         };
+        if let Some(prompt) = &mut self.prompt {
+            prompt.cancel();
+            return self.settle_prompt();
+        }
         let done = match &view {
             DialogView::DriveConsent { .. } => self
                 .queue
@@ -1941,21 +1964,7 @@ impl PortalDialogController {
             DialogView::WindowTransfer { .. } => {
                 self.queue.finish_window_transfer(view.handle(), None)
             }
-            DialogView::Authentication { .. } => {
-                let Some(ticket) = self.queue.current_authentication().filter(|ticket| {
-                    Some(ticket.generation) == self.active_authentication_generation
-                        && self.active.as_deref() == Some(ticket.request().handle.as_str())
-                }) else {
-                    return false;
-                };
-                self.forget_secret();
-                self.queue.cancel_authentication(&ticket)
-            }
-            DialogView::NetworkSecrets { .. } => {
-                self.forget_secret();
-                self.queue
-                    .finish_network_secrets(view.handle(), NetworkSecretsDecision::Cancelled)
-            }
+            DialogView::Authentication { .. } | DialogView::NetworkSecrets { .. } => false,
         };
         if done {
             self.active = None;
@@ -1964,6 +1973,29 @@ impl PortalDialogController {
     }
     pub fn layout(&self, bounds: Rect) -> Option<DialogLayout> {
         let view = self.view()?;
+        if let Some(prompt) = &self.prompt {
+            // The prompt lays itself out as it paints; until it has, the
+            // whole area is the sheet's, so nothing behind it is reachable
+            // and the area a capture must withhold is never too small.
+            let placed = prompt.layout();
+            let sheet = placed
+                .modal
+                .as_ref()
+                .map(|modal| modal.card)
+                .filter(|card| card.area() > 0.0)
+                .unwrap_or(bounds);
+            return Some(DialogLayout {
+                sheet,
+                choices: Vec::new(),
+                cancel: placed.cancel,
+                confirm: placed.primary,
+                launcher_name: None,
+                launcher_icons: Vec::new(),
+                remember: None,
+                review_back: None,
+                answers: Vec::new(),
+            });
+        }
         // Verified field reviews contain exact file/endpoint/certificate text,
         // rather than a one-line caption. Never overlap it with the entry.
         let moderation_review = matches!(&view, DialogView::ActionGrant { detail, .. }
@@ -1987,28 +2019,25 @@ impl PortalDialogController {
         };
         let review_width = 560.0;
         let width = bounds.width().min(review_width);
-        let row_count = view.selectable_count().min(6);
+        let answer_buttons = matches!(view, DialogView::DriveConsent { .. });
+        let row_count = if answer_buttons {
+            0
+        } else {
+            view.selectable_count().min(6)
+        };
         let launcher_editor = view.launcher_editor();
         let launcher_rows = launcher_editor.map_or(0, |editor| {
             usize::from(editor.editable_name) + usize::from(editor.editable_icon)
         });
-        let secret_rows = usize::from(matches!(view, DialogView::Authentication { .. }));
-        let (network_fields, remember_row) = match &view {
-            DialogView::NetworkSecrets {
-                fields,
-                remember_offered,
-                ..
-            } => (fields.len().min(6), usize::from(*remember_offered)),
+        let remember_row = match &view {
             DialogView::DriveConsent { remember_label, .. } => {
-                (0, usize::from(remember_label.is_some()))
+                usize::from(remember_label.is_some())
             }
-            _ => (0, 0),
+            _ => 0,
         };
         let height = 190.0
             + extra_detail
-            + small_count_as_f64(
-                row_count + launcher_rows + secret_rows + network_fields + remember_row,
-            ) * 48.0;
+            + small_count_as_f64(row_count + launcher_rows + remember_row) * 48.0;
         let minimum_width = if moderation_review {
             400.0
         } else {
@@ -2073,17 +2102,36 @@ impl PortalDialogController {
             sheet.x1 - 24.0,
             sheet.y1 - 20.0,
         );
-        let secret = (secret_rows > 0).then(|| {
+        // The drive sheet's two ways to open are its two buttons, sharing
+        // the action row in halves so neither label is ever cut: the other
+        // way on the left, the suggested one, primary, on the right.
+        let (answers, cancel, confirm) =
+            if let DialogView::DriveConsent {
+                choices, preselect, ..
+            } = &view
+            {
+                let row = Rect::new(sheet.x0 + 24.0, cancel.y0, sheet.x1 - 24.0, cancel.y1);
+                let gap = 12.0;
+                let half = (row.width() - gap) / 2.0;
+                let left = Rect::new(row.x0, row.y0, row.x0 + half, row.y1);
+                let right = Rect::new(row.x1 - half, row.y0, row.x1, row.y1);
+                let answers: Vec<Rect> = (0..choices.len())
+                    .map(|index| if index == *preselect { right } else { left })
+                    .collect();
+                let close = Rect::new(
+                    sheet.x1 - 52.0,
+                    sheet.y0 + 16.0,
+                    sheet.x1 - 16.0,
+                    sheet.y0 + 52.0,
+                );
+                (answers, close, right)
+            } else {
+                (Vec::new(), cancel, confirm)
+            };
+        let remember = (remember_row > 0).then(|| {
             let y = sheet.y0 + (118.0 + extra_detail) + small_count_as_f64(row_count) * 48.0;
             Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + row_h)
         });
-        let field_row = |index: usize| {
-            let y =
-                sheet.y0 + (118.0 + extra_detail) + small_count_as_f64(row_count + index) * 48.0;
-            Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + row_h)
-        };
-        let secret_fields = (0..network_fields).map(field_row).collect();
-        let remember = (remember_row > 0).then(|| field_row(network_fields));
         Some(DialogLayout {
             sheet,
             choices,
@@ -2091,29 +2139,23 @@ impl PortalDialogController {
             confirm,
             launcher_name,
             launcher_icons,
-            secret,
-            secret_fields,
             remember,
             review_back: (moderation_review && self.review_page > 0)
                 .then(|| Rect::new(sheet.x0 + 24.0, cancel.y0, sheet.x0 + 108.0, cancel.y1)),
+            answers,
         })
     }
     pub fn click(&mut self, point: vello::kurbo::Point, layout: &DialogLayout) -> bool {
         if layout.review_back.is_some_and(|rect| rect.contains(point)) {
             return self.review_back();
         }
-        if let Some(index) = layout
-            .secret_fields
-            .iter()
-            .position(|rect| rect.contains(point))
-        {
-            self.entry_focus = index;
-            return true;
-        }
         if layout.remember.is_some_and(|rect| rect.contains(point)) {
-            self.entry_focus = self.entries.len();
             self.remember = !self.remember;
             return true;
+        }
+        if let Some(index) = layout.answers.iter().position(|rect| rect.contains(point)) {
+            self.selected = index;
+            return self.confirm();
         }
         if let Some(index) = layout.choices.iter().position(|rect| rect.contains(point)) {
             let visible_start = self.visible_selection_start();
@@ -2236,39 +2278,12 @@ impl PortalDialogController {
         }
     }
 
-    /// Hand a key or IME event to the sheet's focused text field. The
-    /// "Remember" row takes only Space, which ticks it. Consumes every
-    /// event while a sheet with text entry is up.
+    /// Hand a key or IME event to the sheet's focused text field, or to the
+    /// password prompt. Consumes every event while a sheet with text entry
+    /// is up.
     pub fn edit_secret(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
-        use winit::keyboard::{Key, NamedKey};
-
-        if self.is_network_secrets() {
-            if self.entry_focus >= self.entries.len() {
-                // The "Remember" row: Space toggles it, nothing else types.
-                if matches!(
-                    event,
-                    WindowEvent::KeyboardInput {
-                        event: KeyEvent {
-                            logical_key: Key::Named(NamedKey::Space),
-                            state: ElementState::Pressed,
-                            ..
-                        },
-                        ..
-                    }
-                ) {
-                    self.remember = !self.remember;
-                }
-                return true;
-            }
-            self.entry_error = None;
-            let focus = self.entry_focus;
-            for (index, entry) in self.entries.iter_mut().enumerate() {
-                entry.set_focus(index == focus);
-            }
-            if let Some(entry) = self.entries.get_mut(focus) {
-                forward_to_field(entry, event, ctx);
-            }
-            return true;
+        if self.prompt.is_some() {
+            return self.prompt_event(event, ctx);
         }
         self.entry_error = None;
         let Some(field) = self.text_field_mut() else {
@@ -2279,11 +2294,9 @@ impl PortalDialogController {
         true
     }
 
-    /// The single text field of an authentication sheet or a shortcut
-    /// step, when one is up.
+    /// The single text field of a shortcut step, when one is up.
     fn text_field_mut(&mut self) -> Option<&mut TextInput> {
         match self.view()? {
-            DialogView::Authentication { .. } => Some(&mut self.secret),
             DialogView::ShortcutStep { field: Some(_), .. } => Some(&mut self.step_field),
             _ => None,
         }
@@ -2297,31 +2310,11 @@ impl PortalDialogController {
         };
         let mut placed = Vec::new();
         match view {
-            DialogView::Authentication { .. } => {
-                if let Some(rect) = layout.secret {
-                    self.secret.apply_layout_external(rect);
-                    self.secret.set_focus(true);
-                    placed.push(&mut self.secret);
-                }
-            }
             DialogView::ShortcutStep { field: Some(_), .. } => {
                 if let Some(rect) = layout.launcher_name {
                     self.step_field.apply_layout_external(rect);
                     self.step_field.set_focus(true);
                     placed.push(&mut self.step_field);
-                }
-            }
-            DialogView::NetworkSecrets { .. } => {
-                let focus = self.entry_focus;
-                for (index, (entry, rect)) in self
-                    .entries
-                    .iter_mut()
-                    .zip(&layout.secret_fields)
-                    .enumerate()
-                {
-                    entry.apply_layout_external(*rect);
-                    entry.set_focus(index == focus);
-                    placed.push(entry);
                 }
             }
             _ => {}
@@ -2330,29 +2323,14 @@ impl PortalDialogController {
     }
 
     /// Route a pointer event to the sheet's text fields, for hover, caret
-    /// placement and their show/hide controls; a press on a field focuses
-    /// it first. `true` when a field used the event.
+    /// placement and their show/hide controls. `true` when a field used
+    /// the event.
     pub fn field_pointer_event(
         &mut self,
         event: &WindowEvent,
         ctx: &mut EventCtx<'_>,
         layout: &DialogLayout,
-        point: Option<vello::kurbo::Point>,
     ) -> bool {
-        if let (
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                ..
-            },
-            Some(point),
-        ) = (event, point)
-            && let Some(index) = layout
-                .secret_fields
-                .iter()
-                .position(|rect| rect.contains(point))
-        {
-            self.entry_focus = index;
-        }
         let mut used = false;
         for field in self.place_fields(layout) {
             used |= forward_to_field(field, event, ctx);
@@ -2385,10 +2363,6 @@ impl PortalDialogController {
     /// sheet offers one.
     pub fn remember_display(&self) -> Option<(bool, bool)> {
         match self.view()? {
-            DialogView::NetworkSecrets {
-                remember_offered: true,
-                ..
-            } => Some((self.remember, self.entry_focus >= self.entries.len())),
             // Its choices take the focus; Space ticks the row.
             DialogView::DriveConsent {
                 remember_label: Some(_),
@@ -2401,10 +2375,6 @@ impl PortalDialogController {
     /// What the sheet's "Remember" row says, when it offers one.
     pub fn remember_label(&self) -> Option<String> {
         match self.view()? {
-            DialogView::NetworkSecrets {
-                remember_offered: true,
-                ..
-            } => Some(t("portal-remember-device")),
             DialogView::DriveConsent { remember_label, .. } => remember_label,
             _ => None,
         }
@@ -2426,7 +2396,7 @@ impl PortalDialogController {
         offered
     }
 
-    /// Why the network-secrets sheet did not close, when it refused.
+    /// Why a shortcut step did not close, when it refused.
     pub fn entry_error(&self) -> Option<&str> {
         self.entry_error.as_deref()
     }
@@ -2449,42 +2419,87 @@ impl PortalDialogController {
         });
         match &view {
             DialogView::Authentication { echo, .. } => {
-                state["secret_len"] = self.secret.value().chars().count().into();
+                let value = self
+                    .prompt
+                    .as_ref()
+                    .and_then(|prompt| prompt.fields().next())
+                    .map_or("", |(_, input)| input.value());
+                state["secret_len"] = value.chars().count().into();
                 if *echo {
-                    state["secret"] = self.secret.value().into();
+                    state["secret"] = value.into();
                 }
             }
             DialogView::NetworkSecrets {
                 fields,
                 remember_offered,
+                sim,
                 ..
             } => {
-                state["fields"] = fields
-                    .iter()
-                    .zip(&self.entries)
-                    .enumerate()
-                    .map(|(index, (field, input))| {
-                        let value = input.value();
-                        let mut entry = serde_json::json!({
-                            "key": field.key,
-                            "label": field.label,
-                            "masked": field.masked,
-                            "required": field.required,
-                            "length": value.chars().count(),
-                            "focused": index == self.entry_focus,
-                        });
-                        if !field.masked {
-                            entry["value"] = value.into();
-                        }
-                        entry
-                    })
-                    .collect();
+                if let Some(sim) = sim {
+                    // A SIM's fields are the prompt's own (a PUK asks three
+                    // where NetworkManager named one), every one masked.
+                    state["sim"] = serde_json::json!({
+                        "step": match sim.step {
+                            SimUnlockStep::Pin => "pin",
+                            SimUnlockStep::Puk => "puk",
+                        },
+                        "attempts_left": sim.attempts_left,
+                        "busy": self.prompt.as_ref().and_then(SecretPrompt::busy).is_some(),
+                    });
+                    state["fields"] = self
+                        .prompt
+                        .iter()
+                        .flat_map(|prompt| prompt.fields())
+                        .map(|(role, input)| {
+                            serde_json::json!({
+                                "key": sim_field_key(role),
+                                "masked": true,
+                                "required": true,
+                                "length": input.value().chars().count(),
+                                "focused": input.is_focused(),
+                            })
+                        })
+                        .collect();
+                } else {
+                    let inputs = self
+                        .prompt
+                        .iter()
+                        .flat_map(|prompt| prompt.fields().map(|(_, input)| input));
+                    state["fields"] = fields
+                        .iter()
+                        .zip(inputs)
+                        .map(|(field, input)| {
+                            let value = input.value();
+                            let mut entry = serde_json::json!({
+                                "key": field.key,
+                                "label": field.label,
+                                "masked": field.masked,
+                                "required": field.required,
+                                "length": value.chars().count(),
+                                "focused": input.is_focused(),
+                            });
+                            if !field.masked {
+                                entry["value"] = value.into();
+                            }
+                            entry
+                        })
+                        .collect();
+                }
                 state["remember"] = if *remember_offered {
-                    self.remember.into()
+                    self.prompt
+                        .as_ref()
+                        .and_then(SecretPrompt::option_checked)
+                        .unwrap_or(false)
+                        .into()
                 } else {
                     serde_json::Value::Null
                 };
-                state["error"] = self.entry_error.clone().into();
+                state["error"] = self
+                    .prompt
+                    .as_ref()
+                    .and_then(SecretPrompt::error)
+                    .map(str::to_owned)
+                    .into();
             }
             DialogView::ShortcutStep {
                 field_review: true, ..
@@ -2505,19 +2520,12 @@ impl PortalDialogController {
         state
     }
 
-    /// The sheet's single text field — an authentication answer or a
-    /// shortcut step's — when one is up.
+    /// A shortcut step's text field, when one is up.
     pub fn text_field(&self) -> Option<&TextInput> {
         match self.view()? {
-            DialogView::Authentication { .. } => Some(&self.secret),
             DialogView::ShortcutStep { field: Some(_), .. } => Some(&self.step_field),
             _ => None,
         }
-    }
-
-    /// The network-secrets sheet's fields, in order.
-    pub fn secret_fields(&self) -> &[TextInput] {
-        &self.entries
     }
 
     /// Whether the sheet up now asks for a secret: administrator
@@ -2528,18 +2536,14 @@ impl PortalDialogController {
             self.view(),
             Some(DialogView::Authentication { .. } | DialogView::NetworkSecrets { .. })
         ) || self.text_field().is_some_and(TextInput::is_secret)
-            || self.entries.iter().any(TextInput::is_secret)
     }
 
     fn forget_secret(&mut self) {
         // Overwrite before release so the freed allocation does not keep
-        // the password.
-        wipe(&mut self.secret);
+        // the password; the prompt zeroes its fields as it is dropped.
+        self.prompt = None;
+        self.puk_attempt = None;
         wipe(&mut self.step_field);
-        for mut entry in std::mem::take(&mut self.entries) {
-            wipe(&mut entry);
-        }
-        self.entry_focus = 0;
         self.remember = false;
         self.entry_error = None;
     }
@@ -2566,7 +2570,29 @@ impl PortalDialogController {
 
 /// Give `event` to an embedded field; `true` when the field used it. The
 /// fields are local and never write the document.
+/// The `state-dump` name of a SIM prompt's field.
+fn sim_field_key(role: ui::widget::FieldRole) -> &'static str {
+    use ui::widget::FieldRole;
+    match role {
+        FieldRole::Puk => "puk",
+        FieldRole::NewPin => "new-pin",
+        FieldRole::ConfirmPin => "confirm-pin",
+        FieldRole::Pin | FieldRole::Secret | FieldRole::Username | FieldRole::Text => "pin",
+    }
+}
+
 fn forward_to_field(field: &mut TextInput, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
+    let used = forward_to_widget(field, event, ctx);
+    // The value is read back on confirm; drop the copy this hands out.
+    if let Some(value) = field.take_dirty() {
+        drop(zeroize::Zeroizing::new(value));
+    }
+    used
+}
+
+/// Give `event` to a widget the sheet embeds outside any widget tree;
+/// `true` when it used the event.
+fn forward_to_widget(widget: &mut dyn Widget, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
     let mut taffy = TaffyTree::<()>::new();
     let Ok(node) = taffy.new_leaf(Style::default()) else {
         return false;
@@ -2575,7 +2601,7 @@ fn forward_to_field(field: &mut TextInput, event: &WindowEvent, ctx: &mut EventC
     // The sheet owns focus between its fields; the node is a stand-in that
     // must never become the frame's focus target.
     let mut focus_target = None;
-    field.handle_event(
+    widget.handle_event(
         event,
         &mut EventCtx {
             taffy: &taffy,
@@ -2584,10 +2610,6 @@ fn forward_to_field(field: &mut TextInput, event: &WindowEvent, ctx: &mut EventC
             ..ctx.reborrow(ctx.path, node)
         },
     );
-    // The value is read back on confirm; drop the copy this hands out.
-    if let Some(value) = field.take_dirty() {
-        drop(zeroize::Zeroizing::new(value));
-    }
     used
 }
 
@@ -2639,11 +2661,11 @@ fn chooser_detail(request: &ApplicationChoiceRequest) -> String {
     )
 }
 /// The allowing answers the grant sheet offers for `request`, in order.
-fn action_grant_answers(request: &AppActionConsentRequest) -> &'static [AppActionConsent] {
-    if request.confirming {
-        &AppActionConsent::ALLOWING[..1]
-    } else {
-        &AppActionConsent::ALLOWING
+fn action_grant_answers(request: &AppActionConsentRequest) -> Vec<AppActionConsent> {
+    match (request.confirming, &request.scope) {
+        (true, Some(_)) => vec![AppActionConsent::Once, AppActionConsent::Always],
+        (true, None) => vec![AppActionConsent::Once],
+        (false, _) => AppActionConsent::ALLOWING.to_vec(),
     }
 }
 
@@ -2654,7 +2676,22 @@ fn action_grant_detail(request: &AppActionConsentRequest) -> String {
         return moderation_detail(preview);
     }
     if request.confirming {
-        return t_args("portal-confirm-detail", &[("risk", risk.into())]);
+        let mut detail = match &request.scope {
+            Some(scope) => t_args(
+                "portal-confirm-scope-detail",
+                &[("risk", risk.into()), ("scope", scope.clone().into())],
+            ),
+            None => t_args("portal-confirm-detail", &[("risk", risk.into())]),
+        };
+        if let Some(draft) = &request.draft {
+            for field in &draft.fields {
+                detail.push('\n');
+                detail.push_str(&field.label);
+                detail.push_str(": ");
+                detail.push_str(&field.value.line());
+            }
+        }
+        return detail;
     }
     let key = if request.needs_confirmation {
         "portal-grant-detail-confirms"
@@ -2731,6 +2768,7 @@ fn friendly_app_name(app_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::widget::FieldRole;
     use winit::keyboard::{KeyCode, ModifiersState};
     #[test]
     #[allow(
@@ -2917,9 +2955,9 @@ mod tests {
         assert_eq!(sheet.remember_display(), Some((false, false)));
         let layout = sheet.layout(bounds).expect("layout");
         let remember = layout.remember.expect("a remember row");
-        assert_eq!(layout.choices.len(), 2);
-        assert!(remember.y0 >= layout.choices[1].y1, "below the choices");
-        assert!(remember.y1 <= layout.cancel.y0, "above the buttons");
+        assert!(layout.choices.is_empty());
+        assert_eq!(layout.answers.len(), 2);
+        assert!(remember.y1 <= layout.answers[0].y0, "above the buttons");
         assert!(sheet.toggle_remember());
         assert!(sheet.select_next(true));
         assert_eq!(sheet.state_json()["remember"], true);
@@ -2976,15 +3014,20 @@ mod tests {
                 .contains("org.freedesktop.Flatpak.app-install")
         );
         assert!(view.choices().is_empty(), "one identity needs no picker");
-        let layout = controller
-            .layout(Rect::new(0.0, 0.0, 1280.0, 800.0))
-            .expect("layout");
-        assert!(layout.secret.is_some());
+        assert!(
+            controller.prompt().is_some(),
+            "the sheet asks with the password prompt"
+        );
+        assert!(
+            controller
+                .layout(Rect::new(0.0, 0.0, 1280.0, 800.0))
+                .is_some()
+        );
         for key in ["h", "u", "n", "t"] {
             assert!(type_key(&mut controller, Key::Character(key.into())));
         }
         assert!(type_key(&mut controller, Key::Named(NamedKey::Backspace)));
-        let field = controller.text_field().expect("the answer field");
+        let field = answer_field(&controller).expect("the answer field");
         assert!(field.is_secret(), "the answer is a secret field");
         assert!(!field.is_revealed(), "and starts hidden");
         assert_eq!(field.value(), "hun");
@@ -2996,8 +3039,16 @@ mod tests {
                 secret: "hun".into()
             })
         );
-        assert!(controller.text_field().is_none());
-        assert!(controller.secret.value().is_empty(), "nothing is kept");
+        assert!(answer_field(&controller).is_none());
+        assert!(controller.prompt().is_none(), "nothing is kept");
+    }
+
+    /// The authentication prompt's one field.
+    fn answer_field(controller: &PortalDialogController) -> Option<&TextInput> {
+        controller
+            .prompt()
+            .and_then(|prompt| prompt.fields().next())
+            .map(|(_, field)| field)
     }
 
     #[test]
@@ -3009,8 +3060,13 @@ mod tests {
             .expect("queued");
         let mut controller = PortalDialogController::new(queue.clone());
         assert!(controller.pump());
-        let layout = controller.layout(layout_bounds).expect("layout");
-        let fields = controller.place_fields(&layout);
+        assert!(controller.layout(layout_bounds).is_some());
+        let fields: Vec<&TextInput> = controller
+            .prompt()
+            .expect("the password prompt")
+            .fields()
+            .map(|(_, field)| field)
+            .collect();
         assert_eq!(fields.len(), 1);
         assert!(fields[0].is_secret() && !fields[0].is_revealed());
         assert!(fields[0].has_reveal_control());
@@ -3021,7 +3077,7 @@ mod tests {
         let _echo = queue.enqueue_authentication(echo).expect("queued");
         assert!(controller.pump());
         assert!(
-            !controller.text_field().expect("field").is_secret(),
+            !answer_field(&controller).expect("field").is_secret(),
             "an echoed answer is shown as typed"
         );
         assert!(controller.cancel());
@@ -3050,10 +3106,17 @@ mod tests {
                     },
                 ],
                 remember: None,
+                sim: None,
             })
             .expect("queued");
         assert!(controller.pump());
-        let [identity, password] = controller.secret_fields() else {
+        let fields: Vec<&TextInput> = controller
+            .prompt()
+            .expect("the password prompt")
+            .fields()
+            .map(|(_, field)| field)
+            .collect();
+        let [identity, password] = fields.as_slice() else {
             panic!("two fields");
         };
         assert!(!identity.is_secret());
@@ -3084,11 +3147,44 @@ mod tests {
             .expect("queued");
     }
 
-    fn type_key(controller: &mut PortalDialogController, key: winit::keyboard::Key) -> bool {
+    pub(super) fn type_key(
+        controller: &mut PortalDialogController,
+        key: winit::keyboard::Key,
+    ) -> bool {
         let event = ui::synthetic_input::key_input(&key, winit::event::ElementState::Pressed);
         crate::shell::test_support::with_scratch_event_ctx(|ctx| {
             controller.edit_secret(&event, ctx)
         })
+    }
+
+    #[test]
+    fn a_failed_attempt_is_said_in_the_prompt_with_its_field_ready() {
+        use winit::keyboard::Key;
+
+        let queue = PortalDialogQueue::default();
+        let receiver = queue
+            .enqueue_authentication(authentication_request(&["quinn"]))
+            .expect("queued");
+        let mut controller = PortalDialogController::new(queue);
+        assert!(controller.pump());
+        let prompt = controller.prompt().expect("the password prompt");
+        assert_eq!(prompt.error(), Some("Wrong password"));
+        assert_eq!(
+            prompt.focused_field(),
+            Some(FieldRole::Secret),
+            "the keyboard is in the field"
+        );
+        // Typing a new answer clears what was said about the old one.
+        assert!(type_key(&mut controller, Key::Character("p".into())));
+        assert_eq!(controller.prompt().and_then(SecretPrompt::error), None);
+        assert!(controller.confirm());
+        assert_eq!(
+            receiver.blocking_recv(),
+            Ok(AuthenticationDecision::Answered {
+                identity: 0,
+                secret: "p".into()
+            })
+        );
     }
 
     #[test]
@@ -3118,7 +3214,7 @@ mod tests {
             .expect("queued again");
         assert!(controller.pump());
         assert_eq!(
-            controller.text_field().map(TextInput::value),
+            answer_field(&controller).map(TextInput::value),
             Some(""),
             "nothing carried over"
         );

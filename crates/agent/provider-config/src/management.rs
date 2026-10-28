@@ -5,7 +5,7 @@ use std::{future::Future, pin::Pin};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ProviderConfig, protocol::ModelError};
+use crate::{ModelDescriptor, ProviderConfig, protocol::ModelError};
 
 /// Non-secret diagnosis of a provider's credential custody.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -40,6 +40,10 @@ pub trait ProviderAdmin: Send + Sync {
         config: ProviderConfig,
     ) -> AdminFuture<'_, ProviderSnapshot>;
     fn credential_status(&self, profile_id: String) -> AdminFuture<'_, CredentialStatus>;
+    /// The models the provider lists, asked with its stored credential:
+    /// also the proof that the endpoint and credential work.
+    /// [`crate::protocol::ErrorKind::Unsupported`] when it lists none.
+    fn list_models(&self, profile_id: String) -> AdminFuture<'_, Vec<ModelDescriptor>>;
     fn set_api_key(&self, profile_id: String, api_key: String) -> AdminFuture<'_, ()>;
     fn remove_api_key(&self, profile_id: String) -> AdminFuture<'_, ()>;
     fn migrate_api_key(&self, profile_id: String, original_endpoint: String)

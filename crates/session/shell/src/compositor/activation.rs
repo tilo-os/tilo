@@ -41,8 +41,6 @@ pub struct ActivationFacts {
     pub source_was_focused: bool,
 }
 
-/// # Errors
-/// Returns the precise policy denial when the token creation facts are unsafe.
 pub fn evaluate_token_creation(facts: ActivationFacts) -> Result<(), ActivationDenial> {
     if facts.age > MAX_ACTIVATION_AGE {
         return Err(ActivationDenial::Expired);
@@ -65,8 +63,6 @@ pub fn evaluate_token_creation(facts: ActivationFacts) -> Result<(), ActivationD
     Ok(())
 }
 
-/// # Errors
-/// Returns the precise policy denial when an activation request is stale or mismatched.
 pub fn evaluate_activation_request(
     age: Duration,
     target_is_toplevel: bool,
@@ -94,6 +90,86 @@ pub fn app_ids_match(requested: &str, actual: &str) -> bool {
     !requested.is_empty() && canonical(requested) == canonical(actual)
 }
 
+/// The person's own presses (a click, a key, a tap) delivered to an app, by
+/// the Wayland client that received them: the same input serials an
+/// `xdg_activation_v1` token is minted from ([`evaluate_token_creation`]),
+/// recorded as they are delivered so that an app's request to open
+/// something (a link, a file, another app's action) can show it follows the
+/// person's input. Input an agent or a remote participant sends through the
+/// shared seat is never recorded here. Each act proves one open: taking it
+/// uses it up, so an app that keeps opening things after the person's click
+/// opens the rest aside.
+#[derive(Default)]
+pub struct PersonInput {
+    acts: std::sync::Mutex<std::collections::VecDeque<(u32, std::time::Instant)>>,
+}
+
+/// How many recent presses are kept: enough for every client the person
+/// can reach within [`MAX_ACTIVATION_AGE`].
+const MAX_PERSON_ACTS: usize = 64;
+
+impl PersonInput {
+    /// The session's record, shared by the compositor thread that delivers
+    /// input and the threads that serve apps' open requests.
+    pub fn session() -> &'static Self {
+        static SESSION: std::sync::OnceLock<PersonInput> = std::sync::OnceLock::new();
+        SESSION.get_or_init(Self::default)
+    }
+
+    /// The person pressed something in a surface of client `client` at `at`.
+    pub fn note(&self, client: u32, at: std::time::Instant) {
+        let Ok(mut acts) = self.acts.lock() else {
+            return;
+        };
+        acts.retain(|(seen, when)| {
+            *seen != client && at.saturating_duration_since(*when) <= MAX_ACTIVATION_AGE
+        });
+        acts.push_back((client, at));
+        while acts.len() > MAX_PERSON_ACTS {
+            let _ = acts.pop_front();
+        }
+    }
+
+    /// Whether one of `clients` received the person's press within
+    /// [`MAX_ACTIVATION_AGE`] of `now`; taking it uses it up.
+    pub fn take(&self, clients: &[u32], now: std::time::Instant) -> bool {
+        let Ok(mut acts) = self.acts.lock() else {
+            return false;
+        };
+        acts.retain(|(_, when)| now.saturating_duration_since(*when) <= MAX_ACTIVATION_AGE);
+        let before = acts.len();
+        acts.retain(|(client, _)| !clients.contains(client));
+        acts.len() != before
+    }
+}
+
+/// Whether the person's own input is behind a request app `app_id` (a
+/// package id, or a host application's window identity) makes now: a
+/// press reached one of its windows in `tree` within the activation window
+/// and has not been used for another open. Uses it up when it has.
+pub fn person_initiated(tree: &crate::shell::state::WorkspaceTree, app_id: &str) -> bool {
+    let clients: Vec<u32> = tree
+        .desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .filter_map(|tab| match &tab.tile {
+            crate::shell::state::TileContent::Foreign {
+                app_id: window,
+                surface_id,
+            } if crate::shell::launcher::app_id_matches_package(window, app_id)
+                || app_ids_match(app_id, window) =>
+            {
+                Some(crate::compositor::state::client_index_of(*surface_id))
+            }
+            _ => None,
+        })
+        .collect();
+    !clients.is_empty() && PersonInput::session().take(&clients, std::time::Instant::now())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,9 +187,7 @@ mod tests {
 
     #[test]
     fn activation_is_granted_only_for_a_fresh_focused_user_launch() {
-        // Phase `focused_recent_user_launch_is_allowed`.
         assert_eq!(evaluate_token_creation(valid()), Ok(()));
-        // Phase `background_and_forged_requests_are_denied_independently`.
         {
             let cases = [
                 (
@@ -163,7 +237,6 @@ mod tests {
                 assert_eq!(evaluate_token_creation(facts), Err(denial));
             }
         }
-        // Phase `recent_serial_delivered_to_another_client_is_denied`.
         {
             let facts = ActivationFacts {
                 serial_belongs_to_source: false,
@@ -174,7 +247,6 @@ mod tests {
                 Err(ActivationDenial::UnknownSerial)
             );
         }
-        // Phase `stale_foreign_or_mismatched_target_is_denied`.
         assert_eq!(
             evaluate_activation_request(Duration::from_secs(11), true, true),
             Err(ActivationDenial::Expired)
@@ -187,7 +259,6 @@ mod tests {
             evaluate_activation_request(Duration::from_millis(5), true, false),
             Err(ActivationDenial::AppIdMismatch)
         );
-        // Phase `desktop_suffix_is_the_only_app_id_normalisation`.
         assert!(app_ids_match(
             "org.example.Editor.desktop",
             "org.example.Editor"
@@ -198,5 +269,32 @@ mod tests {
         ));
         assert!(!app_ids_match("org.example.editor", "org.example.Editor"));
         assert!(!app_ids_match("", "org.example.Editor"));
+    }
+
+    // A press of the person's in an app proves one open of that app's,
+    // within the activation window; an app with no press of the person's, a
+    // stale one or one already used opens aside. (The interim proof, until
+    // activation tokens travel with the requests.)
+    #[test]
+    fn a_press_of_the_persons_proves_one_open_of_that_app_and_no_other() {
+        let record = PersonInput::default();
+        let start = std::time::Instant::now();
+        let at = |ms: u64| {
+            start
+                .checked_add(Duration::from_millis(ms))
+                .expect("a near instant")
+        };
+        record.note(7, at(0));
+        assert!(!record.take(&[8], at(10)), "another app had no press");
+        assert!(record.take(&[7], at(20)), "the app the person pressed in");
+        assert!(!record.take(&[7], at(30)), "one press proves one open");
+        record.note(7, at(40));
+        assert!(
+            !record.take(
+                &[7],
+                at(41).checked_add(MAX_ACTIVATION_AGE).expect("an instant")
+            ),
+            "a press older than the activation window proves nothing"
+        );
     }
 }

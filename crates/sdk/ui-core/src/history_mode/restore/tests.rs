@@ -1083,3 +1083,45 @@ fn records_containing_table_objects_are_refused_without_mutation() {
     ));
     assert_eq!(doc.save(), before);
 }
+
+/// A schema registration of `TEXT` that reads storage version `version`.
+fn text_schema_at(version: u32) -> &'static HistoryRestoreSchema {
+    Box::leak(Box::new(HistoryRestoreSchema { version, ..TEXT }))
+}
+
+#[test]
+fn a_record_at_another_stored_version_is_refused_unread_and_unwritten() {
+    // A registration describes content at its own version: its selectors,
+    // validators and writer all assume that shape. A record another version
+    // wrote is therefore refused before it is read or written, and the
+    // refusal names both versions instead of reading it as a broken record.
+    let (mut doc, target, live) = text_fixture();
+    let before = doc.save();
+    assert_eq!(
+        prepare_content_restore(&doc, text_schema_at(2), &live, &target).unwrap_err(),
+        RestoreError::SchemaVersion {
+            expected: 2,
+            stored: 1,
+        }
+    );
+    assert_eq!(doc.save(), before);
+
+    // A record stored past the registration's version, after its migration.
+    let mut migrated = doc.fork();
+    tilo_resource::evolution::write_version(&mut migrated, 3).unwrap();
+    let (migrated_heads, migrated_save) = (migrated.get_heads(), migrated.save());
+    for schema in [&TEXT, text_schema_at(2)] {
+        assert_eq!(
+            prepare_content_restore(&migrated, schema, &migrated_heads, &target).unwrap_err(),
+            RestoreError::SchemaVersion {
+                expected: schema.version,
+                stored: 3,
+            }
+        );
+    }
+    assert_eq!(migrated.get_heads(), migrated_heads);
+    assert_eq!(migrated.save(), migrated_save);
+
+    // At the version it reads, the same restore is prepared as before.
+    assert!(prepare_content_restore(&doc, &TEXT, &live, &target).is_ok());
+}

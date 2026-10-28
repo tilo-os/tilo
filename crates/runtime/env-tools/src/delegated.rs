@@ -15,6 +15,11 @@
 //! The worker never follows a path the member controls beyond opening one
 //! regular file without following links, and signs nothing but a `tool`
 //! image for the requested runtime and its own architecture.
+//!
+//! CI's tool catalog is signed the same way: its build seals every tool for
+//! the publisher without the key (`tilo-env-tools build --publisher`), and a
+//! release's signing step, which builds nothing, signs those images and
+//! rewrites the catalog to name the signed ids ([`sign_catalog`]).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -29,6 +34,7 @@ use tilo_environment::{ToolBuildError, ToolBuilder};
 
 use crate::builder::ToolStore;
 use crate::image;
+use crate::index::Catalog;
 use crate::key::CacheKey;
 use tilo_lock::MutexRecover as _;
 
@@ -205,11 +211,6 @@ pub enum DelegatedError {
 /// `identity`: a complete `tool` image for `identity`, built for `runtime`
 /// on `arch`. The signed image is written to `<dest>/<hex id>.tapp`;
 /// returns its id.
-///
-/// # Errors
-///
-/// [`DelegatedError`] for a file that is not a regular file, too large,
-/// malformed, incomplete, or anything but the tool asked for.
 pub fn sign_delegated(
     tapp: &Path,
     runtime: &PackageId,
@@ -217,6 +218,25 @@ pub fn sign_delegated(
     identity: &SigningIdentity,
     dest: &Path,
 ) -> Result<PackageId, DelegatedError> {
+    sign_delegated_image(tapp, runtime, arch, identity, dest).map(|signed| signed.signed)
+}
+
+/// An image sealed without its publisher's key, and the signed one made from it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SignedImage {
+    /// The id the image had with its placeholder signature.
+    pub unsigned: PackageId,
+    pub signed: PackageId,
+}
+
+/// [`sign_delegated`], also naming the id the image had before.
+pub fn sign_delegated_image(
+    tapp: &Path,
+    runtime: &PackageId,
+    arch: Arch,
+    identity: &SigningIdentity,
+    dest: &Path,
+) -> Result<SignedImage, DelegatedError> {
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
@@ -289,7 +309,68 @@ pub fn sign_delegated(
     if result.is_err() {
         let _ = std::fs::remove_file(&staged);
     }
-    result.map(|()| signed.id)
+    result.map(|()| SignedImage {
+        unsigned: meta.id,
+        signed: signed.id,
+    })
+}
+
+/// [`sign_delegated`] for every `.tapp` in `tapps`, returning `catalog`
+/// naming the signed ids and each unsigned id's signed one. Refuses a
+/// catalog that doesn't name exactly those images, all built on `runtime`:
+/// what is published is what the catalog lists.
+pub fn sign_catalog(
+    catalog: &Catalog,
+    tapps: &Path,
+    runtime: &PackageId,
+    arch: Arch,
+    identity: &SigningIdentity,
+    dest: &Path,
+) -> anyhow::Result<(Catalog, std::collections::BTreeMap<PackageId, PackageId>)> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(tapps)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<_, _>>()?;
+    files.retain(|path| {
+        path.extension()
+            .is_some_and(|extension| extension == "tapp")
+    });
+    files.sort();
+    let mut signed = std::collections::BTreeMap::new();
+    for path in &files {
+        let image = sign_delegated_image(path, runtime, arch, identity, dest)
+            .map_err(|error| anyhow::anyhow!("{}: {error}", path.display()))?;
+        // Two lines of the catalog that resolve to one key build one image twice.
+        if let Some(earlier) = signed.insert(image.unsigned, image.signed) {
+            anyhow::ensure!(
+                earlier == image.signed,
+                "{} signed as two images",
+                image.unsigned
+            );
+        }
+    }
+    let mut named = std::collections::BTreeSet::new();
+    let mut out = catalog.clone();
+    for entry in out.tools.values_mut() {
+        anyhow::ensure!(
+            entry.key.runtime == *runtime,
+            "the catalog's {} was built for {}, not {runtime}",
+            entry.tool,
+            entry.key.runtime
+        );
+        let Some(id) = signed.get(&entry.tool) else {
+            anyhow::bail!(
+                "the catalog names {}, which is not in {}",
+                entry.tool,
+                tapps.display()
+            );
+        };
+        named.insert(entry.tool);
+        entry.tool = *id;
+    }
+    if let Some(stray) = signed.keys().find(|id| !named.contains(*id)) {
+        anyhow::bail!("{stray} in {} is not in the catalog", tapps.display());
+    }
+    Ok((out, signed))
 }
 
 #[cfg(test)]
@@ -358,5 +439,67 @@ mod tests {
             sign_delegated(&link, &runtime, arch, &relay, &shelf),
             Err(DelegatedError::Io(_))
         ));
+    }
+
+    #[test]
+    fn a_signed_catalog_names_exactly_the_signed_tools() {
+        let tree = tree();
+        let work = tempfile::tempdir().unwrap();
+        let publisher = SigningIdentity::from_seed(&[7; 32]);
+        let runtime = PackageId::from_bytes([1; 32]);
+        let arch = image::host_arch().unwrap();
+        let built = work.path().join("built");
+        std::fs::create_dir(&built).unwrap();
+        let unsigned_id = unsigned(
+            tree.path(),
+            runtime,
+            publisher.public_key_bytes(),
+            &built.join("hello.tapp"),
+        );
+        let key = CacheKey::new(runtime, ["hello-1-1.x86_64"]);
+        let mut catalog = Catalog::default();
+        catalog.insert(crate::index::Entry {
+            tool: unsigned_id,
+            key: key.clone(),
+            requested: vec!["hello".into()],
+        });
+
+        let signed_dir = work.path().join("signed");
+        let (signed, ids) =
+            sign_catalog(&catalog, &built, &runtime, arch, &publisher, &signed_dir).unwrap();
+        let id = ids[&unsigned_id];
+        assert_ne!(id, unsigned_id);
+        assert_eq!(signed.tools[&key.digest().to_hex()].tool, id);
+        let bytes = std::fs::read(signed_dir.join(format!("{}.tapp", id.to_hex()))).unwrap();
+        let mut blobs = std::collections::BTreeMap::<BlobHash, Vec<u8>>::new();
+        let read = tilo_app_package::tapp::read(bytes.as_slice(), &mut blobs).unwrap();
+        assert!(
+            tilo_app_package::verify(&read.meta, &[publisher.public_key_bytes()])
+                .manifest()
+                .is_some(),
+            "the signed tool verifies against the publisher"
+        );
+        // Signing directly with the key would have made the same image.
+        let direct =
+            image::seal_tool(tree.path(), &key, &["hello".to_owned()], arch, &publisher).unwrap();
+        assert_eq!(direct.id(), id);
+
+        let other = SigningIdentity::from_seed(&[8; 32]);
+        let elsewhere = work.path().join("elsewhere");
+        assert!(sign_catalog(&catalog, &built, &runtime, arch, &other, &elsewhere).is_err());
+        assert!(
+            sign_catalog(
+                &Catalog::default(),
+                &built,
+                &runtime,
+                arch,
+                &publisher,
+                &elsewhere
+            )
+            .is_err()
+        );
+        let empty = work.path().join("empty");
+        std::fs::create_dir(&empty).unwrap();
+        assert!(sign_catalog(&catalog, &empty, &runtime, arch, &publisher, &elsewhere).is_err());
     }
 }

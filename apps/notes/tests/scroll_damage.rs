@@ -292,7 +292,6 @@ fn write_a_rich_note(app: &mut App, host: &mut Host, sections: usize) {
             commit(app, &format!("let line_{line} = {section};"));
             press(app, host, NamedKey::Enter);
         }
-        // A closing fence ends the code block.
         commit(app, "```");
         press(app, host, NamedKey::Enter);
     }

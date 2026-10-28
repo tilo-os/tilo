@@ -227,7 +227,6 @@ mod tests {
 
     #[test]
     fn fixed_catalogue_sources_build_deterministically_and_reject_symlinks() {
-        // Phase `fixed_sources_build_one_valid_deterministic_catalogue`.
         {
             let (_temp, paths) = fixture();
             let report = load_shipped_catalogue(&paths).unwrap();
@@ -237,7 +236,6 @@ mod tests {
             assert_eq!(report.catalogue.records.len(), 3);
             assert!(report.catalogue.records.iter().all(|record| record.signed));
         }
-        // Phase `symlinked_metadata_is_rejected`.
         {
             let (temp, paths) = fixture();
             let outside = temp.path().join("outside.yml");

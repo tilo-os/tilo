@@ -59,7 +59,6 @@ pub enum Priority {
 pub enum ThumbState {
     /// Generation is queued or in flight — paint a placeholder.
     Loading,
-    /// A rendered preview is ready.
     Ready(Arc<RgbaThumb>),
     /// No rendered preview: an unsupported type, or a decode that failed. The
     /// client draws a type badge for `category`.
@@ -347,10 +346,6 @@ impl ThumbnailService {
 
     /// Open a service over the per-user preview cache (`tilo/thumbnails` in
     /// the cache directory), or, with no cache directory, a temporary one.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if neither location can be created.
     pub fn open_default(workers: usize) -> std::io::Result<Self> {
         // No cache directory and no file system (the page): previews live
         // in memory. `temp_dir` panics there rather than failing.
@@ -852,7 +847,6 @@ mod tests {
 
     #[test]
     fn thumbnail_requests_settle_off_thread_as_ready_or_badge() {
-        // Phase `image_file_loads_then_ready_and_second_request_hits`.
         {
             let (_dir, svc) = service();
             let src = tempfile::NamedTempFile::with_suffix(".png").unwrap();
@@ -876,7 +870,6 @@ mod tests {
             assert_eq!(img.max_edge(), 128, "downscaled to the target edge");
             assert!(svc.cache().contains(&key), "generation populated the cache");
         }
-        // Phase `badge_category_settles_immediately_without_work`.
         {
             let (_dir, svc) = service();
             let key = ThumbKey::of_bytes(b"archive", 128);
@@ -886,7 +879,6 @@ mod tests {
             ));
             assert!(svc.is_idle(), "a badge schedules no background work");
         }
-        // Phase `a_broken_image_settles_as_a_badge`.
         {
             let (_dir, svc) = service();
             let src = tempfile::NamedTempFile::with_suffix(".png").unwrap();
@@ -899,7 +891,6 @@ mod tests {
                 ThumbState::Badge(FileCategory::Image)
             ));
         }
-        // Phase `content_bytes_are_generated_on_a_worker_and_cached_by_key`.
         {
             let (_dir, svc) = service();
             let bytes = png([200, 10, 10]);
@@ -913,7 +904,6 @@ mod tests {
             assert_eq!(state.ready().expect("ready").max_edge(), 32);
             assert!(svc.cache().contains(&key));
         }
-        // Phase `encoded_host_thumbnail_is_adopted_without_touching_source`.
         {
             let (_dir, svc) = service();
             let png = crate::generate::encode_png(
@@ -931,7 +921,6 @@ mod tests {
                 "host-provided thumbnail is adopted"
             );
         }
-        // Phase `encoded_thumbnail_loader_never_runs_on_the_requesting_thread`.
         {
             let (_dir, svc) = service();
             let key = ThumbKey::of_hash([8u8; 32], 128);

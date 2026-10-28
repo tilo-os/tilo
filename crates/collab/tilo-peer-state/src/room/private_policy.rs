@@ -193,7 +193,7 @@ fn grants<R: PrivateRead, D: Decode>(
                     Lifetime::Until(at) => work
                         .push(&mut expiries, at.div_ceil(1000))
                         .map_err(resource)?,
-                    Lifetime::Task(_) | Lifetime::UntilRevoked => {}
+                    Lifetime::UntilRevoked => {}
                 }
                 Ok(())
             })?;

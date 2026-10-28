@@ -40,10 +40,6 @@ pub struct CaptureSessionBinding {
 
 impl CaptureSessionBinding {
     /// Bind a local capture session to a shell-verified app registration.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an empty, oversized, or control-bearing session ID.
     pub fn from_verified(
         app: &VerifiedAppRegistration,
         session_id: impl Into<String>,
@@ -279,10 +275,6 @@ impl CaptureBroker {
     }
 
     /// Register or replace one target-local capture source.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid metadata or when the bounded source table is full.
     pub fn register_source(
         &mut self,
         id: impl Into<String>,
@@ -346,10 +338,6 @@ impl CaptureBroker {
     }
 
     /// Mint one short-lived, one-shot proof of fresh target-local consent.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a missing/mismatched source, active kill switch, or capacity limit.
     pub fn authorize(
         &mut self,
         binding: &CaptureSessionBinding,
@@ -428,11 +416,6 @@ impl CaptureBroker {
     }
 
     /// Consume fresh authorization and create a target-local capture lease.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for replay, expiry, identity/source mismatch, device loss,
-    /// kill-switch policy, or capacity exhaustion.
     pub fn acquire(
         &mut self,
         authorization_id: CaptureAuthorizationId,
@@ -490,11 +473,6 @@ impl CaptureBroker {
     /// Source identifiers are taken from the broker-owned authorizations, not
     /// from application input. Validation completes before any proof is
     /// consumed, so partial failure cannot leave an accidental live lease.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for missing, duplicate, expired, foreign, or
-    /// incorrectly bound authorizations, unavailable sources, or capacity.
     pub fn acquire_required(
         &mut self,
         authorization_ids: &[CaptureAuthorizationId],
@@ -574,10 +552,6 @@ impl CaptureBroker {
     }
 
     /// Resolve a live lease to its local-only backend handle.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an expired, foreign, mismatched, revoked, or lost lease/source.
     pub fn resolve<'a>(
         &'a self,
         lease_id: CaptureLeaseId,
@@ -611,11 +585,6 @@ impl CaptureBroker {
     /// Keep a lease that is still current for another [`CAPTURE_LEASE_TTL`]
     /// from `now`: a capture the person allowed lasts as long as the session
     /// it was allowed for, not [`CAPTURE_LEASE_TTL`] past its start.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a lease that expired, was revoked or released,
-    /// belongs to another binding, or whose kind is switched off.
     pub fn renew(
         &mut self,
         lease_id: CaptureLeaseId,
@@ -865,7 +834,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn capture_authorization_is_one_shot_exact_and_broker_scoped() {
-        // Phase `batch_authorization_is_all_or_nothing`.
         {
             let mut broker = broker();
             let owner = binding("so.tilo.chat", "work", "session-batch");
@@ -900,7 +868,6 @@ mod tests {
             assert!(broker.authorizations.is_empty());
             assert_eq!(broker.revoke_authorizations(&ids), 0);
         }
-        // Phase `fresh_authorization_is_one_shot_and_exactly_bound`.
         {
             let mut broker = broker();
             let now = Instant::now();
@@ -921,7 +888,6 @@ mod tests {
                 Ok(BorrowedCaptureHandle::PipeWireNode(41))
             ));
         }
-        // Phase `authorization_expires_and_cannot_cross_brokers`.
         {
             let now = Instant::now();
             let owner = binding("meet", "work", "call");
@@ -945,7 +911,6 @@ mod tests {
                 Err(CaptureBrokerError::InvalidAuthorization)
             );
         }
-        // Phase `opaque_authorizations_are_canonical_restart_scoped_capabilities`.
         {
             let now = Instant::now();
             let owner = binding("meet", "work", "call");
@@ -968,7 +933,6 @@ mod tests {
                 Err(CaptureBrokerError::InvalidAuthorization)
             );
         }
-        // Phase `required_set_is_atomic_exact_bound_and_replay_safe`.
         {
             let now = Instant::now();
             let owner = binding("meet", "work", "call-1");
@@ -1018,7 +982,6 @@ mod tests {
 
     #[test]
     fn capture_sources_stay_local_kind_scoped_and_lease_bound() {
-        // Phase `source_kinds_are_distinct_and_handles_stay_local`.
         {
             let broker = broker();
             assert_eq!(broker.enumerate(CaptureKind::Camera)[0].id, "camera-front");
@@ -1029,7 +992,6 @@ mod tests {
             );
             assert!(broker.enumerate(CaptureKind::Screen).is_empty());
         }
-        // Phase `kill_switch_is_kind_local_and_blocks_enumeration_and_authorization`.
         {
             let mut broker = broker();
             let owner = binding("meet", "work", "call");
@@ -1041,7 +1003,6 @@ mod tests {
             );
             assert_eq!(broker.enumerate(CaptureKind::Microphone).len(), 1);
         }
-        // Phase `owned_fd_is_borrowed_only_while_lease_and_broker_live`.
         {
             let file = std::fs::File::open("/dev/null").unwrap();
             let expected = file.as_fd().as_raw_fd();
@@ -1099,7 +1060,6 @@ mod tests {
             "an expired lease stays expired"
         );
 
-        // Switching the camera off ends its leases for good.
         let auth = broker
             .authorize(&owner, "camera-front", CaptureKind::Camera, far)
             .unwrap();
@@ -1116,7 +1076,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn capture_teardown_revokes_exact_leases_and_is_audited() {
-        // Phase `exact_session_teardown_revokes_only_that_calls_leases`.
         {
             let now = Instant::now();
             let first = binding("meet", "work", "call-1");
@@ -1162,7 +1121,6 @@ mod tests {
                 } if *lease_id == first_lease
             )));
         }
-        // Phase `every_teardown_path_revokes_and_emits_an_auditable_stop`.
         {
             let now = Instant::now();
             let owner = binding("meet", "work", "call");
@@ -1206,7 +1164,6 @@ mod tests {
                 );
             }
         }
-        // Phase `replacement_invalidates_old_proof_and_audit_queue_is_bounded`.
         {
             let now = Instant::now();
             let owner = binding("meet", "work", "call");

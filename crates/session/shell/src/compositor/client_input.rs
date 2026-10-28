@@ -17,7 +17,7 @@ use ui::widget::{WheelJumpAccum, wheel_jump_detents};
 
 pub use crate::shell::input_policy::*;
 use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState};
-use smithay::input::keyboard::FilterResult;
+use smithay::input::keyboard::{FilterResult, KeyboardTarget};
 use smithay::input::pointer::{
     AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
     GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
@@ -82,8 +82,14 @@ pub struct ClientInput {
     cursor: Option<(f64, f64)>,
     /// Implicit pointer grab owner, latched on the first button press and released on the last button up — without this a drag leaving its tile would silently switch to the chrome mid-gesture.
     grab: Option<PointerOwner>,
-    /// Number of physical pointer buttons currently held.
-    buttons_down: u32,
+    /// The pointer buttons currently held, by button. A set, not a count:
+    /// a source can lose a release (a pen lifted over another app, a release
+    /// made while the session was locked), and a count that missed one never
+    /// came back to zero, so the grab it latched stayed for good and every
+    /// later wheel and click went to it instead of the window under the
+    /// pointer. By button, the next press of that button tells the release
+    /// was lost ([`route_mouse_input`]).
+    held_buttons: HashSet<MouseButton>,
     /// Foreign toplevels announced by the xdg-shell handler but not yet mirrored into the chrome's workspace tree.
     pending_adoptions: Vec<PendingAdoption>,
     /// Surfaces whose toplevel was destroyed but whose chrome tab has not been reaped yet.
@@ -124,10 +130,12 @@ pub struct ClientInput {
     /// Saving copies the whole workspace tree, so it runs after
     /// latency-sensitive Wayland input has been queued/flushed.
     focus_persistence_pending: bool,
-    /// Whether the latest direct-touch down was delivered to a client over
-    /// `wl_touch`. That client owns the whole tap, so the compositor must not
-    /// also synthesise a pointer click for it.
-    touch_down_reached_client: bool,
+    /// Whether the latest direct-touch down was taken whole before any
+    /// pointer translation: delivered to a client over `wl_touch` (that
+    /// client owns the whole tap), or spent closing a client popup it landed
+    /// outside of, as a click there only closes it. Either way the
+    /// compositor must not also synthesise a pointer click for it.
+    touch_down_taken: bool,
     /// Who the input being routed belongs to, when it is not the person at
     /// this machine: an agent's seat. Its key and button edges are then
     /// attributed to that participant on the shared-seat ledger.
@@ -301,6 +309,16 @@ impl ClientInput {
         self.pointer_focus
     }
 
+    /// Who holds the implicit pointer grab, for the input-route log: the
+    /// chrome, a client surface by protocol id, or nobody.
+    pub fn grab_label(&self) -> String {
+        match self.grab {
+            None => "none".to_owned(),
+            Some(PointerOwner::Chrome) => "chrome".to_owned(),
+            Some(PointerOwner::Client(id)) => format!("client {id}"),
+        }
+    }
+
     /// Content-free custody of the router's implicit pointer grab. This is
     /// separate from both the actual Wayland focus and keyboard focus.
     pub(super) fn pointer_custody(&self) -> (&'static str, Option<u64>, u32) {
@@ -309,7 +327,8 @@ impl ClientInput {
             Some(PointerOwner::Chrome) => ("chrome", None),
             Some(PointerOwner::Client(surface)) => ("client", Some(surface)),
         };
-        (kind, surface, self.buttons_down)
+        let held = u32::try_from(self.held_buttons.len()).unwrap_or(u32::MAX);
+        (kind, surface, held)
     }
 
     /// Whether `surface_id` is a live foreign toplevel this compositor can route input to.
@@ -366,6 +385,21 @@ impl ClientInput {
 }
 
 // Pure helpers — no seat, no widgets. Unit-testable in isolation.
+
+impl State {
+    /// A press delivered to `surface_id`: when it is the person's own, not
+    /// an agent's or a remote participant's through the shared seat, it is
+    /// what lets that app's next open take the person to what it opens
+    /// ([`crate::compositor::activation::PersonInput`]).
+    fn note_person_press(&self, surface_id: u64) {
+        if self.client_input.participant.is_none() {
+            crate::compositor::activation::PersonInput::session().note(
+                crate::compositor::state::client_index_of(surface_id),
+                Instant::now(),
+            );
+        }
+    }
+}
 
 /// Mint a fresh input serial. Wayland clients ignore events whose serial goes backwards, so every delivered event gets its own.
 fn mint_serial(state: &mut State) -> Serial {
@@ -592,7 +626,9 @@ impl State {
     /// **Every** key goes through here, including ones the shell keeps:
     /// smithay's xkb state derives modifier state from the keycode stream, so
     /// skipping them desynchronises it. `FilterResult::Intercept` advances
-    /// state without emitting; `keycode` is evdev, smithay wants xkb form (evdev + 8).
+    /// state without emitting the key; the modifier change it makes still
+    /// reaches the focused client (see [`Self::announce_kept_modifiers`]).
+    /// `keycode` is evdev, smithay wants xkb form (evdev + 8).
     pub fn deliver_client_key(&mut self, keycode: u32, pressed: bool, forward: bool) -> bool {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return false;
@@ -612,8 +648,9 @@ impl State {
             && has_focus
             && pressed
             && crate::shell::launcher::LaunchSession::current().presentation_observer_enabled())
-        .then(crate::compositor::metrics::monotonic_time_ns)
+        .then(tilo_frame_metrics::monotonic_time_ns)
         .flatten();
+        let modifiers_before = keyboard.modifier_state();
         let intercepted: Option<()> = keyboard.input(
             self,
             keycode.saturating_add(8).into(),
@@ -628,6 +665,9 @@ impl State {
                 }
             },
         );
+        if intercepted.is_some() {
+            self.announce_kept_modifiers(&keyboard, modifiers_before, serial);
+        }
         let delivered = forward && has_focus && intercepted.is_none();
         if delivered {
             self.client_keys_delivered = self.client_keys_delivered.wrapping_add(1);
@@ -653,6 +693,7 @@ impl State {
             record_activation_serial(self, serial, surface_id);
             if pressed {
                 self.note_app_input(surface_id);
+                self.note_person_press(surface_id);
                 let app = self
                     .client_input
                     .surfaces
@@ -668,6 +709,50 @@ impl State {
             }
         }
         delivered
+    }
+
+    /// Tell the focused client the seat's modifiers after a key the shell
+    /// kept changed them.
+    ///
+    /// Smithay sends `wl_keyboard.modifiers` only together with a forwarded
+    /// key, yet the focused client holds the seat's modifier state from its
+    /// `enter` on. A modifier pressed while the shell or another window had
+    /// the keyboard is in that `enter`; its release is not the client's to
+    /// see (the press never reached it), so without this the client keeps
+    /// the modifier down and reads every later key as a chord. Keys stay
+    /// with the shell; only the state every focused window shares goes out.
+    fn announce_kept_modifiers(
+        &mut self,
+        keyboard: &smithay::input::keyboard::KeyboardHandle<Self>,
+        before: smithay::input::keyboard::ModifiersState,
+        serial: Serial,
+    ) {
+        let modifiers = keyboard.modifier_state();
+        if modifiers == before {
+            return;
+        }
+        if let Some(focus) = keyboard.current_focus() {
+            let seat = self.seat.clone();
+            focus.modifiers(&seat, self, modifiers, serial);
+        }
+    }
+
+    /// The keyboard the session reads lost every held key at once: the host
+    /// compositor of a nested session took keyboard focus away from its
+    /// window (`wl_keyboard.leave`), so each key this session saw go down is
+    /// up for it, and its release goes to another window of the host.
+    ///
+    /// Each local hold is released through the seat as a release would be:
+    /// the focused client gets the release of every key it saw pressed and
+    /// the modifiers that follow, so it neither repeats a key nor reads the
+    /// next one under a modifier nobody holds. Keys a remote participant
+    /// still holds stay down. Keyboard focus does not move.
+    pub fn release_local_keyboard(&mut self) {
+        for code in self.remote_seats.release_local_keys() {
+            self.client_input.early_released_keys.remove(&code);
+            let forward = self.client_input.forwarded_keys.remove(&code);
+            let _ = self.deliver_client_key(code, false, forward);
+        }
     }
 
     /// Move the seat pointer to `global` and focus it on `target` (`(surface
@@ -750,6 +835,7 @@ impl State {
             record_activation_serial(self, serial, surface_id);
             if pressed {
                 self.note_app_input(surface_id);
+                self.note_person_press(surface_id);
             }
         }
         true
@@ -891,16 +977,17 @@ impl State {
     }
 
     /// Record a direct-touch down that the compositor kept away from every
-    /// client (a locked session, or chrome capturing input).
+    /// client (a contact the shell's gesture arena owns).
     pub fn note_touch_down_withheld_from_clients(&mut self) {
-        self.client_input.touch_down_reached_client = false;
+        self.client_input.touch_down_taken = false;
     }
 
-    /// Whether the latest touch-down reached a client that takes touch over
-    /// `wl_touch`. Such a contact is that client's alone; any other is turned
-    /// into pointer input (see [`crate::compositor::touch_pointer`]).
-    pub fn touch_down_reached_client(&self) -> bool {
-        self.client_input.touch_down_reached_client
+    /// Whether the latest touch-down was taken whole: by a client that takes
+    /// touch over `wl_touch`, or by closing a client popup it landed outside
+    /// of. Any other contact is turned into pointer input (see
+    /// [`crate::compositor::touch_pointer`]).
+    pub fn touch_down_taken(&self) -> bool {
+        self.client_input.touch_down_taken
     }
 
     /// Forward one touch point to the focused client over `wl_touch`.
@@ -928,7 +1015,7 @@ impl State {
         if matches!(touch, BackendTouchEvent::Down { .. }) {
             // A client that never asked for a `wl_touch` would receive
             // nothing; it gets the contact as pointer input instead.
-            self.client_input.touch_down_reached_client = handle.is_some()
+            self.client_input.touch_down_taken = handle.is_some()
                 && focus.as_ref().is_some_and(|(surface, _)| {
                     surface.client().is_some_and(|client| {
                         client
@@ -944,6 +1031,17 @@ impl State {
         };
         let serial = mint_serial(self);
         let time = event_time(self);
+        // A finger down is a press, as a button or a key is: the same
+        // serial an activation token may be minted from, and the person's
+        // own when no agent or participant sends it through the seat.
+        if matches!(touch, BackendTouchEvent::Down { .. })
+            && let Some((surface_id, _)) = target
+            && focus.is_some()
+        {
+            record_activation_serial(self, serial, surface_id);
+            self.note_app_input(surface_id);
+            self.note_person_press(surface_id);
+        }
         match touch {
             BackendTouchEvent::Down { slot, x, y } => handle.down(
                 self,
@@ -978,7 +1076,61 @@ impl State {
     }
 }
 
-/// Which client (if any) a touch point should be delivered to — only a `Down` establishes touch focus; the rest of the sequence belongs to whatever the down landed on.
+/// Route one direct-touch edge to clients over `wl_touch`: the one place a
+/// finger reaches a client, for the DRM backend and test control alike.
+///
+/// Touch equals pointer. A `Down` goes to the client under it only when a
+/// pointer press there would: never while the session is locked (except on
+/// the on-screen keyboard), never where the shell takes the pointer (an
+/// overlay holding input, a bar or banner over the window; see
+/// [`chrome_captures_touch_at`]), and never past a client popup it lands
+/// outside of, which it closes as a click does and nothing more. A withheld
+/// contact reaches the shell as raw touch and, unless a shell widget reads
+/// raw touch there, as pointer input through the pointer path, which hands
+/// it to the overlay. The rest of a sequence belongs to whatever its `Down`
+/// landed on: Wayland latches touch focus per contact at `down`, so later
+/// edges carry no target and never re-hit-test.
+pub fn route_client_touch(
+    state: &mut State,
+    fb: &mut FrameBuilder,
+    touch: BackendTouchEvent,
+    session_locked: bool,
+    on_keyboard: bool,
+) {
+    let target = match touch {
+        BackendTouchEvent::Down { x, y, .. } => {
+            let shell_takes = !on_keyboard
+                && (session_locked || chrome_captures_touch_at(fb, vello::kurbo::Point::new(x, y)));
+            if shell_takes {
+                state.note_touch_down_withheld_from_clients();
+                return;
+            }
+            let target = touch_target(state, fb, &touch);
+            if !on_keyboard
+                && state.dismiss_popup_grab_outside(target.map(|(surface_id, _)| surface_id))
+            {
+                // Like a click outside a popup, the touch only closes it.
+                state.client_input.touch_down_taken = true;
+                return;
+            }
+            if let Some((surface_id, _)) = target {
+                focus_touch_target(state, fb, surface_id);
+            }
+            target
+        }
+        BackendTouchEvent::Motion { .. } | BackendTouchEvent::Up { .. }
+            if session_locked && !on_keyboard =>
+        {
+            return;
+        }
+        _ => None,
+    };
+    state.forward_client_touch(touch, target);
+}
+
+/// The client a touch-down at the point would land on, before the shell
+/// decides whether it takes the contact itself ([`route_client_touch`]).
+/// `None` for every edge but `Down`.
 pub fn touch_target(
     state: &State,
     fb: &FrameBuilder,
@@ -1357,6 +1509,34 @@ pub fn route_tablet_event(
         .collect()
 }
 
+/// The armed feedback click landed: focus the window under it, as a click
+/// does, and tell the shell which app's window and where in it, in that
+/// window's logical coordinates. A click on no app window picks nothing.
+fn pick_feedback_point(state: &mut State, fb: &mut FrameBuilder) {
+    let point = state.client_input.cursor();
+    let hit = {
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        foreign_tile_at(&tree, fb.host(), point)
+    };
+    let Some(hit) = hit.filter(|hit| state.client_input.surfaces.contains_key(&hit.surface_id))
+    else {
+        return;
+    };
+    let origin =
+        crate::compositor::foreign::store().surface_origin(hit.surface_id, hit.rect, point);
+    let app = fb
+        .chrome()
+        .group_app_id(hit.strip, hit.group)
+        .map(|app| app.as_str().to_owned());
+    focus_pressed(state, fb, hit);
+    let Some(app) = app else {
+        return;
+    };
+    fb.host_mut()
+        .feedback_picked(&app, [point.0 - origin.0, point.1 - origin.1]);
+}
+
 /// Click-to-focus: raise the pressed window group so the keyboard follows
 /// the pointer, or the pen, into the client.
 fn focus_pressed(state: &mut State, fb: &mut FrameBuilder, h: TileHit) {
@@ -1499,7 +1679,13 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
             .client_input
             .keyboard_focus()
             .map(|surface| crate::compositor::foreign::store().sheet_root(surface)),
-        chrome_captures_input(fb) || fb.host().dictation_mutes_remote_input(),
+        // The same decision as local input; dictation takes everything
+        // from other devices while it listens.
+        if fb.host().dictation_mutes_remote_input() {
+            crate::shell::input_policy::InputCapture::ALL
+        } else {
+            crate::shell::input_policy::input_capture(fb)
+        },
         fb.host().palette_visible(),
     )
     .chrome_regions(chrome_regions)
@@ -1566,7 +1752,11 @@ pub fn route_input(
 ) -> bool {
     // The host's own input takes priority over every remote peer for the next half second; stamped here since both the backend loop and the test-control socket push local input through this function.
     // An agent is one more participant, not the host, and wins no priority.
-    if state.client_input.participant.is_none() {
+    // Input another of the person's devices sent is theirs too, so it takes
+    // nothing back from them either.
+    if state.client_input.participant.is_none()
+        && state.input_origin == crate::compositor::state::InputOrigin::Here
+    {
         state
             .remote_input_firewall
             .note_local_input(std::time::Instant::now());
@@ -1587,6 +1777,36 @@ pub fn route_input(
                 chrome_captures_pointer(fb),
                 winit::dpi::PhysicalPosition::new(x, y),
             );
+        }
+    }
+    // `feedback.point` armed: the next click picks what a report is about,
+    // Escape lets it go, and neither reaches an app.
+    if fb.chrome().feedback_pointing() {
+        match event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                fb.with_chrome(|st| {
+                    st.disarm_feedback_pointing();
+                });
+                pick_feedback_point(state, fb);
+                return true;
+            }
+            WindowEvent::MouseInput { .. } => return true,
+            WindowEvent::KeyboardInput { event: key, .. }
+                if key.logical_key
+                    == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) =>
+            {
+                if key.state == ElementState::Pressed {
+                    fb.with_chrome(|st| {
+                        st.disarm_feedback_pointing();
+                    });
+                }
+                return true;
+            }
+            _ => {}
         }
     }
     match event {
@@ -1679,7 +1899,7 @@ fn route_cursor_left(state: &mut State) -> bool {
     let global = state.client_input.cursor();
     state.forward_client_pointer_motion(global, None);
     state.client_input.grab = None;
-    state.client_input.buttons_down = 0;
+    state.client_input.held_buttons.clear();
     false
 }
 
@@ -1693,8 +1913,14 @@ fn route_mouse_input(
     button: MouseButton,
 ) -> bool {
     let pressed = element == ElementState::Pressed;
+    // A press of a button already held: its release never reached the
+    // router. End that press the way its release would have, so the grab it
+    // latched lets go and this press starts a gesture of its own.
+    if pressed && state.client_input.held_buttons.contains(&button) {
+        let _ = route_mouse_input(state, fb, captured, ElementState::Released, button);
+    }
     if pressed {
-        if state.client_input.buttons_down == 0 {
+        if state.client_input.held_buttons.is_empty() {
             // Latch the implicit grab from a fresh hit test, so a drag that leaves the tile stays with its owner.
             let hit = current_pointer_target(state, fb, captured);
             // An xdg popup grab is a protocol modal boundary: the first
@@ -1727,9 +1953,9 @@ fn route_mouse_input(
                 focus_pressed(state, fb, h);
             }
         }
-        state.client_input.buttons_down = state.client_input.buttons_down.saturating_add(1);
+        state.client_input.held_buttons.insert(button);
     } else {
-        state.client_input.buttons_down = state.client_input.buttons_down.saturating_sub(1);
+        state.client_input.held_buttons.remove(&button);
     }
     // A chrome drag's release is the drop: the server-side grab smithay holds only ends on a button event, whether or not a client is under the pointer.
     let chrome_drag = state.selection.chrome_drag.is_some();
@@ -1759,7 +1985,7 @@ fn route_mouse_input(
     } else {
         false
     };
-    if state.client_input.buttons_down == 0 {
+    if state.client_input.held_buttons.is_empty() {
         state.client_input.grab = None;
         if !pressed {
             // Re-resolve focus now the grab is gone — the release may have happened over a different tile (or over chrome).
@@ -1961,10 +2187,6 @@ fn route_keyboard_input(
         && fb.host().banner_has_keyboard()
     {
         fb.host_mut().release_banner_keyboard();
-    }
-    // Any key takes the arrival or wave line away.
-    if pressed {
-        fb.host_mut().dismiss_presence_notice();
     }
     // `/` over a shared window starts cursor chat, unless the focused
     // window takes text (it has an active text input): then the `/` is
@@ -2447,20 +2669,15 @@ mod tests {
                 display.handle(),
                 tree,
             );
-            // At rest the bar hides: the top of the window is the client's,
-            // and the keyboard never leaves it for the bar.
-            let moved = ui::synthetic_input::cursor_moved(1210.0, 70.0);
+            // Down in the window the pointer is the client's, and the
+            // keyboard never leaves it for the bar.
+            let moved = ui::synthetic_input::cursor_moved(640.0, 400.0);
             let _ = route_input(&mut state, &mut fb, &moved, &Modifiers::default());
             assert!(!chrome_captures_pointer(&fb));
             assert!(!chrome_captures_input(&fb));
 
-            // Reached for, its controls take the pointer (only the pointer).
-            let strip = fb.chrome().tree().desktop.workspaces[0].strips[0].id;
-            fb.host_mut()
-                .group_at_for_tests(strip, 0)
-                .expect("maximized group")
-                .set_maximized_chrome_shown_for_tests(true);
-            let _ = fb.paint_settled();
+            // A maximized window keeps its bar: its controls stand there at
+            // rest and take the pointer (only the pointer).
             let restore = fb
                 .host()
                 .active_window_bounds()
@@ -2472,7 +2689,6 @@ mod tests {
                 "captured motion must fall through to shell widget dispatch"
             );
             assert_eq!(fb.host().pointer_position(), Some(restore.center()));
-            assert!(chrome_captures_pointer(&fb));
             assert!(
                 !chrome_captures_input(&fb),
                 "the bar takes the pointer, never the client's keyboard"
@@ -2610,7 +2826,10 @@ mod tests {
             let mut fb = FrameBuilder::new((1600, 900));
             let _ = fb.paint_settled();
             fb.host_mut()
-                .enable_onboarding(std::path::PathBuf::from("/tmp/tilo-oobe-input-test"));
+                .enable_test_onboarding(crate::onboarding_view::OnboardingView::isolated(
+                    std::path::PathBuf::from("/tmp/tilo-oobe-input-test"),
+                    false,
+                ));
             let _ = fb.paint_settled();
 
             assert!(
@@ -2626,11 +2845,11 @@ mod tests {
             let remote_view = crate::network::input_firewall::ShellView::new(
                 vec![(HIDDEN_SURFACE, Rect::new(0.0, 0.0, 400.0, 300.0))],
                 gate_keyboard_focus(Some(HIDDEN_SURFACE), chrome_captures_input(&fb)),
-                chrome_captures_input(&fb),
+                crate::shell::input_policy::input_capture(&fb),
                 false,
             );
             assert!(
-                remote_view.chrome_captures_input(),
+                remote_view.captures_keyboard(),
                 "remote peers must see OOBE as occluding trusted chrome"
             );
         }
@@ -2665,7 +2884,7 @@ mod tests {
             let view = ShellView::new(
                 tiles.iter().map(|h| (h.surface_id, h.rect)).collect(),
                 None,
-                false,
+                crate::shell::input_policy::InputCapture::NONE,
                 false,
             )
             .chrome_regions(
@@ -2733,7 +2952,7 @@ mod tests {
         // guest a coordinate the local user can't even click on. Drives the real publisher against the real laid-out tree, then asks the firewall the question a peer's event asks.
         {
             use crate::network::input_firewall::Denial;
-            use crate::network::streaming::{InputEvent, StreamingShare};
+            use tilo_window_share::streaming::{InputEvent, StreamingShare};
 
             let mut fb = FrameBuilder::new((1600, 900));
             let _ = fb.paint_settled();
@@ -2808,7 +3027,7 @@ mod tests {
             let _ = fb.paint_settled();
             let mut state = state_sharing(ORPHAN_SURFACE);
             publish_remote_input_view(&mut state, &fb, false);
-            assert!(!state.remote_input_firewall.view().chrome_captures_input());
+            assert!(!state.remote_input_firewall.view().captures_keyboard());
 
             fb.host_mut()
                 .dictation_surface_mut()
@@ -2819,7 +3038,7 @@ mod tests {
             );
             publish_remote_input_view(&mut state, &fb, false);
             assert!(
-                state.remote_input_firewall.view().chrome_captures_input(),
+                state.remote_input_firewall.view().captures_keyboard(),
                 "a peer cannot operate the local microphone controls"
             );
 
@@ -2828,7 +3047,7 @@ mod tests {
                 .status(crate::compositor::dictation::DictationStatus::Idle);
             publish_remote_input_view(&mut state, &fb, false);
             assert!(
-                !state.remote_input_firewall.view().chrome_captures_input(),
+                !state.remote_input_firewall.view().captures_keyboard(),
                 "closing dictation must restore normal shared-seat policy"
             );
         }
@@ -2916,9 +3135,9 @@ mod tests {
     /// A `State` with a live seat, one peer holding write access to `surface`, and that surface on screen with the keyboard.
     fn state_sharing(surface: u64) -> crate::compositor::state::State {
         use crate::network::input_firewall::ShellView;
-        use crate::network::streaming::StreamingShare;
         use smithay::reexports::calloop::EventLoop;
         use smithay::reexports::wayland_server::Display;
+        use tilo_window_share::streaming::StreamingShare;
 
         let event_loop: EventLoop<'static, crate::compositor::state::State> =
             EventLoop::try_new().expect("calloop event loop");
@@ -2931,7 +3150,7 @@ mod tests {
         state.remote_input_firewall.publish_view(ShellView::new(
             vec![(surface, Rect::new(0.0, 0.0, 400.0, 300.0))],
             Some(surface),
-            false,
+            crate::shell::input_policy::InputCapture::NONE,
             false,
         ));
         state
@@ -2972,7 +3191,7 @@ mod tests {
         // a late network release is harmless rather than landing in B.
         {
             use crate::network::input_firewall::{Denial, ShellView};
-            use crate::network::streaming::InputEvent;
+            use tilo_window_share::streaming::InputEvent;
 
             const SHARED: u64 = 808;
             const PRIVATE: u64 = 909;
@@ -3008,7 +3227,7 @@ mod tests {
             state.remote_input_firewall.publish_view(ShellView::new(
                 vec![(SHARED, Rect::new(0.0, 0.0, 400.0, 300.0))],
                 Some(PRIVATE),
-                false,
+                crate::shell::input_policy::InputCapture::NONE,
                 false,
             ));
             assert_eq!(
@@ -3030,7 +3249,7 @@ mod tests {
         // Releasing one participant's left button must not end the other one's
         // implicit drag; only the last release reaches Smithay.
         {
-            use crate::network::streaming::{InputEvent, StreamingShare};
+            use tilo_window_share::streaming::{InputEvent, StreamingShare};
 
             const SHARED: u64 = 808;
             const SECOND_PEER: u64 = 78;
@@ -3091,7 +3310,7 @@ mod tests {
         }
         // Phase `remote_click_restores_that_participants_cursor_after_another_peer_moves`.
         {
-            use crate::network::streaming::{InputEvent, StreamingShare};
+            use tilo_window_share::streaming::{InputEvent, StreamingShare};
 
             const SHARED: u64 = 808;
             const SECOND_PEER: u64 = 78;
@@ -3154,7 +3373,7 @@ mod tests {
         }
         // Phase `remote_pointer_leave_ends_drag_but_preserves_caret_focus`.
         {
-            use crate::network::streaming::InputEvent;
+            use tilo_window_share::streaming::InputEvent;
 
             const SHARED: u64 = 808;
             const LEFT: u32 = 272;
@@ -3198,10 +3417,10 @@ mod tests {
             let mut state = seat_state();
             assert!(state.remote_seats.local_button_transition(LEFT, true));
             assert!(!state.remote_seats.button_transition(PEER, LEFT, true));
-            state.client_input.buttons_down = 1;
+            state.client_input.held_buttons.insert(MouseButton::Left);
 
             assert!(!route_cursor_left(&mut state));
-            assert_eq!(state.client_input.buttons_down, 0);
+            assert!(state.client_input.held_buttons.is_empty());
             assert_eq!(
                 state.remote_seats.button_holder_count(LEFT),
                 1,
@@ -3349,7 +3568,7 @@ mod tests {
         state.review_remote_input(
             KILL_PEER,
             KILL_SURFACE,
-            crate::network::streaming::InputEvent::PointerMotion { x: 10.0, y: 10.0 },
+            tilo_window_share::streaming::InputEvent::PointerMotion { x: 10.0, y: 10.0 },
         )
     }
 

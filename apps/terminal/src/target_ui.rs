@@ -7,13 +7,52 @@ use crate::sessions::OpenState;
 use crate::target::{EnvironmentSummary, Location, RelaySummary, SessionTarget};
 use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize, TextInput};
 
-/// One row of the target picker.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum TargetMenuRow {
     Open(SessionTarget),
     /// Run the current environment here or on a relay.
     RunOn(Location),
     Manage,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PickerRow {
+    label: String,
+    /// It is where the tab's session runs: the row carries the check.
+    current: bool,
+    /// A separator stands above it.
+    separated: bool,
+    row: TargetMenuRow,
+}
+
+impl TargetMenuRow {
+    /// The row as the window bar's picker commits it.
+    fn encode(&self) -> String {
+        match self {
+            Self::Open(target) => format!("open:{}", target.encode()),
+            Self::RunOn(location) => format!(
+                "run-on:{}",
+                serde_json::to_string(location).unwrap_or_default()
+            ),
+            Self::Manage => "manage".to_owned(),
+        }
+    }
+
+    /// The row a window bar's picker committed; anything malformed or
+    /// invalid is none.
+    fn decode(raw: &str) -> Option<Self> {
+        if raw == "manage" {
+            return Some(Self::Manage);
+        }
+        if let Some(target) = raw.strip_prefix("open:") {
+            return SessionTarget::decode(target).map(Self::Open);
+        }
+        let location = raw.strip_prefix("run-on:")?;
+        serde_json::from_str::<Location>(location)
+            .ok()
+            .filter(Location::is_valid)
+            .map(Self::RunOn)
+    }
 }
 
 /// The environments panel: list, create and rename.
@@ -27,10 +66,24 @@ struct EnvironmentsPanel {
     rect: Rect,
     close_rect: Rect,
     submit_rect: Rect,
+    /// Try again, while the shell runtime does not answer.
+    retry_rect: Rect,
     /// Per environment: its buttons.
     rows: Vec<EnvironmentRow>,
     /// A folder picker the person opened for this environment record.
     picker: Option<(String, ui::portal::PortalChannel)>,
+}
+
+/// What the environments panel offers. Environments are listed and made
+/// only where the shell runtime answered; elsewhere the panel says what is
+/// wrong and what can be done about it, never a form that cannot work.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PanelOffer {
+    /// The environments, and the name field that makes or renames one.
+    Environments,
+    /// Why environments cannot be listed or made here; `retry` when asking
+    /// the runtime again may help.
+    Problem { message: String, retry: bool },
 }
 
 /// One environment's buttons in the panel, as last drawn.
@@ -117,7 +170,10 @@ fn target_label(
                 Location::Relay { .. } => format!("{name} on {}", location_label(location, relays)),
             }
         }
-        SessionTarget::Legacy { vm } => format!("{vm} ({})", t("terminal-target-legacy")),
+        SessionTarget::Legacy { vm } => crate::i18n::t_args(
+            "terminal-target-legacy",
+            &[("vm", ui::i18n::ArgValue::Text(vm.clone()))],
+        ),
     }
 }
 
@@ -169,6 +225,7 @@ impl TerminalWidget {
     pub fn show_target(&mut self, target: SessionTarget, environments: Vec<EnvironmentSummary>) {
         self.sessions.target = Some(target);
         self.sessions.environments = environments;
+        self.sessions.directory = crate::sessions::Directory::Reached;
     }
 
     /// Report legacy VMs from the legacy VM service; the picker lists them
@@ -183,6 +240,12 @@ impl TerminalWidget {
         self.sessions.relays = relays;
     }
 
+    /// The tab's session source and the places it lists — for tests.
+    #[cfg(test)]
+    pub(crate) fn sessions(&self) -> &crate::sessions::Sessions {
+        &self.sessions
+    }
+
     /// Open sessions through `sessions` — for tests.
     #[cfg(test)]
     pub(crate) fn set_sessions(&mut self, sessions: crate::sessions::Sessions) {
@@ -190,7 +253,7 @@ impl TerminalWidget {
     }
 
     fn header_h(&self) -> f64 {
-        if self.sessions.target.is_some() {
+        if self.sessions.target.is_some() && !self.bar_shows_target() {
             self.chrome_header_h
         } else {
             0.0
@@ -256,7 +319,9 @@ impl TerminalWidget {
         attach: Option<&str>,
     ) {
         self.sessions.target = Some(target.clone());
-        // Dropping the platform lifetime also shuts down reader-held clones.
+        // The session this replaces ends: that closes no window. Dropping the
+        // platform lifetime also shuts down reader-held clones.
+        self.end_session_exit();
         self.service_lifetime = None;
         if let Some(result) =
             self.sessions
@@ -286,6 +351,7 @@ impl TerminalWidget {
         match result {
             Ok(backend) => {
                 self.record_relay_session(backend.relay_session.clone());
+                self.tell_window_session(backend.supervisor_session.clone());
                 self.attach_backend(backend);
                 // A process stands behind the grid from now on.
                 self.headless = false;
@@ -322,6 +388,14 @@ impl TerminalWidget {
                 self.show_status(&reason);
                 self.sessions.state = OpenState::Failed(reason);
             }
+        }
+        // A reconnect attempt settled, one way or the other.
+        self.settle_reconnect();
+        // The window bar's picker names the places there are; they are
+        // listed off the UI thread.
+        if self.bar_shows_target() {
+            self.sessions
+                .refresh_environments_in_background(Arc::clone(&self.waker));
         }
         request_terminal_wake(&self.waker);
     }
@@ -388,6 +462,17 @@ impl TerminalWidget {
                 let reason = t("terminal-host-denied");
                 self.show_status(&reason);
                 self.sessions.state = OpenState::Failed(reason);
+                // A refusal is not where the tab runs: reopened (the next
+                // login restores it), it goes where a new tab would rather
+                // than put the same question to the person unasked.
+                if self
+                    .recorded_target
+                    .as_ref()
+                    .is_some_and(SessionTarget::is_host)
+                {
+                    let back = self.sessions.default_target();
+                    self.record_target(&back);
+                }
             }
             None => {}
         }
@@ -454,6 +539,9 @@ impl TerminalWidget {
             self.handle_environments_panel_event(event, ctx);
             return true;
         }
+        if self.route_start_failure(event, ctx) || self.route_restart(event, ctx) {
+            return true;
+        }
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -484,7 +572,9 @@ impl TerminalWidget {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some(label) = self.chip_label() else {
+        // Where the window bar names the target, the content holds only the
+        // terminal.
+        let Some(label) = self.chip_label().filter(|_| !self.bar_shows_target()) else {
             self.chip_rect = Rect::ZERO;
             return;
         };
@@ -526,17 +616,18 @@ impl TerminalWidget {
         }
     }
 
-    /// Open the target picker under the chip.
-    pub fn open_target_menu(&mut self) {
-        self.sessions.refresh_environments();
+    /// The target picker's rows, in order: the targets (the current one
+    /// marked), "Run on" this device or one of the person's relays for the
+    /// environment the tab runs, then "Manage environments…", each group
+    /// after a separator. The same rows in the window bar's picker and in
+    /// the picker the tab opens itself.
+    fn target_picker_rows(&self) -> Vec<PickerRow> {
         let targets = crate::target::picker_targets(
             &self.sessions.environments,
             true,
             &self.sessions.legacy_vms,
         );
-        let mut menu = ContextMenu::new();
-        menu.set_platform_conventions(self.conventions);
-        let mut rows = Vec::with_capacity(targets.len() + 1);
+        let mut rows = Vec::with_capacity(targets.len() + 2);
         // Picking another environment keeps it where the current one runs.
         let here = self
             .sessions
@@ -549,37 +640,71 @@ impl TerminalWidget {
                 Some(location) => target.at(location),
                 None => target,
             };
-            let current = self.sessions.target.as_ref() == Some(&target);
-            let label = target_label(&target, &self.sessions.environments, &self.sessions.relays);
-            menu.push(MenuItem::action(label, || {}).with_checked(current));
-            rows.push(Some(TargetMenuRow::Open(target)));
+            rows.push(PickerRow {
+                label: target_label(&target, &self.sessions.environments, &self.sessions.relays),
+                current: self.sessions.target.as_ref() == Some(&target),
+                separated: false,
+                row: TargetMenuRow::Open(target),
+            });
         }
-        // "Run on": this device or one of the person's relays, for the
-        // environment the tab runs.
         if let Some(here) = here.filter(|_| !self.sessions.relays.is_empty()) {
-            menu.push(MenuItem::separator());
-            rows.push(None);
             let places =
                 std::iter::once(Location::ThisDevice).chain(self.sessions.relays.iter().map(|r| {
                     Location::Relay {
                         relay: r.relay.clone(),
                     }
                 }));
-            for place in places {
-                let label = format!(
-                    "{}{} {}",
-                    if place == here { "✓ " } else { "" },
-                    t("terminal-run-on"),
-                    location_label(&place, &self.sessions.relays)
-                );
-                menu.push(MenuItem::action(label, || {}));
-                rows.push(Some(TargetMenuRow::RunOn(place)));
+            for (index, place) in places.enumerate() {
+                rows.push(PickerRow {
+                    label: format!(
+                        "{} {}",
+                        t("terminal-run-on"),
+                        location_label(&place, &self.sessions.relays)
+                    ),
+                    current: place == here,
+                    separated: index == 0,
+                    row: TargetMenuRow::RunOn(place),
+                });
             }
         }
-        menu.push(MenuItem::separator());
-        rows.push(None);
-        menu.push(MenuItem::action(t("terminal-target-manage"), || {}));
-        rows.push(Some(TargetMenuRow::Manage));
+        rows.push(PickerRow {
+            label: t("terminal-target-manage"),
+            current: false,
+            separated: true,
+            row: TargetMenuRow::Manage,
+        });
+        rows
+    }
+
+    fn choose_picker_row(&mut self, row: TargetMenuRow) {
+        match row {
+            TargetMenuRow::Open(target) => {
+                let _ = self.switch_target(&target, Requester::Person);
+            }
+            TargetMenuRow::RunOn(location) => {
+                if let Some(target) = self.sessions.target.clone() {
+                    let _ = self.switch_target(&target.at(location), Requester::Person);
+                }
+            }
+            TargetMenuRow::Manage => self.open_environments_panel(),
+        }
+    }
+
+    /// Open the target picker under the chip.
+    pub fn open_target_menu(&mut self) {
+        self.sessions.refresh_environments();
+        let mut menu = ContextMenu::new();
+        menu.set_platform_conventions(self.conventions);
+        let picker = self.target_picker_rows();
+        let mut rows = Vec::with_capacity(picker.len() + 2);
+        for (index, row) in picker.into_iter().enumerate() {
+            if row.separated && index > 0 {
+                menu.push(MenuItem::separator());
+                rows.push(None);
+            }
+            menu.push(MenuItem::action(row.label, || {}).with_checked(row.current));
+            rows.push(Some(row.row));
+        }
         menu.set_viewport(Some(self.rect));
         let anchor = if self.chip_rect.width() > 0.0 {
             self.chip_rect
@@ -630,24 +755,14 @@ impl TerminalWidget {
         let Some(rows) = self.target_menu_rows.take() else {
             return false;
         };
-        match rows.get(index).cloned().flatten() {
-            Some(TargetMenuRow::Open(target)) => {
-                let _ = self.switch_target(&target, Requester::Person);
-            }
-            Some(TargetMenuRow::RunOn(location)) => {
-                if let Some(target) = self.sessions.target.clone() {
-                    let _ = self.switch_target(&target.at(location), Requester::Person);
-                }
-            }
-            Some(TargetMenuRow::Manage) => self.open_environments_panel(),
-            None => {}
+        if let Some(row) = rows.get(index).cloned().flatten() {
+            self.choose_picker_row(row);
         }
         true
     }
 
     // --- the environments panel
 
-    /// Open the environments panel.
     pub fn open_environments_panel(&mut self) {
         self.sessions.refresh_environments();
         let placeholder = t("terminal-env-name-placeholder");
@@ -721,6 +836,23 @@ impl TerminalWidget {
         self.environments_panel.picker.is_some()
     }
 
+    /// What the environments panel offers, by whether the shell runtime
+    /// answered.
+    pub(crate) fn environments_panel_offer(&self) -> PanelOffer {
+        use crate::sessions::Directory;
+        match self.sessions.directory {
+            Directory::Reached => PanelOffer::Environments,
+            Directory::NotHere => PanelOffer::Problem {
+                message: t("terminal-env-unavailable"),
+                retry: false,
+            },
+            Directory::Unreachable | Directory::Unasked => PanelOffer::Problem {
+                message: t("terminal-env-unreachable"),
+                retry: true,
+            },
+        }
+    }
+
     fn close_environments_panel(&mut self) {
         self.environments_panel = EnvironmentsPanel::default();
     }
@@ -733,7 +865,11 @@ impl TerminalWidget {
     }
 
     /// Create a new environment, or finish renaming one, from the name field.
-    fn submit_environment_name(&mut self) {
+    /// Nothing is made where the shell runtime did not answer.
+    pub(crate) fn submit_environment_name(&mut self) {
+        if self.sessions.directory != crate::sessions::Directory::Reached {
+            return;
+        }
         let name = self
             .environments_panel
             .input
@@ -800,6 +936,11 @@ impl TerminalWidget {
                 *ctx.handled = true;
                 return;
             }
+            if self.environments_panel.retry_rect.contains(p) {
+                self.sessions.refresh_environments();
+                *ctx.handled = true;
+                return;
+            }
             if self.environments_panel.submit_rect.contains(p) {
                 self.submit_environment_name();
                 *ctx.handled = true;
@@ -830,7 +971,9 @@ impl TerminalWidget {
                 return;
             }
         }
-        if let Some(input) = self.environments_panel.input.as_mut() {
+        if self.sessions.directory == crate::sessions::Directory::Reached
+            && let Some(input) = self.environments_panel.input.as_mut()
+        {
             let mut input_handled = false;
             Widget::handle_event(
                 input,
@@ -890,14 +1033,25 @@ impl TerminalWidget {
                 button_h + gap / 2.0 + f64::from(tools_h) + f64::from(grants_h) + gap * 2.0
             })
             .collect();
-        let unavailable = t("terminal-env-unavailable");
-        let rows_h = if envs.is_empty() {
-            let (_, h) = tr.measure_style(&unavailable, Some(text_w), &caption);
-            f64::from(h) + gap * 2.0
-        } else {
-            row_heights.iter().sum()
+        let (problem, offers_retry) = match self.environments_panel_offer() {
+            PanelOffer::Environments => (None, false),
+            PanelOffer::Problem { message, retry } => (Some(message), retry),
         };
-        let panel_h = (button_h + gap * 3.0 + rows_h + button_h + gap * 2.0 + caption_line)
+        let reached = problem.is_none();
+        let retry_label = t("terminal-start-retry");
+        let rows_h = match &problem {
+            Some(problem) => {
+                let (_, h) = tr.measure_style(problem, Some(text_w), &caption);
+                f64::from(h) + gap * 2.0 + if offers_retry { button_h + gap } else { 0.0 }
+            }
+            None => row_heights.iter().sum(),
+        };
+        let field_h = if reached {
+            button_h + gap * 2.0 + caption_line
+        } else {
+            gap
+        };
+        let panel_h = (button_h + gap * 3.0 + rows_h + field_h)
             .min(self.rect.height() - margin * 2.0 - self.header_h())
             .max(0.0);
         let x0 = self.rect.center().x - panel_w / 2.0;
@@ -952,15 +1106,41 @@ impl TerminalWidget {
         });
         let mut y = panel_rect.y0 + gap * 2.0 + button_h;
         self.environments_panel.rows.clear();
-        if envs.is_empty() {
+        self.environments_panel.retry_rect = Rect::ZERO;
+        self.environments_panel.submit_rect = Rect::ZERO;
+        if let Some(problem) = &problem {
             tr.draw_style(
                 scene,
-                &unavailable,
-                ink.text_dim,
+                problem,
+                ink.text_primary,
                 transform * Affine::translate((panel_rect.x0 + margin, y)),
                 Some(text_w),
                 &caption,
             );
+            if offers_retry {
+                let (_, h) = tr.measure_style(problem, Some(text_w), &caption);
+                let retry_w = ButtonFace::new(Rect::ZERO, &retry_label)
+                    .control_size(size)
+                    .intrinsic_width(tr, theme);
+                let top = y + f64::from(h) + gap;
+                let retry = Rect::new(
+                    panel_rect.x0 + margin,
+                    top,
+                    panel_rect.x0 + margin + retry_w,
+                    top + button_h,
+                );
+                self.environments_panel.retry_rect = retry;
+                Button::paint(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    &ButtonFace::new(retry, &retry_label)
+                        .control_size(size)
+                        .hovered(retry.contains(p)),
+                );
+            }
+            return;
         }
         for ((env, (tools, grants)), row_h) in envs.iter().zip(&details).zip(&row_heights) {
             if y + row_h > panel_rect.y1 - button_h - gap * 2.0 {

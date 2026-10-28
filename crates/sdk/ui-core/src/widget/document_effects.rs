@@ -37,8 +37,6 @@ impl AppliedDocument<'_> {
 /// Only actions declared to complete asynchronously enter this callback.
 /// Immediate actions, submissions, replay and remote merge do not enter it.
 pub trait DocumentEffects {
-    /// # Errors
-    /// Returns refusal of the current caller or the exact queued consequence.
     fn start_document_effects(
         &mut self,
         operation: &ResourceOperation<'_>,

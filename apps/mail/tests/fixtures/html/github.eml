@@ -1,0 +1,54 @@
+From: Priya Raman <notifications@github.example>
+To: tilo/tilo <tilo@noreply.github.example>
+Cc: Sam Rivera <sam@rivera.example>, Review requested <review_requested@noreply.github.example>
+Subject: Re: [tilo/tilo] Render HTML mail in the reader (PR #4812)
+Message-ID: <tilo/tilo/pull/4812/review/9911@github.example>
+In-Reply-To: <tilo/tilo/pull/4812@github.example>
+Date: Mon, 29 Jun 2026 11:02:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="--==_mimepart_6680"
+
+----==_mimepart_6680
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 7bit
+
+@priya-raman commented on this pull request.
+
+> +    let doc = prepare(html, &policy);
+> +    engine.navigate(doc);
+
+Could we keep the plain-text part around so the reader can switch back?
+
+-- 
+Reply to this email directly, view it on GitHub:
+https://github.example/tilo/tilo/pull/4812#discussion_r1650021
+You are receiving this because your review was requested.
+
+----==_mimepart_6680
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: 7bit
+
+<p></p>
+<p><b>@priya-raman</b> commented on this pull request.</p>
+
+<hr>
+
+<p>In <a href="https://github.example/tilo/tilo/pull/4812#discussion_r1650021">apps/mail/src/reader.rs</a>:</p>
+<pre style='color:#555'>&gt; +    let doc = prepare(html, &amp;policy);
+&gt; +    engine.navigate(doc);
+</pre>
+<p>Could we keep the plain-text part around so the reader can switch back? Some people read everything as text, and <code>multipart/alternative</code> gives us both for free.</p>
+
+<p style="font-size:small;-webkit-text-size-adjust:none;color:#666;">&mdash;<br />Reply to this email directly, <a href="https://github.example/tilo/tilo/pull/4812#discussion_r1650021">view it on GitHub</a>, or <a href="https://github.example/notifications/unsubscribe-auth/AAB7">unsubscribe</a>.<br />You are receiving this because your review was requested.<img src="https://github.example/notifications/beacon/AAB7.gif" height="1" width="1" alt="" /><span style="color: transparent; font-size: 0; display: none; visibility: hidden; overflow: hidden; opacity: 0; width: 0; height: 0; max-width: 0; max-height: 0; mso-hide: all">Message ID: <span>&lt;tilo/tilo/pull/4812/review/9911@github.example&gt;</span></span></p>
+<script type="application/ld+json">[
+{
+"@context": "http://schema.org",
+"@type": "EmailMessage",
+"potentialAction": {
+"@type": "ViewAction",
+"target": "https://github.example/tilo/tilo/pull/4812#discussion_r1650021",
+"name": "View Pull Request"
+}
+}
+]</script>
+----==_mimepart_6680--

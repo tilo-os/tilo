@@ -191,7 +191,6 @@ pub struct NodeState {
 /// snapshot and the captured state of every path in it.
 #[derive(Clone, Debug)]
 pub struct CaptureState {
-    /// Number the next epoch will get.
     pub next_epoch: u64,
     pub snapshot: PathBuf,
     pub nodes: Vec<(PathBuf, NodeState)>,
@@ -334,12 +333,10 @@ impl EpochCapture {
         })
     }
 
-    /// Number the next epoch will get.
     pub fn next_epoch(&self) -> u64 {
         self.next_epoch
     }
 
-    /// The captured state of one path.
     pub fn node_state(&self, rel: &Path) -> Option<NodeState> {
         self.prev.as_ref()?.nodes.get(rel).map(Node::state)
     }
@@ -386,12 +383,10 @@ impl EpochCapture {
         }
     }
 
-    /// The captured node of one path.
     pub fn node(&self, rel: &Path) -> Option<Node> {
         self.prev.as_ref()?.nodes.get(rel).cloned()
     }
 
-    /// Paths tracked at or below `rel`.
     pub fn paths_below(&self, rel: &Path) -> Vec<PathBuf> {
         self.prev.as_ref().map_or_else(Vec::new, |p| {
             p.nodes
@@ -1446,7 +1441,6 @@ mod tests {
 
     #[test]
     fn journal_batches_order_parents_removals_and_rescans() {
-        // Phase `journal_order_is_kept_and_parents_come_first`.
         {
             let order: HashMap<PathBuf, u64> = [("a/obj", 1), ("a", 5), ("ref", 3)]
                 .into_iter()
@@ -1465,7 +1459,6 @@ mod tests {
             );
             assert_eq!(paths(&ops), ["+a", "+a/obj", "+ref"]);
         }
-        // Phase `directory_removal_follows_its_contents`.
         {
             let order: HashMap<PathBuf, u64> = [("d", 1), ("d/x", 2), ("d/y/z", 3), ("d/y", 4)]
                 .into_iter()
@@ -1485,7 +1478,6 @@ mod tests {
             );
             assert_eq!(paths(&ops), ["-d/y/z", "-d/x", "-d/y", "-d"]);
         }
-        // Phase `rescans_order_by_change_time`.
         {
             let ops = order_ops(
                 vec![
@@ -1528,7 +1520,6 @@ mod tests {
 
     #[test]
     fn moves_and_hard_links_are_told_apart_by_inode_and_path() {
-        // Phase `a_directory_move_carries_its_subtree_and_rewrites_removals_inside_it`.
         {
             let before = prev(&[
                 ("a", NodeKind::Dir, 1),
@@ -1570,7 +1561,6 @@ mod tests {
             let keys: Vec<&str> = next.keys().filter_map(|p| p.to_str()).collect();
             assert_eq!(keys, ["elsewhere", "z", "z/f"]);
         }
-        // Phase `an_inode_still_at_its_old_path_is_a_hard_link_not_a_move`.
         {
             let before = prev(&[("a", NodeKind::File, 7)]);
             let (ups, rms, mv) = pair_moves(
@@ -1596,7 +1586,6 @@ mod tests {
 
     #[test]
     fn the_epoch_scheduler_cuts_at_quiescence_interval_or_grace_limit() {
-        // Phase `scheduler_cuts_at_quiescence_or_max_interval`.
         {
             let mut s = EpochScheduler::default();
             let t = Instant::now();
@@ -1617,7 +1606,6 @@ mod tests {
             s.cut();
             assert!(!s.due(t + Duration::from_secs(10)));
         }
-        // Phase `scheduler_waits_for_fresh_open_files_up_to_the_grace_limit`.
         {
             let mut s = EpochScheduler::default();
             let t = Instant::now();

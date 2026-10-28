@@ -64,8 +64,6 @@ fn read_workspace_salt(path: &Path) -> std::io::Result<u16> {
 /// non-secret random one without creating or advertising a transport identity.
 /// Existing installations retain the salt derived from their existing device
 /// key on first migration.
-/// # Errors
-/// Returns filesystem, identity-key or invalid stored salt errors.
 pub fn load_or_create_workspace_salt(
     state_path: &Path,
     peer_key_path: &Path,
@@ -175,7 +173,6 @@ mod tests {
     use super::*;
     #[test]
     fn onboarding_and_identity_policy_keep_sessions_and_salts_consistent() {
-        // Phase `deferred_peer_sync_starts_in_the_session_that_finishes_onboarding`.
         {
             let mut deferred = true;
             assert!(!take_deferred_peer_sync_activation(&mut deferred, true));
@@ -185,7 +182,6 @@ mod tests {
             assert!(!take_deferred_peer_sync_activation(&mut deferred, false));
         }
 
-        // Phase `unfinished_post_identity_setup_reactivates_trusted_first_use_chrome`.
         {
             assert!(should_activate_first_use(false, true, false, false));
             assert!(
@@ -202,7 +198,6 @@ mod tests {
             );
         }
 
-        // Phase `fresh_workspace_salt_does_not_create_a_transport_identity`.
         {
             let dir = tempfile::tempdir().expect("tempdir");
             let state_path = dir.path().join("config/state.json");
@@ -221,7 +216,6 @@ mod tests {
             );
         }
 
-        // Phase `existing_transport_identity_keeps_its_historical_workspace_salt`.
         {
             let dir = tempfile::tempdir().expect("tempdir");
             let state_path = dir.path().join("config/state.json");
@@ -249,7 +243,6 @@ mod tests {
 
     #[test]
     fn presentation_and_lock_policy_waits_for_real_frames_and_fails_closed() {
-        // Phase `output_presentation_removal_stays_pending_until_a_full_frame_submits`.
         {
             let mut pending = false;
             let mut previous_surface_count = 1;
@@ -281,14 +274,12 @@ mod tests {
             ));
         }
 
-        // Phase `portal_screencast_never_publishes_a_locked_frame`.
         {
             assert!(portal_screencast_should_publish(true, false));
             assert!(!portal_screencast_should_publish(true, true));
             assert!(!portal_screencast_should_publish(false, false));
         }
 
-        // Phase `sleep_lock_ack_waits_for_its_exact_frame_and_fails_closed_on_presenter_loss`.
         {
             // A prior desktop frame has retired, but lock frame #42 has not: it
             // cannot release the sleep-delay inhibitor.  If the presenter dies
@@ -307,7 +298,6 @@ mod tests {
             );
         }
 
-        // Phase `failed_suspend_only_unlocks_a_lock_it_prepared`.
         {
             assert!(should_unlock_after_suspend_failure(true, false));
             assert!(!should_unlock_after_suspend_failure(true, true));

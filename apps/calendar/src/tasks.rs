@@ -1,8 +1,9 @@
 //! Tasks list component.
 //!
 //! The Tasks screen lists the sidebar's selected list (a smart list or a
-//! project) in full: a heading with the list's name, the field that adds a
-//! task to it, and one row per task with its subtasks indented beneath it.
+//! project) in full: the field that adds a task to it, and one row per task
+//! with its subtasks indented beneath it. The list's name is the window's
+//! location.
 //! The component owns the scroll state, the entry field, geometry, drawing
 //! and the row actions; `CalendarApp` supplies the model and turns those
 //! actions into the calendar's edits and navigation, through the same paths
@@ -120,31 +121,21 @@ impl<'a> TasksSource<'a> {
 /// painter and the hit rects read.
 #[derive(Clone, Copy, Debug, Default)]
 struct Regions {
-    heading: Rect,
     entry: Option<Rect>,
     list: Rect,
 }
 
 fn regions(area: Rect, theme: &Theme, accepts_new: bool) -> Regions {
     let gutter = f64::from(theme.tokens.spacing.s6);
-    let gap = f64::from(theme.tokens.spacing.rhythm.related);
-    let heading_h = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
-        f64::from(
-            text.measure_style("Ag", None, &theme.text(TextRole::Subheading))
-                .1,
-        )
-    });
     let x0 = area.x0 + gutter;
     let x1 = (area.x1 - gutter).max(x0);
-    let heading = Rect::new(x0, area.y0 + gutter, x1, area.y0 + gutter + heading_h);
-    let mut y = heading.y1 + gap;
+    let mut y = area.y0 + gutter;
     let entry = accepts_new.then(|| {
         let rect = Rect::new(x0, y, x1, y + ControlSize::Regular.height(theme));
         y = rect.y1 + f64::from(theme.tokens.spacing.rhythm.group);
         rect
     });
     Regions {
-        heading,
         entry,
         list: Rect::new(area.x0, y.min(area.y1), area.x1, area.y1),
     }
@@ -293,7 +284,6 @@ impl TasksView {
         let rows = source.rows();
         let mut hits = Vec::new();
 
-        self.draw_heading(ctx, source);
         if let Some(entry) = self.regions.entry {
             self.entry
                 .set_placeholder(&crate::resource::t("calendar-tasks-entry"));
@@ -384,21 +374,6 @@ impl TasksView {
         hits
     }
 
-    /// Paint the selected list's heading using the shared text role.
-    fn draw_heading(&self, ctx: &mut PaintCtx<'_>, source: &TasksSource<'_>) {
-        let style = ctx.theme.text(TextRole::Subheading);
-        let band = self.regions.heading;
-        crate::draw_util::text_in_band(
-            ctx,
-            &source.title(),
-            &style,
-            ctx.theme.text_primary,
-            band.x0,
-            band,
-            band.width(),
-        );
-    }
-
     pub(crate) fn needs_redraw(&self) -> bool {
         self.scroll.needs_redraw() || self.entry.needs_redraw()
     }
@@ -483,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn regions_stack_heading_entry_and_rows_and_drop_the_entry_for_completed() {
+    fn regions_stack_entry_and_rows_and_drop_the_entry_for_completed() {
         let theme = Theme::default();
         let area = Rect::new(0.0, 60.0, 800.0, 700.0);
         let model = Calendar::default();
@@ -499,7 +474,11 @@ mod tests {
         );
         let with_entry = view.regions;
         let entry = with_entry.entry.expect("an entry field");
-        assert!(with_entry.heading.y1 < entry.y0);
+        assert_eq!(
+            entry.y0,
+            area.y0 + f64::from(theme.tokens.spacing.s6),
+            "the entry stands first: the list's name is the window's location"
+        );
         assert!(entry.y1 < with_entry.list.y0);
         assert_eq!(entry.height(), ControlSize::Regular.height(&theme));
         assert_eq!(with_entry.list.y1, area.y1);

@@ -45,6 +45,10 @@ ENGINE_OWNERS = (
     # The rich-text resource: tilo-doc's rich text as a tilo-resource resource,
     # which places changes by tilo-doc's storage keys.
     "crates/doc/tilo-document/",
+    # The resource layer stores every resource type on the engine; its
+    # generic machinery (history, recordings) copies any document's text
+    # and marks.
+    "crates/sdk/tilo-resource/",
     "crates/sdk/ui-core/",
     # Toolkit lab/shots scenarios: lived under ui-core (an owner) until moved
     # into this non-default member; they still exercise the same surfaces.
@@ -142,7 +146,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    print("document engine boundary OK")
+    print("document engine boundary OK", file=sys.stderr)
     return 0
 
 

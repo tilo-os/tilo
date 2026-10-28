@@ -97,8 +97,6 @@ impl HttpService {
 
     /// Serve a host-accepted TCP or TLS stream. Connection admission and TLS
     /// are host-owned; active model calls have their own bounded admission.
-    /// # Errors
-    /// Returns HTTP protocol or stream I/O errors.
     pub async fn serve_io<I>(&self, io: I) -> Result<(), hyper::Error>
     where
         I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,

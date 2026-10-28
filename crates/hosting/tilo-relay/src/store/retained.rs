@@ -30,7 +30,9 @@ pub(crate) use tilo_relay_store::durable::{
 use tilo_relay_store::frames::framed_envelope;
 pub(crate) use tilo_relay_store::frames::{body_of, complete_coedit_payload, payload};
 
+mod group;
 mod tail_index;
+pub(crate) use group::SharedGroup;
 
 fn invalid(message: &str) -> StoreError {
     io::Error::new(io::ErrorKind::InvalidData, message).into()
@@ -418,6 +420,8 @@ fn barriers(
     let Some((first, rest)) = work.split_first_mut() else {
         return Ok(());
     };
+    // Helpers have no barrier hook: what it holds is due before any of them.
+    tilo_relay_store::before_barrier()?;
     std::thread::scope(|scope| {
         let others: Vec<_> = rest
             .iter_mut()
@@ -460,7 +464,6 @@ fn create_lineage(v2: PathBuf, lineage: &Path) -> Result<Option<PathBuf>, StoreE
     Ok(None)
 }
 
-/// Whether anything is at `path`.
 fn exists(path: &Path) -> Result<bool, StoreError> {
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
@@ -581,6 +584,8 @@ pub struct RetainBuild {
     indexed: bool,
     /// Every record digest a delta's full scan saw, to install as the index.
     collected: Option<std::collections::HashSet<u64>>,
+    /// The owner's group commit a plain append joins instead of syncing.
+    group: Option<SharedGroup>,
 }
 /// The durable stage of a lineage's next checkpoint, written outside the
 /// workspace's order ([`WorkspaceStore::stage_fresh_checkpoint`]) and not
@@ -695,10 +700,6 @@ impl CheckpointStage {
         self.build.staged.as_deref().unwrap_or(&self.build.active)
     }
     /// The lineage directory's name.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the lineage path has no name.
     pub fn lineage_name(&self) -> Result<&std::ffi::OsStr, StoreError> {
         self.build
             .lineage
@@ -771,10 +772,6 @@ impl CheckpointStage {
         Ok(())
     }
     /// Collect what the promotion replaced.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when collection fails.
     pub fn finish_gc(
         &mut self,
         limit: super::bounded::WorkLimit,
@@ -824,7 +821,6 @@ impl RetainBuild {
             .as_ref()
             .map_or(&self.sorter.stats, |s| s.stats())
     }
-    /// The retention pass's own work.
     pub fn retention_stats(&self) -> &super::bounded::WorkStats {
         &self.sorter.stats
     }
@@ -939,8 +935,12 @@ impl RetainBuild {
                 );
                 super::continuity::write(&self.store, &path, &self.bytes, receipt)?;
             }
-            durable_write(&path, &self.bytes)?;
-            remember_digest(&path, &self.digest);
+            if let Some(group) = self.group.as_ref().filter(|_| self.continuity.is_none()) {
+                group.defer(&self.lineage, &self.active, path, &self.bytes, self.digest)?;
+            } else {
+                durable_write(&path, &self.bytes)?;
+                remember_digest(&path, &self.digest);
+            }
             if let (Some(before), Some(after)) = (&self.stamp, generation_stamp(&self.active)) {
                 tail_index::appended(&self.lineage, (before, after), next, &self.digest);
             } else {
@@ -950,6 +950,18 @@ impl RetainBuild {
             self.phase = RetainPhase::Done;
         }
         Ok(())
+    }
+    /// Join a plain append to `group`, the owner's group commit, instead of
+    /// syncing it: its barriers wait for the group's flush. A build that
+    /// must list its lineage first flushes what the group holds of it, so
+    /// the listing sees every record by its name.
+    pub(crate) fn deferring(mut self, group: SharedGroup) -> Result<Self, StoreError> {
+        if matches!(self.phase, RetainPhase::Scan(_)) && group.holds(&self.lineage) {
+            group.flush()?;
+            self.rescan()?;
+        }
+        self.group = Some(group);
+        Ok(self)
     }
     /// Install what this delta's full scan found as the lineage's index.
     fn install_index(&mut self) {
@@ -1275,6 +1287,11 @@ impl RetainBuild {
                 if self.publication.is_none() {
                     if let Some(store) = &self.shell_store {
                         if self.selection.is_none() {
+                            // A selection lists retained history: every
+                            // record it may read is under its name first.
+                            if let Some(group) = &self.group {
+                                group.flush()?;
+                            }
                             let incoming = tilo_relay_store::frames::incoming_identity(
                                 &self.bytes,
                                 self.workspace,
@@ -1451,6 +1468,7 @@ impl WorkspaceStore {
         if actual_channel != *channel || !checkpoint {
             return Err(invalid("retained envelope channel or kind mismatch"));
         }
+        self.learn_retained_record(channel, bytes);
         let v2 = self.root.join(RETAINED_DIR).join("v2");
         let lineage = v2.join(format!("{}-{}", hex::encode(author), hex::encode(channel)));
         if !v2.is_dir() {
@@ -1641,8 +1659,36 @@ impl WorkspaceStore {
             stamp: None,
             indexed: false,
             collected: None,
+            group: None,
         }))
     }
+    /// The scratch directory a retain works in and the sorter of its
+    /// ordered pass. Only a checkpoint's ordered pass spills metadata to
+    /// scratch. A delta's scan compares sizes and cached digests and its
+    /// append names the next ordinal, so it creates no directory to remove
+    /// afterwards; a shell selection creates the scratch it needs itself.
+    fn retain_scratch(
+        &self,
+        scratch: Option<PathBuf>,
+        checkpoint: bool,
+    ) -> Result<(PathBuf, super::bounded::Sorter), StoreError> {
+        let scratch_root = self.root.join("store-work-v1");
+        let scratch = scratch.unwrap_or_else(|| {
+            scratch_root.join(format!(
+                "retain-{}",
+                hex::encode(rand::random::<[u8; 16]>())
+            ))
+        });
+        let sorter = if checkpoint {
+            fs::create_dir_all(&scratch_root)?;
+            fs::create_dir(&scratch)?;
+            super::bounded::Sorter::new(scratch.join("sort"))?
+        } else {
+            super::bounded::Sorter::unspilled(scratch.join("sort"))
+        };
+        Ok((scratch, sorter))
+    }
+
     fn start_retain_at(
         &self,
         channel: &[u8; 32],
@@ -1655,6 +1701,7 @@ impl WorkspaceStore {
         if actual_channel != *channel || checkpoint != seq.is_none() {
             return Err(invalid("retained envelope channel or kind mismatch"));
         }
+        self.learn_retained_record(channel, &bytes);
         let fast = if checkpoint {
             None
         } else {
@@ -1681,24 +1728,7 @@ impl WorkspaceStore {
             None if checkpoint => (lineage.join(hex::encode(rand::random::<[u8; 16]>())), true),
             None => (commit_generation(&lineage, &[], None)?, false),
         };
-        let scratch_root = self.root.join("store-work-v1");
-        let scratch = scratch.unwrap_or_else(|| {
-            scratch_root.join(format!(
-                "retain-{}",
-                hex::encode(rand::random::<[u8; 16]>())
-            ))
-        });
-        // Only a checkpoint's ordered pass spills metadata to scratch. A
-        // delta's scan compares sizes and cached digests and its append names
-        // the next ordinal, so it creates no directory to remove afterwards;
-        // a shell selection creates the scratch it needs itself.
-        let sorter = if checkpoint {
-            fs::create_dir_all(&scratch_root)?;
-            fs::create_dir(&scratch)?;
-            super::bounded::Sorter::new(scratch.join("sort"))?
-        } else {
-            super::bounded::Sorter::unspilled(scratch.join("sort"))
-        };
+        let (scratch, sorter) = self.retain_scratch(scratch, checkpoint)?;
         let digest = *blake3::hash(&bytes).as_bytes();
         // A delta needs the generation's last ordinal and whether it already
         // holds these bytes; the tail index answers both without listing it.
@@ -1761,6 +1791,7 @@ impl WorkspaceStore {
                 .map(|_| std::collections::HashSet::new()),
             indexed: indexed.is_some(),
             stamp,
+            group: None,
         })
     }
     pub(super) fn retain_shared(
@@ -1875,12 +1906,15 @@ impl WorkspaceStore {
         let mut out = Vec::new();
         // Compatibility/admin reads do not grant proof or GC authority, but
         // must retain visibility of a previously committed local selection.
-        if let Some(selected) = current(&self.root.join(super::shell_selection::DIRECTORY))? {
+        let selection = self.root.join(super::shell_selection::DIRECTORY);
+        out.extend(read_current(&selection, |selected| {
             let mut manifest = fs::File::open(selected.join("basis.manifest"))?;
+            let mut frames = Vec::new();
             while let Some(meta) = super::bounded::read_meta(&mut manifest)? {
-                out.push(fs::read(self.root.join(meta.source))?);
+                frames.push(fs::read(self.root.join(meta.source))?);
             }
-        }
+            Ok(frames)
+        })?);
         let v2 = self.root.join(RETAINED_DIR).join("v2");
         if !v2.exists() {
             return Ok(out);
@@ -1891,16 +1925,46 @@ impl WorkspaceStore {
             if !lineage.file_type()?.is_dir() {
                 continue;
             }
-            let Some(active) = current(&lineage.path())? else {
-                continue;
-            };
             out.extend(
-                records(&active)?
+                read_current(&lineage.path(), records)?
                     .into_iter()
                     .map(|mut entry| std::mem::take(&mut entry.bytes)),
             );
         }
         Ok(out)
+    }
+}
+
+/// What `read` makes of the generation `selector` currently selects, or
+/// nothing when it selects none.
+///
+/// This read runs beside the persistence owner, which may select a new
+/// generation and collect the old one while it reads: a file of the
+/// generation it began with is then gone. A generation is only ever
+/// collected once it is no longer selected, so a file missing from a
+/// generation that has since been replaced is that, and the read starts
+/// again on the new one; a file missing from the still selected generation
+/// is a real error.
+fn read_current<T>(
+    selector: &Path,
+    mut read: impl FnMut(&Path) -> Result<Vec<T>, StoreError>,
+) -> Result<Vec<T>, StoreError> {
+    let mut selected = current(selector)?;
+    loop {
+        let Some(generation) = selected else {
+            return Ok(Vec::new());
+        };
+        match read(&generation) {
+            Ok(out) => return Ok(out),
+            Err(StoreError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                let now = current(selector)?;
+                if now.as_ref() == Some(&generation) {
+                    return Err(StoreError::Io(error));
+                }
+                selected = now;
+            }
+            Err(error) => return Err(error),
+        }
     }
 }
 
@@ -2933,7 +2997,6 @@ pub(super) mod tests {
             store.load_retained().unwrap(),
             vec![new.clone(), uncovered.clone()]
         );
-        // The next commit's collection reclaims what the failed one left.
         assert_eq!(selections(), 0);
         document.put(automerge::ROOT, "next", 4).unwrap();
         let next_tail = frame(false, document.save_incremental(), 4);

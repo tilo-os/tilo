@@ -91,27 +91,25 @@ mod imp {
             symbol: symbol.to_owned(),
         })?;
         let mut open = OPEN.lock().unwrap_or_else(PoisonError::into_inner);
-        let handle = match open.iter().find(|(name, _)| name == library) {
-            Some((_, handle)) => handle.0,
-            None => {
-                let name = CString::new(library).map_err(|_| LoadError::Open {
+        let handle = if let Some((_, handle)) = open.iter().find(|(name, _)| name == library) {
+            handle.0
+        } else {
+            let name = CString::new(library).map_err(|_| LoadError::Open {
+                library: library.to_owned(),
+                reason: "the name holds a nul".to_owned(),
+            })?;
+            // SAFETY: `name` is a C string. Local symbols: the engine's
+            // own crates bind inside it (it links with -Bsymbolic), and
+            // nothing later resolves against them by accident.
+            let handle = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+            if handle.is_null() {
+                return Err(LoadError::Open {
                     library: library.to_owned(),
-                    reason: "the name holds a nul".to_owned(),
-                })?;
-                // SAFETY: `name` is a C string. Local symbols: the engine's
-                // own crates bind inside it (it links with -Bsymbolic), and
-                // nothing later resolves against them by accident.
-                let handle =
-                    unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
-                if handle.is_null() {
-                    return Err(LoadError::Open {
-                        library: library.to_owned(),
-                        reason: last_error(),
-                    });
-                }
-                open.push((library.to_owned(), Handle(handle)));
-                handle
+                    reason: last_error(),
+                });
             }
+            open.push((library.to_owned(), Handle(handle)));
+            handle
         };
         drop(open);
         // SAFETY: `handle` is an open library (never closed) and

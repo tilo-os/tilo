@@ -46,7 +46,7 @@ fn fixture() -> Fixture {
     persist::write_public_key(&paths.user_pubkey, &root).unwrap();
     persist::write_device_cert(&paths.device_cert, &cert).unwrap();
     let record = identity.join("member.json");
-    let bytes = runtime_identity::public_member_record("Quinten", [88, 101, 242], root).unwrap();
+    let bytes = runtime_identity::public_member_record("Ada", [88, 101, 242], root).unwrap();
     tilo_files::native::atomic::write_with_mode(&record, &bytes, 0o600).unwrap();
     let mut fleet = DeviceFleet::new(hex::encode(root));
     fleet.certificates.push(cert);
@@ -255,7 +255,7 @@ fn current_owner_reference_roundtrip_uses_existing_member_without_exporting_priv
         .resolve_current(&fixture.system, identity)
         .unwrap();
     assert_eq!(resolved.load().unwrap().group_public_key(), fixture.root);
-    assert_eq!(resolved.metadata().unwrap().display_name, "Quinten");
+    assert_eq!(resolved.metadata().unwrap().display_name, "Ada");
     let after = snapshot(fixture.source.path());
     // Only the separately owned output artifact was published.
     assert_eq!(
@@ -464,7 +464,7 @@ fn current_owner_reference_actual_user_reads_root_owned_host_and_retains_activat
             resolved.load().unwrap().group_public_key(),
             source.public_key()
         );
-        assert_eq!(resolved.metadata().unwrap().display_name, "Quinten");
+        assert_eq!(resolved.metadata().unwrap().display_name, "Ada");
         // Returning a path would lose custody here. The retained admission
         // must reject replacement while the same source object is still alive.
         tilo_files::native::atomic::write_with_mode(
@@ -545,7 +545,7 @@ fn current_owner_reference_actual_user_reads_root_owned_host_and_retains_activat
         });
     }
     let mut child = command.spawn().unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+    let deadline = tilo_test_env::hang_deadline();
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;

@@ -99,16 +99,7 @@ class MountedReopenProbeTests(unittest.TestCase):
             self.assertTrue((saved / 'failure.json').is_file())
             self.assertEqual(json.loads((saved / 'receipt.json').read_text())['exit_code'], 1)
 
-    def test_workflow_is_manual_pinned_and_keeps_failure_artifacts(self):
-        source = (ROOT / '.forgejo/workflows/dev-mounted-reopen.yml').read_text()
-        self.assertIn('workflow_dispatch:', source)
-        self.assertNotIn('pull_request:', source)
-        self.assertNotIn('push:', source)
-        self.assertEqual(source.count('persist-credentials: false'), 3)
-        self.assertIn('runs-on: runner\n', source)
-        self.assertIn('if: always()', source)
-        self.assertIn('if-no-files-found: error', source)
-        self.assertNotIn('continue-on-error', source)
+    def test_the_fixture_keeps_failure_evidence(self):
         fixture = (ROOT / 'crates/agent/agent-participant/tests/mounted_resource/driver.mjs').read_text()
         self.assertIn('130_000', fixture)
         self.assertIn("assert.equal(await tab.evaluate(entryOutcome), 'open'", fixture)

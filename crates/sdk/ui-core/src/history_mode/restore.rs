@@ -4,6 +4,7 @@ use automerge::{
     transaction::Transactable,
 };
 use tilo_automerge::ApplyIncoming;
+use tilo_sort::CompactSort as _;
 mod import;
 mod projection;
 pub use import::prepare_external_content_import;
@@ -124,6 +125,11 @@ pub enum PreservedOnCreate {
 #[derive(Debug)]
 pub struct HistoryRestoreSchema {
     pub id: &'static str,
+    /// The stored schema version this registration's selectors, validators
+    /// and restore writer read. A version written at another one is refused
+    /// loudly rather than read through a shape meant for this one: an older
+    /// version is restored only after the document has been brought up to it
+    /// (the resource's migration), never by this restore.
     pub version: u32,
     /// Convenience exact whole-node selectors; checked together with `selectors`.
     pub roots: &'static [HistoryRestoreRoot],
@@ -162,6 +168,16 @@ impl PreparedContentRestore {
     }
 }
 
+/// Check a restore schema on its own, before a record exists: a schema that
+/// names no content selector, or that would rewrite the record's own
+/// bookkeeping, is refused at registration rather than at the first restore.
+///
+/// # Errors
+/// Returns the failure a person could act on.
+pub fn check_schema(schema: &'static HistoryRestoreSchema) -> Result<(), RestoreError> {
+    schema::validate(schema)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RestoreOutcome {
     Changed,
@@ -171,6 +187,11 @@ pub enum RestoreOutcome {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RestoreError {
     InvalidSchema(String),
+    /// The document is stored at a version this registration does not read.
+    SchemaVersion {
+        expected: u32,
+        stored: u32,
+    },
     PendingEdits,
     StaleReview,
     InvalidTargetHeads,
@@ -185,6 +206,10 @@ impl std::fmt::Display for RestoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidSchema(reason) => write!(f, "invalid History restore schema: {reason}"),
+            Self::SchemaVersion { expected, stored } => write!(
+                f,
+                "the record is stored at version {stored}; this restore reads version {expected}"
+            ),
             Self::PendingEdits => f.write_str("finish pending edits before restoring a version"),
             Self::StaleReview => f.write_str("the live record changed after the restore review"),
             Self::InvalidTargetHeads => {
@@ -231,10 +256,6 @@ impl RestoreError {
 /// Mixed structural ancestors and retained entities keep current identities.
 /// This value grants no authority: the host must check the reviewed resource,
 /// lifetime and current permission inside its exclusive record action frame.
-///
-/// # Errors
-/// Returns a typed error for pending edits, stale heads, invalid registration,
-/// unavailable target history, unsupported content, or failed validation.
 pub fn prepare_content_restore(
     doc: &AutoCommit,
     schema: &'static HistoryRestoreSchema,
@@ -242,6 +263,7 @@ pub fn prepare_content_restore(
     target_heads: &[ChangeHash],
 ) -> Result<PreparedContentRestore, RestoreError> {
     schema::validate(schema)?;
+    schema::check_version(doc, schema)?;
     require_committed(doc)?;
     let mut source = doc.clone();
     refuse_tables(&mut source)?;
@@ -363,7 +385,7 @@ fn refuse_tables(doc: &mut AutoCommit) -> Result<(), RestoreError> {
 
 fn sorted_heads(heads: &[ChangeHash]) -> Vec<ChangeHash> {
     let mut result = heads.to_vec();
-    result.sort_unstable();
+    result.compact_sort();
     result.dedup();
     result
 }

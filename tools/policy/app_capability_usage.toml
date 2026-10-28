@@ -24,7 +24,7 @@
 schema = 1
 
 [uses."network.http"]
-crates = ["reqwest", "rustypipe", "ureq", "tilo-model-gateway"]
+crates = ["reqwest", "rustypipe", "ureq", "tilo-model-gateway", "tilo-model-client"]
 features = ["tilo-net/http", "tilo-net/json", "tilo-net/blocking"]
 paths = ["tilo_net::Client", "tilo_net::http"]
 
@@ -92,9 +92,13 @@ paths = ["ui::capture"]
 crates = ["tilo-location"]
 paths = ["ui::location", "tilo_location"]
 
+# Starting programs, and seeing or ending the machine's processes. The
+# system information service alone is `system-info` (an app reading storage
+# sees no process); its process list and its ending of processes are this.
 [uses.processes]
-crates = ["tilo-process", "portable-pty", "bounded-command", "tilo-system-stats", "tilo-system-info"]
-paths = ["process::Command", "tilo_process"]
+crates = ["tilo-process", "portable-pty", "bounded-command"]
+paths = ["process::Command", "tilo_process", "protocol::ProcessStats"]
+methods = ["end_process", "end_app"]
 
 [uses."io-uring"]
 crates = ["io-uring", "tokio-uring", "rio", "glommio", "monoio", "compio"]

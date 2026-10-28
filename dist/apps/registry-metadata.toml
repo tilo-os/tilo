@@ -3,6 +3,8 @@
 # `app-tagline` in apps/<app>/search/<tag>.ftl); app UI language support is
 # detected from each app's checked-in locale resources.
 
+[apps.activity]
+description = "See what changed in a workspace while you were away, who changed it, and replay or undo it."
 [apps.agent]
 description = "A collaborative assistant that works through your apps' own actions."
 [apps.api-tester]
@@ -79,6 +81,8 @@ description = "Keep credentials organized and available when you need them."
 description = "Read and navigate PDF documents with a focused viewer."
 [apps.photos]
 description = "Browse, organize, and enjoy the photos that matter to you."
+[apps.poker]
+description = "Play Texas hold'em with everyone in the room, each from their own window."
 [apps.print-centre]
 description = "Set up printers and keep print jobs moving."
 [apps.publisher]
@@ -101,6 +105,8 @@ description = "Collect useful pieces of text and code for reuse."
 description = "Measure connection speed and understand your network at a glance."
 [apps.store]
 description = "Discover and open native Tilo apps from the signed Tilo app registry."
+[apps.tasks]
+description = "Track the workspace's issues on a list and a board, and hand them to agents."
 [apps.terminal]
 description = "A capable terminal that belongs naturally in your Tilo workspace."
 [apps.themes]
@@ -117,8 +123,6 @@ description = "Write polished Typst documents with a native editing workspace."
 description = "Arrange clips, sound, and stories in a native video editor."
 [apps.video-player]
 description = "Watch local video with simple, dependable playback."
-[apps.vpn]
-description = "Connect and manage private network access from one place."
 [apps.weather]
 description = "Check current conditions and forecasts without the clutter."
 [apps.web-search]

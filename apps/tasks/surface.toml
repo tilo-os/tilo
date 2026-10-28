@@ -1,0 +1,446 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "tasks.tracker"
+label = "Tasks"
+version = 1
+fields = [
+  { path = "issues", type = "Collection<Issue>", stored = "collection", unit = true },
+  { path = "issues.*.number", type = "u64", readonly = true },
+  { path = "issues.*.title", type = "String", label = true },
+  { path = "issues.*.body", type = "RichText", ops = "sha256:b86bfc65e3faa1c9" },
+  { path = "issues.*.status", type = "Status" },
+  { path = "issues.*.assignee", type = "Option<Atom>", readonly = true },
+  { path = "issues.*.model", type = "Option<ModelChoice>", readonly = true, stored = "record" },
+  { path = "issues.*.model.profile", type = "String" },
+  { path = "issues.*.model.model", type = "String" },
+  { path = "issues.*.subject", type = "Option<serde_json::Value>", readonly = true },
+  { path = "issues.*.quick", type = "bool", readonly = true },
+  { path = "issues.*.labels", type = "Set<String>" },
+  { path = "issues.*.parent", type = "Option<Id>", readonly = true },
+  { path = "issues.*.links", type = "Collection<Link>", stored = "collection" },
+  { path = "issues.*.links.*.label", type = "String", label = true },
+  { path = "issues.*.links.*.app", type = "String" },
+  { path = "issues.*.links.*.kind", type = "String" },
+  { path = "issues.*.links.*.resource", type = "String" },
+  { path = "issues.*.links.*.record", type = "Option<String>" },
+  { path = "issues.*.area", type = "Option<Area>", readonly = true, stored = "record" },
+  { path = "issues.*.area.resource", type = "String" },
+  { path = "issues.*.area.app", type = "String" },
+  { path = "issues.*.area.kind", type = "String" },
+  { path = "issues.*.area.label", type = "String" },
+  { path = "issues.*.due_ms", type = "Option<i64>" },
+  { path = "issues.*.priority", type = "Option<u8>" },
+  { path = "issues.*.cost_budget", type = "Option<u64>", readonly = true },
+  { path = "issues.*.spend", type = "Option<u64>", readonly = true },
+  { path = "issues.*.comments", type = "Collection<Message>", readonly = true, stored = "collection" },
+  { path = "issues.*.comments.*.author", type = "String", readonly = true },
+  { path = "issues.*.comments.*.by_agent", type = "bool", readonly = true },
+  { path = "issues.*.comments.*.at_ms", type = "i64", readonly = true },
+  { path = "issues.*.comments.*.text", type = "String", readonly = true },
+  { path = "issues.*.comments.*.kind", type = "MessageKind", readonly = true },
+  { path = "issues.*.comments.*.run", type = "u64", readonly = true },
+  { path = "issues.*.comments.*.lookup", type = "String", readonly = true },
+  { path = "issues.*.comments.*.incorporated", type = "bool", readonly = true },
+  { path = "issues.*.author", type = "String", readonly = true },
+  { path = "issues.*.created_ms", type = "i64", readonly = true },
+  { path = "issues.*.budget", type = "Option<Budget>", readonly = true, stored = "record" },
+  { path = "issues.*.budget.turn_ms", type = "u64" },
+  { path = "issues.*.budget.total_ms", type = "u64" },
+  { path = "issues.*.budget.max_tokens", type = "Option<u64>" },
+  { path = "issues.*.budget.max_priced_calls", type = "Option<u64>" },
+  { path = "issues.*.budget.max_cost_micros", type = "Option<u64>" },
+  { path = "issues.*.budget.currency", type = "String" },
+  { path = "issues.*.run", type = "Option<Run>", readonly = true, stored = "record" },
+  { path = "issues.*.run.epoch", type = "u64" },
+  { path = "issues.*.run.agent", type = "Atom" },
+  { path = "issues.*.run.starter", type = "String" },
+  { path = "issues.*.run.paused", type = "Option<PausedRun>", stored = "record" },
+  { path = "issues.*.run.paused.held", type = "Counter" },
+  { path = "issues.*.run.paused.through", type = "u64" },
+  { path = "issues.*.run.paused.at_ms", type = "i64" },
+  { path = "issues.*.run.paused.reason", type = "String" },
+  { path = "issues.*.run.phase", type = "RunPhase" },
+  { path = "issues.*.run.model", type = "Option<ModelChoice>", stored = "record" },
+  { path = "issues.*.run.model.profile", type = "String" },
+  { path = "issues.*.run.model.model", type = "String" },
+  { path = "issues.*.run.device", type = "Option<String>" },
+  { path = "issues.*.run.started_ms", type = "i64" },
+  { path = "issues.*.run.updated_ms", type = "i64" },
+  { path = "issues.*.run.spend", type = "Option<Spend>", stored = "record" },
+  { path = "issues.*.run.spend.steps", type = "Vec<StepSpend>" },
+  { path = "issues.*.run.spend.steps_taken", type = "u64" },
+  { path = "issues.*.run.spend.input_tokens", type = "u64" },
+  { path = "issues.*.run.spend.output_tokens", type = "u64" },
+  { path = "issues.*.run.spend.priced_calls", type = "u64" },
+  { path = "issues.*.run.spend.cost_micros", type = "u64" },
+  { path = "issues.*.run.spend.currency", type = "String" },
+  { path = "issues.*.run.spend.held_tokens", type = "u64" },
+  { path = "issues.*.run.spend.held_cost_micros", type = "u64" },
+  { path = "issues.*.run.confirmation", type = "Option<Confirmation>", stored = "record" },
+  { path = "issues.*.run.confirmation.id", type = "String" },
+  { path = "issues.*.run.confirmation.app", type = "String" },
+  { path = "issues.*.run.confirmation.action", type = "String" },
+  { path = "issues.*.run.confirmation.resource", type = "String" },
+  { path = "issues.*.run.confirmation.arguments_digest", type = "String" },
+  { path = "issues.*.run.confirmation.draft", type = "serde_json::Value" },
+  { path = "issues.*.run.confirmation.preview", type = "Option<serde_json::Value>" },
+  { path = "issues.*.run.confirmation.state", type = "ConfirmationState" },
+  { path = "issues.*.run.confirmation.edits", type = "serde_json::Value" },
+  { path = "issues.*.run.confirmation.reason", type = "String" },
+  { path = "issues.*.run.confirmation.answered_by", type = "String" },
+  { path = "areas", type = "Collection<TrackerArea>", stored = "collection", unit = true },
+  { path = "areas.*.id", type = "Id", readonly = true },
+  { path = "areas.*.name", type = "String", label = true },
+  { path = "areas.*.kind", type = "Kind", readonly = true },
+  { path = "areas.*.people", type = "Collection<Person>", stored = "collection" },
+  { path = "areas.*.people.*.name", type = "String", label = true, readonly = true },
+  { path = "areas.*.people.*.role", type = "String", readonly = true },
+  { path = "numbers", type = "Counter", readonly = true },
+  { path = "imported", type = "Set<String>", readonly = true },
+]
+
+[[resources.verbs]]
+id = "create"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "title", required = true, schema = { type = "string" } },
+  { name = "parent", required = false, schema = { type = ["string", "null"] } },
+  { name = "body", required = false, schema = { type = ["string", "null"] } },
+  { name = "status", required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "backlog" }, { type = "string", const = "todo" }, { type = "string", const = "in-progress" }, { type = "string", const = "in-review" }, { type = "string", const = "done" }, { type = "string", const = "cancelled" }] }] } },
+  { name = "assignee", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "create-area"
+kind = "undoable"
+writes = ["record", "areas.*"]
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "kind", required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "project" }, { type = "string", const = "area" }] }] } },
+]
+
+[[resources.verbs]]
+id = "rename-area"
+kind = "undoable"
+writes = ["record", "areas.*"]
+params = [
+  { name = "area", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-kind"
+kind = "undoable"
+writes = ["record", "areas.*"]
+params = [
+  { name = "area", required = true, schema = { type = "string" } },
+  { name = "kind", required = true, schema = { oneOf = [{ type = "string", const = "project" }, { type = "string", const = "area" }] } },
+]
+
+[[resources.verbs]]
+id = "involve"
+kind = "undoable"
+writes = ["record", "areas.*"]
+params = [
+  { name = "area", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "role", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "remove-person"
+kind = "undoable"
+writes = ["record", "areas.*"]
+params = [
+  { name = "area", required = true, schema = { type = "string" } },
+  { name = "person", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "move-under"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "parent", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "assign"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "assignee", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "choose-model"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "model", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { model = { type = "string" }, profile = { type = "string" } }, required = ["profile", "model"] } },
+]
+
+[[resources.verbs]]
+id = "ask-agent"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "title", required = true, schema = { type = "string" } },
+  { name = "body", required = false, schema = { type = ["string", "null"] } },
+  { name = "agent", required = true, schema = { type = "string" } },
+  { name = "model", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { model = { type = "string" }, profile = { type = "string" } }, required = ["profile", "model"] } },
+  { name = "subject", required = false, schema = {} },
+  { name = "quick", required = false, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "add-label"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "label", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "place"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "status", required = true, schema = { oneOf = [{ type = "string", const = "backlog" }, { type = "string", const = "todo" }, { type = "string", const = "in-progress" }, { type = "string", const = "in-review" }, { type = "string", const = "done" }, { type = "string", const = "cancelled" }] } },
+  { name = "before", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "comment"
+field = "comments"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "link"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "app", required = true, schema = { type = "string" } },
+  { name = "kind", required = true, schema = { type = "string" } },
+  { name = "resource", required = true, schema = { type = "string" } },
+  { name = "label", required = true, schema = { type = "string" } },
+  { name = "record", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "link-note"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "note", required = true, schema = { type = "object", pick = "resource", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"], resource_kind = "notes.notebook.pages" } },
+]
+
+[[resources.verbs]]
+id = "delete"
+destructive = true
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "approve-run"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "pause-run"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "pause-run-for-budget"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "reason", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "resume-run"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "stop-run"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "end-idle-run"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "after_ms", required = true, schema = { type = "integer" } },
+]
+
+[[resources.verbs]]
+id = "set-execution-budget"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "turn_ms", required = false, schema = { type = ["integer", "null"], minimum = 0 } },
+  { name = "total_ms", required = false, schema = { type = ["integer", "null"], minimum = 0 } },
+  { name = "limits", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { currency = { type = "string" }, max_cost_micros = { type = ["integer", "null"], minimum = 0 }, max_priced_calls = { type = ["integer", "null"], minimum = 0 }, max_tokens = { type = ["integer", "null"], minimum = 0 } }, required = ["currency"] } },
+]
+
+[[resources.verbs]]
+id = "plan"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "area", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { app = { type = "string" }, kind = { type = "string" }, label = { type = "string" }, resource = { type = "string" } }, required = ["resource", "app", "kind", "label"] } },
+  { name = "priority", required = false, schema = { type = ["integer", "null"], maximum = 255, minimum = 0 } },
+  { name = "cost_budget", required = false, schema = { type = ["integer", "null"], minimum = 0 } },
+  { name = "due_ms", required = false, schema = { type = ["integer", "null"] } },
+]
+
+[[resources.verbs]]
+id = "send-message"
+field = "comments"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "report-run"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "phase", required = true, schema = { oneOf = [{ type = "string", const = "approved" }, { type = "string", const = "accepted" }, { type = "string", const = "planning" }, { type = "string", const = "executing" }, { type = "string", const = "waiting" }, { type = "string", const = "done" }, { type = "string", const = "failed" }, { type = "string", const = "stopped" }] } },
+  { name = "text", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "incorporate"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "through", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "ask-confirmation"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "question", required = true, schema = { type = "object", additionalProperties = false, properties = { action = { type = "string" }, app = { type = "string" }, arguments_digest = { type = "string" }, draft = {}, id = { type = "string" }, preview = {}, resource = { type = "string" } }, required = ["id", "app", "action", "resource", "arguments_digest", "draft"] } },
+]
+
+[[resources.verbs]]
+id = "answer-confirmation"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "confirm", required = true, schema = { type = "boolean" } },
+  { name = "edits", required = false, schema = {} },
+  { name = "reason", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "settle-confirmation"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "id", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "finish-run"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "outcome", required = true, schema = { oneOf = [{ type = "string", const = "done" }, { type = "string", const = "failed" }, { type = "string", const = "stopped" }] } },
+  { name = "summary", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "run-on-device"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "device", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "hold-spend"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "tokens", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "cost_micros", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "settle-spend"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "step", required = true, schema = { type = "object", additionalProperties = false, properties = { cost_micros = { type = "integer", minimum = 0 }, currency = { type = "string" }, device = { type = "string" }, input_tokens = { type = "integer", minimum = 0 }, model = { type = "string" }, output_tokens = { type = "integer", minimum = 0 }, priced_calls = { type = "integer", minimum = 0 }, step = { type = "integer", minimum = 0 } }, required = ["step", "model", "device", "input_tokens", "output_tokens", "priced_calls", "cost_micros", "currency"] } },
+]
+
+[[resources.verbs]]
+id = "import"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "tasks", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { assignee = { type = ["string", "null"] }, author = { type = "string" }, created_ms = { type = "integer" }, instruction = { type = "string" }, messages = { type = "array", items = { type = "object", additionalProperties = false, properties = { at_ms = { type = "integer" }, author = { type = "string" }, by_agent = { type = "boolean" }, text = { type = "string" } }, required = ["author", "text"] } }, status = { oneOf = [{ type = "string", const = "backlog" }, { type = "string", const = "todo" }, { type = "string", const = "in-progress" }, { type = "string", const = "in-review" }, { type = "string", const = "done" }, { type = "string", const = "cancelled" }] }, task = { type = "string" }, title = { type = "string" } }, required = ["task", "title", "status"] } } },
+]
+
+[[resources.verbs]]
+id = "record-read"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "resource", required = true, schema = { type = "object", pick = "resource", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] } },
+]

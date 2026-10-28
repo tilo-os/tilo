@@ -7,10 +7,12 @@
 //! (the resource itself, an item, a live row) offers them the same way; the
 //! framework's root answers them. See `docs/architecture/web-routing.md` §4.3.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
-    ActionKind, ActionParam, ActionSpec, EncodedAction, ExecutionMode, OperationKind, ParamType,
-    ResultSpec,
+    ActionKind, ActionParam, ActionSpec, ActionType, EncodedAction, ExecutionMode, OperationKind,
+    ParamType, ResultSpec, Target,
 };
 
 /// The link to the resource as a URL.
@@ -43,7 +45,7 @@ pub const SHARE_TYPE: &str = "tilo.resource.share-link";
 pub const SHARE_INVITE_TYPE: &str = "tilo.resource.share-invite-link";
 
 /// One declared view, as the link names it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SharedView {
     pub id: String,
     pub primary: bool,
@@ -82,12 +84,27 @@ pub fn offer(resource: &mut tilo_actions::Resource) {
             range: view.range.is_some(),
         })
         .collect();
-    let id = resource.id.as_str().to_owned();
-    let kind = resource.kind.clone();
-    resource
-        .actions
-        .push(spec(false, id.clone(), kind.clone(), views.clone()));
-    resource.actions.push(spec(true, id, kind, views));
+    let target = Target::new(resource.id.as_str().to_owned());
+    for invite in [false, true] {
+        let ty = share_type(invite, &resource.kind, &views);
+        resource.actions.push(ty.bind(target.clone()));
+    }
+}
+
+/// Which link type: whether it invites, the kind of resource, its views.
+type ShareKey = (bool, String, Vec<SharedView>);
+
+/// The type of the link to resources of kind `kind` with `views`, kept once
+/// for every resource that offers it; its target is the resource's id.
+fn share_type(invite: bool, kind: &str, views: &[SharedView]) -> Arc<ActionType> {
+    thread_local! {
+        static KEPT: std::cell::RefCell<crate::kept::KeptTypes<ShareKey>> =
+            std::cell::RefCell::default();
+    }
+    let key = (invite, kind.to_owned(), views.to_vec());
+    crate::kept::kept_type(&KEPT, key, || {
+        Arc::clone(spec(invite, kind.to_owned(), views.to_vec()).action_type())
+    })
 }
 
 /// [`offer`] on `resource` and everything nested in it.
@@ -171,7 +188,9 @@ fn params(invite: bool, views: &[SharedView]) -> Vec<ActionParam> {
     params
 }
 
-fn spec(invite: bool, resource: String, kind: String, views: Vec<SharedView>) -> ActionSpec {
+/// The link spec of resources of kind `kind` with `views`, whose target is
+/// the resource's id.
+fn spec(invite: bool, kind: String, views: Vec<SharedView>) -> ActionSpec {
     let params = params(invite, &views);
     let (id, label, type_id, action_kind, description) = if invite {
         (
@@ -190,16 +209,16 @@ fn spec(invite: bool, resource: String, kind: String, views: Vec<SharedView>) ->
             "A link to this, as a URL that opens it in a browser or an installed Tilo. Anyone opening it still needs access to the workspace.",
         )
     };
-    let mut spec = ActionSpec::typed_operation(
+    let mut spec = ActionSpec::typed_operation_on(
         id,
         label,
         label,
         OperationKind::Effect,
         type_id,
         params,
-        move |args| {
+        move |target, args| {
             let request = ShareRequest {
-                resource: resource.clone(),
+                resource: target.get::<String>().cloned().unwrap_or_default(),
                 kind: kind.clone(),
                 views: views.clone(),
                 invite,
@@ -215,8 +234,9 @@ fn spec(invite: bool, resource: String, kind: String, views: Vec<SharedView>) ->
     .with_description(description);
     // Minting waits on the room's host for a fresh locator, which only
     // answers in-process at once; over the session it arrives later.
-    spec.contract.execution = ExecutionMode::Background { cancellable: true };
-    spec.contract.result = ResultSpec::Json {
+    let contract = &mut spec.type_mut().contract;
+    contract.execution = ExecutionMode::Background { cancellable: true };
+    contract.result = ResultSpec::Json {
         schema: serde_json::json!({
             "type": "object",
             "properties": {"url": {"type": "string"}},

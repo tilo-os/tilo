@@ -148,7 +148,10 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
     // input. Asserted via an added theme-accent fill, since glyph text isn't
     // introspectable in the scene encoding.
     {
-        let tree = WorkspaceTree::bootstrap_demo();
+        // The person's own workspace, as a signed-in session adopts it: only
+        // a person who may administer it is offered the invite action.
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        tree.adopt_ownerless_workspaces(&shell::shell::state::local_user_id());
 
         let (baseline_scene, _baseline_chrome) = render_overlay_host(&tree);
         let baseline_fills = collect_solid_colors(&baseline_scene);
@@ -201,20 +204,27 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
     {
         let tree = tree_with_seeded_roster();
 
-        let (general_fills, _) = render_with_ws_settings_tab(&tree, WsTab::General);
-        let (roles_fills, _) = render_with_ws_settings_tab(&tree, WsTab::Members);
-
-        // Members pane paints row-card + avatar + role-chip + Remove button per
-        // member (>= 4 fills each); a 3-person roster clears the 20 threshold.
-        let diff = roles_fills.abs_diff(general_fills);
-        assert!(
-            diff >= 20,
-            "Switching to the Members tab must change the rendered output by
-             at least 20 solid-colour fills (a row card + avatar + role chip +
-             Remove button per member of the real roster). \
-             Observed |members_fills - general_fills| = {diff} (general={general_fills}, \
-             members={roles_fills}). If this drops to 0 the modal body is not \
-             per-tab branching at all."
+        // One row per member of the real roster, on the Members tab only.
+        // Counted as the rows the pane lays out, not as painted fills: the
+        // rows are the design system's list rows, and the owner's own row
+        // offers no role choice or Remove, so a fill count says nothing
+        // stable about how many people are shown.
+        let roster = tree
+            .desktop
+            .active_workspace()
+            .expect("fixture workspace")
+            .roster()
+            .len();
+        assert!(roster >= 3, "the fixture seeds a roster");
+        assert_eq!(
+            member_rows_on_tab(&tree, WsTab::Members),
+            roster,
+            "the Members tab shows one row per member of the real roster"
+        );
+        assert_eq!(
+            member_rows_on_tab(&tree, WsTab::General),
+            0,
+            "the General tab shows no member rows: the modal body branches per tab"
         );
     }
 
@@ -283,6 +293,7 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
             st.ws_settings_tab = WsTab::Members;
             st.editing_workspace_name = None;
         }
+        settle_host(&mut host_a);
         let scene_a = render_host_to_scene(&mut host_a);
         let fills_a = collect_solid_colors(&scene_a).len();
 
@@ -295,6 +306,7 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
             st.ws_settings_tab = WsTab::Members;
             st.editing_workspace_name = Some("__files_tab__".into());
         }
+        settle_host(&mut host_b);
         let scene_b = render_host_to_scene(&mut host_b);
         let fills_b = collect_solid_colors(&scene_b).len();
 
@@ -324,6 +336,7 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
             st.ws_settings_tab = WsTab::Permissions;
             st.editing_workspace_name = None;
         }
+        settle_host(&mut host_a);
         let scene_a = render_host_to_scene(&mut host_a);
         let fills_a = collect_solid_colors(&scene_a).len();
 
@@ -336,6 +349,7 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
             st.ws_settings_tab = WsTab::Permissions;
             st.editing_workspace_name = Some("Press Esc to close".into());
         }
+        settle_host(&mut host_b);
         let scene_b = render_host_to_scene(&mut host_b);
         let fills_b = collect_solid_colors(&scene_b).len();
 
@@ -365,9 +379,14 @@ fn workspace_settings_invariance_fixture_keeps_its_scene_across_row_transitions(
         state.overlays.ws_settings = true;
         state.ws_settings_tab = WsTab::Members;
     }
+    settle_host(&mut host);
     let first = collect_solid_colors(&render_host_to_scene(&mut host));
-    std::thread::sleep(ui::time::Duration::from_millis(2300));
-    let later = collect_solid_colors(&render_host_to_scene(&mut host));
+    let later_at = ui::time::now()
+        .checked_add(ui::time::Duration::from_millis(2300))
+        .expect("the clock reaches 2.3 s ahead");
+    let later = ui::time::testing::with_monotonic_time(later_at, || {
+        collect_solid_colors(&render_host_to_scene(&mut host))
+    });
     assert_eq!(
         first, later,
         "the same settled pane must keep its full scene"
@@ -382,17 +401,27 @@ fn build_settled_workspace_settings_host(
     tree: &WorkspaceTree,
 ) -> (shell::shell::overlay_host::ShellOverlayHost, Chrome) {
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(tree);
+    settle_host(&mut host);
+    (host, chrome)
+}
+
+/// Draw `host` until it rests. Call it again after changing what the host
+/// shows (opening the settings pane, picking a tab): the first frames after
+/// a change mount and load what it shows, so only a rested frame compares.
+fn settle_host(host: &mut shell::shell::overlay_host::ShellOverlayHost) {
     host.set_motion_reduced(true);
-    let _ = render_host_to_scene(&mut host);
+    let _ = render_host_to_scene(host);
     // The first layout can mount embedded apps. Apply the real preference to
     // those new children before measuring the settled pane, then draw again.
     host.set_motion_reduced(true);
-    let _ = render_host_to_scene(&mut host);
+    let _ = render_host_to_scene(host);
     // Initial fixture record writes can finish asynchronously and show a Saved
     // bubble. Reduced motion removes its fade, not its finite lifetime. Wait
     // for the production hosts to report rest before comparing settled panes.
+    // A loaded runner can take seconds per host update, so the wait is the
+    // shared hang bound rather than a fixed few seconds.
     let deadline = ui::time::now()
-        .checked_add(ui::time::Duration::from_secs(10))
+        .checked_add(tilo_test_env::hang_bound())
         .expect("fixture deadline fits the monotonic clock");
     let mut document = automerge::AutoCommit::new();
     loop {
@@ -403,18 +432,17 @@ fn build_settled_workspace_settings_host(
             &automerge::ROOT,
         );
         host.set_motion_reduced(true);
-        let _ = render_host_to_scene(&mut host);
+        let _ = render_host_to_scene(host);
         if !host.has_pending_visual_work() && !host.has_transient_feedback() {
             break;
         }
         assert!(
             ui::time::now() < deadline,
             "workspace settings fixture did not settle: {:?}",
-            pending_visual_names(&host)
+            pending_visual_names(host)
         );
         std::thread::sleep(ui::time::Duration::from_millis(16));
     }
-    (host, chrome)
 }
 
 fn pending_visual_names(widget: &dyn Widget) -> Vec<String> {
@@ -502,6 +530,30 @@ fn tree_with_seeded_roster() -> WorkspaceTree {
         }
     }
     tree
+}
+
+/// How many member rows Workspace Settings lays out with `tab` open.
+fn member_rows_on_tab(tree: &WorkspaceTree, tab: WsTab) -> usize {
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(tree);
+    {
+        let mut st = chrome.borrow_mut();
+        st.overlays.ws_settings = true;
+        st.ws_settings_tab = tab;
+    }
+    lay_out(&mut host, W, H);
+    host.force_ws_settings_settled();
+    lay_out(&mut host, W, H);
+    let mut tr = TextRenderer::new();
+    let mut scene = Scene::new();
+    let presence = PresenceCtx::default();
+    host.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &Theme::dark(),
+        &presence,
+    );
+    host.member_control_rects().len()
 }
 
 /// Render with the modal open at the given tab. `ws_settings_tab` is the
@@ -690,7 +742,7 @@ fn quick_settings_renders_power_utility_white_slider_fill_and_wifi_drill_in() {
             let mut chrome = chrome.borrow_mut();
             chrome.quick_settings.radios.wifi_available = true;
             chrome.quick_settings.wifi = false;
-            chrome.open_quick_settings_section(shell::shell::quick_settings::QsSection::Wifi);
+            chrome.open_quick_settings_section(tilo_quick_settings::QsSection::Wifi);
         });
 
         // EXPECTED: root_fills != wifi_fills. CURRENT: equal (drill-in unwired).
@@ -726,12 +778,11 @@ fn render_quick_settings_open(
     (collect_solid_colors(&scene).len(), chrome)
 }
 
-/// Audit `concept-coverage.md:20,114-123,377-381` (`WindowFrame.tsx:114-123`):
-/// the concept hides the maximized floating chrome until the pointer reaches
-/// for the top edge. Ours hides it at rest (no cursor, and a cursor in the
-/// app at y=200) and shows it once reached for (`top_edge_reveal`).
+/// A maximized window keeps its bar: the same bar, in the same place, as
+/// when it isn't, its maximize control now offering Restore beside its
+/// close. Both show at rest, and a cursor in the app changes nothing.
 #[test]
-fn maximized_chrome_hides_at_rest_and_shows_when_reached_for() {
+fn a_maximized_window_keeps_its_bar_with_restore_and_close_at_rest() {
     let theme = Theme::dark().with_reduce_motion(true);
 
     let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
@@ -757,22 +808,36 @@ fn maximized_chrome_hides_at_rest_and_shows_when_reached_for() {
     };
 
     let fills_no_cursor = fills(&mut group);
+    let bounds = group.presentation_bounds();
+    let restore = bounds.restore.expect("the bar offers Restore at rest");
+    let close = bounds.close.expect("and its close control");
+    assert_eq!(
+        bounds.maximize, None,
+        "a maximized window offers no Maximize"
+    );
+    for control in [restore, close] {
+        assert!(
+            bounds.tab_bar.contains(control.center()),
+            "the control {control:?} stands in the window's bar {:?}",
+            bounds.tab_bar
+        );
+    }
+    let client = bounds.client.expect("the window's client is laid out");
+    assert!(
+        client.y0 >= bounds.tab_bar.y1 - 0.5,
+        "the bar takes its own room above the client: bar {:?}, client {client:?}",
+        bounds.tab_bar
+    );
+
     let cursor_event = ui::synthetic_input::cursor_moved(480.0, 200.0);
     let modifiers = winit::event::Modifiers::default();
     dispatch(&mut group, &taffy, child_node, modifiers, &cursor_event);
     let fills_in_app = fills(&mut group);
     assert_eq!(
         fills_in_app, fills_no_cursor,
-        "a cursor in the app shows no chrome, as with no cursor at all"
+        "a cursor in the app changes nothing about the bar"
     );
-
-    group.set_maximized_chrome_shown_for_tests(true);
-    let fills_reached = fills(&mut group);
-    assert!(
-        fills_reached > fills_in_app,
-        "reaching for the top edge shows the floating chrome (title + Full screen + \
-         Restore + close): at rest={fills_in_app}, reached={fills_reached}"
-    );
+    assert_eq!(group.presentation_bounds().restore, Some(restore));
 }
 
 #[test]
@@ -965,7 +1030,7 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
             .desktop
             .active_workspace()
             .expect("active workspace")
-            .room;
+            .room();
 
         let before = TopBarChrome::from_tree(&tree.desktop);
         assert!(
@@ -980,23 +1045,23 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
         let frames = vec![
             InboundPresence {
                 peer: 0x11,
-                user: "bob".into(),
                 key: key.clone(),
                 point: (100.0, 100.0),
                 ts: 0,
+                cleared: false,
             },
             InboundPresence {
                 peer: 0x22,
-                user: "dana".into(),
                 key,
                 point: (400.0, 300.0),
                 ts: 0,
+                cleared: false,
             },
         ];
 
         // Names are a governance fact written by the room's authority via
-        // `apply_room_changes`; the frame-announced names are deliberately not
-        // consulted, so the bar below proves names came from the room, not the wire.
+        // `apply_room_changes`; a frame carries no name the network hands on,
+        // so the bar below proves names came from the room, not the wire.
         let room_says = |_: &str| {
             std::collections::BTreeMap::from([
                 (0x11u64, "bob".to_string()),
@@ -1318,8 +1383,6 @@ mod helper_tests {
             assert_eq!(colors[0], (99, 102, 241, 255));
         }
 
-        // Phase `contains_color_close_respects_tolerance`.
-        // Guards the tolerance helper's boundary.
         {
             let palette = vec![(99, 102, 241, 255)];
             assert!(contains_color_close(&palette, (99, 102, 241), 0));

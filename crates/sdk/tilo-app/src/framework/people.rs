@@ -15,8 +15,13 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use tilo_resource::{Binds, Resource};
 use ui_core::LocalState;
 use ui_core::presence::PresenceCtx;
+use ui_core::widget::mention_picker::{MentionCandidate, merged_roster};
+use ui_core::widget::{Dropdown, Element};
+
+use super::ViewCx;
 
 /// The names the host knows for the participants of the window's room.
 /// Cloneable; clones read the same roster.
@@ -37,6 +42,8 @@ struct Roster {
     names: HashMap<String, String>,
     /// The label this session's participant goes by, when the room said.
     own: Option<String>,
+    /// Everyone the room names, by name, as `@` offers them.
+    members: Vec<MentionCandidate>,
 }
 
 impl People {
@@ -71,6 +78,20 @@ impl People {
         id.to_owned()
     }
 
+    /// The room's people and agents, this window's own participant among
+    /// them, sorted by name: whom a picker of members offers
+    /// ([`ViewCx::member_picker`]).
+    pub fn members(&self) -> Vec<MentionCandidate> {
+        self.roster.borrow().members.clone()
+    }
+
+    /// Whether another person is in the room with this window now.
+    pub fn others_here(&self) -> bool {
+        self.roster.borrow().members.iter().any(|member| {
+            !member.is_self && member.kind == ui_core::presence::ParticipantKind::Person
+        })
+    }
+
     /// Whether `id` is the participant this window is for.
     pub fn is_me(&self, id: &str) -> bool {
         self.me.as_deref() == Some(id)
@@ -91,6 +112,7 @@ impl People {
                 .map(|user| (user.0.clone(), presence.display_name(user)))
                 .collect(),
             own: presence.self_label(),
+            members: merged_roster(presence, &[]),
         };
         if *self.roster.borrow() == next {
             return false;
@@ -111,6 +133,49 @@ impl People {
             .map(|(id, name)| ((*id).to_owned(), (*name).to_owned()))
             .collect();
         people
+    }
+}
+
+impl<R: Resource, T: 'static> ViewCx<R, T> {
+    /// A dropdown of the room's people and agents by name, bound to a verb
+    /// as [`Self::control_with`] binds a control: it shows `read` of the
+    /// resource and invokes `action` with the value of the one picked.
+    /// `first` are the options before the members (nobody, say); `value_of`
+    /// is how the record names a member, `None` leaving one out; `make`
+    /// dresses the bound dropdown (its id, its label). Built again as the roster
+    /// changes, so it offers whom the room names now.
+    pub fn member_picker<B: Binds<R, String> + Clone>(
+        &self,
+        first: Vec<(String, String)>,
+        value_of: impl Fn(&MentionCandidate) -> Option<String> + 'static,
+        make: impl Fn(Dropdown) -> Element + 'static,
+        read: impl Fn(&T) -> String + 'static,
+        action: B,
+    ) -> Element {
+        let people = self.people();
+        let read = Rc::new(read);
+        self.switch(&people.revision(), move |cx, _| {
+            let options = first
+                .iter()
+                .cloned()
+                .chain(
+                    people
+                        .members()
+                        .iter()
+                        .filter_map(|member| Some((value_of(member)?, member.name.clone()))),
+                )
+                .collect();
+            let read = Rc::clone(&read);
+            make(cx.control_with(
+                |state| {
+                    let mut picker = Dropdown::from_state(Vec::new(), state);
+                    picker.set_value_options(options);
+                    picker
+                },
+                move |state| read(state),
+                action.clone(),
+            ))
+        })
     }
 }
 

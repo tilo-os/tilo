@@ -1,0 +1,62 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Join</title>
+<!-- Served by `tilo-app run --platform web --share`: pick a name, then the
+     app opens in the shared room as a person of this page's own. -->
+<style>
+  :root { color-scheme: light dark; --ground: #f4f3f1; --ink: #1c1b1a; --dim: #68655f; --field: #ffffff; --edge: #d6d3cd; --accent: #2b5fd9; }
+  @media (prefers-color-scheme: dark) { :root { --ground: #161616; --ink: #ecebe8; --dim: #a09d97; --field: #222121; --edge: #3a3936; --accent: #7aa2ff; } }
+  html, body { margin: 0; height: 100%; background: var(--ground); color: var(--ink); font: 16px/1.4 system-ui, sans-serif; }
+  main { max-width: 360px; margin: 18vh auto 0; padding: 0 16px; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 6px; }
+  p { color: var(--dim); margin: 0 0 20px; }
+  input, button { font: inherit; width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 8px; }
+  input { border: 1px solid var(--edge); background: var(--field); color: var(--ink); margin-bottom: 12px; }
+  button { border: 0; background: var(--accent); color: #fff; cursor: pointer; }
+  #surface { position: fixed; inset: 0; display: none; }
+  body.open #surface { display: block; }
+  body.open main { display: none; }
+</style>
+<main>
+  <h1 id="title">Join</h1>
+  <p id="lead">Everyone who opens this page joins the same room. Pick the name the others see.</p>
+  <form id="join">
+    <input id="name" autocomplete="nickname" placeholder="Your name" required maxlength="32" autofocus>
+    <button id="go">Join</button>
+  </form>
+</main>
+<div id="surface"></div>
+<script type="module">
+  const lead = document.getElementById('lead');
+  const button = document.getElementById('go');
+  const room = await (await fetch('/__tilo/room/', {cache: 'no-store'})).json();
+  document.title = room.name;
+  document.getElementById('title').textContent = `Join ${room.name}`;
+  const status = {
+    joining: 'Joining the room',
+    waiting: 'Waiting for the first person to open it',
+    loading: 'Opening what the others have open',
+  };
+  document.getElementById('join').addEventListener('submit', async event => {
+    event.preventDefault();
+    const name = document.getElementById('name').value.trim();
+    if (!name) return;
+    button.disabled = true;
+    try {
+      const {openInRoom} = await import('/dev-room.mjs');
+      globalThis.room = await openInRoom({
+        surface: document.getElementById('surface'),
+        name,
+        onStatus: phase => {
+          if (phase === 'opening' || phase === 'ready') document.body.classList.add('open');
+          else lead.textContent = status[phase] ?? lead.textContent;
+        },
+      });
+    } catch (error) {
+      console.error(error);
+      lead.textContent = `You could not join: ${error?.message ?? error}`;
+      button.disabled = false;
+    }
+  });
+</script>

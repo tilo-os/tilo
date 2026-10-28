@@ -51,7 +51,6 @@ pub trait SearchSource: Widget {
     }
 }
 
-/// `widget`'s search providers.
 pub fn search_providers(widget: &(impl Widget + ?Sized)) -> Vec<Box<dyn super::SearchProvider>> {
     capability::<dyn SearchSource>(widget).map_or_else(Vec::new, SearchSource::search_providers)
 }
@@ -134,7 +133,6 @@ pub fn search_index_entries(
     capability::<dyn SearchSource>(widget).map_or_else(Vec::new, SearchSource::search_index_entries)
 }
 
-/// Activate hit `action_id` in `widget`.
 pub fn activate_search_result(
     widget: &mut (impl Widget + ?Sized),
     action_id: &str,

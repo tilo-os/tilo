@@ -55,11 +55,6 @@ pub struct VncSession {
 
 impl VncSession {
     /// Start connecting; returns immediately with status `Connecting`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the operating system refuses to spawn the
-    /// background worker thread.
     pub fn connect(cfg: VncConfig) -> io::Result<VncSession> {
         let status = Arc::new(Mutex::new(SessionStatus::Connecting));
         let frame: Arc<Mutex<Option<Framebuffer>>> = Arc::new(Mutex::new(None));
@@ -124,11 +119,6 @@ impl VncSession {
     }
 
     /// Queue input without blocking the UI thread.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the bounded queue is full or the VNC worker has
-    /// already stopped.
     pub fn send_input(&self, input: VncInput) -> Result<(), String> {
         self.input_tx.try_send(input).map_err(|error| match error {
             TrySendError::Full(_) => {
@@ -359,15 +349,16 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: Duration = Duration::from_secs(30);
+    use tilo_test_env::hang_bound;
 
     /// A minimal RFB 3.8 server that offers `None` security and serves one
     /// 4x2 Raw framebuffer of known pixels. Real socket, real bytes — the
-    /// client's handshake + decode run end-to-end against it.
-    fn spawn_loopback_server(pixels: Vec<[u8; 4]>) -> u16 {
+    /// client's handshake + decode run end-to-end against it. The server keeps
+    /// the connection open until the returned sender is dropped.
+    fn spawn_loopback_server(pixels: Vec<[u8; 4]>) -> (u16, std::sync::mpsc::Sender<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        let (keep_open, open) = std::sync::mpsc::channel::<()>();
         std::thread::spawn(move || {
             let (mut s, _) = listener.accept().unwrap();
 
@@ -382,7 +373,6 @@ mod tests {
             assert_eq!(chosen[0], rfb::security::NONE);
             s.write_all(&0u32.to_be_bytes()).unwrap(); // SecurityResult OK
 
-            // ClientInit.
             let mut ci = [0u8; 1];
             s.read_exact(&mut ci).unwrap();
 
@@ -420,10 +410,10 @@ mod tests {
             }
             s.write_all(&msg).unwrap();
 
-            // Keep the socket open briefly so the client can read it.
-            std::thread::sleep(Duration::from_millis(400));
+            // Keep the socket open until the client has read the update.
+            let _ = open.recv();
         });
-        port
+        (port, keep_open)
     }
 
     #[test]
@@ -441,7 +431,7 @@ mod tests {
                 [70, 80, 90, 255],
                 [100, 110, 120, 255],
             ];
-            let port = spawn_loopback_server(pixels.clone());
+            let (port, _hold) = spawn_loopback_server(pixels.clone());
 
             let mut vnc = VncSession::connect(VncConfig {
                 host: "127.0.0.1".into(),
@@ -451,7 +441,7 @@ mod tests {
             .unwrap();
 
             let mut got: Option<Framebuffer> = None;
-            let deadline = ui::time::now() + HANG_BOUND;
+            let deadline = ui::time::now() + hang_bound();
             while ui::time::now() < deadline {
                 if let SessionStatus::Failed(e) = vnc.status() {
                     panic!("vnc connect failed: {e}")
@@ -488,7 +478,7 @@ mod tests {
             })
             .unwrap();
             let mut failed = false;
-            let deadline = ui::time::now() + HANG_BOUND;
+            let deadline = ui::time::now() + hang_bound();
             while ui::time::now() < deadline {
                 if let SessionStatus::Failed(_) = vnc.status() {
                     failed = true;

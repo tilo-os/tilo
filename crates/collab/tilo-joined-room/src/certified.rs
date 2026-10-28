@@ -281,9 +281,11 @@ impl VerifiedNativeEnrollment {
     pub fn bootstrap(&self) -> &JoinBootstrap {
         &self.bootstrap
     }
+    /// The certificate this device is a member with: the one it joined
+    /// with, or the renewal of it the governor answered.
     #[must_use]
     pub fn local_device(&self) -> &DeviceCert {
-        self.intent.local_device()
+        &self.bootstrap.device_cert
     }
     #[must_use]
     pub fn transport_hint(&self) -> &TransportHint {
@@ -317,7 +319,8 @@ impl VerifiedNativeEnrollment {
             || pending_id.generation() == 0
             || bootstrap.version != 1
             || bootstrap.invite_id != intent.verified_join().invite_id()
-            || bootstrap.device_cert != *intent.local_device()
+            || (bootstrap.device_cert != *intent.local_device()
+                && !crate::renewal::renews(&bootstrap.device_cert, intent.local_device()))
             || bootstrap.role != grant.role
             || bootstrap.room != grant.room
             || bootstrap.workspace_id != grant.workspace_id
@@ -328,7 +331,7 @@ impl VerifiedNativeEnrollment {
                 "native Complete does not match persisted proof and exact enrollment scope".into(),
             );
         }
-        if !bootstrap.certified_roster.contains(intent.local_device())
+        if !bootstrap.certified_roster.contains(&bootstrap.device_cert)
             || !bootstrap.certified_roster.contains(&grant.authority)
         {
             return Err("native Complete omitted exact enrolled certificates".into());

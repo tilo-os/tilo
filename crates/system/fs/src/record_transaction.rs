@@ -197,10 +197,6 @@ impl RecordTransactionJournal {
 
     /// Durably install a prepared intent. An exact retry is idempotent;
     /// transaction-ID reuse with different bytes is corruption.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid/colliding state, capacity, or persistence.
     pub fn insert_prepared(
         &mut self,
         entry: RecordTransactionJournalEntry,
@@ -249,11 +245,6 @@ impl RecordTransactionJournal {
 
     /// Persist exactly one monotonic phase transition. Repeating the current
     /// phase with identical delta is success; skipping phases is rejected.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for unknown transactions, invalid transitions or
-    /// deltas, or persistence failure.
     pub fn advance(
         &mut self,
         id: Uuid,
@@ -289,11 +280,6 @@ impl RecordTransactionJournal {
     /// Store the deterministic namespace delta before mutating the live
     /// namespace. This closes the crash window between namespace persistence
     /// and the `NamespaceCommitted` phase write.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unknown transaction, invalid phase/delta, or
-    /// persistence failure.
     pub fn stage_namespace_delta(
         &mut self,
         id: Uuid,
@@ -325,11 +311,6 @@ impl RecordTransactionJournal {
     }
 
     /// Remove only a fully broadcast entry and fsync the journal directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the transaction is unknown/incomplete or removal
-    /// fails.
     pub fn remove_completed(&mut self, id: Uuid) -> Result<(), RecordTransactionJournalError> {
         let entry = self
             .entries
@@ -600,7 +581,6 @@ mod tests {
 
     #[test]
     fn journal_restarts_exactly_with_monotonic_phases_and_whole_batches() {
-        // Phase `journal_restarts_exactly_and_allows_only_monotonic_phases`.
         {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("transactions");
@@ -653,7 +633,6 @@ mod tests {
                 0
             );
         }
-        // Phase `journal_rejects_partial_or_mutated_participant_batches`.
         {
             let mut value = entry();
             value.participant_batches.pop();

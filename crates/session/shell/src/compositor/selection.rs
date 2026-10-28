@@ -66,6 +66,9 @@ use tilo_lock::MutexRecover as _;
 /// aliases are also offered for X11-heritage clients via Xwayland.
 pub const TEXT_MIME: &str = "text/plain;charset=utf-8";
 
+/// Formatted text, as browsers, office suites and Tilo's editors offer it.
+pub const HTML_MIME: &str = "text/html";
+
 /// Mime types a compositor-owned selection advertises, most-specific first.
 pub fn text_mime_types() -> Vec<String> {
     [TEXT_MIME, "text/plain", "UTF8_STRING", "STRING", "TEXT"]
@@ -575,10 +578,12 @@ pub fn history_item_text(store: &SharedSelection, id: [u8; 32]) -> Option<String
     let bytes = {
         let store = store.lock().ok()?;
         let item = store.history.iter().find(|item| item.id == id)?;
-        text_mime_types()
+        let bytes = text_mime_types()
             .iter()
             .find_map(|mime| item.values.get(mime))?
-            .clone()
+            .clone();
+        drop(store);
+        bytes
     };
     String::from_utf8(bytes)
         .ok()
@@ -668,9 +673,31 @@ pub fn mirror_text(store: &SharedSelection, target: Target) -> Option<String> {
 /// in-process immediately, becomes a Wayland selection on the next tick via
 /// [`State::pump_selection`].
 pub fn set_mirror_text(store: &SharedSelection, target: Target, text: &str) -> bool {
-    // Ctrl+C starts a new offer even when chrome already owned the clipboard;
-    // otherwise unrelated successive copies would be merged into one history
-    // generation. Primary selection remains ephemeral and is not retained.
+    copy_into_mirror(store, target, TEXT_MIME, text.as_bytes().to_vec()).is_ok()
+}
+
+/// A new copy from chrome: `bytes` as `mime` and nothing else, replacing
+/// whatever `target` held, and published on the next tick.
+///
+/// Every copy starts a new offer, even when the compositor already owned the
+/// selection (a copy it took over from a client that went away, or an
+/// earlier chrome copy). Adding to that offer instead would keep the earlier
+/// formats beside the new one: a screenshot taken after copying some text
+/// would still offer that text, and every app that prefers text would paste
+/// it instead of the image. It would also fold the copy into the earlier
+/// copy's history entry. Primary selection remains ephemeral and is not
+/// retained.
+///
+/// # Errors
+///
+/// As [`set_mirror_bytes`]: an invalid MIME type, an unavailable store or a
+/// payload over the selection budget. The earlier copy is gone either way.
+fn copy_into_mirror(
+    store: &SharedSelection,
+    target: Target,
+    mime: &str,
+    bytes: Vec<u8>,
+) -> Result<(), String> {
     if let Ok(mut store) = store.lock() {
         let slot = store.slot_mut(target);
         wipe_if_secret(slot);
@@ -678,7 +705,7 @@ pub fn set_mirror_text(store: &SharedSelection, target: Target, text: &str) -> b
         slot.mime_types.clear();
         slot.compositor_owned = false;
     }
-    set_mirror_bytes(store, target, TEXT_MIME, text.as_bytes().to_vec()).is_ok()
+    set_mirror_bytes(store, target, mime, bytes)
 }
 
 /// Write a secret `text` to the clipboard from chrome: the same as
@@ -708,14 +735,39 @@ pub fn set_mirror_secret_text(store: &SharedSelection, text: &str) -> bool {
     true
 }
 
+/// A formatted copy from chrome: `plain` as text and `html` as `text/html`,
+/// one offer replacing whatever the clipboard held, published on the next
+/// tick and kept in history as one entry.
+pub fn set_mirror_rich_text(store: &SharedSelection, html: &str, plain: &str) -> bool {
+    if html.len().saturating_add(plain.len()) > MAX_SELECTION_BYTES {
+        return false;
+    }
+    let Ok(mut store) = store.lock() else {
+        return false;
+    };
+    let watchers = std::sync::Arc::clone(&store.revision_watchers);
+    {
+        let slot = store.slot_mut(Target::Clipboard);
+        wipe_if_secret(slot);
+        slot.values.clear();
+        slot.values
+            .insert(TEXT_MIME.to_owned(), plain.as_bytes().to_vec());
+        slot.values
+            .insert(HTML_MIME.to_owned(), html.as_bytes().to_vec());
+        slot.mime_types = normalized_mimes(slot.values.keys().cloned());
+        slot.generation = slot.generation.wrapping_add(1).max(1);
+        slot.compositor_owned = true;
+        bump_revision(slot, &watchers, true);
+        slot.publish_pending = true;
+        slot.clear_pending = false;
+    }
+    record_clipboard_history(&mut store);
+    true
+}
+
 /// Replace Tilo's pending portal offer.  There is deliberately no publication
 /// until payload arrives: offering stale bytes under a newly remote-owned MIME
 /// would leak the prior selection.
-///
-/// # Errors
-///
-/// Returns an error for an empty, excessive, or malformed MIME offer, or if
-/// the shared selection store is unavailable.
 pub fn begin_mirror_offer(
     store: &SharedSelection,
     target: Target,
@@ -926,7 +978,7 @@ pub fn record_client_bytes(
 /// selection stays ephemeral, as on every other desktop.
 ///
 /// Returns whether ownership changed. The same payload is not taken over
-/// again within [`ADOPT_COOLDOWN_MS`], so a clipboard manager that re-copies
+/// again within `ADOPT_COOLDOWN_MS`, so a clipboard manager that re-copies
 /// the selection it sees cannot start a ping-pong with the compositor.
 pub fn adopt_complete_client_selection(store: &SharedSelection, now_ms: u64) -> bool {
     let Ok(mut store) = store.lock() else {
@@ -1602,6 +1654,25 @@ impl ui::clipboard::ClipboardBackend for HostClipboard {
         set_mirror_secret_text(&self.store, text)
     }
 
+    fn set_rich_text(&self, html: &str, plain: &str) -> bool {
+        if html.len() > ui::clipboard::MAX_CLIPBOARD_HTML_BYTES
+            || plain.len() > ui::clipboard::MAX_CLIPBOARD_PLAIN_FALLBACK_BYTES
+        {
+            return false;
+        }
+        set_mirror_rich_text(&self.store, html, plain)
+    }
+
+    fn rich_text(&self) -> Option<ui::clipboard::RichTextOffer> {
+        let html =
+            String::from_utf8(mirror_bytes(&self.store, Target::Clipboard, HTML_MIME)?).ok()?;
+        Some(ui::clipboard::RichTextOffer {
+            html,
+            plain: mirror_text(&self.store, Target::Clipboard),
+        })
+        .filter(ui::clipboard::RichTextOffer::is_valid)
+    }
+
     fn set_image(&self, width: usize, height: usize, rgba: &[u8]) -> bool {
         let Some(expected_len) = width
             .checked_mul(height)
@@ -1624,7 +1695,7 @@ impl ui::clipboard::ClipboardBackend for HostClipboard {
         if png.len() > ui::clipboard::MAX_CLIPBOARD_IMAGE_BYTES {
             return false;
         }
-        set_mirror_bytes(&self.store, Target::Clipboard, "image/png", png).is_ok()
+        copy_into_mirror(&self.store, Target::Clipboard, "image/png", png).is_ok()
     }
 
     fn name(&self) -> &'static str {
@@ -2269,7 +2340,6 @@ mod tests {
 
     #[test]
     fn drags_carry_decoded_local_paths_and_safe_payloads() {
-        // Phase `client_drag_uri_paths_are_local_absolute_and_percent_decoded`.
         assert_eq!(
             paths_from_uri_list(
                 b"# source names\r\nfile:///var/workspace/My%20Photo.png\r\n\
@@ -2280,7 +2350,6 @@ mod tests {
                 std::path::PathBuf::from("/tmp/report#final.pdf"),
             ]
         );
-        // Phase `client_drag_content_prefers_visual_or_text_payload_not_uri_or_secret`.
         {
             let mimes = vec![
                 URI_LIST_MIME.to_string(),
@@ -2299,7 +2368,6 @@ mod tests {
             assert_eq!(drag_content_limit("audio/ogg").0, 256 * 1024 * 1024);
             assert_eq!(drag_content_limit("video/mp4").0, 512 * 1024 * 1024);
         }
-        // Phase `multi_item_drop_advances_exact_insertion_side`.
         {
             use crate::shell::tab_binding::Placement;
             assert_eq!(
@@ -2314,7 +2382,6 @@ mod tests {
                 Placement::GroupAt(crate::shell::state::StripId::from(8), 3)
             );
         }
-        // Phase `a_chrome_drag_offers_a_uri_list_and_the_single_files_bytes`.
         {
             let drag = ChromeDrag::new(vec![std::path::PathBuf::from(
                 "/var/workspace/Demo/my photo.png",
@@ -2338,7 +2405,6 @@ mod tests {
                 "the list is not a file"
             );
         }
-        // Phase `a_multi_file_drag_is_paths_only`.
         {
             let drag = ChromeDrag::new(vec![
                 std::path::PathBuf::from("/a.png"),
@@ -2348,7 +2414,6 @@ mod tests {
             assert_eq!(drag.uri_list(), "file:///a.png\r\nfile:///b.png\r\n");
             assert_eq!(drag.file_for_mime("image/png"), None);
         }
-        // Phase `unknown_extensions_travel_as_paths_only`.
         {
             let drag = ChromeDrag::new(vec![std::path::PathBuf::from("/thing.qcow2")]);
             assert_eq!(drag.mime_types, vec![URI_LIST_MIME.to_string()]);
@@ -2430,7 +2495,6 @@ mod tests {
             assert!(!compositor_owns(&s, Target::Clipboard));
             assert!(s.lock().unwrap().clipboard.clear_pending);
         }
-        // Phase `chrome_write_supersedes_stale_client_payloads`.
         {
             let s = store();
             let generation = begin_client_selection(
@@ -2452,7 +2516,6 @@ mod tests {
             );
             assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some("fresh"));
         }
-        // Phase `overlarge_or_stale_client_payload_cannot_replace_current_selection`.
         {
             let s = store();
             let old =
@@ -2482,7 +2545,6 @@ mod tests {
             assert!(mimes.iter().any(|m| m == "text/plain"));
             assert!(mimes.iter().any(|m| m == "UTF8_STRING"));
         }
-        // Phase `binary_offer_round_trips_without_text_decoding_and_keeps_text_aliases`.
         {
             let s = store();
             begin_mirror_offer(
@@ -2504,25 +2566,51 @@ mod tests {
             assert!(mimes.iter().any(|mime| mime == "image/png"));
             assert!(mimes.iter().any(|mime| mime == "UTF8_STRING"));
         }
-        // Phase `chrome_image_copy_offers_png_and_preserves_text`.
+        // Phase `chrome_image_copy_offers_png_and_replaces_the_earlier_copy`.
+        // An image copy (a screenshot) is a new copy: the text copied before
+        // it is no longer offered, else apps that prefer text paste that.
         {
             let s = store();
-            set_mirror_text(&s, Target::Clipboard, "caption");
+            set_mirror_text(&s, Target::Clipboard, "copied before");
             let host = HostClipboard {
                 store: Arc::clone(&s),
             };
             assert!(host.set_image(1, 1, &[0xff, 0x00, 0x80, 0xff]));
             let bytes = mirror_bytes(&s, Target::Clipboard, "image/png").unwrap();
             assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+            assert_eq!(mirror_text(&s, Target::Clipboard), None);
+            assert_eq!(
+                mirror_mime_types(&s, Target::Clipboard),
+                vec!["image/png".to_string()]
+            );
+        }
+        {
+            let s = store();
+            set_mirror_text(&s, Target::Clipboard, "copied before");
+            let host = HostClipboard {
+                store: Arc::clone(&s),
+            };
+            assert!(host.set_rich_text("<p>plain <b>bold</b></p>", "plain bold"));
             assert_eq!(
                 mirror_text(&s, Target::Clipboard).as_deref(),
-                Some("caption")
+                Some("plain bold")
+            );
+            assert_eq!(
+                mirror_bytes(&s, Target::Clipboard, HTML_MIME).as_deref(),
+                Some(b"<p>plain <b>bold</b></p>".as_slice())
             );
             let mimes = mirror_mime_types(&s, Target::Clipboard);
-            assert!(mimes.iter().any(|mime| mime == "image/png"));
-            assert!(mimes.iter().any(|mime| mime == TEXT_MIME));
+            assert!(mimes.iter().any(|mime| mime == HTML_MIME), "{mimes:?}");
+            assert!(mimes.iter().any(|mime| mime == "UTF8_STRING"), "{mimes:?}");
+            let rich = host.rich_text().expect("the formatting pastes back");
+            assert_eq!(rich.html, "<p>plain <b>bold</b></p>");
+            assert_eq!(rich.plain.as_deref(), Some("plain bold"));
+            assert!(host.set_text(ui::clipboard::ClipboardTarget::Clipboard, "later"));
+            assert!(
+                host.rich_text().is_none(),
+                "a plain copy drops the formatting"
+            );
         }
-        // Phase `chrome_image_copy_rejects_invalid_dimensions_and_payload_size`.
         {
             let s = store();
             let host = HostClipboard { store: s };
@@ -2543,7 +2631,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn clipboard_history_keeps_distinct_safe_copies() {
-        // Phase `clipboard_manager_tracks_distinct_copies_newest_first`.
         {
             let s = store();
             assert!(set_mirror_text(&s, Target::Clipboard, "first"));
@@ -2558,7 +2645,6 @@ mod tests {
             assert_eq!(history[0].text_preview.as_deref(), Some("first"));
             assert_eq!(history[1].text_preview.as_deref(), Some("second"));
         }
-        // Phase `primary_and_secret_or_oversized_selections_never_enter_history`.
         {
             let s = store();
             assert!(set_mirror_text(&s, Target::Primary, "selection churn"));
@@ -2577,7 +2663,6 @@ mod tests {
             .unwrap();
             assert!(clipboard_history(&s).is_empty());
         }
-        // Phase `clipboard_manager_can_pin_clear_restore_and_remove`.
         {
             let s = store();
             set_mirror_text(&s, Target::Clipboard, "keep");
@@ -2598,7 +2683,6 @@ mod tests {
             assert!(remove_history_item(&s, keep));
             assert!(!remove_history_item(&s, discard));
         }
-        // Phase `asynchronous_multi_mime_copy_becomes_one_history_item`.
         {
             let s = store();
             let generation = begin_client_selection(
@@ -2625,7 +2709,6 @@ mod tests {
             assert_eq!(history[0].text_preview.as_deref(), Some("caption"));
             assert!(history[0].mime_types.iter().any(|mime| mime == "image/png"));
         }
-        // Phase `fabric_clipboard_is_history_only_and_is_not_reauthored`.
         {
             use crate::shell::device_fabric::{ClipboardEntry, ClipboardPayload, FabricStamp};
             use crate::shell::personal_continuity::DeviceId;
@@ -2792,7 +2875,6 @@ mod tests {
             clipboard_history(&s).is_empty(),
             "a password-manager copy must not enter clipboard history"
         );
-        // The next selection replaces and clears it.
         client_copy(&s, Target::Clipboard, &[TEXT_MIME], "next");
         assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some("next"));
     }
@@ -2898,7 +2980,6 @@ mod tests {
         assert_eq!(mirror_text(&s, Target::Clipboard), None);
         assert!(offered(&s).contains(&"image/png".to_owned()));
         assert!(!adopt_complete_client_selection(&s, 10_001));
-        // A late transfer for A's generation is rejected.
         record_client_bytes(&s, Target::Clipboard, a, TEXT_MIME, b"from A".to_vec());
         assert_eq!(mirror_text(&s, Target::Clipboard), None);
         record_client_bytes(&s, Target::Clipboard, b, "UTF8_STRING", b"from B".to_vec());
@@ -2927,7 +3008,6 @@ mod tests {
             Some("from chrome")
         );
 
-        // Clearing leaves nothing adoptable to resurrect.
         clear_mirror(&s, Target::Clipboard);
         assert!(!adopt_complete_client_selection(&s, 20_000));
         assert!(offered(&s).is_empty());
@@ -2939,10 +3019,8 @@ mod tests {
         let s = store();
         client_copy(&s, Target::Clipboard, &[TEXT_MIME], "same");
         assert!(adopt_complete_client_selection(&s, 5_000));
-        // The manager re-asserts identical content as a new client owner.
         client_copy(&s, Target::Clipboard, &[TEXT_MIME], "same");
         assert!(!adopt_complete_client_selection(&s, 5_100));
-        // Later, or different content, is a real copy again.
         assert!(adopt_complete_client_selection(
             &s,
             5_000 + ADOPT_COOLDOWN_MS
@@ -2982,7 +3060,6 @@ impl SelectionRefusal {
 
 #[cfg(target_os = "linux")]
 impl State {
-    /// The refusal smithay will apply to a `set_selection` made on `device`, if any.
     fn selection_refusal(
         &self,
         device: &smithay::reexports::wayland_server::backend::ObjectId,

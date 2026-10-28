@@ -76,6 +76,8 @@ mod tests {
             excluded_flatpak_apps: Default::default(),
             device_label: "Native storage fixture".into(),
             purpose: install_profile_model::default_purpose(),
+            deferred: false,
+            target: None,
         };
         let pending = store.reserve(&choices, IdentityKind::New).unwrap();
         let prepared = Arc::new(

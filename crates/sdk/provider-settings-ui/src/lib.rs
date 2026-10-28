@@ -5,18 +5,18 @@ use crate::widgets::{
     value_row,
 };
 use agent_provider_config::management::{CredentialStatus, ProviderAdmin, ProviderSnapshot};
+use agent_provider_config::presets::{Authentication, Preset};
 use agent_provider_config::protocol::{ErrorKind, ModelError};
 use agent_provider_config::{
-    EndpointLocation, ModelDescriptor, ModelRequestLimits, ProviderConfig, ProviderProfile,
-    ProviderProtocol,
+    AgentModel, EndpointLocation, Interaction, ModelDescriptor, ModelRequestLimits, ProviderConfig,
+    ProviderProfile, ProviderProtocol,
 };
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use ui::framework::{ActionControl, LiveRow};
 use ui::lock::MutexRecover as _;
 use ui::tilo_resource::{self, ActionRef, Binds, Effect};
-use ui::widget::{Button, Row, Text, TextInput};
+use ui::widget::{Button, Dropdown, Row, Text, TextInput};
 use zeroize::Zeroize;
 mod admin;
 use admin::AdminRead;
@@ -26,48 +26,6 @@ mod app_tests;
 pub mod i18n;
 pub mod widgets;
 pub use app::{ProviderSettingsApp, definition};
-/// The person's agent providers, as their settings hold them: the hosted
-/// ones roam with the person, those on this device or its network stay.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
-)]
-#[serde(from = "StoredProviders", into = "StoredProviders")]
-pub struct AgentProviders {
-    #[model(readonly)]
-    pub config: ProviderConfig,
-}
-
-/// [`AgentProviders`] as the settings section stores them.
-#[derive(Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-struct StoredProviders {
-    config: ProviderConfig,
-    hosted: agent_provider_config::HostedProfiles,
-}
-
-impl From<StoredProviders> for AgentProviders {
-    fn from(stored: StoredProviders) -> Self {
-        Self {
-            config: ProviderConfig::from_stored(stored.config, stored.hosted),
-        }
-    }
-}
-
-impl From<AgentProviders> for StoredProviders {
-    fn from(providers: AgentProviders) -> Self {
-        let (config, hosted) = providers.config.stored();
-        Self { config, hosted }
-    }
-}
-
-impl ui::storage::SettingsSchema for AgentProviders {
-    const SCOPE: ui::storage::Scope =
-        ui::storage::Scope::Shared(agent_provider_config::SETTINGS_SECTION);
-}
-
-#[ui::tilo_resource::resource(kind = "settings.agent-providers", label = "Agent model providers")]
-impl AgentProviders {}
-
 pub trait PanelBindings: Clone + 'static {
     fn offline_metadata(&self) -> bool {
         false
@@ -84,20 +42,99 @@ const fn identity<A: serde::Serialize>(
 ) -> ActionRef<ProviderEffect, A> {
     action
 }
+
+/// A model picker's choice as the effect that records it: the choice names
+/// a provider and one of its models, or neither, which lets the kind or
+/// agent follow the default again.
+struct ModelChoiceBinds {
+    kind: String,
+}
+
+impl ui::tilo_resource::Binds<ProviderEffect, String> for ModelChoiceBinds {
+    fn action_id(&self) -> &'static str {
+        ProviderEffect::SET_INTERACTION_MODEL.id()
+    }
+    fn arguments(
+        &self,
+        input: String,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+        let chosen = match input.split_once('\u{1}') {
+            Some((provider, model)) => ProviderEffect::SetInteractionModel {
+                kind: self.kind.clone(),
+                provider: Some(provider.to_owned()),
+                model: Some(model.to_owned()),
+            },
+            None => ProviderEffect::SetInteractionModel {
+                kind: self.kind.clone(),
+                provider: None,
+                model: None,
+            },
+        };
+        Ok(ui::tilo_resource::Effect::arguments(&chosen))
+    }
+}
+
+/// Record on `config` the model chosen for `kind`, or with neither provider
+/// nor model let that kind follow the default again.
+fn choose_interaction_model(
+    config: &mut ProviderConfig,
+    kind: &str,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<(), String> {
+    let kind = Interaction::from_id(kind).ok_or_else(|| t("agent-kind-unknown"))?;
+    config
+        .set_interaction_model(kind, chosen_model(provider, model)?)
+        .map_err(|_| t("agent-model-gone"))
+}
+
+/// A picker's choice as a chosen model: both the provider and its model, or
+/// neither, which lets the agent or kind follow the default again.
+fn chosen_model(
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<Option<AgentModel>, String> {
+    match (provider, model) {
+        (Some(profile), Some(model)) => Ok(Some(AgentModel { profile, model })),
+        (None, None) => Ok(None),
+        _ => Err(t("agent-model-choice-incomplete")),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum ProviderEffect {
     /// Reload the authoritative profiles and credential status.
-    #[effect(job, device_only, label = "Refresh providers")]
+    #[effect(job, label = "Refresh providers")]
     RefreshProviders,
-    /// Add a hosted provider speaking `anthropic` or `openai-compatible`.
-    #[effect(job, device_only, label = "Add provider")]
+    /// Add a provider from a known one, which fills its name, endpoint and
+    /// protocol; its model is chosen afterwards.
+    #[effect(job, label = "Add provider")]
     AddProvider {
-        #[param("`anthropic` or `openai-compatible`")]
-        protocol: String,
+        #[param(
+            "`openai`, `anthropic`, `gemini`, `mistral`, `openrouter`, `groq`, `xai`, `deepseek`, `together`, `fireworks`, `huggingface`, `ollama`, `lm-studio`, or `openai-compatible` for any other"
+        )]
+        preset: String,
+    },
+    /// Ask the provider which models it offers, with its stored key or
+    /// sign-in: shows whether the connection works, and the models to
+    /// choose from.
+    #[effect(job, row, label = "Test connection")]
+    ListProviderModels {
+        #[param("The provider's id")]
+        provider: String,
+    },
+    /// Make one model the one agents use from this provider: one it listed,
+    /// or any other id.
+    #[effect(job, row, idempotent, label = "Use model")]
+    SetProviderModel {
+        #[param("The provider's id")]
+        provider: String,
+        #[param("The model's id")]
+        model: String,
     },
     /// Speak another protocol to a provider.
-    #[effect(job, device_only, row, idempotent)]
+    #[effect(job, row, idempotent)]
     SetProviderProtocol {
         #[param("The provider's id")]
         provider: String,
@@ -105,14 +142,14 @@ pub enum ProviderEffect {
         protocol: String,
     },
     /// Offer a provider to agents, or stop offering it.
-    #[effect(job, device_only, row, idempotent)]
+    #[effect(job, row, idempotent)]
     SetProviderEnabled {
         #[param("The provider's id")]
         provider: String,
         on: bool,
     },
     /// Name a provider, where it is, and the model agents use from it.
-    #[effect(job, device_only, row)]
+    #[effect(job, row)]
     SetProviderDetails {
         #[param("The provider's id")]
         provider: String,
@@ -124,7 +161,7 @@ pub enum ProviderEffect {
         model: Option<String>,
     },
     /// Set this model's request allowance; omit both values to restore defaults.
-    #[effect(job, device_only, row, idempotent)]
+    #[effect(job, row, idempotent)]
     SetModelRequestLimits {
         provider: String,
         model: String,
@@ -133,23 +170,45 @@ pub enum ProviderEffect {
         plan_timeout_ms: Option<u32>,
     },
     /// Read source context and this model's configured deployment limits.
-    #[effect(device_only, row, returns, kind = "read")]
+    #[effect(row, returns, kind = "read")]
     InspectModelRequestLimits { provider: String, model: String },
     /// Make a provider the one agents use unless told otherwise.
-    #[effect(job, device_only, row, idempotent, label = "Use by default")]
+    #[effect(job, row, idempotent, label = "Use by default")]
     SetDefaultProvider {
         #[param("The provider's id")]
         provider: String,
     },
+    /// Choose the model one agent plans with; omit both to let it use the
+    /// default again.
+    #[effect(job, idempotent)]
+    SetAgentModel {
+        #[param("The agent's id")]
+        agent: String,
+        #[param("The provider's id")]
+        provider: Option<String>,
+        #[param("The model's id, one the provider offers")]
+        model: Option<String>,
+    },
+    /// Choose the model each kind of interaction runs on; omit both to let
+    /// that kind follow the default again.
+    #[effect(job, idempotent)]
+    SetInteractionModel {
+        #[param("`one_shot`, `task`, `subtask`, `request`, `classifier` or `dictation`")]
+        kind: String,
+        #[param("The provider's id")]
+        provider: Option<String>,
+        #[param("The model's id, one the provider offers")]
+        model: Option<String>,
+    },
     /// Remove a provider and its stored API key.
-    #[effect(job, device_only, row, destructive, label = "Remove provider")]
+    #[effect(job, row, destructive, label = "Remove provider")]
     RemoveProvider {
         #[param("The provider's id")]
         provider: String,
     },
     /// Store a provider's API key in this device's vault: a hosted
     /// provider that roamed here from another device needs its own.
-    #[effect(job, device_only, row, label = "Save API key")]
+    #[effect(job, row, label = "Save API key")]
     SaveProviderKey {
         #[param("The provider's id")]
         provider: String,
@@ -157,12 +216,7 @@ pub enum ProviderEffect {
         key: Option<String>,
     },
     /// Bind a legacy key only after independently confirming its original endpoint.
-    #[effect(
-        job,
-        device_only,
-        row,
-        label = "Confirm original endpoint and migrate key"
-    )]
+    #[effect(job, row, label = "Confirm original endpoint and migrate key")]
     MigrateProviderKey {
         #[param("The provider's id")]
         provider: String,
@@ -170,19 +224,13 @@ pub enum ProviderEffect {
         original_endpoint: String,
     },
     /// Remove a legacy key that is not bound to a provider origin.
-    #[effect(
-        job,
-        device_only,
-        row,
-        destructive,
-        label = "Remove unbound legacy key"
-    )]
+    #[effect(job, row, destructive, label = "Remove unbound legacy key")]
     RemoveLegacyProviderKey {
         #[param("The provider's id")]
         provider: String,
     },
     /// Remove a provider's stored API key.
-    #[effect(job, device_only, row, destructive, label = "Remove API key")]
+    #[effect(job, row, destructive, label = "Remove API key")]
     RemoveProviderKey {
         #[param("The provider's id")]
         provider: String,
@@ -258,7 +306,17 @@ fn provider_row(profile: &ProviderProfile) -> LiveRow {
     }))
     .operation(offer(ProviderEffect::RemoveProvider {
         provider: id.clone(),
-    }));
+    }))
+    .operation(offer(ProviderEffect::ListProviderModels {
+        provider: id.clone(),
+    }))
+    .operation(
+        ProviderEffect::SetProviderModel {
+            provider: id.clone(),
+            model: profile.default_model.clone().unwrap_or_default(),
+        }
+        .bound_asking(&["model"]),
+    );
     let row = row
         .operation(
             ProviderEffect::SetProviderDetails {
@@ -321,6 +379,8 @@ pub struct ProviderPanel<H: PanelBindings> {
     provider_field_buffers: Mutex<HashMap<String, HostedFieldBuffers>>,
     limit_field_buffers: Mutex<HashMap<(String, String), LimitFieldBuffers>>,
     pub keys: HashMap<String, Result<CredentialStatus, String>>,
+    /// What each provider answered when its models were last asked for.
+    pub listed_models: HashMap<String, Result<Vec<ModelDescriptor>, String>>,
     pub admin_snapshot: Option<ProviderSnapshot>,
     empty_config: ProviderConfig,
     pub admin_pending: Option<admin::PendingAdmin>,
@@ -345,6 +405,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
             provider_field_buffers: Mutex::default(),
             limit_field_buffers: Mutex::default(),
             keys: HashMap::new(),
+            listed_models: HashMap::new(),
             admin_snapshot: None,
             empty_config: ProviderConfig::default(),
             admin_pending: None,
@@ -356,14 +417,22 @@ impl<H: PanelBindings> ProviderPanel<H> {
         panel.read_keys();
         panel
     }
-    fn admit(&self, button: Button) -> Button {
-        if self.admin_pending.is_some()
+    /// Nobody here can change providers and there is nothing to keep
+    /// locally: the panel has no controls to offer, only who decides.
+    pub fn administered_elsewhere(&self) -> bool {
+        !self.provider_admin.is_available() && !self.cx.offline_metadata() && self.notice.is_none()
+    }
+    /// Whether a change can be asked for now.
+    fn admits(&self) -> bool {
+        !(self.admin_pending.is_some()
             || (!self.provider_admin.is_available() && !self.cx.offline_metadata())
-            || (self.provider_admin.is_available() && self.admin_snapshot.is_none())
-        {
-            button.with_enabled(false)
-        } else {
+            || (self.provider_admin.is_available() && self.admin_snapshot.is_none()))
+    }
+    fn admit(&self, button: Button) -> Button {
+        if self.admits() {
             button
+        } else {
+            button.with_enabled(false)
         }
     }
     fn bind_row(
@@ -372,6 +441,15 @@ impl<H: PanelBindings> ProviderPanel<H> {
         row: LiveRow,
         binding: impl Binds<ProviderEffect, ()>,
     ) -> Button {
+        Self::bind_row_control(self.admit(button), row, binding)
+    }
+    /// Bind `control` to one of `row`'s published operations.
+    fn bind_row_control<I: 'static, C: ActionControl<I>>(
+        control: C,
+        row: LiveRow,
+        binding: impl Binds<ProviderEffect, I>,
+    ) -> C {
+        let button = control;
         let row = row.into_resource();
         let Some(spec) = row
             .actions
@@ -394,7 +472,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
             args.retain(|name, _| asked.contains(name));
             Ok(args)
         }) {
-            Ok(binding) => self.admit(button).bind_action(binding),
+            Ok(binding) => button.bind_action(binding),
             Err(_) => button.unavailable(),
         }
     }
@@ -455,9 +533,18 @@ impl<H: PanelBindings> ProviderPanel<H> {
     fn sections_with_sign_in(&self, include_sign_in: bool) -> Vec<SettingsSection> {
         let mut sections = Vec::new();
         if let Some(notice) = &self.notice {
-            sections.push(section(&t("agent-service-title"), rows(vec![note(notice)])));
+            // A result is about a provider, so it is filed under the providers
+            // rather than under the local model service it has nothing to do
+            // with.
+            sections.push(section(&t("agent-notice-title"), rows(vec![note(notice)])));
         }
         sections.push(self.hosted_profiles_with_sign_in(include_sign_in));
+        if let Some(agents) = self.agent_models_card() {
+            sections.push(agents);
+        }
+        if let Some(kinds) = self.interaction_models_card() {
+            sections.push(kinds);
+        }
         // Limits are per model: with no model yet the section would be a
         // paragraph about nothing.
         if self
@@ -542,7 +629,33 @@ impl<H: PanelBindings> ProviderPanel<H> {
             self.admin_snapshot = None;
         }
         self.keys = read.keys;
+        let mut value = None;
+        let mut listing_failed = None;
+        // Which provider the answer is about, as the profile names it: the
+        // notice says whose result it is instead of leaving one line to
+        // stand for every provider.
+        let mut listing_for = None;
+        if let Some((provider, listed)) = read.listed {
+            value = listed
+                .as_ref()
+                .ok()
+                .and_then(|models| serde_json::to_value(models).ok());
+            let listed = listed.map_err(|error| listing_error(&error));
+            listing_failed = listed.as_ref().err().cloned();
+            listing_for = Some(
+                self.provider_config()
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.id == provider)
+                    .map_or_else(|| provider.clone(), |profile| profile.label.clone()),
+            );
+            self.listed_models.insert(provider, listed);
+        }
+        let listing_failure = listing_failed.clone();
         let outcome = read.outcome.map_err(|error| {
+            if let Some(message) = listing_failed {
+                return message;
+            }
             if error.kind == ErrorKind::Conflict && self.admin_snapshot.is_some() {
                 t("agent-provider-conflict")
             } else if error.kind == ErrorKind::Conflict {
@@ -563,17 +676,28 @@ impl<H: PanelBindings> ProviderPanel<H> {
         if let Some(acknowledgement) = self.limits_ack.take().filter(|_| read.acknowledged) {
             self.acknowledge_limits(&acknowledgement);
         }
-        self.notice = Some(match &outcome {
-            Ok(()) => t(if self.admin_reply.is_some() {
-                "agent-provider-saved"
-            } else {
-                "agent-provider-ready"
-            }),
-            Err(error) => error.clone(),
-        });
+        // Only what the person asked for and cannot read anywhere else is a
+        // notice: a provider's own card shows its test result, and a change
+        // that took is already the state the panel shows. One line speaking
+        // for every provider, or announcing a save, says nothing they can act
+        // on.
+        self.notice = match (&outcome, &value) {
+            (Ok(()), Some(serde_json::Value::Array(models))) if !models.is_empty() => Some(t_args(
+                "agent-test-connected",
+                &[
+                    ("provider", listing_for.unwrap_or_default().into()),
+                    ("count", models.len().into()),
+                ],
+            )),
+            (Ok(()), _) => None,
+            // The provider's own card says its test failed, beside the
+            // provider it is about.
+            (Err(_), _) if listing_failure.is_some() => None,
+            (Err(error), _) => Some(error.clone()),
+        };
         if let Some(reply) = self.admin_reply.take() {
             reply.finish(outcome.map(|()| ui::tilo_actions::ActionOutput {
-                value: None,
+                value,
                 resources: Vec::new(),
             }));
         }
@@ -614,8 +738,14 @@ impl<H: PanelBindings> ProviderPanel<H> {
                     (max_output_tokens, runtime_context_tokens, plan_timeout_ms),
                 )?;
             }
-            ProviderEffect::AddProvider { protocol: slug } => {
-                config.upsert(ProviderProfile::hosted(protocol(&slug)?));
+            ProviderEffect::AddProvider { preset } => {
+                let preset = Preset::from_slug(&preset)
+                    .filter(|preset| !matches!(preset.authentication(), Authentication::SignIn(_)))
+                    .ok_or_else(|| t("agent-preset-unknown"))?;
+                config.upsert(preset.profile());
+            }
+            ProviderEffect::SetProviderModel { provider, model } => {
+                self.choose_default_model(&mut config, &provider, &model)?;
             }
             ProviderEffect::SetProviderProtocol {
                 provider,
@@ -659,9 +789,52 @@ impl<H: PanelBindings> ProviderPanel<H> {
                     return Err(t("agent-provider-gone"));
                 }
             }
+            ProviderEffect::SetAgentModel {
+                agent,
+                provider,
+                model,
+            } => {
+                let chosen = chosen_model(provider, model)?;
+                config
+                    .set_agent_model(&agent, chosen)
+                    .map_err(|_| t("agent-model-gone"))?;
+            }
+            ProviderEffect::SetInteractionModel {
+                kind,
+                provider,
+                model,
+            } => choose_interaction_model(&mut config, &kind, provider, model)?,
             _ => return Err("not a provider effect".into()),
         }
         Ok(config.sanitised())
+    }
+
+    /// Make `model` the default of `provider`, which offers it afterwards even
+    /// if it was written by hand rather than listed by the provider.
+    fn choose_default_model(
+        &self,
+        config: &mut ProviderConfig,
+        provider: &str,
+        model: &str,
+    ) -> Result<(), String> {
+        let model = model.trim();
+        if model.is_empty() || model.len() > 256 || model.contains(char::is_control) {
+            return Err(t("agent-model-invalid"));
+        }
+        let listed = self
+            .listed_models
+            .get(provider)
+            .and_then(|listed| listed.as_ref().ok())
+            .and_then(|models| models.iter().find(|listed| listed.id == model))
+            .cloned();
+        let profile = find(config, provider)?;
+        if !profile.models.iter().any(|known| known.id == model) {
+            profile
+                .models
+                .push(listed.unwrap_or_else(|| ModelDescriptor::new(model.to_owned())));
+        }
+        profile.default_model = Some(model.to_owned());
+        Ok(())
     }
 
     pub fn provider_notice(&mut self, outcome: Result<String, &String>) {
@@ -699,11 +872,16 @@ impl<H: PanelBindings> ProviderPanel<H> {
         self.hosted_profiles_with_sign_in(true)
     }
 
+    /// Whether the backend's providers are loaded and nothing is pending.
+    pub fn can_admin(&self) -> bool {
+        self.provider_admin.is_available()
+            && self.admin_pending.is_none()
+            && self.admin_snapshot.is_some()
+    }
+
     fn hosted_profiles_with_sign_in(&self, include_sign_in: bool) -> SettingsSection {
         let config = self.provider_config().clone();
-        let can_admin = self.provider_admin.is_available()
-            && self.admin_pending.is_none()
-            && self.admin_snapshot.is_some();
+        let can_admin = self.can_admin();
         let mut body: Vec<Item> = vec![note(&t("agent-hosted-intro"))];
         if !self.provider_admin.is_available() {
             body.push(note(&t(if self.cx.offline_metadata() {
@@ -729,27 +907,19 @@ impl<H: PanelBindings> ProviderPanel<H> {
             )));
         }
         if self.provider_admin.is_available() || self.cx.offline_metadata() {
-            body.push(row(Box::new(
-                Row::new()
-                    .push(Box::new(self.bind_invocation(
-                        Button::new("agent-models-add-anthropic", &t("agent-add-anthropic")),
-                        ProviderEffect::AddProvider {
-                            protocol: "anthropic".into(),
-                        },
-                    )))
-                    .push(widgets::gap(ui::tokens::SpacingStep::S2))
-                    .push(Box::new(self.bind_invocation(
-                        Button::new("agent-models-add-openai", &t("agent-add-compatible")),
-                        ProviderEffect::AddProvider {
-                            protocol: "openai-compatible".into(),
-                        },
-                    ))),
-            )));
+            body.push(field_row(
+                &t("agent-add-provider"),
+                Box::new(self.add_provider_control()),
+            ));
         }
         for profile in config
             .profiles
             .iter()
-            .filter(|profile| profile.location != EndpointLocation::ThisDevice)
+            // The local model this device's model service runs has its own card.
+            .filter(|profile| {
+                profile.location != EndpointLocation::ThisDevice
+                    || !profile.is_local_vllm_candidate()
+            })
             .filter(|profile| include_sign_in || profile.sign_in.is_none())
         {
             self.profile_body(&mut body, profile, can_admin);
@@ -761,6 +931,73 @@ impl<H: PanelBindings> ProviderPanel<H> {
             )));
         }
         section(&t("agent-hosted-title"), rows(body))
+    }
+
+    /// The known providers to add, each filling its own details. Those that
+    /// sign in are offered where the sign-in runs (the native host).
+    fn add_provider_control(&self) -> Dropdown {
+        let mut chooser = Dropdown::from_state(Vec::new(), &ui::LocalState::new(String::new()))
+            .with_id("agent-models-add-provider")
+            .with_accessible_name(t("agent-add-provider"))
+            .with_placeholder(&t("agent-add-provider-placeholder"));
+        chooser.set_value_options(
+            Preset::ALL
+                .into_iter()
+                .filter(|preset| !matches!(preset.authentication(), Authentication::SignIn(_)))
+                .map(|preset| (preset.slug().to_owned(), preset.label().to_owned()))
+                .collect(),
+        );
+        let chooser = chooser.with_enabled(self.admits());
+        self.cx
+            .bind(chooser, identity(ProviderEffect::ADD_PROVIDER))
+    }
+
+    /// Test the connection, and choose the model from what the provider
+    /// listed; the model field above takes any other id.
+    pub fn profile_models(&self, body: &mut Vec<Item>, profile: &ProviderProfile, can_admin: bool) {
+        let profile_id = profile.id.clone();
+        body.push(row(Box::new(
+            self.bind_invocation(
+                Button::new(
+                    &format!("agent-models-test-{profile_id}"),
+                    &t("agent-test-connection"),
+                )
+                .with_enabled(can_admin),
+                ProviderEffect::ListProviderModels {
+                    provider: profile_id.clone(),
+                },
+            ),
+        )));
+        match self.listed_models.get(&profile_id) {
+            None => {}
+            Some(Err(error)) => body.push(row(widgets::error_caption(error))),
+            Some(Ok(models)) if models.is_empty() => {
+                body.push(note(&t("agent-test-no-models")));
+            }
+            Some(Ok(models)) => {
+                let selected = profile.default_model.clone().unwrap_or_default();
+                let mut chooser = Dropdown::from_state(Vec::new(), &ui::LocalState::new(selected))
+                    .with_id(&format!("agent-models-choose-{profile_id}"))
+                    .with_accessible_name(t("agent-choose-model"))
+                    .with_placeholder(&t("agent-choose-model-placeholder"));
+                chooser.set_value_options(
+                    models
+                        .iter()
+                        .map(|model| (model.id.clone(), model.display_label().to_owned()))
+                        .collect(),
+                );
+                let provider = profile_id.clone();
+                body.push(field_row(
+                    &t("agent-choose-model"),
+                    Box::new(Self::bind_row_control(
+                        chooser.with_enabled(can_admin),
+                        provider_row(profile),
+                        identity(ProviderEffect::SET_PROVIDER_MODEL)
+                            .map(move |model: String| (provider.clone(), model)),
+                    )),
+                ));
+            }
+        }
     }
 
     fn profile_fields(&self, body: &mut Vec<Item>, profile: &ProviderProfile) {
@@ -1028,7 +1265,11 @@ impl<H: PanelBindings> ProviderPanel<H> {
         self.profile_actions(body, profile);
         let protocol = t("agent-protocol");
         body.push(value_row(&protocol, profile.protocol.label()));
-        self.profile_credentials(body, profile, can_admin);
+        // Only a hosted provider keeps a key in this device's vault.
+        if profile.location == EndpointLocation::Hosted || profile.sign_in.is_some() {
+            self.profile_credentials(body, profile, can_admin);
+        }
+        self.profile_models(body, profile, can_admin);
         if profile.default_model.is_some() {
             body.push(row(Box::new(self.bind_invocation(
                 Button::new(
@@ -1080,6 +1321,98 @@ impl<H: PanelBindings> ProviderPanel<H> {
             .clone();
         drop(buffers);
         fields
+    }
+
+    /// The agents that plan with a model other than the default, each with
+    /// the way back to the default. `None` while every agent uses it.
+    pub fn agent_models_card(&self) -> Option<SettingsSection> {
+        let config = self.provider_config();
+        if config.agent_models.is_empty() {
+            return None;
+        }
+        let mut body = vec![note(&t("agent-models-agents-caption"))];
+        for agent in config.agent_models.keys() {
+            let model = config.selection_for(agent).map_or_else(
+                || t("agent-model-unavailable"),
+                |(profile, model)| {
+                    t_args(
+                        "agent-model-of-provider",
+                        &[
+                            ("model", model.display_label().into()),
+                            ("provider", profile.display_label().into()),
+                        ],
+                    )
+                },
+            );
+            body.push(value_row(agent, &model));
+            body.push(row(Box::new(self.bind_invocation(
+                Button::new(
+                    &format!("agent-model-default-{}", hex::encode(agent)),
+                    &t("agent-model-use-default"),
+                ),
+                ProviderEffect::SetAgentModel {
+                    agent: agent.clone(),
+                    provider: None,
+                    model: None,
+                },
+            ))));
+        }
+        Some(section(&t("agent-models-agents-title"), rows(body)))
+    }
+
+    /// The model each kind of interaction runs on, chosen among the models
+    /// the providers offer. A kind left alone follows the default.
+    #[must_use]
+    pub fn interaction_models_card(&self) -> Option<SettingsSection> {
+        let config = self.provider_config();
+        if !config
+            .profiles
+            .iter()
+            .any(|profile| !profile.models.is_empty())
+        {
+            return None;
+        }
+        let offered: Vec<(String, String)> = config
+            .profiles
+            .iter()
+            .filter(|profile| profile.enabled)
+            .flat_map(|profile| {
+                profile.models.iter().map(move |model| {
+                    let value = format!("{}\u{1}{}", profile.id, model.id);
+                    let label = t_args(
+                        "agent-kind-model-label",
+                        &[
+                            ("model", model.display_label().into()),
+                            ("provider", profile.display_label().into()),
+                        ],
+                    );
+                    (value, label)
+                })
+            })
+            .collect();
+        let can_admin = self.admits();
+        let mut body = vec![note(&t("agent-models-kinds-caption"))];
+        for kind in Interaction::ALL {
+            let selected = config
+                .interaction_models
+                .get(kind.id())
+                .map_or_else(String::new, |chosen| {
+                    format!("{}\u{1}{}", chosen.profile, chosen.model)
+                });
+            let label = t(&format!("agent-kind-{}", kind.id().replace('_', "-")));
+            let mut chooser = Dropdown::from_state(Vec::new(), &ui::LocalState::new(selected))
+                .with_id(&format!("agent-kind-choose-{}", kind.id()))
+                .with_accessible_name(&label)
+                .with_placeholder(&t("agent-kind-model-default"))
+                .with_enabled(can_admin);
+            chooser.set_value_options(offered.clone());
+            let kind = kind.id().to_owned();
+            body.push(field_row(
+                &label,
+                Box::new(self.cx.bind(chooser, ModelChoiceBinds { kind })),
+            ));
+        }
+        Some(section(&t("agent-models-kinds-title"), rows(body)))
     }
 
     pub fn request_limits_card(&self) -> SettingsSection {
@@ -1197,6 +1530,18 @@ pub fn set_model_limits(
     }
     selected.request_limits = limits;
     Ok(())
+}
+
+/// What a person can do about a failed model list.
+fn listing_error(error: &ModelError) -> String {
+    match error.kind {
+        ErrorKind::Authentication | ErrorKind::PermissionDenied => t("agent-test-key-refused"),
+        ErrorKind::Unsupported => t("agent-test-no-list"),
+        ErrorKind::Transport | ErrorKind::TimedOut => t("agent-test-unreachable"),
+        ErrorKind::RateLimited => t("agent-test-rate-limited"),
+        ErrorKind::CreditsExhausted => t("agent-test-no-credits"),
+        _ => t("agent-test-failed"),
+    }
 }
 
 /// The provider `id` of `config`.

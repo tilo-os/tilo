@@ -53,7 +53,6 @@ pub struct EmbeddedApp {
     /// Focus state represented by `painted`. A hidden app can lose and regain
     /// focus without changing the frame its host last showed.
     painted_focus: bool,
-    /// The control that had focus when focus last left the app.
     restore_focus: Option<NodeId>,
     /// Shift was held as focus last moved, so focus entering the app lands
     /// on its last control.
@@ -67,6 +66,14 @@ pub struct EmbeddedApp {
     painted_parts: RefCell<Option<crate::scene_parts::SectionParts>>,
     /// Background work not yet serviced by a model pump or frame.
     woken: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The app's next wake deadline as it stood after it last ran
+    /// ([`Self::wake_deadline`]), while `deadline_known`.
+    deadline: Cell<Option<crate::time::Instant>>,
+    /// The app has not run since `deadline` was asked for.
+    deadline_known: Cell<bool>,
+    /// The app ran since its host last found it with no intent for the host
+    /// ([`AppWidget::take_host_intent`]): only an app that runs raises one.
+    intents_owed: Cell<bool>,
     /// Tells this app's damage hints from every other source's.
     source: u64,
     /// Where the app's frames changed since `painted` was last replaced.
@@ -112,9 +119,6 @@ static NEXT_SOURCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 impl EmbeddedApp {
     /// Show `app` in a region of a host's scene. `wake` is told when the
     /// app's background work wants it to run again.
-    ///
-    /// # Errors
-    /// The app's wake scope is already bound to another host.
     pub fn new(
         mut app: App,
         wake: impl Fn(crate::wake::WakeEvent) + Send + Sync + 'static,
@@ -129,6 +133,12 @@ impl EmbeddedApp {
                     wake(event);
                 })
                 .map_err(|error| crate::launch::LaunchError::Operation(error.to_string()))?;
+        }
+        if app.wake_scope.is_some() {
+            // As in a window of its own: a change of an outside authority
+            // the app's permissions follow wakes it to show it.
+            let _entry = app.enter_wake_scope();
+            crate::permissions::wake_on_outside_change(crate::wake::WakeHandle::new());
         }
         Ok(Self {
             app,
@@ -146,6 +156,9 @@ impl EmbeddedApp {
             painted: RefCell::new(Scene::new()),
             painted_parts: RefCell::new(None),
             woken,
+            deadline: Cell::new(None),
+            deadline_known: Cell::new(false),
+            intents_owed: Cell::new(true),
             source: NEXT_SOURCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             damage: super::SurfaceDamage::default(),
             painted_damage: PaintedDamage::default(),
@@ -207,6 +220,7 @@ impl EmbeddedApp {
     /// with without a host's layout and focus.
     #[cfg(any(test, feature = "test-support"))]
     pub fn input_for_test(&mut self, event: WindowEvent) {
+        self.runs();
         self.app.surface_input(&self.region, event, false);
         self.wants_frame.set(true);
     }
@@ -218,6 +232,7 @@ impl EmbeddedApp {
     /// changed.
     #[cfg(feature = "test-support")]
     pub fn pump_shell_connection_for_test(&mut self) -> bool {
+        self.runs();
         let changed = self.app.test_pump_floating_service();
         if changed {
             self.app.layout.layout_dirty = true;
@@ -227,13 +242,43 @@ impl EmbeddedApp {
     }
 
     /// The app shown, to drive it.
+    /// When the app next wants to run with nothing waking it. Its widgets
+    /// change their deadlines only as the app runs (a pump, a frame, an
+    /// input), so the tree is asked once after each run, not on every
+    /// pump and frame of its host.
+    fn wake_deadline(&self) -> Option<crate::time::Instant> {
+        if self.deadline_known.get() {
+            return self.deadline.get();
+        }
+        // A bound component's permissions changing with time is a deadline
+        // too, as in a window of its own.
+        let deadline = self
+            .app
+            .root_widget
+            .next_wake_deadline()
+            .into_iter()
+            .chain(self.app.permissions_change_at())
+            .min();
+        self.deadline.set(deadline);
+        self.deadline_known.set(true);
+        deadline
+    }
+
+    /// The app runs: its deadlines may move.
+    fn runs(&self) {
+        self.deadline_known.set(false);
+        self.intents_owed.set(true);
+    }
+
     pub fn app_mut(&mut self) -> &mut App {
+        self.runs();
         &mut self.app
     }
 
     /// The root widget of the app's component: what an app's own tests
     /// reach into, as they would in the app's window.
     pub fn component_root_mut(&mut self) -> Option<&mut dyn Widget> {
+        self.runs();
         // Whatever the caller does to it is no change the tracking sees.
         self.app.mark_semantic_tree_stale();
         let root = self
@@ -277,6 +322,7 @@ impl EmbeddedApp {
     }
 
     fn app_widget_mut(&mut self) -> Option<&mut dyn AppWidget> {
+        self.runs();
         self.app.mark_semantic_tree_stale();
         self.app
             .root_widget
@@ -288,6 +334,7 @@ impl EmbeddedApp {
 
 impl crate::widget::WindowHistory for EmbeddedApp {
     fn set_window_presents_history(&mut self, tab_presents: bool) {
+        self.runs();
         self.app.set_window_presents_history(tab_presents);
     }
 
@@ -299,6 +346,7 @@ impl crate::widget::WindowHistory for EmbeddedApp {
         &mut self,
         control: crate::widget::HistoryControl,
     ) -> Result<(), String> {
+        self.runs();
         self.app.invoke_window_history_control(control)?;
         self.wants_frame.set(true);
         Ok(())
@@ -307,12 +355,16 @@ impl crate::widget::WindowHistory for EmbeddedApp {
 
 impl crate::widget::SearchableWindow for EmbeddedApp {
     fn visit_search_root(&mut self, visit: &mut dyn FnMut(&mut dyn Widget) -> bool) -> bool {
+        self.runs();
         let changed = visit(self.app.root_widget.as_mut());
         if changed {
             // What the search found shows on the app's next frame: matches
-            // painted, a match scrolled into view, a list narrowed.
+            // painted, a match scrolled into view, a list narrowed. A
+            // replacement is an edit the app's widgets write when they
+            // settle, so that frame syncs.
             self.app.mark_semantic_tree_stale();
             self.app.layout.layout_dirty = true;
+            self.app.needs_sync = true;
             self.wants_frame.set(true);
         }
         changed
@@ -333,6 +385,7 @@ impl Widget for EmbeddedApp {
         theme: &Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.runs();
         // The app looks as the host does around it. A new palette must
         // replace its retained scene even when the region's size is unchanged.
         if self.app.accessibility.base_theme != *theme {
@@ -351,6 +404,7 @@ impl Widget for EmbeddedApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.runs();
         let rect = crate::widget::layout_rect(taffy, node, origin);
         if rect.size() != self.rect.size() {
             self.app.layout.layout_dirty = true;
@@ -381,9 +435,7 @@ impl Widget for EmbeddedApp {
         let mut painted = self.painted.borrow_mut();
         let mut painted_parts = self.painted_parts.borrow_mut();
         let due = self
-            .app
-            .root_widget
-            .next_wake_deadline()
+            .wake_deadline()
             .is_some_and(|deadline| deadline <= crate::time::now());
         let woken = self.woken.swap(false, std::sync::atomic::Ordering::AcqRel);
         // Drawn for a host that copies, the app hands out copies from now
@@ -409,6 +461,7 @@ impl Widget for EmbeddedApp {
             self.damage.set_copy_scale(copy_scale(placement));
         }
         if self.wants_frame.get() || woken || due || self.focused != self.painted_focus {
+            self.runs();
             // A frame whose sync or layout leaves more to settle runs again
             // at once, so what the host paints is the app at rest.
             let mut again = true;
@@ -491,6 +544,7 @@ impl Widget for EmbeddedApp {
                 placement,
                 rects,
                 copies,
+                earlier: Vec::new(),
             }
         });
         let key = crate::scene_parts::PartKey::new("ui.embedded-app", ());
@@ -512,9 +566,7 @@ impl Widget for EmbeddedApp {
         _path: &crate::widget::ModelPath,
     ) -> bool {
         let due = self
-            .app
-            .root_widget
-            .next_wake_deadline()
+            .wake_deadline()
             .is_some_and(|deadline| deadline <= crate::time::now());
         // A wake the app raised from another thread (a question put to its
         // action directory, an invocation, a collaborator's edit) is serviced
@@ -527,6 +579,7 @@ impl Widget for EmbeddedApp {
         if !due && !woken {
             return false;
         }
+        self.runs();
         let presentation_changed = self.app.pump_embedded_model();
         // A durability that changed in this pass left the layout dirty
         // (`App::sync_model`), so the next frame shows it; a structure change
@@ -536,6 +589,7 @@ impl Widget for EmbeddedApp {
             || self.app.unsettled()
             || (woken && self.app.root_widget.needs_redraw())
             || self.app.root_widget.needs_animation_frame()
+            || self.app.permissions_walk_due(crate::time::now())
             || crate::motion::frames_wanted(crate::time::now());
         if visible {
             self.wants_frame.set(true);
@@ -544,6 +598,7 @@ impl Widget for EmbeddedApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.runs();
         self.entering_backwards = ctx.modifiers.state().shift_key();
         let local = self.local_event(event, ctx.scale_factor);
         self.app.set_surface_modifiers(*ctx.modifiers);
@@ -567,7 +622,6 @@ impl Widget for EmbeddedApp {
         Some(self)
     }
 
-    /// The id of the app shown.
     fn test_id(&self) -> Option<&str> {
         self.app
             .root_widget
@@ -619,6 +673,7 @@ impl Widget for EmbeddedApp {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        self.runs();
         if focused == self.focused {
             return;
         }
@@ -672,7 +727,19 @@ impl Widget for EmbeddedApp {
             .unwrap_or(false)
     }
 
+    fn ime_refuses_ordinary_commits(&self) -> bool {
+        self.app
+            .focused_node
+            .and_then(|node| {
+                self.app
+                    .inspect_node(node, |widget| widget.ime_refuses_ordinary_commits())
+                    .ok()
+            })
+            .unwrap_or(false)
+    }
+
     fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
+        self.runs();
         self.app
             .mutate_node(self.app.focused_node?, |widget| {
                 widget.start_deferred_text()
@@ -682,6 +749,7 @@ impl Widget for EmbeddedApp {
     }
 
     fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
+        self.runs();
         self.app
             .mutate_node(self.app.focused_node?, |widget| {
                 widget.commit_deferred_text(text)
@@ -718,10 +786,12 @@ impl Widget for EmbeddedApp {
 
     /// The host's presentation preferences are the app's.
     fn set_motion_reduced(&mut self, reduced: bool) {
+        self.runs();
         self.app.set_reduce_motion(reduced);
     }
 
     fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+        self.runs();
         self.app.set_platform_conventions(conventions);
     }
 
@@ -729,6 +799,7 @@ impl Widget for EmbeddedApp {
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
     ) {
+        self.runs();
         self.app.set_interaction_environment(environment);
     }
 
@@ -755,6 +826,7 @@ impl Widget for EmbeddedApp {
         _state: &mut crate::widget::Edits<'_>,
         _path: &crate::widget::ModelPath,
     ) -> bool {
+        self.runs();
         let Some(id) = semantic_target(self.app.semantic_tree(), key_path) else {
             return false;
         };
@@ -785,7 +857,7 @@ impl Widget for EmbeddedApp {
     }
 
     fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
-        self.app.root_widget.next_wake_deadline()
+        self.wake_deadline()
     }
 }
 
@@ -797,16 +869,20 @@ impl crate::component_lifecycle::ComponentLifecycle for EmbeddedApp {
         crate::component_lifecycle::unsaved_documents(self.app.root_widget.as_ref(), doc)
     }
     fn checkpoint_components(&mut self) -> Vec<String> {
+        self.runs();
         crate::component_lifecycle::checkpoint_components(self.app.root_widget.as_mut())
     }
     fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        self.runs();
         crate::component_lifecycle::finish_admitted_close(self.app.root_widget.as_mut())
     }
     fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        self.runs();
         self.app.close_components();
         self.app.take_component_close_reports()
     }
     fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        self.runs();
         self.app.take_component_close_reports()
     }
 }
@@ -826,6 +902,7 @@ impl crate::widget::CompleteContentProvider for EmbeddedApp {
         _theme: &Theme,
         _presence: &PresenceCtx,
     ) -> bool {
+        self.runs();
         use crate::widget::CompleteContentWidgetExt as _;
         let app = &mut self.app;
         let local = bounds - vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0);
@@ -856,11 +933,37 @@ impl AppWidget for EmbeddedApp {
             crate::widget::published_resources(self.app.root_widget.as_ref(), &self.app.state.doc)
         })
     }
+    fn window_search(&self) -> Option<crate::widget::WindowPublication> {
+        let root = self.app.root_widget.as_ref();
+        Some(crate::widget::WindowPublication {
+            resources: crate::widget::published_resources(root, &self.app.state.doc),
+            providers: crate::widget::published_search_providers(root),
+        })
+    }
+    fn run_window_control(
+        &mut self,
+        invocation: tilo_actions::ControlInvocation,
+    ) -> Result<(), tilo_actions::ControlInvocation> {
+        match self
+            .app
+            .invoke_local_resource_action(&invocation.address, &invocation.arguments)
+        {
+            Ok(_) => {
+                self.wants_frame.set(true);
+                Ok(())
+            }
+            Err(error) => {
+                tracing::warn!(%error, address = ?invocation.address, "the window's search row was refused");
+                Err(invocation)
+            }
+        }
+    }
     fn invoke_device_local_action(
         &mut self,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.runs();
         if !self.device_local {
             return Err(tilo_actions::DoorError::Unknown(address.clone()));
         }
@@ -886,6 +989,7 @@ impl AppWidget for EmbeddedApp {
         &mut self,
         operation: &crate::floating_surface::DeviceShellOperation,
     ) -> Result<serde_json::Value, String> {
+        self.runs();
         self.app_widget_mut()
             .ok_or("Terminal is not available")?
             .device_shell_operation(operation)
@@ -894,8 +998,25 @@ impl AppWidget for EmbeddedApp {
         self.app_widget_mut()
             .is_some_and(AppWidget::request_device_shell)
     }
+    /// Its host asks on every pump; the app is reached only when it ran
+    /// since it last had none, and only taking one runs it.
     fn take_host_intent(&mut self) -> Option<crate::widget::AppHostIntent> {
-        self.app_widget_mut()?.take_host_intent()
+        if !self.intents_owed.get() {
+            return None;
+        }
+        let intent = self
+            .app
+            .root_widget
+            .as_any_mut()
+            .and_then(|root| root.downcast_mut::<crate::widget::BoundAppWidget>())
+            .and_then(AppWidget::take_host_intent);
+        if intent.is_some() {
+            self.runs();
+            self.app.mark_semantic_tree_stale();
+        } else {
+            self.intents_owed.set(false);
+        }
+        intent
     }
 }
 
@@ -1016,7 +1137,6 @@ mod theme_repaint_tests {
         }
         let region = KurboRect::new(40.0, 20.0, 340.0, 120.0);
         let button = tile.app.root_widget.get_rect();
-        // The pointer arrives over the button and its hover is painted.
         let at = button.center();
         let moved = crate::synthetic_input::cursor_moved(at.x, at.y);
         tile.app.surface_input(&tile.region, moved, false);
@@ -1027,11 +1147,12 @@ mod theme_repaint_tests {
             "the button's tooltip is pending over {button:?}"
         );
         // It rests: the tooltip shows, and only it changes.
-        std::thread::sleep(
-            crate::widget::tooltip::HOVER_DWELL + crate::time::Duration::from_millis(50),
-        );
+        let rested = crate::time::now()
+            + crate::widget::tooltip::HOVER_DWELL
+            + crate::time::Duration::from_millis(50);
         tile.wants_frame.set(true);
-        let shown = paint_tracked(&mut tile, &theme);
+        let shown =
+            crate::time::testing::with_monotonic_time(rested, || paint_tracked(&mut tile, &theme));
         assert!(
             tile.app.input.tooltip_host.visible().is_some(),
             "the tooltip shows"
@@ -1045,6 +1166,48 @@ mod theme_repaint_tests {
             repainted < region.area(),
             "{damage:?} repaints the tooltip ({chip:?}), not the app's {region:?}"
         );
+    }
+
+    /// A tooltip is about where the pointer rests in a window the person
+    /// is using: it goes when the pointer leaves, and when the window loses
+    /// focus.
+    #[test]
+    fn a_tooltip_goes_when_the_pointer_leaves_or_the_window_loses_focus() {
+        let _settled = crate::motion::testing::settled();
+        for ending in [
+            WindowEvent::CursorLeft {
+                device_id: winit::event::DeviceId::dummy(),
+            },
+            WindowEvent::Focused(false),
+        ] {
+            let app = App::new_with_controlled_inputs(
+                crate::state::State::new(),
+                Box::new(crate::widget::Button::new("probe", "Probe").tooltip("Probe the tile")),
+            );
+            let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+            let theme = Theme::light();
+            layout(&mut tile, &theme);
+            let _ = paint_tracked(&mut tile, &theme);
+            let at = tile.app.root_widget.get_rect().center();
+            let moved = crate::synthetic_input::cursor_moved(at.x, at.y);
+            tile.app.surface_input(&tile.region, moved, false);
+            let rested = crate::time::now()
+                + crate::widget::tooltip::HOVER_DWELL
+                + crate::time::Duration::from_millis(50);
+            tile.wants_frame.set(true);
+            crate::time::testing::with_monotonic_time(rested, || {
+                let _ = paint_tracked(&mut tile, &theme);
+                assert!(
+                    tile.app.input.tooltip_host.visible().is_some(),
+                    "the tooltip shows"
+                );
+                tile.app.surface_input(&tile.region, ending.clone(), false);
+            });
+            assert!(
+                tile.app.input.tooltip_host.visible().is_none(),
+                "{ending:?} takes the tooltip away"
+            );
+        }
     }
 
     #[test]
@@ -1244,14 +1407,13 @@ mod saving_record_wake_tests {
         panic!("the tile must come to rest");
     }
 
-    fn due(tile: &EmbeddedApp, now: crate::time::Instant) -> bool {
-        tile.next_wake_deadline()
-            .is_some_and(|deadline| deadline <= now)
-    }
-
     #[test]
-    fn a_record_saving_at_the_last_frame_is_resampled_by_the_pump_not_a_paint() {
-        let host = ProbeHost::new();
+    fn a_record_saving_at_the_last_frame_is_resampled_when_its_store_wakes_the_pump() {
+        // The frame's sync offers the edit to the record's writer, which
+        // would land it on its own after its debounce: on a loaded machine
+        // that falls inside the pumps below that check a save still under
+        // way. The store writes only when the test flushes it.
+        let host = ProbeHost::holding_writes();
         let component = runner_probe_definition()
             .instantiate(
                 host.prepare_with_permissions(
@@ -1282,37 +1444,29 @@ mod saving_record_wake_tests {
             .unwrap();
         sample(&mut tile);
         assert_eq!(sampled(&mut tile), Some(RecordSaveStatus::Saving));
-        assert!(tile.next_wake_deadline().is_some());
-
-        // Still being written when the deadline comes due: the pump samples
-        // it again and the deadline moves on. Nothing changed on screen, so
-        // no frame is asked for.
-        bound(&mut tile).age_record_save_sample();
-        assert!(due(&tile, crate::time::now()));
-        assert!(
-            !pump(&mut tile),
-            "a resample that changed nothing paints nothing"
+        assert_eq!(
+            tile.next_wake_deadline(),
+            None,
+            "the record's store wakes the tile once the write lands: no deadline polls for it"
         );
+
+        // Nothing has landed and nothing woke the tile: the pump runs nothing
+        // and asks for no frame, however often the host pumps.
+        for _ in 0..100 {
+            assert!(!pump(&mut tile), "a save still under way paints nothing");
+        }
         assert!(!tile.needs_redraw());
         assert_eq!(sampled(&mut tile), Some(RecordSaveStatus::Saving));
-        assert!(
-            !due(&tile, crate::time::now()),
-            "the resample re-arms the deadline from itself"
-        );
 
-        // The writer finishes off the event loop and wakes nobody: the stale
-        // deadline is all that is left of the save.
+        // The writer finishes off the event loop and its store wakes the tile.
         binding.records.try_flush_record(&id).unwrap();
         binding.records.await_submitted(&id).unwrap();
         assert_eq!(
             binding.records.save_status(&id).unwrap(),
             RecordSaveStatus::Saved
         );
-        bound(&mut tile).age_record_save_sample();
-        let now = crate::time::now();
-        assert!(due(&tile, now));
 
-        // The pump, with no draw, finds it saved: the deadline is gone and one
+        // The pump, with no draw, takes up the wake and finds it saved: one
         // frame shows the change.
         assert!(pump(&mut tile), "the finished save is shown");
         assert_eq!(sampled(&mut tile), Some(RecordSaveStatus::Saved));
@@ -1338,3 +1492,94 @@ mod copy_tests;
 #[cfg(test)]
 #[path = "embedded_wake_tests.rs"]
 mod wake_tests;
+
+#[cfg(test)]
+#[path = "embedded_search_tests.rs"]
+mod search_tests;
+
+#[cfg(test)]
+mod wake_deadline_tests {
+    use super::theme_repaint_tests::{layout, paint};
+    use super::*;
+    use crate::widget::TaffyTreeExt as _;
+    use std::rc::Rc;
+
+    /// A leaf counting how often its deadline is asked for.
+    struct Asked {
+        asks: Rc<Cell<usize>>,
+        deadline: crate::time::Instant,
+        rect: KurboRect,
+    }
+
+    impl Widget for Asked {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.widget_leaf(taffy::Style::default(), node_map, self)
+        }
+        crate::rect_geometry!();
+        fn draw(
+            &mut self,
+            _: &mut Scene,
+            _: Affine,
+            _: &mut TextRenderer,
+            _: &Theme,
+            _: &PresenceCtx,
+        ) {
+        }
+        fn name(&self) -> &'static str {
+            "Asked"
+        }
+        fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+            self.asks.set(self.asks.get() + 1);
+            Some(self.deadline)
+        }
+    }
+
+    /// An app hosted in a tile is asked for its next deadline once after it
+    /// ran, not on every pump and paint of its host: nothing but the app
+    /// running moves it.
+    #[test]
+    fn an_idle_embedded_app_is_asked_its_deadline_once_after_it_ran() {
+        let asks = Rc::new(Cell::new(0));
+        let deadline = crate::time::now() + crate::time::Duration::from_secs(3600);
+        let app = App::new_with_controlled_inputs(
+            crate::state::State::new(),
+            Box::new(Asked {
+                asks: Rc::clone(&asks),
+                deadline,
+                rect: KurboRect::ZERO,
+            }),
+        );
+        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+        let theme = Theme::light();
+        layout(&mut tile, &theme);
+        let _ = paint(&mut tile, &theme);
+        let doc = automerge::AutoCommit::new();
+        // The app ran in its first frame and pump.
+        let _ = Widget::update(&mut tile, &doc, &automerge::ROOT);
+        let _ = paint(&mut tile, &theme);
+        assert_eq!(Widget::next_wake_deadline(&tile), Some(deadline));
+        let settled = asks.get();
+        for _ in 0..10 {
+            assert!(!Widget::update(&mut tile, &doc, &automerge::ROOT));
+            let _ = paint(&mut tile, &theme);
+            assert_eq!(Widget::next_wake_deadline(&tile), Some(deadline));
+        }
+        assert_eq!(asks.get(), settled, "idle pumps and paints asked again");
+        // Its host asks for its intents on every pump: an app that did not
+        // run since it had none is not reached, so nothing it holds moved.
+        for _ in 0..10 {
+            assert!(AppWidget::take_host_intent(&mut tile).is_none());
+            assert_eq!(Widget::next_wake_deadline(&tile), Some(deadline));
+        }
+        assert_eq!(asks.get(), settled, "asking for intents ran the app");
+        // Whatever reaches into the app may move it: asked again.
+        let _ = tile.app_mut();
+        let _ = Widget::next_wake_deadline(&tile);
+        assert!(asks.get() > settled);
+    }
+}

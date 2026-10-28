@@ -146,9 +146,7 @@ impl SearchHit {
 pub enum DeepLink {
     /// Play a track by id.
     Track(String),
-    /// Open an album page.
     Album(String),
-    /// Open an artist page.
     Artist(String),
     /// Open a playlist page.
     Playlist(String),
@@ -366,7 +364,7 @@ fn kind_icon(type_id: &str) -> Icon {
 
 /// The user's **own library** — synced across their devices — as typed
 /// Song/Album/Artist/Playlist search entries, the library resource's own
-/// ([`crate::resource::Music`]): found from the one Ctrl+K palette and OS
+/// ([`crate::model::Library`]): found from the one Ctrl+K palette and OS
 /// search, each invoking the canonical action that plays the song or opens
 /// the page. An empty library contributes nothing — nothing is fabricated.
 ///
@@ -540,7 +538,6 @@ mod tests {
 
     #[test]
     fn search_descriptors_deep_links_and_subtitles_are_stable_and_safe() {
-        // Phase `descriptors_are_stable_and_complete`.
         {
             let types = all_searchable_types();
             let ids: Vec<&str> = types.iter().map(|t| t.id).collect();
@@ -557,7 +554,6 @@ mod tests {
             assert!(types.iter().all(|t| !t.display_name.is_empty()));
         }
 
-        // Phase `deep_links_round_trip`.
         {
             assert_eq!(
                 DeepLink::parse(&SearchHit::track_link("dQw4w9WgXcQ")),
@@ -577,7 +573,6 @@ mod tests {
             );
         }
 
-        // Phase `deep_link_rejects_hostile_and_malformed`.
         {
             assert!(DeepLink::parse("https://evil/track/x").is_none());
             assert!(DeepLink::parse("music://track/").is_none());
@@ -586,7 +581,6 @@ mod tests {
             assert!(DeepLink::parse("").is_none());
         }
 
-        // Phase `artist_subtitle_uses_compact_subscriber_count`.
         {
             // The subscriber count in an artist subtitle is abbreviated via the
             // shared compact-count formatter (12_300 → "12.3K").
@@ -598,7 +592,6 @@ mod tests {
 
     #[test]
     fn library_provider_registers_real_hits_and_fabricates_nothing() {
-        // Phase `offline_provider_contributes_nothing_but_never_errors`.
         {
             // The default backend is offline: real OS search over it yields no rows
             // (the app shows the local library instead) — and crucially does not
@@ -609,11 +602,9 @@ mod tests {
             assert!(provider.query("   ").is_empty());
         }
 
-        // Phase `library_hits_find_songs_albums_artists_and_playlists`.
         {
             let lib = seed::sample_library();
 
-            // A song findable by its own title routes to a play deep-link.
             let some = lib.tracks.values().next().unwrap().clone();
             let hits = library_hits(&lib, &some.title);
             assert!(
@@ -623,7 +614,6 @@ mod tests {
                 "song hit with a play deep-link"
             );
 
-            // An artist findable by name routes to an artist-page deep-link.
             let artist = lib.artists.values().next().unwrap().clone();
             let ahits = library_hits(&lib, &artist.name);
             assert!(
@@ -632,7 +622,6 @@ mod tests {
                 "artist hit with an artist-page deep-link"
             );
 
-            // A personal playlist findable by name routes to a playlist deep-link.
             let pl = lib.playlists().next().unwrap().clone();
             let phits = library_hits(&lib, &pl.name);
             assert!(
@@ -641,7 +630,6 @@ mod tests {
                 "playlist hit with a playlist deep-link"
             );
 
-            // Every hit carries a non-empty title, subtitle and deep link.
             for h in hits.iter().chain(&ahits).chain(&phits) {
                 assert!(!h.title.is_empty());
                 assert!(!h.subtitle.is_empty());
@@ -649,14 +637,12 @@ mod tests {
             }
         }
 
-        // Phase `library_hits_empty_library_is_empty`.
         {
             // An empty (default) library fabricates nothing.
             assert!(library_hits(&Library::default(), "anything").is_empty());
             assert!(library_hits(&Library::default(), "").is_empty());
         }
 
-        // Phase `library_provider_registers_typed_rows_into_the_search_framework`.
         {
             use ui::search::SearchRegistry;
             let lib = seed::sample_library();
@@ -680,7 +666,6 @@ mod tests {
             assert_eq!(song.icon, Some(Icon::Music));
             assert_eq!(song.anchor(), crate::actions::track_resource_id(&track.id));
 
-            // All four types section under their plural kind headers.
             let album = lib.albums.values().next().unwrap().clone();
             assert!(registry.query_grouped(&album.title).iter().any(|g| {
                 g.kind == "Albums"
@@ -706,7 +691,6 @@ mod tests {
             }));
         }
 
-        // Phase `library_provider_fabricates_nothing_on_an_empty_library`.
         {
             // An empty (default) library contributes zero entries.
             assert!(library_entries(&Library::default()).is_empty());
@@ -720,7 +704,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn indexed_provider_bounds_work_and_reaches_late_entities() {
-        // Phase `indexed_provider_bounds_candidate_work_before_materialising_results`.
         {
             let mut lib = Library::default();
             lib.artists.insert(
@@ -771,7 +754,6 @@ mod tests {
             );
         }
 
-        // Phase `exact_library_lookup_reaches_entities_beyond_the_old_snapshot_cutoff`.
         {
             let mut lib = Library::default();
             lib.artists.insert(
@@ -823,7 +805,6 @@ mod tests {
             );
         }
 
-        // Phase `distinctive_partial_phrase_finds_a_late_item_after_common_trigrams`.
         {
             let mut lib = Library::default();
             lib.artists.insert(
@@ -875,7 +856,6 @@ mod tests {
             );
         }
 
-        // Phase `provider_pages_unicode_results_without_scanning_the_whole_library`.
         {
             let mut lib = Library::default();
             lib.artists.insert(
@@ -938,7 +918,6 @@ mod tests {
             );
         }
 
-        // Phase `provider_indexes_playlist_memberships_with_safe_canonical_open_actions`.
         {
             let lib = seed::sample_library();
             let playlist = lib.playlists().next().expect("seed playlist");

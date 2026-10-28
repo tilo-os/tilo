@@ -34,8 +34,8 @@ use tilo_actions::remote::{
 };
 use tilo_agent_participant::room_actions::RoomMember;
 use tilo_agent_participant::{
-    AgentHost, AgentHostLink, AppCatalogue, ApprovalDone, CatalogueFactory, HostActions,
-    HostEndpoint, ModelChoice, RoomActions, RoomRecordsLink, SupervisorHost, Witness,
+    AgentHost, AgentHostLink, AppCatalogue, ApprovalDone, CatalogueFactory, FeedbackReviewer,
+    HostActions, HostEndpoint, ModelChoice, RoomActions, RoomRecordsLink, SupervisorHost, Witness,
 };
 use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 
@@ -256,8 +256,12 @@ impl ActionHost for RelayWitness {
         None
     }
 
-    fn cancel(&self, _: &Caller, _: &tilo_actions::InvocationId) -> Result<(), ActionHostError> {
-        Err(ActionHostError::UnknownInvocation)
+    fn cancel(
+        &self,
+        _: &Caller,
+        _: &tilo_actions::InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionHostError::UnknownInvocation))
     }
 
     fn confirm(
@@ -292,10 +296,41 @@ pub struct AgentOptions {
     /// The apps agents may open, and whose records pages may act on through
     /// the host; this machine's registry when `None`.
     pub catalogue: Option<CatalogueFactory>,
+    /// The model the host lends its rooms' reporters to look over their
+    /// reports' reviews, if any.
+    pub feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
 }
 
 /// The host's app-serving plane: agents and the rooms' page actions.
 struct HostActionsPlane(HostActions);
+
+/// The app-serving plane of a host that runs no agents: the rooms' page
+/// actions alone. A member's own actions on a room record (linking their
+/// account on the room's Discord from the profile card) need nothing more.
+struct RoomRecordsPlane(RoomActions);
+
+impl crate::AppServingPlane for RoomRecordsPlane {
+    fn serve(
+        &self,
+        workspace_id: u64,
+        caller: &tilo_actions::remote::Caller,
+        message: tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
+        let agents = match &message {
+            tilo_actions::remote::RemoteActionMessage::CatalogueRequest { query, .. } => {
+                query.provider.as_deref() == Some(tilo_relay_protocol::agents::AGENTS_PROVIDER)
+            }
+            tilo_actions::remote::RemoteActionMessage::Invoke(request) => {
+                request.target.provider == tilo_relay_protocol::agents::AGENTS_PROVIDER
+            }
+            _ => false,
+        };
+        if agents {
+            return None;
+        }
+        self.0.serve(workspace_id, caller, message)
+    }
+}
 
 impl crate::AppServingPlane for HostActionsPlane {
     fn serve(
@@ -315,9 +350,14 @@ struct RelayRecordsLink {
     rooms: Option<crate::rooms::Rooms>,
     browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
     web_entry: Option<String>,
+    feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
 }
 
 impl RoomRecordsLink for RelayRecordsLink {
+    fn feedback_reviewer(&self) -> Option<Arc<dyn FeedbackReviewer>> {
+        self.feedback_reviewer.clone()
+    }
+
     fn user_public_key(&self) -> [u8; 32] {
         self.user_public_key
     }
@@ -387,18 +427,69 @@ impl RoomRecordsLink for RelayRecordsLink {
         })
     }
 
-    // `content_blob` keeps refusing: the relay keeps no room content store
-    // an avatar could be read from, so an appearance naming an avatar is
-    // refused here while a name alone is admitted.
+    /// What the room's host keeps ([`crate::rooms::Rooms::kept_content`]):
+    /// a bridged person's avatar its bots fetched, a file or a feedback
+    /// report's picture a member posted. A relay keeping no content for the
+    /// room answers none, which refuses an appearance naming an avatar.
+    fn content_blob(&self, workspace: u64, hash: &str) -> Option<Vec<u8>> {
+        let rooms = self.rooms.as_ref()?;
+        self.member
+            .runtime
+            .block_on(rooms.kept_content(workspace, hash))
+    }
+}
+
+/// Start `cfg`'s relay serving its rooms' records to pages, without agents:
+/// the host mounts a record of an app in `catalogue` (this machine's
+/// registry when `None`) and runs an action on it for whoever the room's
+/// policy lets ask, as it does beside agents in [`start`]. Its rooms'
+/// reporters may have `feedback_reviewer` look over their reports.
+///
+/// # Errors
+/// Why the relay did not start.
+pub async fn start_serving_records(
+    mut cfg: crate::RelayConfig,
+    identity: RelayIdentity,
+    catalogue: Option<CatalogueFactory>,
+    feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
+) -> Result<Relay, RelayError> {
+    let host_cert = identity.device_cert.clone();
+    let catalogue = catalogue.unwrap_or_else(|| Arc::new(AppCatalogue::native));
+    cfg.services.app_serving = true;
+    let plane = Arc::new(RoomRecordsPlane(RoomActions::new(catalogue)));
+    let web_entry = cfg.web_entry.clone();
+    let relay = Relay::start_with_app_serving(cfg, identity, Some(plane.clone())).await?;
+    attach_records(&plane.0, &relay, &host_cert, web_entry, feedback_reviewer)?;
+    Ok(relay)
+}
+
+/// Give `rooms` the records `relay` holds, joined as its own device.
+fn attach_records(
+    rooms: &RoomActions,
+    relay: &Relay,
+    host_cert: &DeviceCert,
+    web_entry: Option<String>,
+    feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
+) -> Result<(), RelayError> {
+    rooms
+        .attach(Arc::new(RelayRecordsLink {
+            user_public_key: relay.room_records().user_public_key(),
+            rooms: relay.rooms().cloned(),
+            browser_origin: Arc::clone(&relay.browser_origin),
+            web_entry,
+            feedback_reviewer,
+            member: RoomMember {
+                endpoint: HostEndpoint::iroh(relay.node_addr(), host_cert.clone()),
+                key: relay.room_records().signing_key().clone(),
+                runtime: tokio::runtime::Handle::current(),
+            },
+        }))
+        .map_err(RelayError::Identity)
 }
 
 /// Start `cfg`'s relay with an agent supervisor as its app-serving plane,
 /// then start the supervisor's agents: those the state directory says were
 /// running resume.
-///
-/// # Errors
-///
-/// Returns why the relay did not start or the agent state could not be read.
 pub async fn start(
     cfg: crate::RelayConfig,
     identity: RelayIdentity,
@@ -449,21 +540,13 @@ async fn start_inner(
         }
         None => Relay::start_with_app_serving(cfg, identity, Some(plane.clone())).await?,
     };
-    plane
-        .0
-        .rooms
-        .attach(Arc::new(RelayRecordsLink {
-            user_public_key: relay.room_records().user_public_key(),
-            rooms: relay.rooms().cloned(),
-            browser_origin: Arc::clone(&relay.browser_origin),
-            web_entry,
-            member: RoomMember {
-                endpoint: HostEndpoint::iroh(relay.node_addr(), host_cert.clone()),
-                key: relay.room_records().signing_key().clone(),
-                runtime: tokio::runtime::Handle::current(),
-            },
-        }))
-        .map_err(RelayError::Identity)?;
+    attach_records(
+        &plane.0.rooms,
+        &relay,
+        &host_cert,
+        web_entry,
+        options.feedback_reviewer,
+    )?;
     agents
         .start(
             HostEndpoint::iroh(relay.node_addr(), host_cert),

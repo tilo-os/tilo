@@ -66,10 +66,6 @@ pub trait RecentsStore {
     fn load(&self) -> Recents;
 
     /// Replace what is stored.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description of why the recents could not be kept.
     fn save(&self, recents: &Recents) -> Result<(), String>;
 }
 
@@ -318,6 +314,24 @@ impl EmojiPicker {
     }
 
     /// Shared scrollbar fades request bounded repainting, never idle frames.
+    /// Step a glide after a flick to the frame's time, once per frame;
+    /// returns whether the open grid moved.
+    pub fn advance_scroll(&mut self) -> bool {
+        if !self.open {
+            return false;
+        }
+        let moved = if self.tones.is_some() {
+            self.tone_scroll.advance()
+        } else {
+            self.body_scroll.advance()
+        };
+        if moved {
+            self.press = None;
+            self.hover = None;
+        }
+        moved
+    }
+
     pub fn needs_animation_frame(&self) -> bool {
         self.open
             && [
@@ -408,8 +422,6 @@ impl EmojiPicker {
             && rect.x1 <= grid.x1 + 0.5)
             .then_some(rect)
     }
-
-    // --- content ---------------------------------------------------------
 
     fn rebuild(&mut self) {
         let catalogue = self.catalogue;
@@ -537,8 +549,6 @@ impl EmojiPicker {
             self.commit(text);
         }
     }
-
-    // --- geometry --------------------------------------------------------
 
     fn layout(&mut self) {
         // A new grid must never complete a press on the old geometry/content.
@@ -873,7 +883,25 @@ impl EmojiPicker {
             .map(|(i, _)| i)
     }
 
-    // --- input -----------------------------------------------------------
+    /// Let the search field painted in the card take a pointer event. The
+    /// picker still owns the query, so only the selection is copied back.
+    fn field_pointer(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: ModifiersState,
+    ) -> bool {
+        let took = self.search.handle_chrome_pointer(
+            event,
+            scale_factor,
+            winit::event::Modifiers::from(modifiers),
+        );
+        if took {
+            let (anchor, cursor) = self.search.selection_anchor_focus_or_caret();
+            self.caret = Selection { anchor, cursor };
+        }
+        took
+    }
 
     /// Route an event while the picker is open. It owns the keyboard and the
     /// pointer: whatever it does not act on reaches nothing behind it.
@@ -926,6 +954,12 @@ impl EmojiPicker {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 if let Some(p) = cursor {
+                    if self.geometry.field.contains(p) {
+                        // A press in the search field places the caret and
+                        // drags a selection instead of picking an emoji.
+                        self.field_pointer(event, scale_factor, modifiers);
+                        return;
+                    }
                     self.button(*state, *button, p, now);
                 }
             }
@@ -946,6 +980,7 @@ impl EmojiPicker {
                 }
             }
             WindowEvent::CursorMoved { .. } => {
+                self.field_pointer(event, scale_factor, modifiers);
                 self.hover = cursor.map(|p| self.hit(p));
             }
             WindowEvent::Focused(false) => {
@@ -1122,8 +1157,6 @@ impl EmojiPicker {
         }
     }
 
-    // --- words -----------------------------------------------------------
-
     /// The localised name of `text`, with its tone when it carries one.
     pub fn spoken_name(&self, text: &str) -> String {
         let Some(found) = self.catalogue.lookup(text) else {
@@ -1139,22 +1172,21 @@ impl EmojiPicker {
         }
     }
 
-    /// What the keys do now: drawn keycaps and their outcomes.
+    /// The one key worth showing: Shift+Enter, the skin tones of the
+    /// highlighted emoji, which nothing else on the card reveals. Enter
+    /// inserting and Escape closing need no keycaps (no shortcut-hint
+    /// clutter).
     fn hint(&self) -> Vec<ui::widget::KeyHint> {
         use ui::widget::KeyHint;
-        let mut hints = vec![KeyHint::new(["Enter"], t("emoji-picker-hint-insert"))];
         if self.selected().is_some_and(|text| self.takes_tone(text)) {
-            hints.push(KeyHint::new(
+            vec![KeyHint::new(
                 ["Shift", "Enter"],
                 t("emoji-picker-hint-tone"),
-            ));
+            )]
         } else {
-            hints.push(KeyHint::new(["Esc"], t("emoji-picker-hint-close")));
+            Vec::new()
         }
-        hints
     }
-
-    // --- accessibility ---------------------------------------------------
 
     /// The picker as assistive technology sees it: a modal dialog with the
     /// search field focused, the group tabs, the grid (the highlighted emoji
@@ -1384,8 +1416,6 @@ impl EmojiPicker {
         );
     }
 
-    // --- paint -----------------------------------------------------------
-
     /// Paint over `viewport`. Geometry follows the theme's spacing and
     /// metrics, re-laid out when either (or the viewport) changed.
     #[allow(
@@ -1466,11 +1496,12 @@ impl EmojiPicker {
             self.footer_height = footer_height;
             self.layout();
         }
-        let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography;
         let g = self.geometry.clone();
 
-        ui::chrome::shell::paint_panel(scene, transform, g.card, theme, 1.0);
+        let painted = ui::chrome::shell::paint_panel(scene, transform, g.card, theme, 1.0);
+        let theme = &painted.theme;
+        let colors = &theme.tokens.colors;
+        let type_scale = &theme.tokens.typography;
 
         self.search
             .draw(scene, transform, text_renderer, theme, presence);
@@ -1679,6 +1710,14 @@ fn draw_emoji(
     );
 }
 
+/// Hand the desktop's emoji catalogue to the toolkit's shared picker and
+/// reaction strip as well, so the pickers a host opens from a window bar's
+/// reactions offer the whole catalogue, like this picker does. Calling it
+/// again is free; a host calls it before it draws its first window bar.
+pub fn offer_catalogue() {
+    tilo_emoji_catalogue::offer();
+}
+
 /// Where a card of `size` goes for a field whose caret is `caret`: its left
 /// edge on the caret, `gap` below it, or `gap` above it when the display
 /// ends first; when neither side has room, on whichever side has more, and
@@ -1825,7 +1864,6 @@ mod tests {
             Some(cell),
             Instant::now(),
         );
-        // Search correction through the production keyboard editing path.
         press(
             &mut picker,
             &Key::Character("a".into()),
@@ -2322,7 +2360,6 @@ mod tests {
 
     #[test]
     fn the_dialog_announces_the_highlight() {
-        // German names and searches in German.
         let mut picker = EmojiPicker::new();
         picker.open(VIEWPORT, "de-DE");
         typed(&mut picker, "daumen");

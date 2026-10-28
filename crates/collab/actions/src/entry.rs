@@ -144,7 +144,6 @@ impl Did {
     }
 }
 
-/// A built-in edit of one field.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FieldEdit {
     /// The model type that owns the field, kebab-case (`snippet`).
@@ -199,6 +198,10 @@ pub enum EditOp {
     Settle,
     /// A settled outbox entry was forgotten.
     Forget,
+    /// The actor reacted with an emoji (`new`).
+    React,
+    /// The actor took back their reaction with an emoji (`new`).
+    Unreact,
 }
 
 impl EditOp {
@@ -220,6 +223,8 @@ impl EditOp {
             Self::RemoveColumn => "remove-column",
             Self::Settle => "settle",
             Self::Forget => "forget",
+            Self::React => "react",
+            Self::Unreact => "unreact",
         }
     }
 }
@@ -247,7 +252,6 @@ impl VerbCall {
 pub struct GroupOf {
     /// The first [`MAX_GROUP_MEMBERS`] members.
     pub members: Vec<Did>,
-    /// How many members the group had.
     pub count: u32,
     /// Every distinct action among the members, without values, however
     /// many members there were: what a receiver decides the change by.
@@ -355,7 +359,10 @@ impl Described {
 /// The plain arguments of a variant's fields (an adjacently tagged value's
 /// `args`, else the fields beside an internal `action` tag): its plain
 /// values by name, then the plain values of its nested records as
-/// `record.field`.
+/// `record.field`. Text arguments are kept whole ([`Scalar::argument`]):
+/// what a person, a script or an agent passed is what the change says it
+/// did, and a reader that recalls it (a calculation put back, a formula
+/// opened) gets all of it.
 fn plain_args(
     fields: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> impl Iterator<Item = (String, Scalar)> + '_ {
@@ -370,14 +377,14 @@ fn plain_args(
             .flat_map(serde_json::Map::iter)
             .filter(move |(name, _)| !(tagged && name.as_str() == "action"))
     };
-    let plain = own().filter_map(|(name, value)| Some((name.clone(), Scalar::from_json(value)?)));
+    let plain = own().filter_map(|(name, value)| Some((name.clone(), Scalar::argument(value)?)));
     let nested = own().flat_map(|(name, value)| {
         value
             .as_object()
             .into_iter()
             .flat_map(serde_json::Map::iter)
             .filter_map(move |(field, value)| {
-                Some((format!("{name}.{field}"), Scalar::from_json(value)?))
+                Some((format!("{name}.{field}"), Scalar::argument(value)?))
             })
     });
     plain.chain(nested)
@@ -451,6 +458,15 @@ impl Scalar {
         }
     }
 
+    /// A verb's argument as passed: a plain JSON value, text kept whole
+    /// ([`Self::whole_text`]). `None` for arrays and objects, and for null.
+    pub fn argument(value: &serde_json::Value) -> Option<Self> {
+        match value {
+            serde_json::Value::String(text) => Some(Self::whole_text(text)),
+            _ => Self::from_json(value),
+        }
+    }
+
     /// Text cut to [`MAX_SCALAR_CHARS`], without control characters.
     pub fn text(text: &str) -> Self {
         let mut chars = text.chars().filter(|ch| !ch.is_control());
@@ -460,6 +476,15 @@ impl Scalar {
         } else {
             Self(serde_json::Value::String(cut))
         }
+    }
+
+    /// A text an edit wrote whole (a formula, a title), kept whole without
+    /// control characters: the change carries the text anyway, and a reader
+    /// elides it where it draws it. Other text is cut ([`Self::text`]).
+    pub fn whole_text(text: &str) -> Self {
+        Self(serde_json::Value::String(
+            text.chars().filter(|ch| !ch.is_control()).collect(),
+        ))
     }
 
     /// Any serializable plain value (a bool, a number, a unit enum, a
@@ -548,6 +573,32 @@ mod tests {
                 None
             )
             .is_none()
+        );
+    }
+
+    /// A long text argument reaches the entry whole, as passed: a formula
+    /// an agent added, a calculation the palette committed.
+    #[test]
+    fn a_verbs_text_arguments_are_kept_whole() {
+        let formula = ["x"; 60].join("+");
+        let tagged = crate::EncodedAction {
+            type_id: "calculator.action".into(),
+            payload: serde_json::to_vec(&serde_json::json!({
+                "action": "commit-history",
+                "args": {"expr": formula, "result": "1", "nested": {"note": formula}},
+            }))
+            .unwrap(),
+        };
+        let Did::Verb(verb) = Described::from_encoded(&tagged, Some("calculator"))
+            .unwrap()
+            .what
+        else {
+            panic!("a verb");
+        };
+        assert_eq!(verb.args.get("expr"), Some(&Scalar::whole_text(&formula)));
+        assert_eq!(
+            verb.args.get("nested.note"),
+            Some(&Scalar::whole_text(&formula))
         );
     }
 

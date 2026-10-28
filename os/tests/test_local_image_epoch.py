@@ -68,7 +68,9 @@ class LocalImageEpoch(unittest.TestCase):
         local = (REPO / 'os/dev/local-inputs.sh').read_text()
         self.assertIn(': "${TILO_LAYER_EPOCH:=base}"', local)
         dev = (REPO / 'os/dev/build-dev-image.sh').read_text()
-        self.assertIn('base_created="$(tilo_image_source_time "$base")"', dev)
+        # A caller that knows the base's commit time (t's os-dev-image) passes it;
+        # otherwise it is read from the local base.
+        self.assertIn('base_created="${TILO_DEV_BASE_CREATED:-$(tilo_image_source_time "$base")}"', dev)
 
 
 if __name__ == '__main__':

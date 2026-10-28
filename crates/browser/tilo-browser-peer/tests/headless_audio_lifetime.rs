@@ -1,4 +1,3 @@
-//! The production audio wrapper owns and reaps its foreground daemon.
 #![cfg(target_os = "linux")]
 
 use std::fs;

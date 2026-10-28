@@ -460,7 +460,6 @@ mod tests {
 
     #[test]
     fn name_field_commits_trimmed_text_or_cancels() {
-        // Case `typing_then_enter_commits_the_trimmed_text`.
         {
             let mut f = NameField::new("");
             let m = Modifiers::default();
@@ -479,7 +478,6 @@ mod tests {
             );
         }
 
-        // Case `a_rename_starts_from_the_existing_name_and_can_be_emptied`.
         {
             let mut f = NameField::new("Intro rewrite");
             let m = Modifiers::default();
@@ -495,7 +493,6 @@ mod tests {
             );
         }
 
-        // Case `escape_cancels`.
         {
             let mut f = NameField::new("half typed");
             assert_eq!(
@@ -507,7 +504,6 @@ mod tests {
 
     #[test]
     fn name_field_owns_editing_keys_but_leaves_chords_to_the_host() {
-        // Case `a_chorded_key_is_left_for_the_host`.
         {
             let mut f = NameField::new("");
             let m = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
@@ -515,7 +511,6 @@ mod tests {
             assert_eq!(f.text(), "", "Ctrl+S must not type an 's' into the name");
         }
 
-        // Case `a_stray_key_is_consumed_rather_than_reaching_a_typeahead`.
         {
             // The pane behind this field filters by author as you type. An arrow key
             // (or anything else) leaking through while a name field is up would
@@ -526,7 +521,6 @@ mod tests {
             assert_eq!(f.text(), "x", "and it changed nothing");
         }
 
-        // Case `backspace_removes_one_extended_grapheme`.
         {
             let family = "A👨\u{200d}👩\u{200d}👧\u{200d}👦";
             let mut field = NameField::new(format!("{family}e\u{301}"));
@@ -540,7 +534,6 @@ mod tests {
             assert_eq!(field.text(), "A", "ZWJ family emoji is one deletion");
         }
 
-        // Case `ime_preedit_is_shaped_underlined_and_committed_atomically`.
         {
             let mut field = NameField::new("ab");
             let preedit = "漢字";
@@ -615,7 +608,6 @@ mod tests {
         field.handle_event(&backspace, &m);
         assert_eq!(field.text(), "", "Backspace on an empty name is harmless");
 
-        // A rename seeds the caret at the end of the existing name.
         field.set_text("Draft 👍🏽");
         field.handle_event(&backspace, &m);
         field.handle_event(&typed("2"), &m);
@@ -627,7 +619,6 @@ mod tests {
 
     #[test]
     fn long_or_squeezed_names_keep_the_caret_end_visible_without_overflow() {
-        // Case `shaped_end_caret_stays_visible_for_long_ltr_and_rtl_names`.
         {
             let rect = Rect::new(0.0, 0.0, 120.0, 32.0);
             let ltr = NameField::new("a very long version name whose end must stay visible");
@@ -650,7 +641,7 @@ mod tests {
     fn unchanged_browser_name_reshapes_after_font_generation_changes() {
         let root = crate::font_catalog::checkout_root();
         let fonts = crate::font_catalog::FontCatalog::product("", "en-US")
-            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
             .unwrap();
         let mut renderer = TextRenderer::with_browser_font_system(fonts);
         let field = NameField::new("مَرْحَبًا");
@@ -669,6 +660,9 @@ mod tests {
             .install_browser_font(
                 "NotoSansArabic[wght].ttf",
                 std::fs::read(root.join("NotoSansArabic[wght].ttf")).unwrap(),
+                &crate::font_catalog::test_sha256(
+                    &std::fs::read(root.join("NotoSansArabic[wght].ttf")).unwrap(),
+                ),
             )
             .unwrap();
         field.reshape_if_stale(&mut renderer, field.text(), &TextStyle::new(14.0));

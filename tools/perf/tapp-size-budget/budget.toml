@@ -3,10 +3,10 @@
 #
 # - Release / apps fails when a tapp it has just packaged is over its app's
 #   budget, which is the `bytes` below plus every raise under raises/.
-# - Perf / scheduled fails when a published app is over its budget, or when
+# - t's perf-footprint (the performance run) fails when a published app is over its budget, or when
 #   the median (p50), p90 or max of the apps in the registry is over its
 #   fleet ceiling.
-# - CI / fast quality fails when a budget grows without a raise file new in
+# - t's `changes` check fails when a budget grows without a raise file new in
 #   the same change, and when the apps below are not exactly the default
 #   collection (dist/apps/app-collections.toml).
 #
@@ -57,254 +57,258 @@ p90 = 4521984   # 4,447,232 (osk)
 # with those apps dropped from their raise files. Agent and Discord fell
 # furthest (x86_64 5,505,024 -> 1,179,648 and 5,963,776 -> 1,572,864 B).
 
+[apps."so.tilo.activity"]
+x86_64 = 1048576
+aarch64 = 1048576
+
 [apps."so.tilo.agent"]
-x86_64 = 1179648
+x86_64 = 1114112
 aarch64 = 1048576
 
 [apps."so.tilo.api-tester"]
-x86_64 = 1638400
-aarch64 = 1572864
+x86_64 = 1572864
+aarch64 = 1507328
 
 [apps."so.tilo.backups"]
-x86_64 = 1376256
-aarch64 = 1310720
+x86_64 = 1048576
+aarch64 = 1179648
 
 [apps."so.tilo.browser"]
-x86_64 = 2097152
-aarch64 = 1835008
+x86_64 = 1966080
+aarch64 = 1900544
 
 [apps."so.tilo.calculator"]
-x86_64 = 786432
+x86_64 = 720896
 aarch64 = 720896
 
 [apps."so.tilo.calendar"]
-x86_64 = 2228224
+x86_64 = 2359296
 aarch64 = 2031616
 
 [apps."so.tilo.camera"]
-x86_64 = 1966080
-aarch64 = 1835008
-
-[apps."so.tilo.canvas"]
-x86_64 = 4784128
-aarch64 = 4259840
-
-[apps."so.tilo.chat"]
-x86_64 = 3670016
-aarch64 = 3342336
-
-[apps."so.tilo.chip-design"]
-x86_64 = 1966080
+x86_64 = 1900544
 aarch64 = 1769472
 
+[apps."so.tilo.canvas"]
+x86_64 = 4456448
+aarch64 = 4128768
+
+[apps."so.tilo.chat"]
+x86_64 = 3407872
+aarch64 = 3145728
+
+[apps."so.tilo.chip-design"]
+x86_64 = 1835008
+aarch64 = 1703936
+
 [apps."so.tilo.clocks"]
-x86_64 = 1441792
-aarch64 = 1376256
+x86_64 = 1245184
+aarch64 = 1179648
 
 [apps."so.tilo.code-editor"]
-x86_64 = 2686976
+x86_64 = 2752512
 aarch64 = 2490368
 
 [apps."so.tilo.contacts"]
-x86_64 = 2031616
-aarch64 = 1835008
-
-[apps."so.tilo.containers"]
-x86_64 = 1703936
-aarch64 = 1572864
-
-[apps."so.tilo.db-client"]
-x86_64 = 4653056
-aarch64 = 4325376
-
-[apps."so.tilo.diffmerge"]
-x86_64 = 1048576
-aarch64 = 983040
-
-[apps."so.tilo.discord"]
-x86_64 = 1572864
-aarch64 = 1441792
-
-[apps."so.tilo.disk-usage"]
-x86_64 = 720896
-aarch64 = 655360
-
-[apps."so.tilo.disks"]
-x86_64 = 1441792
-aarch64 = 1376256
-
-[apps."so.tilo.ebook"]
-x86_64 = 1966080
-aarch64 = 1769472
-
-[apps."so.tilo.feeds"]
-x86_64 = 1769472
+x86_64 = 1638400
 aarch64 = 1638400
 
-[apps."so.tilo.file-explorer"]
+[apps."so.tilo.containers"]
+x86_64 = 1245184
+aarch64 = 1245184
+
+[apps."so.tilo.db-client"]
 x86_64 = 4194304
-aarch64 = 3932160
+aarch64 = 3997696
 
-[apps."so.tilo.firewall"]
-x86_64 = 1441792
-aarch64 = 1376256
-
-[apps."so.tilo.git-client"]
-x86_64 = 4063232
-aarch64 = 3735552
-
-[apps."so.tilo.hex-editor"]
-x86_64 = 851968
-aarch64 = 786432
-
-[apps."so.tilo.imager"]
-x86_64 = 4259840
-aarch64 = 3866624
-
-[apps."so.tilo.logs"]
+[apps."so.tilo.diffmerge"]
 x86_64 = 983040
 aarch64 = 917504
 
-[apps."so.tilo.mail"]
-x86_64 = 3276800
-aarch64 = 3014656
-
-[apps."so.tilo.maps"]
-x86_64 = 1441792
-aarch64 = 1310720
-
-[apps."so.tilo.messages"]
-x86_64 = 1310720
-aarch64 = 1245184
-
-# Initial ceiling uses web-search: both are portable, host-backed SDK UIs
-# packaged as thin apps against the shared runtime, without a bundled service.
-# Provider administration has no search engine payload. Measure its first
-# release packages on both architectures and ratchet these ceilings down.
-[apps."so.tilo.model-providers"]
-x86_64 = 2097152
-aarch64 = 1966080
-
-[apps."so.tilo.monitor"]
-x86_64 = 1245184
-aarch64 = 1179648
-
-[apps."so.tilo.music"]
-x86_64 = 4587520
-aarch64 = 4128768
-
-[apps."so.tilo.notes"]
-x86_64 = 2293760
-aarch64 = 2097152
-
-[apps."so.tilo.osk"]
-x86_64 = 4259840
-aarch64 = 4194304
-
-[apps."so.tilo.passwords"]
-x86_64 = 1376256
-aarch64 = 1310720
-
-[apps."so.tilo.pdf-viewer"]
-x86_64 = 2293760
-aarch64 = 2097152
-
-[apps."so.tilo.photos"]
-x86_64 = 2490368
-aarch64 = 2228224
-
-[apps."so.tilo.print-centre"]
-x86_64 = 1245184
-aarch64 = 1179648
-
-[apps."so.tilo.publisher"]
-x86_64 = 851968
-aarch64 = 786432
-
-[apps."so.tilo.remote"]
-x86_64 = 3145728
-aarch64 = 2818048
-
-[apps."so.tilo.scratchpad"]
-x86_64 = 524288
-aarch64 = 524288
-
-[apps."so.tilo.settings"]
-x86_64 = 5832704
-aarch64 = 5242880
-
-[apps."so.tilo.sheets"]
+[apps."so.tilo.discord"]
 x86_64 = 1638400
 aarch64 = 1507328
 
-[apps."so.tilo.shortcuts"]
-x86_64 = 2097152
-aarch64 = 1900544
+[apps."so.tilo.disk-usage"]
+x86_64 = 655360
+aarch64 = 655360
 
-[apps."so.tilo.slides"]
-x86_64 = 2031616
-aarch64 = 1900544
+[apps."so.tilo.disks"]
+x86_64 = 1507328
+aarch64 = 1376256
 
-[apps."so.tilo.snippets"]
-x86_64 = 1245184
-aarch64 = 1179648
+[apps."so.tilo.ebook"]
+x86_64 = 2293760
+aarch64 = 2097152
 
-[apps."so.tilo.speed-test"]
-x86_64 = 786432
-aarch64 = 720896
+[apps."so.tilo.feeds"]
+x86_64 = 1507328
+aarch64 = 1441792
 
-[apps."so.tilo.store"]
+[apps."so.tilo.file-explorer"]
 x86_64 = 3145728
 aarch64 = 2883584
 
-[apps."so.tilo.terminal"]
+[apps."so.tilo.firewall"]
+x86_64 = 1048576
+aarch64 = 1048576
+
+[apps."so.tilo.git-client"]
+x86_64 = 3866624
+aarch64 = 3604480
+
+[apps."so.tilo.hex-editor"]
+x86_64 = 786432
+aarch64 = 720896
+
+[apps."so.tilo.imager"]
+x86_64 = 2555904
+aarch64 = 2490368
+
+[apps."so.tilo.logs"]
+x86_64 = 786432
+aarch64 = 786432
+
+[apps."so.tilo.mail"]
+x86_64 = 2752512
+aarch64 = 2555904
+
+[apps."so.tilo.maps"]
+x86_64 = 1376256
+aarch64 = 1310720
+
+[apps."so.tilo.messages"]
+x86_64 = 1376256
+aarch64 = 1245184
+
+[apps."so.tilo.model-providers"]
+x86_64 = 851968
+aarch64 = 851968
+
+[apps."so.tilo.monitor"]
+x86_64 = 1179648
+aarch64 = 1179648
+
+[apps."so.tilo.music"]
+x86_64 = 3145728
+aarch64 = 2883584
+
+[apps."so.tilo.notes"]
+x86_64 = 2031616
+aarch64 = 1966080
+
+[apps."so.tilo.osk"]
+x86_64 = 3735552
+aarch64 = 3670016
+
+[apps."so.tilo.passwords"]
+x86_64 = 1179648
+aarch64 = 1179648
+
+[apps."so.tilo.pdf-viewer"]
+x86_64 = 2228224
+aarch64 = 2031616
+
+[apps."so.tilo.photos"]
+x86_64 = 2424832
+aarch64 = 2228224
+
+[apps."so.tilo.poker"]
+x86_64 = 720896
+aarch64 = 720896
+
+[apps."so.tilo.print-centre"]
+x86_64 = 1048576
+aarch64 = 1048576
+
+[apps."so.tilo.publisher"]
+x86_64 = 720896
+aarch64 = 720896
+
+[apps."so.tilo.remote"]
+x86_64 = 2818048
+aarch64 = 2555904
+
+[apps."so.tilo.scratchpad"]
+x86_64 = 458752
+aarch64 = 458752
+
+[apps."so.tilo.settings"]
+x86_64 = 3473408
+aarch64 = 3211264
+
+[apps."so.tilo.sheets"]
+x86_64 = 1835008
+aarch64 = 1507328
+
+[apps."so.tilo.shortcuts"]
+x86_64 = 1900544
+aarch64 = 1769472
+
+[apps."so.tilo.slides"]
+x86_64 = 1835008
+aarch64 = 1769472
+
+[apps."so.tilo.snippets"]
+x86_64 = 1048576
+aarch64 = 1048576
+
+[apps."so.tilo.speed-test"]
+x86_64 = 720896
+aarch64 = 720896
+
+[apps."so.tilo.store"]
+x86_64 = 2883584
+aarch64 = 2686976
+
+[apps."so.tilo.tasks"]
 x86_64 = 1507328
+aarch64 = 1572864
+
+[apps."so.tilo.terminal"]
+x86_64 = 1572864
 aarch64 = 1310720
 
 [apps."so.tilo.themes"]
-x86_64 = 1048576
-aarch64 = 1048576
+x86_64 = 917504
+aarch64 = 917504
 
 [apps."so.tilo.thumbnails"]
 x86_64 = 65536
 aarch64 = 65536
 
 [apps."so.tilo.totp"]
-x86_64 = 1638400
-aarch64 = 1572864
+x86_64 = 1179648
+aarch64 = 1179648
 
 [apps."so.tilo.tube"]
-x86_64 = 3473408
-aarch64 = 3211264
+x86_64 = 1966080
+aarch64 = 1900544
 
 [apps."so.tilo.typst-editor"]
-x86_64 = 983040
-aarch64 = 917504
-
-[apps."so.tilo.video-editor"]
-x86_64 = 2228224
-aarch64 = 2031616
-
-[apps."so.tilo.video-player"]
-x86_64 = 983040
-aarch64 = 917504
-
-[apps."so.tilo.vpn"]
-x86_64 = 1048576
+x86_64 = 1114112
 aarch64 = 1048576
 
+[apps."so.tilo.video-editor"]
+x86_64 = 2293760
+aarch64 = 2097152
+
+[apps."so.tilo.video-player"]
+x86_64 = 917504
+aarch64 = 917504
+
 [apps."so.tilo.weather"]
-x86_64 = 1179648
-aarch64 = 1114112
+x86_64 = 983040
+aarch64 = 917504
 
 [apps."so.tilo.web-search"]
-x86_64 = 2097152
-aarch64 = 1966080
+x86_64 = 983040
+aarch64 = 851968
 
 [apps."so.tilo.windows"]
-x86_64 = 1376256
-aarch64 = 1310720
+x86_64 = 1310720
+aarch64 = 1245184
 
 [apps."so.tilo.word-processor"]
-x86_64 = 2293760
-aarch64 = 2031616
+x86_64 = 2031616
+aarch64 = 1900544

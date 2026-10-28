@@ -23,7 +23,7 @@ use tilo_app_package::Manifest;
 use tilo_app_package::pack::{SigningIdentity, pack};
 
 fn run(data_dir: &std::path::Path, arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+    Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
         .arg("--data-dir")
         .arg(data_dir)
         .args(arguments)
@@ -958,7 +958,6 @@ fn delegated_refresh_preserves_incomplete_stage_and_transaction_recovery() {
         "{}",
         String::from_utf8_lossy(&authorized.stderr)
     );
-    // Start with a real signed public member, distinct from the missing ABI.
     let retained = native_submission(
         &publisher_key,
         "so.tilo.runtime.retained",

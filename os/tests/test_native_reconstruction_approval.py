@@ -11,22 +11,11 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from frozen_source_fixture import NATIVE_DRIVER, NATIVE_RECIPE
+from restart_fixture import restart_fixture
 SPEC = importlib.util.spec_from_file_location('approval', ROOT/'os/dev/approve-native-reconstruction.py')
 a = importlib.util.module_from_spec(SPEC); SPEC.loader.exec_module(a)
 # Any independently pinned helper commit; the tests supply its blobs from this tree.
 HELPER = '6d390d9ddd96dbe734a6a7d90ac882bd8ef4adc8'
-
-
-def restart_fixture(test):
-    """Give the next subTest phase of a merged test the fresh fixture it had
-    as its own test: tear down, run cleanups, reset instance state, set up."""
-    test.tearDown()
-    test.doCleanups()
-    fresh = type(test)(test._testMethodName).__dict__
-    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
-    test.__dict__.clear()
-    test.__dict__.update(fresh, **keep)
-    test.setUp()
 
 
 class ApprovalTests(unittest.TestCase):

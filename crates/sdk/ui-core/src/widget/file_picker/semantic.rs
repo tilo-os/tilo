@@ -1,18 +1,34 @@
 //! Typed operations on the same scoped picker used by pointer and AT input.
-use super::{FilePicker, FilePickerMode};
+use super::{FilePicker, FilePickerMode, Listing};
 
 #[derive(Clone, Debug)]
 pub enum PickerOperation {
-    Inspect { page: usize },
-    Select { entry: String },
-    Navigate { entry: String },
+    Inspect {
+        page: usize,
+    },
+    Select {
+        entry: String,
+    },
+    Navigate {
+        entry: String,
+    },
     Up,
     Confirm,
     Cancel,
-    SetFilename { filename: String },
+    SetFilename {
+        filename: String,
+    },
     Replace,
     KeepExisting,
     NextFilter,
+    /// Search every place the person can reach (the system search), as
+    /// Enter in the search field does; an empty query goes back to the
+    /// folder.
+    Search {
+        query: String,
+    },
+    /// Show what was chosen here before.
+    Recent,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,10 +50,17 @@ impl FilePicker {
     /// Binds an operation to the actual listing, selection and Save prompt.
     fn semantic_state(&self) -> String {
         let mut hash = blake3::Hasher::new();
+        let listing = match &self.listing {
+            Listing::Folder => String::new(),
+            Listing::Recent => "\u{0}recent".to_owned(),
+            Listing::Search(query) => format!("\u{0}search\u{0}{query}"),
+        };
         for part in [
             self.current_dir.as_os_str().as_encoded_bytes(),
             self.active_filter_label().as_bytes(),
             self.filename().as_bytes(),
+            listing.as_bytes(),
+            self.query.value().as_bytes(),
         ] {
             hash.update(&part.len().to_le_bytes());
             hash.update(part);
@@ -72,7 +95,12 @@ impl FilePicker {
             "total": self.entries.len(), "entries": entries, "can_confirm": self.can_commit_open(),
             "can_up": self.can_go_up(), "filter": self.active_filter_label().chars().take(256).collect::<String>(), "filename": self.filename().chars().take(256).collect::<String>(),
             "mode": match self.mode { FilePickerMode::Open => "open", FilePickerMode::Save => "save", FilePickerMode::Directory => "directory" },
-            "replace_pending": self.replace_prompt.is_some(), "completed": self.pending_outcome.is_some()}),
+            "replace_pending": self.replace_prompt.is_some(), "completed": self.pending_outcome.is_some(),
+            "listing": match &self.listing { Listing::Folder => "folder", Listing::Recent => "recent", Listing::Search(_) => "search" },
+            "query": self.query.value().chars().take(256).collect::<String>(),
+            "can_recent": !self.recent.is_empty(),
+            "looking_up": self.looking_up(), "checking": self.check.is_some(),
+            "name_error": self.name_error.is_some()}),
         )
     }
 
@@ -110,15 +138,9 @@ impl FilePicker {
                     .find(|row| entry_id(&row.path) == entry)
                     .ok_or(PickerRefusal::UnavailableEntry)?
                     .clone();
-                let within_scope = if row.is_dir {
-                    self.safe_existing_directory(&row.path).is_some()
-                } else {
-                    self.safe_existing_file(&row.path).is_some()
-                };
-                if !within_scope {
+                if !Self::within_scope(&row) {
                     return Err(PickerRefusal::OutsideScope);
                 }
-                // Select is the ordinary single-click selection. Directory traversal is explicit.
                 if navigate {
                     if !row.is_dir {
                         return Err(PickerRefusal::UnavailableEntry);
@@ -135,7 +157,7 @@ impl FilePicker {
                 self.go_up();
             }
             PickerOperation::Confirm => {
-                if !self.can_commit_open() {
+                if self.check.is_some() || !self.can_commit_open() {
                     return Err(PickerRefusal::Unavailable);
                 }
                 self.click_open();
@@ -166,6 +188,18 @@ impl FilePicker {
                 self.keep_existing();
             }
             PickerOperation::NextFilter => self.cycle_filter(),
+            PickerOperation::Search { query } => {
+                if query.len() > 1024 {
+                    return Err(PickerRefusal::Unavailable);
+                }
+                self.search_for(&query);
+            }
+            PickerOperation::Recent => {
+                if self.recent.is_empty() {
+                    return Err(PickerRefusal::Unavailable);
+                }
+                self.show_recent();
+            }
             PickerOperation::Inspect { .. } => {}
         }
         self.semantic_inspection(0)

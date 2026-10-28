@@ -15,9 +15,9 @@
 #                  (os/kernel-buildroot-snapshot.env), reused while its inputs
 #                  are unchanged. TILO_KERNEL_TRUST=unsigned only when the chosen
 #                  kernel cannot pass the signed check (a local kernel).
-#   owner key      the RFC 8032 test-vector key the CI build-validation lane uses
-#                  (.forgejo/workflows/build-image.yml), never a production key.
-#   series         TILO_ALLOW_EMPTY_SERIES=1, as in that lane.
+#   owner key      the RFC 8032 test-vector key CI's unpublished image builds
+#                  use, never a production key.
+#   series         TILO_ALLOW_EMPTY_SERIES=1, as in those builds.
 #   browser        TILO_WITH_BROWSER=0 (no Browser or engine runtime).
 #   debug info     TILO_RUST_DEBUGINFO=0, as CI's dev image lane.
 #   layer epoch    TILO_LAYER_EPOCH=base: layers dated by the base image, so a new
@@ -134,7 +134,7 @@ else
     if [ -n "$KERNEL_RPMS_REF" ]; then
       _li_kernel_note="the newest CI-built $_li_arch kernel whose signed provenance binds a signed build environment"
     else
-      [ -n "$_li_buildroot" ] || die "no $_li_buildroot_var in os/kernel-buildroot-snapshot.env to build a local kernel on; run the build-buildroots workflow"
+      [ -n "$_li_buildroot" ] || die "no $_li_buildroot_var in os/kernel-buildroot-snapshot.env to build a local kernel on; run t test image-kernel-buildroot-$_li_arch"
       _li_kernel_hash="$( { printf '%s\n' "$_li_buildroot"; git -C "$TILO_REPO" ls-files -s -- os/kernel os/external-assets/github-assets.tsv; } | sha256sum | cut -c1-16)"
       KERNEL_RPMS_REF="localhost/tilo-kernel:$_li_arch-$_li_kernel_hash"
       if podman image exists "$KERNEL_RPMS_REF"; then

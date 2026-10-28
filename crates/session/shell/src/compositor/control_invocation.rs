@@ -114,10 +114,6 @@ impl ControlInvocation {
     /// An admitted invocation. Its `receipt` is the answer, unless the
     /// request waits until `settle_by` and the job has not settled: then the
     /// job is followed.
-    ///
-    /// # Errors
-    ///
-    /// The answer to send now, when there is nothing to wait for.
     #[allow(
         clippy::result_large_err,
         reason = "the answer is the wire Response the transport writes back as is"
@@ -128,7 +124,7 @@ impl ControlInvocation {
         settle_by: Option<Instant>,
     ) -> Result<Self, test_control::Response> {
         match (settle_by, receipt.broker_invocation_id) {
-            (Some(by), Some(job)) if !receipt.update.is_terminal() && Instant::now() < by => {
+            (Some(by), Some(job)) if !receipt.update.is_terminal() && tilo_clock::now() < by => {
                 Ok(Self {
                     action,
                     stage: Stage::Settling(Settling {
@@ -177,7 +173,9 @@ impl ControlInvocation {
         if settling.moved() && !settling.read(progress) {
             return ControlInvocationPoll::Ready(invocation_response(&action, &settling.latest));
         }
-        if settling.latest.update.is_terminal() || settle_by.is_none_or(|by| Instant::now() >= by) {
+        if settling.latest.update.is_terminal()
+            || settle_by.is_none_or(|by| tilo_clock::now() >= by)
+        {
             return ControlInvocationPoll::Ready(invocation_response(&action, &settling.latest));
         }
         ControlInvocationPoll::Waiting(Self {
@@ -341,7 +339,6 @@ mod tests {
             Some(MAX_SETTLE_WAIT)
         );
         assert_eq!(settle_window(&invoke(Some(250), Some("device"))), None);
-        // A job read waits the same way, through the same bound.
         let status = |wait_ms| test_control::Command::ActionsStatus {
             invocation_id: 7,
             wait_ms,
@@ -365,7 +362,6 @@ mod tests {
             panic!("nothing to wait for");
         };
         assert_eq!(state(&answer), "accepted");
-        // A settled or job-less receipt has nothing to follow either.
         for settled in [receipt(Some(4), succeeded()), receipt(None, accepted())] {
             assert!(
                 ControlInvocation::admitted(
@@ -424,23 +420,28 @@ mod tests {
 
     #[test]
     fn a_waiting_reply_answers_what_it_knows_when_the_wait_runs_out_or_the_job_is_gone() {
-        let expired = followed(
-            receipt(Some(3), accepted()),
-            later(Duration::from_millis(20)),
-        );
+        use ui::time::testing::with_monotonic_time;
+        let start = Instant::now();
+        let settle_by = start.checked_add(Duration::from_millis(20));
+        let expired =
+            with_monotonic_time(start, || followed(receipt(Some(3), accepted()), settle_by));
         let mut running = Job {
             status: Some(accepted()),
             ..Job::default()
         };
-        let ControlInvocationPoll::Waiting(expired) = expired.poll(&mut running) else {
+        let ControlInvocationPoll::Waiting(expired) =
+            with_monotonic_time(start, || expired.poll(&mut running))
+        else {
             panic!("still within the wait");
         };
         let due = expired
-            .recheck_at(Instant::now())
+            .recheck_at(start)
             .expect("an unwatched wait has a deadline");
-        assert!(due <= later(Duration::from_secs(1)).expect("later"));
-        std::thread::sleep(Duration::from_millis(30));
-        let ControlInvocationPoll::Ready(answer) = expired.poll(&mut running) else {
+        assert!(due <= start.checked_add(Duration::from_secs(1)).expect("later"));
+        let past = start.checked_add(Duration::from_millis(30)).expect("later");
+        let ControlInvocationPoll::Ready(answer) =
+            with_monotonic_time(past, || expired.poll(&mut running))
+        else {
             panic!("the wait ran out");
         };
         assert_eq!(state(&answer), "accepted", "the latest update, unsettled");

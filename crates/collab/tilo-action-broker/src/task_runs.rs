@@ -1,13 +1,13 @@
-//! Agent runs of workspace tasks the broker saw end, until the session's
-//! history recorder takes them.
+//! Agent runs of issues the broker saw end, until the session's history
+//! recorder takes them.
 //!
-//! An agent working a task stamps every change it makes with the task's
-//! group (kind `task`, the task id). Each application's history can already
-//! undo those changes by naming the task; what is missing without this is
-//! the record above them: one run, attributed to the agent, that Activity
-//! lists and the Task Center offers to undo as a unit. The broker knows when
-//! a run ends and who it worked for, so it hands that over here; the session
-//! finds the changes in the documents and records the run.
+//! An agent running an issue stamps every change it makes with the run's
+//! group (kind `task`, [`runtime_collab::task_run_group`]). Each
+//! application's history can already undo those changes by naming the
+//! group; what is missing without this is the record above them: one run,
+//! attributed to the agent, that Activity lists and undoes as a unit. The
+//! broker knows when a run ends and who it worked for, so it hands that over
+//! here; the session finds the changes in the documents and records the run.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -16,31 +16,32 @@ use std::sync::Mutex;
 /// only a stalled session ever reaches it, and then the oldest go first.
 const MAX_ENDED_RUNS: usize = 64;
 
-/// An agent's run of a workspace task that ended.
+/// An agent's run of an issue that ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EndedTaskRun {
-    /// The room of the workspace the task is in.
     pub room: String,
-    /// The task's id: the group id its changes are stamped with.
-    pub task_id: String,
-    /// The task's title, which history shows the run under.
+    /// The group id the run's changes are stamped with.
+    pub group: String,
+    /// The issue's title, which history shows the run under.
     pub title: String,
     /// The agent that worked it, as its changes name it (`agent:<id>`).
     pub agent: String,
-    /// Policy id of the person the task works for.
+    /// Policy id of the person the run works for.
     pub person: String,
-    /// The request as the person phrased it, when the task carries one.
+    /// What the agent was asked, when the issue still says.
     pub instruction: Option<String>,
     /// How the run ended, in a few words.
     pub outcome: String,
 }
 
-/// The runs history records once they end: shortcut runs and agent runs of
-/// workspace tasks, each until the recorder takes them.
+/// What the broker holds of a run while it lives and once it ends: a
+/// shortcut run going (and the steps waiting on its person) is stopped
+/// through here, and both kinds of run wait here until history takes them.
 #[derive(Default)]
 pub struct EndedRuns {
     pub shortcuts: crate::automation::ShortcutRuns,
     pub tasks: TaskRuns,
+    pub running: crate::automation::RunLedger,
 }
 
 /// Ended task runs, until the history recorder takes them.
@@ -53,7 +54,7 @@ impl TaskRuns {
     pub fn push(&self, run: EndedTaskRun) {
         if let Ok(mut ended) = self.ended.lock() {
             // A run reported twice (a retried report) is recorded once.
-            ended.retain(|queued| queued.room != run.room || queued.task_id != run.task_id);
+            ended.retain(|queued| queued.room != run.room || queued.group != run.group);
             ended.push_back(run);
             while ended.len() > MAX_ENDED_RUNS {
                 ended.pop_front();
@@ -79,10 +80,10 @@ impl TaskRuns {
 mod tests {
     use super::*;
 
-    fn ended(task: &str, outcome: &str) -> EndedTaskRun {
+    fn ended(group: &str, outcome: &str) -> EndedTaskRun {
         EndedTaskRun {
             room: "room".into(),
-            task_id: task.into(),
+            group: group.into(),
             title: "Tidy".into(),
             agent: "agent:scribe".into(),
             person: "person:ada".into(),
@@ -103,7 +104,7 @@ mod tests {
         assert_eq!(
             taken
                 .iter()
-                .map(|run| (run.task_id.as_str(), run.outcome.as_str()))
+                .map(|run| (run.group.as_str(), run.outcome.as_str()))
                 .collect::<Vec<_>>(),
             [("task:2", "done"), ("task:1", "cancelled")]
         );

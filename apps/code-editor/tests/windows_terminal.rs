@@ -11,7 +11,7 @@ fn embedded_windows_terminal_runs_a_command_and_receives_its_output() {
     // The echoed command contains the prompt and `echo`; only its output is
     // an entire line equal to the marker.
     app.shots_terminal_input("echo TILO_CODE_CONPTY_READY\r");
-    let start = ui::time::now();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         app.sync(&mut state.doc, &state.root);
         let output = app.shots_terminal_grid_text().unwrap_or_default();
@@ -22,7 +22,7 @@ fn embedded_windows_terminal_runs_a_command_and_receives_its_output() {
             return;
         }
         assert!(
-            start.elapsed() < Duration::from_secs(30),
+            std::time::Instant::now() < deadline,
             "embedded terminal did not execute the command; grid: {output:?}"
         );
         std::thread::sleep(Duration::from_millis(50));

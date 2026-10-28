@@ -135,7 +135,6 @@ impl ServerAdvertisement {
 pub enum PowerClass {
     /// Stable external power.
     External,
-    /// On external power and charging.
     Charging,
     /// No reliable observation.
     Unknown,
@@ -256,11 +255,6 @@ fn short_device(device: &DeviceKey) -> String {
 }
 
 /// Choose the best eligible worker for `needs` among `candidates`.
-///
-/// # Errors
-///
-/// Returns [`NoEligibleWorker`], listing every candidate's reason, when none
-/// can take the job.
 pub fn place_compute_job<'a>(
     needs: &ComputeRequirements<'_>,
     candidates: impl IntoIterator<Item = &'a ServerAdvertisement>,
@@ -364,7 +358,6 @@ mod tests {
             "no advertised compute worker can take the job; 01010101: critical_battery; 02020202: energy_saver"
         );
 
-        // A loaded, distant desktop still beats the drained laptop.
         let mut desktop = worker(3);
         desktop.active_assignments = 3;
         desktop.latency_ms = 400;

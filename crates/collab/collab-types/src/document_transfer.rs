@@ -74,7 +74,6 @@ impl DocumentMutationKind {
 /// One piece of a segmented document mutation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DocumentSegment {
-    /// Kind of the complete mutation.
     pub kind: DocumentMutationKind,
     /// [`transfer_digest`] of the complete mutation. Identifies the transfer
     /// and authenticates the reassembled bytes.
@@ -355,7 +354,6 @@ pub enum ReassemblyError {
 pub struct ReassembledDocument {
     /// Unsegmented typed payload, decodable with [`DocumentMutation::decode`].
     pub payload: Vec<u8>,
-    /// Kind of the complete mutation.
     pub kind: DocumentMutationKind,
     /// Automerge bytes carried, excluding the typed prefix.
     pub len: usize,
@@ -711,7 +709,6 @@ mod tests {
                 DocumentFrame::decode(&wire),
                 Err(DocumentMutationError::TooLarge { .. })
             ));
-            // The endpoint decode of a reassembled mutation accepts it.
             assert!(DocumentMutation::decode(&wire).is_ok());
         }
 

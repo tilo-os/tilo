@@ -50,6 +50,12 @@ const PEAK_RATE: u32 = 8_000;
 #[cfg(feature = "decode")]
 const DECODE_BUDGET: Duration = Duration::from_secs(30);
 
+#[cfg(all(test, feature = "decode"))]
+thread_local! {
+    /// Decodes on this thread that ended because their budget ran out.
+    static BUDGET_EXPIRIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Compute `buckets` normalized peak amplitudes (0..1) from the real audio at
 /// `path`: PCM read directly for a WAV, a real decode for anything else.
 ///
@@ -175,6 +181,8 @@ fn pull_peak_windows(
     let mut saw_any = false;
     loop {
         if ui::time::now() > deadline {
+            #[cfg(test)]
+            BUDGET_EXPIRIES.with(|count| count.set(count.get() + 1));
             break;
         }
         if bus.pop_filtered(&[gst::MessageType::Error]).is_some() {
@@ -556,7 +564,6 @@ mod tests {
 
     #[test]
     fn wav_peaks_decode_every_format_and_prefix_safely() {
-        // Case `every_prefix_of_a_wav_is_read_without_panicking`.
         {
             // A download cut short can end anywhere: inside the chunk header,
             // inside `fmt `, or mid-sample. None of those may read past the end.
@@ -564,13 +571,10 @@ mod tests {
             for n in 0..wav.len() {
                 let _ = peaks_from_wav_bytes(&wav[..n], 4);
             }
-            // With the samples cut off entirely there is nothing to draw.
             assert_eq!(peaks_from_wav_bytes(&wav[..44], 4), None);
             assert!(peaks_from_wav_bytes(&wav, 4).is_some());
         }
-        // Case `every_supported_sample_format_decodes_to_the_same_level`.
         {
-            // Half scale, as each PCM width spells it.
             let cases: [(u16, u16, Vec<u8>); 5] = [
                 (1, 8, vec![192]),
                 (1, 16, 16_384i16.to_le_bytes().to_vec()),
@@ -592,7 +596,6 @@ mod tests {
             let stereo = decode_samples(&[0, 0x40, 0, 0x40, 0], 1, 16, 2).expect("stereo");
             assert_eq!(stereo.len(), 1);
         }
-        // Case `peaks_reflect_the_real_pcm_envelope`.
         {
             // Loud first half, quiet second half → the peaks must mirror that shape.
             let sr = 8000;
@@ -615,12 +618,10 @@ mod tests {
                 "loud half dominates ({first} vs {second})"
             );
         }
-        // Case `non_wav_bytes_yield_no_peaks`.
         {
             assert!(peaks_from_wav_bytes(b"not a wav file at all!!", 32).is_none());
             assert!(peaks_from_wav_bytes(&[], 32).is_none());
         }
-        // Case `peaks_track_the_source_and_are_not_a_fixed_shape`.
         {
             // Two different signals must give two different envelopes. A
             // synthesized fallback would give the same picture for both — that is
@@ -663,7 +664,6 @@ mod tests {
             );
             std::fs::remove_file(&f).ok();
         }
-        // Case `unhydrated_source_is_missing_not_pending`.
         {
             let mut cache = WaveformCache::new();
             let id = uuid::Uuid::new_v4();
@@ -683,7 +683,6 @@ mod tests {
                 "the renderer is told there is nothing, so it draws nothing"
             );
         }
-        // Case `a_queued_compute_reaches_a_terminal_state_and_goes_quiet`.
         {
             // Drive the real queue + worker, not a stub: a readable WAV must land
             // as Ready and `has_pending` must fall back to false.
@@ -731,17 +730,15 @@ mod tests {
             hydration: crate::media::Hydration::Local,
         };
         assert_eq!(cache.state(id), WaveformState::Unrequested);
-        #[cfg(feature = "decode")]
-        let started = ui::time::now();
         cache.warm_blocking(id, &source);
         assert_eq!(cache.state(id), WaveformState::Unavailable);
         // The failed pipeline settles on its own error, not by holding the
         // worker until the decode budget runs out.
         #[cfg(feature = "decode")]
-        assert!(
-            started.elapsed() < DECODE_BUDGET / 2,
-            "an unreadable source settled only after {:?}",
-            started.elapsed()
+        assert_eq!(
+            BUDGET_EXPIRIES.with(std::cell::Cell::get),
+            0,
+            "an unreadable source settled only when its decode budget ran out"
         );
         assert!(cache.peaks(id).is_none());
         assert!(!cache.has_pending(), "a settled failure is not pending");

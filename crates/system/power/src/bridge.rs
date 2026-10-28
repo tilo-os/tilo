@@ -25,7 +25,6 @@ use tilo_lock::MutexRecover as _;
 pub struct PowerNotification {
     /// Toast title.
     pub summary: String,
-    /// Toast body.
     pub body: String,
     /// `true` for the critical-battery toast (maps to urgency 2), `false`
     /// for the low-battery heads-up (urgency 1).
@@ -80,14 +79,33 @@ struct BridgeInner {
     commands: Vec<PowerCommand>,
     /// power-profiles-daemon's active profile as the service last read it.
     active_profile: Option<String>,
+    /// Whether the machine runs on battery, as the service last saw it;
+    /// `None` before it first looked.
+    on_battery: Option<bool>,
 }
 
+/// How the compositor loop is woken when a signal arrives for it.
+pub type SignalWake = Arc<dyn Fn() + Send + Sync>;
+
 /// The shared power mailbox. Clone to hand a handle to each side.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PowerBridge {
     inner: Arc<Mutex<BridgeInner>>,
     /// Woken on every command, so the service sleeps until there is one.
     command_wake: Arc<Notify>,
+    /// Wakes the compositor loop on every signal. The loop parks until its
+    /// next deadline or event: a locked, blanked session parks for up to a
+    /// minute, and a signal only queued waited for whatever woke it next (a
+    /// resume applied 16 s late, a sleep delay held to logind's timeout).
+    signal_wake: Arc<Mutex<Option<SignalWake>>>,
+}
+
+impl std::fmt::Debug for PowerBridge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PowerBridge")
+            .field("inner", &self.inner)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for PowerBridge {
@@ -101,14 +119,24 @@ impl PowerBridge {
         Self {
             inner: Arc::new(Mutex::new(BridgeInner::default())),
             command_wake: Arc::new(Notify::new()),
+            signal_wake: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Wake the compositor loop with `wake` whenever a signal is pushed.
+    pub fn set_signal_wake(&self, wake: SignalWake) {
+        *self.signal_wake.lock_recover() = Some(wake);
     }
 
     // ---- service → compositor ---------------------------------------
 
-    /// Push a signal for the compositor loop to apply on its next frame.
+    /// Push a signal for the compositor loop and wake it to apply it.
     pub fn push_signal(&self, signal: PowerSignal) {
         self.lock().signals.push(signal);
+        let wake = self.signal_wake.lock_recover().clone();
+        if let Some(wake) = wake {
+            wake();
+        }
     }
 
     /// Drain every pending signal (called once per compositor frame).
@@ -130,6 +158,24 @@ impl PowerBridge {
     /// has read one or where power-profiles-daemon is absent.
     pub fn active_profile(&self) -> Option<String> {
         self.lock().active_profile.clone()
+    }
+
+    /// Record whether the machine runs on battery, as the service saw it, so
+    /// the compositor resolves the source's idle-suspend timer on a settings
+    /// reload. Returns whether it changed since the service last looked: the
+    /// first look only notes it (the session started on the timer of the
+    /// source it found).
+    pub fn note_on_battery(&self, on_battery: bool) -> bool {
+        let mut inner = self.lock();
+        let changed = inner.on_battery.is_some_and(|before| before != on_battery);
+        inner.on_battery = Some(on_battery);
+        changed
+    }
+
+    /// Whether the machine runs on battery, as the service last saw it;
+    /// `false` before it has looked.
+    pub fn on_battery(&self) -> bool {
+        self.lock().on_battery.unwrap_or(false)
     }
 
     // ---- compositor → service ---------------------------------------
@@ -187,7 +233,6 @@ mod tests {
 
     #[test]
     fn the_bridge_delivers_signals_commands_and_policy_once_to_shared_mailboxes() {
-        // Phase `signals_round_trip_once`.
         {
             let b = PowerBridge::new();
             b.push_signal(PowerSignal::Lock);
@@ -200,25 +245,20 @@ mod tests {
             let drained = b.drain_signals();
             assert_eq!(drained.len(), 2);
             assert_eq!(drained[0], PowerSignal::Lock);
-            // Draining empties the queue.
             assert!(b.drain_signals().is_empty());
         }
-        // Phase `commands_round_trip_once`.
         {
             let b = PowerBridge::new();
             b.request_suspend();
             assert_eq!(b.drain_commands(), vec![PowerCommand::Suspend]);
             assert!(b.drain_commands().is_empty());
         }
-        // Phase `clones_share_the_mailbox`.
         {
             let a = PowerBridge::new();
             let b = a.clone();
             a.request_suspend();
-            // Command pushed on `a` is visible to `b`.
             assert_eq!(b.drain_commands(), vec![PowerCommand::Suspend]);
         }
-        // Phase `the_active_profile_the_service_read_is_shared`.
         {
             let service = PowerBridge::new();
             let compositor = service.clone();
@@ -228,7 +268,6 @@ mod tests {
             service.note_active_profile("performance");
             assert_eq!(compositor.active_profile().as_deref(), Some("performance"));
         }
-        // Phase `policy_updates_cross_the_bridge_without_stringly_state`.
         {
             let bridge = PowerBridge::new();
             let policy = PowerPolicy::default();
@@ -238,6 +277,31 @@ mod tests {
                 vec![PowerCommand::UpdatePolicy(policy)]
             );
         }
+    }
+
+    #[test]
+    fn every_signal_wakes_the_compositor_loop() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let bridge = PowerBridge::new();
+        // Before a wake is set a signal still queues.
+        bridge.push_signal(PowerSignal::Lock);
+        let woken = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&woken);
+        bridge.set_signal_wake(Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }));
+        let service = bridge.clone();
+        service.push_signal(PowerSignal::ResumedFromSleep);
+        service.push_signal(PowerSignal::PreparingForSleep);
+        assert_eq!(woken.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            bridge.drain_signals(),
+            vec![
+                PowerSignal::Lock,
+                PowerSignal::ResumedFromSleep,
+                PowerSignal::PreparingForSleep
+            ]
+        );
     }
 
     #[tokio::test(start_paused = true)]

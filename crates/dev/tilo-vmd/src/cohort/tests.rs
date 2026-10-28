@@ -233,10 +233,10 @@ type = "{entry_type}"
     manifest.publisher.identity = format!("ed25519:{publisher}");
     let packed = tilo_app_package::pack(&payload, &manifest, &identity).unwrap();
     let store = layer.join("usr/share/tilo-apps");
-    let archives = store.join("cohort");
-    fs::create_dir_all(&archives).unwrap();
+    // The archive the publisher signed and the store installed. The layer does
+    // not carry it: the daemon must rebuild exactly these bytes.
     tilo_app_package::tapp::write(
-        fs::File::create(archives.join(format!("so.tilo.{name}.tapp"))).unwrap(),
+        fs::File::create(work.join("signed.tapp")).unwrap(),
         &packed.meta,
         Some(&packed),
     )
@@ -326,19 +326,22 @@ pub(crate) fn fixture(root: &Path, case: &str) {
             )
             .unwrap();
         }
-        "archive_missing" => {
-            fs::remove_file(layer.join("usr/share/tilo-apps/cohort/so.tilo.fixture.tapp")).unwrap();
+        // Another key in the app publisher pin: the installed packages are
+        // signed, but not by the publisher this layer names.
+        "app_publisher" => pin(&layer, "app-publisher.hex", &"11".repeat(32)),
+        // A payload file swapped for a link out of the store: the archive must
+        // never be rebuilt from bytes outside the authenticated layer.
+        "payload_escape" => {
+            let binary = layer.join("usr/share/tilo-apps/payload/fixture/bin/fixture");
+            fs::copy(&binary, work.join("outside")).unwrap();
+            fs::remove_file(&binary).unwrap();
+            std::os::unix::fs::symlink(work.join("outside"), binary).unwrap();
         }
-        "archive_corrupt" => fs::write(
-            layer.join("usr/share/tilo-apps/cohort/so.tilo.fixture.tapp"),
-            b"corrupt",
-        )
-        .unwrap(),
-        "archive_escape" => {
-            let archive = layer.join("usr/share/tilo-apps/cohort/so.tilo.fixture.tapp");
-            fs::remove_file(&archive).unwrap();
-            std::os::unix::fs::symlink(work.join("outside"), archive).unwrap();
-            fs::write(work.join("outside"), b"outside").unwrap();
+        // A cohort archive left in the layer is not what the daemon installs.
+        "stale_archive" => {
+            let archives = layer.join("usr/share/tilo-apps/cohort");
+            fs::create_dir_all(&archives).unwrap();
+            fs::write(archives.join("so.tilo.fixture.tapp"), b"stale").unwrap();
         }
         "engine" | "engine_publisher" | "engine_directory" => {
             engine(&layer, &work, case);
@@ -368,105 +371,130 @@ pub(crate) fn save(registry: &Registry, path: &Path) {
     .unwrap();
 }
 
+/// The session acknowledges exactly the selection the verified cohort asked for.
+fn check_selection(cohort: &VerifiedCohort) {
+    let session = crate::apply::Session {
+        slot: "device".into(),
+        unit: "session-3.scope".into(),
+        user: "owner".into(),
+        units: Vec::new(),
+        control_socket: PathBuf::from("/run/owner/control"),
+        stand_in: false,
+        login: None,
+    };
+    let row = &cohort.packages.first().unwrap().row;
+    for variant in ["selected", "wrong-root", "missing", "forged-held", "held"] {
+        let mut receipt = serde_json::json!({
+            "id": row.id, "version": row.version, "root": row.package_id_hex,
+            "runtime": row.runtime, "preserved": false, "pinned": true, "held": false,
+        });
+        match variant {
+            "wrong-root" => receipt["root"] = "11".repeat(32).into(),
+            "forged-held" => receipt["preserved"] = true.into(),
+            "held" => {
+                receipt["root"] = "22".repeat(32).into();
+                receipt["preserved"] = true.into();
+                receipt["held"] = true.into();
+            }
+            _ => {}
+        }
+        let output = if variant == "missing" {
+            String::new()
+        } else {
+            format!("cohort-selection: {receipt}\n")
+        };
+        let mut apply = crate::apply::RecordingApply::default();
+        apply.cohort_replies.push_back(output);
+        let selected = super::select(&mut apply, &session, cohort);
+        if matches!(variant, "selected" | "held") {
+            let actions = selected.unwrap();
+            assert!(
+                matches!(actions.as_slice(), [tilo_vm_protocol::CohortSelection { id, pinned: true, preserved, .. }]
+                if id == &row.id && *preserved == (variant == "held"))
+            );
+        } else {
+            assert!(
+                selected.is_err(),
+                "{variant} must not acknowledge selection"
+            );
+        }
+        assert_eq!(apply.calls.len(), 1);
+        assert!(
+            apply
+                .calls
+                .first()
+                .unwrap()
+                .starts_with("install_cohort_app owner ")
+        );
+    }
+}
+
+/// A verified cohort, and only one for this architecture, vouches for a new graph.
+fn check_abi(cohort: &VerifiedCohort) {
+    let mut provenance = tilo_vm_protocol::Provenance::local("apps+runtime");
+    provenance.cargo_profile = Some("thin-app".into());
+    provenance.cargo_lock_hash = Some("new graph".into());
+    provenance.target = Some(format!("{}-unknown-linux-gnu", std::env::consts::ARCH));
+    let base = tilo_vm_protocol::BaseInfo {
+        cargo_lock_hash: Some("old graph".into()),
+        target: provenance.target.clone(),
+        ..Default::default()
+    };
+    assert!(crate::daemon::abi_check(&provenance, &base, std::env::consts::ARCH).is_err());
+    assert!(
+        crate::daemon::abi_check_verified(&provenance, &base, std::env::consts::ARCH, Some(cohort))
+            .is_ok()
+    );
+    provenance.target = Some("wrong-architecture".into());
+    assert!(
+        crate::daemon::abi_check_verified(&provenance, &base, std::env::consts::ARCH, Some(cohort))
+            .is_err()
+    );
+}
+
 fn verify_subject(root: &Path, case: &str) {
+    let staging = root.join("staging");
     let result = verify(
         &root.join("layer"),
         &root.join("base"),
         std::env::consts::ARCH,
+        &staging,
     );
     if matches!(
         case,
-        "valid" | "dual_isa" | "service" | "empty_isa" | "retired" | "engine"
+        "valid" | "dual_isa" | "service" | "empty_isa" | "retired" | "engine" | "stale_archive"
     ) {
         assert!(result.is_ok(), "{}", result.err().unwrap());
         let cohort = result.unwrap();
-        if case == "valid" {
-            let session = crate::apply::Session {
-                slot: "device".into(),
-                unit: "session-3.scope".into(),
-                user: "owner".into(),
-                units: Vec::new(),
-                control_socket: PathBuf::from("/run/owner/control"),
-                stand_in: false,
-                login: None,
-            };
-            let row = &cohort.packages.first().unwrap().row;
-            for variant in ["selected", "wrong-root", "missing", "forged-held", "held"] {
-                let mut receipt = serde_json::json!({
-                    "id": row.id, "version": row.version, "root": row.package_id_hex,
-                    "runtime": row.runtime, "preserved": false, "pinned": true, "held": false,
-                });
-                match variant {
-                    "wrong-root" => receipt["root"] = "11".repeat(32).into(),
-                    "forged-held" => receipt["preserved"] = true.into(),
-                    "held" => {
-                        receipt["root"] = "22".repeat(32).into();
-                        receipt["preserved"] = true.into();
-                        receipt["held"] = true.into();
-                    }
-                    _ => {}
-                }
-                let output = if variant == "missing" {
-                    String::new()
-                } else {
-                    format!("cohort-selection: {receipt}\n")
-                };
-                let mut apply = crate::apply::RecordingApply::default();
-                apply.cohort_replies.push_back(output);
-                let selected = super::select(&mut apply, &session, &cohort);
-                if matches!(variant, "selected" | "held") {
-                    let actions = selected.unwrap();
-                    assert!(
-                        matches!(actions.as_slice(), [tilo_vm_protocol::CohortSelection { id, pinned: true, preserved, .. }]
-                        if id == &row.id && *preserved == (variant == "held"))
-                    );
-                } else {
-                    assert!(
-                        selected.is_err(),
-                        "{variant} must not acknowledge selection"
-                    );
-                }
-                assert_eq!(apply.calls.len(), 1);
-                assert!(
-                    apply
-                        .calls
-                        .first()
-                        .unwrap()
-                        .starts_with("install_cohort_app owner ")
-                );
-            }
-        }
-        let mut provenance = tilo_vm_protocol::Provenance::local("apps+runtime");
-        provenance.cargo_profile = Some("thin-app".into());
-        provenance.cargo_lock_hash = Some("new graph".into());
-        provenance.target = Some(format!("{}-unknown-linux-gnu", std::env::consts::ARCH));
-        let base = tilo_vm_protocol::BaseInfo {
-            cargo_lock_hash: Some("old graph".into()),
-            target: provenance.target.clone(),
-            ..Default::default()
-        };
-        assert!(crate::daemon::abi_check(&provenance, &base, std::env::consts::ARCH).is_err());
-        assert!(
-            crate::daemon::abi_check_verified(
-                &provenance,
-                &base,
-                std::env::consts::ARCH,
-                Some(&cohort)
-            )
-            .is_ok()
+        // The derived archive is the publisher's signed archive, byte for
+        // byte: complete, the same package id, trusted under the layer's pin.
+        let derived = fs::read(&cohort.packages.first().unwrap().archive).unwrap();
+        assert_eq!(derived, fs::read(root.join("work/signed.tapp")).unwrap());
+        let tapp =
+            tilo_app_package::tapp::read(derived.as_slice(), &mut tilo_app_package::DiscardBlobs)
+                .unwrap();
+        assert!(tapp.is_complete());
+        assert_eq!(
+            tapp.meta.id.to_hex(),
+            cohort.packages.first().unwrap().row.package_id_hex
         );
-        provenance.target = Some("wrong-architecture".into());
-        assert!(
-            crate::daemon::abi_check_verified(
-                &provenance,
-                &base,
-                std::env::consts::ARCH,
-                Some(&cohort)
-            )
-            .is_err()
+        if case == "valid" {
+            check_selection(&cohort);
+        }
+        check_abi(&cohort);
+        drop(cohort);
+        assert_eq!(
+            fs::read_dir(&staging).unwrap().count(),
+            0,
+            "the derived archives outlived their cohort"
         );
     } else {
         assert!(result.is_err(), "an invalid cohort was admitted");
+        assert_eq!(
+            fs::read_dir(&staging).unwrap().count(),
+            0,
+            "a refused cohort left archives behind"
+        );
     }
 }
 
@@ -501,19 +529,28 @@ fn complete_cohort_replays_real_signatures_payload_and_native_closure() {
         "executable",
         "escape",
         "record_escape",
-        "archive_missing",
-        "archive_corrupt",
-        "archive_escape",
         "engine",
         "engine_publisher",
         "engine_directory",
+        "app_publisher",
+        "payload_escape",
+        "stale_archive",
     ] {
         let root = tempfile::tempdir().unwrap();
         fixture(root.path(), case);
+        // The one directory the verifier may write: everything else is
+        // read-only in the sandbox below.
+        let staging = root.path().join("staging");
+        fs::create_dir_all(&staging).unwrap();
+        // Bounded by the shared hang bound, not a fixed half minute: on a
+        // loaded machine the sandboxed run of this binary outlived 30 s and
+        // was killed after its test had passed.
+        let bound = tilo_test_env::hang_bound().as_secs().to_string();
         let output = Command::new("timeout")
             .args([
-                "30",
+                bound.as_str(),
                 "bwrap",
+                "--die-with-parent",
                 "--unshare-all",
                 "--uid",
                 "0",
@@ -527,6 +564,8 @@ fn complete_cohort_replays_real_signatures_payload_and_native_closure() {
                 "--proc",
                 "/proc",
             ])
+            .arg("--bind")
+            .args([&staging, &staging])
             .args(["--setenv", SUBJECT])
             .arg(root.path())
             .args(["--setenv", "TILO_VMD_COHORT_CASE", case])
@@ -540,7 +579,8 @@ fn complete_cohort_replays_real_signatures_payload_and_native_closure() {
             .unwrap();
         assert!(
             output.status.success(),
-            "{case}: {}{}",
+            "{case} ({}): {}{}",
+            output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );

@@ -71,7 +71,6 @@ fn working_names_and_fixed_records_are_bounded_and_disjoint() {
                 ".tilo-part-ABCDEF0123456789abcdef0123456789",
                 ".tilo-part-0123456789abcdef0123456789abcde",
                 ".tilo-part-0123456789abcdef0123456789abcdef0",
-                // Right length, wrong prefix.
                 ".tilo-pack-0123456789abcdef0123456789abcdef",
             ] {
                 assert!(validate_leaf(&selected, leaf).is_err(), "accepted {leaf:?}");
@@ -582,7 +581,6 @@ pub(in crate::setup) fn prefix(
     prepared.committed = prepared.hashes.length;
     Ok(())
 }
-/// Stale attempts, malformed records, corrupt prefixes and unknown payloads.
 #[test]
 #[cfg(unix)]
 #[allow(
@@ -1554,7 +1552,6 @@ impl FreshProvider for &mut FreshDisk<'_> {
         self.revoke_preparation();
     }
 }
-/// Fresh settlement success and refusals.
 #[test]
 #[cfg(unix)]
 #[allow(

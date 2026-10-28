@@ -15,7 +15,8 @@
 //! * [`enrol`]: adding the factor to a volume and registering it.
 //! * [`luks`]: the volume's slots and token, through cryptsetup.
 
-pub mod askpass;
+/// systemd's password agent protocol, shared with the boot sign-in screen.
+pub use tilo_ask_password as askpass;
 pub mod enrol;
 pub mod exchange;
 pub mod exec;

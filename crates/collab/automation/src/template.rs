@@ -48,7 +48,9 @@ fn placeholder(inner: &str) -> Result<Binding, String> {
     let named = match &binding {
         Binding::Input(name) | Binding::Var(name) => Binding::named_part(name).0,
         Binding::StepOutput { step: name, .. } => name.as_str(),
-        Binding::Literal(_) | Binding::Template(_) => return Err(unknown()),
+        Binding::Literal(_) | Binding::Template(_) | Binding::Object(_) | Binding::List(_) => {
+            return Err(unknown());
+        }
     };
     if is_identifier(named) {
         Ok(binding)

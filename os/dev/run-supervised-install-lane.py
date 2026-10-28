@@ -288,7 +288,7 @@ def select_nodes(document, disk_name=None, vm_name=None, excluded_vm_names=()):
             raise ValueError('requested disk node is not a ready ARM node')
     else:
         choices = [node for node in nodes
-                   if node['metadata'].get('labels', {}).get('agent-sandbox.podesta.ai/disk-kernel')]
+                   if node['metadata'].get('labels', {}).get('agent-sandbox.sandbox.example/disk-kernel')]
         if not choices:
             raise ValueError('no ready ARM disk-kernel node exists')
         disk = sorted(choices, key=lambda row: row['metadata']['name'])[0]
@@ -304,7 +304,7 @@ def select_nodes(document, disk_name=None, vm_name=None, excluded_vm_names=()):
         if not choices:
             raise ValueError('no separate ready ARM KVM node exists')
         vm = sorted(choices, key=lambda row: (
-          bool(row['metadata'].get('labels',{}).get('agent-sandbox.podesta.ai/disk-kernel')),
+          bool(row['metadata'].get('labels',{}).get('agent-sandbox.sandbox.example/disk-kernel')),
           row['metadata']['name']))[0]
     if vm['metadata']['name'] == disk['metadata']['name']:
         raise ValueError('disk and KVM acceptance workers must use separate nodes')
@@ -314,16 +314,16 @@ def select_nodes(document, disk_name=None, vm_name=None, excluded_vm_names=()):
 def select_verifier_node(document, disk, vm, verifier_name=None):
     nodes=[node for node in document['items'] if ready(node)
            and node['metadata'].get('labels',{}).get('kubernetes.io/arch')=='arm64']
-    kernel=disk['metadata'].get('labels',{}).get('agent-sandbox.podesta.ai/disk-kernel')
+    kernel=disk['metadata'].get('labels',{}).get('agent-sandbox.sandbox.example/disk-kernel')
     if verifier_name:
         choices=[node for node in nodes if node['metadata']['name']==verifier_name
                  and node['metadata']['name'] not in {disk['metadata']['name'],vm['metadata']['name']}
-                 and node['metadata'].get('labels',{}).get('agent-sandbox.podesta.ai/disk-kernel')==kernel]
+                 and node['metadata'].get('labels',{}).get('agent-sandbox.sandbox.example/disk-kernel')==kernel]
     else:
         excluded={disk['metadata']['name'],vm['metadata']['name']}
         choices=[node for node in nodes
                  if node['metadata']['name'] not in excluded
-                 and node['metadata'].get('labels',{}).get('agent-sandbox.podesta.ai/disk-kernel')==kernel]
+                 and node['metadata'].get('labels',{}).get('agent-sandbox.sandbox.example/disk-kernel')==kernel]
     if len(choices)!=1 and verifier_name:
         raise ValueError('requested verifier node is not a ready ARM disk-kernel node')
     if not choices:
@@ -335,7 +335,7 @@ def disk_manifest(name, node, image=DISK_IMAGE, deadline=43200, *, operation=Non
                   expires_at=None):
     if not digest_reference(image) or not re.fullmatch(r'[a-z0-9](?:[-a-z0-9]*[a-z0-9])?', name):
         raise ValueError('invalid disk worker identity')
-    kernel = node['metadata'].get('labels', {}).get('agent-sandbox.podesta.ai/disk-kernel')
+    kernel = node['metadata'].get('labels', {}).get('agent-sandbox.sandbox.example/disk-kernel')
     if not kernel:
         raise ValueError('disk node lacks the reviewed kernel label')
     labels = {}
@@ -350,9 +350,9 @@ def disk_manifest(name, node, image=DISK_IMAGE, deadline=43200, *, operation=Non
       'spec':{'runtimeClassName':'kata-qemu-runtime-rs','restartPolicy':'Never',
        'activeDeadlineSeconds':deadline,'automountServiceAccountToken':False,
        'nodeSelector':{'kubernetes.io/hostname':node['metadata']['name'],
-                       'kubernetes.io/arch':'arm64','agent-sandbox.podesta.ai/disk-kernel':kernel,
-                       'agent-sandbox.podesta.ai/kata':'true','katacontainers.io/kata-runtime':'true'},
-       'tolerations':[{'key':'agent-sandbox.podesta.ai/dedicated','operator':'Equal','value':'true','effect':'NoSchedule'},
+                       'kubernetes.io/arch':'arm64','agent-sandbox.sandbox.example/disk-kernel':kernel,
+                       'agent-sandbox.sandbox.example/kata':'true','katacontainers.io/kata-runtime':'true'},
+       'tolerations':[{'key':'agent-sandbox.sandbox.example/dedicated','operator':'Equal','value':'true','effect':'NoSchedule'},
                       {'key':'ci-cgroup-enforced','operator':'Equal','value':'v1','effect':'NoSchedule'},
                       {'key':'node.kubernetes.io/not-ready','operator':'Exists','effect':'NoExecute','tolerationSeconds':300},
                       {'key':'node.kubernetes.io/unreachable','operator':'Exists','effect':'NoExecute','tolerationSeconds':300}],
@@ -417,8 +417,8 @@ def validate_creator_node(value, creator):
         valid = (isinstance(value, dict) and metadata['name'] == creator['node']
                  and metadata['uid'] == creator['node_uid']
                  and labels.get('kubernetes.io/arch') == 'arm64'
-                 and isinstance(labels.get('agent-sandbox.podesta.ai/disk-kernel'), str)
-                 and bool(labels['agent-sandbox.podesta.ai/disk-kernel']))
+                 and isinstance(labels.get('agent-sandbox.sandbox.example/disk-kernel'), str)
+                 and bool(labels['agent-sandbox.sandbox.example/disk-kernel']))
     except (KeyError, TypeError):
         valid = False
     if not valid:
@@ -2960,9 +2960,9 @@ def complete_interrupted_creator_release(args, nodes, checkpoint, handoff):
     verifier_node=matches[0]
     validate_creator_node(verifier_node,verifier)
     creator_kernel=checkpoint['creator_node']['metadata']['labels'].get(
-      'agent-sandbox.podesta.ai/disk-kernel')
+      'agent-sandbox.sandbox.example/disk-kernel')
     verifier_kernel=verifier_node['metadata']['labels'].get(
-      'agent-sandbox.podesta.ai/disk-kernel')
+      'agent-sandbox.sandbox.example/disk-kernel')
     if verifier['node']==checkpoint['creator']['node'] or verifier_kernel!=creator_kernel:
         raise ValueError('release-attempt verifier is not the separate reviewed worker')
     manifest=verifier_manifest(args,verifier_node,checkpoint)

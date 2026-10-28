@@ -59,7 +59,6 @@ pub struct TransportHealth {
     pub phase: &'static str,
     /// The current connection completed the certified handshake.
     pub authenticated: bool,
-    /// Last envelope from the host.
     pub last_relay_contact_at_ms: Option<u64>,
     /// The host is the session peer on this carrier.
     pub last_session_peer_contact_at_ms: Option<u64>,
@@ -73,7 +72,6 @@ pub struct TransportHealth {
 pub struct Retry {
     /// Consecutive failed attempts.
     pub attempt: u32,
-    /// When the next attempt runs.
     pub next_attempt_at_ms: Option<u64>,
     /// An attempt is running now.
     pub in_flight: bool,
@@ -95,7 +93,6 @@ pub struct AdmissionHealth {
 pub struct RecordRef {
     /// Application id.
     pub app_id: String,
-    /// Room.
     pub room: String,
     /// Record wire name.
     pub record_id: String,
@@ -105,7 +102,6 @@ pub struct RecordRef {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordHealth {
-    /// The record.
     pub record: RecordRef,
     /// `online` | `offline-queued` | `blocked`.
     pub editing: &'static str,
@@ -165,7 +161,6 @@ pub struct SessionFailure {
     /// The desktop surface of a `renderer` or `asset` failure.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub surface_id: Option<String>,
-    /// The surface's asset of an `asset` failure.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub asset_id: Option<String>,
     /// `notice` | `error`.
@@ -201,9 +196,7 @@ pub enum RecoveryRequest {
     },
     /// Fetch and verify a surface's asset again.
     RetryAsset {
-        /// The surface.
         surface_id: String,
-        /// The surface's id for the asset.
         asset_id: String,
     },
 }
@@ -438,6 +431,8 @@ mod tests {
             device: [0; 32],
             generation: 7,
             channels: String::new(),
+            personal_rooms: std::collections::BTreeSet::new(),
+            room_members: std::collections::BTreeMap::new(),
         };
         serde_json::to_value(PeerSnapshot::from_status(&status).health).unwrap_or_default()
     }

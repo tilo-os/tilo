@@ -1,21 +1,17 @@
-//! The one card Files shows over its content when something needs the
-//! person: a change they may want to take back, or a failure with a way on.
+//! What Files says when something needs the person: a change they may want
+//! to take back, or a failure with a way on.
 //!
-//! Everything else stays quiet. A change the listing already shows (a new
-//! folder, a rename, a copy put on the clipboard) says nothing; neutral
-//! news is the transient status bubble's. A notice is the shared toast card
-//! ([`ui::widget::toast::paint_transient`]) with at most one action and a
-//! close button, at the bottom of the file view; it goes away by itself,
-//! but not while the pointer rests on it.
+//! It waits, and it does not expire. An outcome with a way on is an item in
+//! [`ui::attention`] — the app that asks, what it is about, and exactly one
+//! action — and one without is recorded in the ledger. Nothing here is said
+//! in a notice with a lifetime: a message that leaves after eight seconds
+//! teaches people not to read the ones that matter.
 
 use std::path::PathBuf;
 
-use ui::time::{Duration, Instant};
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastCardHit, ToastKind};
-use vello::kurbo::{Point, Rect};
-
-/// How long a notice stays up once the pointer is not on it.
-const LIFETIME: Duration = Duration::from_secs(8);
+/// The verb prefix a waiting row's action carries: the app reads which
+/// action by what follows it.
+pub(crate) const NOTICE_VERB: &str = "files.notice";
 
 /// What a notice's button does.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,6 +22,11 @@ pub(crate) enum NoticeAction {
     OpenWith(PathBuf),
     /// Stop the copy or move under way.
     CancelTransfer,
+    /// Hand the received-file service the shared-file link `0` again.
+    ReceiveAgain(String),
+    /// Open the version history of `path`, where a change to it that
+    /// failed can be made again.
+    OpenHistory(PathBuf),
 }
 
 impl NoticeAction {
@@ -34,45 +35,56 @@ impl NoticeAction {
             Self::Undo => crate::i18n::t("files-notice-undo"),
             Self::OpenWith(_) => crate::i18n::t("files-notice-open-with"),
             Self::CancelTransfer => crate::i18n::t("files-notice-cancel"),
+            Self::ReceiveAgain(_) => crate::i18n::t("files-notice-try-again"),
+            Self::OpenHistory(_) => crate::i18n::t("files-notice-open-history"),
         }
+    }
+
+    /// The verb this action waits on: Files' own, so another app's row is
+    /// never mistaken for this one.
+    fn verb(&self) -> String {
+        let kind = match self {
+            Self::Undo => "undo",
+            Self::OpenWith(_) => "open-with",
+            Self::CancelTransfer => "cancel-transfer",
+            Self::ReceiveAgain(_) => "receive-again",
+            Self::OpenHistory(_) => "open-history",
+        };
+        format!("{NOTICE_VERB}.{kind}")
     }
 }
 
-/// Which part of the card the pointer is over.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Part {
-    Card,
-    Action,
-    Close,
-}
-
-/// What a click on the card asked for.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum NoticeClick {
-    /// The click landed on the card but asked for nothing.
-    Absorbed,
-    Dismissed,
-    Action(NoticeAction),
+/// Files, as the waiting stack and the ledger name it.
+fn owner() -> ui::attention::Owner {
+    ui::attention::Owner::new("so.tilo.files", "Files").with_icon(ui::icons::Icon::Folder)
 }
 
 #[derive(Clone, Debug)]
 struct Shown {
     title: String,
     body: String,
-    kind: ToastKind,
     action: Option<NoticeAction>,
-    /// When the lifetime started: the notice was shown or the pointer left.
-    since: Instant,
 }
 
-/// The notice currently up, if any, with the geometry it was painted at.
-#[derive(Clone, Debug, Default)]
+/// What Files last said, and where it waits.
+#[derive(Debug, Default)]
 pub(crate) struct Notice {
     shown: Option<Shown>,
-    hit: ToastCardHit,
-    hovered: Option<Part>,
-    /// The part a press on the card landed on; its release acts only there.
-    pressed: Option<Part>,
+    /// The row raised for it, and the action that row waits on: what the
+    /// person pressed is read back by the row's identity.
+    waiting: Option<(ui::attention::ItemId, NoticeAction)>,
+    /// What was already said, so one outcome is recorded once.
+    said: Option<String>,
+}
+
+impl Clone for Notice {
+    fn clone(&self) -> Self {
+        Self {
+            shown: self.shown.clone(),
+            waiting: None,
+            said: self.said.clone(),
+        }
+    }
 }
 
 impl Notice {
@@ -82,20 +94,16 @@ impl Notice {
         &mut self,
         title: impl Into<String>,
         body: impl Into<String>,
-        kind: ToastKind,
         action: Option<NoticeAction>,
     ) {
         self.shown = Some(Shown {
             title: title.into(),
             body: body.into(),
-            kind,
             action,
-            since: ui::time::now(),
         });
-        self.hit = ToastCardHit::default();
     }
 
-    /// Show how far a copy or move is: the same card updated in place, up
+    /// Show how far a copy or move is: the same notice updated in place, up
     /// until the transfer ends.
     pub(crate) fn show_progress(&mut self, title: String, body: String) {
         if let Some(shown) = &mut self.shown
@@ -105,28 +113,19 @@ impl Notice {
             shown.body = body;
             return;
         }
-        self.show(
-            title,
-            body,
-            ToastKind::Info,
-            Some(NoticeAction::CancelTransfer),
-        );
+        self.show(title, body, Some(NoticeAction::CancelTransfer));
     }
 
-    /// Whether the card is a transfer's progress.
+    /// Whether the notice is a transfer's progress.
     pub(crate) fn shows_progress(&self) -> bool {
         self.action() == Some(&NoticeAction::CancelTransfer)
     }
 
     pub(crate) fn dismiss(&mut self) -> bool {
-        self.hovered = None;
-        self.pressed = None;
-        self.hit = ToastCardHit::default();
+        // What was said is said: if the same thing happens again after the
+        // person answered it, it is news again.
+        self.said = None;
         self.shown.take().is_some()
-    }
-
-    pub(crate) fn is_shown(&self) -> bool {
-        self.shown.is_some()
     }
 
     /// What the notice says, as one line: its title, then its reason.
@@ -149,144 +148,51 @@ impl Notice {
         self.action() == Some(&NoticeAction::Undo)
     }
 
-    /// Take the notice down once its lifetime is over; whether it did.
-    pub(crate) fn expire(&mut self, now: Instant) -> bool {
-        let over = self.shown.as_ref().is_some_and(|shown| {
-            shown.action != Some(NoticeAction::CancelTransfer)
-                && self.hovered.is_none()
-                && !ui::time::wall_frozen()
-                && now.saturating_duration_since(shown.since) > LIFETIME
-        });
-        over && self.dismiss()
-    }
-
-    /// When the notice expires, for the widget's wake deadline.
-    pub(crate) fn deadline(&self) -> Option<Instant> {
-        if ui::time::wall_frozen() || self.hovered.is_some() || self.shows_progress() {
-            return None;
-        }
-        self.shown.as_ref().map(|shown| shown.since + LIFETIME)
-    }
-
-    /// Where the action button was painted (`Rect::ZERO` when it wasn't).
-    #[cfg(test)]
-    pub(crate) fn action_rect(&self) -> Rect {
-        self.hit.primary_action_rect
-    }
-
-    /// Whether `point` is on the painted card.
-    pub(crate) fn contains(&self, point: Point) -> bool {
-        self.shown.is_some() && self.hit.card_rect.contains(point)
-    }
-
-    /// Follow the pointer; whether what is hovered changed.
-    pub(crate) fn pointer_moved(&mut self, point: Point) -> bool {
-        let part = self.part_at(point);
-        if part == self.hovered {
-            return false;
-        }
-        if part.is_none()
-            && let Some(shown) = &mut self.shown
-        {
-            // The pointer kept it up; give the person the full time again.
-            shown.since = ui::time::now();
-        }
-        self.hovered = part;
-        true
-    }
-
-    /// A press at `point`; whether it landed on the card (and so is the
-    /// card's, not the file view's under it).
-    pub(crate) fn press(&mut self, point: Point) -> bool {
-        self.pressed = self.part_at(point);
-        self.pressed.is_some()
-    }
-
-    /// The release of a press: what it asked for, or `None` when the press
-    /// wasn't on the card.
-    pub(crate) fn release(&mut self, point: Point) -> Option<NoticeClick> {
-        let pressed = self.pressed.take()?;
-        let click = match self.part_at(point) {
-            Some(Part::Close) if pressed == Part::Close => NoticeClick::Dismissed,
-            Some(Part::Action) if pressed == Part::Action => self
-                .action()
-                .cloned()
-                .map_or(NoticeClick::Absorbed, NoticeClick::Action),
-            _ => NoticeClick::Absorbed,
-        };
-        Some(self.activate(click))
-    }
-
-    /// Activate the action (or the close button) without a pointer, as
-    /// assistive technology does.
-    pub(crate) fn activate(&mut self, click: NoticeClick) -> NoticeClick {
-        if click != NoticeClick::Absorbed {
-            self.dismiss();
-        }
-        click
-    }
-
-    fn part_at(&self, point: Point) -> Option<Part> {
-        self.shown.as_ref()?;
-        let hit = &self.hit;
-        if hit.primary_action_rect.contains(point) {
-            Some(Part::Action)
-        } else if hit.close_rect.contains(point) {
-            Some(Part::Close)
-        } else if hit.card_rect.contains(point) {
-            Some(Part::Card)
-        } else {
-            None
-        }
-    }
-
-    /// Paint the notice at the bottom of `area`.
-    pub(crate) fn paint(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        area: Rect,
-    ) {
-        let Some(shown) = &self.shown else {
-            self.hit = ToastCardHit::default();
+    /// Where the notice goes: a change to take back or a failure with a way
+    /// on waits for the person, and anything else is recorded. Call on every
+    /// sync; one outcome is said once.
+    pub(crate) fn publish(&mut self) {
+        let Some(line) = self.line() else {
             return;
         };
-        let label = shown.action.as_ref().map(NoticeAction::label);
-        let mut card = ToastCard::new(&shown.title, shown.kind)
-            .body(&shown.body)
-            .closable(true)
-            .close_hovered(self.hovered == Some(Part::Close));
-        if let Some(label) = &label {
-            card = card.action(label, self.hovered == Some(Part::Action));
+        if self.said.as_deref() == Some(line.as_str()) {
+            return;
         }
-        self.hit = ui::widget::toast::paint_transient(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            area,
-            ToastAnchor::BottomCenter,
-            &card,
-        );
+        self.said = Some(line.clone());
+        match self.action().cloned() {
+            Some(action) => {
+                let published = ui::attention::publish(
+                    ui::attention::Notice::needs(
+                        owner(),
+                        line,
+                        ui::attention::Action::new(action.verb(), action.label()),
+                    )
+                    .urgent(match action {
+                        NoticeAction::CancelTransfer => ui::attention::Urgency::Noted,
+                        _ => ui::attention::Urgency::Waiting,
+                    }),
+                );
+                if let ui::attention::Published::Waiting(item) = published {
+                    self.waiting = Some((item, action));
+                }
+            }
+            None => {
+                ui::attention::publish(ui::attention::Notice::did(owner(), line));
+            }
+        }
     }
 
-    /// The notice as a live region: a failure interrupts, anything else
-    /// waits its turn.
-    pub(crate) fn access_node(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, Politeness, Role};
-        let shown = self.shown.as_ref()?;
-        Some(
-            AccessNode::new(Role::StaticText)
-                .with_name(self.line()?)
-                .with_bounds(self.hit.card_rect)
-                .with_live(if shown.kind == ToastKind::Error {
-                    Politeness::Assertive
-                } else {
-                    Politeness::Polite
-                }),
-        )
+    /// The row a person pressed, if it was this notice's: what it asked for,
+    /// and the notice is down.
+    pub(crate) fn pressed(&mut self, acted: &ui::attention::Acted) -> Option<NoticeAction> {
+        let (item, action) = self.waiting.as_ref()?;
+        if *item != acted.item || acted.action.verb != action.verb() {
+            return None;
+        }
+        let action = action.clone();
+        self.waiting = None;
+        self.dismiss();
+        Some(action)
     }
 }
 
@@ -294,66 +200,63 @@ impl Notice {
 mod tests {
     use super::*;
 
+    /// A change to take back waits for the person, with one action, and
+    /// acting on that row takes it down. Nothing here has a lifetime.
     #[test]
-    fn a_notice_answers_clicks_on_its_parts_and_stays_while_hovered() {
+    fn a_notice_waits_with_its_button_and_acting_takes_it_down() {
+        ui::attention::clear();
         let mut notice = Notice::default();
-        notice.show(
-            "Moved 2 items to Trash",
-            "",
-            ToastKind::Success,
-            Some(NoticeAction::Undo),
-        );
-        notice.hit = ToastCardHit {
-            card_rect: Rect::new(0.0, 0.0, 300.0, 48.0),
-            close_rect: Rect::new(270.0, 10.0, 290.0, 30.0),
-            secondary_action_rect: Rect::ZERO,
-            primary_action_rect: Rect::new(200.0, 10.0, 260.0, 38.0),
-        };
+        notice.show("Moved 2 items to Trash", "", Some(NoticeAction::Undo));
+        notice.publish();
+        let waiting = ui::attention::items();
+        assert_eq!(waiting.len(), 1, "the change waits");
+        assert_eq!(waiting[0].title(), "Moved 2 items to Trash");
+        assert_eq!(waiting[0].owner().name, "Files");
+        assert_eq!(waiting[0].action().label, t_undo());
         assert!(notice.offers_undo());
-        assert!(notice.press(Point::new(10.0, 10.0)));
+        let acted = ui::attention::take(waiting[0].id()).expect("it waits on a verb");
+        assert_eq!(notice.pressed(&acted), Some(NoticeAction::Undo));
+        assert_eq!(notice.line(), None, "acting on it takes it down");
         assert_eq!(
-            notice.release(Point::new(10.0, 10.0)),
-            Some(NoticeClick::Absorbed)
+            notice.pressed(&acted),
+            None,
+            "a second press asks for nothing"
         );
-        assert!(notice.is_shown());
-        assert!(!notice.press(Point::new(400.0, 10.0)));
-        assert_eq!(notice.release(Point::new(400.0, 10.0)), None);
-        // A press that slides off the button onto the card does nothing.
-        assert!(notice.press(Point::new(220.0, 20.0)));
-        assert_eq!(
-            notice.release(Point::new(10.0, 10.0)),
-            Some(NoticeClick::Absorbed)
-        );
-        assert!(notice.is_shown());
-
-        // While the pointer rests on it, it never expires.
-        assert!(notice.pointer_moved(Point::new(20.0, 20.0)));
-        let later = ui::time::now() + LIFETIME + LIFETIME;
-        assert!(!notice.expire(later));
-        assert_eq!(notice.deadline(), None);
-
-        assert!(notice.press(Point::new(220.0, 20.0)));
-        assert_eq!(
-            notice.release(Point::new(220.0, 20.0)),
-            Some(NoticeClick::Action(NoticeAction::Undo))
-        );
-        assert!(!notice.is_shown(), "acting on a notice takes it down");
+        assert!(ui::attention::items().is_empty());
     }
 
+    fn t_undo() -> String {
+        crate::i18n::t("files-notice-undo")
+    }
+
+    /// An outcome with nothing to do about it is recorded, not thrown at the
+    /// window: it does not expire, and it asks nobody.
     #[test]
-    fn a_notice_expires_after_its_lifetime() {
+    fn an_outcome_with_nothing_to_do_is_recorded() {
+        ui::attention::clear();
+        ui::attention::clear_ledger();
         let mut notice = Notice::default();
-        notice.show(
-            "Couldn’t open “a.pdf”",
-            "No app opens PDF files",
-            ToastKind::Error,
-            None,
+        notice.show("Couldn’t open “a.pdf”", "No app opens PDF files", None);
+        notice.publish();
+        assert!(ui::attention::items().is_empty(), "nothing to act on");
+        assert!(
+            ui::attention::entries()
+                .iter()
+                .any(|entry| entry.what().contains("Couldn’t open")),
+            "the ledger keeps it"
         );
-        let shown_at = ui::time::now();
-        assert!(!notice.expire(shown_at));
-        if !ui::time::wall_frozen() {
-            assert!(notice.expire(shown_at + LIFETIME + Duration::from_millis(1)));
-            assert!(!notice.is_shown());
-        }
+    }
+
+    /// The same outcome is said once, however many frames pass.
+    #[test]
+    fn one_outcome_is_recorded_once() {
+        ui::attention::clear();
+        ui::attention::clear_ledger();
+        let mut notice = Notice::default();
+        notice.show("Copied 3 files", "", None);
+        notice.publish();
+        notice.publish();
+        notice.publish();
+        assert_eq!(ui::attention::entries().len(), 1);
     }
 }

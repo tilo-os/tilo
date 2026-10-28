@@ -10,7 +10,6 @@ use ui::tilo_actions::{ActionInvoker, ActorKind};
 use ui::tilo_resource::items::item_resource_id;
 use ui::tilo_resource::{Bytes, Settled};
 
-use crate::TerminalWidget;
 use crate::resource::{ItemKind, RunAnswer, Terminal};
 use crate::sessions::Sessions;
 use crate::target::RecentTarget;
@@ -18,7 +17,7 @@ use crate::target::RecentTarget;
 type App = ui::framework::testing::TestApp<crate::TerminalShell>;
 
 const KEY: &str = "0123456789abcdef0123456789abcdef";
-const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+use tilo_test_env::hang_bound;
 
 fn b64(text: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(text)
@@ -29,10 +28,16 @@ fn prompt() -> String {
 }
 
 /// What the session's shell prints for one command: its marks around
-/// `output`.
+/// `output`, numbered as the shell's first command is.
 fn ran(command: &str, output: &str, status: i32) -> Vec<u8> {
+    numbered(1, command, output, status)
+}
+
+/// [`ran`] with the command's own place in the shell's history.
+fn numbered(number: u64, command: &str, output: &str, status: i32) -> Vec<u8> {
     format!(
-        "{command}\r\n\x1b]133;C;k={KEY};cmd={};cwd={}\x07{output}\x1b]133;D;{status};k={KEY}\x07{}",
+        "{command}\r\n\x1b]133;C;k={KEY};cmd={};cwd={};t={number}\x07{output}\
+         \x1b]133;D;{status};k={KEY};t={number}\x07{}",
         b64(command),
         b64("/src/demo"),
         prompt()
@@ -72,7 +77,8 @@ impl std::io::Write for Typed {
 }
 
 /// A shell that marks its runs: each line typed into it runs, printing
-/// `output` for it with status 0, and the lines are kept in `lines`.
+/// `output` for it with status 0, and the lines are kept in `lines`. Its
+/// numbers count the lines typed into it, its history being its own.
 fn shell(
     typed: Receiver<Vec<u8>>,
     print: Sender<Vec<u8>>,
@@ -81,15 +87,27 @@ fn shell(
 ) {
     std::thread::spawn(move || {
         let mut line = Vec::new();
+        let mut number = 0_u64;
         while let Ok(bytes) = typed.recv() {
             for byte in bytes {
                 match byte {
-                    // Ctrl-U clears what was typed at the prompt.
                     0x15 => line.clear(),
                     b'\r' => {
                         let command = String::from_utf8_lossy(&line).into_owned();
                         line.clear();
-                        let _ = print.send(ran(&command, output, 0));
+                        // Only a line with something in it runs, and only it
+                        // takes a place in the shell's history.
+                        if command.trim().is_empty() {
+                            let _ = print.send(prompt().into_bytes());
+                            continue;
+                        }
+                        // The shell counts a line before it runs it, as
+                        // its history does. The two count the same lines
+                        // (this one receives every line the terminal types,
+                        // and the person types none), so a line asked for is
+                        // at the place the terminal counted for it.
+                        number = number.saturating_add(1);
+                        let _ = print.send(numbered(number, &command, output, 0));
                         let _ = lines.send(command);
                     }
                     byte => line.push(byte),
@@ -122,7 +140,7 @@ fn run_shell(app: &mut App, output: &'static str) -> (Sender<Vec<u8>>, Receiver<
         backend.runs = Some(KEY.into());
         Ok(backend)
     });
-    app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
         .expect("the terminal surface is hosted");
     app.settle();
     print.send(prompt().into_bytes()).unwrap();
@@ -131,7 +149,7 @@ fn run_shell(app: &mut App, output: &'static str) -> (Sender<Vec<u8>>, Receiver<
 
 /// Settle `app` until its session record satisfies `done`.
 fn settle_until(app: &mut App, done: impl Fn(&Terminal) -> bool) {
-    let deadline = ui::time::now() + HANG_BOUND;
+    let deadline = ui::time::now() + hang_bound();
     while ui::time::now() < deadline {
         app.settle();
         if done(&app.state()) {
@@ -140,12 +158,28 @@ fn settle_until(app: &mut App, done: impl Fn(&Terminal) -> bool) {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     let inspected = app
-        .with_surface(|terminal: &mut TerminalWidget| terminal.inspect_session())
+        .with_surface(|terminal: &mut crate::TerminalView| terminal.inspect_session())
         .unwrap();
     panic!(
         "the session record never got there: {:#?} {inspected}",
         app.state()
     );
+}
+
+/// The next line typed at the session's shell. The terminal types a line
+/// `run` asked for only on a frame after it saw the shell's prompt mark,
+/// and that mark arrives from the reader thread whenever it does, so
+/// keep settling until the shell reads the line.
+fn typed_line(app: &mut App, lines: &Receiver<String>) -> String {
+    let deadline = ui::time::now() + hang_bound();
+    while ui::time::now() < deadline {
+        app.settle();
+        if let Ok(line) = lines.try_recv() {
+            return line;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the shell never got a line: {:#?}", app.state());
 }
 
 /// A failing `cargo test` the person ran is a run with its output and one
@@ -196,9 +230,11 @@ fn an_agent_reruns_the_failing_test_of_a_run() {
         serde_json::json!({ "test": test }),
     )
     .expect("the agent's rerun runs and settles");
+    // The run's package and target selection come back, so only the
+    // library that reported the test builds again.
     assert_eq!(
-        lines.recv_timeout(HANG_BOUND).unwrap(),
-        format!("cargo test -p terminal -- --exact {test}"),
+        typed_line(&mut app, &lines),
+        format!("cargo test -p terminal --lib -- --exact {test}"),
         "typed at the prompt, once"
     );
     settle_until(&mut app, |state| {
@@ -257,7 +293,7 @@ fn run_takes_one_command_line_for_a_running_session() {
     assert!(app.state().requests.entries().next().is_none());
     app.call("run", serde_json::json!({ "command": "ls -la" }))
         .expect("runs");
-    assert_eq!(lines.recv_timeout(HANG_BOUND).unwrap(), "ls -la");
+    assert_eq!(typed_line(&mut app, &lines), "ls -la");
     settle_until(&mut app, |state| state.runs.len() == 1);
 }
 
@@ -332,5 +368,68 @@ fn two_sessions_are_searchable_together() {
         found.iter().any(|title| title == "cargo build -p first")
             && found.iter().any(|title| title == "cargo test -p second"),
         "{found:?}"
+    );
+}
+
+/// Tab and Shift+Tab are the shell's keys while the grid has the keyboard:
+/// the window hands them to the session's process (completion, back-tab)
+/// rather than moving focus to the next control.
+#[test]
+fn tab_reaches_the_session_while_the_grid_has_the_keyboard() {
+    let mut app = App::new().expect("terminal");
+    let (_print, printed) = channel::<Vec<u8>>();
+    let (typed_tx, typed) = channel();
+    let mut parts = Some((printed, typed_tx));
+    let sessions = Sessions::scripted(RecentTarget::none(), move |_, _, _| {
+        let (printed, typed) = parts.take().expect("one process");
+        let mut backend = crate::inner::TerminalBackend::for_test();
+        backend.reader = Box::new(Printed(printed, Vec::new()));
+        backend.writer = Box::new(Typed(typed));
+        Ok(backend)
+    });
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
+        .expect("the terminal surface is hosted");
+    app.settle();
+    let grid = app
+        .with_surface(|terminal: &mut crate::TerminalView| terminal.grid_rect())
+        .unwrap();
+    assert!(grid.area() > 0.0, "the grid is laid out: {grid:?}");
+    let centre = grid.center();
+    app.harness().click_at(centre.x, centre.y);
+    app.settle();
+    while typed.try_recv().is_ok() {}
+    let focused = app
+        .with_surface(|terminal: &mut crate::TerminalView| {
+            ui::widget::Widget::is_focused(terminal.terminal())
+        })
+        .unwrap();
+    assert!(focused, "a click on the grid gives it the keyboard");
+
+    let sent = |app: &mut App, modifiers: &[&str], key: &str| {
+        app.harness().set_modifiers(
+            &modifiers
+                .iter()
+                .map(|m| (*m).to_owned())
+                .collect::<Vec<_>>(),
+        );
+        app.harness().key(key);
+        app.harness().set_modifiers(&[]);
+        app.settle();
+        let mut bytes = Vec::new();
+        while let Ok(chunk) = typed.try_recv() {
+            bytes.extend(chunk);
+        }
+        bytes
+    };
+    assert_eq!(sent(&mut app, &[], "Tab"), b"\t", "Tab is the shell's");
+    assert_eq!(
+        sent(&mut app, &["shift"], "Tab"),
+        b"\x1b[Z",
+        "Shift+Tab is back-tab"
+    );
+    assert_eq!(
+        sent(&mut app, &[], "Tab"),
+        b"\t",
+        "the grid still has the keyboard"
     );
 }

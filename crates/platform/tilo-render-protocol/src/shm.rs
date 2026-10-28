@@ -45,10 +45,6 @@ impl Mapping {
     /// Map `fd` read-only after checking it is a memfd sealed against
     /// resizing (and against writes when `immutable`), at least `min_len`
     /// bytes and at most `max_len`.
-    ///
-    /// # Errors
-    ///
-    /// When a seal is missing, the size is out of range, or the map fails.
     pub fn map_sealed(
         fd: &OwnedFd,
         immutable: bool,
@@ -96,10 +92,6 @@ impl Mapping {
     /// Map a whole regular file read-only: a font from the shared read-only
     /// view, which lives on the image's read-only `/usr` and so cannot shrink
     /// under the mapping.
-    ///
-    /// # Errors
-    ///
-    /// When the file is empty, larger than `max_len`, or the map fails.
     pub fn map_file(fd: &OwnedFd, max_len: usize) -> io::Result<Self> {
         let stat = rustix::fs::fstat(fd)?;
         if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::RegularFile {

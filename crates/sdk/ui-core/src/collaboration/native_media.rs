@@ -70,7 +70,7 @@ fn reply(shared: &Shared, id: u64, result: Result<Snapshot, String>) {
     }
     shared
         .inbound
-        .send_durable(CollabEvent::NativeMediaCommandResult {
+        .send_reply(CollabEvent::NativeMediaCommandResult {
             request_id: id,
             result,
         });
@@ -83,7 +83,9 @@ impl Sender {
         }
         let priority = matches!(
             request.command,
-            Command::Leave | Command::SetMuted { muted: true }
+            Command::Leave
+                | Command::SetMuted { muted: true }
+                | Command::SetDeafened { deafened: true }
         );
         let effect = request.carries_intent();
         let Ok(mut queue) = self.0.queue.lock() else {

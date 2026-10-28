@@ -161,8 +161,12 @@ impl Widget for IconWidget {
             return;
         }
         let color = self.resolve_color(theme);
-        self.icon
-            .draw_with_stroke(scene, transform, self.rect, color, self.stroke_px);
+        if self.icon.is_brand() {
+            self.icon.draw_filled(scene, transform, self.rect, color);
+        } else {
+            self.icon
+                .draw_with_stroke(scene, transform, self.rect, color, self.stroke_px);
+        }
     }
 
     fn name(&self) -> &'static str {

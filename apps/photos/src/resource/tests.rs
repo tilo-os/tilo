@@ -236,7 +236,6 @@ fn edits_rotate_compose_crops_and_refuse_what_is_not_a_crop() {
         "an edit of a photograph the library lacks refuses"
     );
 
-    // Reset is both fields, as one change.
     group(
         &mut library,
         &[paths.crop.set(Rect01::FULL), paths.rotate_quarters.set(0)],
@@ -643,7 +642,6 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
         assert!(merge(&mut library, &item.id, local).is_err());
         assert!(merge(&mut library, &item.id, ocr(&"f".repeat(64), "wrong bytes")).is_err());
 
-        // Removing shared analysis is both components, as one change.
         let paths = photo_paths(&item.id);
         group(&mut library, &[paths.ocr.set(None), paths.vision.set(None)]).unwrap();
         assert!(photo(&library, &item.id).analysis().is_none());
@@ -703,8 +701,6 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
         library
             .apply(Invoke::edit(&insert(&item)).unwrap())
             .unwrap();
-        // A component of other bytes, as a replica with a replaced picture
-        // left it.
         let mut state = library.state().unwrap();
         state.photo_mut(&item.id).unwrap().vision = replaced.vision;
         ui::tilo_resource::Fields::write_fields(&state, library.doc_mut(), &automerge::ROOT)
@@ -766,6 +762,21 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
     eprintln!("phase local_analysis_is_a_cancellable_background_job");
     {
         let effects = <PhotosEffect as ui::tilo_resource::Effect>::specs();
+        // Folders are reached by their path, which browser storage lacks:
+        // the framework publishes these unavailable on such a host.
+        for id in ["import-directory", "reindex-directory"] {
+            let spec = effects
+                .iter()
+                .find(|spec| spec.id == id)
+                .unwrap_or_else(|| panic!("{id} is published"));
+            assert!(
+                spec.contract
+                    .tags
+                    .iter()
+                    .any(|tag| tag == tilo_actions::REQUIRES_NATIVE_PATHS_TAG),
+                "{id} declares it needs file system paths"
+            );
+        }
         for id in ["analyze-image", "analyze-text"] {
             let spec = effects
                 .iter()

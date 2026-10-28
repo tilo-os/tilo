@@ -17,17 +17,19 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
-# Reach the PDF engine through its engine library in the runtime bundle
-# (libtilo_pdf_engine.so, crates/runtime/engines/pdf) instead of linking it.
+# Reach the PDF and archive engines through their engine libraries in the
+# runtime bundle (libtilo_pdf_engine.so, libtilo_archive_engine.so under
+# crates/runtime/engines) instead of linking them.
 # The release collection enables it (dist/apps/app-collections.toml); a `thin`
 # build without it (`tilo-app dev`) links tilo-pdf statically, because an
 # engine library links only through tools/ci/rustc-thin-app-wrapper.sh.
-runtime-engine = ["thin", "tilo-pdf-engine/thin"]
+runtime-engine = ["thin", "tilo-pdf-engine/thin", "tilo-archive-engine/thin"]
 
 [dependencies]
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-pdf-engine = { path = "../../crates/runtime/engines/pdf", optional = true }
+tilo-archive-engine = { path = "../../crates/runtime/engines/archive", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 tilo-automation = { path = "../../crates/collab/automation" }
@@ -68,9 +70,11 @@ host-fs = { path = "../../crates/system/host-fs" }
 tilo-pdf = { path = "../../crates/platform/tilo-pdf" }
 # Used by `--shots` demo seeds to create sample images and an EPUB cover.
 image = { workspace = true, features = ["png", "jpeg"] }
+# Archives: browsing into, extracting and packing them. A thin release build
+# loads it from libtilo_archive_engine.so (`runtime-engine`).
+tilo-archive = { path = "../../crates/platform/tilo-archive" }
+# The `--shots` demo seeds write a zip.
 zip.workspace = true
-tar.workspace = true
-flate2.workspace = true
 # Home, config, cache and the localized user folders.
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 # Change notification for the open directory (inotify, FSEvents), so an idle
@@ -91,6 +95,7 @@ taffy.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tar.workspace = true
 tilo-history = { path = "../../crates/sdk/tilo-history" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true

@@ -243,6 +243,7 @@ async fn main() -> anyhow::Result<()> {
             status(BridgeStatus::Ended {
                 code: None,
                 reason: Some(format!("{error:#}")),
+                superseded: false,
             });
             return Err(error);
         }
@@ -288,7 +289,11 @@ async fn main() -> anyhow::Result<()> {
     if let Some(reason) = &reason {
         eprintln!("\r\n[{reason}]\r");
     }
-    status(BridgeStatus::Ended { code, reason });
+    status(BridgeStatus::Ended {
+        code,
+        reason,
+        superseded: matches!(end, BridgeEnd::Superseded),
+    });
     if let BridgeEnd::Exited(Some(code)) = end
         && code != 0
     {

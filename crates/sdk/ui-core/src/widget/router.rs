@@ -60,11 +60,6 @@ pub enum RouteError {
 
 impl RouteHandle {
     /// Create a navigation stack from a finite route registry.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the registry is empty, contains a blank name, or
-    /// does not contain `initial`.
     pub fn new<S, I, R>(initial: S, routes: I) -> Result<Self, RouteError>
     where
         S: Into<String>,
@@ -196,11 +191,6 @@ impl RouteHandle {
     }
 
     /// A directly usable [`super::Button::on_click`] callback.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error immediately for an unknown route, rather than waiting
-    /// for the user to click a dead control.
     pub fn push_action(&self, route: impl Into<String>) -> Result<Box<dyn FnMut()>, RouteError> {
         let route = route.into();
         self.require_known(&route)?;
@@ -303,10 +293,6 @@ impl Router {
     ///
     /// The factory receives the same handle that drives the host, allowing a
     /// screen to bind buttons without global state.
-    ///
-    /// # Errors
-    ///
-    /// Returns a route-registry error or the initial screen's build error.
     pub fn new<S, I, R>(
         initial: S,
         routes: I,
@@ -460,7 +446,6 @@ mod tests {
 
     #[test]
     fn route_history_mutations_are_explicit_and_bounded() {
-        // Case `route_history_push_replace_back_forward_and_reset_are_explicit`.
         {
             let handle = RouteHandle::new("home", ["home", "settings", "about"]).unwrap();
             assert_eq!(handle.current(), "home");
@@ -485,7 +470,6 @@ mod tests {
             assert_eq!(handle.history(), (vec![], "home".into(), vec![]));
         }
 
-        // Case `unknown_routes_and_duplicate_current_pushes_do_not_mutate_history`.
         {
             let handle = RouteHandle::new("home", ["home", "settings"]).unwrap();
             assert!(!handle.push("home").unwrap());
@@ -498,7 +482,6 @@ mod tests {
             assert!(handle.push_action("missing").is_err());
         }
 
-        // Case `exhausted_revision_refuses_route_mutations_without_reusing_a_snapshot`.
         {
             let handle = RouteHandle::new("home", ["home", "settings"]).unwrap();
             handle.state.borrow_mut().revision = u64::MAX;
@@ -512,7 +495,6 @@ mod tests {
 
     #[test]
     fn screen_builds_restore_the_last_valid_route_and_reset_focus_on_success() {
-        // Case `failed_screen_build_restores_the_last_valid_route`.
         {
             let theme = Theme::default();
             let mut router = Router::new("home", ["home", "broken"], &theme, |route, _theme, _| {
@@ -538,7 +520,6 @@ mod tests {
             assert!(!router.take_structure_dirty());
         }
 
-        // Case `failed_build_at_final_revision_keeps_route_and_retained_child_coherent`.
         {
             let theme = Theme::default();
             let mut router = Router::new("home", ["home", "broken"], &theme, |route, _theme, _| {
@@ -567,7 +548,6 @@ mod tests {
             assert!(!router.take_structure_dirty());
         }
 
-        // Case `initial_deep_link_and_successful_transition_rebuild_and_reset_focus`.
         {
             let theme = Theme::default();
             let mut router =

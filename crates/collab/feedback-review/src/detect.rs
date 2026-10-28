@@ -6,6 +6,7 @@
 //! looks like a number is not reported as one with high confidence.
 
 use std::sync::LazyLock;
+use tilo_sort::CompactSort as _;
 
 use regex_lite::Regex;
 
@@ -291,7 +292,7 @@ pub(crate) fn scan(text: &str) -> Vec<Hit> {
     }
     // A shorter reading inside a stronger one (a digit run inside a card, a
     // token inside a URL parameter) adds nothing; keep the stronger.
-    hits.sort_by_key(|hit| {
+    hits.compact_sort_by_key(|hit| {
         (
             hit.start,
             std::cmp::Reverse(hit.end),

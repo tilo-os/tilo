@@ -99,6 +99,8 @@ impl ShellOverlayHost {
             return;
         }
         if !row.group_layout_is_current() || !row.group_is_laid_out(pending.group) {
+            // Gathered once a later layout places the group.
+            ui::widget::note_layout_moved();
             return;
         }
         if !row.scroll_group_into_view(pending.group) {
@@ -111,6 +113,8 @@ impl ShellOverlayHost {
             row.pan_to(offset);
         }
         surface.keep_clicked_group_in_place(pending.strip, pending.group);
+        // The pan starts after the row was placed in this layout.
+        ui::widget::note_layout_moved();
         self.axis_gather_pending = None;
     }
 }

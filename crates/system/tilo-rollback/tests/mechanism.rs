@@ -21,177 +21,20 @@
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
 use tilo_rollback::{
     Config, Pbkdf, approval, confirm, counter, exec, keyslots, lockout, policy,
     policy::{Prediction, Workspace},
     token::{RollbackToken, SealedObject, SignedPrediction},
     tpm_policy,
 };
+use tilo_test_env::Capability;
+use tilo_test_env::swtpm::Swtpm;
 
 // Harness
 
-fn have(tool: &str) -> bool {
-    Command::new("sh")
-        .arg("-c")
-        .arg(format!("command -v {tool} >/dev/null 2>&1"))
-        .status()
-        .is_ok_and(|s| s.success())
-}
-
-fn missing_tools() -> Vec<&'static str> {
-    ["swtpm", "tpm2_startup", "cryptsetup"]
-        .into_iter()
-        .filter(|t| !have(t))
-        .collect()
-}
-
-/// A free TCP port `n` for which `n + 1` is also free.
-///
-/// Binding then releasing is racy: two tests can grab the same pair, so the loser's `swtpm`
-/// fails with "address already in use" and its test talks to the wrong TPM. Retry with a
-/// fresh pair on failure.
-fn free_port_pair() -> (u16, u16) {
-    use std::sync::atomic::{AtomicU16, Ordering};
-    static SKEW: AtomicU16 = AtomicU16::new(0);
-    let skew = SKEW.fetch_add(2, Ordering::Relaxed);
-    for attempt in 0..64u16 {
-        let base = {
-            let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-            l.local_addr().unwrap().port()
-        };
-        // Walk away from the kernel's suggestion by a per-caller amount so two
-        // threads handed adjacent ephemeral ports do not converge on one pair.
-        let base = base
-            .checked_add(skew)
-            .and_then(|b| b.checked_add(attempt.saturating_mul(2)))
-            .unwrap_or(base);
-        if base >= u16::MAX - 1 {
-            continue;
-        }
-        let a = std::net::TcpListener::bind(("127.0.0.1", base));
-        let b = std::net::TcpListener::bind(("127.0.0.1", base.saturating_add(1)));
-        if a.is_ok() && b.is_ok() {
-            return (base, base.saturating_add(1));
-        }
-    }
-    panic!("could not find an adjacent free TCP port pair for swtpm");
-}
-
-struct Tpm {
-    _state: tempfile::TempDir,
-    port: u16,
-    child: Child,
-}
-
-impl Tpm {
-    fn start() -> Option<Tpm> {
-        let missing = missing_tools();
-        if !missing.is_empty() {
-            eprintln!(
-                "SKIP: this test needs {missing:?}, which are not installed. Install swtpm, tpm2-tools, \
-                 and cryptsetup to run it."
-            );
-            return None;
-        }
-        // Retry on a fresh port pair: a lost race shows up as swtpm exiting immediately.
-        let mut last = String::new();
-        for _ in 0..8 {
-            match Self::try_start() {
-                Ok(tpm) => return Some(tpm),
-                Err(why) => last = why,
-            }
-        }
-        panic!("could not start swtpm after 8 attempts; last failure: {last}");
-    }
-
-    fn try_start() -> Result<Tpm, String> {
-        let state = tempfile::tempdir().expect("tempdir");
-        // tpm2-tools' `swtpm:` TCTI assumes the control channel is at `port + 1`; two unrelated
-        // free ports produce a data channel that answers and a control channel that looks broken.
-        let (port, ctrl) = free_port_pair();
-        // No `--create-ek-cert`: minting one needs swtpm_localca, which fails in a test sandbox
-        // and is not needed here.
-        let setup_log = state.path().join("setup.log");
-        let _ = Command::new("swtpm_setup")
-            .args(["--tpm2", "--tpmstate"])
-            .arg(state.path())
-            .stdout(Stdio::from(
-                std::fs::File::create(&setup_log).expect("setup log"),
-            ))
-            .stderr(Stdio::from(
-                std::fs::File::options()
-                    .append(true)
-                    .open(&setup_log)
-                    .expect("setup log"),
-            ))
-            .status();
-        let log = state.path().join("swtpm.log");
-        let child = Command::new("swtpm")
-            .arg("socket")
-            .arg("--tpm2")
-            .arg(format!("--tpmstate=dir={}", state.path().display()))
-            .arg(format!("--server=type=tcp,port={port}"))
-            .arg(format!("--ctrl=type=tcp,port={ctrl}"))
-            .arg("--flags=not-need-init,startup-clear")
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(std::fs::File::create(&log).expect("swtpm log")))
-            .stderr(Stdio::from(
-                std::fs::File::options()
-                    .append(true)
-                    .open(&log)
-                    .expect("swtpm log"),
-            ))
-            .spawn()
-            .expect("spawning swtpm");
-        let mut tpm = Tpm {
-            _state: state,
-            port,
-            child,
-        };
-        let mut last = String::new();
-        // Readiness usually takes a few probes; 300 x 100 ms only bounds a hang.
-        for _ in 0..300 {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            // Already-exited swtpm means the port pair was taken; retry with a new one.
-            if let Ok(Some(status)) = tpm.child.try_wait() {
-                return Err(format!(
-                    "swtpm on port {port} exited ({status}): {}",
-                    std::fs::read_to_string(&log).unwrap_or_default().trim()
-                ));
-            }
-            match Command::new("tpm2_getcap")
-                .arg("properties-fixed")
-                .env("TPM2TOOLS_TCTI", tpm.tcti())
-                .output()
-            {
-                Ok(o) if o.status.success() => return Ok(tpm),
-                Ok(o) => last = String::from_utf8_lossy(&o.stderr).into_owned(),
-                Err(e) => last = format!("could not run tpm2_getcap: {e}"),
-            }
-        }
-        Err(format!(
-            "swtpm on port {port} never answered.\n--- swtpm log ---\n{}\n\
-             --- swtpm_setup log ---\n{}\n--- last probe error ---\n{last}",
-            std::fs::read_to_string(&log).unwrap_or_default(),
-            std::fs::read_to_string(&setup_log).unwrap_or_default(),
-        ))
-    }
-
-    fn tcti(&self) -> String {
-        format!("swtpm:host=127.0.0.1,port={}", self.port)
-    }
-}
-
-impl Drop for Tpm {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
 struct Fixture {
-    _tpm: Tpm,
+    _tpm: Swtpm,
     scratch: tempfile::TempDir,
     runner: exec::Real,
     cfg: Config,
@@ -209,7 +52,13 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Option<Fixture> {
-        let tpm = Tpm::start()?;
+        let tpm = match Swtpm::start() {
+            Ok(tpm) => tpm,
+            Err(why) => {
+                tilo_test_env::capability_unavailable(Capability::Swtpm, format_args!("{why}"));
+                return None;
+            }
+        };
         let scratch = tempfile::tempdir().expect("tempdir");
         let runner = exec::Real::new()
             .with_tcti(Some(&tpm.tcti()))

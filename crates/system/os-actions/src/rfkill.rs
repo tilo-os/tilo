@@ -114,7 +114,6 @@ pub fn unblock(kind: RadioKind) -> Result<(), String> {
 /// `struct rfkill_event` (the 8-byte first version every kernel accepts):
 /// `idx` (u32, ignored for `CHANGE_ALL`), `type`, `op`, `soft`, `hard`.
 fn change_all_event(kind: RadioKind, soft_block: bool) -> [u8; 8] {
-    /// `RFKILL_OP_CHANGE_ALL`.
     const OP_CHANGE_ALL: u8 = 3;
     let mut event = [0_u8; 8];
     event[4] = kind.kernel_type();
@@ -153,7 +152,6 @@ mod tests {
         switch(class.path(), "rfkill1", "bluetooth", "1", "0");
         let wlan = state_in(class.path(), RadioKind::Wlan);
         assert!(wlan.present && wlan.allows());
-        // The laptop's platform switch blocks Wi-Fi too.
         switch(class.path(), "rfkill2", "wlan", "1", "0");
         let wlan = state_in(class.path(), RadioKind::Wlan);
         assert!(wlan.soft_blocked && !wlan.hard_blocked && !wlan.allows());

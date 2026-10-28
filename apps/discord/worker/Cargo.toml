@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../../crates/platform/tilo-lock" }
+base64.workspace = true
 blake3.workspace = true
 discord-wire = { path = "../../discord-model" }
 futures-util = { workspace = true, features = ["sink"] }
@@ -24,17 +25,26 @@ serde.workspace = true
 serde_json.workspace = true
 tilo-connector = { path = "../../../crates/agent/connector" }
 tilo-net = { path = "../../../crates/platform/tilo-net", features = ["http"] }
-tokio = { workspace = true, features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["io-std", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-rustls.workspace = true
 tokio-websockets = { version = "0.13.3", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector"] }
 url.workspace = true
 zeroize.workspace = true
 workspace-hack = { version = "0.1" }
 tilo-clock = { path = "../../../crates/platform/tilo-clock" }
+# Voice: transport encryption (Discord's rtpsize AEAD modes, sealed in
+# tilo-seal), DAVE end-to-end encryption, and Opus to mix several Tilo
+# speakers into one stream. libopus is built from source by opusic-sys (cmake).
+davey.workspace = true
+getrandom.workspace = true
+opus = "0.4"
+tilo-seal = { path = "../../../crates/system/tilo-seal" }
 
 [dev-dependencies]
 fake-discord = { path = "../../../crates/dev/fake-discord" }
 tempfile.workspace = true
+collab-types = { path = "../../../crates/collab/collab-types" }
+tilo-test-env = { path = "../../../crates/dev/test-env" }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-secrets = { path = "../../../crates/platform/tilo-secrets" }
 # The bridge end to end: its program on a room's host, with this binary.

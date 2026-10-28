@@ -1,4 +1,3 @@
-//! Exercise the real launcher claim, disk snapshot, and restore staging path.
 use super::*;
 use crate::shell::personal_continuity::{AppInstanceId, LaunchIntent};
 use crate::shell::personal_continuity_registry::{ContinuationRegistry, global_registry};
@@ -34,14 +33,14 @@ fn adopt(tree: &mut WorkspaceTree, instance: u64) -> TabId {
     launcher::remember_launch_named(APP, &[APP.to_string()], "Record restart fixture");
     launcher::set_pending_placement(APP, Placement::NewGroup);
     launcher::attach_continuity_instance_for_test(APP, instance);
-    let room = tree.desktop.active_workspace().unwrap().room;
+    let room = tree.desktop.active_workspace().unwrap().room();
     crate::shell::tab_binding::adopt_toplevel_in_room(tree, next_id(), Some(APP.into()), room)
         .expect("launcher-attributed adoption")
 }
 
 fn staged(tree: &WorkspaceTree, tab: TabId) -> Option<u64> {
     let item = pending(tree).into_iter().find(|item| item.tab == tab)?;
-    let room = tree.desktop.workspaces[item.workspace].room;
+    let room = tree.desktop.workspaces[item.workspace].room();
     stage_continuation_for_tab(tree, &item);
     launcher::take_staged_resume_for_package(&item.app_id, room).map(|(_, record)| record)
 }
@@ -62,7 +61,7 @@ fn local_record_restart_keeps_exact_records_and_drops_mismatches() {
         let first_tab = adopt(&mut tree, first_record);
         let second_record = next_id();
         let second_tab = adopt(&mut tree, second_record);
-        let room = tree.desktop.active_workspace().unwrap().room;
+        let room = tree.desktop.active_workspace().unwrap().room();
         let launch = LaunchIntent::app(APP).unwrap();
         for (tab, record) in [(first_tab, first_record), (second_tab, second_record)] {
             assert_eq!(
@@ -132,7 +131,7 @@ fn local_record_restart_keeps_exact_records_and_drops_mismatches() {
             tree.persist_path = Some(path.clone());
             let record = next_id();
             let tab = adopt(&mut tree, record);
-            let room = tree.desktop.active_workspace().unwrap().room;
+            let room = tree.desktop.active_workspace().unwrap().room();
             crate::shell::persist::wait_for_saves();
             let mut json: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -214,12 +213,12 @@ fn local_record_restart_removes_closed_and_revalidates_live_tabs() {
             // not later shadow a changed tab or an exact remote continuation.
             let mut restored = crate::shell::persist::load_tree_from(&path).unwrap();
             assert_eq!(staged(&restored, tab), Some(record));
-            let room = restored.desktop.active_workspace().unwrap().room;
+            let room = restored.desktop.active_workspace().unwrap().room();
             let workspace = restored.desktop.active_workspace_mut().unwrap();
             let tile = &mut workspace.strips[0].window_groups[0].tabs[0].tile;
             let remote_record = next_id();
             match mode {
-                "room" => workspace.set_room(RoomId::new()),
+                "room" => *workspace = crate::shell::state::rehomed(workspace, RoomId::new()),
                 "app" => {
                     *tile = TileContent::LocalApp {
                         app_id: "dev.tilo.changed-record-test".into(),

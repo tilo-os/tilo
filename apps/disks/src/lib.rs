@@ -20,6 +20,7 @@ pub mod app;
 pub mod locales;
 pub mod map;
 pub mod model;
+mod offer;
 pub mod ops;
 pub mod probe;
 pub mod resource;

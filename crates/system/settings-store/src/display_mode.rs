@@ -226,11 +226,6 @@ pub fn layout_available(
 /// then stage it as a [`DisplayTransaction`]. The compositor applies it at
 /// once and restores the previous layout unless it is confirmed within
 /// [`DisplayTransaction::CONFIRM_TIMEOUT_MS`].
-///
-/// # Errors
-///
-/// Returns an I/O error wrapping [`DisplayLayoutError`] when the layout is
-/// unavailable, or the settings write error.
 pub fn stage_layout(mode: DisplayLayoutMode) -> std::io::Result<DisplayTransaction> {
     let snapshot = DisplayHardwareSnapshot::load()
         .ok_or_else(|| std::io::Error::other(DisplayLayoutError::NoHardwareSnapshot))?;

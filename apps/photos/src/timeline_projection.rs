@@ -163,6 +163,16 @@ impl TimelineProjection {
         true
     }
 
+    /// Every photograph's id in the chronology's own order: the order the
+    /// outline, the keyboard and a slide show move through.
+    pub fn ordered_ids(&self) -> Vec<String> {
+        self.days
+            .iter()
+            .flat_map(|day| day.rows.iter())
+            .flat_map(|row| row.ids.iter().cloned())
+            .collect()
+    }
+
     pub fn len(&self) -> usize {
         self.photos.len()
     }

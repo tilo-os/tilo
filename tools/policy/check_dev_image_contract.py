@@ -39,9 +39,6 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 DEV_CONTAINERFILE = "os/Containerfile.dev"
-# The CI workflows that build a dev image: the OS lane that gates on it and the
-# disk workflow for images that already exist.
-DEV_IMAGE_WORKFLOWS = (".forgejo/workflows/build-image.yml", ".forgejo/workflows/dev-disk.yml")
 DEV_REPOSITORY = "registry.tilo.so/tilo/tilo-vm"
 # Unsigned OS images from main integration builds; dev disks build on them.
 INTEGRATION_REPOSITORY = "registry.tilo.so/tilo/tilo-ci"
@@ -68,8 +65,16 @@ class Finding:
     why: str
     fix: str
 
+    def headline(self) -> str:
+        """The finding, one line: what main prints on stdout."""
+        return f"{self.where}: {self.what}"
+
+    def detail(self) -> str:
+        """Why it matters and the fix: what main prints on stderr after the headline."""
+        return f"  why: {self.why}.\n  fix: {self.fix}\n  re-run: {RERUN}"
+
     def __str__(self) -> str:
-        return f"{self.where}: {self.what}\n  why: {self.why}.\n  fix: {self.fix}\n  re-run: {RERUN}"
+        return f"{self.headline()}\n{self.detail()}"
 
 
 def load(name: str, path: Path):
@@ -107,11 +112,12 @@ def rel(repo: Path, path: Path) -> str:
 
 
 def production_containerfiles(repo: Path) -> list[Path]:
-    return sorted(p for p in (repo / "os").glob("Containerfile*")
-                  if p.is_file() and p.name != Path(DEV_CONTAINERFILE).name)
+    """The production image recipes, and the compile they pack (os/image/compile.sh)."""
+    recipes = [p for p in (repo / "os").glob("Containerfile*")
+               if p.is_file() and p.name != Path(DEV_CONTAINERFILE).name]
+    compile_script = repo / "os/image/compile.sh"
+    return sorted(recipes + ([compile_script] if compile_script.is_file() else []))
 
-
-# ---- 1. the dev image is never the production image ---------------------------
 
 def check_dev_containerfile(repo: Path) -> list[Finding]:
     path = repo / DEV_CONTAINERFILE
@@ -176,21 +182,6 @@ def check_dev_containerfile(repo: Path) -> list[Finding]:
             findings.append(Finding(builder, "builds os/Containerfile.dev without fingerprint-resolved RPMS_REF",
                                     "without it the dev image has no frozen snapshot to install its toolchain from",
                                     'resolve `rpms_ref` via resolve-rpm-snapshot.sh and pass `--build-arg "RPMS_REF=$rpms_ref"`.'))
-    # CI builds dev images with the same script developers run, so a CI dev
-    # image cannot drift from a local one.
-    for workflow in DEV_IMAGE_WORKFLOWS:
-        path = repo / workflow
-        if not path.is_file():
-            continue
-        body = path.read_text(encoding="utf-8")
-        if re.search(r"(?:--file[ =]|\bbuild\s+-f\s+)\S*Containerfile\.dev", body):
-            findings.append(Finding(workflow, "builds os/Containerfile.dev itself",
-                                    "a second recipe for the dev image drifts from the one developers build locally",
-                                    "build it with ./os/dev/build-dev-image.sh (TILO_DEV_BASE, TILO_DEV_IMAGE, TILO_BUILD_ARGS)."))
-        elif "build-dev-image.sh" not in body:
-            findings.append(Finding(workflow, "no longer builds the dev image with os/dev/build-dev-image.sh",
-                                    "the dev disk CI publishes must come from the recipe developers build locally",
-                                    "build it with ./os/dev/build-dev-image.sh."))
     return findings
 
 
@@ -268,8 +259,9 @@ def check_production_policy(repo: Path) -> list[Finding]:
     findings = []
     docker = policy.get("transports", {}).get("docker", {})
     for repository, why, admitted in (
-        (DEV_REPOSITORY, WHY_FLAVOUR + "; dev images are unsigned by design, so the production policy "
-         "refuses them by name", "only the dev image's own policy (os/scripts/finalize-dev-image.py) admits it."),
+        (DEV_REPOSITORY, WHY_FLAVOUR + "; dev images run dev-only code, so the production policy "
+         "refuses them by name", "only the dev image's own policy (os/scripts/finalize-dev-image.py) admits "
+         "them, signed with the development key."),
         (INTEGRATION_REPOSITORY, WHY_INTEGRATION, "nothing on an installed system may pull it."),
     ):
         scope = docker.get(repository)
@@ -282,8 +274,6 @@ def check_production_policy(repo: Path) -> list[Finding]:
                                     + admitted))
     return findings
 
-
-# ---- 2. production images carry nothing dev-only ------------------------------
 
 def dev_only_needles(repo: Path) -> list[tuple[re.Pattern[str], str]]:
     installer = load("install_components_for_dev_contract", repo / "os/scripts/install-components.py")
@@ -349,10 +339,13 @@ def main(argv: list[str] | None = None) -> int:
     findings = audit(args.repo.resolve())
     if findings:
         print(f"dev image contract failed ({len(findings)} problem(s)):\n", file=sys.stderr)
-        print("\n\n".join(map(str, findings)), file=sys.stderr)
+        for finding in findings:
+            sys.stderr.flush()
+            print(finding.headline(), flush=True)
+            print(finding.detail() + "\n", file=sys.stderr)
         return 1
     print(f"Dev image contract OK ({len(production_containerfiles(args.repo.resolve()))} production "
-          "Containerfiles carry nothing dev-only)")
+          "Containerfiles carry nothing dev-only)", file=sys.stderr)
     return 0
 
 

@@ -12,10 +12,15 @@ use ui::history_source::{SchemaObjectId, schema_changes_since};
 // a widget built on its own loads them as it is made.
 ui::embedded_catalog!(pub static CATALOG, ["en-US", "de"]);
 
-/// Load the toolkit's widget messages and [`CATALOG`] on this thread.
+/// Load the toolkit's widget messages and [`CATALOG`] on this thread, and
+/// offer the Unicode emoji a page's reactions pick from.
 pub fn register_messages() {
     ui::i18n::I18nManager::register_widget_messages();
     CATALOG.ensure();
+    // A page's reactions pick from the whole emoji catalogue, where this
+    // build carries it: in the browser desktop Notes shares the start module,
+    // which carries none, and there Chat's module offers it.
+    tilo_unicode_emoji::offer();
 }
 
 impl NoteDates {
@@ -67,13 +72,8 @@ pub struct NoteDates {
 
 impl NoteDates {
     /// The dates as the one line the note header shows, in the local time
-    /// zone, read against the clock a capture pins. A date the history does
-    /// not know is left out; a note with no known date shows nothing.
-    pub fn labels(self) -> Vec<String> {
-        self.labels_at(ui::clock::local_now())
-    }
-
-    /// [`Self::labels`] against an explicit `now`.
+    /// zone, read against `now`. A date the history does not know is left
+    /// out; a note with no known date shows nothing.
     pub fn labels_at(self, now: chrono::DateTime<chrono::Local>) -> Vec<String> {
         use ui::i18n::I18nManager;
         let created = self.created.map(|seconds| when(seconds, now));
@@ -220,7 +220,6 @@ impl NoteDateIndex {
     }
 }
 
-/// Whether `history` holds every change in `heads`.
 fn contains_all(history: &automerge::Automerge, heads: &[ChangeHash]) -> bool {
     heads
         .iter()
@@ -298,6 +297,24 @@ mod tests {
             dates.display_labels_in(true, &chrono::FixedOffset::east_opt(-5 * 3600).unwrap());
         assert!(compact[0].contains("Oct 3, 2026"), "{compact:?}");
     }
+    /// A page's reactions pick from the whole Unicode catalogue: loading the
+    /// app's messages hands the toolkit's picker the catalogue this build
+    /// carries.
+    #[test]
+    fn a_page_offers_the_whole_emoji_catalogue() {
+        register_messages();
+        let catalogue = ui::emoji_catalogue::catalogue()
+            .expect("a native build of Notes carries the Unicode catalogue");
+        assert!(
+            !catalogue.groups().is_empty(),
+            "every Unicode group is there"
+        );
+        assert!(
+            catalogue.search("thumbs", 8).contains(&"👍"),
+            "the picker finds a Unicode emoji by name"
+        );
+    }
+
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn metadata_dates_follow_real_edits_and_survive_reload_and_legacy_notes() {

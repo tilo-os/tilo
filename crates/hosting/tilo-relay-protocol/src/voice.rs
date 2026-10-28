@@ -25,11 +25,11 @@
 //! session) learns its calls with
 //! [`Envelope::VoiceCalls`](crate::Envelope::VoiceCalls).
 //!
-//! What a participant shows besides its voice (its camera, a shared screen)
-//! is [`Showing`], set with
+//! What a participant shows besides its voice (its camera, a shared screen,
+//! whether its microphone is off or it is deafened) is [`Showing`], set with
 //! [`Envelope::VoiceShow`](crate::Envelope::VoiceShow) and carried on its
 //! [`VoiceParticipant`] in every grant and call list, so everyone sees who
-//! has a camera on or shares a screen before any picture arrives.
+//! has a camera on, shares a screen or is muted before any picture arrives.
 //!
 //! Browser and native devices use the same envelopes: a browser session is
 //! one more peer of the relay.
@@ -61,42 +61,33 @@ pub enum CallOperation {
     /// had restarted, or a new one where participants publish and subscribe.
     /// Any member may open a channel's call.
     Open {
-        /// The chat app.
         app_id: String,
-        /// The chat record holding the channel.
         record_id: String,
-        /// The voice channel.
         channel_id: String,
     },
     /// Start a call on voice channel `channel_id` of the chat record
     /// `record_id` of app `app_id`.
     Start {
-        /// The chat app.
         app_id: String,
-        /// The chat record holding the channel.
         record_id: String,
-        /// The voice channel.
         channel_id: String,
         /// What participants may do.
         allowed: Directions,
     },
     /// End an active call.
     End {
-        /// The call.
         call: [u8; 32],
         /// The epoch the caller last saw.
         epoch: u64,
     },
     /// Restart an ended call on its original channel.
     Restart {
-        /// The call.
         call: [u8; 32],
         /// The epoch the caller last saw.
         epoch: u64,
     },
     /// Change what participants may do.
     SetDirections {
-        /// The call.
         call: [u8; 32],
         /// The epoch the caller last saw.
         epoch: u64,
@@ -105,7 +96,6 @@ pub enum CallOperation {
     },
     /// Deny one person directions in a call; denying neither lifts it.
     SetDenial {
-        /// The call.
         call: [u8; 32],
         /// The epoch the caller last saw.
         epoch: u64,
@@ -119,7 +109,6 @@ pub enum CallOperation {
 /// A call as the room's governance records it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallState {
-    /// The call.
     pub call: [u8; 32],
     /// Advances with every change of the call.
     pub epoch: u64,
@@ -132,7 +121,6 @@ pub struct CallState {
 /// Admission of one participation to a call's voice carrier.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VoiceGrant {
-    /// The call.
     pub call: [u8; 32],
     /// The call's epoch this grant was issued under.
     pub epoch: u64,
@@ -165,39 +153,84 @@ pub struct VoiceGrant {
 pub struct CallSummary {
     /// The call as governance records it.
     pub state: CallState,
-    /// The chat app the call's voice channel belongs to.
     pub app_id: String,
-    /// The chat record holding the channel.
     pub record_id: String,
-    /// The voice channel.
     pub channel_id: String,
-    /// Who is in the call now.
     pub participants: Vec<VoiceParticipant>,
 }
 
-/// One participant of a call.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VoiceParticipant {
     /// The participating device.
     pub device_public_key: [u8; 32],
     /// Its person.
     pub user_public_key: [u8; 32],
-    /// Its voice namespace.
     pub namespace: String,
-    /// Whether it may publish.
     pub publishes: bool,
     /// What it shows besides its voice.
     pub showing: Showing,
+    /// Set when a bridge holds this participation: for a person on another
+    /// service, whose voice it carries into the call, or for the bridge
+    /// itself, listening to carry the call out. Its person is then the
+    /// bridge's, never the one it shows.
+    pub bridged: Option<Bridged>,
+}
+
+/// Who a bridge's participation stands for. A bridge (a room's Discord bot)
+/// holds one participation per person on the other side, so each is heard,
+/// shown and turned down on their own, and one of its own that hears the
+/// call and carries it out. A participant reading one shows it by `name`,
+/// marked as reached through `service`, and never as the bridge's person.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bridged {
+    /// The service, lowercase: `discord`.
+    pub service: String,
+    /// The account on that service whose voice this carries; `None` for
+    /// the bridge's own participation, which carries the call out.
+    pub account: Option<String>,
+    /// The shown name: trimmed, NFC-normalized, 1..=80 characters, as an
+    /// appearance's (`tilo_actions::appearance`).
+    pub name: String,
+    /// BLAKE3 hex of the avatar in the room's content store.
+    pub avatar: Option<String>,
+    /// The room member the account is linked to: the participant is shown
+    /// as that member, reached through `service`.
+    pub linked: Option<[u8; 32]>,
 }
 
 /// What a participant shows besides its voice: its pictures are published
 /// on the carrier while it shows them (tilo-video/1, `tilo_moq::video`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is its own fact the others see: camera, screen, muted, deafened"
+)]
 pub struct Showing {
-    /// Its camera is on.
     pub camera: bool,
     /// It shares a screen.
     pub screen: bool,
+    /// Its microphone is off: everyone sees it muted. A participant that may
+    /// not publish counts as muted.
+    pub muted: bool,
+    /// It hears nothing of the call (and is muted): everyone sees it
+    /// deafened.
+    pub deafened: bool,
+}
+
+/// The call that is room `room`'s window carrier: every member device of a
+/// room that shares its layout joins it ([`Envelope::VoiceJoin`](crate::Envelope::VoiceJoin))
+/// to publish the windows of host programs it runs (a terminal, any Wayland
+/// or X client) and to view the other members' as live video, one
+/// `tilo-video/1` window track each. It is in no room's governance: it
+/// stands while the room shares its layout, and a device holds it beside its
+/// voice call, never in place of one. Its pictures are sealed for the
+/// room's members, so the relay forwards what it cannot read.
+#[must_use]
+pub fn windows_call(room: &str) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"tilo-room-windows-v1\0");
+    hash.update(room.as_bytes());
+    *hash.finalize().as_bytes()
 }
 
 /// The voice namespace of `participation` in `call`: `<call hex>/<participation hex>`.

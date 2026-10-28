@@ -1,0 +1,14 @@
+[Unit]
+Description=Keep the clock floor current while chrony is the time authority
+
+[Timer]
+# Network time stepping the clock (and resume) is when the floor moves most;
+# the hourly run keeps a crash or a forced power-off from losing more than an
+# hour. The shutdown record is tilo-clock-floor-shutdown.service.
+OnClockChange=yes
+OnCalendar=hourly
+AccuracySec=5min
+Unit=tilo-clock-floor.service
+
+[Install]
+WantedBy=timers.target

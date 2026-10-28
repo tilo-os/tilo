@@ -23,7 +23,6 @@
 )]
 
 use file_explorer::FileExplorerWidget;
-use file_explorer::files_app::status_bubble_safe_inset;
 use file_explorer::model::ViewMode;
 use ui::headless::Framed;
 use ui::theme::Theme;
@@ -201,14 +200,12 @@ fn assert_scrolls_via_wheel(mode: ViewMode) {
         "{mode:?}: a wheel-down must scroll the list; offset stayed {one_notch}",
     );
 
-    // Fling to the bottom: the content's bottom edge reaches the top of the
-    // reserved status-bubble lane, so the last entries remain visible rather
-    // than sitting under the floating status pill.
+    // Fling to the bottom: the content's bottom edge reaches the viewport's,
+    // so the last entries remain visible.
     h.wheel(1000.0);
     h.relayout();
     let content_after = h.rect_of("FileView");
-    let safe_inset = f64::from(status_bubble_safe_inset(&ui::Theme::dark()));
-    let max_offset = (content_before.height() - (viewport.height() - safe_inset)).max(0.0);
+    let max_offset = (content_before.height() - viewport.height()).max(0.0);
     let bottom = applied_offset(&h);
     assert!(
         bottom > one_notch,
@@ -216,14 +213,14 @@ fn assert_scrolls_via_wheel(mode: ViewMode) {
     );
     assert!(
         (bottom - max_offset).abs() < 2.0,
-        "{mode:?}: scroll clamps above the status lane (got {bottom}, max {max_offset})",
+        "{mode:?}: scroll clamps at the end (got {bottom}, max {max_offset})",
     );
     assert!(
-        (content_after.y1 - (viewport.y1 - safe_inset)).abs() < 2.0,
-        "{mode:?}: fully scrolled, the last entries sit above the status lane \
-         (content.y1={} safe-bottom={})",
+        (content_after.y1 - viewport.y1).abs() < 2.0,
+        "{mode:?}: fully scrolled, the last entries end at the viewport's bottom \
+         (content.y1={} bottom={})",
         content_after.y1,
-        viewport.y1 - safe_inset,
+        viewport.y1,
     );
 }
 

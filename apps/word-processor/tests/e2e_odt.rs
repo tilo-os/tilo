@@ -43,8 +43,6 @@ fn append_to(app: &mut App, block: &str, text: &str) {
     );
 }
 
-/// Open-edit-save-reload works for ODT and Markdown, and a table and a custom
-/// named style survive an ODT save and reload.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -63,7 +61,6 @@ fn odt_and_markdown_edits_survive_save_and_reload() {
         );
         save_as(&mut author, &path);
 
-        // Open it in the word processor.
         let mut app = launched(&path);
         assert_eq!(texts(&app), ["alpha"]);
 
@@ -78,7 +75,6 @@ fn odt_and_markdown_edits_survive_save_and_reload() {
             },
         );
 
-        // Save back to the same .odt, and open it anew.
         save_as(&mut app, &path);
         assert_eq!(texts(&launched(&path)), ["alpha beta", "gamma"]);
 
@@ -202,7 +198,6 @@ fn odt_and_markdown_edits_survive_save_and_reload() {
             "built-in body still available after import"
         );
 
-        // The block still references the named style.
         let snap = snapshot(&reopened);
         assert_eq!(
             snap.blocks[0].attrs.get("style"),

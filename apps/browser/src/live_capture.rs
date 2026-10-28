@@ -20,10 +20,8 @@ use ui::lock::MutexRecover as _;
 
 /// The page a live capture opens unless `TILO_BROWSER_LIVE_URL` names one.
 const DEFAULT_LIVE_URL: &str = "https://example.org";
-/// The viewport a live capture is drawn at.
 const LIVE_VIEWPORT: (u32, u32) = (1200, 720);
 
-/// Capture the live page at `out`.
 pub(crate) fn shots_live(out: &str) -> Result<(), String> {
     capture(out, false)
 }
@@ -136,11 +134,13 @@ fn render_live_shot_to_png(
     // Keep capture chrome/session data isolated while using real maintained
     // protection and the same WebViewEngine event/render pipeline as the app.
     let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-    crate::blocker::spawn_filter_loader(engine.clone());
     engine.send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
         crate::blocker::user_scripts(),
     )));
-    engine.send(WebViewCommand::Navigate(url.to_string()));
+    crate::blocker::spawn_filter_loader(
+        engine.clone(),
+        Some(WebViewCommand::Navigate(url.to_string())),
+    );
 
     let (w, h) = viewport;
     let theme = ui::launch::shot_theme_from_env()?;

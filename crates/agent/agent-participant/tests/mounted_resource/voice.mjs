@@ -57,14 +57,19 @@ const deadline = setTimeout(() => {
 }, 130_000);
 deadline.unref();
 
-async function open(device) {
+// A browser with `prompt` left out has no automatic answer to the
+// microphone prompt: the journey sets the page's permission itself, as the
+// person would in the site settings.
+async function open(device, {prompt = true} = {}) {
   const browser = await launch({args:['--ignore-certificate-errors', '--enable-features=Vulkan',
     '--use-vulkan=swiftshader', '--use-angle=swiftshader', '--use-fake-device-for-media-stream',
-    '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required',
+    ...(prompt ? ['--use-fake-ui-for-media-stream'] : []), '--autoplay-policy=no-user-gesture-required',
     ]});
   browsers.add(browser);
+  if (!prompt) await microphone(browser, 'denied');
   const tab = await browser.tab();
   pages.push(tab);
+  tab.browser = browser;
   await tab.navigate(origin + '/fixture.html');
   await tab.waitFor('document.readyState === "complete"');
   await tab.send('Page.bringToFront');
@@ -78,23 +83,41 @@ async function open(device) {
   return tab;
 }
 
+async function microphone(browser, setting) {
+  const reply = await browser.send('Browser.setPermission', {permission:{name:'microphone'}, setting, origin});
+  assert.equal(reply.error, undefined, `the microphone permission must be ${setting}`);
+}
+
 async function action(tab, name, gesture = false) {
   const response = await tab.send('Runtime.evaluate', {expression:
     `mount.invokeAction(fixture.callRow, ${JSON.stringify(name)})`,
     returnByValue:true, userGesture:gesture});
-  assert.equal(response.result?.exceptionDetails, undefined, 'public Chat action failed');
+  const thrown = response.result?.exceptionDetails;
+  assert.equal(thrown, undefined, `public Chat action ${name} failed: ${thrown?.exception?.description ?? thrown?.exception?.value ?? thrown?.text ?? ''}`);
   const result = response.result.result.value;
-  assert.equal(result.state, 'completed', `${name} must complete through the compiled app`);
+  assert.equal(result.state, 'completed', `${name} must complete through the compiled app: ${JSON.stringify(result).slice(0, 400)}`);
   return result.output?.value;
 }
 const snapshot = tab => action(tab, 'call-status');
 const inactive = tab => tab.evaluate('!peer.voice.call.stats().captureActive');
 const resourcesClosed = tab => tab.evaluate('voiceEvidence.contexts.every(c=>c.state === "closed") && voiceEvidence.streams.every(s=>s.getTracks().every(t=>t.readyState === "ended")) && voiceEvidence.workers.every(w=>w.stopped)');
-async function activateMuteControl(tab) {
+// The call's microphone is Chat's action in the window bar, wherever the
+// call is shown: found by that action, it is named for what a press does
+// (Unmute while muted, Mute while heard).
+const microphoneControl = `Array.from(document.querySelectorAll('[data-tilo-semantic]')).find(element => {
+  try {return JSON.parse(element.dataset.tiloSemantic).at(-1) === 'window-toolbar-action:call-mute';} catch {return false;}
+})`;
+async function activateMicrophone(tab, outcome) {
+  try {
+    await tab.waitFor(`(mount.requestSemantics(), ${microphoneControl}?.getAttribute('aria-label') === ${JSON.stringify(outcome)})`, {timeout:10_000});
+  } catch {
+    const controls = await tab.evaluate(`Array.from(document.querySelectorAll('[data-tilo-semantic]')).map(element => [element.dataset.tiloSemantic, element.getAttribute('aria-label')])`);
+    process.stderr.write(`semantic controls: ${JSON.stringify(controls)}\n`);
+    throw Error(`actual Chat microphone control saying ${outcome} is missing`);
+  }
   const response = await tab.send('Runtime.evaluate', {expression:`(() => {
-    mount.requestSemantics();
-    const button = Array.from(document.querySelectorAll('[data-tilo-semantic]')).find(element => element.getAttribute('aria-label') === 'Mute microphone');
-    if (!button) throw Error('actual Chat microphone control is missing');
+    const button = ${microphoneControl};
+    if (button?.getAttribute('aria-label') !== ${JSON.stringify(outcome)}) throw Error('actual Chat microphone control is missing');
     button.click(); return true;
   })()`, returnByValue:true, userGesture:true});
   assert.equal(response.result?.exceptionDetails, undefined, 'native semantic microphone control must activate');
@@ -112,7 +135,7 @@ async function waitReported(tab, expression) {
 try {
   stage('mount-two-certified-compiled-chat-profiles');
   const first = await open({});
-  const second = await open(fixture.secondDevice);
+  const second = await open(fixture.secondDevice, {prompt:false});
   for (const tab of pages) {
     const controls = await tab.evaluate("mount.actions(fixture.callRow).map(a=>a.address.action)");
     for (const name of ['join-call','call-status','mute','unmute','leave-call']) assert.ok(controls.includes(name), `public ${name} missing`);
@@ -127,8 +150,21 @@ try {
     assert.equal(await tab.evaluate('voiceEvidence.streams.length'), 0, 'join must not request a microphone');
   }
   stage('actual-chat-joins-muted-without-capture');
+  // The browser refuses the microphone: the person stays in the call,
+  // muted, and the call says why; the other person is unaffected.
+  await activateMicrophone(second, 'Unmute');
+  const refused = await waitReported(second, value => value.reported.issue === 'permission_denied');
+  assert.equal(refused.reported.state, 'live', 'a refused microphone keeps the call');
+  assert.equal(refused.reported.muted, true);
+  assert.equal(refused.reported.capture_active, false);
+  assert.equal(refused.clientIssue, null, 'Chat keeps the call: nothing failed');
+  assert.equal(await second.evaluate('peer.voice.call.state.phase'), 'live');
+  assert.equal(await second.evaluate('voiceEvidence.streams.length'), 0, 'no microphone was handed over');
+  assert.equal(await first.evaluate('peer.voice.call.state.participants.length'), 2, 'the other person still hears the call');
+  stage('actual-chat-refused-microphone-stays-in-the-call-muted');
+  await microphone(second.browser, 'granted');
   await action(first, 'unmute', true);
-  await activateMuteControl(second);
+  await activateMicrophone(second, 'Unmute');
   for (const tab of pages) {
     await tab.waitFor('peer.voice.call.stats().captureActive === true', {timeout:10_000});
     await waitReported(tab, value => value.reported.capture_active && !value.reported.muted);
@@ -140,7 +176,7 @@ try {
   for (let index=0; index<pages.length; index++) {
     writeFileSync(join(evidence, `chat-call-${index}.png`), await pages[index].screenshot());
   }
-  await activateMuteControl(second);
+  await activateMicrophone(second, 'Mute');
   await waitReported(second, value => value.reported.muted && !value.reported.capture_active);
   assert.equal(await inactive(second), true);
   assert.equal(await first.evaluate('peer.voice.call.stats().captureActive'), true, 'one device mute must not mute the other');

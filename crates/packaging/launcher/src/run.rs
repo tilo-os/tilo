@@ -26,6 +26,9 @@ use crate::services::{
     EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext, resolve_blob_bind,
     resolve_chooser_bind, resolve_service_binds_for_launch, to_service_binds,
 };
+use entrypoint_runtime::{preflight_entrypoint_runtime, resolve_launch_runtimes};
+
+mod entrypoint_runtime;
 
 struct SeccompFds {
     clone3_compat: OwnedFd,
@@ -161,6 +164,17 @@ pub enum RunError {
     },
     #[error("manifest declares runtime `{0}` but the value is not in `<name>/<version>` form")]
     RuntimeReferenceMalformed(String),
+    #[error(
+        "`{package}` runs on the runtime `{runtime}`, which is not installed (looked in \
+         {searched}). Install it with `app install {package}`, which also fetches the runtime \
+         it needs.",
+        searched = display_paths(.searched)
+    )]
+    EntrypointRuntimeMissing {
+        package: String,
+        runtime: String,
+        searched: Vec<PathBuf>,
+    },
     #[error(
         "`{package}` changed while it was opening: an update replaced the build at {path}. \
          Open it again to start the new one."
@@ -589,7 +603,6 @@ mod headless_console_launch_tests {
 
     #[test]
     fn launch_claims_and_device_hints_follow_the_manifest() {
-        // Phase `uri_is_revalidated_against_the_launch_manifest`.
         {
             let manifest = browser_manifest();
             let accepted = RunOptions {
@@ -620,7 +633,6 @@ mod headless_console_launch_tests {
                 );
             }
         }
-        // Phase `only_gui_game_packages_receive_the_scheduler_hint`.
         {
             let game: ManifestView = crate::manifest::test_manifest(
                 "id = \"so.tilo.game\"\nversion = \"1\"\nkind = \"app\"\ncategory = \"Games\"",
@@ -639,7 +651,6 @@ mod headless_console_launch_tests {
                 &RunOptions::default()
             ));
         }
-        // Phase `only_game_launches_receive_the_ntsync_device`.
         {
             let mut game = vec!["/app/game".to_string()];
             splice_game_ntsync(&mut game, true).unwrap();
@@ -657,40 +668,7 @@ mod headless_console_launch_tests {
 }
 
 #[cfg(test)]
-mod interface_tests {
-    use super::*;
-    use tilo_app_package::interfaces::ProvidedInterfaces;
-
-    #[test]
-    fn a_build_speaking_another_interface_version_is_refused() {
-        let settings: ManifestView = crate::manifest::test_manifest(
-            "id = \"so.tilo.settings\"\nversion = \"2\"\nkind = \"app\"",
-            "[entrypoint]\nbin = \"bin/settings\"\n\
-             [sandbox.services]\nsystem = \"required@2\"\ncollab = \"optional@3\"\n",
-        );
-        let os = |system: u32, runtime: u32| {
-            ProvidedInterfaces::new([("system", system), ("runtime", runtime)], ["collab"])
-        };
-        let unmet = interfaces_unmet(&settings, Some(&os(1, 3)));
-        assert_eq!(unmet.len(), 1);
-        assert_eq!(unmet[0].requirement, "system@2");
-        let optional = interfaces_unmet(&settings, Some(&os(2, 4)));
-        assert_eq!(
-            optional[0].requirement, "collab@3",
-            "an optional service is spoken at its own version where it is there"
-        );
-        assert!(interfaces_unmet(&settings, Some(&os(2, 3))).is_empty());
-        assert!(interfaces_unmet(&settings, None).is_empty());
-
-        let message = RunError::InterfacesUnmet {
-            package: "so.tilo.settings".into(),
-            unmet: tilo_app_package::interfaces::describe_unmet(&unmet),
-        }
-        .to_string();
-        assert!(message.contains("system@2 (this system provides system@1)"));
-        assert!(message.contains("app remove so.tilo.settings"));
-    }
-}
+mod interface_tests;
 
 #[cfg(test)]
 mod managed_service_tests {
@@ -800,7 +778,6 @@ mod managed_service_tests {
 
     #[test]
     fn managed_service_launches_are_confined_to_headless_service_packages() {
-        // Phase `managed_service_requires_service_kind_and_headless_entrypoint`.
         {
             let service = manifest("service", "cli");
             assert!(validate_launch_mode(&service, &service_options()).is_ok());
@@ -813,7 +790,6 @@ mod managed_service_tests {
                 Err(RunError::InvalidServiceLaunch(_))
             ));
         }
-        // Phase `managed_service_cannot_receive_a_display_or_open_resource`.
         {
             let manifest = manifest("service", "cli");
             let display = RunOptions {
@@ -827,7 +803,6 @@ mod managed_service_tests {
             };
             assert!(validate_launch_mode(&manifest, &document).is_err());
         }
-        // Phase `no_launch_can_readdress_its_signed_package_id`.
         {
             let service = RunOptions {
                 app_id: Some("so.tilo.other".into()),
@@ -886,12 +861,6 @@ pub fn resolve_capabilities(manifest: &ManifestView, opts: &RunOptions) -> Capab
 
 /// Priority: explicit override > manifest declaration (per-user, then
 /// system; system first for an ABI-bound version) > no bind. `Ok(None)` (no declaration) is distinct from `Err`.
-///
-/// # Errors
-///
-/// Returns [`RunError`] if the manifest's runtime reference is malformed, if
-/// the resolved bundle fails signature/publisher verification, or if no
-/// bundle is found and `opts.allow_missing_runtime` is unset.
 pub fn resolve_runtime_test_helper(
     manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
@@ -899,12 +868,12 @@ pub fn resolve_runtime_test_helper(
     resolve_runtime(manifest, opts)
 }
 
-/// The launch argv after [`splice_optional_runtimes`] ran on a bare `entry`
+/// The launch argv after `splice_optional_runtimes` ran on a bare `entry`
 /// token, and the mounts it returned for Landlock.
 ///
 /// # Errors
 ///
-/// As [`splice_optional_runtimes`].
+/// As `splice_optional_runtimes`.
 pub fn optional_runtimes_test_helper(
     manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
@@ -1064,12 +1033,6 @@ pub fn resolve_gpu_selection(
 
 /// Priority: explicit override > manifest declaration (per-user, then
 /// system; system first for an ABI-bound version) > no bind. `Ok(None)` (no declaration) is distinct from `Err`.
-///
-/// # Errors
-///
-/// Returns [`RunError`] if the manifest's runtime reference is malformed, if
-/// the resolved bundle fails signature/publisher verification, or if no
-/// bundle is found and `opts.allow_missing_runtime` is unset.
 pub fn resolve_runtime(
     manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
@@ -1181,10 +1144,11 @@ fn splice_runtime_mounts(
     argv: &mut Vec<String>,
     manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
-    resolved_runtime_present: bool,
+    runtime: Option<(&Path, &str)>,
 ) -> Result<Vec<String>, RunError> {
-    let optional = resolve_optional_runtimes(manifest, opts);
-    splice_runtime_mounts_with(argv, opts, resolved_runtime_present, &optional)
+    let optional = resolve_launch_runtimes(manifest, opts)?;
+    preflight_entrypoint_runtime(manifest, opts, runtime, &optional)?;
+    splice_runtime_mounts_with(argv, opts, runtime.is_some(), &optional)
 }
 
 /// [`splice_runtime_mounts`] for optional runtimes already resolved.
@@ -1211,7 +1175,15 @@ fn resolve_optional_runtimes(
     opts: &RunOptions,
 ) -> Vec<(PathBuf, String)> {
     let mut found = Vec::new();
-    for raw in &manifest.optional_runtimes {
+    let entry = manifest.entrypoint.runtime.as_deref();
+    // The entrypoint's runtime is declared among the optional ones but is
+    // not optional: `resolve_launch_runtimes` resolves it and refuses the
+    // launch without it.
+    for raw in manifest
+        .optional_runtimes
+        .iter()
+        .filter(|raw| Some(raw.as_str()) != entry)
+    {
         match find_runtime_bundle(raw, opts) {
             Ok((Some(bundle), _)) => found.push(bundle),
             Ok((None, searched)) => tracing::info!(
@@ -1252,7 +1224,7 @@ fn splice_optional_runtimes(
     manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
 ) -> Result<Vec<String>, RunError> {
-    splice_resolved_optional_runtimes(argv, &resolve_optional_runtimes(manifest, opts))
+    splice_resolved_optional_runtimes(argv, &resolve_launch_runtimes(manifest, opts)?)
 }
 
 /// Verify the bundle at `path` against the signature policy. Unless
@@ -1273,7 +1245,7 @@ fn enforce_bundle_policy(
 }
 
 /// A runtime bundle a person installed into their own store, verified by the
-/// policy a launch applies to it ([`enforce_bundle_policy`]): every payload
+/// policy a launch applies to it (`enforce_bundle_policy`): every payload
 /// byte proven (by its signed fs-verity digest, else hashed), signed by a
 /// trusted publisher. Returns its manifest, whose root hash is the bundle's
 /// identity.
@@ -1679,7 +1651,6 @@ mod dev_override_tests {
 
     #[test]
     fn trust_roots_follow_the_build_profile() {
-        // Phase `a_release_build_reads_the_images_trusted_publisher_list`.
         {
             let path = trusted_publishers_path_from(dev_override_from(
                 false,
@@ -1688,7 +1659,6 @@ mod dev_override_tests {
             ));
             assert_eq!(path, Path::new(TRUSTED_PUBLISHERS_FILE));
         }
-        // Phase `a_developer_build_honours_the_trusted_publisher_override`.
         {
             let path = trusted_publishers_path_from(dev_override_from(
                 true,
@@ -1697,7 +1667,6 @@ mod dev_override_tests {
             ));
             assert_eq!(path, Path::new("/dev/runtime/trusted-publishers.txt"));
         }
-        // Phase `a_release_build_ignores_the_runtime_bundle_root_override`.
         {
             let gated = dev_override_from(
                 false,
@@ -1964,7 +1933,10 @@ fn start_egress_gate(
         return Ok((None, None));
     };
 
-    let host_socket = crate::netgate::gate_socket_path(current_uid(), std::process::id());
+    let host_socket = crate::netgate::gate_socket_path(
+        &crate::dbus_proxy::session_runtime_dir(),
+        std::process::id(),
+    );
     match crate::netgate::NetGate::start(&host_socket, policy.clone()) {
         Ok(gate) => {
             let bind = crate::sandbox::NetGateBind {
@@ -2010,6 +1982,12 @@ unsafe fn place_child_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()> {
             "service fd relocation floor overflowed RawFd",
         )
     })?;
+    // Capture descriptors sit at fixed numbers above 1024 (the original
+    // roots from 1800), and F_DUPFD refuses a floor at or above the soft
+    // descriptor limit with EINVAL. A login's soft limit is commonly 1024
+    // under a much higher hard one, so lift the soft limit far enough for
+    // the relocation; the sandbox's own limit is set right after placement.
+    unsafe { raise_soft_nofile(floor, pairs.len())? };
     for (src, _) in pairs.iter_mut() {
         // F_DUPFD returns the lowest free fd >= floor, i.e. clear of
         // every target.
@@ -2050,6 +2028,38 @@ unsafe fn place_child_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()> {
 /// contain workspace content or broker responses; an untrusted app also does not
 /// need an unbounded descriptor table. Both soft and hard limits are set so the
 /// app cannot raise them again.
+/// Lift the soft `RLIMIT_NOFILE` so descriptors from `floor` up to
+/// `floor + count` can be created, within the hard limit (EMFILE when the
+/// hard limit is lower). Async-signal-safe: only getrlimit and setrlimit,
+/// and errors carry an errno rather than an allocated message.
+unsafe fn raise_soft_nofile(floor: RawFd, count: usize) -> std::io::Result<()> {
+    let needed = u64::try_from(floor)
+        .ok()
+        .and_then(|floor| floor.checked_add(u64::try_from(count).ok()?))
+        .ok_or_else(|| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: the pointer refers to an initialized rlimit for the call.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if limit.rlim_cur >= needed {
+        return Ok(());
+    }
+    if limit.rlim_max != libc::RLIM_INFINITY && limit.rlim_max < needed {
+        // No allocation after fork: the errno says it, the doc says why.
+        return Err(std::io::Error::from_raw_os_error(libc::EMFILE));
+    }
+    limit.rlim_cur = needed;
+    // SAFETY: as above.
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 unsafe fn set_sandbox_resource_limits() -> std::io::Result<()> {
     let core = libc::rlimit {
         rlim_cur: 0,
@@ -2247,11 +2257,12 @@ fn splice_app_dir(
 }
 
 /// Settings remaps XDG into the app dir. Bind the parts of the session's
-/// `~/.config/tilo` it edits over that path
-/// ([`crate::appdir::SESSION_SETTINGS_BINDS`]), so a write to the settings
-/// document is the one the compositor watches and the open Settings window
-/// paints, while the rest of that directory (trust lists, registries,
-/// records) stays out of the sandbox.
+/// `~/.config/tilo` it is custodian of over that path
+/// ([`crate::appdir::SESSION_SETTINGS_BINDS`]: the account stores, and the
+/// workspace tree read-only), while the rest of that directory (the settings
+/// document and its records, trust lists, registries) stays out of the
+/// sandbox. Settings reads and writes the session's settings through the
+/// shell's settings service on its channel, as every app does.
 fn splice_session_settings(argv: &mut Vec<String>, package_id: &str) -> Result<(), RunError> {
     use std::os::unix::fs::DirBuilderExt as _;
 
@@ -2338,6 +2349,47 @@ fn splice_retained_files(
     crate::sandbox::push_retained_files_bind(argv, path);
     argv.push(entry);
     Ok(())
+}
+
+/// Bind the app's own view of the files the person chose for it in the
+/// session shell's chooser (`tilo_documents`) at
+/// [`tilo_documents::SANDBOX_DIR`]. The view is empty at launch and fills as
+/// the person chooses; nothing else of the documents filesystem, and no
+/// other app's view, is reachable. Answers whether it was bound: a launch
+/// outside a room, or a session whose shell serves no documents, binds
+/// nothing.
+fn splice_documents(
+    argv: &mut Vec<String>,
+    manifest: &ManifestView,
+    opts: &RunOptions,
+) -> Result<bool, RunError> {
+    let Some(view) = documents_view(
+        tilo_documents::mountpoint().as_deref(),
+        &manifest.package_id,
+        opts.workspace_id.as_deref(),
+    ) else {
+        return Ok(false);
+    };
+    let entry = pop_entry(argv)?;
+    argv.extend([
+        "--bind-try".to_owned(),
+        view.display().to_string(),
+        tilo_documents::SANDBOX_DIR.to_owned(),
+    ]);
+    argv.push(entry);
+    Ok(true)
+}
+
+/// The host folder that is `package_id`'s view in `room` under the
+/// documents filesystem mounted at `mountpoint`, when it is being served.
+fn documents_view(
+    mountpoint: Option<&Path>,
+    package_id: &str,
+    room: Option<&str>,
+) -> Option<PathBuf> {
+    let key = tilo_documents::AppKey::new(room?, package_id)?;
+    let view = tilo_documents::app_view(mountpoint?, &key);
+    view.is_dir().then_some(view)
 }
 
 fn validate_retained_files_projection(path: &Path) -> Result<(), RunError> {
@@ -2535,6 +2587,9 @@ struct ShimSpliceCtx<'a> {
     gpu_devices: bool,
     pipeline_seed: &'a Option<PathBuf>,
     keep_fds: &'a [RawFd],
+    /// The app's view of the documents chosen for it is bound
+    /// ([`splice_documents`]).
+    documents: bool,
 }
 
 /// In-sandbox shim: bind this launcher binary in and rewrite the trailing
@@ -2643,6 +2698,13 @@ fn splice_sandbox_shim(
     // And the person's records of it, bound the same way.
     argv.push("--rw".to_string());
     argv.push(crate::appdir::SANDBOX_PERSON_DIR.to_string());
+    // The documents chosen for it, by their in-sandbox path like the app
+    // directory: read and written as each choice allows (the documents
+    // filesystem refuses the rest), never executed.
+    if ctx.documents {
+        argv.push("--rw-noexec".to_string());
+        argv.push(tilo_documents::SANDBOX_DIR.to_string());
+    }
     // The GPU device nodes a `gpu` app was bound — same O_RDWR reasoning
     // as above.
     if ctx.gpu_devices {
@@ -2845,6 +2907,8 @@ struct ChildSetup {
         Option<std::thread::JoinHandle<()>>,
     ),
     latency_sensitive: bool,
+    /// A development session's launch of a module payload: followed from the spawn on.
+    live_module: Option<crate::live_module::LiveModule>,
 }
 
 /// Finish building `argv` (seccomp prefix + passthrough tail), spawn `bwrap`
@@ -2873,6 +2937,7 @@ fn spawn_and_wait(
         services: resolved,
         identity_broker,
         latency_sensitive,
+        live_module,
     } = child_setup;
     let (observer, debug_output) = match observer {
         Some((observer, debug_output)) => (Some(observer), debug_output),
@@ -3126,6 +3191,12 @@ fn spawn_and_wait(
     }
     // 5. Spawn + wait.
     let mut child = cmd.spawn().map_err(RunError::Spawn)?;
+    // Until the app exits; the watch stops and its directory goes when this drops.
+    let _following = live_module.and_then(|live| {
+        live.follow()
+            .inspect_err(|error| tracing::warn!(%error, "live module: not following reinstalls"))
+            .ok()
+    });
     if let Some((_, file)) = debug_output {
         let sink = Arc::new(std::sync::Mutex::new(file));
         let budget = Arc::new(AtomicUsize::new(DEBUG_OUTPUT_LIMIT));
@@ -3274,6 +3345,11 @@ fn preflight_runtime_libraries(
     let Some(entry_bin) = launch_entry_bin(manifest, &opts.mode) else {
         return Ok(());
     };
+    if manifest.entrypoint.runtime.is_some() {
+        // The binary is the entrypoint runtime's, checked once that runtime
+        // is resolved (`preflight_entrypoint_runtime`).
+        return Ok(());
+    }
     let payload_mount = crate::sandbox::payload_mount_for(&manifest.package_id);
     let runtime_mount = crate::sandbox::runtime_mount_for(version);
     let view = crate::loader_preflight::LoaderView::for_sandbox(
@@ -3631,7 +3707,7 @@ pub(crate) fn run_with_context(
         // engine is hundreds of MB); nothing else here needs the answer
         // before the sandbox argv is built.
         let optional = spawn_beside(scope, "launch-optional-runtimes", move || {
-            let bundles = resolve_optional_runtimes(manifest, opts);
+            let bundles = resolve_launch_runtimes(manifest, opts);
             tilo_startup_metrics::handoff_mark("optional-runtimes-verified");
             bundles
         })?;
@@ -3653,6 +3729,8 @@ pub(crate) fn run_with_context(
     let runtime_arg = resolved_runtime
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
+    let optional_runtimes = optional_runtimes?;
+    preflight_entrypoint_runtime(manifest, opts, runtime_arg, &optional_runtimes)?;
 
     if let Some(owner) = native_owner
         && let Some(hosts) = owner.reviewed_network_hosts()?
@@ -3736,6 +3814,18 @@ pub(crate) fn run_with_context(
         if let Some(door) = crate::job_door::open(opts.no_services) {
             resolved.push(door);
         }
+        // The shell opens the app's later windows in this process through
+        // the door it released this launch with (`runtime_portal::windows`).
+        #[cfg(target_os = "linux")]
+        if matches!(opts.mode, LaunchMode::Gui)
+            && let Some(door) = crate::registration_gate::take_window_door()
+        {
+            resolved.push(crate::services::ResolvedService {
+                name: runtime_portal::windows::SERVICE.to_owned(),
+                host: door,
+                child_fd: runtime_portal::windows::CHILD_FD,
+            });
+        }
         resolved
     };
     let binds = to_service_binds(&resolved);
@@ -3808,6 +3898,15 @@ pub(crate) fn run_with_context(
         resolved_runtime.is_some(),
         &optional_runtimes,
     )?;
+    // A development session's launch of a module payload follows its package's reinstalls.
+    let live_module = if enrolled.is_none() && native_owner.is_none() {
+        crate::live_module::LiveModule::prepare(manifest, opts)?
+    } else {
+        None
+    };
+    if let Some(live) = &live_module {
+        live.splice(&mut argv, &mut ro_paths)?;
+    }
     if native_owner
         .and_then(crate::managed::EnrolledProcessObserver::capture_projection)
         .is_some()
@@ -3836,6 +3935,7 @@ pub(crate) fn run_with_context(
     let (system_authority, _system_bus_guard) = splice_system_authority(&mut argv, manifest)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
     splice_retained_files(&mut argv, manifest, opts)?;
+    let documents = splice_documents(&mut argv, manifest, opts)?;
     let _browser_projection = crate::browser_projection::splice(&mut argv, manifest, opts)?;
     splice_action_authority(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
@@ -3863,6 +3963,7 @@ pub(crate) fn run_with_context(
             gpu_devices: gpu_granted,
             pipeline_seed: &pipeline_seed,
             keep_fds: &keep_fds,
+            documents,
         },
     )?;
 
@@ -3927,6 +4028,7 @@ pub(crate) fn run_with_context(
                 identity_broker_thread,
             ),
             latency_sensitive,
+            live_module,
         },
         &egress,
         net_gate.as_ref(),
@@ -4132,7 +4234,6 @@ mod captured_resource_tests {
 
     #[test]
     fn captured_output_is_bounded_and_cancellable() {
-        // Phase `limits_are_nonzero_and_launcher_bounded`.
         {
             assert!(plan().validate().is_ok());
             for invalid in [
@@ -4159,7 +4260,6 @@ mod captured_resource_tests {
                 ));
             }
         }
-        // Phase `stdout_and_stderr_share_one_hard_memory_budget`.
         {
             let used = Arc::new(AtomicUsize::new(0));
             let exceeded = Arc::new(AtomicBool::new(false));
@@ -4182,7 +4282,6 @@ mod captured_resource_tests {
             assert_eq!(used.load(AtomicOrdering::Acquire), 8);
             assert!(exceeded.load(AtomicOrdering::Acquire));
         }
-        // Phase `cancellation_is_target_local_and_sticky`.
         {
             let cancellation = CaptureCancellation::default();
             let observer = cancellation.clone();
@@ -4540,7 +4639,7 @@ fn run_with_capture_spawn<T>(
             Some((runtime_portal::process_binding::ENV.into(), "1".into())),
         )?;
     }
-    let ro_paths = splice_runtime_mounts(&mut argv, manifest, opts, resolved_runtime.is_some())?;
+    let ro_paths = splice_runtime_mounts(&mut argv, manifest, opts, runtime_arg)?;
     splice_tool_context(&mut argv)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
     splice_workspace_id_bind(&mut argv, opts)?;
@@ -4554,6 +4653,7 @@ fn run_with_capture_spawn<T>(
     let (system_authority, _system_bus_guard) = splice_system_authority(&mut argv, manifest)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
     splice_retained_files(&mut argv, manifest, opts)?;
+    let documents = splice_documents(&mut argv, manifest, opts)?;
     let _browser_projection = crate::browser_projection::splice(&mut argv, manifest, opts)?;
     splice_action_authority(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
@@ -4575,6 +4675,7 @@ fn run_with_capture_spawn<T>(
             gpu_devices: gpu_granted,
             pipeline_seed: &pipeline_seed,
             keep_fds: &keep_fds,
+            documents,
         },
     )?;
 
@@ -4751,18 +4852,21 @@ fn resolve_dbus_bind(
     portals: &std::collections::BTreeMap<String, PortalPolicy>,
     graphical: bool,
 ) -> (Option<DBusBindPlan>, Vec<DBusProxyGuard>) {
-    let (uid, pid) = (current_uid(), std::process::id());
+    let (runtime, pid) = (dbus_proxy::session_runtime_dir(), std::process::id());
     let sockets = ProxySockets {
-        session: dbus_proxy::proxy_socket_path(uid, pid),
-        atspi: dbus_proxy::atspi_proxy_socket_path(uid, pid),
+        session: dbus_proxy::proxy_socket_path(&runtime, pid),
+        atspi: dbus_proxy::atspi_proxy_socket_path(&runtime, pid),
+        ready_within: dbus_proxy::PROXY_READY_TIMEOUT,
     };
     resolve_dbus_bind_at(portals, graphical, &sockets)
 }
 
-/// Where one launch's D-Bus proxies listen on the host.
+/// Where one launch's D-Bus proxies listen on the host, and how long each
+/// may take to report its listener ready.
 struct ProxySockets {
     session: PathBuf,
     atspi: PathBuf,
+    ready_within: std::time::Duration,
 }
 
 fn resolve_dbus_bind_at(
@@ -4800,20 +4904,21 @@ fn resolve_dbus_bind_at(
     let (session, atspi) = std::thread::scope(|scope| {
         let atspi = graphical.then(|| {
             spawn_beside(scope, "launch-atspi", || {
-                spawn_atspi_proxy(&binary, &bus_addr, uid, &sockets.atspi)
+                spawn_atspi_proxy(&binary, &bus_addr, uid, sockets)
             })
         });
-        let session = dbus_proxy::spawn_filtered_proxy(
+        let session = dbus_proxy::spawn_filtered_proxy_within(
             &binary,
             &bus_addr,
             &sockets.session,
             &dbus_proxy::session_filter_args(wants_portals, graphical),
+            sockets.ready_within,
         );
         let atspi = match atspi {
             Some(Ok(handle)) => join_beside(handle),
             Some(Err(error)) => {
                 tracing::warn!(%error, "AT-SPI proxy could not start beside the session proxy");
-                spawn_atspi_proxy(&binary, &bus_addr, uid, &sockets.atspi)
+                spawn_atspi_proxy(&binary, &bus_addr, uid, sockets)
             }
             None => None,
         };
@@ -4855,22 +4960,24 @@ fn spawn_atspi_proxy(
     binary: &std::path::Path,
     session_bus: &str,
     uid: u32,
-    socket: &Path,
+    sockets: &ProxySockets,
 ) -> Option<(crate::sandbox::AtspiBindPlan, DBusProxyGuard)> {
     let Some(atspi_addr) = dbus_proxy::host_atspi_address(session_bus) else {
         tracing::info!("the session runs no accessibility bus");
         return None;
     };
-    match dbus_proxy::spawn_filtered_proxy(
+    match dbus_proxy::spawn_filtered_proxy_within(
         binary,
         &atspi_addr,
-        socket,
+        &sockets.atspi,
         dbus_proxy::ATSPI_FILTER_ARGS,
+        sockets.ready_within,
     ) {
         Ok(guard) => Some((
             crate::sandbox::AtspiBindPlan {
                 host_socket: guard.socket_path().to_path_buf(),
                 sandbox_path: dbus_proxy::sandbox_atspi_path(uid),
+                read_only: dbus_proxy::atspi_read_only(),
             },
             guard,
         )),
@@ -4910,6 +5017,9 @@ mod dbus_resolution_tests {
     /// The session and AT-SPI proxies come up side by side. Each mock proxy
     /// reports ready only once both have started, so one after the other the
     /// first would never be ready and the session bus would stay unbound.
+    /// The proxies get the shared hang bound to report ready, not the
+    /// product's two seconds: two forked shells polling on a loaded machine
+    /// have taken longer than that to see each other.
     #[test]
     fn the_session_and_accessibility_proxies_start_side_by_side() {
         use std::os::unix::fs::PermissionsExt;
@@ -4922,10 +5032,9 @@ notify=0
 if [ "$1" = --fd=0 ]; then notify=1; shift; fi
 dir=$(dirname "$2")
 : >"$2.started"
-tries=0
+deadline=$(($(date +%s) + TILO_MOCK_PROXY_WAIT_SECS))
 while [ "$(ls "$dir" | grep -c '\.started$')" -lt 2 ]; do
-    tries=$((tries + 1))
-    [ "$tries" -gt 400 ] && exit 1
+    [ "$(date +%s)" -gt "$deadline" ] && exit 1
     sleep 0.01
 done
 : >"$2"
@@ -4938,10 +5047,15 @@ exec sleep infinity
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(crate::dbus_proxy::PROXY_BIN_ENV, &proxy)
             .set("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1234/bus")
-            .set("AT_SPI_BUS_ADDRESS", "unix:path=/run/user/1234/at-spi/bus");
+            .set("AT_SPI_BUS_ADDRESS", "unix:path=/run/user/1234/at-spi/bus")
+            .set(
+                "TILO_MOCK_PROXY_WAIT_SECS",
+                tilo_test_env::hang_bound().as_secs().to_string(),
+            );
         let sockets = ProxySockets {
             session: tmp.path().join("sockets/1.sock"),
             atspi: tmp.path().join("sockets/1-atspi.sock"),
+            ready_within: tilo_test_env::hang_bound(),
         };
 
         let (plan, guards) =
@@ -4980,7 +5094,6 @@ mod identity_resolution_tests {
 
     #[test]
     fn identity_record_resolution_honours_the_requested_source() {
-        // Phase `explicit_record_wins_and_skips_existence_check`.
         {
             let opts = RunOptions {
                 identity: IdentitySource::Record(PathBuf::from("/nowhere/does/not/exist.json")),
@@ -4992,7 +5105,6 @@ mod identity_resolution_tests {
                 "explicit path is used verbatim, no exists() check"
             );
         }
-        // Phase `a_named_store_resolves_its_active_identity`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let store = store_with_primary(tmp.path());
@@ -5005,7 +5117,6 @@ mod identity_resolution_tests {
                 Some(store.join("primary.json"))
             );
         }
-        // Phase `an_empty_store_resolves_nothing`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let opts = RunOptions {
@@ -5051,7 +5162,6 @@ mod identity_resolution_tests {
             assert_eq!(std::fs::read(&path).unwrap(), original);
             assert!(!store.path().join("secrets").exists());
         }
-        // Phase `explicit_identity_outside_the_managed_store_is_never_rewritten`.
         {
             use std::os::unix::fs::PermissionsExt;
 
@@ -5378,7 +5488,6 @@ mod identity_resolution_tests {
 
     #[test]
     fn the_user_identity_store_is_located_via_xdg_then_home() {
-        // Phase `the_user_store_prefers_xdg_config_home`.
         {
             let mut home = tilo_test_env::TestHome::new().unwrap();
             // A record under `$HOME/.config` must lose to `$XDG_CONFIG_HOME`.
@@ -5391,7 +5500,6 @@ mod identity_resolution_tests {
                 Some(ident)
             );
         }
-        // Phase `the_user_store_falls_back_to_home_without_xdg`.
         {
             let mut home = tilo_test_env::TestHome::new().unwrap();
             let ident = store_with_primary(&home.home().join(".config")).join("primary.json");
@@ -5443,7 +5551,6 @@ mod app_dir_tests {
 
     #[test]
     fn the_app_directory_is_resolved_per_room_and_never_from_the_manifest() {
-        // Phase `workspace_launch_without_an_author_grant_is_read_only`.
         {
             let m = manifest("so.tilo.fixture");
             let workspace = resolve_capabilities(&m, &opts_in(Some("room-a")));
@@ -5458,7 +5565,6 @@ mod app_dir_tests {
                 crate::capabilities::Participation::Unscoped
             );
 
-            // The room's grants make the app an author.
             let dir = tempfile::tempdir().expect("tempdir");
             let file = dir.path().join("grants.json");
             std::fs::write(
@@ -5548,7 +5654,7 @@ mod app_dir_tests {
     }
 
     #[test]
-    fn settings_binds_the_session_store_and_other_apps_do_not() {
+    fn settings_binds_its_accounts_but_never_the_session_settings_and_other_apps_bind_nothing() {
         let config = tempfile::tempdir().expect("session config");
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_CONFIG_HOME", config.path());
@@ -5559,18 +5665,14 @@ mod app_dir_tests {
 
         splice_session_settings(&mut argv, "so.tilo.settings").expect("settings");
         let host = config.path().join("tilo");
-        for writable in ["session", "accounts"] {
-            assert!(
-                host.join(writable).is_dir(),
-                "{writable} must exist to bind read-write"
-            );
-            assert!(
-                argv.windows(3).any(|w| w[0] == "--bind"
-                    && w[1] == host.join(writable).to_string_lossy()
-                    && w[2] == format!("/run/tilo/app/.config/tilo/{writable}")),
-                "Settings must bind {writable} over remapped XDG: {argv:?}"
-            );
-        }
+        let accounts = host.join("accounts");
+        assert!(accounts.is_dir(), "accounts must exist to bind read-write");
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--bind"
+                && w[1] == accounts.to_string_lossy()
+                && w[2] == "/run/tilo/app/.config/tilo/accounts"),
+            "Settings must bind accounts over remapped XDG: {argv:?}"
+        );
         assert!(
             !argv.iter().any(|arg| arg == host.to_string_lossy().as_ref()
                 || arg == crate::appdir::SANDBOX_SESSION_CONFIG),
@@ -5588,11 +5690,13 @@ mod app_dir_tests {
                 "{private} must stay out of the Settings sandbox: {argv:?}"
             );
         }
+        // The settings document is the shell's: Settings reaches it through
+        // the settings service on its channel, like every app, not a bind.
         assert!(
-            argv.windows(3).any(|w| w[0] == "--setenv"
-                && w[1] == "TILO_SESSION_SETTINGS"
-                && w[2] == crate::appdir::SANDBOX_SESSION_SETTINGS),
-            "Settings must name the session document: {argv:?}"
+            !argv.iter().any(|arg| arg == "TILO_SESSION_SETTINGS"
+                || arg.ends_with("/session")
+                || arg.ends_with("/session/settings.json")),
+            "Settings must not bind or name the session document: {argv:?}"
         );
         assert_eq!(argv.last().map(String::as_str), Some("/entry"));
     }
@@ -5679,6 +5783,7 @@ mod managed_spawn_policy_tests {
                     services: vec![],
                     identity_broker: (None, None, None),
                     latency_sensitive: false,
+                    live_module: None,
                 },
                 &crate::netgate::EgressDecision::Blocked,
                 None,
@@ -5755,6 +5860,7 @@ mod managed_spawn_policy_tests {
                     services: vec![],
                     identity_broker: (None, None, None),
                     latency_sensitive: false,
+                    live_module: None,
                 },
                 &crate::netgate::EgressDecision::Blocked,
                 None,
@@ -5794,6 +5900,7 @@ mod managed_spawn_policy_tests {
                     services: vec![],
                     identity_broker: (None, None, None),
                     latency_sensitive: false,
+                    live_module: None,
                 },
                 &crate::netgate::EgressDecision::Blocked,
                 None,
@@ -5867,8 +5974,6 @@ bin = \"store\"
             &manifest.package_id,
             "person-a",
             false,
-            10_000,
-            13_000,
         );
         std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).unwrap();
         let opts = RunOptions {
@@ -6239,6 +6344,7 @@ mod retained_files_tests {
                 gpu_devices: false,
                 pipeline_seed: &None,
                 keep_fds: &[],
+                documents: false,
             },
         )
         .unwrap();
@@ -6256,6 +6362,91 @@ mod retained_files_tests {
         let mut argv = vec!["settings".into()];
         splice_retained_files(&mut argv, &other, &opts).unwrap();
         assert_eq!(argv, ["settings"]);
+    }
+
+    /// An app launched into a room is bound its own view of the documents
+    /// chosen for it, at the one sandbox path, and nothing else of the
+    /// documents filesystem; Landlock lets it read and write there as each
+    /// choice allows, never execute.
+    #[test]
+    fn an_app_is_bound_only_its_own_view_of_the_documents_chosen_for_it() {
+        let mount = tempfile::tempdir().unwrap();
+        let own = mount.path().join("room-7").join("so.tilo.pdf-viewer");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::create_dir_all(mount.path().join("room-7").join("so.tilo.files")).unwrap();
+        assert_eq!(
+            documents_view(Some(mount.path()), "so.tilo.pdf-viewer", Some("room-7")),
+            Some(own)
+        );
+        for (mountpoint, app, room) in [
+            (None, "so.tilo.pdf-viewer", Some("room-7")),
+            (Some(mount.path()), "so.tilo.pdf-viewer", None),
+            (Some(mount.path()), "so.tilo.pdf-viewer", Some("room-8")),
+            (Some(mount.path()), "..", Some("room-7")),
+            (
+                Some(mount.path()),
+                "so.tilo.files/../so.tilo.pdf-viewer",
+                Some("room-7"),
+            ),
+        ] {
+            assert_eq!(
+                documents_view(mountpoint, app, room),
+                None,
+                "{app} in {room:?}"
+            );
+        }
+
+        let manifest: ManifestView = toml::from_str(
+            "[package]\nkind = \"app\"\nid = \"so.tilo.pdf-viewer\"\nversion = \"1.0\"\n[entrypoint]\nbin = \"viewer\"\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\n[sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n[sandbox.net]\nmode = \"off\"\n",
+        )
+        .unwrap();
+        let opts = RunOptions {
+            landlock_enforce: true,
+            ..RunOptions::default()
+        };
+        let capabilities = resolve_capabilities(&manifest, &opts);
+        for documents in [true, false] {
+            let mut shim = vec!["viewer".into()];
+            splice_sandbox_shim(
+                &mut shim,
+                &opts,
+                &ShimSpliceCtx {
+                    manifest: &manifest,
+                    net_gate: &None,
+                    runtime_arg: None,
+                    extra_ro_paths: &[],
+                    egress: &crate::netgate::EgressDecision::Blocked,
+                    capabilities: &capabilities,
+                    dbus_plan: &None,
+                    system_authority: &None,
+                    wayland_bind: &None,
+                    gpu: &None,
+                    gpu_devices: false,
+                    pipeline_seed: &None,
+                    keep_fds: &[],
+                    documents,
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                shim.windows(2)
+                    .any(|args| args == ["--rw-noexec", tilo_documents::SANDBOX_DIR]),
+                documents
+            );
+            assert!(
+                !shim
+                    .iter()
+                    .any(|arg| arg.starts_with(tilo_documents::SANDBOX_DIR)
+                        && arg != tilo_documents::SANDBOX_DIR),
+                "no rule reaches past the app's own view"
+            );
+            assert!(
+                !shim
+                    .windows(2)
+                    .any(|args| args == ["--rw", tilo_documents::SANDBOX_DIR]),
+                "documents are never executable"
+            );
+        }
     }
 
     #[test]

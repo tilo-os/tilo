@@ -54,7 +54,6 @@ fn presence_keys_and_locations_are_single_per_peer() {
             None,
             "the caret must clear from the previous block when it moves"
         );
-        // A second peer is unaffected.
         let bob = UserId("bob".into());
         ctx.set_caret(&a, bob.clone(), 1);
         ctx.set_caret(&b, alice, 6);

@@ -13,7 +13,7 @@ use tilo_reference::link::{
 };
 use tilo_resource::share::{SHARE_INVITE_TYPE, SHARE_TYPE, ShareRequest};
 use ui_core::time::{Duration, Instant};
-use ui_core::{CatalogueCall, LocalState, RemoteActions, RemoteCall};
+use ui_core::{Arrival, CatalogueCall, RemoteActions};
 
 /// How long a minting waits for the host's locator.
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -42,10 +42,11 @@ struct Minting {
 struct Pending {
     invocation: tilo_actions::InvocationId,
     minting: Minting,
-    call: LocalState<CatalogueCall>,
+    call: CatalogueCall,
     started: Instant,
-    /// A person asked through a view: the URL goes to the clipboard.
-    copy: bool,
+    /// A person asked through a view: the URL goes to the clipboard their
+    /// click claimed.
+    copy: Option<ui_core::clipboard::ReservedCopy>,
     /// The minted URL, once its copy is under way: the answer waits for the
     /// clipboard's outcome, which settles without blocking the app.
     copying: Option<(String, ui_core::clipboard::ClipboardCopy)>,
@@ -56,8 +57,10 @@ struct Pending {
 pub(crate) struct ShareLinks {
     remote: RemoteActions,
     pending: Vec<Pending>,
-    /// Resources a view asked to copy a link to, in the order asked.
-    copy_requested: Vec<String>,
+    /// Resources a view asked to copy a link to, in the order asked, each
+    /// with the clipboard its click claimed: a browser copies only inside
+    /// the click, and the host answers after it.
+    copy_requested: Vec<(String, ui_core::clipboard::ReservedCopy)>,
 }
 
 impl Default for ShareLinks {
@@ -70,7 +73,6 @@ impl Default for ShareLinks {
     }
 }
 
-/// Whether `type_id` is one of the link operations.
 pub(crate) fn handles(type_id: &str) -> bool {
     type_id == SHARE_TYPE || type_id == SHARE_INVITE_TYPE
 }
@@ -92,8 +94,10 @@ impl ShareLinks {
         if invocation.address.action == tilo_resource::share::SHARE_LINK
             || invocation.address.action == tilo_resource::share::SHARE_INVITE_LINK
         {
-            self.copy_requested
-                .push(invocation.address.resource.clone());
+            self.copy_requested.push((
+                invocation.address.resource.clone(),
+                ui_core::reserve_clipboard_copy(),
+            ));
         }
     }
 
@@ -114,9 +118,8 @@ impl ShareLinks {
         let copy = self
             .copy_requested
             .iter()
-            .position(|resource| *resource == request.resource)
-            .map(|at| self.copy_requested.remove(at))
-            .is_some();
+            .position(|(resource, _)| *resource == request.resource)
+            .map(|at| self.copy_requested.remove(at).1);
         if request.invite {
             if !may_invite {
                 return Err("You may not invite people to this workspace".into());
@@ -147,10 +150,10 @@ impl ShareLinks {
         // A host in this process answers at once.
         if let Some(result) = settled(&pending) {
             let url = result?;
-            if !pending.copy {
+            let Some(reserved) = pending.copy.take() else {
                 return Ok(Some(finish(&url, None)));
-            }
-            let copy = ui_core::try_clipboard_copy(&url);
+            };
+            let copy = reserved.fill(&url);
             if let Some(copied) = copy.outcome() {
                 return Ok(Some(finish(&url, Some(copied))));
             }
@@ -187,13 +190,13 @@ impl ShareLinks {
                     .then(|| Err("The workspace's host did not answer".to_owned()))
             })?;
             match result {
-                Ok(url) if pending.copy => {
-                    let copy = ui_core::try_clipboard_copy(&url);
-                    pending.copying = Some((url, copy));
-                }
                 Ok(url) => {
-                    self.pending.remove(at);
-                    return Some(succeeded(invocation, finish(&url, None)));
+                    let Some(reserved) = pending.copy.take() else {
+                        self.pending.remove(at);
+                        return Some(succeeded(invocation, finish(&url, None)));
+                    };
+                    let copy = reserved.fill(&url);
+                    pending.copying = Some((url, copy));
                 }
                 Err(message) => {
                     self.pending.remove(at);
@@ -222,11 +225,11 @@ impl ShareLinks {
 /// The URL `pending`'s host answer makes, once it has answered.
 fn settled(pending: &Pending) -> Option<Result<String, String>> {
     pending.call.with(|call| match call {
-        RemoteCall::Pending => None,
-        RemoteCall::Refused(error) => Some(Err(format!(
+        Arrival::Pending { .. } => None,
+        Arrival::Failed(error) => Some(Err(format!(
             "The workspace's host would not look the resource up: {error}"
         ))),
-        RemoteCall::Done(page) => Some(render(&pending.minting, page)),
+        Arrival::Ready(page) => Some(render(&pending.minting, page)),
     })
 }
 
@@ -387,6 +390,7 @@ fn render_at(
         record: Some(minting.record.clone()),
         resource: minting.resource.clone(),
         view: minting.view.clone(),
+        discuss: None,
     };
     Link {
         mode: minting.mode,
@@ -429,7 +433,7 @@ mod tests {
     fn page(entry: Option<&str>) -> CataloguePage {
         CataloguePage {
             locator: Some(ResourceViewLocator {
-                origin: "https://quinten.tilo.cloud".into(),
+                origin: "https://ada.tilo.cloud".into(),
                 room: ROOM.into(),
                 host_device: "ab".repeat(32),
                 provider: "record:so.tilo.chat:".into(),
@@ -457,13 +461,13 @@ mod tests {
         assert_eq!(
             url(&serde_json::json!({})).unwrap(),
             format!(
-                "https://tilo.so/app/#/@quinten.tilo.cloud/w/{ROOM}/so.tilo.chat/-/chat.message:01JA"
+                "https://tilo.so/app/#/@ada.tilo.cloud/w/{ROOM}/so.tilo.chat/-/chat.message:01JA"
             )
         );
         assert_eq!(
             url(&serde_json::json!({"start": 6, "end": 9, "mode": "desktop"})).unwrap(),
             format!(
-                "https://tilo.so/#/@quinten.tilo.cloud/w/{ROOM}/so.tilo.chat/-/chat.message:01JA?chars=6-9"
+                "https://tilo.so/#/@ada.tilo.cloud/w/{ROOM}/so.tilo.chat/-/chat.message:01JA?chars=6-9"
             )
         );
         assert!(
@@ -494,7 +498,7 @@ mod tests {
         let minting = minting(&root, &CHAT).unwrap();
         assert_eq!(
             render(&minting, &page(Some("https://tilo.so/"))).unwrap(),
-            format!("https://tilo.so/app/#/@quinten.tilo.cloud/w/{ROOM}/so.tilo.chat/-")
+            format!("https://tilo.so/app/#/@ada.tilo.cloud/w/{ROOM}/so.tilo.chat/-")
         );
     }
 }

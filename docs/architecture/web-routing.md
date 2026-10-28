@@ -178,16 +178,16 @@ https://app.example/app/#/@rooms.example/w/0b5e7a62-4d0f-4c55-9d2a-58d3a3f0c001/
 https://app.example/#/@rooms.example/w/commons~0b5e7a62-4d0f-4c55-9d2a-58d3a3f0c001/so.tilo.chat/-/chat.message:01JA2C7Q
     A message with Chat focused on its desktop (what a bridge bot posts).
 
-https://tilo.so/#/@quinten.tilo.cloud/w/reading-group~6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90/so.tilo.word-processor/uuid:3e0d5a1c-7b2f-4e8a-9c6d-1a2b3c4d5e6f/word_processor.block:b12?chars=40-96
+https://tilo.so/#/@ada.tilo.cloud/w/reading-group~6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90/so.tilo.word-processor/uuid:3e0d5a1c-7b2f-4e8a-9c6d-1a2b3c4d5e6f/word_processor.block:b12?chars=40-96
     A passage in a private workspace's document, on the desktop.
 
 https://tilo.so/app/#/me/so.tilo.calculator
     Calculator full tab in the person's own room; what `tilo-app dev` opens.
 
-https://tilo.so/app/#/@quinten.tilo.cloud/w/reading-group~6f1c…/so.tilo.word-processor/uuid:3e0d…?invite=AAECAwQF…
+https://tilo.so/app/#/@ada.tilo.cloud/w/reading-group~6f1c…/so.tilo.word-processor/uuid:3e0d…?invite=AAECAwQF…
     The document full tab, with an invitation for someone not yet a member.
 
-tilo://open#/@quinten.tilo.cloud/w/reading-group~6f1c…/so.tilo.chat/-/chat.channel:general
+tilo://open#/@ada.tilo.cloud/w/reading-group~6f1c…/so.tilo.chat/-/chat.channel:general
     The same channel, handed to an installed Tilo (§7).
 ```
 
@@ -320,7 +320,7 @@ one view; a resource with no view has nothing to open, so it has no link.
   list.
 - When a person invokes either through a view, the view copies the URL to
   the clipboard and says so; when an agent or bot invokes it, it gets the URL
-  as output. Same action, same contract, visible in history as "Quinten
+  as output. Same action, same contract, visible in history as "Ada
   copied a link to #general" or "Discord bridge shared a link to #general".
 - `mode` defaults to `app` for a link to a resource or an app: a recipient
   wants the thing first, may not be a member of the room whose desktop the
@@ -617,10 +617,19 @@ new page, so nothing of one room's state or pending work reaches the
 other. Back and Forward across a switch load the room anew, never inside
 the previous room's desktop. A bare desktop entry under a home reopens
 the room the person last chose (choosing the home goes back to it); never
-in an embed. A remembered room whose admission fails is offered as "did
-not open last time" and is no longer reopened by a bare entry, and the
-failure page offers the person's other workspaces. Remembering grants
-nothing: every room still decides at its own door.
+in an embed. Each remembered room is pinned to the host that held it (its
+device key): a room lives in its host's state, so once the origin answers
+as another host (set up again on fresh state), the rooms the host before
+held are gone and the browser forgets them. It learns that from the host
+its page is connected to, and, when opening a remembered room fails, by
+asking the room's origin which host answers there now. A host that cannot
+be reached, or fails, says nothing about its rooms: a remembered room
+whose admission fails for any other reason stays, offered as "did not
+open last time", and is no longer reopened by a bare entry, and the
+failure page offers the person's other workspaces. Two remembered
+workspaces with one name are listed with their host, and their room when
+one host holds both. Remembering grants nothing: every room still
+decides at its own door.
 
 The `web-entry` image (`crates/browser/tilo-browser-runtime/container/`)
 is the runtime's desktop bundle as static files. Its `entry.json` is

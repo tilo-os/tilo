@@ -3,7 +3,7 @@ name = "tilo-dialogs"
 version = "0.1.0"
 edition = "2024"
 publish = true
-license.workspace = true
+license = "MIT"
 description = "File choosers, opening files with their app, and opening URIs on Linux, macOS and the web."
 repository.workspace = true
 homepage.workspace = true
@@ -13,8 +13,9 @@ name = "tilo_dialogs"
 path = "src/lib.rs"
 
 [features]
-# Test backends for scoped choosers and URI opening, for dependents' tests.
-test-support = []
+# Test backends for scoped choosers and URI opening, and the backend
+# contract checks, for dependents' tests.
+test-support = ["dep:tilo-test-env"]
 
 [dependencies]
 # Outcomes are delivered from the app runtime or a host callback and wake the
@@ -27,6 +28,8 @@ tracing.workspace = true
 # — a URI naming a remote host must not resolve to a local path — and is
 # tested on every target.
 url.workspace = true
+# The contract checks' hang bound (`test-support`).
+tilo-test-env = { version = "0.1.0", path = "../../dev/test-env", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 # `O_NOFOLLOW`/`O_DIRECTORY` when opening a chosen file or folder.
@@ -64,6 +67,7 @@ js-sys = "=0.3.85"
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 # `examples/pick.rs` runs the main run loop the panels live on.
 [target.'cfg(target_os = "macos")'.dev-dependencies]

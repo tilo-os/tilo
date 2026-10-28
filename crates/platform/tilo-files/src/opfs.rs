@@ -471,7 +471,6 @@ async fn remove_tree(parent: &FileSystemDirectoryHandle, name: &str) -> Result<(
     .map(drop)
 }
 
-/// Whether `name` in `dir` is taken, by a file or a directory.
 async fn exists(dir: &FileSystemDirectoryHandle, name: &str) -> Result<bool, FsError> {
     match file_handle(dir, name, false).await {
         Ok(_) | Err(FsError::IsADirectory) => Ok(true),

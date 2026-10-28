@@ -1,7 +1,7 @@
 //! `tilo-agent` — a participant without a window.
 //!
 //! The agent connects to the compositor's collaboration broker and carries
-//! out broker-leased tasks (`--task-runs`) under its own actor, so every
+//! out the runs of issues assigned to it (`--task-runs`) under its own actor, so every
 //! change is attributed to it. It never sees a pixel and never touches a
 //! pointer.
 //!
@@ -42,15 +42,24 @@
 #[cfg(test)]
 extern crate self as tilo_agent;
 
-pub mod memory;
 pub mod model;
 pub mod pages;
 pub mod plan;
 pub mod providers;
 pub mod session;
+pub mod skills;
 pub mod surface;
 pub mod tools;
 pub mod transform;
 pub mod wire;
 
 pub use session::{Config, Session};
+
+/// The machine this agent runs on, as a run's receipt records it: the host
+/// name, so a person reading the issue sees which device paid for a step.
+/// It is a hint, never an identity; a machine with no host name reports
+/// `unknown` rather than nothing.
+#[must_use]
+pub fn device_name() -> String {
+    tilo_paths::session::host_name().unwrap_or_else(|| "unknown".to_owned())
+}

@@ -19,9 +19,8 @@ use tilo_automerge::ApplyIncoming as _;
 use tilo_doc::snapshot::DocSnapshot;
 
 use super::{
-    HistorySource, NO_VISIBLE_CHANGE, entry_id_from_hash, genesis_context, groups,
-    is_store_genesis, patch_summary, runs, structural_summary, summarize_patches,
-    timestamp_from_ms,
+    HistorySource, NO_VISIBLE_CHANGE, entry_id_from_hash, genesis_context, is_store_genesis,
+    patch_summary, structural_summary, summarize_patches, timestamp_from_ms,
 };
 use crate::widget::history::{HistoryEntry, HistoryEntryId};
 
@@ -72,7 +71,6 @@ struct Basis {
     catalogue: u64,
 }
 
-/// One change of the log.
 struct Logged {
     hash: ChangeHash,
     id: HistoryEntryId,
@@ -306,7 +304,7 @@ impl HistoryLog {
         // pays no extra diff.
         let marker = summary == NO_VISIBLE_CHANGE && {
             let patches = patches.unwrap_or_else(|| doc.diff(&before, &after));
-            groups::is_group_marker(&patches) || runs::is_run_marker(&patches)
+            super::is_history_metadata(&patches)
         };
         let store_genesis = is_store_genesis(doc, time_ms, &hash);
         if let Some(logged) = self.changes.last_mut() {
@@ -360,9 +358,14 @@ impl HistoryLog {
             .unwrap_or(0);
         let genesis_actor = crate::record::genesis_actor(doc).map(|actor| actor.to_hex_string());
         let schema_genesis = tilo_doc::model::schema_genesis_actor_hex();
-        let mut out = Vec::with_capacity(self.changes.len().saturating_sub(start));
+        let mut out: Vec<HistoryEntry> =
+            Vec::with_capacity(self.changes.len().saturating_sub(start));
+        // A person typing on in one field is one row ([`super::typing`]):
+        // each author's open run, by the row it is.
+        let mut typing = super::typing::TypingRuns::<usize>::default();
         for logged in self.changes.iter().skip(start) {
             let Some(reading) = &logged.reading else {
+                typing.continues(&logged.actor, None, logged.time_ms);
                 continue;
             };
             // The schema genesis is a change nobody made — its containers are
@@ -379,6 +382,7 @@ impl HistoryLog {
             let genesis =
                 genesis_actor.as_deref() == Some(logged.actor.as_str()) || reading.store_genesis;
             if (genesis && !source.record_genesis) || reading.marker {
+                typing.continues(&logged.actor, None, logged.time_ms);
                 continue;
             }
             let context = if genesis {
@@ -399,6 +403,40 @@ impl HistoryLog {
                     .and_then(super::sentence::step_summary)
                     .unwrap_or_else(|| reading.summary.clone())
             };
+            let typed = context
+                .as_ref()
+                .filter(|_| !genesis)
+                .and_then(super::typing::TypedField::of);
+            if let Some(&mut row) = typing.continues(&logged.actor, typed.as_ref(), logged.time_ms)
+            {
+                // The row is the run as of its newest change: what it now
+                // reads, when, and the version it restores to. It moves to
+                // where that change is in the log.
+                let mut run = out.remove(row);
+                run.id = logged.id;
+                run.timestamp = timestamp_from_ms(logged.time_ms);
+                run.summary = summary;
+                run.entry_kind = reading.entry_kind;
+                run.text_delta = run.text_delta.zip(reading.text_delta).map(
+                    |((added, removed), (more, fewer))| {
+                        (added.saturating_add(more), removed.saturating_add(fewer))
+                    },
+                );
+                run.context = context;
+                out.push(run);
+                let moved = out.len().saturating_sub(1);
+                for place in typing.places_mut() {
+                    if *place == row {
+                        *place = moved;
+                    } else if *place > row {
+                        *place = place.saturating_sub(1);
+                    }
+                }
+                continue;
+            }
+            if let Some(field) = typed {
+                typing.start(&logged.actor, field, logged.time_ms, out.len());
+            }
             out.push(HistoryEntry {
                 id: logged.id,
                 author: source

@@ -300,7 +300,6 @@ mod fake_specifics {
         );
         let listed = source.list(&source.root()).unwrap();
         assert_eq!(listed[0].name, "café.txt");
-        // Case and normalization differences are the same name.
         let clash = cloud_source::upload(
             &source,
             UploadTarget::Create {

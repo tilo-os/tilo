@@ -45,10 +45,6 @@ impl std::fmt::Display for ConsoleError {
 /// scenario driver's tests implement it with a scripted installer.
 pub trait Console {
     /// Send `request` (an object with an `op`) and return the reply object.
-    ///
-    /// # Errors
-    ///
-    /// [`ConsoleError`] when nothing answered or the reply was malformed.
     fn request(&mut self, request: Value) -> Result<Value, ConsoleError>;
 
     /// `state_dump`: what the app believes is on screen.

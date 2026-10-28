@@ -9,6 +9,11 @@
 //! library of its own in the runtime bundle that only Browser names
 //! `DT_NEEDED`, and the tapp carries only Browser's own code.
 //!
+//! The parts of Browser people rarely use are here too (`browser-parts`:
+//! extensions, site controls with the content blocker's lists, site
+//! capabilities), with the website-session codec check
+//! (`tilo-browser-sessions`), so the tapp carries the browsing itself.
+//!
 //! Imager reads profiles too, but its own code calls `SQLite`'s inline
 //! statement API, whose C calls must resolve in the app's link (a Rust dylib
 //! exports no C symbols), so it links `SQLite` itself and never this library.
@@ -23,9 +28,15 @@
 // link then refuses (each crate may show up once).
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
+#[cfg(feature = "thin")]
+extern crate tilo_accounts_engine;
 
 #[cfg(feature = "thin")]
 pub use browser_continuity;
+#[cfg(feature = "thin")]
+pub use browser_parts;
+#[cfg(feature = "thin")]
+pub use tilo_browser_sessions;
 
 /// Run the engine's own code: write a Chromium history database with one web
 /// page and one local file, and read it back through the capture, which must

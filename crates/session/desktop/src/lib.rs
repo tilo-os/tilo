@@ -20,18 +20,28 @@ pub mod backdrop;
 pub mod chrome;
 pub mod collaborators;
 pub mod composition;
+pub mod control_hints;
+pub mod desk_edges;
 pub mod emoji_picker;
 pub mod feedback;
+pub mod feedback_picker;
+pub mod follow_banner;
 pub mod here;
 pub mod intents;
 pub mod launchpad;
 pub mod overview;
 pub mod overview_panel;
+pub mod overview_picture;
+pub mod people_overlay;
 pub mod profile_card;
 pub mod records;
 pub mod resolver;
 pub mod search;
 pub mod session_commands;
+pub mod shortcuts;
+pub mod strip_indicators;
+pub mod strip_navigator;
+pub mod strip_switcher;
 pub mod text_entry;
 pub mod topbar;
 pub mod window_switcher;
@@ -41,7 +51,9 @@ pub mod workspace_settings;
 // The workspace history pane, the notification stack and centre, the
 // drill-in list and the desktop's catalogue are portable: they live with the
 // desktop surface, which the browser builds too.
-pub use tilo_desktop_surface::{activity, drill_in, i18n, notifications, person_cursor};
+pub use tilo_desktop_surface::{
+    activity, drill_in, history_log, i18n, notifications, person_cursor,
+};
 
 #[cfg(test)]
 mod i18n_copy_lint_tests;

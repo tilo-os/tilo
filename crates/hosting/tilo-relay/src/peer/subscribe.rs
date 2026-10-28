@@ -5,7 +5,7 @@ use super::{
     Arc, AuthenticatedPeer, Decision, Envelope, Lag, MAX_AUTOBOUND_WORKSPACES, PeerError,
     ReplayCatchup, ReplayHandle, ReplayTicket, ResumeLog, RoomOperation, SessionCtx,
     SharedWorkspace, StateDelivery, StateSession, StateSource, Step, StoreError, Subscriber,
-    WorkspaceAutobind, WorkspaceRegistry, current_session, mpsc, room_access,
+    WorkspaceAutobind, WorkspaceRegistry, current_session, lost_session, mpsc, room_access,
     session_peer_authorized, unix_now_ns,
 };
 use tilo_lock::MutexRecover as _;
@@ -226,11 +226,17 @@ async fn admit_subscription(
         }));
     }
     // Only the relay owner's own devices can be enrolled into an autobound
-    // room, so only they may cause one to be bound.
+    // room, so only they may cause one to be bound; and every person the
+    // relay trusts may have it carry their own room.
+    let own_room = crate::own_room_workspace_id_matches(&peer.user_public_key, workspace_id);
     let autobind = session
         .autobind
-        .filter(|_| peer.user_public_key == *session.own_user_public_key);
-    let ws = get_or_autobind_workspace(session.workspaces, autobind, workspace_id).await?;
+        .filter(|_| own_room || peer.user_public_key == *session.own_user_public_key);
+    let ws = if own_room {
+        bind_own_room(session.workspaces, autobind, peer, workspace_id).await?
+    } else {
+        get_or_autobind_workspace(session.workspaces, autobind, workspace_id).await?
+    };
     let Some(ws) = ws else {
         return Ok(SubscribeAdmission::Refused(Envelope::NotAuthorised {
             workspace_id,
@@ -238,12 +244,13 @@ async fn admit_subscription(
         }));
     };
     let mut wr = crate::workspace_io::fresh_membership(&ws).await?;
-    if !session_peer_authorized(peer, session)
-        || (subscribed.contains(&workspace_id) && !current_session(&wr, peer, session.outbound))
-    {
+    if !session_peer_authorized(peer, session) {
         return Err(PeerError::Protocol(
             "subscriber authorization changed".into(),
         ));
+    }
+    if subscribed.contains(&workspace_id) && !current_session(&wr, peer, session.outbound) {
+        return Err(lost_session(&wr, peer, session, RoomOperation::Subscribe));
     }
     // Same-owner peer relays are gated by their active federation lease, so
     // they don't need to appear in the workspace membership list.
@@ -254,13 +261,13 @@ async fn admit_subscription(
             drop(wr);
             crate::workspace_io::admit_member(&ws, peer.device_public_key, revision).await?;
             wr = crate::workspace_io::fresh_membership(&ws).await?;
-            if !session.admits(&wr, peer, RoomOperation::Subscribe)
-                || (subscribed.contains(&workspace_id)
-                    && !current_session(&wr, peer, session.outbound))
-            {
+            if !session.admits(&wr, peer, RoomOperation::Subscribe) {
                 return Err(PeerError::Protocol(
                     "subscriber authorization changed".into(),
                 ));
+            }
+            if subscribed.contains(&workspace_id) && !current_session(&wr, peer, session.outbound) {
+                return Err(lost_session(&wr, peer, session, RoomOperation::Subscribe));
             }
         }
         Decision::Deny(reason) => {
@@ -407,6 +414,46 @@ pub(super) async fn handle_unsubscribe(
     }
     subscribed.retain(|id| id != &workspace_id);
     Ok(None)
+}
+
+/// The person's own room ([`crate::own_room`]) bound for `peer`: a room
+/// whose only admitted user root is theirs, so any of their devices is
+/// admitted to it, and no device of anyone else. The relay only carries it,
+/// as it carries any room: what their devices seal into it stays theirs.
+/// Admitting the root again on every subscription keeps a room bound before
+/// a restart, or by the relay owner, theirs as well.
+async fn bind_own_room(
+    workspaces: &WorkspaceRegistry,
+    autobind: Option<&WorkspaceAutobind>,
+    peer: &AuthenticatedPeer,
+    workspace_id: u64,
+) -> Result<Option<SharedWorkspace>, StoreError> {
+    let existing = workspaces.lock().await.get(&workspace_id).cloned();
+    let workspace = match (existing, autobind) {
+        (Some(workspace), _) => workspace,
+        (None, None) => return Ok(None),
+        (None, Some(autobind)) => {
+            crate::workspace_io::get_or_initialize(
+                workspaces,
+                autobind.state_root.clone(),
+                &autobind.shell_payloads,
+                workspace_id,
+                true,
+                crate::room_access::AdmissionMode::Explicit,
+                MAX_AUTOBOUND_WORKSPACES,
+            )
+            .await?
+        }
+    };
+    let added = workspace
+        .lock()
+        .await
+        .admitted_users
+        .insert(peer.user_public_key);
+    if added {
+        crate::authority_epoch::bump();
+    }
+    Ok(Some(workspace))
 }
 
 pub(crate) async fn get_or_autobind_workspace(

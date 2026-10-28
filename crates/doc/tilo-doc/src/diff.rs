@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 pub use tilo_resource::diff::{RunOp, TextRun, text_runs};
 use tilo_resource::diff::{Step, align};
+use tilo_sort::CompactSort as _;
 
 /// The full structural diff of a document between two versions (`old` → `new`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -271,7 +272,7 @@ fn diff_marks(old: &[MarkSpan], new: &[MarkSpan]) -> (Vec<MarkSpan>, Vec<MarkSpa
 fn diff_attrs(old: &BTreeMap<String, AttrVal>, new: &BTreeMap<String, AttrVal>) -> Vec<AttrChange> {
     let mut out = Vec::new();
     let mut keys: Vec<&String> = old.keys().chain(new.keys()).collect();
-    keys.sort();
+    keys.compact_sort();
     keys.dedup();
     for k in keys {
         let ov = old.get(k);
@@ -290,7 +291,7 @@ fn diff_attrs(old: &BTreeMap<String, AttrVal>, new: &BTreeMap<String, AttrVal>) 
 fn diff_props(old: &BTreeMap<String, String>, new: &BTreeMap<String, String>) -> Vec<PropChange> {
     let mut out = Vec::new();
     let mut keys: Vec<&String> = old.keys().chain(new.keys()).collect();
-    keys.sort();
+    keys.compact_sort();
     keys.dedup();
     for k in keys {
         let ov = old.get(k);
@@ -317,7 +318,6 @@ mod tests {
 
     #[test]
     fn block_diffs_pair_by_id_or_position_and_keep_runs_minimal() {
-        // Phase `detects_added_removed_changed_blocks`.
         {
             let mut doc = Document::new();
             let alpha_id = doc.insert_block(None, "paragraph");
@@ -357,7 +357,6 @@ mod tests {
             assert_eq!(removed.id, gamma_id);
             assert_eq!(removed.old_text.as_deref(), Some("gamma"));
         }
-        // Phase `identical_snapshots_diff_empty`.
         {
             let mut d = Document::new();
             let p = d.insert_block(None, "paragraph");
@@ -367,7 +366,6 @@ mod tests {
             assert!(diff.is_empty(), "a snapshot vs itself has no changes");
             assert_eq!(diff.summary.changed, 0);
         }
-        // Phase `positional_fallback_across_independent_docs`.
         {
             // Two docs with no shared ids still diff by position.
             let mut a = Document::new();
@@ -384,7 +382,6 @@ mod tests {
             );
             assert!(diff.blocks[0].runs.iter().any(|r| r.op == RunOp::Insert));
         }
-        // Phase `char_run_diff_is_minimal`.
         {
             let runs = text_runs("the quick fox", "the quick brown fox");
             assert!(
@@ -403,7 +400,6 @@ mod tests {
 
     #[test]
     fn mark_attr_and_property_changes_are_reported() {
-        // Phase `detects_mark_and_attr_changes`.
         {
             let mut d = Document::new();
             let p = d.insert_block(None, "paragraph");
@@ -421,7 +417,6 @@ mod tests {
             );
             assert!(ch.marks_removed.is_empty());
         }
-        // Phase `property_changes_are_reported`.
         {
             let mut d = Document::new();
             d.set_doc_prop("title", "Draft");
@@ -603,7 +598,7 @@ fn diff_sheet(old: &SheetView, new: &SheetView) -> SheetChange {
         .collect();
 
     let mut refs: Vec<&str> = old_cells.keys().chain(new_cells.keys()).copied().collect();
-    refs.sort_unstable();
+    refs.compact_sort();
     refs.dedup();
 
     let mut cells = Vec::new();
@@ -651,7 +646,6 @@ mod sheet_diff_tests {
 
     #[test]
     fn workbook_diffs_report_cell_and_sheet_changes() {
-        // Phase `workbook_diff_reports_added_changed_removed_cells`.
         {
             let mut a = Workbook::new();
             let s = a.add_sheet("S");
@@ -690,7 +684,6 @@ mod sheet_diff_tests {
             let json = serde_json::to_string(&diff).expect("sheet diff serializes to JSON");
             assert!(json.contains("A1") && json.contains("B1"));
         }
-        // Phase `workbook_diff_detects_added_and_removed_sheets`.
         {
             let mut a = Workbook::new();
             a.add_sheet("Keep");

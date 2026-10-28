@@ -1,4 +1,3 @@
-//! Exercise the production swap wake policy without a hypervisor or guest.
 use super::*;
 
 struct Guest {

@@ -78,7 +78,7 @@ impl DisplayUpdate {
 ///
 /// A source that keeps a history ([`crate::SessionSettings`]) records it
 /// beside each changed leaf, so "who changed this" has an answer and a later
-/// system undo has its input. Both fields are optional: a write another
+/// system undo has its input. Every field is optional: a write another
 /// process made to the copy arrives with no origin at all.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChangeOrigin {
@@ -90,6 +90,33 @@ pub struct ChangeOrigin {
     /// device's own input, else the collaborator's or agent's principal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub principal: Option<String>,
+    /// The action that ran [`Self::action`] on the person's behalf, when it
+    /// did not run on its own: the palette's `appearance.theme.dark` runs
+    /// Settings' appearance field edit. "Dark mode, from the palette" and
+    /// "edited in Settings" make the same edit; this tells them apart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invoked_by: Option<InvokingAction>,
+}
+
+/// The action that invoked another one, as a settings change records it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InvokingAction {
+    /// Its action id (`appearance.theme.dark`).
+    pub action: String,
+    /// Its invocation, when it ran as one the action journal knows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invocation: Option<String>,
+}
+
+impl InvokingAction {
+    /// The action `action`, run outside any journalled invocation.
+    #[must_use]
+    pub fn action(action: impl Into<String>) -> Self {
+        Self {
+            action: action.into(),
+            invocation: None,
+        }
+    }
 }
 
 impl ChangeOrigin {
@@ -102,6 +129,7 @@ impl ChangeOrigin {
         Self {
             action: Some(action.into()),
             principal: None,
+            invoked_by: None,
         }
     }
 
@@ -109,6 +137,13 @@ impl ChangeOrigin {
     #[must_use]
     pub fn by(mut self, principal: impl Into<String>) -> Self {
         self.principal = Some(principal.into());
+        self
+    }
+
+    /// This origin, run by the action `invoked_by`.
+    #[must_use]
+    pub fn invoked_by(mut self, invoked_by: Option<InvokingAction>) -> Self {
+        self.invoked_by = invoked_by;
         self
     }
 
@@ -357,8 +392,9 @@ pub struct DeferredFailure {
 /// Set when a source stores a [`DeferredFailure`], cleared when they are taken.
 static DEFERRED_FAILED: AtomicBool = AtomicBool::new(false);
 
-/// A source records that a deferred write failed and was reverted.
-pub(crate) fn note_deferred_failure() {
+/// A source records that a deferred write failed and was reverted (or, an
+/// app's view of the session's settings, that the session refused it).
+pub fn note_deferred_failure() {
     DEFERRED_FAILED.store(true, Ordering::Release);
 }
 

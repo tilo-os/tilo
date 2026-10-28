@@ -3,7 +3,7 @@ name = "tilo-paint-stream"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
-license.workspace = true
+license = "MIT"
 description = "A web page as a layered display list: the engine runs on the host, every client draws the list with its own Vello and text stack. Format, keyed patches, and conversion from an engine's layout snapshot."
 
 # Portable: the host converts and diffs, the WASM client applies and draws.

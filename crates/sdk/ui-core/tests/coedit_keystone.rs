@@ -349,7 +349,6 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
             "the added text must add drawn pixels in B's local render"
         );
 
-        // The keystone assertion.
         assert_same_frame(
             &a_after,
             &b_after,

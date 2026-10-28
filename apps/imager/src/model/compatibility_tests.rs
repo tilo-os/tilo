@@ -1,4 +1,3 @@
-//! The frozen pre-extraction definitions guard the public wire and CRDT contracts.
 #[expect(
     dead_code,
     reason = "the frozen fixture retains the entire pre-extraction model API"

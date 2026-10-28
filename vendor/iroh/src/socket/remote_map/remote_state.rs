@@ -989,10 +989,19 @@ impl State {
             %network_path,
         );
         conn_state.add_open_path(network_path.clone(), path.id(), &self.metrics);
-        if network_path.is_relay()
-            && let Err(e) = path.set_max_idle_timeout(Some(RELAY_PATH_MAX_IDLE_TIMEOUT))
-        {
-            debug!(?e, "failed to set relay path idle timeout");
+        if network_path.is_relay() {
+            // TILO PATCH: a relay path never gets a shorter idle timeout than the
+            // configured default (`default_path_max_idle_timeout`), which may be the
+            // longer one: the timeout set first is put back if it was longer.
+            match path.set_max_idle_timeout(Some(RELAY_PATH_MAX_IDLE_TIMEOUT)) {
+                Ok(Some(configured)) if configured > RELAY_PATH_MAX_IDLE_TIMEOUT => {
+                    if let Err(e) = path.set_max_idle_timeout(Some(configured)) {
+                        debug!(?e, "failed to set relay path idle timeout");
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => debug!(?e, "failed to set relay path idle timeout"),
+            }
         }
 
         self.set_path_status(conn_id, path, &network_path);

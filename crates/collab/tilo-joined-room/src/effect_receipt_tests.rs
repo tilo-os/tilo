@@ -83,7 +83,7 @@ fn member_effect_uses_original_durable_receipt_and_refuses_changed_or_foreign_au
                 &fixture.key,
                 fixture.now
             )?);
-            peer.durable_mutation_messages(
+            peer.publication_mut().durable_mutation_messages(
                 view.peer(),
                 &fixture.key,
                 fixture.now,
@@ -606,6 +606,7 @@ fn assert_archived_file_layout(path: &std::path::Path) {
     let storage: crate::NativeAuthorityStorage =
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     assert!(crate::publication::validate_file_layout(4, &storage).is_ok());
+    assert!(crate::publication::validate_file_layout(5, &storage).is_ok());
     assert!(crate::publication::validate_file_layout(3, &storage).is_err());
     let mut mismatched = storage.clone();
     mismatched.rooms.values_mut().next().unwrap().version = 2;

@@ -13,6 +13,7 @@
     reason = "app-local arithmetic; see the note above"
 )]
 pub mod actions;
+pub mod applications;
 pub mod archive;
 pub mod breadcrumbs;
 mod cloud_jobs;
@@ -78,3 +79,8 @@ pub fn mounted_files_in(
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(FileExplorerShell)
 }
+
+#[cfg(test)]
+mod action_icons_tests;
+#[cfg(test)]
+mod action_keywords_tests;

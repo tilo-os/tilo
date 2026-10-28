@@ -103,9 +103,6 @@ impl ClientData for ClientState {
 }
 
 impl WaylandServer {
-    /// # Errors
-    ///
-    /// Returns an error if the keyboard's XKB config fails to load.
     pub fn new(
         dh: &DisplayHandle,
         event_tx: mpsc::UnboundedSender<WaylandEvent>,

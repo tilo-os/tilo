@@ -39,31 +39,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalogue_resolves_every_used_key_and_keeps_interpolated_sentences() {
-        // Phase `every_key_the_app_uses_resolves_to_a_real_string`.
+    fn catalogue_resolves_every_used_key() {
         {
             // A key that resolves to itself is a key with no catalogue entry — the
             // failure mode that ships an untranslatable literal to a screen.
             for key in [
-                "mail-setup-heading-add",
-                "mail-setup-heading-edit",
-                "mail-setup-label-display-name",
-                "mail-setup-label-email",
-                "mail-setup-label-username",
-                "mail-setup-label-password",
-                "mail-setup-label-imap-host",
-                "mail-setup-label-smtp-host",
-                "mail-setup-label-sign-in",
-                "mail-setup-auth-password",
-                "mail-setup-auth-oauth",
-                "mail-setup-tls",
-                "mail-setup-advanced",
-                "mail-setup-save",
-                "mail-setup-checking",
-                "mail-setup-sign-in",
-                "mail-setup-signing-in",
-                "mail-setup-cancel",
-                "mail-setup-remove",
                 "mail-compose-label-to",
                 "mail-compose-label-cc",
                 "mail-compose-label-bcc",
@@ -77,23 +57,11 @@ mod tests {
                 "mail-compose-prompt-add",
                 "mail-compose-prompt-cancel",
                 "mail-contact-write",
-                "mail-setup-oauth-provider-fallback",
-                "mail-setup-oauth-note-unavailable",
             ] {
                 let s = t(key);
                 assert_ne!(s, key, "{key} has no entry in the catalogue");
                 assert!(!s.trim().is_empty(), "{key} resolves to nothing");
             }
-        }
-
-        // Phase `interpolated_keys_keep_the_sentence_in_the_catalogue`.
-        {
-            let s = t_args(
-                "mail-setup-oauth-sign-in",
-                &[("provider", ui::i18n::ArgValue::from("Gmail"))],
-            );
-            assert!(s.contains("Gmail"), "{s}");
-            assert_ne!(s, "mail-setup-oauth-sign-in");
         }
     }
 }

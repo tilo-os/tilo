@@ -14,9 +14,6 @@ pub struct ConnectedService {
 
 impl ConnectedService {
     /// Supply an explicit service dependency without mutating process environment.
-    ///
-    /// # Errors
-    /// Returns why the socket pair, runtime or server thread could not start.
     pub fn start<S>(server: S) -> Result<(Self, OwnedFd), String>
     where
         S: app_host::Server + Send + 'static,
@@ -40,9 +37,6 @@ impl ConnectedService {
     }
 
     /// Stop the fixture and assert its driver result through the caller's test.
-    ///
-    /// # Errors
-    /// Returns a runtime failure or a panicked server driver.
     pub fn shutdown(mut self) -> Result<(), String> {
         self.stop()
     }
@@ -97,7 +91,7 @@ where
                 // disconnector can release state ahead of the message loop.
                 disconnect.shutdown(std::net::Shutdown::Both)
                     .map_err(|error| error.to_string())?;
-                let result = tokio::time::timeout(std::time::Duration::from_secs(2), &mut rpc)
+                let result = tokio::time::timeout(tilo_test_env::hang_bound(), &mut rpc)
                     .await.map_err(|_| "app-host test transport did not disconnect".to_owned())?;
                 driver_result(result)
             },
@@ -302,9 +296,7 @@ mod tests {
                 .unwrap()
                 .list()
         });
-        observed
-            .recv_timeout(std::time::Duration::from_secs(2))
-            .unwrap();
+        tilo_test_env::recv("the server call to be entered", &observed);
         assert_eq!(service.shutdown(), Ok(()));
         // Like the Store fixture, release the saved task waker after joining.
         drop(waiter.lock().unwrap().take());

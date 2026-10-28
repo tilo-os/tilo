@@ -31,6 +31,7 @@ fn desktop() -> (WorkspaceTree, StripId) {
             label: kind.as_str().to_string(),
             kind,
         },
+        app_title: None,
     };
     let group = |id: GroupId, tab: Tab| WindowGroup {
         id,

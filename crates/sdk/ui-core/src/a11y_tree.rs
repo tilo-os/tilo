@@ -30,6 +30,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use tilo_sort::CompactSort as _;
 
 use taffy::NodeId as TaffyNodeId;
 use vello::kurbo::Rect;
@@ -58,6 +59,8 @@ mod reading_order;
 
 #[path = "a11y_tree/component_nodes.rs"]
 mod component_nodes;
+#[path = "a11y_tree/pointed.rs"]
+mod pointed;
 use component_nodes::ComponentNodes;
 pub(crate) use node_identity::AdmittedNodeNames;
 use node_identity::WidgetNodeMap;
@@ -274,7 +277,8 @@ impl TreeDelta {
 
 /// Build closures for [`AppPrompted`](SemanticActionKind::AppPrompted)
 /// actions, keyed by `(node id, action name)`.
-type PromptedMap = HashMap<(SemanticId, String), Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>>;
+/// The spec of each prompted action, which builds it from its text.
+type PromptedMap = HashMap<(SemanticId, String), ActionSpec>;
 
 /// The retained accessibility tree. Persists node identity across frames and
 /// diffs each [`refresh`](Self::refresh) against the previous.
@@ -372,7 +376,7 @@ impl SemanticTree {
     /// receive no layout dispatch id. `focused` folds
     /// into each node's [`AccessState::focused`]. `resources` is the focused
     /// app's open-resource forest
-    /// ([`Widget::resources`]); each
+    /// ([`crate::resources::PublishesResources::resources`]); each
     /// exported [`ActionSpec`] becomes an invokable
     /// affordance.
     pub fn refresh(
@@ -607,9 +611,9 @@ impl SemanticTree {
             delta.added.extend(updates.added);
             delta.removed.extend(updates.removed);
             delta.updated.extend(updates.updated);
-            delta.added.sort();
-            delta.removed.sort();
-            delta.updated.sort();
+            delta.added.compact_sort();
+            delta.removed.compact_sort();
+            delta.updated.compact_sort();
         }
 
         #[cfg(any(test, feature = "test-support"))]
@@ -798,7 +802,7 @@ impl SemanticTree {
     /// invocation with simulated clicks.
     pub fn control_paths(&self, control_id: &str) -> Vec<Vec<SemanticId>> {
         let mut paths = self.control_paths_unranked(control_id);
-        paths.sort_by(|left, right| {
+        paths.compact_sort_by(|left, right| {
             left.len()
                 .cmp(&right.len())
                 .then_with(|| left.last().cmp(&right.last()))
@@ -937,7 +941,14 @@ impl SemanticTree {
                     } else {
                         spec
                     };
-                    resource.actions.push(spec);
+                    // A control's own verbs (focus it, press it, set it) are
+                    // how agents and scripts drive what a person presses
+                    // directly: never a row of their own in people's lists,
+                    // where they would repeat the app's actions as
+                    // "New folder — Focus".
+                    resource
+                        .actions
+                        .push(spec.for_audience(tilo_actions::Audience::Agents));
                 }
                 Some(resource)
             })
@@ -954,7 +965,7 @@ impl SemanticTree {
                     .iter()
                     .find_map(|component| component.prompted.get(&key))
             })
-            .map(|build| build(arg))
+            .and_then(|spec| spec.build_text(arg))
     }
 }
 
@@ -1097,7 +1108,6 @@ struct Build<'a, const BOUND: bool> {
     duplicate_ids: Vec<SemanticId>,
     /// The last refresh's retained subtrees, taken from as they recur.
     retained_before: RetainedMap,
-    /// This refresh's, for the next.
     retained: RetainedMap,
     /// A subtree built this refresh took the place of one it kept under the
     /// same id: a repeated id the full walk has to report.
@@ -1105,6 +1115,13 @@ struct Build<'a, const BOUND: bool> {
     /// The synthetic children compared in full or built.
     #[cfg(any(test, feature = "test-support"))]
     compared: usize,
+    /// The route of each retained widget with no layout node of its own,
+    /// set by its parent before it is visited: the nearest laid-out widget
+    /// and the child indices from it ([`crate::a11y_child_route`]).
+    routes: HashMap<*const (), (TaffyNodeId, Vec<usize>)>,
+    /// The route of the widget whose synthetic children are being visited,
+    /// when it has no layout node: their targets are reached through it.
+    synthetic_route: Option<(TaffyNodeId, Vec<usize>)>,
 }
 
 /// A widget's synthetic child as the widget handed it over: built this
@@ -1199,9 +1216,9 @@ impl Sections<'_> {
                 delta.removed.push(id.clone());
             }
         }
-        delta.added.sort();
-        delta.removed.sort();
-        delta.updated.sort();
+        delta.added.compact_sort();
+        delta.removed.compact_sort();
+        delta.updated.compact_sort();
         delta
     }
 }
@@ -1233,6 +1250,8 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
             ambiguous_projection: false,
             ptr_to_taffy,
             focused,
+            routes: HashMap::new(),
+            synthetic_route: None,
         }
     }
 
@@ -1254,10 +1273,35 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
         parent_durable: bool,
         parent_children: &mut Vec<SemanticId>,
     ) {
+        // Under a parent without a durable identity nothing is durable, and
+        // the projection for actions keeps only durable nodes: it need not
+        // ask this widget or anything under it for its node.
+        if self.actions_only && !parent_durable {
+            return;
+        }
         let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
             return;
         };
         let taffy_id = self.ptr_to_taffy.get(w);
+        // A retained widget the window's layout gave no node is reached
+        // through the nearest widget that has one; every child is routed
+        // from here before any is visited, hosted ones included.
+        let route = if taffy_id.is_some() {
+            None
+        } else {
+            self.routes.remove(&std::ptr::from_ref(w).cast::<()>())
+        };
+        for (index, child) in w.children().into_iter().enumerate() {
+            let child_route = match (taffy_id, &route) {
+                (Some(owner), _) if w.lays_out_child(index) => Some((owner, vec![index])),
+                (None, Some((owner, path))) => Some((*owner, [path.as_slice(), &[index]].concat())),
+                (Some(_), _) | (None, None) => None,
+            };
+            if let Some(child_route) = child_route {
+                self.routes
+                    .insert(std::ptr::from_ref(child).cast::<()>(), child_route);
+            }
+        }
         let (access, shared) = match w.accessibility_shared() {
             Some(SharedAccessNode { node, children }) => (Some(node), children),
             None => (w.accessibility(), Vec::new()),
@@ -1304,6 +1348,7 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
                     .into_iter()
                     .map(Synthetic::Owned)
                     .chain(shared.into_iter().map(Synthetic::Shared));
+                let outer_route = std::mem::replace(&mut self.synthetic_route, route.clone());
                 for (i, synth) in synthetic.enumerate() {
                     let child = self.visit_synthetic_retained(
                         SyntheticParent {
@@ -1317,6 +1362,7 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
                     );
                     children.push(child);
                 }
+                self.synthetic_route = outer_route;
 
                 let mut state = access.state;
                 if let (Some(t), Some(f)) = (taffy_id, self.focused)
@@ -1343,8 +1389,18 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
                     bounds: Some(w.get_rect()),
                     actions,
                     children,
-                    widget_taffy_id: taffy_id.map(u64::from),
-                    semantic_target: access.action_target.clone(),
+                    // A widget with no layout node is acted on through the
+                    // nearest one that has.
+                    widget_taffy_id: taffy_id
+                        .or(route.as_ref().map(|(owner, _)| *owner))
+                        .map(u64::from),
+                    semantic_target: match (&route, taffy_id) {
+                        (Some((_, path)), None) => Some(crate::a11y_child_route::encode(
+                            path,
+                            access.action_target.as_deref(),
+                        )),
+                        _ => access.action_target.clone(),
+                    },
                 };
                 self.order.push(id.clone());
                 self.insert_node(node);
@@ -1371,8 +1427,9 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
         hosted: Vec<HostedWidget<'_>>,
     ) -> SemanticId {
         // A widget hosted in the child is walked afresh, and the projection
-        // for actions keeps nothing.
-        if !hosted.is_empty() || self.actions_only {
+        // for actions keeps nothing; nor does a routed widget's, whose
+        // targets carry its route.
+        if !hosted.is_empty() || self.actions_only || self.synthetic_route.is_some() {
             #[cfg(any(test, feature = "test-support"))]
             {
                 self.compared = self.compared.saturating_add(1);
@@ -1495,8 +1552,14 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
                 Vec::new()
             },
             children,
-            widget_taffy_id: semantic_target.and(owner).map(u64::from),
-            semantic_target: semantic_target.map(str::to_owned),
+            widget_taffy_id: semantic_target
+                .and(owner.or(self.synthetic_route.as_ref().map(|(owner, _)| *owner)))
+                .map(u64::from),
+            semantic_target: match (&self.synthetic_route, owner) {
+                (Some((_, path)), None) => semantic_target
+                    .map(|target| crate::a11y_child_route::encode(path, Some(target))),
+                _ => semantic_target.map(str::to_owned),
+            },
         };
         self.order.push(id.clone());
         self.insert_node(node);
@@ -1594,7 +1657,6 @@ mod tests {
 
     #[test]
     fn semantic_ids_are_durable_and_exported_only_when_stable() {
-        // Case `identity_is_stable_across_frames`.
         {
             let mut col = Column::new()
                 .push(Box::new(Button::new("a", "Alpha")))
@@ -1634,7 +1696,6 @@ mod tests {
             );
         }
 
-        // Case `duplicate_control_locations_choose_the_shortest_semantic_path`.
         {
             let mut tree = SemanticTree::new();
             let group = SemanticId("root~k:advanced".into());
@@ -1673,7 +1734,6 @@ mod tests {
             assert_eq!(routes[1].last(), Some(&deep));
         }
 
-        // Case `durable_widget_keys_survive_layout_rebuild_and_sibling_reorder`.
         {
             let mut first = Column::new()
                 .push(Box::new(Button::new("alpha", "Alpha")))
@@ -1715,7 +1775,6 @@ mod tests {
             assert!(tree.duplicate_ids().is_empty());
         }
 
-        // Case `encoded_action_keys_remain_valid_resource_ids`.
         {
             let mut button = Button::new("settings.section:network\u{1f}open", "Network");
             let node_map = layout(&mut button);
@@ -1737,7 +1796,6 @@ mod tests {
             );
         }
 
-        // Case `frame_local_control_identity_is_not_exported`.
         {
             let mut button = Button::new("go", "Go");
             let node_map = layout(&mut button);
@@ -1754,7 +1812,6 @@ mod tests {
             assert!(tree.action_resources().is_empty());
         }
 
-        // Case `controls_in_a_scroll_region_are_published_only_under_a_key`.
         {
             let published = |scroll: crate::widget::Scrollable| {
                 let mut scroll = scroll.with_child(Box::new(Button::new("go", "Go")));
@@ -1814,7 +1871,6 @@ mod tests {
 
     #[test]
     fn nodes_afford_only_the_actions_they_declare() {
-        // Case `semantic_projection_classifies_navigation_as_view`.
         {
             assert_eq!(
                 semantic_operation_kind(Role::Button, &Action::Focus),
@@ -1830,7 +1886,6 @@ mod tests {
             );
         }
 
-        // Case `button_node_affords_focus_and_activate_verbs`.
         {
             let mut btn = Button::new("go", "Go");
             let node_map = layout(&mut btn);
@@ -1854,7 +1909,6 @@ mod tests {
             ));
         }
 
-        // Case `plain_text_is_not_falsely_advertised_as_activatable`.
         {
             let label = crate::a11y::AccessNode::new(Role::Label);
             assert!(
@@ -1865,7 +1919,6 @@ mod tests {
             );
         }
 
-        // Case `declared_context_menu_is_projected_as_a_view_action`.
         {
             let row = crate::a11y::AccessNode::new(Role::ListItem)
                 .with_state(AccessState::new().focusable(true).context_menu(true));
@@ -1879,7 +1932,6 @@ mod tests {
             ));
         }
 
-        // Case `effectful_controls_are_not_projected_without_a_domain_contract`.
         {
             let mut button = Button::new("go", "Go");
             let node_map = layout(&mut button);
@@ -1898,7 +1950,6 @@ mod tests {
             );
         }
 
-        // Case `standard_local_text_input_projects_its_framework_owned_set_value`.
         {
             let mut field = TextInput::new(Vec::new()).with_accessible_name("Destination");
             let node_map = layout(&mut field);
@@ -1919,7 +1970,6 @@ mod tests {
 
     #[test]
     fn refresh_deltas_track_focus_membership_and_nested_cells() {
-        // Case `focus_change_updates_the_same_node`.
         {
             let mut col = Column::new()
                 .push(Box::new(Button::new("a", "Alpha")))
@@ -1965,7 +2015,6 @@ mod tests {
             );
         }
 
-        // Case `added_and_removed_nodes_surface_in_the_delta`.
         {
             let mut two = Column::new()
                 .push(Box::new(Button::new("a", "Alpha")))
@@ -1988,7 +2037,6 @@ mod tests {
             assert!(now.len() < baseline.len(), "the tree shrank");
         }
 
-        // Case `retained_table_control_is_nested_under_its_synthetic_cell`.
         {
             struct RowData {
                 id: u64,

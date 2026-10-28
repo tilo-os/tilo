@@ -266,6 +266,15 @@ pub fn setting_row_described(label: &str, description: &str, control: El) -> Ite
     )))
 }
 
+/// A setting that belongs to the row above it and is shown only while that
+/// one applies (drag lock under tap-and-drag): indented one leading column
+/// under it, so the pair reads as one choice and its refinement.
+pub fn nested_setting_row(label: &str, description: Option<&str>, control: El) -> Item {
+    row(Box::new(
+        setting_list_row(label, description, control).nested(),
+    ))
+}
+
 /// A setting whose control wants the whole measure (a slider, a text
 /// field): the label (and its explanation) over the control.
 fn stacked(label: &str, description: Option<&str>, control: El) -> Item {
@@ -383,7 +392,7 @@ fn split_failure(message: &str) -> (&str, Option<&str>) {
 }
 
 /// The technical reason of a failure, behind a closed "Details" disclosure.
-fn failure_details(reason: &str) -> El {
+fn failure_details(what: &str, reason: &str) -> El {
     Box::new(
         Section::new(vec![Box::new(
             Text::new(reason).with_role(TextRole::Caption).dimmed(),
@@ -391,7 +400,8 @@ fn failure_details(reason: &str) -> El {
         .with_header(SectionHeader::group(crate::i18n::t(
             "settings-failure-details",
         )))
-        .collapsed(),
+        .collapsed()
+        .disclosure_id(format!("failure-details:{what}")),
     )
 }
 
@@ -415,7 +425,7 @@ pub fn error_caption(message: &str) -> El {
                 .with_no_padding()
                 .with_intrinsic_height()
                 .push(Box::new(headline))
-                .push(failure_details(reason)),
+                .push(failure_details(what, reason)),
         ),
     }
 }
@@ -505,16 +515,6 @@ pub fn trailing_slider(control: El) -> El {
             .with_min_width(TRAILING_SLIDER_MIN_WIDTH)
             .with_child(control),
     )
-}
-
-/// A setting whose control is a chooser (dropdown, segmented picker).
-pub fn choice_row(label: &str, control: El) -> Item {
-    setting_row(label, control)
-}
-
-/// [`choice_row`] with a line explaining it under the label.
-pub fn choice_row_described(label: &str, description: &str, control: El) -> Item {
-    setting_row_described(label, description, control)
 }
 
 /// A setting whose control takes the full width beneath its label, at

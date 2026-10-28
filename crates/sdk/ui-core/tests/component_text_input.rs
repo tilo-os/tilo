@@ -348,7 +348,7 @@ fn component_publication_locus_respects_scrollable_clipping() {
         // determines which of their pixels were painted.
         assert!(raw.y1 < 600.0);
         let before = frame.inspection_json().unwrap();
-        let locus = frame.published_action_locus(12, definition.app_id, &record, &address);
+        let locus = frame.published_action_locus(12, definition.app_id(), &record, &address);
         if let Some(edge) = visible_edge {
             let visible = locus.expect("partially visible control");
             assert_eq!(visible.x0, raw.x0);
@@ -376,7 +376,7 @@ fn component_publication_locus_checks_owner_record_and_lifetime_without_input() 
     let component = definition
         .instantiate(context, LaunchTarget::New, RestoreInput::None)
         .unwrap();
-    let app = definition.app_id.to_owned();
+    let app = definition.app_id().to_owned();
     let record_id = component.record().id.clone();
     let record = record_id.as_str().to_owned();
     let mut frame = FrameHarness::from_component(component, (800, 600), runner_inputs()).unwrap();
@@ -481,7 +481,7 @@ fn component_publication_locus_refuses_ambiguous_controls_and_replaced_mounts() 
         let component = definition
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
             .unwrap();
-        let app = definition.app_id.to_owned();
+        let app = definition.app_id().to_owned();
         let checkout = component.record().clone();
         let mut frame =
             FrameHarness::from_component(component, (800, 600), runner_inputs()).unwrap();
@@ -537,7 +537,10 @@ impl AppWidget for WithdrawableResource {
 }
 
 impl Widget for WithdrawableResource {
-    tilo_ui::provides!(dyn tilo_ui::resources::PublishesResources);
+    tilo_ui::provides!(
+        dyn tilo_ui::resources::PublishesResources,
+        dyn tilo_ui::host_operation::ResourceOperations
+    );
     fn name(&self) -> &'static str {
         "WithdrawableResource"
     }
@@ -551,9 +554,13 @@ impl Widget for WithdrawableResource {
         nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
+}
+
+impl tilo_ui::host_operation::ResourceOperations for WithdrawableResource {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[tilo_ui::widget::resource_actions::OPERATION_TYPE]
     }
+
     fn start_operation(
         &mut self,
         _: &tilo_ui::host_operation::ResourceOperation<'_>,

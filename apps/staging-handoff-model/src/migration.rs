@@ -25,6 +25,16 @@ pub struct Migration {
         deserialize_with = "present_inventory"
     )]
     flatpak_inventory: Option<FlatpakInventory>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    deferred_handoff: Option<DeferredHandoff>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeferredHandoff {
+    schema: u32,
+    original_uid: u32,
+    journal_sha256: [u8; 32],
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -190,17 +200,11 @@ struct PendingComputerApplicationsScope {
 
 impl Migration {
     /// Validate descriptive source metadata without granting source access.
-    ///
-    /// # Errors
-    /// Returns the first malformed source, consent or inventory binding.
     pub fn validate_standalone(&self) -> Result<(), String> {
         self.validate_context(None)
     }
 
     /// Validate the source against the retained disk and installation extents.
-    ///
-    /// # Errors
-    /// Returns the first malformed or mismatched source binding.
     pub fn validate_in_handoff(&self, handoff: &Handoff) -> Result<(), String> {
         self.validate_context(Some(handoff))
     }
@@ -214,6 +218,12 @@ impl Migration {
         };
         if self.schema != 1
             || !is_guid(&self.operation_id)
+            || self.deferred_handoff.as_ref().is_some_and(|handoff| {
+                handoff.schema != 1
+                    || handoff.original_uid != 1000
+                    || handoff.original_uid != self.home.original_uid
+                    || handoff.journal_sha256 == [0; 32]
+            })
             || !(self.categories.home || self.categories.flatpak || self.categories.accounts)
             || (self.home_policy.is_some_and(|p| p != Policy::Copy) && !self.categories.home)
             || handoff.is_some_and(|h| {

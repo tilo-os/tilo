@@ -30,7 +30,7 @@ use cli_shim::{Sidecar, sidecar_path_for};
 
 /// System install path for the launcher; overridable by the sidecar's
 /// `launcher = ...` field so tests can point at a target/debug/tilo-launcher without root-installing.
-const DEFAULT_LAUNCHER_PATH: &str = "/usr/bin/tilo-launcher";
+const DEFAULT_LAUNCHER_PATH: &str = "/usr/libexec/tilo/tilo-launcher";
 
 fn main() -> ! {
     // Diverges — either execvs the launcher (never returns) or exits via the error path with a status the caller can inspect.
@@ -77,7 +77,6 @@ fn read_sidecar(path: &Path) -> Result<Sidecar, String> {
 }
 
 fn execv_launcher(launcher: &Path, argv: &[String]) -> ! {
-    // Build the raw C argv + terminating NULL.
     let path_c = CString::new(launcher.as_os_str().as_encoded_bytes())
         .unwrap_or_else(|_| die("tilo-cli-shim: launcher path contains a NUL byte"));
     let owned: Vec<CString> = argv
@@ -134,7 +133,7 @@ mod tests {
         let launcher = s
             .launcher
             .unwrap_or_else(|| PathBuf::from(DEFAULT_LAUNCHER_PATH));
-        assert_eq!(launcher, PathBuf::from("/usr/bin/tilo-launcher"));
+        assert_eq!(launcher, PathBuf::from("/usr/libexec/tilo/tilo-launcher"));
 
         let text = format!("{PLAIN}launcher   = \"/tmp/target/debug/tilo-launcher\"\n");
         let s: Sidecar = toml::from_str(&text).expect("decode");

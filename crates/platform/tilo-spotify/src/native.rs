@@ -110,8 +110,6 @@ pub struct NativeAudio {
 }
 impl NativeAudio {
     /// Start native playback with an owned registration and a sealed grant.
-    /// # Errors
-    /// The runtime refused the worker. Session failures arrive through `error`.
     pub fn start(uri: String, account: String, output: Output) -> Result<Self, String> {
         let (commands, receiver) = tokio::sync::mpsc::channel(16);
         let status = Arc::new(Mutex::new(Status::default()));
@@ -915,11 +913,16 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(5)).await;
                 updates.set_user_attribute("type", "premium");
             });
-            let mut sink =
-                verified_sink(&session, &cancel, &output, &frames, Duration::from_secs(2))
-                    .await
-                    .unwrap()
-                    .unwrap();
+            let mut sink = verified_sink(
+                &session,
+                &cancel,
+                &output,
+                &frames,
+                tilo_test_env::hang_bound(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
             received.await.unwrap();
             assert_eq!(sink.pipeline.current_state(), gst::State::Null);
             assert_eq!(frames.load(Ordering::Acquire), 0);
@@ -961,7 +964,7 @@ mod tests {
                 &cancel,
                 &eligibility_output(),
                 &frames,
-                Duration::from_secs(2),
+                tilo_test_env::hang_bound(),
             )
             .await
             .unwrap();
@@ -985,7 +988,7 @@ mod tests {
                     &AtomicBool::new(false),
                     &eligibility_output(),
                     &frames,
-                    Duration::from_secs(2),
+                    tilo_test_env::hang_bound(),
                 )
                 .await;
                 assert!(result.is_err(), "{product:?} must not authorize audio");
@@ -1016,14 +1019,9 @@ mod tests {
             sink.write(AudioPacket::Samples(vec![0.25; 2048]), &mut converter)
                 .unwrap();
         }
-        let deadline = tilo_clock::now() + Duration::from_secs(5);
-        while rendered.load(Ordering::Relaxed) < 4 && tilo_clock::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(
-            rendered.load(Ordering::Relaxed) >= 4,
-            "clocked PCM must arrive"
-        );
+        tilo_test_env::wait_until("clocked PCM to arrive", || {
+            rendered.load(Ordering::Relaxed) >= 4
+        });
         assert!(bytes.lock().unwrap().len() >= 16_384);
         assert!(bytes.lock().unwrap().iter().any(|byte| *byte != 0));
         assert!(frames.load(Ordering::Relaxed) > 0);
@@ -1058,14 +1056,9 @@ mod tests {
                 sink.write(AudioPacket::Samples(vec![0.25; 2048]), &mut converter)
                     .unwrap();
             }
-            let deadline = tilo_clock::now() + Duration::from_secs(5);
-            while rendered.load(Ordering::Relaxed) == 0 && tilo_clock::now() < deadline {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            assert!(
-                rendered.load(Ordering::Relaxed) > 0,
-                "each new output delivers clocked PCM"
-            );
+            tilo_test_env::wait_until("each new output to deliver clocked PCM", || {
+                rendered.load(Ordering::Relaxed) > 0
+            });
             // An interruption must not wait for EOS that will never be sent.
             tilo_rt::block_on(drain_output(&pipeline, &AtomicBool::new(true)))
                 .unwrap()

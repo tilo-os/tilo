@@ -78,27 +78,31 @@ pub fn refreshed_remotes(rows: &str, previous: &[Remote]) -> Vec<Remote> {
     remotes
 }
 
-/// Explain a device repository's known permission refusal in human terms.
-pub fn remote_error(remote: &Remote, error: &str) -> String {
+/// What the Store says when the Flatpak repository `remote` could not be
+/// read: decided by the host's typed refusal, never by an error's text.
+pub fn remote_error(remote: &Remote, error: &app_host::client::CatalogueError) -> String {
+    use app_host::client::Refusal;
     tracing::warn!(repository = %remote.name, %error, "could not read Flatpak repository");
-    if !remote.user_managed && error.contains("GenerateOciSummary") {
-        ui::i18n::I18nManager::format(
+    match error.refusal() {
+        Some(Refusal::DeviceRepositoryStale) => ui::i18n::I18nManager::format(
             "store-device-repository-refresh",
             &[("name", ui::i18n::ArgValue::Text(remote.title.clone()))],
-        )
-    } else if error.contains("command timed out after ") {
-        ui::i18n::I18nManager::format(
+        ),
+        Some(Refusal::TimedOut) => ui::i18n::I18nManager::format(
             "store-repository-timeout",
             &[("name", ui::i18n::ArgValue::Text(remote.title.clone()))],
-        )
-    } else {
-        ui::i18n::I18nManager::format(
+        ),
+        Some(Refusal::SystemUpdateNeeded) => ui::i18n::I18nManager::format(
+            "store-system-update-needed",
+            &[("name", ui::i18n::ArgValue::Text(remote.title.clone()))],
+        ),
+        Some(Refusal::Expired) | None => ui::i18n::I18nManager::format(
             "store-repository-read-error",
             &[
                 ("name", ui::i18n::ArgValue::Text(remote.title.clone())),
                 ("error", ui::i18n::ArgValue::Text(error.to_string())),
             ],
-        )
+        ),
     }
 }
 
@@ -143,6 +147,10 @@ pub struct AppStreamRecord {
     /// When the app last changed on Flathub, Unix seconds; 0 when unknown.
     #[serde(default)]
     pub updated_at_unix: u64,
+    /// The processors Flathub builds the app for (`x86_64`, `aarch64`);
+    /// empty when the response does not say.
+    #[serde(default)]
+    pub arches: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -173,89 +181,6 @@ fn client() -> Result<Client, FlathubError> {
         .map_err(|e| FlathubError::Http(e.to_string()))
 }
 
-/// Fetch the popular set. `max_apps` bounds the total returned so we
-/// don't over-populate the list — the task caps around 200.
-///
-/// # Errors
-///
-/// Returns [`FlathubError::Http`] if a page request fails or comes back
-/// with a non-success status, or [`FlathubError::Decode`] if a page's body
-/// isn't the expected JSON shape.
-pub fn fetch_popular(max_apps: usize) -> Result<Vec<AppStreamRecord>, FlathubError> {
-    if max_apps == 0 {
-        return Ok(Vec::new());
-    }
-    let text = client()?
-        .get(format!(
-            "{}/collection/popular?page=1&per_page={}",
-            api_base(),
-            max_apps.min(200)
-        ))
-        .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .and_then(reqwest::blocking::Response::text)
-        .map_err(|e| FlathubError::Http(e.to_string()))?;
-    let mut records = decode_records(&text)?;
-    records.truncate(max_apps);
-    Ok(records)
-}
-
-/// Fetch one appstream record.
-///
-/// # Errors
-///
-/// Returns [`FlathubError::Http`] if the request fails or comes back with a
-/// non-success status, or [`FlathubError::Decode`] if the body isn't the
-/// expected JSON shape.
-pub fn fetch_appstream(app_id: &str) -> Result<AppStreamRecord, FlathubError> {
-    let url = format!("{}/appstream/{}", api_base(), app_id);
-    let c = client()?;
-    let text = c
-        .get(&url)
-        .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .and_then(reqwest::blocking::Response::text)
-        .map_err(|e| FlathubError::Http(e.to_string()))?;
-    let mut value: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| FlathubError::Decode(e.to_string()))?;
-    // `/appstream/<id>` has shipped responses both with and without a repeated
-    // id field. The path remains authoritative, so don't reject the latter.
-    if let Some(object) = value.as_object_mut()
-        && !object.contains_key("flatpakAppId")
-        && !object.contains_key("app_id")
-        && !object.contains_key("id")
-    {
-        object.insert("id".into(), serde_json::Value::String(app_id.into()));
-    }
-    let mut record = record_from_value(&value)?;
-    record.app_id = app_id.to_string();
-    Ok(record)
-}
-
-/// Full-text search. Flathub's response has changed between a bare array and
-/// a `{ "hits": [...] }` envelope; accept both and normalize summary records
-/// into the same shape used by collection/detail enrichment.
-///
-/// # Errors
-///
-/// Returns [`FlathubError::Http`] if the request fails or comes back with a
-/// non-success status, or [`FlathubError::Decode`] if the body isn't the
-/// expected JSON shape.
-pub fn search(query: &str) -> Result<Vec<AppStreamRecord>, FlathubError> {
-    if query.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-    let url = format!("{}/search", api_base());
-    let text = client()?
-        .post(url)
-        .json(&serde_json::json!({ "query": query }))
-        .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .and_then(reqwest::blocking::Response::text)
-        .map_err(|e| FlathubError::Http(e.to_string()))?;
-    decode_records(&text)
-}
-
 fn decode_records(text: &str) -> Result<Vec<AppStreamRecord>, FlathubError> {
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| FlathubError::Decode(e.to_string()))?;
@@ -263,18 +188,10 @@ fn decode_records(text: &str) -> Result<Vec<AppStreamRecord>, FlathubError> {
         .as_array()
         .or_else(|| value.get("hits").and_then(serde_json::Value::as_array))
         .ok_or_else(|| FlathubError::Decode("expected an array or hits array".into()))?;
-    rows.iter()
-        .filter(|row| {
-            row.get("arches")
-                .and_then(serde_json::Value::as_array)
-                .is_none_or(|arches| {
-                    arches
-                        .iter()
-                        .any(|arch| arch.as_str() == Some(std::env::consts::ARCH))
-                })
-        })
-        .map(record_from_value)
-        .collect()
+    // An app without a build for this device's processor stays listed with
+    // the processors it has: the Store says it is not available here rather
+    // than letting it vanish.
+    rows.iter().map(record_from_value).collect()
 }
 
 fn record_from_value(value: &serde_json::Value) -> Result<AppStreamRecord, FlathubError> {
@@ -360,6 +277,18 @@ fn record_from_value(value: &serde_json::Value) -> Result<AppStreamRecord, Flath
             .unwrap_or_default(),
         license: string_field(value, &["project_license", "license"]).unwrap_or_default(),
         updated_at_unix: unix_field(value, &["updated_at", "last_updated"]),
+        arches: value
+            .get("arches")
+            .and_then(serde_json::Value::as_array)
+            .map(|arches| {
+                arches
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .filter(|arch| !arch.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 
@@ -398,10 +327,6 @@ fn get_text(url: &str) -> Result<String, FlathubError> {
 
 /// One of Flathub's collections (`popular`, `trending`, `recently-updated`,
 /// `recently-added`), first page, in `locale`.
-///
-/// # Errors
-///
-/// Returns why the request or its decoding failed.
 pub fn fetch_collection(
     name: &str,
     per_page: usize,
@@ -419,10 +344,6 @@ pub fn fetch_collection(
 /// One page of Flathub's whole catalogue in `locale`: the search index with
 /// an empty query, `per_page` apps at a time. Answers the records and how
 /// many pages there are.
-///
-/// # Errors
-///
-/// Returns why the request or its decoding failed.
 pub fn fetch_catalogue_page(
     page: usize,
     per_page: usize,
@@ -456,10 +377,6 @@ pub fn fetch_catalogue_page(
 }
 
 /// Full-text search of Flathub in `locale`.
-///
-/// # Errors
-///
-/// Returns why the request or its decoding failed.
 pub fn search_localized(query: &str, locale: &str) -> Result<Vec<AppStreamRecord>, FlathubError> {
     if query.trim().is_empty() {
         return Ok(Vec::new());
@@ -501,10 +418,6 @@ pub fn fetch_appstream_document(
 
 /// What Flathub's build summary says about one app: its download and
 /// installed size and the permissions its sandbox grants, as JSON.
-///
-/// # Errors
-///
-/// Returns why the request or its decoding failed.
 pub fn fetch_summary(app_id: &str) -> Result<serde_json::Value, FlathubError> {
     if !crate::reports::valid_app_id(app_id) {
         return Err(FlathubError::Decode("invalid app id".into()));
@@ -641,7 +554,33 @@ mod tests {
         };
         let message = remote_error(
             &remote,
-            "Failed: remote exception: remote exception: command timed out after 8000 ms",
+            &app_host::client::CatalogueError::Refused {
+                refusal: app_host::client::Refusal::TimedOut,
+                detail: "Flatpak repository query: command timed out after 8000 ms".into(),
+            },
+        );
+        // Only the refusal decides: any wording of the detail reads the same.
+        for detail in ["", "it took too long", "Flatpak repository query timed out"] {
+            assert_eq!(
+                remote_error(
+                    &remote,
+                    &app_host::client::CatalogueError::Refused {
+                        refusal: app_host::client::Refusal::TimedOut,
+                        detail: detail.into(),
+                    },
+                ),
+                message
+            );
+        }
+        // And text alone never makes a refusal.
+        assert_ne!(
+            remote_error(
+                &remote,
+                &app_host::client::CatalogueError::Failed(
+                    "command timed out after 8000 ms GenerateOciSummary".into()
+                ),
+            ),
+            message
         );
         assert_eq!(
             message,
@@ -679,25 +618,14 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("FLATHUB_API_BASE", format!("http://{address}/api/v2"));
-        env.set("TILO_STORE_HTTP_TIMEOUT", "2");
-        listener.set_nonblocking(true).unwrap();
+        env.set(
+            "TILO_STORE_HTTP_TIMEOUT",
+            tilo_test_env::hang_bound().as_secs().to_string(),
+        );
         let server = std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + Duration::from_secs(3);
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(
-                            std::time::Instant::now() < deadline,
-                            "no collection request received"
-                        );
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    Err(error) => panic!("collection request failed: {error}"),
-                }
-            };
+            let (mut stream, _) = listener.accept().expect("collection request");
             stream
-                .set_read_timeout(Some(Duration::from_secs(3)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let mut buffer = [0; 4096];
             let size = stream.read(&mut buffer).unwrap();
@@ -711,10 +639,12 @@ mod tests {
             .unwrap();
             request
         });
-        let rows = fetch_popular(200).unwrap();
+        let rows = fetch_collection("popular", 200, "en").unwrap();
         let request = server.join().unwrap();
         assert!(
-            request.starts_with("GET /api/v2/collection/popular?page=1&per_page=200 HTTP/1.1"),
+            request.starts_with(
+                "GET /api/v2/collection/popular?page=1&per_page=200&locale=en HTTP/1.1"
+            ),
             "{request}"
         );
         assert_eq!(rows[0].app_id, "org.gnome.Calculator");
@@ -727,7 +657,6 @@ mod tests {
     /// Every Flathub search/detail response shape decodes; the remotes parser is bounded without a binary.
     #[test]
     fn flathub_decoders_accept_published_shapes_and_remotes_stay_bounded() {
-        // Case `search_decoder_accepts_current_hit_shape`.
         {
             let out = decode_records(
             r#"{"hits":[{"app_id":"org.example.App","name":"Example","summary":"Useful","main_categories":["Utility"]}]}"#,
@@ -737,7 +666,6 @@ mod tests {
             assert_eq!(out[0].categories[0].name, "Utility");
         }
 
-        // Case `detail_decoder_accepts_path_authoritative_shape`.
         {
             let mut record = record_from_value(&serde_json::json!({
                 "id": "placeholder",
@@ -764,11 +692,17 @@ mod tests {
             {"app_id": "org.example.Native", "arches": [std::env::consts::ARCH]},
             {"app_id": "org.example.Foreign", "arches": ["different-device"]}
         ]});
-        let native = decode_records(&architecture_rows.to_string()).unwrap();
-        assert_eq!(native.len(), 1);
-        assert_eq!(native[0].app_id, "org.example.Native");
+        let rows = decode_records(&architecture_rows.to_string()).unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.app_id.as_str())
+                .collect::<Vec<_>>(),
+            ["org.example.Native", "org.example.Foreign"],
+            "an app built only for another processor is kept, not dropped"
+        );
+        assert_eq!(rows[0].arches, [std::env::consts::ARCH]);
+        assert_eq!(rows[1].arches, ["different-device"]);
 
-        // Host rows include system and user installations, and disabled remotes.
         let rows = list_remotes(
             "flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem\nfedora\toci+https://registry.fedoraproject.org\tFedora\tsystem,disabled\n",
         );

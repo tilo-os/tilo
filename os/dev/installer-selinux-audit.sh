@@ -26,7 +26,7 @@ guest_root() {
       -p "${TILO_SSH_PORT:-2222}" \
       -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
       -o ConnectTimeout=5 -o LogLevel=ERROR \
-      quickuser@127.0.0.1 "sudo -S -p '' /usr/bin/bash -ec $command_quoted"
+      tester@127.0.0.1 "sudo -S -p '' /usr/bin/bash -ec $command_quoted"
 }
 
 cmd="${1:-}"

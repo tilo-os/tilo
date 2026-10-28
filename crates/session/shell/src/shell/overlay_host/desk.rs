@@ -7,11 +7,13 @@
 //! surfaces are open), lays the widgets out at their edges beside any live
 //! call or navigation card, and paints them.
 //!
-//! The Super surface is the command palette opened field-only
-//! ([`ui::CommandPalette::set_field_only_while_empty`]) over a light scrim,
-//! with every widget open around it and the time and status under the field. Typing
-//! searches exactly as the palette always has; Escape and a click outside
-//! close it through the palette's own paths.
+//! The Super surface is global search over a light scrim, with every widget
+//! open around it and the time and status under the field. Tapped, it shows
+//! the launcher under the field ([`crate::shell::search::launcher`]); held,
+//! it is the field alone
+//! ([`ui::CommandPalette::set_field_only_while_empty`]), a glance at the
+//! widgets. Typing searches exactly as the palette always has; Escape and a
+//! click outside close it through the palette's own paths.
 //!
 //! Nothing here paints a blurred backdrop: glance forms and cards are the
 //! opaque overlay surface, the scrim one translucent fill, so an idle desk
@@ -44,9 +46,10 @@ use crate::shell::desk_widgets::team::{self, TeamMember};
 use crate::shell::desk_widgets::{
     Context, DeskBoard, DeskWidgetPrefs, DockEdge, Form, ShowMode, Slot, WidgetId,
 };
+use crate::shell::i18n::{t, t_args};
 use crate::shell::input_policy::SuperGesture;
 use crate::shell::now_playing::{NowPlayingView, PlaybackStatus, PlayerSnapshot};
-use crate::shell::quick_settings::now_playing::{NowPlayingCard, paint_artwork};
+use crate::shell::now_playing_panel::{NowPlayingCard, paint_song_at_rest};
 
 /// How strongly the Super surface dims what is behind it, as a share of
 /// the theme's modal scrim: the background stays mostly visible.
@@ -56,6 +59,9 @@ pub(crate) const SUPER_SCRIM: f32 = 0.35;
 const MUSIC_GLANCE: Size = Size::new(240.0, 40.0);
 /// Width of every open card.
 const CARD_WIDTH: f64 = ui::tokens::Metrics::BASE.panel_width_utility as f64;
+/// A desk widget's target prefix: `desk.widget:<key>` opens or folds it,
+/// and `.pin` keeps it on this strip.
+pub(super) const DESK_TARGET: &str = "desk.widget:";
 /// The band above an open card holding its pin.
 const PIN_BAND: f64 = ui::tokens::Spacing::BASE.s8 as f64;
 const PIN: f64 = ui::tokens::Layout::BASE.pin as f64;
@@ -75,8 +81,6 @@ const CALENDAR_ROW: f64 = ui::tokens::Spacing::BASE.s8 as f64;
 const MONITOR_GLANCE: Size = Size::new(176.0, 40.0);
 const MONITOR_HEADER: f64 = ui::tokens::Layout::BASE.row_header as f64;
 const MONITOR_ROW: f64 = ui::tokens::Metrics::BASE.bar_height as f64;
-/// A press that moves this far becomes a drag to another edge.
-const DRAG_SLOP: f64 = ui::tokens::Metrics::BASE.icon_label_gap as f64;
 
 /// How the Super surface was opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,13 +96,8 @@ pub enum SuperSurface {
     Pinned,
 }
 
-/// A press on a widget, and the drag it may become.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Press {
-    id: WidgetId,
-    at: Point,
-    dragging: bool,
-}
+/// A press on a widget, and the drag to another edge it may become.
+type Press = layout::EdgeDrag<WidgetId>;
 
 /// What the host keeps for the desk between frames.
 pub(crate) struct DeskState {
@@ -114,6 +113,9 @@ pub(crate) struct DeskState {
     /// (`ui::motion::Ambient`).
     shown: BTreeMap<WidgetId, ui::motion::Presence>,
     opened: BTreeMap<WidgetId, ui::motion::Presence>,
+    /// Whether another surface owned the screen at the last update: the
+    /// widgets coming back when it goes follow what closed it.
+    covered: bool,
     super_surface: Option<SuperSurface>,
     system_activities: Vec<Rect>,
     music_card: NowPlayingCard,
@@ -127,6 +129,11 @@ pub(crate) struct DeskState {
     monitor_source: Box<dyn system_monitor::Source>,
     /// Wakes the loop when a reading arrives.
     monitor_wake: Option<crate::session_runtime::Wake>,
+    /// The widgets and their pins as Tab and assistive technology reach
+    /// them: each showing widget once, and its pin while its card is open.
+    targets: ui::widget::PaintedTargets,
+    /// The desk itself holds keyboard focus (Tab reached it).
+    focused: bool,
 }
 
 impl Default for DeskState {
@@ -139,6 +146,7 @@ impl Default for DeskState {
             edges: BTreeMap::new(),
             shown: BTreeMap::new(),
             opened: BTreeMap::new(),
+            covered: false,
             super_surface: None,
             system_activities: Vec::new(),
             music_card: NowPlayingCard::new(),
@@ -149,6 +157,8 @@ impl Default for DeskState {
             monitor: system_monitor::Monitor::default(),
             monitor_source: Box::new(system_monitor::Service::default()),
             monitor_wake: None,
+            targets: ui::widget::PaintedTargets::new(),
+            focused: false,
         }
     }
 }
@@ -171,13 +181,23 @@ impl ShellOverlayHost {
     /// then the whole surface once Super has been held longer or the
     /// pointer moves. A chord at either stage takes it away without a fade.
     pub fn super_gesture(&mut self, gesture: SuperGesture, doc: &AutoCommit, root: &ObjId) {
+        // While the capture tool is up, Super is held for its chords: nothing
+        // the hold brings up may show over what is being captured.
+        if self.capture_studio.is_open()
+            && matches!(
+                gesture,
+                SuperGesture::Tap | SuperGesture::Peek | SuperGesture::PeekFull
+            )
+        {
+            return;
+        }
         match (gesture, self.desk.super_surface) {
             // A second tap closes the surface, and closes plain search as it
             // always has.
             (SuperGesture::Tap, surface) if surface.is_some() || self.palette_visible => {
                 self.close_super_surface();
             }
-            (SuperGesture::Tap, None) => {
+            (SuperGesture::Tap, None) | (SuperGesture::PeekTaken, Some(SuperSurface::Glimpse)) => {
                 self.open_super_surface(SuperSurface::Pinned, doc, root);
             }
             (SuperGesture::Peek, None) if !self.palette_visible => {
@@ -185,9 +205,6 @@ impl ShellOverlayHost {
             }
             (SuperGesture::PeekFull, Some(SuperSurface::Glimpse)) => {
                 self.open_super_surface(SuperSurface::Peek, doc, root);
-            }
-            (SuperGesture::PeekTaken, Some(SuperSurface::Glimpse)) => {
-                self.open_super_surface(SuperSurface::Pinned, doc, root);
             }
             (
                 SuperGesture::PeekReleased | SuperGesture::PeekCancelled,
@@ -201,10 +218,14 @@ impl ShellOverlayHost {
                     self.close_super_surface();
                 } else {
                     self.desk.super_surface = Some(SuperSurface::Pinned);
+                    self.palette.set_field_only_while_empty(false);
+                    self.palette_layout_dirty = true;
                 }
             }
             (SuperGesture::PeekTaken, Some(SuperSurface::Peek)) => {
                 self.desk.super_surface = Some(SuperSurface::Pinned);
+                self.palette.set_field_only_while_empty(false);
+                self.palette_layout_dirty = true;
             }
             _ => return,
         }
@@ -224,10 +245,13 @@ impl ShellOverlayHost {
     /// Open the Super surface: search with an empty field at the top, every
     /// widget open around it, the time and status.
     pub fn open_super_surface(&mut self, mode: SuperSurface, doc: &AutoCommit, root: &ObjId) {
-        if !self.palette_visible {
-            self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+        if !self.global_search_open() {
+            self.toggle_global_search();
         }
-        self.palette.set_field_only_while_empty(true);
+        // Tapped, it is global search with the launcher under the field;
+        // held, a glance at the widgets with the field alone.
+        self.palette
+            .set_field_only_while_empty(mode != SuperSurface::Pinned);
         self.palette_layout_dirty = true;
         self.desk.super_surface = Some(mode);
         self.refresh_search_results(doc, root);
@@ -243,7 +267,7 @@ impl ShellOverlayHost {
     /// The hold was a chord after all, or Super came up during the quiet
     /// stage: everything the hold brought is gone at once, with no fade
     /// for the eye to follow while the chord runs.
-    fn cancel_super_surface(&mut self) {
+    pub(super) fn cancel_super_surface(&mut self) {
         self.close_super_surface();
         self.palette_was_visible = false;
         self.palette_transition = ui::motion::Presence::closed();
@@ -282,6 +306,146 @@ impl ShellOverlayHost {
 
     pub fn desk_widget_prefs(&self) -> &DeskWidgetPrefs {
         &self.desk.prefs
+    }
+
+    /// Whether the desk has a control Tab can reach now: a showing
+    /// widget's glance or card.
+    pub(super) fn desk_is_focusable(&self) -> bool {
+        self.desk
+            .slots
+            .iter()
+            .any(|slot| self.desk.board.form(slot.id) != Form::Away)
+    }
+
+    /// Tab reached the desk, or left it: the widgets' controls take or give
+    /// back the keyboard.
+    pub(super) fn set_desk_focus(&mut self, focused: bool) {
+        if self.desk.focused != focused {
+            self.desk.focused = focused;
+            self.desk.targets.set_host_focus(focused);
+            self.bump_chrome();
+        }
+    }
+
+    pub(super) fn desk_is_focused(&self) -> bool {
+        self.desk.focused
+    }
+
+    pub(super) fn desk_wants_tab(&self) -> bool {
+        self.desk.targets.wants_tab_input()
+    }
+
+    /// A key for the desk while Tab has reached it: Tab between its
+    /// controls, Enter or Space to open, fold or pin one.
+    pub(super) fn handle_desk_keyboard(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        if !self.desk.focused {
+            return false;
+        }
+        let mut changed = self.desk.targets.handle_event(event, ctx);
+        let activated = self.desk.targets.take_activated();
+        for target in activated {
+            changed |= self.desk_activate_target(&target);
+        }
+        if changed {
+            self.bump_chrome();
+        }
+        *ctx.handled || changed
+    }
+
+    /// The desk's controls as assistive technology reads them, when the
+    /// desk is on screen rather than under another surface.
+    pub(super) fn desk_accessibility_children(&self) -> Vec<ui::a11y::AccessNode> {
+        if self.desk_covered() {
+            return Vec::new();
+        }
+        self.desk.targets.accessibility_children()
+    }
+
+    /// Carry out what assistive technology asked of a desk control: the
+    /// same open, fold or pin its press and Enter perform.
+    pub(super) fn desk_semantic_action(&mut self, action: &ui::a11y::Action, target: &str) -> bool {
+        if !self.desk.targets.perform_semantic_action(action, target) {
+            return false;
+        }
+        let activated = self.desk.targets.take_activated();
+        let mut changed = false;
+        for target in activated {
+            changed |= self.desk_activate_target(&target);
+        }
+        if changed || matches!(action, ui::a11y::Action::Focus) {
+            self.bump_chrome();
+        }
+        true
+    }
+
+    fn desk_activate_target(&mut self, target: &str) -> bool {
+        let Some(rest) = target.strip_prefix(DESK_TARGET) else {
+            return false;
+        };
+        let (key, pin) = rest
+            .strip_suffix(".pin")
+            .map_or((rest, false), |key| (key, true));
+        let Some(widget) = WidgetId::ALL.into_iter().find(|id| id.key() == key) else {
+            return false;
+        };
+        if pin {
+            self.toggle_widget_pin(widget);
+        } else if self.desk.board.form(widget) == Form::Open {
+            self.desk.board.close();
+        } else {
+            self.desk.board.open(widget);
+        }
+        self.update_desk(ui::time::now());
+        self.bump_chrome();
+        true
+    }
+
+    /// Register this frame's widgets and pins for Tab and assistive
+    /// technology. A widget's own target opens or folds it; its pin's target
+    /// keeps it on this strip.
+    fn register_desk_targets(&mut self) {
+        self.desk.targets.begin_frame();
+        let strip = self
+            .chrome
+            .as_ref()
+            .and_then(|chrome| chrome.borrow().active_strip_id())
+            .map(|strip| strip.0);
+        for slot in &self.desk.slots {
+            let form = self.desk.board.form(slot.id);
+            if form == Form::Away {
+                continue;
+            }
+            let title = desk_widget_title(slot.id);
+            let id = format!("{DESK_TARGET}{}", slot.id.key());
+            if form == Form::Open {
+                self.desk.targets.target(
+                    id.clone(),
+                    slot.open,
+                    t_args("desk-widget-close", &[("widget", title.as_str().into())]),
+                );
+                let pinned = self.desk.prefs.get(slot.id).always_on(strip);
+                self.desk.targets.target(
+                    format!("{id}.pin"),
+                    pin_rect(slot.open),
+                    t(if pinned {
+                        "desk-widget-unpin"
+                    } else {
+                        "desk-widget-pin"
+                    }),
+                );
+            } else {
+                self.desk.targets.target(
+                    id,
+                    slot.glance,
+                    t_args("desk-widget-open", &[("widget", title.into())]),
+                );
+            }
+        }
+        self.desk.targets.end_frame();
     }
 
     /// The form `id` is in now.
@@ -340,10 +504,8 @@ impl ShellOverlayHost {
         fullscreen
             || flags.capture
             || LayerId::ALL.into_iter().any(|id| {
-                !matches!(
-                    id,
-                    LayerId::CommandPalette | LayerId::RoomActivity | LayerId::NowPlaying
-                ) && self.overlay_is_open(id, flags)
+                !matches!(id, LayerId::CommandPalette | LayerId::NowPlaying)
+                    && self.overlay_is_open(id, flags)
             })
     }
 
@@ -470,6 +632,21 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Whether another surface owns the screen now, and what the widgets
+    /// showing move as: coming back as a surface over them closes, as that
+    /// close did (a key lands them at once, a click fades them in);
+    /// otherwise on their own.
+    fn desk_cover(&mut self) -> (bool, ui::tokens::MotionSource) {
+        let covered = self.desk_covered();
+        let uncovered = std::mem::replace(&mut self.desk.covered, covered) && !covered;
+        let source = if uncovered {
+            self.input_source
+        } else {
+            ui::tokens::MotionSource::Pointer
+        };
+        (covered, source)
+    }
+
     /// Lay the widgets out and decide their forms at `now`. Returns whether
     /// anything on the desk changed.
     pub(crate) fn update_desk(&mut self, now: Instant) -> bool {
@@ -484,7 +661,7 @@ impl ShellOverlayHost {
             self.end_super_surface();
         }
         self.desk.team_count = self.team_count();
-        let items: Vec<Item> = WidgetId::ALL
+        let items: Vec<Item<WidgetId>> = WidgetId::ALL
             .into_iter()
             .map(|id| {
                 let (glance, open, has_content) = self.widget_sizes(id, now);
@@ -509,9 +686,9 @@ impl ShellOverlayHost {
         // whatever waits beside or below it. Widgets on that edge step past
         // all of it, as past a call card.
         let mut occupied = self.desk.system_activities.clone();
-        let ribbon = self.strip_switcher_zone();
+        let ribbon = self.strip_frame().zone();
         if ribbon.area() > 0.0 {
-            let labels = self.strip_switcher.extent_beside(&self.strip_ribbon());
+            let labels = self.strip_navigator.labels_extent(&self.strip_frame());
             let switcher = if labels.area() > 0.0 {
                 ribbon.union(labels)
             } else {
@@ -528,7 +705,7 @@ impl ShellOverlayHost {
             .as_ref()
             .and_then(|chrome| chrome.borrow().active_strip_id())
             .map(|strip| strip.0);
-        let covered = self.desk_covered();
+        let (covered, shown_source) = self.desk_cover();
         let ctx = Context {
             now,
             prefs: &self.desk.prefs,
@@ -555,7 +732,7 @@ impl ShellOverlayHost {
                 .shown
                 .entry(slot.id)
                 .or_insert_with(ui::motion::Presence::closed)
-                .show(shown, shown_spec(slot.id, asked), motion, source, now);
+                .show(shown, shown_spec(slot.id, asked), motion, shown_source, now);
             // A card only ever opens on purpose: asked for.
             self.desk
                 .opened
@@ -614,7 +791,7 @@ impl ShellOverlayHost {
     /// show it at rest.
     #[cfg(feature = "hosted-test-control")]
     pub fn desk_settling_for_shots(&self) -> bool {
-        self.desk_animating(Instant::now())
+        self.desk_animating(ui::time::now())
     }
 
     /// Lay the desk out at `now` with every widget already where it is
@@ -634,6 +811,21 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Take every desk widget away at once, with no fade: something that
+    /// must not show them has opened (the capture tool, which holds the
+    /// screen still and must not hold a glance the Super of its chord
+    /// brought up).
+    pub(super) fn clear_desk_at_once(&mut self) {
+        for presence in self
+            .desk
+            .shown
+            .values_mut()
+            .chain(self.desk.opened.values_mut())
+        {
+            presence.snap(false);
+        }
+    }
+
     pub(crate) fn desk_animating(&self, now: Instant) -> bool {
         self.desk
             .shown
@@ -645,15 +837,18 @@ impl ShellOverlayHost {
     /// A pointer sample at `p`, in desktop coordinates.
     pub(crate) fn desk_pointer(&mut self, p: Point, now: Instant) {
         self.desk.board.on_pointer(p, now, &self.desk.slots);
-        if let Some(press) = self.desk.press.as_mut()
-            && !press.dragging
-            && (p - press.at).hypot() > DRAG_SLOP
-        {
-            press.dragging = true;
+        if let Some(press) = self.desk.press.as_mut() {
+            press.moved(p);
         }
         if self.update_desk(now) || self.desk.press.is_some_and(|press| press.dragging) {
             self.bump_chrome();
         }
+    }
+
+    /// Where each desk widget waits in its quiet form: what else at the
+    /// edges (the pinned people overlay) steps past.
+    pub(super) fn desk_glances(&self) -> Vec<Rect> {
+        self.desk.slots.iter().map(|slot| slot.glance).collect()
     }
 
     pub(crate) fn desk_pointer_left(&mut self, now: Instant) {
@@ -661,7 +856,7 @@ impl ShellOverlayHost {
     }
 
     /// The widget form under `p`, if one is showing there.
-    fn desk_hit(&self, p: Point) -> Option<(WidgetId, Form, Rect)> {
+    pub(super) fn desk_hit(&self, p: Point) -> Option<(WidgetId, Form, Rect)> {
         self.desk
             .slots
             .iter()
@@ -696,24 +891,19 @@ impl ShellOverlayHost {
                 if form == Form::Open && self.desk_open_click(id, rect, p) {
                     return true;
                 }
-                self.desk.press = Some(Press {
-                    id,
-                    at: p,
-                    dragging: false,
-                });
+                self.desk.press = Some(Press::new(id, p));
                 true
             }
             ElementState::Released => {
                 let Some(press) = self.desk.press.take() else {
                     return false;
                 };
-                if press.dragging {
-                    let edge = layout::nearest_edge(self.overlay_area(), p);
+                if let Some(edge) = press.release(self.overlay_area(), p) {
                     self.set_widget_edge(press.id, edge);
                 } else if self.desk.board.form(press.id) == Form::Glance {
                     self.desk.board.open(press.id);
                 }
-                self.update_desk(Instant::now());
+                self.update_desk(ui::time::now());
                 self.bump_chrome();
                 true
             }
@@ -734,10 +924,7 @@ impl ShellOverlayHost {
             self.desk.music_card.layout(card);
             if card.contains(p) {
                 let action = self.desk.music_card.click(&view, p);
-                if !matches!(
-                    action,
-                    crate::shell::quick_settings::now_playing::CardAction::None
-                ) {
+                if !matches!(action, crate::shell::now_playing_panel::CardAction::None) {
                     // The same dispatch the Quick Settings card uses: the
                     // command goes to exactly that player's bus, whichever
                     // workspace its app runs in; nothing switches.
@@ -820,9 +1007,39 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) -> Vec<Rect> {
-        let now = Instant::now();
+        let now = ui::time::now();
         self.desk.motion = theme.motion();
+        self.register_desk_targets();
+        let content = self.desk_content(now, presence);
+        // The strip switcher's labels are where the person is looking: a
+        // widget glance under them steps aside while they are open.
+        let switcher_card = self
+            .strip_navigator
+            .is_open()
+            .then(|| self.strip_navigator.switcher().layout().bounds);
         let mut painted = Vec::new();
+        let mut pass = DeskPass {
+            scene,
+            transform,
+            text,
+            theme,
+            content: &content,
+        };
+        for slot in self.desk.slots.clone() {
+            self.paint_slot(&mut pass, slot, now, switcher_card, &mut painted);
+        }
+        self.desk.targets.paint_focus(
+            scene,
+            transform,
+            f64::from(theme.tokens.radii.control),
+            theme,
+        );
+        painted
+    }
+
+    /// What the widgets show this pass: who is on the team, the music the
+    /// player has, the month on view and the monitor's reading.
+    fn desk_content(&self, now: Instant, presence: &PresenceCtx) -> DeskContent {
         let team_showing = self.desk.board.form(WidgetId::Team) != Form::Away
             || self
                 .desk
@@ -834,92 +1051,102 @@ impl ShellOverlayHost {
         } else {
             Vec::new()
         };
-        let music = self.music_view(now);
-        let month = self.calendar_month();
-        let reading = self.desk.monitor.reading();
+        DeskContent {
+            music: self.music_view(now),
+            month: self.calendar_month(),
+            reading: self.desk.monitor.reading(),
+            members,
+        }
+    }
+
+    /// One widget: its glance while it is folded, its open card while it is
+    /// open, haloed by the present cursor's colour. Returns the bounds it
+    /// painted.
+    fn paint_slot(
+        &mut self,
+        pass: &mut DeskPass<'_>,
+        slot: Slot,
+        now: Instant,
+        switcher_card: Option<Rect>,
+        painted: &mut Vec<Rect>,
+    ) {
+        let (transform, content, theme) = (pass.transform, pass.content, pass.theme);
+        let (scene, text) = (&mut *pass.scene, &mut *pass.text);
+        let shown = self
+            .desk
+            .shown
+            .get(&slot.id)
+            .map_or(0.0, |t| shown_opacity(t.progress(now)));
+        if shown <= f32::EPSILON || switcher_card.is_some_and(|card| card.overlaps(slot.glance)) {
+            return;
+        }
+        let open = self
+            .desk
+            .opened
+            .get(&slot.id)
+            .map_or(0.0, |t| ui::motion::unit_opacity(t.progress(now)));
+        let edge = self
+            .desk
+            .edges
+            .get(&slot.id)
+            .copied()
+            .unwrap_or_else(|| slot.id.default_edge());
         let drag = self
             .desk
             .press
-            .filter(|press| press.dragging)
             .zip(self.last_cursor)
-            .map(|(press, p)| (press.id, p - press.at));
-        // The strip switcher's labels are where the person is looking: a
-        // widget glance under them steps aside while they are open.
-        let switcher_card = self
-            .strip_switcher
-            .is_open()
-            .then(|| self.strip_switcher.layout().bounds);
-        for slot in self.desk.slots.clone() {
-            let shown = self.desk.shown.get(&slot.id).map_or(0.0, |t| {
-                shown_opacity(slot.id, t.progress(now), self.desk.motion)
-            });
-            if shown <= f32::EPSILON || switcher_card.is_some_and(|card| card.overlaps(slot.glance))
-            {
-                continue;
-            }
-            let open = self
-                .desk
-                .opened
-                .get(&slot.id)
-                .map_or(0.0, |t| ui::motion::unit_opacity(t.progress(now)));
-            let edge = self
-                .desk
-                .edges
-                .get(&slot.id)
-                .copied()
-                .unwrap_or_else(|| slot.id.default_edge());
-            // Opacity only: a widget fades in place, and only a drag moves
-            // it.
-            let shift = drag
-                .filter(|(id, _)| *id == slot.id)
-                .map_or(vello::kurbo::Vec2::ZERO, |(_, delta)| delta);
-            let at = transform.pre_translate(shift);
-            let glance_alpha = shown * (1.0 - open);
-            if glance_alpha > f32::EPSILON {
-                with_alpha(
-                    scene,
-                    at,
-                    slot.glance.inflate(24.0, 24.0),
-                    glance_alpha,
-                    |scene| match slot.id {
-                        WidgetId::Music => {
-                            if let Some(view) = music.as_ref() {
-                                paint_music_glance(
-                                    scene,
-                                    at,
-                                    text,
-                                    theme,
-                                    slot.glance,
-                                    view.player(),
-                                );
-                            }
+            .and_then(|(press, p)| Some((press.id, press.shift(p)?)));
+        // Opacity only: a widget fades in place, and only a drag moves
+        // it.
+        let shift = drag
+            .filter(|(id, _)| *id == slot.id)
+            .map_or(vello::kurbo::Vec2::ZERO, |(_, delta)| delta);
+        let at = transform.pre_translate(shift);
+        let glance_alpha = shown * (1.0 - open);
+        if glance_alpha > f32::EPSILON {
+            with_alpha(
+                scene,
+                at,
+                slot.glance.inflate(24.0, 24.0),
+                glance_alpha,
+                |scene| match slot.id {
+                    WidgetId::Music => {
+                        if let Some(view) = content.music.as_ref() {
+                            paint_music_glance(scene, at, text, theme, slot.glance, view.player());
                         }
-                        WidgetId::Team => {
-                            paint_team_glance(scene, at, text, theme, slot.glance, edge, &members);
-                        }
-                        WidgetId::Calendar => {
-                            paint_calendar_glance(scene, at, text, theme, slot.glance, &month);
-                        }
-                        WidgetId::SystemMonitor => {
-                            paint_monitor_glance(scene, at, text, theme, slot.glance, reading);
-                        }
-                    },
-                );
-                painted.push(at.transform_rect_bbox(slot.glance.inflate(24.0, 32.0)));
-            }
-            let open_alpha = shown * open;
-            if open_alpha > f32::EPSILON {
-                let content = OpenContent {
-                    music: music.as_ref(),
-                    members: &members,
-                    month: &month,
-                    reading,
-                };
-                self.paint_open_card(scene, (at, open_alpha), text, theme, slot, content);
-                painted.push(at.transform_rect_bbox(slot.open.inflate(24.0, 32.0)));
-            }
+                    }
+                    WidgetId::Team => {
+                        paint_team_glance(
+                            scene,
+                            at,
+                            text,
+                            theme,
+                            slot.glance,
+                            edge,
+                            &content.members,
+                        );
+                    }
+                    WidgetId::Calendar => {
+                        paint_calendar_glance(scene, at, text, theme, slot.glance, &content.month);
+                    }
+                    WidgetId::SystemMonitor => {
+                        paint_monitor_glance(scene, at, text, theme, slot.glance, content.reading);
+                    }
+                },
+            );
+            painted.push(at.transform_rect_bbox(slot.glance.inflate(24.0, 32.0)));
         }
-        painted
+        let open_alpha = shown * open;
+        if open_alpha > f32::EPSILON {
+            let open_content = OpenContent {
+                music: content.music.as_ref(),
+                members: &content.members,
+                month: &content.month,
+                reading: content.reading,
+            };
+            self.paint_open_card(scene, (at, open_alpha), text, theme, slot, open_content);
+            painted.push(at.transform_rect_bbox(slot.open.inflate(24.0, 32.0)));
+        }
     }
 
     /// `slot`'s open card, pin band included, at `alpha`.
@@ -940,8 +1167,25 @@ impl ShellOverlayHost {
         );
         let card = card_rect(slot.open);
         let cursor = self.last_cursor;
+        let pin_target = format!("{DESK_TARGET}{}.pin", slot.id.key());
+        let pin_rect_now = pin_rect(slot.open);
+        let pin_label = t(if pinned {
+            "desk-widget-unpin"
+        } else {
+            "desk-widget-pin"
+        });
+        let pin_focused = self.desk.targets.interaction(&pin_target).focused;
+        let pin_hovered = cursor.is_some_and(|point| pin_rect_now.contains(point));
+        // The same face every plain toggle uses: on, the pin stands lifted;
+        // under the pointer or the keyboard it answers like any control.
+        let pin_face =
+            ui::widget::ButtonFace::icon_only(pin_rect_now, ui::icons::Icon::Pin, &pin_label)
+                .role(ui::widget::ButtonRole::Plain)
+                .toggled(pinned)
+                .hovered(pin_hovered)
+                .focused(pin_focused);
         with_alpha(scene, at, slot.open.inflate(24.0, 24.0), alpha, |scene| {
-            paint_pin(scene, at, theme, pin_rect(slot.open), pinned);
+            ui::widget::Button::paint(scene, at, text, theme, &pin_face);
             match slot.id {
                 WidgetId::Music => {
                     if let Some(view) = content.music {
@@ -1023,7 +1267,26 @@ impl ShellOverlayHost {
     }
 }
 
-/// What an open card shows, read once per frame.
+/// One painting pass of the desk: where it draws (`scene`, `transform`) and
+/// what it draws with (`text`, `theme`) and from (`content`).
+struct DeskPass<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+    content: &'a DeskContent,
+}
+
+/// What every widget of a pass shows, gathered once so a repeated paint of
+/// the same widget reads the same.
+struct DeskContent {
+    music: Option<NowPlayingView>,
+    month: Month,
+    reading: Reading,
+    members: Vec<TeamMember>,
+}
+
+/// What one open card shows, borrowed from [`DeskContent`].
 #[derive(Clone, Copy)]
 struct OpenContent<'a> {
     music: Option<&'a NowPlayingView>,
@@ -1088,26 +1351,20 @@ fn team_card_height(people: usize) -> f64 {
     TEAM_HEADER + TEAM_ROW * ui::num::f64_of_usize(rows) + more + 8.0
 }
 
-/// How widget `id` comes and goes. The Team widget's faces are people, and
-/// a person shown faintly reads as a ghost: it appears with the standard
-/// Appear motion, whole within its first moments, and is otherwise hidden,
-/// never resting in between. The others arrive as ambient chrome does.
+/// How widget `id` comes and goes: as ambient chrome does, by opacity in
+/// place, going at once. The Team widget's faces are people, and a person
+/// shown faintly reads as a ghost, so it always arrives as if asked for, at
+/// `fast`, whole as its motion ends and otherwise hidden, never on the slow
+/// unasked fade. Its motion is exactly its fade: a frame it asks for is a
+/// frame that changes.
 fn shown_spec(id: WidgetId, asked: bool) -> ui::motion::MotionSpec {
-    match id {
-        WidgetId::Team => ui::motion::Appear::SPEC,
-        _ => ui::motion::Ambient::spec(asked),
-    }
+    ui::motion::Ambient::spec(asked || id == WidgetId::Team)
 }
 
-/// How much of widget `id` shows at `progress` of its coming and going
+/// How much of a widget shows at `progress` of its coming and going
 /// ([`shown_spec`]).
-fn shown_opacity(id: WidgetId, progress: f64, motion: ui::tokens::EffectiveMotion) -> f32 {
-    match id {
-        WidgetId::Team => {
-            ui::motion::Appear::pose(progress, vello::kurbo::Point::ORIGIN, motion).opacity
-        }
-        _ => ui::motion::unit_opacity(progress),
-    }
+fn shown_opacity(progress: f64) -> f32 {
+    ui::motion::unit_opacity(progress)
 }
 
 /// The ground every desk card stands on: the one floating card
@@ -1155,7 +1412,12 @@ fn paint_music_glance(
         Point::new(rect.x0 + 6.0 + 14.0, rect.center().y),
         (28.0, 28.0),
     );
-    paint_artwork(scene, transform, text, theme, art, player, None);
+    paint_song_at_rest(
+        &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+        player,
+        art,
+        None,
+    );
     let glyph = Rect::from_center_size(Point::new(rect.x1 - 20.0, rect.center().y), (14.0, 14.0));
     let icon = if player.status == PlaybackStatus::Playing {
         ui::icons::Icon::Pause
@@ -1663,37 +1925,14 @@ fn paint_monitor_card(
     }
 }
 
-fn paint_pin(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect, pinned: bool) {
-    let colors = &theme.tokens.colors;
-    // On: an inverted control, the way Tilo marks a primary choice.
-    let ground = if pinned {
-        colors.text_primary
-    } else {
-        colors.surfaces.overlay
-    };
-    let radius = rect.height() / 2.0;
-    ui::surface::card(scene, transform, rect, radius, ground);
-    ui::paint::stroke_round(
-        scene,
-        transform,
-        rect,
-        radius,
-        ui::chrome::panel_border(theme),
-        1.0,
-    );
-    let ink = if pinned {
-        colors.surfaces.overlay
-    } else {
-        colors.text_dim
-    };
-    ui::icons::draw_icon(
-        scene,
-        transform,
-        rect.inflate(-6.0, -6.0),
-        ui::icons::Icon::Pin,
-        ink,
-        1.4,
-    );
+/// A widget's name, for the controls that open, fold or pin it.
+fn desk_widget_title(id: WidgetId) -> String {
+    t(match id {
+        WidgetId::Music => "desk-widget-music",
+        WidgetId::Team => "desk-widget-team",
+        WidgetId::Calendar => "desk-widget-calendar",
+        WidgetId::SystemMonitor => "desk-widget-system-monitor",
+    })
 }
 
 #[cfg(test)]

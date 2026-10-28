@@ -79,7 +79,6 @@ fn room_arrivals_status_and_follow_reach_the_right_surface() {
 
         assert!(a.followed_peer().is_none(), "not following anyone yet");
 
-        // Click well inside the right-edge band.
         let hit = a.try_follow_click(viewport, Point::new(98.0, 50.0));
         assert!(hit, "clicking the mist band should select the peer");
         assert_eq!(a.followed_peer(), Some("bob"));
@@ -107,9 +106,9 @@ fn room_arrivals_status_and_follow_reach_the_right_surface() {
         let room = PresenceKey::Workspace {
             id: "finance-room".into(),
         };
-        let xaver = UserId("xaver".into());
+        let bob = UserId("bob".into());
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: xaver.0.clone(),
+            user_id: bob.0.clone(),
             key: room.clone(),
             payload: PresencePayload::Status {
                 text: "Reconciling forecast against actuals".into(),
@@ -118,7 +117,7 @@ fn room_arrivals_status_and_follow_reach_the_right_surface() {
         });
         let status = a
             .presence_ctx()
-            .status_for(&xaver, SystemTime::now())
+            .status_for(&bob, SystemTime::now())
             .expect("status should be visible in the universal room model");
         assert_eq!(status.text, "Reconciling forecast against actuals");
         assert!(matches!(
@@ -127,7 +126,7 @@ fn room_arrivals_status_and_follow_reach_the_right_surface() {
         ));
 
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: xaver.0.clone(),
+            user_id: bob.0.clone(),
             key: room,
             payload: PresencePayload::Status {
                 text: String::new(),
@@ -136,7 +135,7 @@ fn room_arrivals_status_and_follow_reach_the_right_surface() {
         });
         assert!(
             a.presence_ctx()
-                .status_for(&xaver, SystemTime::now())
+                .status_for(&bob, SystemTime::now())
                 .is_none()
         );
     }

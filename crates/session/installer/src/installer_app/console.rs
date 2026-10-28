@@ -119,6 +119,10 @@ impl InstallerApp {
 
     /// What the installer believes is on screen, as data. Shared by
     /// `state_dump` and the `status` action.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the state report mirrors the wizard in one place so no door drifts"
+    )]
     pub fn console_state(&self) -> Value {
         let disks: Vec<Value> = self
             .disks
@@ -187,7 +191,7 @@ impl InstallerApp {
                 "username": local_text(&self.username).trim(),
                 "full_name": local_text(&self.full_name).trim(),
                 "passphrase_set": !secret_copy(&self.password).is_empty(),
-                "secret_policy": if self.tpm_pin_policy() { "tpm-pin" } else { "passphrase" },
+                "secret_policy": if self.startup_secret_is_pin() { "tpm-pin" } else { "passphrase" },
             },
             "options": {
                 "filesystem": FILESYSTEMS.get(self.selected_fs).copied().unwrap_or("btrfs"),
@@ -204,6 +208,10 @@ impl InstallerApp {
                 "recovery_promise": self.recovery_ack,
                 "ready": self.encryption_ready() && self.destructive_confirmation_ready(),
             },
+            // The same report Review shows, for a caller without a screen. It
+            // reads the words the rows draw, so an agent, a script and a
+            // screen reader are answered by one implementation.
+            "hardware": self.hardware.to_json(),
             "install": {
                 "state": self.install_state_name(),
                 "stages": friendly_install_status(&self.status_lines),
@@ -216,6 +224,10 @@ impl InstallerApp {
             },
             "image": {
                 "composefs": console_control::booted_composefs(),
+            },
+            "unattended": {
+                "active": self.unattended_mode,
+                "error": self.unattended_error,
             },
         })
     }

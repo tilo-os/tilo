@@ -24,7 +24,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::{TaffyTreeExt, Widget};
+use crate::widget::{TaffyTreeExt, Tone, Widget};
 
 /// The gap between two lines of a stack: half the tight step.
 fn line_gap(theme: &Theme) -> f64 {
@@ -48,6 +48,11 @@ pub struct TextStackFace<'a> {
     secondary: Option<&'a str>,
     tertiary: Option<&'a str>,
     size: StackSize,
+    /// The secondary line's status ink ([`Tone::Neutral`]: secondary ink).
+    secondary_tone: Tone,
+    /// Type set at a scale of the surface's own (the lock screen's), in
+    /// place of the theme's roles.
+    styles: Option<(&'a TextStyle, &'a TextStyle)>,
 }
 
 /// The styles and inks of a stack in one theme.
@@ -57,8 +62,14 @@ struct StackStyles {
 }
 
 impl StackStyles {
-    fn of(size: StackSize, theme: &Theme) -> Self {
-        let role = match size {
+    fn of(face: &TextStackFace<'_>, theme: &Theme) -> Self {
+        if let Some((title, caption)) = face.styles {
+            return Self {
+                title: title.clone(),
+                caption: caption.clone(),
+            };
+        }
+        let role = match face.size {
             StackSize::Regular => TextRole::Body,
             StackSize::Dense => TextRole::Label,
         };
@@ -77,7 +88,25 @@ impl<'a> TextStackFace<'a> {
             secondary: None,
             tertiary: None,
             size: StackSize::Regular,
+            secondary_tone: Tone::Neutral,
+            styles: None,
         }
+    }
+
+    /// Set the title and the caption lines in `title` and `caption`, for a
+    /// surface that scales its type itself.
+    #[must_use]
+    pub fn styled(mut self, title: &'a TextStyle, caption: &'a TextStyle) -> Self {
+        self.styles = Some((title, caption));
+        self
+    }
+
+    /// The secondary line says a status (a playback error): it reads in
+    /// `tone`'s ink.
+    #[must_use]
+    pub fn secondary_tone(mut self, tone: Tone) -> Self {
+        self.secondary_tone = tone;
+        self
     }
 
     /// The secondary line. An empty string shows no line.
@@ -110,7 +139,7 @@ impl<'a> TextStackFace<'a> {
     /// The stack's height: its lines and the gaps between them.
     #[must_use]
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
-        let styles = StackStyles::of(self.size, theme);
+        let styles = StackStyles::of(self, theme);
         let line = |text: &mut TextRenderer, style: &TextStyle| {
             f64::from(text.measure_style("Ag", None, style).1)
         };
@@ -128,7 +157,7 @@ impl<'a> TextStackFace<'a> {
     /// The widest line's natural width.
     #[must_use]
     pub fn natural_width(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
-        let styles = StackStyles::of(self.size, theme);
+        let styles = StackStyles::of(self, theme);
         let mut width = f64::from(text.measure_style(self.title, None, &styles.title).0);
         for line in [self.secondary, self.tertiary].into_iter().flatten() {
             width = width.max(f64::from(text.measure_style(line, None, &styles.caption).0));
@@ -140,9 +169,16 @@ impl<'a> TextStackFace<'a> {
     /// `rect`: what a leading icon beside a multi-line stack lines up with.
     #[must_use]
     pub fn title_centre(&self, rect: Rect, text: &mut TextRenderer, theme: &Theme) -> f64 {
-        let styles = StackStyles::of(self.size, theme);
+        let styles = StackStyles::of(self, theme);
         let title = f64::from(text.measure_style("Ag", None, &styles.title).1);
         rect.y0 + (rect.height() - self.height(text, theme)) / 2.0 + title / 2.0
+    }
+
+    /// The baseline-side top of the title as [`Self::paint`] places it in
+    /// `rect`: where a quiet line beside the title starts.
+    #[must_use]
+    pub fn title_top(&self, rect: Rect, text: &mut TextRenderer, theme: &Theme) -> f64 {
+        rect.y0 + (rect.height() - self.height(text, theme)) / 2.0
     }
 
     /// Paint the stack in `rect`, centred vertically, each line elided to
@@ -150,7 +186,7 @@ impl<'a> TextStackFace<'a> {
     /// stack on a selected row or a floating panel reads.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
         let theme = ctx.theme;
-        let styles = StackStyles::of(self.size, theme);
+        let styles = StackStyles::of(self, theme);
         let colors = &theme.tokens.colors;
         let height = self.height(ctx.text, theme);
         let mut y = rect.y0 + (rect.height() - height) / 2.0;
@@ -170,7 +206,11 @@ impl<'a> TextStackFace<'a> {
         };
         y += line(ctx, self.title, &styles.title, colors.text_primary, y) + line_gap(theme);
         if let Some(secondary) = self.secondary {
-            y += line(ctx, secondary, &styles.caption, colors.text_dim, y) + line_gap(theme);
+            let ink = match self.secondary_tone {
+                Tone::Neutral => colors.text_dim,
+                tone => tone.colour(theme),
+            };
+            y += line(ctx, secondary, &styles.caption, ink, y) + line_gap(theme);
         }
         if let Some(tertiary) = self.tertiary {
             line(ctx, tertiary, &styles.caption, colors.text_tertiary, y);
@@ -194,6 +234,7 @@ pub struct TextStack {
     secondary: String,
     tertiary: String,
     size: StackSize,
+    secondary_tone: Tone,
     rect: Rect,
     dirty: bool,
     /// The theme the last layout was built with, for measuring.
@@ -208,6 +249,7 @@ impl TextStack {
             secondary: String::new(),
             tertiary: String::new(),
             size: StackSize::Regular,
+            secondary_tone: Tone::Neutral,
             rect: Rect::ZERO,
             dirty: true,
             layout_theme: Theme::dark(),
@@ -242,10 +284,20 @@ impl TextStack {
         }
     }
 
+    /// Set the secondary line's status ink
+    /// ([`TextStackFace::secondary_tone`]).
+    pub fn set_secondary_tone(&mut self, tone: Tone) {
+        if self.secondary_tone != tone {
+            self.secondary_tone = tone;
+            self.dirty = true;
+        }
+    }
+
     fn face(&self) -> TextStackFace<'_> {
         let face = TextStackFace::new(&self.title)
             .secondary(&self.secondary)
-            .tertiary(&self.tertiary);
+            .tertiary(&self.tertiary)
+            .secondary_tone(self.secondary_tone);
         match self.size {
             StackSize::Regular => face,
             StackSize::Dense => face.dense(),

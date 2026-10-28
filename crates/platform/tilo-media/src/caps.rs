@@ -7,6 +7,11 @@ pub enum Feature {
     /// [`crate::MediaEngine`] decodes real media (not the synthesized
     /// pattern).
     Playback,
+    /// [`crate::MediaEngine`] plays adaptive live streams (HLS), not only
+    /// one progressive file, wherever [`Feature::Playback`] is built in.
+    /// It reports the target rather than the build, so a native build
+    /// without decoders does not claim live streams need another app.
+    LiveStreams,
     /// Decoded pictures stay on the GPU and are imported without a copy
     /// (dmabuf). Where this is unsupported, frames arrive as RGBA or planar
     /// YUV in system memory and are uploaded; consumers fall back to that.
@@ -30,6 +35,7 @@ const NO_ENCODE: &str = "built without the `encode` feature";
 const WEB_READBACK: &str = "the page reads pictures back through a canvas";
 const WEB_NO_REALTIME: &str = "WebCodecs calls are not wired to the engine yet";
 const WEB_NO_ENCODE: &str = "no encoder on the page yet";
+const WEB_NO_LIVE: &str = "the page's media element plays one progressive file, not HLS";
 const NO_GRAPH: &str = "no PipeWire graph on this platform";
 
 impl tilo_platform_caps::Feature for Feature {
@@ -39,6 +45,7 @@ impl tilo_platform_caps::Feature for Feature {
         use Availability::{Available, Unsupported};
         match self {
             Self::Playback | Self::NowPlaying => [Available, Available, Available],
+            Self::LiveStreams => [Available, Available, Unsupported(WEB_NO_LIVE)],
             Self::ZeroCopyVideo => [
                 Available,
                 Unsupported("no dmabuf import on macOS; frames are uploaded"),

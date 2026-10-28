@@ -71,9 +71,25 @@ impl CapnpBrokerState {
                     trigger: tilo_automation::RunTrigger::Manual,
                     mode: automation::run_mode(request.confirmation.as_ref()),
                     inputs,
+                    // A task that invoked this run is its parent: the caller's
+                    // context names that task's group, so the run's steps are
+                    // stamped with it and the run reads as part of that task.
+                    parent: request
+                        .context
+                        .as_ref()
+                        .and_then(|context| context.group.clone())
+                        .filter(|group| group.kind != "shortcut"),
                 },
-                |runtime| automation::DoorHooks::new(request.confirmation.clone(), runtime),
+                |runtime, run| {
+                    automation::DoorHooks::new(
+                        request.confirmation.clone(),
+                        runtime,
+                        self.ended_runs.running.running.clone(),
+                        run,
+                    )
+                },
                 Some(ShortcutAdmission { origin, request }),
+                None,
             )
             .map_err(abandon)?;
         if let Ok(mut ledger) = self.remote_invocations.lock() {
@@ -97,12 +113,44 @@ impl CapnpBrokerState {
         shortcut_id: &str,
         inputs: serde_json::Map<String, serde_json::Value>,
     ) -> Result<u64, ActionHostError> {
+        self.start_interactive_shortcut_run_continuing(caller, room, shortcut_id, inputs, None)
+    }
+
+    /// [`Self::start_interactive_shortcut_run`], continuing the run `from`
+    /// names: its steps before `from` are taken as they happened and the run
+    /// goes on from `from`, as it stands in the shortcut now. The origin run
+    /// has to be one of this shortcut's runs in `room`.
+    ///
+    /// # Errors
+    ///
+    /// Why the shortcut cannot run for `caller`, or why the run it says to go
+    /// on from cannot be continued.
+    pub(crate) fn start_interactive_shortcut_run_continuing(
+        self: &Arc<Self>,
+        caller: &Caller,
+        room: &str,
+        shortcut_id: &str,
+        inputs: serde_json::Map<String, serde_json::Value>,
+        from: Option<tilo_automation::Continuation>,
+    ) -> Result<u64, ActionHostError> {
         let shortcut = self
             .saved_shortcut(caller, room, shortcut_id)
             .ok_or(ActionHostError::UnknownAction)?;
-        let prompts = self.step_prompts.clone();
+        let origin = match &from {
+            Some(continuation) => Some(self.earlier_run(continuation, shortcut_id)?),
+            None => None,
+        };
+        let carried = origin
+            .zip(from)
+            .map(|(report, asked)| automation::Continued {
+                report,
+                from: asked.from,
+            });
+        let prompts = self.ended_runs.running.prompts.clone();
         let name = shortcut.name.clone();
-        let hooks = |runtime| automation::SheetHooks::new(prompts, name, runtime);
+        let runs = self.ended_runs.running.running.clone();
+        let hooks =
+            move |runtime, run| automation::SheetHooks::new(prompts, name, runtime, runs, run);
         self.start_shortcut_run(
             caller,
             room,
@@ -112,15 +160,37 @@ impl CapnpBrokerState {
                 trigger: tilo_automation::RunTrigger::Manual,
                 mode: tilo_automation::RunMode::Interactive,
                 inputs,
+                parent: None,
             },
             hooks,
             None,
+            carried,
         )
+    }
+
+    /// Run `continuation` names, which has to be one of this broker's own
+    /// runs of `shortcut_id`.
+    fn earlier_run(
+        &self,
+        continuation: &tilo_automation::Continuation,
+        shortcut_id: &str,
+    ) -> Result<tilo_automation::RunReport, ActionHostError> {
+        if continuation.from.as_str().is_empty() {
+            return Err(ActionHostError::InvalidRequest {
+                reason: "a continued run says which step it goes on from".into(),
+            });
+        }
+        self.ended_runs
+            .shortcuts
+            .report(continuation.run, shortcut_id)
+            .ok_or_else(|| ActionHostError::Refused {
+                reason: "that run is not recorded for this shortcut".into(),
+            })
     }
 
     /// The oldest step of an interactive run waiting for its person.
     pub(crate) fn take_step_prompt(&self) -> Option<automation::PromptedStep> {
-        self.step_prompts.take_next()
+        self.ended_runs.running.prompts.take_next()
     }
 
     /// Start one of saved shortcut `shortcut_id`'s triggers, `trigger`, in
@@ -175,9 +245,11 @@ impl CapnpBrokerState {
             }
         })?;
         if matches!(trigger, tilo_automation::TriggerSpec::Keyboard { .. }) {
-            let prompts = self.step_prompts.clone();
+            let prompts = self.ended_runs.running.prompts.clone();
             let name = shortcut.name.clone();
-            let hooks = |runtime| automation::SheetHooks::new(prompts, name, runtime);
+            let runs = self.ended_runs.running.running.clone();
+            let hooks =
+                move |runtime, run| automation::SheetHooks::new(prompts, name, runtime, runs, run);
             return self.start_shortcut_run(
                 caller,
                 room,
@@ -187,8 +259,10 @@ impl CapnpBrokerState {
                     trigger: tilo_automation::RunTrigger::Fired(trigger.clone()),
                     mode: tilo_automation::RunMode::Interactive,
                     inputs: serde_json::Map::new(),
+                    parent: None,
                 },
                 hooks,
+                None,
                 None,
             );
         }
@@ -201,8 +275,17 @@ impl CapnpBrokerState {
                 trigger: tilo_automation::RunTrigger::Fired(trigger.clone()),
                 mode: tilo_automation::RunMode::Unattended,
                 inputs,
+                parent: None,
             },
-            |runtime| automation::DoorHooks::new(None, runtime),
+            |runtime, run| {
+                automation::DoorHooks::new(
+                    None,
+                    runtime,
+                    self.ended_runs.running.running.clone(),
+                    run,
+                )
+            },
+            None,
             None,
         )
     }
@@ -234,8 +317,9 @@ impl CapnpBrokerState {
         room: &str,
         shortcut: tilo_automation::Shortcut,
         start: automation::RunStart,
-        hooks: impl FnOnce(tokio::runtime::Handle) -> K,
+        hooks: impl FnOnce(tokio::runtime::Handle, tilo_automation::RunId) -> K,
         admission: Option<ShortcutAdmission<'_>>,
+        carried: Option<automation::Continued>,
     ) -> Result<u64, ActionHostError>
     where
         K: tilo_automation::RunHooks + Send + 'static,
@@ -247,7 +331,7 @@ impl CapnpBrokerState {
             .ok_or(ActionHostError::UnknownAction)?
             .runtime()
             .map_err(|reason| ActionHostError::Unavailable { reason })?;
-        let hooks = hooks(runtime.clone());
+        let hooks = hooks(runtime.clone(), start.run);
         let actor = BrokerActor::for_caller(caller).id;
         let _lifecycle = self
             .lifecycle
@@ -263,6 +347,31 @@ impl CapnpBrokerState {
         let state = Arc::clone(self);
         let caller = caller.clone().running_shortcut(shortcut.id.clone());
         let room = room.to_string();
+        let parent = start.parent.clone();
+        // Registered before the first step, so a stop can find it; it leaves
+        // as it ends, whether or not it was stopped.
+        let running = automation::RunningRun {
+            room: room.clone(),
+            shortcut: shortcut.id.clone(),
+            name: shortcut.name.clone(),
+            run: start.run,
+            at: None,
+            stopped: None,
+        };
+        // What this run's steps say they are part of: the work unit that asked
+        // for it, or its own group. Read before the steps run, so it names the
+        // shortcut that asked for it among the ones above it.
+        let group = start
+            .parent
+            .as_ref()
+            .map_or_else(|| start.run.0.to_string(), |parent| parent.id.clone());
+        let chain =
+            self.ended_runs
+                .running
+                .running
+                .above(&room, Some(group.as_str()), &shortcut.id);
+        self.ended_runs.running.running.register(running);
+        let registered = self.ended_runs.running.running.clone();
         runtime.spawn(async move {
             let report = tilo_automation::run(
                 &host,
@@ -275,9 +384,16 @@ impl CapnpBrokerState {
                     trigger: start.trigger,
                     inputs: start.inputs,
                     caused_by: None,
+                    // A run that goes on from an earlier one takes the steps
+                    // before the step it goes on from from that run's record.
+                    resume: carried.as_ref().map(|carried| &carried.report),
+                    from: carried.as_ref().map(|carried| carried.from.clone()),
+                    parent,
+                    chain,
                 },
             )
             .await;
+            registered.leave(start.run);
             let update = automation::completion(invocation, &report);
             if let Err(error) = state.complete_host_action(&admitted, update) {
                 tracing::warn!(%error, "shortcut completion could not be recorded");
@@ -388,5 +504,20 @@ impl CapnpBrokerState {
     /// Whether a finished shortcut run is waiting to be taken.
     pub fn has_finished_shortcut_runs(&self) -> bool {
         self.ended_runs.shortcuts.has_finished()
+    }
+
+    /// The runs going in `room`, so it can offer to stop one.
+    pub fn running_shortcut_runs(&self, room: &str) -> Vec<automation::RunningRun> {
+        self.ended_runs.running.running.going(room)
+    }
+
+    /// Stop the runs `request` names before their next step.
+    pub fn stop_shortcut_runs(
+        &self,
+        room: &str,
+        request: &automation::StopRequest,
+        reason: &str,
+    ) -> Vec<automation::RunningRun> {
+        self.ended_runs.running.running.stop(room, request, reason)
     }
 }

@@ -48,9 +48,13 @@ impl ChatPermissions {
         }
     }
 
-    /// Adopt the context the compositor passed into `draw`.
+    /// Adopt the context the window acts under this frame.
     pub fn from_context(ctx: PermissionContext) -> Self {
         Self { ctx }
+    }
+
+    pub fn context(&self) -> &PermissionContext {
+        &self.ctx
     }
 
     /// May this peer hydrate + render the bytes behind an attachment `blob`?
@@ -132,7 +136,6 @@ mod tests {
 
     #[test]
     fn permissions_gate_writes_by_role_but_never_reading_or_leaving() {
-        // Permissive admin allows everything.
         let p = ChatPermissions::permissive();
         assert!(p.can_embed(&"a".repeat(64)), "admin: embed");
         assert!(p.can_participate(), "admin: participate");
@@ -185,18 +188,15 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "Chat's composer appears the moment authorship arrives."
     #[test]
     fn the_composer_appears_the_moment_authorship_arrives() {
-        use std::cell::RefCell;
-        use std::rc::Rc;
         use ui::room_sync::{RoomSync, RoomSyncState};
         // The launch opened Chat read-only: its room did not let Chat author.
-        let launch = Rc::new(RefCell::new(PermissionContext::member_of(
+        let launch = ui::permissions::SharedPermissions::new(PermissionContext::member_of(
             "3f2b1c00-0000-4000-8000-000000000001",
             "u_guest",
             Role::Viewer,
-        )));
+        ));
         ui::room_sync::follow_participation(&launch);
         let chat = || ChatPermissions::from_context(launch.borrow().clone());
         assert!(!chat().can_participate(), "read-only, no composer");

@@ -24,6 +24,7 @@ fn e(name: &str, is_dir: bool, size: u64, mime: &str, year: i32) -> Entry {
         availability: None,
         share: None,
         history: None,
+        app: None,
         rich_metadata: None,
         observed: None,
     }
@@ -38,6 +39,94 @@ fn sort_entries_orders_by_each_key_and_keeps_directories_first() {
     sort_by_type_orders_by_mime();
     sort_by_name_places_alpha_order_with_dirs_first();
     sort_order_toggle_reverses_non_dir_group_but_keeps_dirs_first();
+    sort_by_name_reads_numbers_by_value();
+    entries_alike_by_the_key_read_in_name_order();
+}
+
+fn names(v: &[Entry]) -> Vec<&str> {
+    v.iter().map(|entry| entry.name.as_str()).collect()
+}
+
+/// A camera's or a scanner's numbered files list in the order they were
+/// made, as a person reads the numbers: `IMG_9` before `IMG_10`.
+fn sort_by_name_reads_numbers_by_value() {
+    let mut v = vec![
+        e("IMG_10.jpg", false, 0, "image/jpeg", 2020),
+        e("img_9.jpg", false, 0, "image/jpeg", 2020),
+        e("IMG_100.jpg", false, 0, "image/jpeg", 2020),
+        e("IMG_09b.jpg", false, 0, "image/jpeg", 2020),
+        e("Chapter 2", true, 0, "inode/directory", 2020),
+        e("chapter 11", true, 0, "inode/directory", 2020),
+        e("Éclair.txt", false, 0, "text/plain", 2020),
+        e("éclair 2.txt", false, 0, "text/plain", 2020),
+    ];
+    sort_entries(SortBy::Name, SortOrder::Ascending, &mut v);
+    assert_eq!(
+        names(&v),
+        [
+            "Chapter 2",
+            "chapter 11",
+            "img_9.jpg",
+            "IMG_09b.jpg",
+            "IMG_10.jpg",
+            "IMG_100.jpg",
+            "éclair 2.txt",
+            "Éclair.txt",
+        ]
+    );
+    sort_entries(SortBy::Name, SortOrder::Descending, &mut v);
+    assert_eq!(
+        names(&v),
+        [
+            "chapter 11",
+            "Chapter 2",
+            "Éclair.txt",
+            "éclair 2.txt",
+            "IMG_100.jpg",
+            "IMG_10.jpg",
+            "IMG_09b.jpg",
+            "img_9.jpg",
+        ]
+    );
+    // Names that differ only in case or leading zeros still have one order.
+    let mut v = vec![
+        e("b", false, 0, "text/plain", 2020),
+        e("B", false, 0, "text/plain", 2020),
+        e("page007", false, 0, "text/plain", 2020),
+        e("page7", false, 0, "text/plain", 2020),
+    ];
+    sort_entries(SortBy::Name, SortOrder::Ascending, &mut v);
+    assert_eq!(names(&v), ["B", "b", "page007", "page7"]);
+}
+
+/// Sorting by size, date or type orders the files that tie on it by name,
+/// not by the order the disk happened to list them in.
+fn entries_alike_by_the_key_read_in_name_order() {
+    let mut v = vec![
+        e("report-10.txt", false, 1, "text/plain", 2020),
+        e("notes.png", false, 1, "image/png", 2020),
+        e("report-2.txt", false, 1, "text/plain", 2020),
+        e("a.txt", false, 1, "text/plain", 2020),
+    ];
+    for sort_by in [SortBy::Size, SortBy::Modified] {
+        sort_entries(sort_by, SortOrder::Ascending, &mut v);
+        assert_eq!(
+            names(&v),
+            ["a.txt", "notes.png", "report-2.txt", "report-10.txt"],
+            "{sort_by:?}"
+        );
+        sort_entries(sort_by, SortOrder::Descending, &mut v);
+        assert_eq!(
+            names(&v),
+            ["a.txt", "notes.png", "report-2.txt", "report-10.txt"],
+            "{sort_by:?} descending reverses the key, not the names within it"
+        );
+    }
+    sort_entries(SortBy::Type, SortOrder::Ascending, &mut v);
+    assert_eq!(
+        names(&v),
+        ["notes.png", "a.txt", "report-2.txt", "report-10.txt"]
+    );
 }
 
 fn sort_entries_always_places_directories_first() {
@@ -86,8 +175,8 @@ fn paths_and_breadcrumbs_name_home_workspaces_and_root() {
 }
 
 fn format_path_substitutes_home_prefix() {
-    let home = PathBuf::from("/home/quinten");
-    let p = PathBuf::from("/home/quinten/Documents");
+    let home = PathBuf::from("/home/user");
+    let p = PathBuf::from("/home/user/Documents");
     assert_eq!(format_path(&p, Some(&home)), "~/Documents");
     assert_eq!(format_path(&home, Some(&home)), "~");
     assert_eq!(format_path(&PathBuf::from("/etc"), Some(&home)), "/etc");
@@ -98,8 +187,8 @@ use file_explorer::breadcrumbs::breadcrumb_components;
 
 fn breadcrumb_component_click_navigates_to_that_component() {
     crate::common::pin_locale();
-    let home = PathBuf::from("/home/quinten");
-    let cwd = PathBuf::from("/home/quinten/Documents/Projects");
+    let home = PathBuf::from("/home/user");
+    let cwd = PathBuf::from("/home/user/Documents/Projects");
     let comps = breadcrumb_components(&cwd, Some(&home), &[]);
     let labels: Vec<&str> = comps.iter().map(|(l, _)| l.as_str()).collect();
     // Clean text labels — the leading root is drawn as a themed vector icon
@@ -124,7 +213,7 @@ fn breadcrumb_component_click_navigates_to_that_component() {
 fn a_workspace_root_is_named_rather_than_spelled_out() {
     let ws = PathBuf::from("/var/tmp/tilo/workspace");
     let roots = vec![ws.clone()];
-    let home = PathBuf::from("/home/quinten");
+    let home = PathBuf::from("/home/user");
 
     // The root itself: one segment, the workspace's name.
     let comps = breadcrumb_components(&ws, Some(&home), &roots);
@@ -396,6 +485,7 @@ fn list_build_yields_a_file_view() {
         availability: None,
         share: None,
         history: None,
+        app: None,
         rich_metadata: None,
         observed: None,
     }];
@@ -433,6 +523,7 @@ fn grid_mode_uses_responsive_file_view() {
         availability: None,
         share: None,
         history: None,
+        app: None,
         rich_metadata: None,
         observed: None,
     }];

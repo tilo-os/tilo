@@ -130,7 +130,7 @@ fn execute() -> Result<bool, String> {
             .desktop
             .active_workspace()
             .ok_or("fixture has no active workspace")?;
-        let actor = workspace.actor_for_person(&chrome.local_user_for_room(&workspace.room));
+        let actor = workspace.actor_for_person(&chrome.local_user_for_room(&workspace.room()));
         let gate = shell::shell::search::visibility::PolicyVisibility::new(workspace, actor);
         let entries = session.host.action_catalog("",&chrome,&ui_state.doc,&ui_state.root,&gate).enumerate()
             .into_iter().map(|a|serde_json::json!({"provider":a.resource.provider,"id":a.resource.id,"title":a.title,"kind":format!("{:?}",a.kind),"contract":a.contract})).collect::<Vec<_>>();
@@ -162,7 +162,7 @@ fn execute() -> Result<bool, String> {
         return ux_bench_support::run(&mut driver, &scenario, &out, state_snapshot, || {
             session.records.try_flush()?;
             let state_path = options.state_dir.join("state.json");
-            shell::shell::persist::save_tree_to(&session.tree.read(), &state_path)
+            shell::shell::persist::save_shared_tree_to(&session.tree, &state_path)
                 .map_err(|e| e.to_string())?;
             let reopened =
                 shell::shell::persist::load_tree_from(&state_path).map_err(|e| e.to_string())?;
@@ -176,9 +176,8 @@ fn execute() -> Result<bool, String> {
     }
     let report = ui::ux_bench::run_with_state(&mut driver, &scenario, &out, state_snapshot)?;
     session.records.try_flush()?;
-    // Match the native runner's normal shutdown persistence boundary.
     let state_path = options.state_dir.join("state.json");
-    shell::shell::persist::save_tree_to(&session.tree.read(), &state_path)
+    shell::shell::persist::save_shared_tree_to(&session.tree, &state_path)
         .map_err(|e| e.to_string())?;
     let reopened = shell::shell::persist::load_tree_from(&state_path).map_err(|e| e.to_string())?;
     let expected_names: Vec<_> = session

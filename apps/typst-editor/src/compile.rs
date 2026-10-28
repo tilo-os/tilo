@@ -18,13 +18,13 @@ use std::sync::{Arc, OnceLock};
 
 use typst::diag::{FileError, FileResult, Severity, SourceDiagnostic};
 use typst::foundations::{Bytes, Datetime, Duration};
-use typst::layout::{Frame, FrameItem, Point as TypstPoint, Transform};
 use typst::syntax::{DiagSpanKind, FileId, Source};
-use typst::text::{Font, FontBook, TextItem};
-use typst::utils::{LazyHash, Scalar};
+use typst::text::{Font, FontBook};
+use typst::utils::LazyHash;
 use typst::{Library, LibraryExt, World};
 use typst_layout::PagedDocument;
-use vello::kurbo::{Affine, Point};
+
+use crate::pages::TypstPages;
 
 /// Severity of a flattened diagnostic — decoupled from `typst::Severity` so
 /// downstream widgets need no typst dependency.
@@ -54,50 +54,17 @@ pub struct Diagnostic {
     pub hints: Vec<String>,
 }
 
-/// A single rendered page: straight-alpha RGBA8, composited over white so it
-/// reads as paper regardless of the document's page fill.
-#[derive(Clone)]
-pub struct PageImage {
-    pub rgba: Arc<[u8]>,
-    /// Bitmap size in pixels (intrinsic to `pixel_per_pt`).
-    pub width: u32,
-    pub height: u32,
-    /// Page size in typographic points — the resolution-independent unit the
-    /// preview lays pages out in, so zoom scales display without re-rendering.
-    pub width_pt: f64,
-    pub height_pt: f64,
-}
-
-/// A run of shaped text on a page, in **page points**, carrying one selectable
-/// cell per glyph so the preview can hit-test a drag to a character boundary
-/// and copy the covered text. Extracted from the compiled `typst` frame — the
-/// same layout the raster is rendered from — so positions line up exactly.
-#[derive(Clone, Debug)]
-pub struct TextRun {
-    /// Top / bottom of the run's line box in page points (y grows downward).
-    pub top: f64,
-    pub bottom: f64,
-    pub cells: Vec<TextCell>,
-}
-
-/// One selectable glyph cell within a [`TextRun`], in page points.
-#[derive(Clone, Debug)]
-pub struct TextCell {
-    pub x0: f64,
-    pub x1: f64,
-    /// The source characters this glyph renders (may be empty for a ligature
-    /// continuation, or several chars for a combined glyph).
-    pub text: String,
-}
-
 /// The full result of one compile pass.
 #[derive(Clone)]
 pub struct CompileOutput {
-    pub pages: Vec<PageImage>,
-    /// Extracted selectable text, one entry per page (parallel to `pages`).
-    pub page_text: Vec<Vec<TextRun>>,
+    /// The laid-out pages, rasterised on demand as the preview shows them;
+    /// `None` when compilation failed.
+    pub document: Option<Arc<TypstPages>>,
     pub diagnostics: Vec<Diagnostic>,
-    /// Wall-clock compile+render time in milliseconds.
+    /// The headings the source writes, read from the syntax the compile
+    /// parsed.
+    pub(crate) headings: Vec<crate::outline::Heading>,
+    /// Wall-clock compile time in milliseconds.
     pub elapsed_ms: u128,
     /// True when compilation produced a document (even with warnings); false
     /// when a fatal error stopped layout.
@@ -105,6 +72,10 @@ pub struct CompileOutput {
 }
 
 impl CompileOutput {
+    pub fn page_count(&self) -> usize {
+        self.document.as_ref().map_or(0, |document| document.len())
+    }
+
     pub fn error_count(&self) -> usize {
         self.diagnostics
             .iter()
@@ -333,41 +304,27 @@ fn civil_from_days(days: i64) -> (i32, u8, u8) {
     )
 }
 
-/// Compile `src` and rasterise every page at `pixel_per_pt`. Never panics on
-/// bad input — compiler errors are returned as [`Diagnostic`]s with an empty
-/// page list.
-pub fn compile_source(parts: &Arc<WorldParts>, src: &str, pixel_per_pt: f32) -> CompileOutput {
+/// Compile `src` and lay out its pages; nothing is rasterised here, the
+/// preview renders the pages it shows. Never panics on bad input — compiler
+/// errors are returned as [`Diagnostic`]s with no document.
+pub fn compile_source(parts: &Arc<WorldParts>, src: &str) -> CompileOutput {
     let started = ui::time::now();
     let world = TypstWorld::new(parts.clone(), src);
 
     let result = typst::compile::<PagedDocument>(&world);
     let warnings = result.warnings;
 
-    let render_options = typst_render::RenderOptions {
-        pixel_per_pt: Scalar::new(f64::from(pixel_per_pt)),
-        render_bleed: false,
-    };
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
-    let (pages, page_text, ok) = match result.output {
+    let (document, ok) = match result.output {
         Ok(document) => {
-            let mut imgs = Vec::with_capacity(document.pages().len());
-            let mut texts = Vec::with_capacity(document.pages().len());
-            for page in document.pages() {
-                let pixmap = typst_render::render(page, &render_options);
-                let size = page.frame.size();
-                let mut img = pixmap_to_rgba(&pixmap);
-                img.width_pt = size.x.to_pt();
-                img.height_pt = size.y.to_pt();
-                imgs.push(img);
-                texts.push(extract_page_text(&page.frame));
-            }
-            (imgs, texts, true)
+            let pages = TypstPages::new(document.pages().to_vec());
+            (Some(Arc::new(pages)), true)
         }
         Err(errors) => {
             for d in &errors {
                 diagnostics.push(flatten(&world, d));
             }
-            (Vec::new(), Vec::new(), false)
+            (None, false)
         }
     };
 
@@ -381,9 +338,9 @@ pub fn compile_source(parts: &Arc<WorldParts>, src: &str, pixel_per_pt: f32) -> 
     comemo::evict(8);
 
     CompileOutput {
-        pages,
-        page_text,
+        document,
         diagnostics,
+        headings: crate::outline::headings_in(&world.main),
         elapsed_ms: started.elapsed().as_millis(),
         ok,
     }
@@ -410,86 +367,6 @@ pub fn compile_pdf(parts: &Arc<WorldParts>, src: &str) -> Result<Vec<u8>, Vec<Di
     let bytes = typst_pdf::pdf(&document, &options).map_err(|errors| flatten_all(&errors))?;
     comemo::evict(8);
     Ok(bytes)
-}
-
-/// Walk a compiled page frame and pull out every run of shaped text with its
-/// per-glyph geometry, in page points. Nested groups are followed with their
-/// transform composed in, so text placed inside `#align`, `#box`, tables, etc.
-/// still lands at the right spot.
-fn extract_page_text(frame: &Frame) -> Vec<TextRun> {
-    let mut runs = Vec::new();
-    walk_frame(frame, Affine::IDENTITY, &mut runs);
-    runs
-}
-
-fn walk_frame(frame: &Frame, cur: Affine, out: &mut Vec<TextRun>) {
-    for (pos, item) in frame.items() {
-        match item {
-            FrameItem::Group(group) => {
-                let child = cur
-                    * Affine::translate((pos.x.to_pt(), pos.y.to_pt()))
-                    * transform_to_affine(&group.transform);
-                walk_frame(&group.frame, child, out);
-            }
-            FrameItem::Text(text) => {
-                if let Some(run) = build_run(*pos, text, cur) {
-                    out.push(run);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-/// A typst affine transform → a kurbo one (same row-major layout typst-render
-/// uses to feed tiny-skia, so geometry matches the raster).
-fn transform_to_affine(t: &Transform) -> Affine {
-    Affine::new([
-        t.sx.get(),
-        t.ky.get(),
-        t.kx.get(),
-        t.sy.get(),
-        t.tx.to_pt(),
-        t.ty.to_pt(),
-    ])
-}
-
-/// Build a [`TextRun`] for one shaped `TextItem` placed at `pos` inside a frame
-/// whose local→page transform is `cur`. Glyph advances accumulate along the
-/// baseline; the line box comes from the font's ascender/descender so cells on
-/// adjacent lines don't vertically overlap. Rotation/shear is not modelled
-/// (documents lay text axis-aligned); the x/y scale of `cur` is honoured.
-fn build_run(pos: TypstPoint, item: &TextItem, cur: Affine) -> Option<TextRun> {
-    if item.glyphs.is_empty() {
-        return None;
-    }
-    let size = item.size;
-    let metrics = item.font.metrics();
-    let ascent = metrics.ascender.at(size).to_pt();
-    let descent = metrics.descender.at(size).to_pt(); // negative (below baseline)
-
-    let coeffs = cur.as_coeffs();
-    let sx = coeffs[0].hypot(coeffs[1]).max(1e-6); // |x-basis| of `cur`
-    let sy = coeffs[2].hypot(coeffs[3]).max(1e-6); // |y-basis| of `cur`
-    let origin = cur * Point::new(pos.x.to_pt(), pos.y.to_pt());
-
-    let mut cells = Vec::with_capacity(item.glyphs.len());
-    let mut cum = 0.0f64;
-    for g in &item.glyphs {
-        let adv = g.x_advance.at(size).to_pt();
-        let x0 = origin.x + cum * sx;
-        let x1 = origin.x + (cum + adv) * sx;
-        cum += adv;
-        let range = g.range.start as usize..g.range.end as usize;
-        let text = item.text.get(range).unwrap_or("").to_string();
-        cells.push(TextCell { x0, x1, text });
-    }
-
-    Some(TextRun {
-        top: origin.y - ascent * sy,
-        bottom: origin.y - descent * sy,
-        cells,
-    })
 }
 
 /// Flatten a `typst` diagnostic into our plain struct, resolving the span to a
@@ -543,40 +420,6 @@ fn byte_to_line_col(text: &str, byte: usize) -> (usize, usize) {
     (line, col)
 }
 
-/// tiny-skia stores premultiplied RGBA8. Un-premultiply and composite over
-/// white so the page reads as opaque paper. `pixmap.data()` is RGBA order.
-///
-/// `tiny-skia` is pinned to the same `0.12` series typst-render uses, so the
-/// `Pixmap` type returned by `typst_render::render` unifies with this one.
-fn pixmap_to_rgba(pixmap: &tiny_skia::Pixmap) -> PageImage {
-    let width = pixmap.width();
-    let height = pixmap.height();
-    let src = pixmap.data();
-    let mut out = vec![0u8; (width as usize) * (height as usize) * 4];
-    for (dst, px) in out.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
-        let (&[r, g, b, a], [d0, d1, d2, d3]) = (px, dst) else {
-            // `chunks_exact(4)` guarantees length 4 on both sides; this branch
-            // is unreachable, but skipping the pixel beats indexing blind.
-            continue;
-        };
-        // Composite premultiplied colour over white: out = premul + (255 - a).
-        let inv = 255 - a;
-        *d0 = r.saturating_add(inv);
-        *d1 = g.saturating_add(inv);
-        *d2 = b.saturating_add(inv);
-        *d3 = 255;
-    }
-    PageImage {
-        rgba: Arc::from(out),
-        width,
-        height,
-        // Filled in by the caller from the page frame; a sane default keeps the
-        // aspect correct if ever constructed without a frame.
-        width_pt: f64::from(width),
-        height_pt: f64::from(height),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -585,7 +428,7 @@ mod tests {
     fn bundled_documents_compile_cleanly_and_the_showcase_is_compact_and_crisp() {
         let parts = WorldParts::new();
         for (index, sample) in crate::samples::SAMPLES.iter().enumerate() {
-            let out = compile_source(&parts, sample.source, 2.0);
+            let out = compile_source(&parts, sample.source);
             assert!(out.ok, "{}: {:?}", sample.name, out.diagnostics);
             assert!(
                 out.diagnostics.is_empty(),
@@ -594,23 +437,24 @@ mod tests {
                 out.diagnostics
             );
             if index == crate::samples::DEFAULT_INDEX {
-                assert_eq!(out.pages.len(), 1, "the note is a single complete page");
-                let page = &out.pages[0];
-                assert!(
-                    page.height_pt / page.width_pt < 0.88,
-                    "fits the showcase viewport"
-                );
-                assert!((f64::from(page.width) - 2.0 * page.width_pt).abs() <= 1.0);
-                assert!((f64::from(page.height) - 2.0 * page.height_pt).abs() <= 1.0);
+                let document = out.document.as_ref().expect("laid out");
+                assert_eq!(document.len(), 1, "the note is a single complete page");
+                let (width_pt, height_pt) = document.sizes()[0];
+                assert!(height_pt / width_pt < 0.88, "fits the showcase viewport");
+                let width = (2.0 * width_pt).round() as u32;
+                let page = tilo_page_raster::PageSource::render_page(document.as_ref(), 0, width)
+                    .expect("renders");
+                assert_eq!(page.width, width);
+                assert!((f64::from(page.height) - 2.0 * height_pt).abs() <= 1.0);
             }
         }
     }
 
     #[test]
     fn compile_extracts_text_glyphs_and_pdf_bytes() {
-        // Case `windows_compilation_uses_real_emoji_glyphs`.
         #[cfg(target_os = "windows")]
         {
+            use typst::layout::FrameItem;
             let parts = WorldParts::new();
             let world = TypstWorld::new(parts, "= Native Grün 🌍");
             let output = typst::compile::<PagedDocument>(&world)
@@ -641,29 +485,28 @@ mod tests {
         // geometry the preview's text selection hit-tests against.
         {
             let parts = WorldParts::new();
-            let out = compile_source(&parts, "= Hello\n\nSome body text here.\n", 2.0);
+            let out = compile_source(&parts, "= Hello\n\nSome body text here.\n");
             assert!(out.ok, "clean source compiles");
             assert_eq!(out.error_count(), 0);
-            assert!(!out.pages.is_empty(), "produced a page");
-            assert!(
-                out.pages[0].width_pt > 0.0 && out.pages[0].height_pt > 0.0,
-                "point size set"
-            );
+            assert!(out.page_count() > 0, "produced a page");
+            let (width_pt, height_pt) = out.document.as_ref().unwrap().sizes()[0];
+            assert!(width_pt > 0.0 && height_pt > 0.0, "point size set");
 
-            let cells: usize = out
-                .page_text
-                .iter()
-                .flat_map(|p| p.iter())
-                .map(|r| r.cells.len())
+            let document = out.document.as_ref().unwrap();
+            let cells: usize = (0..document.len())
+                .map(|page| document.text(page).len())
                 .sum();
             assert!(cells > 0, "extracted glyph cells for the text layer");
 
-            // Within any run, glyph cells advance left-to-right.
-            for run in out.page_text.iter().flat_map(|p| p.iter()) {
-                for w in run.cells.windows(2) {
-                    assert!(w[1].x0 + 1e-6 >= w[0].x0, "cells advance rightward");
+            for page in 0..document.len() {
+                for w in document.text(page).cells().windows(2) {
+                    if w[1].line == w[0].line {
+                        assert!(w[1].x0 + 1e-6 >= w[0].x0, "cells advance rightward");
+                    }
                 }
-                assert!(run.bottom > run.top, "run line box has positive height");
+                for cell in document.text(page).cells() {
+                    assert!(cell.bottom > cell.top, "a line box has positive height");
+                }
             }
         }
         // Case `compile_pdf_produces_pdf_bytes`:
@@ -692,9 +535,9 @@ mod tests {
         // cleanly instead of failing on a world without a clock.
         {
             let parts = WorldParts::new();
-            let out = compile_source(&parts, "Dated #datetime.today().display()\n", 1.0);
+            let out = compile_source(&parts, "Dated #datetime.today().display()\n");
             assert_eq!(out.error_count(), 0, "{:?}", out.diagnostics);
-            assert!(!out.pages.is_empty());
+            assert!(out.page_count() > 0);
         }
         // Case `civil_date_from_days`:
         // The shifted UTC date of an explicit offset is the proleptic
@@ -714,7 +557,7 @@ mod tests {
         // resolvable span whose end column is strictly past the start.
         {
             let parts = WorldParts::new();
-            let out = compile_source(&parts, "Text #missing_var more.\n", 2.0);
+            let out = compile_source(&parts, "Text #missing_var more.\n");
             assert!(out.error_count() >= 1, "unknown variable is an error");
             let d = out
                 .diagnostics
@@ -750,7 +593,7 @@ mod tests {
         // click-to-jump all have real spans to act on.
         {
             let parts = WorldParts::new();
-            let out = compile_source(&parts, crate::samples::ERROR_WARNING, 2.0);
+            let out = compile_source(&parts, crate::samples::ERROR_WARNING);
             assert!(out.error_count() >= 1, "fixture carries a blocking error");
             assert!(out.warning_count() >= 1, "fixture carries a warning");
 

@@ -31,7 +31,6 @@ pub enum DecoderKind {
     /// Linux `V4L2` stateless / stateful codecs — embedded system-on-chip
     /// parts, Raspberry Pi.
     V4l2,
-    /// Vulkan Video.
     Vulkan,
     /// Direct3D 11/12 video (present for completeness; not reachable here).
     D3d,
@@ -357,16 +356,13 @@ mod tests {
 
     #[test]
     fn decoder_classification_reads_what_was_actually_plugged() {
-        // Phase `real_element_names_classify_to_the_right_family`.
         {
-            // The names this machine actually produces.
             assert_eq!(DecoderKind::classify("nvh264dec0"), DecoderKind::NvCodec);
             assert_eq!(DecoderKind::classify("vah264dec0"), DecoderKind::Va);
             assert_eq!(DecoderKind::classify("avdec_h264-0"), DecoderKind::Software);
             // And the ones other hardware produces.
             assert_eq!(DecoderKind::classify("vaapih265dec"), DecoderKind::Va);
             assert_eq!(DecoderKind::classify("v4l2h264dec"), DecoderKind::V4l2);
-            // The stateless family the Hantro / rkvdec / Cedrus blocks drive.
             assert_eq!(DecoderKind::classify("v4l2slh264dec0"), DecoderKind::V4l2);
             assert_eq!(DecoderKind::classify("v4l2slvp8dec"), DecoderKind::V4l2);
             assert_eq!(DecoderKind::classify("v4l2slmpeg2dec"), DecoderKind::V4l2);
@@ -375,7 +371,6 @@ mod tests {
             assert_eq!(DecoderKind::classify("vulkanh264dec"), DecoderKind::Vulkan);
             assert_eq!(DecoderKind::classify("d3d11h264dec"), DecoderKind::D3d);
         }
-        // Phase `software_decoders_with_hardware_looking_names_are_not_mistaken_for_gpus`.
         {
             // `vp8dec`/`vp9dec` are libvpx on the CPU but start with "v"; calling
             // them VA-API would report hardware decode that never happened.
@@ -385,7 +380,6 @@ mod tests {
             assert_eq!(DecoderKind::classify("openh264dec0"), DecoderKind::Software);
             assert!(!DecoderKind::classify("vp9dec0").is_hardware());
         }
-        // Phase `decoder_detection_ignores_parsers_containers_and_audio`.
         {
             assert!(looks_like_video_decoder("nvh264dec0"));
             assert!(looks_like_video_decoder("vah264dec0"));
@@ -411,7 +405,6 @@ mod tests {
             );
             assert!(!looks_like_video_decoder("qtdemux0"));
         }
-        // Phase `report_never_claims_hardware_before_a_decoder_is_plugged`.
         {
             let mut r = HwReport::default();
             assert!(!r.is_hardware(), "unknown is not hardware");
@@ -425,7 +418,6 @@ mod tests {
             assert!(r.is_hardware());
             assert_eq!(r.decoder_kind, Some(DecoderKind::NvCodec));
         }
-        // Phase `a_second_decoder_does_not_overwrite_the_chosen_one`.
         {
             let mut r = HwReport::default();
             r.note_element("nvh264dec0");
@@ -436,7 +428,6 @@ mod tests {
             assert!(r.is_hardware(), "still reporting the real primary decoder");
             assert_eq!(r.decoder_candidates.len(), 2, "both kept for diagnostics");
         }
-        // Phase `dmabuf_is_read_from_the_negotiated_caps_not_assumed`.
         {
             let mut r = HwReport::default();
             r.note_element("vah264dec0");
@@ -451,7 +442,6 @@ mod tests {
 
     #[test]
     fn decode_policy_ranks_hardware_families_against_software() {
-        // Phase `policy_off_demotes_hardware_below_software`.
         {
             assert!(
                 rank_for(HwPolicy::Off, DecoderKind::NvCodec)
@@ -459,7 +449,6 @@ mod tests {
                 "with hardware off, software must win autoplug"
             );
         }
-        // Phase `policy_auto_lifts_every_hardware_family_above_software`.
         {
             for k in [
                 DecoderKind::Va,
@@ -474,7 +463,6 @@ mod tests {
                 );
             }
         }
-        // Phase `forcing_a_family_puts_it_above_the_others_and_leaves_software_as_the_fallback`.
         {
             let p = HwPolicy::Force(DecoderKind::Va);
             assert!(rank_for(p, DecoderKind::Va) > rank_for(p, DecoderKind::NvCodec));
@@ -483,7 +471,6 @@ mod tests {
             // software, not to a different GPU family.
             assert!(rank_for(p, DecoderKind::Software) > rank_for(p, DecoderKind::NvCodec));
         }
-        // Phase `software_decoders_keep_their_shipped_order_under_every_policy`.
         {
             // dav1ddec ships one above libaom's av1dec; vp9dec above avdec_vp9.
             let dav1d = 257;
@@ -505,7 +492,6 @@ mod tests {
                 "hardware still outranks the best software decoder"
             );
         }
-        // Phase `env_policy_parses_the_documented_values_and_survives_a_typo`.
         {
             for (v, want) in [
                 ("auto", HwPolicy::Auto),

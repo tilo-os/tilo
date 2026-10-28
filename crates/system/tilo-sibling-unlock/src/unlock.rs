@@ -62,7 +62,6 @@ pub trait Siblings {
 
 /// Checks a derived passphrase against the slot. A seam for tests.
 pub trait Volume {
-    /// Whether `passphrase` opens `keyslot`.
     fn opens(&self, keyslot: u32, passphrase: &str) -> bool;
 }
 
@@ -77,9 +76,6 @@ pub enum Outcome {
 
 /// This boot's id: the kernel's random boot id, which the booted system can
 /// read too.
-///
-/// # Errors
-/// When the file is missing or not a UUID.
 pub fn boot_id(path: &Path) -> Result<BootId> {
     let text = std::fs::read_to_string(path).context("this boot has no boot id")?;
     let hex_digits: String = text.trim().chars().filter(|c| *c != '-').collect();

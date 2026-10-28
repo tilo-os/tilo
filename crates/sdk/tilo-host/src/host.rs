@@ -30,10 +30,12 @@ use crate::capture::{ScreenCaptureChannel, ScreenCaptureOutcome, ScreenCaptureRe
 use crate::clipboard::{ClipboardBackend, InProcessClipboard};
 use crate::mpris::{MprisCommand, MprisConfig, PlayerSnapshot};
 
-pub mod environment;
 /// The native desktop implementation; see [`crate::native::services`].
 #[cfg(feature = "native")]
 pub use crate::native::services as native;
+/// Host inputs: who the process is and where its files live, kept with the
+/// current process (`tilo_process::environment`).
+pub use tilo_process::environment;
 mod recording;
 
 pub use environment::{
@@ -262,7 +264,6 @@ pub fn install_default_if_unset(make: impl FnOnce() -> HostServices) -> bool {
     true
 }
 
-/// The installed default, if a runner installed one.
 pub fn installed_default() -> Option<HostServices> {
     DEFAULT.read().ok()?.clone()
 }
@@ -369,7 +370,6 @@ mod tests {
 
     #[test]
     fn host_services_are_inert_and_scopes_nest_and_restore_even_on_panic() {
-        // Case `null_services_perform_nothing_outside_the_process`.
         {
             let null = HostServices::null();
             assert!(null.clipboard.set_text(ClipboardTarget::Clipboard, "local"));
@@ -413,7 +413,6 @@ mod tests {
             );
         }
 
-        // Case `scopes_nest_and_restore`.
         {
             let (outer, outer_record) = HostServices::recording();
             let (inner, inner_record) = HostServices::recording();
@@ -428,7 +427,6 @@ mod tests {
             assert_eq!(inner_record.opened_uris(), ["inner://1"]);
         }
 
-        // Case `scope_is_restored_after_a_panic`.
         {
             let (services, record) = HostServices::recording();
             let depth = || SCOPES.with(|scopes| scopes.borrow().len());

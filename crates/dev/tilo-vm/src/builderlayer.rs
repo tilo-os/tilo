@@ -510,7 +510,6 @@ mod tests {
         stream.read_to_end(&mut received).unwrap();
         assert_eq!(received, layer);
 
-        // One flipped byte in a data line, or a cut stream, is an error.
         let text = String::from_utf8(framed.clone()).unwrap();
         let damaged = text.replacen(&format!("{DATA}AAEC"), &format!("{DATA}AAED"), 1);
         assert_ne!(damaged, text);

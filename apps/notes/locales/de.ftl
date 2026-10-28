@@ -29,8 +29,6 @@ notes-menu-delete = Löschen
 notes-a11y-new-child-under = Neue Unternotiz in
 notes-a11y-more-actions-for = Weitere Aktionen für
 
-notes-view-editor = Editor
-
 ## Verlauf: was jede Änderung getan hat, nach Feld und nach Aktion
 
 notes-page-body = { $item } bearbeitet
@@ -70,6 +68,7 @@ notes-delete-tag = Schlagwort { $item } gelöscht
 notes-keep-image = Ein Bild im Notizbuch abgelegt
 notes-place-image = Bild zu { $item } hinzugefügt
 notes-import-markdown = { $title } importiert
+notes-append-to-note = Zu { $title } hinzugefügt
 
 ## Keyboard shortcuts sheet
 notes-help-title = Tastenkürzel
@@ -134,6 +133,8 @@ notes-no-previous = Keine frühere Notiz
 notes-no-next = Keine spätere Notiz
 notes-link-copied = Link zu { $title } kopiert
 notes-link-unsafe = Dieser Link lässt sich nicht sicher öffnen
+notes-resource-link-invalid = Dieser Link führt hier zu nichts
+notes-resource-link-open-failed = Der Link ließ sich nicht öffnen
 notes-link-open-failed = Der Link wurde nicht geöffnet
 notes-import-title = Markdown importieren
 notes-import-accept = Importieren
@@ -141,6 +142,20 @@ notes-markdown-files = Markdown
 notes-import-not-utf8 = Die Datei ist kein UTF-8-Text
 notes-imported = { $title } importiert
 notes-import-failed = Nicht importiert: { $error }
+notes-notion-import-title = Notion-Export importieren
+notes-notion-menu-import = Aus Notion importieren
+notes-notion-files = Notion-Export
+notes-notion-json-files = Notion-Seitenliste
+notes-notion-imported =
+    { $pages ->
+        [one] Eine Seite importiert
+       *[other] { $pages } Seiten importiert
+    }
+notes-notion-empty = In dieser Datei ist keine Seite zum Importieren
+notes-notion-too-big = Der Export ist zu groß zum Importieren
+notes-notion-too-many-pages = Der Export enthält mehr als { $limit } Seiten
+notes-notion-archive-invalid = Das Export-Archiv lässt sich nicht lesen
+notes-notion-unreadable = Diese Datei ist kein Notion-Export
 notes-export-title = Markdown exportieren
 notes-export-accept = Exportieren
 notes-insert-image-title = Bild einfügen
@@ -178,3 +193,7 @@ notes-status-counts = { $notes ->
     [one] 1 Wort
    *[other] { $words } Wörter
 }
+
+notes-outline = Gliederung
+notes-outline-empty = Keine Überschriften
+notes-outline-untitled = Unbenannte Überschrift

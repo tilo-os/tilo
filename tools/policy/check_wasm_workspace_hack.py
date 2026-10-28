@@ -27,11 +27,12 @@ WASM = "wasm32-unknown-unknown"
 HACK = "workspace-hack"
 
 # What the browser builds for wasm32: the desktop bundle, which links the
-# browser runtime and every web app, and the image compute worker.
+# browser runtime and every web app, and the image compute worker, each with
+# the manifest a finding about it names.
 ROOTS = (
-    ("tilo-web-desktop", ()),
-    ("tilo-browser-runtime", ()),
-    ("tilo-browser-compute", ()),
+    ("tilo-web-desktop", (), "crates/browser/tilo-web-desktop/Cargo.toml"),
+    ("tilo-browser-runtime", (), "crates/browser/tilo-browser-runtime/Cargo.toml"),
+    ("tilo-browser-compute", (), "crates/browser/tilo-browser-compute/Cargo.toml"),
 )
 
 
@@ -52,14 +53,14 @@ def tree(package: str, features: tuple[str, ...], invert: str | None = None) -> 
 
 def main() -> int:
     failed = False
-    for package, features in ROOTS:
+    for package, features, manifest in ROOTS:
         try:
             reached = tree(package, features)
             if package not in reached:
                 print(f"cargo tree did not describe {package} for {WASM}", file=sys.stderr)
                 return 1
             if HACK not in reached:
-                print(f"{package} ({WASM}): no {HACK}")
+                print(f"{package} ({WASM}): no {HACK}", file=sys.stderr)
                 continue
             dependants = sorted(set(tree(package, features, invert=HACK)) - {HACK})
         except RuntimeError as error:
@@ -67,9 +68,8 @@ def main() -> int:
             return 1
         failed = True
         print(
-            f"{package} reaches {HACK} for {WASM} through {', '.join(dependants)}; name it under "
-            "[target.'cfg(not(target_arch = \"wasm32\"))'.dependencies] in those manifests",
-            file=sys.stderr,
+            f"{manifest}: {package} reaches {HACK} for {WASM} through {', '.join(dependants)}; name it "
+            "under [target.'cfg(not(target_arch = \"wasm32\"))'.dependencies] in those manifests"
         )
     return 1 if failed else 0
 

@@ -25,10 +25,6 @@ pub(super) fn progress_fraction(bytes: u64, total: u64) -> f64 {
 
 /// Serve append-only progress while retaining the privileged operation until
 /// its native transaction has completed. Existing output inodes are refused.
-///
-/// # Errors
-/// Returns errors creating the exclusive progress output or serializing, writing
-/// or flushing the fallback terminal event. Operation failures are exit codes.
 pub fn serve_helper(
     progress_path: &Path,
     cancel_path: &Path,
@@ -67,10 +63,6 @@ pub struct AuthorizedHelperRequest {
 
 /// Read only the authenticated user's private request and check its signed-in
 /// process's digest before deserializing any application-owned request fields.
-///
-/// # Errors
-/// Returns an error for missing or extra helper arguments, invalid private paths,
-/// unreadable or oversized requests, failed caller authentication or a digest mismatch.
 pub fn read_authorized_helper_request(
     args: &[String],
 ) -> Result<Option<AuthorizedHelperRequest>, Box<dyn std::error::Error>> {
@@ -176,10 +168,6 @@ pub fn read_helper_request(path: &Path) -> io::Result<Vec<u8>> {
 
 #[cfg(target_os = "linux")]
 /// Read a bounded request from a directory private to the authenticated caller.
-///
-/// # Errors
-/// Returns an error if `PKEXEC_UID` is missing or invalid, directory or file
-/// ownership or permissions are unsafe, or opening, inspecting or reading fails.
 pub fn read_linux_helper_request(request_path: &Path) -> io::Result<(Vec<u8>, u32)> {
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::fs::OpenOptionsExt;
@@ -241,10 +229,6 @@ pub fn read_linux_helper_request(request_path: &Path) -> io::Result<(Vec<u8>, u3
 }
 
 /// Validate the fixed filenames within one private helper job directory.
-///
-/// # Errors
-/// Returns an error for invalid path layout, failed request metadata lookup or
-/// a request that is not a regular file.
 pub fn validate_helper_paths(request: &Path, progress: &Path, cancel: &Path) -> io::Result<()> {
     let request_parent = request
         .parent()
@@ -309,19 +293,11 @@ pub fn bind_linux_helper_source(source: &ReviewedSource) -> io::Result<std::path
 }
 
 /// Create a progress output without overwriting an existing inode.
-///
-/// # Errors
-/// Returns an error if exclusive file creation fails, including an existing path.
 pub fn create_progress_output(path: &Path) -> io::Result<std::fs::File> {
     OpenOptions::new().write(true).create_new(true).open(path)
 }
 
 /// Launch and supervise one digest-bound, already secret-stripped request.
-///
-/// # Errors
-/// Returns an error for a missing or changed reviewed source identity, source I/O,
-/// private job setup, request persistence, executable lookup, command construction,
-/// helper launch or progress-channel supervision failures.
 pub fn run_privileged_helper(
     source: &ReviewedSource,
     request_bytes: &[u8],
@@ -396,10 +372,6 @@ pub fn helper_executable() -> io::Result<std::path::PathBuf> {
 }
 
 /// Relay progress and retain child supervision even on channel failure.
-///
-/// # Errors
-/// Returns errors opening or reading the progress channel or querying child
-/// status, or if a successful child exits before creating its progress channel.
 pub fn relay_helper_progress(
     child: &mut Child,
     progress_path: &Path,
@@ -508,10 +480,6 @@ fn relay_helper_progress_inner(
 }
 
 /// Publish cancellation at most once after successfully creating its marker.
-///
-/// # Errors
-/// Returns an error if creating the cancellation marker fails for a reason other
-/// than an already existing marker.
 pub fn relay_cancellation(
     should_cancel: &impl Fn() -> bool,
     cancel_path: &Path,

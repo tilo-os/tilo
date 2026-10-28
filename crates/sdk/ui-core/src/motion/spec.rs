@@ -16,6 +16,12 @@ pub enum Pace {
     Slow,
     /// `springs.heavy`: a window's rect, which should feel like it has mass.
     Heavy,
+    /// `gesture.fling_projection_ms`: a released gesture coasting on. Its
+    /// velocity dies away exponentially at the rate the coast time gives
+    /// (a critically damped spring of natural frequency `1 / coast`), so a
+    /// coast aimed at where the release projects ([`super::Snap::rest_for`])
+    /// starts at the fingers' speed and never turns back.
+    Coast,
     /// No motion: the change shows on the next frame (something leaving
     /// that has nothing to say).
     Instant,
@@ -116,6 +122,7 @@ impl MotionSpec {
         }
         let spring = match pace {
             Pace::Heavy => SpringSpec::from_params(motion.tokens().springs.heavy),
+            Pace::Coast => SpringSpec::critical(1.0 / pace_duration(pace, motion).as_secs_f64()),
             _ => SpringSpec::settling_within(pace_duration(pace, motion)),
         };
         let base = pace_duration(pace, motion).as_secs_f64().max(1e-3);
@@ -209,5 +216,8 @@ fn pace_duration(pace: Pace, motion: EffectiveMotion) -> crate::time::Duration {
         Pace::Base | Pace::Heavy => d.base(),
         Pace::Instant => crate::time::Duration::ZERO,
         Pace::Slow => d.slow(),
+        Pace::Coast => crate::time::Duration::from_millis(u64::from(
+            motion.tokens().gesture.fling_projection_ms.max(1),
+        )),
     }
 }

@@ -80,7 +80,6 @@ pub struct EnrolmentRound2 {
 pub struct DkgSession {
     /// This device's 1-indexed share number.
     share_index: u16,
-    /// Threshold `t`.
     threshold: u16,
     /// Total participants `n`.
     total: u16,
@@ -334,9 +333,7 @@ pub struct DkgOutcome {
     /// The shared group public key, byte-for-byte compatible with a regular
     /// Ed25519 verifying key.
     pub group_public_key: Ed25519PublicKey,
-    /// `t` in t-of-n.
     pub threshold: u16,
-    /// `n` in t-of-n.
     pub total: u16,
     /// This device's 1-indexed share number.
     pub share_index: u16,

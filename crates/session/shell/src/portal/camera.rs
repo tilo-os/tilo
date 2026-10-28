@@ -219,7 +219,6 @@ mod tests {
 
     #[test]
     fn camera_access_is_always_the_camera_capability_and_maps_responses() {
-        // Phase `access_is_always_camera`.
         {
             let (kind, cap) = camera_capability();
             assert_eq!(kind, CapabilityKind::Camera);
@@ -234,7 +233,6 @@ mod tests {
             assert_eq!(code, 0);
             assert!(results.is_empty());
         }
-        // Phase `access_deny_returns_one`.
         {
             let (code, _) = crate::portal::reply::reply(access_outcome(PromptOutcome::Deny));
             assert_eq!(code, 1);

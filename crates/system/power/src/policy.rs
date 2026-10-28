@@ -67,7 +67,14 @@ pub struct PowerPolicy {
     /// idle-suspend (the display can still blank/lock — that is the idle
     /// state machine's separate concern).
     pub idle_suspend: Option<Duration>,
-    /// What to do when the lid closes.
+    /// Whether entering sleep locks the session.
+    ///
+    /// `true` (the default) makes every suspend leave the session locked, so
+    /// waking asks for the password. `false` lets a machine that was unlocked
+    /// when it went to sleep wake to the work its owner left on screen; a
+    /// lock that was already there — from the idle timer, the lock command or
+    /// a suspend already in flight — is kept either way.
+    pub lock_on_sleep: bool,
     pub lid_close_action: PowerAction,
     /// What to do when the power key is pressed.
     pub power_key_action: PowerAction,
@@ -94,6 +101,7 @@ impl Default for PowerPolicy {
             // (see `config`), this bare default is the "no config at all"
             // floor.
             idle_suspend: None,
+            lock_on_sleep: true,
             lid_close_action: PowerAction::Suspend,
             power_key_action: PowerAction::Suspend,
             low_battery_percent: 15,
@@ -185,12 +193,10 @@ mod tests {
 
     #[test]
     fn power_actions_round_trip_and_lid_and_key_follow_policy() {
-        // Phase `action_labels_round_trip`.
         {
             for a in [PowerAction::Suspend, PowerAction::Lock, PowerAction::Ignore] {
                 assert_eq!(PowerAction::from_label(a.label()), Some(a));
             }
-            // Case-insensitive and tolerant of synonyms for "ignore".
             assert_eq!(
                 PowerAction::from_label("SUSPEND"),
                 Some(PowerAction::Suspend)
@@ -202,12 +208,10 @@ mod tests {
             assert_eq!(PowerAction::from_label("none"), Some(PowerAction::Ignore));
             assert_eq!(PowerAction::from_label("garbage"), None);
         }
-        // Phase `lid_open_is_never_an_action`.
         {
             let p = PowerPolicy::default();
             assert_eq!(p.on_lid(false), None, "opening the lid does nothing");
         }
-        // Phase `lid_close_follows_policy`.
         {
             let mut p = PowerPolicy {
                 lid_close_action: PowerAction::Suspend,
@@ -219,7 +223,6 @@ mod tests {
             p.lid_close_action = PowerAction::Ignore;
             assert_eq!(p.on_lid(true), None, "ignore means no action");
         }
-        // Phase `power_key_follows_policy`.
         {
             let mut p = PowerPolicy {
                 power_key_action: PowerAction::Lock,
@@ -233,7 +236,6 @@ mod tests {
 
     #[test]
     fn a_host_never_suspends_and_an_endpoint_follows_its_settings() {
-        // Phase `the_board_is_a_host`.
         {
             assert_eq!(duty_from(true, false), MachineDuty::Host);
             assert_eq!(duty_from(false, true), MachineDuty::Host);
@@ -246,11 +248,9 @@ mod tests {
             critical_action: PowerAction::Suspend,
             ..PowerPolicy::default()
         };
-        // Phase `an_endpoint_keeps_its_settings`.
         {
             assert_eq!(configured.for_duty(MachineDuty::Endpoint), configured);
         }
-        // Phase `a_host_drops_every_automatic_suspend`.
         {
             let host = configured.for_duty(MachineDuty::Host);
             assert_eq!(host.idle_suspend, None);

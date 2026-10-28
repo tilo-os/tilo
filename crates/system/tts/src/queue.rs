@@ -107,7 +107,6 @@ mod tests {
 
     #[test]
     fn the_queue_orders_interrupts_and_drains_by_priority() {
-        // Phase `plain_append_preserves_order`.
         {
             let mut q = SpeechQueue::new();
             let interrupted = q.push(Utterance::new("a").with_interrupt(false));
@@ -120,7 +119,6 @@ mod tests {
             assert_eq!(q.pop().unwrap().text, "c");
             assert!(q.is_empty());
         }
-        // Phase `interrupt_drops_equal_and_lower_priority_pending`.
         {
             let mut q = SpeechQueue::new();
             q.push(Utterance::new("focus 1")); // Message, interrupt
@@ -128,7 +126,6 @@ mod tests {
             assert_eq!(q.len(), 1);
             assert_eq!(q.peek().unwrap().text, "focus 2");
         }
-        // Phase `interrupt_keeps_strictly_higher_priority_pending`.
         {
             let mut q = SpeechQueue::new();
             // An error is queued (Important).
@@ -141,7 +138,6 @@ mod tests {
             assert_eq!(q.pop().unwrap().text, "error!");
             assert_eq!(q.pop().unwrap().text, "button");
         }
-        // Phase `lower_priority_text_dropped_by_message_interrupt`.
         {
             let mut q = SpeechQueue::new();
             q.push(
@@ -149,12 +145,10 @@ mod tests {
                     .with_priority(Priority::Text)
                     .with_interrupt(false),
             );
-            // Focus change interrupts bulk reading.
             q.push(Utterance::new("Cancel button"));
             assert_eq!(q.len(), 1);
             assert_eq!(q.peek().unwrap().text, "Cancel button");
         }
-        // Phase `clear_empties`.
         {
             let mut q = SpeechQueue::new();
             q.push_text("a");
@@ -163,7 +157,6 @@ mod tests {
             assert!(q.is_empty());
             assert_eq!(q.pop(), None);
         }
-        // Phase `drive_flushes_into_speaker_in_order`.
         {
             use crate::null::NullSpeaker;
             let mut q = SpeechQueue::new();
@@ -174,7 +167,6 @@ mod tests {
             assert!(q.is_empty());
             assert_eq!(spk.spoken(), &["one".to_string(), "two".to_string()]);
         }
-        // Phase `non_interrupting_does_not_clear`.
         {
             let mut q = SpeechQueue::new();
             q.push(Utterance::new("important focus"));

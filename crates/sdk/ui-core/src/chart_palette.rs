@@ -120,7 +120,6 @@ mod tests {
 
     #[test]
     fn chart_palettes_wrap_categories_and_clamp_ramps() {
-        // Case `categorical_lookup_wraps_and_can_never_be_empty`.
         {
             let first = Color::from_rgb8(1, 2, 3);
             let second = Color::from_rgb8(4, 5, 6);
@@ -132,7 +131,6 @@ mod tests {
             assert_eq!(palette.categorical(usize::MAX), second);
         }
 
-        // Case `continuous_ramps_clamp_and_preserve_endpoints`.
         {
             let low = Color::from_rgb8(10, 20, 30);
             let mid = Color::from_rgb8(100, 110, 120);

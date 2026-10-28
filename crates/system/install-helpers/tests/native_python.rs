@@ -66,15 +66,15 @@ fn suite(script: &str, args: &[&str]) -> std::io::Result<()> {
         .args(args)
         .env(
             "TILO_PREPARED_EXTRACT_BINARY",
-            env!("CARGO_BIN_EXE_staging-handoff-native-extractor"),
+            tilo_test_env::package_binary!("staging-handoff-native-extractor"),
         )
         .env(
             "TILO_FIRSTBOOT_HOME_SEEDS_BINARY",
-            env!("CARGO_BIN_EXE_install-test-home-seeds"),
+            tilo_test_env::package_binary!("install-test-home-seeds"),
         )
         .env(
             "TILO_FIRSTBOOT_FILES_BINARY",
-            env!("CARGO_BIN_EXE_install-test-firstboot-files"),
+            tilo_test_env::package_binary!("install-test-firstboot-files"),
         )
         .output()?;
     if !output.status.success() {
@@ -110,9 +110,10 @@ fn prepared_binding() -> std::io::Result<()> {
 
 #[test]
 fn native_home_seeds() -> std::io::Result<()> {
+    let binary = tilo_test_env::package_binary!("install-test-home-seeds");
     suite(
         "os/tests/test_firstboot_home_seeds_native.py",
-        &["--binary", env!("CARGO_BIN_EXE_install-test-home-seeds")],
+        &["--binary", binary.to_str().unwrap()],
     )
 }
 

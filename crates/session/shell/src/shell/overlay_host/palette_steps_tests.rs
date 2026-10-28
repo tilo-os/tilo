@@ -102,6 +102,35 @@ impl SearchProvider for StepsFixture {
                 99,
             ),
         ];
+        let mut lock = self.action(
+            "lock",
+            "Zqfixture lock",
+            vec![
+                ActionParam::required("minutes", ParamType::Integer, "Minutes")
+                    .with_choices(["1", "10"]),
+                ActionParam::optional("confirm", ParamType::Boolean, "Confirm")
+                    .with_labelled_choices([("true", "Make it less safe")]),
+            ],
+            97,
+        );
+        let runs = self.runs.clone();
+        lock.on_open = Rc::new(
+            move |_: &mut ui::widget::Edits<'_>,
+                  _: &ObjId,
+                  _: &crate::shell::chrome_state::Chrome,
+                  args: &ActionArgs|
+                  -> Result<(), ActionError> {
+                let minutes = args.integer("minutes").unwrap_or_default();
+                let confirmed = args.boolean("confirm") == Some(true);
+                if minutes > 1 && !confirmed {
+                    return Err(ActionError::ConfirmationRequired);
+                }
+                runs.borrow_mut()
+                    .push(format!("lock={minutes} {confirmed}"));
+                Ok(())
+            },
+        );
+        rows.push(lock);
         let runs = self.runs.clone();
         rows.push(SearchResult::nullary(
             ResourceKind::Application,
@@ -215,6 +244,35 @@ fn a_parameter_with_values_is_a_list_to_pick_from_never_json() {
         !h.host.palette_visible(),
         "a completed action closes search"
     );
+}
+
+#[test]
+fn a_value_that_makes_it_less_safe_asks_one_more_step_to_confirm() {
+    let (mut h, runs) = steps_harness(QUERY);
+    select(&mut h, "Zqfixture lock");
+    assert!(press(&mut h, NamedKey::Enter));
+    assert_eq!(labels(&h), vec!["1", "10"]);
+    assert!(press(&mut h, NamedKey::Enter));
+    assert_eq!(
+        runs.borrow().as_slice(),
+        ["lock=1 false"],
+        "a safer value runs at once"
+    );
+
+    let (mut h, runs) = steps_harness(QUERY);
+    select(&mut h, "Zqfixture lock");
+    assert!(press(&mut h, NamedKey::Enter));
+    assert!(press(&mut h, NamedKey::ArrowDown));
+    assert!(press(&mut h, NamedKey::Enter));
+    assert!(h.host.palette_visible(), "nothing ran yet");
+    assert_eq!(labels(&h), vec!["Make it less safe"], "the confirmation");
+    assert!(runs.borrow().is_empty());
+    assert!(press(&mut h, NamedKey::Enter));
+    assert_eq!(
+        runs.borrow().last().map(String::as_str),
+        Some("lock=10 true")
+    );
+    assert!(!h.host.palette_visible());
 }
 
 #[test]
@@ -390,7 +448,9 @@ fn a_switch_shows_its_new_state_on_its_row_right_after_it_flips() {
             .desktop
             .active_workspace_mut()
             .expect("active workspace");
-        workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
+        workspace.set_owner(crate::shell::state::local_user_id_for_room(
+            &workspace.room(),
+        ));
     }
     h.host.set_palette_visible(true);
     h.host.set_palette_focus(true);
@@ -471,5 +531,88 @@ fn rows_wear_their_own_pictures() {
     assert_eq!(
         notes.icon,
         Some(ui::icons::app_glyph("so.tilo.notes", None))
+    );
+}
+
+/// One action whose argument may be left out, which fails when it runs.
+struct FailingOpen;
+
+impl SearchProvider for FailingOpen {
+    fn id(&self) -> &'static str {
+        "failing-open"
+    }
+    fn name(&self) -> &'static str {
+        "Failing open"
+    }
+    fn resource_kinds(&self) -> &[ResourceKind] {
+        &[ResourceKind::Action]
+    }
+    fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
+        if !ctx.needle.starts_with("zqopen") || !ctx.wanted.contains(&ResourceKind::Action) {
+            return Vec::new();
+        }
+        let mut row = SearchResult::nullary(
+            ResourceKind::Action,
+            "failing-open",
+            "open",
+            "Zqopen folder",
+            None,
+            100,
+            |_, _, _| {},
+        );
+        row.params = vec![ActionParam::optional(
+            "path",
+            ParamType::Text,
+            "Folder; omit to choose one",
+        )];
+        row.on_open = Rc::new(
+            |_: &mut ui::widget::Edits<'_>,
+             _: &ObjId,
+             _: &crate::shell::chrome_state::Chrome,
+             _: &ActionArgs|
+             -> Result<(), ActionError> {
+                Err(ActionError::Explained(
+                    "Another file is being opened. Finish that first.".into(),
+                ))
+            },
+        );
+        vec![row]
+    }
+}
+
+/// An action whose arguments may all be left out runs at once; when it
+/// fails, the failure is told on its row, as for one that takes none.
+#[test]
+fn a_failed_run_with_nothing_to_ask_is_told_on_its_row() {
+    let mut h = build_harness_sized(1280.0, 800.0);
+    h.host.search_registry.register(Rc::new(FailingOpen));
+    h.host.set_palette_visible(true);
+    h.host.set_palette_focus(true);
+    h.host.force_palette_settled();
+    h.host.set_palette_query("zqopen");
+    h.host
+        .refresh_search_results(&AutoCommit::new(), &automerge::ROOT);
+    settle(&mut h, 1280.0, 800.0);
+    select(&mut h, "Zqopen folder");
+    assert!(press(&mut h, NamedKey::Enter));
+    assert!(
+        h.host.palette_visible(),
+        "search stays to tell what happened"
+    );
+    let row = h
+        .host
+        .palette
+        .visible_entries()
+        .iter()
+        .find(|entry| entry.label == "Zqopen folder")
+        .map(|entry| (entry.description.clone(), entry.badge.is_some()))
+        .expect("the row that ran is still listed");
+    assert_eq!(
+        row,
+        (
+            Some("Another file is being opened. Finish that first.".to_owned()),
+            true
+        ),
+        "the failure is on the row that ran, marked as failed"
     );
 }

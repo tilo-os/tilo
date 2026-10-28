@@ -236,12 +236,10 @@ mod tests {
             let _ = woke_tx.send(());
         });
         let waiting = control.clone();
-        let waiter = std::thread::spawn(move || {
-            let started = Instant::now();
-            (
-                waiting.wait_stop(Duration::from_secs(30)),
-                started.elapsed(),
-            )
+        let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
+        // A waiter the condvar failed to wake would wait out its hour.
+        std::thread::spawn(move || {
+            let _ = stopped_tx.send(waiting.wait_stop(Duration::from_secs(3600)));
         });
         // Not ready in time: the expiry is the stop, and its reason sticks.
         control.expire_unless_ready(
@@ -249,15 +247,11 @@ mod tests {
             "projection session did not become ready in time",
         );
         control.request_stop(None);
-        let (stopped, elapsed) = waiter.join().expect("waiter");
-        assert!(stopped);
-        assert!(
-            elapsed < Duration::from_secs(30),
-            "the condvar woke the waiter"
-        );
-        woke_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("registered waker ran");
+        assert!(tilo_test_env::recv(
+            "the condvar to wake the waiter",
+            &stopped_rx
+        ));
+        tilo_test_env::recv("the registered waker", &woke_rx);
         assert_eq!(
             control.stop_reason(),
             Some("projection session did not become ready in time")

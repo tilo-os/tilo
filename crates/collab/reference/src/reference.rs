@@ -137,6 +137,76 @@ impl ResourceRef {
     pub fn is_partial(&self) -> bool {
         self.span.is_some()
     }
+
+    /// The one action that opens this reference: its resource's `open`
+    /// view in `app`, in workspace `room`, on `record` (`None`: the app's
+    /// own record of the workspace). The host launches the app on the record
+    /// when no window shows it, and admits the open as the person who asked
+    /// under their grants, as it admits any action; a search hit, a chip and
+    /// an agent all open things this way.
+    #[must_use]
+    pub fn open_target(
+        &self,
+        room: &str,
+        app: &str,
+        record: Option<&str>,
+    ) -> tilo_actions::remote::RemoteActionTarget {
+        self.action_target(
+            room,
+            app,
+            record,
+            tilo_actions::remote::APPLICATION_OPEN_ACTION,
+        )
+    }
+
+    /// The published `action` of this reference's resource in `app`, in
+    /// workspace `room`, on `record` (`None`: the app's own record of the
+    /// workspace): the target an app calls another app's action on, which
+    /// the host delivers to the app showing the record, launching it first
+    /// when none does.
+    #[must_use]
+    pub fn action_target(
+        &self,
+        room: &str,
+        app: &str,
+        record: Option<&str>,
+        action: &str,
+    ) -> tilo_actions::remote::RemoteActionTarget {
+        match record {
+            Some(record) => tilo_actions::remote::application_record_target(
+                room,
+                app,
+                record,
+                self.id.clone(),
+                action,
+            ),
+            None => {
+                tilo_actions::remote::application_action_target(room, app, self.id.clone(), action)
+            }
+        }
+    }
+}
+
+/// An existing resource of the workspace in the app that keeps it: what an
+/// action parameter that picks one takes ([`tilo_actions::Pick::Resource`]).
+/// A person picks it from the palette by the title its app publishes; an
+/// agent passes the same reference. Nobody types its id.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceAt {
+    /// The app that keeps the resource.
+    pub app: String,
+    /// The app's record that keeps it; its record of the workspace without.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<String>,
+    /// The resource, by its kind and its id in that app.
+    #[serde(flatten)]
+    pub reference: ResourceRef,
+}
+
+impl tilo_resource::JsonSchema for ResourceAt {
+    fn json_schema() -> serde_json::Value {
+        tilo_actions::resource_reference_schema()
+    }
 }
 
 /// What an app answers when asked what is selected right now.
@@ -152,6 +222,34 @@ pub trait Referent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a person picks and an agent passes reads as one reference: the
+    /// app, the kind and the id, with the label beside them.
+    #[test]
+    fn a_resource_at_its_app_reads_from_the_reference_an_agent_passes() {
+        let passed = serde_json::json!({
+            "app": "so.tilo.notes",
+            "kind": "notes.notebook.pages",
+            "id": "notes.notebook/pages/p1",
+            "label": "Plan",
+        });
+        let at: ResourceAt = serde_json::from_value(passed.clone()).expect("a reference");
+        assert_eq!(at.app, "so.tilo.notes");
+        assert_eq!(at.record, None);
+        assert_eq!(
+            at.reference,
+            ResourceRef::whole("notes.notebook.pages", "notes.notebook/pages/p1", "Plan")
+        );
+        let written = serde_json::to_value(&at).expect("writes");
+        assert_eq!(written["id"], passed["id"]);
+        assert!(
+            tilo_actions::validate_json_schema(
+                &written,
+                &<ResourceAt as tilo_resource::JsonSchema>::json_schema()
+            )
+            .is_ok()
+        );
+    }
 
     /// A span normalises its direction, counts in its declared unit, may end
     /// just past the last character, and reports rather than guesses when it
@@ -181,6 +279,29 @@ mod tests {
         // Case: a char span may end just past the last character.
         assert_eq!(Span::chars(0, 4).slice("café"), Some("café"));
         assert_eq!(Span::chars(3, 4).slice("café"), Some("é"));
+    }
+
+    #[test]
+    fn a_reference_opens_through_its_apps_open_on_its_record() {
+        let page = ResourceRef::whole("notes.page", "notes.page:1", "Plan");
+        let target = page.open_target("room-1", "so.tilo.notes", Some("uuid:7"));
+        assert_eq!(
+            tilo_actions::remote::application_provider(&target.provider),
+            Some(("room-1", "so.tilo.notes"))
+        );
+        assert_eq!(
+            tilo_actions::remote::application_provider_record(&target.provider),
+            Some("uuid:7")
+        );
+        assert_eq!(
+            target.address,
+            tilo_actions::ActionAddress::new("notes.page:1", "open")
+        );
+        let target = page.open_target("room-1", "so.tilo.notes", None);
+        assert_eq!(
+            tilo_actions::remote::application_provider_record(&target.provider),
+            None
+        );
     }
 
     #[test]

@@ -22,10 +22,10 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-optional = ["open-uri", "clipboard", "files.open", "files.paths", "app-files", "threads", "media.decode", "camera", "microphone", "screen-capture", "notifications", "gpu"]
+optional = ["open-uri", "clipboard", "files.open", "files.save", "files.paths", "app-files", "threads", "media.decode", "camera", "microphone", "screen-capture", "notifications", "gpu"]
 
 [resources]
-kinds = ["chat.drafts", "chat.messages", "chat.workspace", "tilo.moderation", "tilo.rich-text"]
+kinds = ["chat.drafts", "chat.messages", "chat.workspace", "tilo.moderation", "tilo.rich-text", "tilo.workspace.emoji"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -58,11 +58,11 @@ mode = "off"
 screencast = "via-host"
 
 [sandbox.services]
-collab = "optional@2"
-tilo-fs = "optional@2"
-shell-ui = "optional@10"
+collab = "optional@10"
+tilo-fs = "optional@10"
+shell-ui = "optional@17"
 # Conversation inference uses the launcher-authenticated gateway, never provider keys.
-model-gateway = "optional@2"
+model-gateway = "optional@10"
 
 [actions]
 query = true
@@ -85,12 +85,12 @@ ext  = []
 resource  = "chat.workspace"
 action    = "start-call"
 label     = "Start a call"
-kind      = "outside"
+kind      = "read"
 operation = "effect"
 
 [[offers]]
 resource  = "chat.workspace"
 action    = "start-video-call"
 label     = "Start a video call"
-kind      = "outside"
+kind      = "undoable"
 operation = "effect"

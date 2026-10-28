@@ -297,7 +297,6 @@ mod tests {
         );
         assert!(waiting.ready_for(7, host).is_empty(), "released once");
 
-        // One that waited past its caller is dropped, its caller long gone.
         let (mut stale, _, _stale_answer) = request(7, host);
         stale.to = Addressee::Host(host);
         waiting.hold(stale, start);

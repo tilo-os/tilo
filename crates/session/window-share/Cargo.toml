@@ -1,0 +1,37 @@
+[package]
+name = "tilo-window-share"
+description = "A window shared with the workspace's other devices, owner side: the share session, its encoders, the viewer and input registry, and the encode settings and counters."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# The stream envelopes, peer and surface ids, colorimetry and HDR10 metadata
+# a share announces are the neighbour protocol's vocabulary.
+neighbour-wire = { path = "../../collab/neighbour-wire" }
+# The frame transport, encode throttle and encode errors the chat call app
+# shares; this crate adds the share session over them.
+tilo-callstream = { path = "../../collab/tilo-callstream" }
+# Codec negotiation and the real-time hardware and software encoders.
+media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["realtime"] }
+# The codec name a page shared as a display list announces.
+tilo-paint-stream = { version = "0.1.0", path = "../../browser/paint-stream" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# A client's dmabuf, staged for the encoder without a copy; only smithay's
+# buffer types, no backend.
+smithay = { version = "0.7", default-features = false }
+
+[dev-dependencies]
+media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["test-support"] }
+serde_json.workspace = true
+libc.workspace = true
+
+[lints]
+workspace = true

@@ -655,7 +655,7 @@ pub enum TouchpadCommand {
     },
     /// Fingers move DX, DY millimetres: one moves the pointer, two scroll, three swipe.
     #[command(
-        after_help = "Examples:\n  tilo-vm input touchpad swipe 30 0                 # pointer right\n  tilo-vm input touchpad swipe 0 -30 --fingers 2    # scroll\n  tilo-vm input touchpad swipe 40 0 --fingers 3     # workspace gesture"
+        after_help = "Examples:\n  tilo-vm input touchpad swipe 30 0                 # pointer right\n  tilo-vm input touchpad swipe 0 -30 --fingers 2    # scroll\n  tilo-vm input touchpad swipe 40 0 --fingers 3     # workspace gesture\n  tilo-vm input touchpad swipe 80 0 --press         # drag what is under the pointer"
     )]
     Swipe {
         /// Millimetres right.
@@ -670,6 +670,9 @@ pub enum TouchpadCommand {
         /// How long the movement takes, in milliseconds.
         #[arg(long, default_value_t = 300)]
         duration: u32,
+        /// Hold the clickpad down while the fingers move: a drag.
+        #[arg(long)]
+        press: bool,
     },
     /// Press the clickpad's physical button.
     #[command(after_help = "Examples:\n  tilo-vm input touchpad click")]
@@ -1040,7 +1043,7 @@ pub struct AddArgs {
     #[arg(long)]
     pub key: Option<PathBuf>,
     /// Let the --ssh user run commands as root without a password
-    /// (/etc/sudoers.d/tilo-vm-<user> on the device, checked by visudo); sudo
+    /// (`/etc/sudoers.d/tilo-vm-<user>` on the device, checked by visudo); sudo
     /// asks for that user's password once, on this terminal.
     #[arg(long)]
     pub grant_sudo: bool,
@@ -1120,14 +1123,14 @@ pub enum ImageCommand {
         after_help = "Examples:\n  tilo-vm image build                  # target/tilo-vm/image, the dev image as an OCI layout\n  tilo-vm image build --disk           # and target/tilo-vm/disk.qcow2\n  tilo-vm vm upgrade --image target/tilo-vm/image\n  tilo-vm vm create dev --image target/tilo-vm/disk.qcow2\n\nOn another machine instead of here: run image build there in a synced copy of\nthe worktree (SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) when it has no git),\nbring target/tilo-vm back, then:\n  tilo-vm vm upgrade --image target/tilo-vm/image\n  tilo-vm image disk                   # a disk from it, written here (where loop devices are)\n\nThe build is the one vm upgrade --from local runs: the production base is\nrebuilt only when its inputs changed, podman's layer cache and the builder\nstage's cargo cache skip unchanged steps, and a failed step reruns on its own.\nScratch goes to <out>-build (next to the output). tilo-vm guide images."
     )]
     Build {
-        /// Also write the dev disk, <out>/disk.qcow2.
+        /// Also write the dev disk, `<out>/disk.qcow2`.
         #[arg(long)]
         disk: bool,
         /// Output directory, relative to the worktree.
         #[arg(long, default_value = "target/tilo-vm")]
         out: std::path::PathBuf,
     },
-    /// Write the dev disk from an image image build left, without building: <layout dir>/../disk.qcow2.
+    /// Write the dev disk from an image image build left, without building: `<layout dir>/../disk.qcow2`.
     #[command(
         after_help = "Examples:\n  tilo-vm image disk                          # from target/tilo-vm/image\n  tilo-vm vm create dev --image target/tilo-vm/disk.qcow2\n\nFor an image built elsewhere, such as on another machine (tilo-vm image\nbuild --help): the layout goes into this host's podman storage as\nlocalhost/tilo-vm:latest and os/dev/build-image.sh (TILO_SKIP_BUILD=1) installs\nit to a disk, the disk step of the build itself. It needs passwordless sudo\n(loop device and mounts)."
     )]
@@ -1153,6 +1156,11 @@ pub struct UpgradeArgs {
     /// published dev image, or a dev image built here FROM its integration image.
     #[arg(long)]
     pub from: Option<String>,
+    /// A pushed branch's head: t builds it (reusing what it built before), signs and
+    /// publishes it for this device (`t dispatch publish-os-ref-<target> --ref BRANCH
+    /// --publish`), and the device follows it until its channel publishes something newer.
+    #[arg(long = "ref", value_name = "BRANCH", conflicts_with_all = ["from", "image"])]
+    pub branch: Option<String>,
     /// With `--from local`: build FROM this production image as it is,
     /// instead of localhost/tilo:latest rebuilt when its inputs changed.
     #[arg(long, requires = "from", conflicts_with = "rebuild_base")]
@@ -1172,7 +1180,7 @@ pub struct UpgradeArgs {
 pub enum SlotCommand {
     /// Create a slot (default: named after your branch) and start its session.
     #[command(
-        after_help = "Examples:\n  tilo-vm slot create --headless\n  tilo-vm slot create review-a --headful\n  tilo-vm slot create apps --headful --identity\n  tilo-vm slot create dual --headful --outputs 2560x1600@2,1920x1080@1\n\n--identity mints a throwaway test identity inside the new session, through\na control op only dev-image shells carry, and restarts the session with no\ndesktop layout, so apps open at once. It never replaces a real identity.\n\n--outputs gives a headful slot one virtual monitor per entry, left to right,\ntop-aligned, the first one primary. Each is WIDTHxHEIGHT[@SCALE]. Like a\nmonitor without an EDID, a vkms output offers the standard VESA (DMT) 60 Hz\nmodes, e.g. 1280x800, 1920x1080, 1920x1200, 2560x1600, 4096x2160; a size it\ndoes not offer fails with the list it does. SCALE is 0.5 to 4 (default 1). The mode and scale go\nthrough the display settings exactly as a confirmed change in Settings does,\nand are remembered for that set of monitors. Outputs are fixed when the slot\nis created; rerunning the same create applies the layout again.\n\ntilo-vm input move X Y then takes desktop coordinates in logical pixels:\nwith 2560x1600@2,1920x1080 the first monitor is x 0-1279, the second\nx 1280-3199."
+        after_help = "Examples:\n  tilo-vm slot create --headless\n  tilo-vm slot create review-a --headful\n  tilo-vm slot create apps --headful --identity\n  tilo-vm slot create me --headful --identity device\n  tilo-vm slot create dual --headful --outputs 2560x1600@2,1920x1080@1\n\n--identity mints a throwaway test identity inside the new session, through\na control op only dev-image shells carry, and restarts the session with no\ndesktop layout, so apps open at once. It never replaces a real identity.\n--identity device makes the slot's user this VM's person instead: its\nsession runs on the machine's identity tree and its own onboarding creates\nthe identity, certifying the machine, which starts fs (as a first boot does).\nOne slot per VM, refused once the VM holds an identity.\n\n--outputs gives a headful slot one virtual monitor per entry, left to right,\ntop-aligned, the first one primary. Each is WIDTHxHEIGHT[@SCALE]. Like a\nmonitor without an EDID, a vkms output offers the standard VESA (DMT) 60 Hz\nmodes, e.g. 1280x800, 1920x1080, 1920x1200, 2560x1600, 4096x2160; a size it\ndoes not offer fails with the list it does. SCALE is 0.5 to 4 (default 1). The mode and scale go\nthrough the display settings exactly as a confirmed change in Settings does,\nand are remembered for that set of monitors. Outputs are fixed when the slot\nis created; rerunning the same create applies the layout again.\n\ntilo-vm input move X Y then takes desktop coordinates in logical pixels:\nwith 2560x1600@2,1920x1080 the first monitor is x 0-1279, the second\nx 1280-3199."
     )]
     Create {
         /// The slot (default: your slot).
@@ -1195,11 +1203,20 @@ pub enum SlotCommand {
             num_args = 1
         )]
         outputs: Vec<tilo_vm_protocol::OutputSpec>,
-        /// Give the slot's user a throwaway test identity, so apps open
-        /// without the first-login flow, and start the session with fresh
-        /// desktop state. Needs a dev image's shell.
-        #[arg(long)]
-        identity: bool,
+        /// Give the slot's user an identity, so apps open: a throwaway test
+        /// identity in a private root (the default; needs a dev image's
+        /// shell), or `device`: the user becomes this VM's person through the
+        /// session's own onboarding, as a device's first login does, which
+        /// certifies the machine and starts fs. One slot per VM, on a VM that
+        /// holds no identity yet.
+        #[arg(
+            long,
+            value_name = "KIND",
+            num_args = 0..=1,
+            default_missing_value = "throwaway",
+            value_enum
+        )]
+        identity: Option<SlotIdentity>,
     },
     /// List the VM's slots with owner, generation and session state.
     #[command(after_help = "Examples:\n  tilo-vm slot list\n  tilo-vm slot list --json")]
@@ -1308,6 +1325,15 @@ pub enum SeatCommand {
     },
 }
 
+/// Which identity `slot create --identity` gives the slot's user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum SlotIdentity {
+    /// A throwaway test identity in the slot's private root.
+    Throwaway,
+    /// This VM's person, through the session's onboarding.
+    Device,
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1354,14 +1380,23 @@ mod tests {
             };
             identity
         };
-        assert!(identity(&[
-            "tilo-vm",
-            "slot",
-            "create",
-            "--headful",
-            "--identity"
-        ]));
-        assert!(!identity(&["tilo-vm", "slot", "create", "--headful"]));
+        assert_eq!(
+            identity(&["tilo-vm", "slot", "create", "--headful", "--identity"]),
+            Some(SlotIdentity::Throwaway)
+        );
+        assert_eq!(
+            identity(&[
+                "tilo-vm",
+                "slot",
+                "create",
+                "acceptance",
+                "--headful",
+                "--identity",
+                "device"
+            ]),
+            Some(SlotIdentity::Device)
+        );
+        assert_eq!(identity(&["tilo-vm", "slot", "create", "--headful"]), None);
     }
 
     #[test]
@@ -1726,24 +1761,24 @@ mod tests {
                 "scenario",
                 "install",
                 "--username",
-                "xaver",
+                "bob",
                 "--credentials-stdin",
             ])
             .unwrap();
             let Some(Command::Scenario(ScenarioCommand::Install(args))) = retained.command else {
                 panic!("not the install scenario");
             };
-            assert_eq!(args.username.as_deref(), Some("xaver"));
+            assert_eq!(args.username.as_deref(), Some("bob"));
             assert!(args.credentials_stdin);
             for invalid in [
-                vec!["tilo-vm", "scenario", "install", "--username", "xaver"],
+                vec!["tilo-vm", "scenario", "install", "--username", "bob"],
                 vec!["tilo-vm", "scenario", "install", "--credentials-stdin"],
                 vec![
                     "tilo-vm",
                     "scenario",
                     "install",
                     "--username",
-                    "xaver",
+                    "bob",
                     "--credentials-stdin",
                     "--dry-run",
                 ],

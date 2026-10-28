@@ -1,5 +1,5 @@
 #!/usr/bin/bash
-# Offer a tilo-rollback TPM2+PIN key before systemd-cryptsetup falls back to its
+# Offer a tilo-rollback TPM2 key before systemd-cryptsetup falls back to its
 # normal recovery-key/passphrase/FIDO2 agents. This runs only in the initramfs.
 set -uo pipefail
 
@@ -17,12 +17,21 @@ pin_file="$pin_dir/unlock.pin"
 # Do not show a redundant PIN prompt on ordinary passphrase-only installs. A
 # malformed Tilo token deliberately reaches tilo-rollback, which logs the problem
 # and then yields to the independent unlock path.
+#
+# A token sealed without a PIN is the whole point of a system volume that opens
+# by itself: prompting would defeat it. Only a token that carries a PIN asks for
+# one, and only when `boot-status` says this boot may try a PIN-less token at
+# all — tilo-rollback re-checks that before unsealing, so nothing here can turn a
+# slot into an unattended unlock on an unverified boot.
 has_token=0
+needs_pin=0
 for ((token_id=0; token_id<32; token_id++)); do
   token="$(cryptsetup token export --token-id "$token_id" "$device" 2>/dev/null || true)"
   if printf '%s' "$token" | grep -Eq '"type"[[:space:]]*:[[:space:]]*"tilo-rollback"'; then
     has_token=1
-    break
+    if printf '%s' "$token" | grep -Eq '"pin"[[:space:]]*:[[:space:]]*true'; then
+      needs_pin=1
+    fi
   fi
 done
 [ "$has_token" -eq 1 ] || exit 0
@@ -34,14 +43,24 @@ trap cleanup EXIT
 
 # -n avoids a newline becoming part of the TPM auth value. The PIN is held only
 # in initramfs tmpfs and removed immediately after the unseal attempt.
-if ! systemd-ask-password -n --echo=masked --id="tilo-rollback:$volume" \
-     "Enter the Tilo disk PIN" >"$pin_file"; then
-  printf 'tilo-rollback: PIN entry cancelled; offering recovery unlock\n' >&2
-  exit 0
+#
+# With no PIN-carrying token there is nothing to ask for. The unlock below then
+# still runs through tilo-rollback, which refuses a PIN-less token on a boot
+# whose Secure Boot trust policy changed since the volume was sealed and yields
+# to the recovery path instead.
+if [ "$needs_pin" -eq 1 ]; then
+  if ! systemd-ask-password -n --echo=masked --id="tilo-rollback:$volume" \
+       "Enter the Tilo disk PIN" >"$pin_file"; then
+    printf 'tilo-rollback: PIN entry cancelled; offering recovery unlock\n' >&2
+    exit 0
+  fi
+  chmod 0600 "$pin_file"
+  unlock_args=(--pin-file "$pin_file")
+else
+  unlock_args=()
 fi
-chmod 0600 "$pin_file"
 
-if tilo-rollback unlock --device "$device" --pin-file "$pin_file" \
+if tilo-rollback unlock --device "$device" "${unlock_args[@]}" \
      --output "$output"; then
   exit 0
 fi

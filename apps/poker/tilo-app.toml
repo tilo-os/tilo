@@ -1,0 +1,41 @@
+[package]
+id = "so.tilo.poker"
+name = "Poker"
+category = "Game"
+version = "0.1.0"
+kind = "app"
+runtime = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+aarch64 = "aarch64"
+
+[resources]
+kinds = ["so.tilo.poker.table"]
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "optional@10"
+tilo-fs = "optional@10"
+
+[entrypoint]
+bin = "bin/poker"
+type = "gui"
+splash-budget = 250
+
+[providers]
+mime = []
+ext = []

@@ -89,11 +89,27 @@ pub(crate) fn author_tapp_version(
     version: &str,
     identity: &SigningIdentity,
 ) -> Vec<u8> {
+    author_tapp_with_files(package_id, version, identity, &[])
+}
+
+/// [`author_tapp_version`] with `files` (path under the payload, bytes)
+/// beside the entrypoint, for a package the size of a real app.
+pub(crate) fn author_tapp_with_files(
+    package_id: &str,
+    version: &str,
+    identity: &SigningIdentity,
+    files: &[(String, Vec<u8>)],
+) -> Vec<u8> {
     let pubhex = hex::encode(identity.public_key_bytes());
     let dir = tempfile::tempdir().unwrap();
     let payload = dir.path().join("payload");
     std::fs::create_dir_all(payload.join("bin")).unwrap();
     std::fs::write(payload.join("bin").join("app"), b"#!/bin/true\ntilo app\n").unwrap();
+    for (path, bytes) in files {
+        let path = payload.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
     let manifest_toml = format!(
         r#"
 [package]
@@ -148,7 +164,6 @@ pub(crate) fn test_publisher() -> SigningIdentity {
     SigningIdentity::from_signing_key(SigningKey::from_bytes(&[11_u8; 32]))
 }
 
-/// A signed registry entry pointing at `tapp_url`.
 fn signed_entry(package_id: &str, tapp_url: &str, tapp: &[u8]) -> RegistryEntry {
     signed_entry_version(package_id, "1.4.0", tapp_url, tapp)
 }
@@ -330,7 +345,6 @@ fn registry_entries_install_update_and_refuse_corrupted_downloads() {
         let owner = SigningKey::from_bytes(&[12; 32]);
         let tapp = author_tapp(PACKAGE_ID, &publisher);
 
-        // Serve it.
         let port_probe = TcpListener::bind("127.0.0.1:0").unwrap();
         let planned_port = port_probe.local_addr().unwrap().port();
         drop(port_probe);
@@ -404,8 +418,6 @@ fn registry_entries_install_update_and_refuse_corrupted_downloads() {
             .unwrap_or_else(|e| panic!("install must succeed: {}", e.user_message()));
         assert_eq!(installed.package_id, PACKAGE_ID);
 
-        // 4. The desktop's own reader now returns it — the compositor
-        //    enumerates installed apps through exactly this call.
         let now_installed = package_store::list_installed().unwrap();
         let found = now_installed
             .iter()
@@ -513,7 +525,6 @@ fn registry_entries_install_update_and_refuse_corrupted_downloads() {
         let publisher = test_publisher();
         let owner = SigningKey::from_bytes(&[12; 32]);
         let good = author_tapp("so.tilo.catalogue-corrupt", &publisher);
-        // Serve a truncated archive under the same entry.
         let corrupted = good[..good.len() / 2].to_vec();
 
         let registry = Registry::start(String::new(), corrupted.clone());
@@ -815,7 +826,7 @@ fn explicit_version_updates_an_existing_app_to_the_requested_signed_offer() {
     )
     .unwrap();
     let install = |version: &str| {
-        std::process::Command::new(env!("CARGO_BIN_EXE_app"))
+        std::process::Command::new(tilo_test_env::package_binary!("app"))
             .args(["install", ID, "--version", version])
             .output()
             .unwrap()

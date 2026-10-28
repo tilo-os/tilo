@@ -1,0 +1,46 @@
+#!/bin/sh
+# Whether authselect's applied configuration still matches what it was applied from, so
+# authselect-apply-changes.service can skip a boot that changed nothing.
+#
+#   tilo-authselect-unchanged check    exit 0 when nothing changed since the last successful
+#                                      apply (the unit's ExecCondition then skips it), 1 when
+#                                      a profile or the selection changed or none was recorded
+#   tilo-authselect-unchanged record   remember what was just applied
+#
+# Fedora's unit runs `authselect apply-changes --upgrade` on every boot, ordered before user
+# sessions, so the greeter waited for it each time; it only has work to do after an image
+# update changed the profiles under /usr or someone changed the selection in /etc. The
+# fingerprint covers both: every profile file under /usr/share/authselect, and the selection
+# and custom profiles under /etc/authselect. It is stored in /var after each successful apply,
+# so a customised setup with unchanged profiles is not re-applied, and any change still is.
+# TILO_AUTHSELECT_ROOT prefixes every path, for tests.
+set -eu
+
+root=${TILO_AUTHSELECT_ROOT:-}
+stored="$root/var/lib/tilo/authselect-applied"
+
+fingerprint() {
+    {
+        for dir in "$root/usr/share/authselect" "$root/etc/authselect"; do
+            [ -d "$dir" ] || continue
+            find "$dir" -type f -print0 | LC_ALL=C sort -z | xargs -0r sha256sum
+        done
+    } | sed "s|  $root/|  /|" | sha256sum | cut -d' ' -f1
+}
+
+case ${1:-} in
+    check)
+        [ -s "$stored" ] || exit 1
+        [ "$(fingerprint)" = "$(cat "$stored")" ] && exit 0
+        exit 1
+        ;;
+    record)
+        mkdir -p "$(dirname "$stored")"
+        fingerprint > "$stored.tmp"
+        mv "$stored.tmp" "$stored"
+        ;;
+    *)
+        echo "usage: $0 check|record" >&2
+        exit 2
+        ;;
+esac

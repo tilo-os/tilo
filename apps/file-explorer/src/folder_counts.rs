@@ -186,7 +186,6 @@ fn count_entries(folder: &Path, hidden: bool) -> Option<u64> {
 mod tests {
     use super::*;
     use std::sync::mpsc;
-    use std::time::Duration;
 
     #[test]
     fn a_folder_is_counted_off_the_ui_thread_and_cached_until_it_changes() {
@@ -203,22 +202,20 @@ mod tests {
 
         // Unknown at first: the view shows nothing yet.
         assert_eq!(counts.count(dir.path(), None, false), None);
-        let worker = wakes.recv_timeout(Duration::from_secs(10)).unwrap();
+        let worker = wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         assert_ne!(worker, ui_thread, "counted on the worker's thread");
         assert!(counts.take_arrived());
         assert!(!counts.take_arrived());
         assert_eq!(counts.count(dir.path(), None, false), Some(3));
 
-        // Showing hidden files counts them, as a separate entry.
         assert_eq!(counts.count(dir.path(), None, true), None);
-        wakes.recv_timeout(Duration::from_secs(10)).unwrap();
+        wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         assert_eq!(counts.count(dir.path(), None, true), Some(4));
 
-        // A new modification time reads the folder again.
         std::fs::write(dir.path().join("c.txt"), b"x").unwrap();
         let later = Some(Local::now());
         assert_eq!(counts.count(dir.path(), later, false), None);
-        wakes.recv_timeout(Duration::from_secs(10)).unwrap();
+        wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         assert_eq!(counts.count(dir.path(), later, false), Some(4));
     }
 }

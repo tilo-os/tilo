@@ -123,16 +123,19 @@ fn refining_through_the_job_door_is_one_undo_step() {
 }
 
 #[test]
-fn legacy_subject_and_refine_calls_explain_the_job_door_without_editing() {
+fn select_takes_geometry_and_points_at_find_area_for_pictures() {
     let mut app = TestApp::<App>::new().unwrap();
     open_disc(&mut app);
     call(&mut app, "select", json!({"ellipse": [34, 34, 132, 132]}));
     let before = app.state();
     let versions = app.versions();
-    for args in [json!({"subject": true}), json!({"refine": 8})] {
-        let error = app.call("select", args).unwrap_err().to_string();
-        assert!(error.contains("find-area"), "{error}");
-        assert!(error.contains("job"), "{error}");
+    for args in [
+        json!({"subject": true}),
+        json!({"refine": 8}),
+        json!({"at": [100, 100]}),
+        json!({"colour": "#d03020"}),
+    ] {
+        assert!(app.call("select", args).is_err());
         assert_eq!(app.state(), before);
         assert_eq!(app.versions(), versions);
     }
@@ -143,6 +146,13 @@ fn legacy_subject_and_refine_calls_explain_the_job_door_without_editing() {
         .iter()
         .find(|resource| resource.kind == "canvas.artwork")
         .unwrap();
+    let select = artwork
+        .actions
+        .iter()
+        .find(|action| action.id == "select")
+        .unwrap();
+    let described = select.description.as_deref().unwrap_or_default();
+    assert!(described.contains("find-area"), "{described}");
     let find = artwork
         .actions
         .iter()
@@ -249,7 +259,7 @@ fn an_accepted_edge_job_allows_its_participants_published_inspect() {
         .unwrap_or_else(|| panic!("inspect did not publish its marks: {inspected}"));
     assert!(marks.iter().any(|mark| mark["id"] == "photo"));
     app.harness()
-        .wait_until(ui::time::Duration::from_secs(10), |harness| {
+        .wait_until(tilo_test_env::hang_bound(), |harness| {
             harness
                 .job_updates(invocation)
                 .iter()
@@ -291,6 +301,42 @@ fn a_host_cancelled_edge_job_does_not_leave_the_finder_busy() {
     app.effect(&effect)
         .expect("a cancelled worker must release its busy state");
     assert_ne!(app.state().selection, before.selection);
+}
+
+#[test]
+fn a_running_edge_job_refuses_a_second_one_until_it_is_cancelled() {
+    let mut app = TestApp::<App>::new().unwrap();
+    open_disc(&mut app);
+    call(&mut app, "select", json!({"ellipse": [34, 34, 132, 132]}));
+    let before = app.state();
+    let effect = canvas::resource::ViewOp::FindArea {
+        area: canvas::resource::FindArea {
+            refine: Some(8.0),
+            ..Default::default()
+        },
+    };
+    let first = app.start_effect(&effect).unwrap();
+    // A finder that is genuinely running still protects itself: the refusal
+    // is the in-flight guard, not a latched flag, and it edits nothing.
+    let busy = app
+        .start_effect(&effect)
+        .expect_err("a second finder must not start over the first");
+    assert!(busy.to_string().contains("already being found"), "{busy}");
+    assert!(
+        !app.harness()
+            .job_updates(first)
+            .iter()
+            .any(ui::tilo_actions::InvocationUpdate::is_terminal)
+    );
+    assert_eq!(app.state(), before);
+    // Cancelling the one that runs is what releases the guard.
+    assert!(matches!(
+        app.cancel_effect(first),
+        Some(ui::tilo_actions::InvocationUpdate::Cancelled { .. })
+    ));
+    app.settle();
+    app.start_effect(&effect)
+        .expect("cancellation released the finder for the next operation");
 }
 
 #[test]
@@ -375,7 +421,7 @@ fn a_refined_edge_finished_off_thread_stays_in_the_authors_content_store() {
     let prepared = {
         let _entered = scope.enter();
         canvas::subject::prepare(
-            &canvas::selection::Select {
+            &canvas::resource::FindArea {
                 refine: Some(4.0),
                 ..Default::default()
             },

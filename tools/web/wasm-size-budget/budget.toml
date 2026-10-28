@@ -16,7 +16,7 @@ headroom = 0.01
 # start module, which the page loads first; each app's own code, including
 # its instantiations of the resource, action and view framework, is in the
 # module fetched when the app first opens and is not counted here. Measured
-# at 21171038 bytes by the sdk-web-size steps once the desktop tree had one
-# shared deserializer and vello drew glyphs with the toolkit's skrifa.
+# at 20552592 bytes by the sdk-web-size steps once the splitter merged the
+# copies of a function each module carried more than once.
 [bundles.desktop]
-bytes = 21430272
+bytes = 20774912

@@ -7,10 +7,6 @@ pub struct PrivatePolicyBasis {
 impl PrivatePolicyBasis {
     /// Preserves the historical strict capability/expiry checks and revision.
     /// This legacy output carries no allocation, owner, caller or clock witness.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if room governance is missing or malformed.
     pub fn from_peer(peer: &tilo_peer_state::StatePeer) -> Result<Self, String> {
         let (revision, expiries) = tilo_peer_state::legacy_policy::private_policy_basis(peer)?;
         Ok(Self { revision, expiries })

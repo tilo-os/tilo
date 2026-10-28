@@ -9,34 +9,23 @@ const DIRECTORY_RPC_TIMEOUT: Duration = Duration::from_secs(2);
 /// bounds a hung broker, not an ordinary slow one.
 const ADMISSION_RPC_TIMEOUT: Duration = Duration::from_secs(60);
 
-fn admission_timeout() -> Duration {
+/// How long the session behind `state` waits for an admission answer: the
+/// production bound, or a test's shorter one for that session alone
+/// (the `admission_timeout_ms` of its `BridgeState`), so a
+/// never-answered invocation's unknown outcome is observed without waiting
+/// out the production bound and without shortening any other session's.
+pub(super) fn admission_timeout(state: &super::BridgeState) -> Duration {
     #[cfg(test)]
-    if let Some(timeout) = tests_admission_timeout() {
-        return timeout;
+    match state
+        .admission_timeout_ms
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        0 => {}
+        ms => return Duration::from_millis(ms),
     }
+    #[cfg(not(test))]
+    let _ = state;
     ADMISSION_RPC_TIMEOUT
-}
-
-/// A test bound for admission answers, so a never-answered invocation's
-/// unknown outcome is observed without waiting out the production bound.
-#[cfg(test)]
-static TEST_ADMISSION_TIMEOUT_MS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
-#[cfg(test)]
-fn tests_admission_timeout() -> Option<Duration> {
-    match TEST_ADMISSION_TIMEOUT_MS.load(std::sync::atomic::Ordering::SeqCst) {
-        0 => None,
-        ms => Some(Duration::from_millis(ms)),
-    }
-}
-
-#[cfg(test)]
-pub(super) fn set_test_admission_timeout(timeout: Duration) {
-    TEST_ADMISSION_TIMEOUT_MS.store(
-        u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
-        std::sync::atomic::Ordering::SeqCst,
-    );
 }
 
 pub(super) fn query_bytes(query: &runtime_collab::ActionDirectoryQuery, meter: &mut ByteMeter) {
@@ -163,6 +152,7 @@ pub(super) async fn resolve(
 )]
 pub(super) async fn invoke(
     route: &SdkRoute,
+    admission_timeout: Duration,
     peer_id: u64,
     revision: &str,
     resource: &str,
@@ -180,7 +170,7 @@ pub(super) async fn invoke(
     // Losing the response is not proof that admission or an effect failed.
     // This wire method returns its server-generated identity only in the
     // response; timeout cannot safely retry or invent a terminal receipt.
-    tokio::time::timeout(admission_timeout(), route.channel.invoke_resolved_published_action(
+    tokio::time::timeout(admission_timeout, route.channel.invoke_resolved_published_action(
             peer_id,
             revision,
             resource,

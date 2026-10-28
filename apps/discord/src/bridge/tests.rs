@@ -42,32 +42,27 @@ fn planned_in(guild: &Guild, room: &Value, event: &Value) -> BridgePlan {
             chat: &chat(),
             context: &Context::default(),
             room,
+            emoji: None,
         },
         event,
     )
 }
 
 #[test]
-fn a_linked_tilo_moderators_delete_in_discord_removes_and_anyone_elses_resends() {
+fn a_tilo_message_deleted_in_discord_is_removed_in_chat_not_sent_again() {
     let mut g = guild();
     g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
-    g.links.push(Link {
-        discord_user: "d_mod".into(),
-        person: "u_mod".into(),
-        ..Link::default()
-    });
     let deleted = discord(
         source::MESSAGE_DELETED,
-        &json!({"guild_id": "1", "channel_id": "d1", "message_id": "dm1", "executor": "d_mod"}),
+        &json!({"guild_id": "1", "channel_id": "d1", "message_id": "dm1", "executor": "d_admin"}),
     );
-    let room = json!({"members": [{"person": "u_mod", "role": "Moderator"}]});
-    let removed = planned_in(&g, &room, &deleted);
-    assert_eq!(removed.chat_removes.len(), 1, "{removed:?}");
-    assert!(removed.sends.is_empty());
-    // Without the room's roles nobody counts as a moderator.
-    let resent = planned(&g, &deleted);
-    assert!(resent.chat_removes.is_empty());
-    assert_eq!(resent.sends.len(), 1, "{resent:?}");
+    let removed = planned(&g, &deleted);
+    assert_eq!(
+        removed.chat_removes,
+        [json!({"message": "m1"})],
+        "{removed:?}"
+    );
+    assert!(removed.sends.is_empty(), "never sent again: {removed:?}");
 }
 
 fn discord(source: &str, payload: &Value) -> Value {
@@ -106,6 +101,54 @@ fn a_post_entry_names_its_channel_and_the_plan_finds_the_message_it_made() {
         planned(&sent, &event).sends.is_empty(),
         "a message already in Discord is not sent again"
     );
+}
+
+/// Sharing a window or a resource posts a message, which goes across like
+/// any post; its sharer stopping the share edits the Discord copy.
+#[test]
+fn sharing_posts_and_stopping_a_share_edits_its_copy() {
+    let shared = json!({
+        "kind": CHAT_KIND,
+        "did": verb("share-window"),
+        "item": {"kind": "channels", "id": "c1"},
+        "actor": {"id": "u_ada"},
+        "arguments": {"channel": "c1"},
+    });
+    assert_eq!(route_channel(&shared), "c1");
+    let plan = planned(&guild(), &shared);
+    assert_eq!(plan.sends.len(), 1, "{:?}", plan.sends);
+    assert_eq!(plan.sends[0]["op"]["tilo"], "m1");
+    let mut sent = guild();
+    sent.map.push(mapping(MappedKind::Message, "m1", "dm1"));
+    let stopped = json!({
+        "kind": CHAT_KIND,
+        "did": verb("stop-sharing"),
+        "item": {"kind": "messages", "id": "m1"},
+        "arguments": {"message": "m1"},
+    });
+    let plan = planned(&sent, &stopped);
+    assert_eq!(plan.edits.len(), 1, "{plan:?}");
+    assert_eq!(plan.edits[0]["message"], "dm1");
+}
+
+/// Its sharer closing or reopening the shared window edits the Discord copy,
+/// so it says whether the share is live right now.
+#[test]
+fn closing_or_reopening_a_shared_window_edits_its_copy() {
+    let mut sent = guild();
+    sent.map.push(mapping(MappedKind::Message, "m1", "dm1"));
+    for open in [false, true] {
+        let event = json!({
+            "kind": CHAT_KIND,
+            "did": verb("share-open"),
+            "item": {"kind": "messages", "id": "m1"},
+            "actor": {"id": "u_ada"},
+            "arguments": {"open": open},
+        });
+        let plan = planned(&sent, &event);
+        assert_eq!(plan.edits.len(), 1, "{plan:?}");
+        assert_eq!(plan.edits[0]["message"], "dm1");
+    }
 }
 
 #[test]
@@ -210,4 +253,296 @@ fn removing_banning_and_unbanning_a_linked_person_reaches_discord() {
     assert_eq!(planned(&g, &room("unban", "u_ada")).unbans.len(), 1);
     // A guest with no linked account has nothing to act on in Discord.
     assert!(planned(&g, &room("ban", "u_bo")).bans.is_empty());
+}
+
+/// A Chat change's history entry for a reaction: the framework's field
+/// edit of a message's reactions.
+fn reaction_edit(op: &str, message: &str, emoji: &str) -> Value {
+    json!({"did": "edit", "ty": "message", "field": "reactions", "op": op, "new": emoji,
+           "path": [{"field": "messages"}, {"item": message}, {"field": "reactions"}]})
+}
+
+#[test]
+fn a_tilo_reaction_is_routed_to_its_message_and_becomes_the_bots() {
+    let mut g = guild();
+    g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
+    let event = json!({"kind": MESSAGES_KIND, "did": {"did": "group", "members": [reaction_edit("react", "m1", "👍")]}});
+    assert_eq!(route(&g, &event), "m1");
+    let chat = json!({"messages": [{"id": "m1", "value": {"channel": "c1", "author": "u_ada", "text": "hello",
+        "reactions": [{"emoji": "👍", "by": "u_bo", "at": 1}]}}]});
+    let read = |chat: &Value, event: &Value| {
+        plan(
+            Reading {
+                guild: &g,
+                chat,
+                context: &Context::default(),
+                room: &Value::Null,
+                emoji: None,
+            },
+            event,
+        )
+    };
+    let planned = read(&chat, &event);
+    assert_eq!(
+        planned.reacts,
+        [json!({"channel": "d1", "message": "dm1", "emoji": "👍"})]
+    );
+    assert!(planned.apply_channels.is_empty() && !planned.again);
+
+    let taken = json!({"kind": MESSAGES_KIND, "did": reaction_edit("unreact", "m1", "👍")});
+    let none = json!({"messages": [{"id": "m1", "value": {"channel": "c1", "author": "u_ada", "text": "hello", "reactions": []}}]});
+    assert_eq!(
+        read(&none, &taken).unreacts,
+        [json!({"channel": "d1", "message": "dm1", "emoji": "👍"})]
+    );
+    // Another field edit of a message is no reaction.
+    let pinned = json!({"kind": MESSAGES_KIND, "did": {"did": "edit", "op": "set", "new": true,
+        "path": [{"field": "messages"}, {"item": "m1"}, {"field": "pinned"}]}});
+    assert_eq!(read(&chat, &pinned), BridgePlan::default());
+}
+
+#[test]
+fn a_discord_reaction_is_the_members_own_reaction_on_the_mapped_message() {
+    let mut g = guild();
+    g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
+    let event = discord(
+        source::REACTION_ADDED,
+        &json!({"guild_id": "1", "channel_id": "d1", "message_id": "dm1", "user_id": "d7",
+                "user_name": "Dee", "emoji": ":party:", "emoji_id": "77", "animated": true}),
+    );
+    assert_eq!(route(&g, &event), "m1", "read with the message it is on");
+    let planned = planned(&g, &event);
+    assert_eq!(planned.chat_reacts.len(), 1, "{planned:?}");
+    let react = &planned.chat_reacts[0];
+    assert_eq!(react["message"], "m1");
+    assert_eq!(react["emoji"], ":party:");
+    assert_eq!(react["appearance"]["name"], "Dee");
+    assert_eq!(react["appearance"]["persona"]["account"], "d7");
+    // The bot's own reaction comes back from Discord as nothing.
+    let echo = discord(
+        source::REACTION_REMOVED,
+        &json!({"guild_id": "1", "channel_id": "d1", "message_id": "dm1", "user_id": "9", "emoji": "👍"}),
+    );
+    assert_eq!(planned_in(&g, &Value::Null, &echo), BridgePlan::default());
+}
+
+/// The chat as `read-room` answers it with a filed report's message: its
+/// text read out of the report, its picture as an image, a reaction on it.
+fn with_report() -> Value {
+    json!({
+        "messages": [{"id": "m_feedback_r1", "value": {
+            "channel": "c1", "author": "u_ada",
+            "text": "Saving does nothing\n1. Files: Save (button)",
+            "attachment": {"$variant": "image", "name": "report.png", "blob": "ab", "w": 320, "h": 200},
+            "reactions": [{"emoji": "👍", "by": "u_bo", "at": 1}]
+        }}],
+        "people": [{"id": "u_ada", "name": "Ada", "agent": false}]
+    })
+}
+
+fn read_with_report(guild: &Guild, event: &Value) -> BridgePlan {
+    plan(
+        Reading {
+            guild,
+            chat: &with_report(),
+            context: &Context::default(),
+            room: &Value::Null,
+            emoji: None,
+        },
+        event,
+    )
+}
+
+#[test]
+fn a_filed_report_goes_across_as_its_message_with_its_picture() {
+    // Chat records filing on the channel, with the submission it filed.
+    let event = json!({
+        "kind": CHAT_KIND,
+        "did": verb(SUBMIT_FEEDBACK),
+        "item": {"kind": "channels", "id": "c1"},
+        "actor": {"id": "u_ada"},
+        "arguments": {"channel": "c1", "submission": {"id": "r1"}},
+    });
+    assert_eq!(route(&guild(), &event), "m_feedback_r1");
+    let planned = read_with_report(&guild(), &event);
+    assert_eq!(planned.sends.len(), 1, "{planned:?}");
+    let op = &planned.sends[0]["op"];
+    assert_eq!(op["tilo"], "m_feedback_r1");
+    assert_eq!(op["username"], "Ada");
+    assert_eq!(
+        op["content"],
+        "Saving does nothing\n1. Files: Save (button)"
+    );
+    assert_eq!(
+        op["attachments"],
+        json!([{"blob": "ab", "name": "report.png", "size": 0}])
+    );
+    assert!(
+        planned.apply_channels.is_empty(),
+        "filing changes no layout"
+    );
+    let mut sent = guild();
+    sent.map
+        .push(mapping(MappedKind::Message, "m_feedback_r1", "dm9"));
+    assert!(
+        read_with_report(&sent, &event).sends.is_empty(),
+        "a report already in Discord is not sent again"
+    );
+}
+
+#[test]
+fn a_reaction_to_a_filed_report_goes_across_on_its_message() {
+    let mut g = guild();
+    g.map
+        .push(mapping(MappedKind::Message, "m_feedback_r1", "dm9"));
+    let edit = json!({"did": "edit", "op": "react", "new": "👍",
+        "path": [{"field": "feedback"}, {"item": "r1"}, {"field": "reactions"}]});
+    let event = json!({"kind": CHAT_KIND, "did": edit});
+    assert_eq!(route(&g, &event), "m_feedback_r1");
+    assert_eq!(
+        read_with_report(&g, &event).reacts,
+        [json!({"channel": "d1", "message": "dm9", "emoji": "👍"})]
+    );
+}
+
+#[test]
+fn the_servers_custom_emoji_are_recorded_with_its_layout() {
+    let payload = json!({"guild_id": "1", "bot_user": "9", "channels": [], "roles": [],
+        "emojis": [{"id": "55", "name": "tilo_hello", "animated": false}]});
+    let mut g = guild();
+    let first = planned(&g, &discord("layout-changed", &payload));
+    assert_eq!(first.observe[0]["emojis"][0]["name"], "tilo_hello");
+    g.observe_emojis(vec![discord_wire::event::EmojiInfo {
+        id: "55".into(),
+        name: "tilo_hello".into(),
+        animated: false,
+    }]);
+    assert!(
+        planned(&g, &discord("layout-changed", &payload))
+            .observe
+            .is_empty()
+    );
+}
+
+/// A mirroring bridge of "talk" with #one and #two, Discord listing them so.
+fn arranged_guild() -> Guild {
+    let mut g = guild();
+    g.mirror_channels = true;
+    g.map = [
+        mapping(MappedKind::Category, "k_talk", "d_talk"),
+        mapping(MappedKind::Channel, "c_one", "d_one"),
+        mapping(MappedKind::Channel, "c_two", "d_two"),
+        mapping(MappedKind::Webhook, "c_one", "wh_one"),
+        mapping(MappedKind::Webhook, "c_two", "wh_two"),
+    ]
+    .into_iter()
+    .collect();
+    observed(&mut g, &[("d_one", 0), ("d_two", 1)]);
+    g
+}
+
+/// Discord's layout with "talk"'s channels at these positions.
+fn layout_payload(positions: &[(&str, i64)], connected: bool) -> Value {
+    let mut channels =
+        vec![json!({"id": "d_talk", "kind": "category", "name": "talk", "position": 0})];
+    channels.extend(positions.iter().map(|(id, position)| {
+        json!({"id": id, "kind": "text", "name": id.trim_start_matches("d_"),
+            "parent": "d_talk", "position": position})
+    }));
+    json!({"guild_id": "1", "bot_user": "9", "channels": channels, "roles": [],
+        "connected": connected})
+}
+
+/// `g` with "talk"'s channels recorded at these positions.
+fn observed(g: &mut Guild, positions: &[(&str, i64)]) {
+    let layout: discord_wire::event::LayoutChanged =
+        serde_json::from_value(layout_payload(positions, false)).unwrap();
+    g.observe("9".into(), layout.channels, Vec::new());
+}
+
+/// The room's chat with "talk" listing `channels` in this order.
+fn talk(channels: &[&str]) -> Value {
+    json!({
+        "categories": [{"id": "k_talk", "value": {"name": "talk"}}],
+        "channels": channels.iter().map(|id| json!({"id": id, "value": {
+            "category": "k_talk", "name": id.trim_start_matches("c_"), "topic": "",
+            "kind": "text", "archived": false}})).collect::<Vec<_>>(),
+    })
+}
+
+fn planned_on(guild: &Guild, chat: &Value, event: &Value) -> BridgePlan {
+    plan(
+        Reading {
+            guild,
+            chat,
+            context: &Context::default(),
+            room: &Value::Null,
+            emoji: None,
+        },
+        event,
+    )
+}
+
+#[test]
+fn a_channel_moved_in_discord_rearranges_chat_with_the_layout() {
+    let g = arranged_guild();
+    let event = discord(
+        "layout-changed",
+        &layout_payload(&[("d_one", 1), ("d_two", 0)], false),
+    );
+    let first = planned_on(&g, &talk(&["c_one", "c_two"]), &event);
+    assert_eq!(first.observe.len(), 1);
+    assert_eq!(
+        first.chat_arrangements,
+        [json!({"categories": ["k_talk"], "channels": [
+            {"channel": "c_two", "category": "k_talk"},
+            {"channel": "c_one", "category": "k_talk"},
+        ]})]
+    );
+    assert!(first.arrange_channels.is_empty(), "never sent back");
+    // Once recorded, with Chat rearranged, nothing is left to do.
+    let mut recorded = g;
+    observed(&mut recorded, &[("d_one", 1), ("d_two", 0)]);
+    let second = planned_on(&recorded, &talk(&["c_two", "c_one"]), &event);
+    assert!(second.chat_arrangements.is_empty() && second.arrange_channels.is_empty());
+}
+
+#[test]
+fn a_reconnect_brings_chat_in_line_with_discord() {
+    let g = arranged_guild();
+    let chat = talk(&["c_two", "c_one"]);
+    let same = layout_payload(&[("d_one", 0), ("d_two", 1)], false);
+    assert!(
+        planned_on(&g, &chat, &discord("layout-changed", &same))
+            .chat_arrangements
+            .is_empty(),
+        "a layout that moved nothing leaves Chat's order be"
+    );
+    let connected = layout_payload(&[("d_one", 0), ("d_two", 1)], true);
+    assert_eq!(
+        planned_on(&g, &chat, &discord("layout-changed", &connected))
+            .chat_arrangements
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn a_channel_moved_in_chat_moves_in_discord() {
+    let g = arranged_guild();
+    let chat = talk(&["c_two", "c_one"]);
+    let moved = json!({"kind": CHAT_KIND, "did": verb("move-channel"),
+        "item": {"id": "c_two"}});
+    let plan = planned_on(&g, &chat, &moved);
+    assert_eq!(
+        plan.arrange_channels,
+        [json!({"categories": [], "channels": [
+            {"channel": "d_two", "parent": "d_talk", "position": 0},
+            {"channel": "d_one", "parent": "d_talk", "position": 1},
+        ]})]
+    );
+    assert!(plan.chat_arrangements.is_empty());
+    // A change that rearranges nothing does not move Discord's channels.
+    let read = json!({"kind": CHAT_KIND, "did": verb("mark-read"), "item": {"id": "c_two"}});
+    assert!(planned_on(&g, &chat, &read).arrange_channels.is_empty());
 }

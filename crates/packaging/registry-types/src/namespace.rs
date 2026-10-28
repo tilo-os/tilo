@@ -13,7 +13,6 @@
 //!
 //! [`TILO_NAMESPACE`] belongs to Tilo itself.
 
-/// The namespace of Tilo's own apps.
 pub const TILO_NAMESPACE: &str = "so.tilo";
 
 /// Longest package id, in bytes.
@@ -37,13 +36,11 @@ fn labels_valid(name: &str, min_labels: usize) -> bool {
         && name.split('.').all(valid_label)
 }
 
-/// Whether `id` is a syntactically valid package id.
 #[must_use]
 pub fn valid_package_id(id: &str) -> bool {
     labels_valid(id, 3)
 }
 
-/// Whether `namespace` is a syntactically valid namespace.
 #[must_use]
 pub fn valid_namespace(namespace: &str) -> bool {
     labels_valid(namespace, 2)

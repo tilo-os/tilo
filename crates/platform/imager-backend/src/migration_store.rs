@@ -1000,14 +1000,12 @@ mod tests {
         (temp, store, job)
     }
 
-    /// Issue details across attempts, compaction and paging.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn issue_details_and_pages_stay_attempt_scoped_and_bounded() {
-        // Phase `later_attempt_with_same_counts_cannot_inherit_earlier_details`.
         {
             let (_temp, store, job) = fixture();
             let mut earlier = OperationRecord::new(&job);
@@ -1039,7 +1037,6 @@ mod tests {
             );
         }
 
-        // Phase `queued_legacy_compaction_cannot_lose_the_new_detail_reference`.
         {
             let (_temp, store, job) = fixture();
             let store = Arc::new(store);
@@ -1060,7 +1057,6 @@ mod tests {
             assert_eq!(store.issue_page(&saved, 0).unwrap().issues.len(), 32);
         }
 
-        // Phase `saved_issue_pages_are_immutable_across_later_attempts`.
         {
             let (_temp, store, job) = fixture();
             let mut operation = OperationRecord::new(&job);
@@ -1085,7 +1081,6 @@ mod tests {
             );
         }
 
-        // Phase `every_issue_remains_available_in_bounded_pages_after_restart`.
         {
             let (_temp, store, job) = fixture();
             let mut operation = OperationRecord::new(&job);
@@ -1120,7 +1115,6 @@ mod tests {
             assert_eq!(count, 1000);
         }
 
-        // Phase `index_does_not_duplicate_unbounded_verified_paths`.
         {
             let (_temp, store, job) = fixture();
             let mut operation = OperationRecord::new(&job);
@@ -1161,7 +1155,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn store_ownership_is_exclusive_and_released_on_process_death() {
-        // Phase `ownership_releases_after_process_death_without_removing_lock_file`.
         {
             let (temp, store, _job) = fixture();
             let root = store.root().to_owned();
@@ -1198,7 +1191,6 @@ mod tests {
             assert!(MigrationStore::open_at(&root).is_ok());
         }
 
-        // Phase `second_owner_cannot_load_or_normalize_live_operation`.
         {
             let (_temp, store, job) = fixture();
             let mut operation = OperationRecord::new(&job);
@@ -1367,7 +1359,6 @@ mod tests {
             assert_eq!(store.load().unwrap()[0].source().unwrap(), source);
         }
 
-        // Phase `creating_private_state_does_not_chmod_existing_parent`.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

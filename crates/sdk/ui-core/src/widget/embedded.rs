@@ -49,6 +49,9 @@ pub struct Embedded<W: Widget> {
     /// Build-time theme inputs must match the paint-time theme even when the
     /// rectangle and document have not changed (for example, larger text).
     layout_theme: Option<Theme>,
+    /// The owner's viewport as its last draw saw it, in the owner's space:
+    /// what a panel the child opens is kept inside.
+    owner_viewport: Option<Rect>,
 }
 
 impl<W: Widget + 'static> Embedded<W> {
@@ -67,6 +70,7 @@ impl<W: Widget + 'static> Embedded<W> {
             focus_request: false,
             fill: false,
             layout_theme: None,
+            owner_viewport: None,
         }
     }
 
@@ -158,10 +162,14 @@ impl<W: Widget + 'static> Embedded<W> {
         let rebuilt = self.root.is_none()
             || structure_dirty
             || self.layout_theme.as_ref().is_none_or(|laid| laid != theme);
+        // A widget about to be drawn anew is laid out again too: what it
+        // paints (a hovered handle, an open menu) it places while laid out,
+        // and a repaint no longer asks for a measure of its own.
         if !rebuilt
             && let Some((laid, height)) = self.laid
             && laid == rect
             && !self.widget.layout_needs_measure()
+            && !self.widget.needs_redraw()
         {
             return height;
         }
@@ -226,9 +234,28 @@ impl<W: Widget + 'static> Embedded<W> {
     ) {
         let recoloured = self.recoloured(theme);
         let theme = recoloured.as_ref().unwrap_or(theme);
+        let owner = self.child_viewport(presence);
         self.widget
             .draw(scene, transform * self.transform, text, theme, presence);
+        presence.viewport.set(owner);
         self.widget.mark_drawn();
+    }
+
+    /// Note the owner's viewport, and show it to the child in the child's
+    /// own space for the child's draw: a panel the child places (a menu, a
+    /// picker) is kept inside what the owner shows. Returns the owner's, to
+    /// put back after.
+    fn child_viewport(&mut self, presence: &PresenceCtx) -> Option<Rect> {
+        let owner = presence.viewport.get();
+        if owner.is_some() {
+            self.owner_viewport = owner;
+        }
+        if self.transform.determinant().abs() > f64::EPSILON {
+            presence
+                .viewport
+                .set(owner.map(|viewport| self.transform.inverse().transform_rect_bbox(viewport)));
+        }
+        owner
     }
 
     /// Paint what the widget floats over everything (its menus, a link's
@@ -242,13 +269,64 @@ impl<W: Widget + 'static> Embedded<W> {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let recoloured = self.recoloured(theme);
-        let theme = recoloured.as_ref().unwrap_or(theme);
+        // What floats over everything (a menu, a popover) stands on its own
+        // panel in the owner's inks: the words' own colour
+        // ([`Self::set_text_color`]) is for the words, and dark words on a
+        // light slide must never become a dark menu's labels.
+        let owner = self.child_viewport(presence);
+        let placed = self.overlay_transform().unwrap_or(self.transform);
         self.widget
-            .draw_overlay(scene, transform * self.transform, text, theme, presence);
+            .draw_overlay(scene, transform * placed, text, theme, presence);
+        presence.viewport.set(owner);
     }
 
-    /// Route one window event to the widget.
+    /// While the child has a panel open over everything (a menu,
+    /// [`Widget::modal_capture`]), what places the child's space for it: the
+    /// panel stands where the child drawn under [`Self::set_transform`] puts
+    /// its corner, at the owner's own scale, so a menu opened on words drawn
+    /// small on a canvas reads and is hit as a menu anywhere else does; and
+    /// moved as little as keeps it inside the owner's viewport, as a menu
+    /// near a window's edge is.
+    fn overlay_transform(&self) -> Option<Affine> {
+        let panel = self.widget.modal_capture()?;
+        let corner = panel.origin();
+        let offset = (self.transform * corner) - corner;
+        let placed = panel + offset;
+        let inside = |low: f64, high: f64, min: f64, max: f64| {
+            if high - low > max - min || low < min {
+                min - low
+            } else if high > max {
+                max - high
+            } else {
+                0.0
+            }
+        };
+        let nudge = self
+            .owner_viewport
+            .map_or(vello::kurbo::Vec2::ZERO, |viewport| {
+                vello::kurbo::Vec2::new(
+                    inside(placed.x0, placed.x1, viewport.x0, viewport.x1),
+                    inside(placed.y0, placed.y1, viewport.y0, viewport.y1),
+                )
+            });
+        Some(Affine::translate(offset + nudge))
+    }
+
+    /// The panel the child has open over everything, in the owner's space
+    /// ([`Widget::modal_capture`]): while there is one, the owner routes
+    /// every pointer and key event to the child, which takes the panel's.
+    pub fn modal_capture(&self) -> Option<Rect> {
+        let panel = self.widget.modal_capture()?;
+        Some(self.overlay_transform()?.transform_rect_bbox(panel))
+    }
+
+    /// From the child's space to the owner's for pointer input and what is
+    /// drawn over everything: the panel's placement while one is open,
+    /// else the child's transform.
+    fn input_transform(&self) -> Affine {
+        self.overlay_transform().unwrap_or(self.transform)
+    }
+
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -273,13 +351,18 @@ impl<W: Widget + 'static> Embedded<W> {
             WindowEvent::CursorMoved {
                 device_id,
                 position,
-            } if self.transform != Affine::IDENTITY => {
-                let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
-                let local = self.transform.inverse() * logical;
+            } if self.input_transform() != Affine::IDENTITY => {
                 mapped = WindowEvent::CursorMoved {
                     device_id: *device_id,
-                    position: PhysicalPosition::new(local.x * scale_factor, local.y * scale_factor),
+                    position: self.to_child(*position, scale_factor),
                 };
+                &mapped
+            }
+            WindowEvent::Touch(touch) if self.input_transform() != Affine::IDENTITY => {
+                mapped = WindowEvent::Touch(winit::event::Touch {
+                    location: self.to_child(touch.location, scale_factor),
+                    ..*touch
+                });
                 &mapped
             }
             _ => event,
@@ -305,12 +388,126 @@ impl<W: Widget + 'static> Embedded<W> {
         }
     }
 
+    /// A physical position in the owner's space, in the child's.
+    fn to_child(
+        &self,
+        position: PhysicalPosition<f64>,
+        scale_factor: f64,
+    ) -> PhysicalPosition<f64> {
+        let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
+        let local = self.input_transform().inverse() * logical;
+        PhysicalPosition::new(local.x * scale_factor, local.y * scale_factor)
+    }
+
+    /// Write what the child took up in the sync pass or left to do after
+    /// its last event ([`Widget::settle`]): the formatting a keystroke
+    /// closed, a toolbar's change made outside an input event. Call from
+    /// the owner's own `settle`, which the host runs every frame; a child
+    /// that is never settled writes those only with its next event.
+    pub fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, path: &ObjId) {
+        self.widget.settle(edits, path);
+    }
+
+    /// When the child next needs a sync with no input
+    /// ([`Widget::next_wake_deadline`]): a spelling squiggle settling, the
+    /// suggestion for the word under the caret. The owner reports it as its
+    /// own.
+    pub fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        self.widget.next_wake_deadline()
+    }
+
+    /// Whether the child is animating ([`Widget::needs_animation_frame`]).
+    pub fn needs_animation_frame(&self) -> bool {
+        self.widget.needs_animation_frame()
+    }
+
+    /// The pointer shape the child shows at `point`, in the owner's space
+    /// (the text beam over a text box drawn scaled onto a canvas).
+    pub fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.widget.cursor_shape(self.transform.inverse() * point)
+    }
+
+    /// What the child holds for the input method ([`Widget::ime_content`]).
+    pub fn ime_content(&self) -> Option<crate::ime::InputContent> {
+        self.widget.ime_content()
+    }
+
+    /// Whether the child takes line feeds as text ([`Widget::ime_multiline`]).
+    pub fn ime_multiline(&self) -> bool {
+        self.widget.ime_multiline()
+    }
+
     /// Whether the child asked for keyboard focus (a press on a field)
     /// since the last call. The owner takes the host's focus in response
     /// (`*ctx.focus_target = Some(ctx.node_id)`) and keeps routing keys and
     /// the input method to the child.
     pub fn take_focus_request(&mut self) -> bool {
         std::mem::take(&mut self.focus_request)
+    }
+
+    /// The child's accessibility tree in the owner's space, for a canvas
+    /// that draws the child to include among its own nodes: assistive
+    /// technology then reads and edits the child as it would anywhere else.
+    /// The child's own node is given its rectangle, since it has no widget
+    /// of the owner's tree to take one from.
+    pub fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        fn map(node: &mut crate::a11y::AccessNode, transform: Affine) {
+            if let Some(bounds) = node.bounds {
+                node.bounds = Some(transform.transform_rect_bbox(bounds.to_rect()).into());
+            }
+            for child in &mut node.children {
+                map(child, transform);
+            }
+        }
+        let mut node = self.widget.accessibility()?;
+        node.bounds
+            .get_or_insert_with(|| self.widget.get_rect().into());
+        map(&mut node, self.transform);
+        Some(node)
+    }
+
+    /// An assistive technology operates a node of [`Self::accessibility`]:
+    /// `key_path` is relative to the child's own node
+    /// ([`Widget::perform_action`]).
+    pub fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        key_path: &[u64],
+        edits: &mut crate::widget::Edits<'_>,
+        path: &crate::widget::ModelPath,
+    ) -> bool {
+        self.widget.perform_action(action, key_path, edits, path)
+    }
+
+    /// An assistive technology operates a node of [`Self::accessibility`]
+    /// that names its target ([`Widget::perform_semantic_action`]).
+    pub fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        edits: &mut crate::widget::Edits<'_>,
+        path: &crate::widget::ModelPath,
+    ) -> bool {
+        self.widget
+            .perform_semantic_action(target, action, edits, path)
+    }
+
+    /// Where the person is in the child (a caret, a selection), for the
+    /// owner to publish to collaborators as its own
+    /// ([`crate::presence::capability::PublishesPresence`]).
+    pub fn presence_payload(
+        &self,
+    ) -> Option<(
+        crate::presence::PresenceKey,
+        crate::collaboration::PresencePayload,
+    )> {
+        crate::presence::capability::presence_payload(&*self.widget)
+    }
+
+    /// What the person has selected in the child, for asking an agent about
+    /// it ([`crate::presence::capability::PublishesPresence::shared_selection`]).
+    pub fn shared_selection(&self) -> Option<crate::shared_selection::SharedSelection> {
+        crate::shared_selection::selection_of(&*self.widget)
     }
 
     /// Bring the widget up to date with the document.
@@ -370,7 +567,6 @@ mod tests {
         assert!(height > 0.0);
         let drawn = host.rect();
         assert!((drawn.x0 - 60.0).abs() < 1e-9 && (drawn.width() - 200.0).abs() < 1e-9);
-        // A click where the box is drawn lands in it.
         click(
             &mut host,
             &mut crate::widget::Edits::lend(&mut doc),
@@ -386,6 +582,54 @@ mod tests {
         assert!(
             drawn.inflate(1.0, 1.0).contains(caret.center()),
             "{caret:?} within {drawn:?}"
+        );
+    }
+
+    #[test]
+    fn a_menu_opened_on_small_words_near_an_edge_stays_inside_the_owner() {
+        let theme = Theme::dark();
+        let mut text = crate::font_catalog::fixture_renderer();
+        let mut host = Embedded::new(BlockEditor::new().with_wrap_lines(true));
+        host.widget_mut()
+            .present_blocks(&[BlockContent::paragraph("a", "words at the edge")]);
+        // Laid out 400 wide and drawn at half size against the right and
+        // bottom edges of an 800 x 600 owner.
+        host.set_transform(Affine::translate((600.0, 570.0)) * Affine::scale(0.5));
+        host.layout(Rect::new(0.0, 0.0, 400.0, 0.0), &theme, &mut text);
+        let owner = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let presence = PresenceCtx::empty();
+        presence.viewport.set(Some(owner));
+        host.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &presence,
+        );
+        assert_eq!(
+            presence.viewport.get(),
+            Some(owner),
+            "the owner's viewport is put back"
+        );
+        assert!(host.widget_mut().open_text_menu(Point::new(380.0, 10.0)));
+        host.draw_overlay(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &presence,
+        );
+        let menu = host.modal_capture().expect("the menu is open");
+        assert!(
+            menu.x0 >= owner.x0 - 1e-6
+                && menu.x1 <= owner.x1 + 1e-6
+                && menu.y0 >= owner.y0 - 1e-6
+                && menu.y1 <= owner.y1 + 1e-6,
+            "{menu:?} inside {owner:?}"
+        );
+        assert!(
+            menu.width() > 100.0,
+            "drawn at the owner's scale, not the words': {menu:?}"
         );
     }
 

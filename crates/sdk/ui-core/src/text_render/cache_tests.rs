@@ -666,3 +666,35 @@ fn retained_geometry_separates_current_distinction_scope_and_restores_plain_hits
         "leaving the scope restores its original cache hit"
     );
 }
+
+#[test]
+fn a_repeated_clamp_shapes_nothing_again() {
+    let style = TextStyle::new(14.0);
+    let title = "A long video title that wraps over more than two lines in a narrow card";
+    let mut renderer = crate::font_catalog::fixture_renderer();
+    let first = renderer.clamp_to_lines_style(title, 120.0, 2, &style);
+    let shaped = renderer.misses;
+    assert_eq!(
+        renderer.clamp_to_lines_style(title, 120.0, 2, &style),
+        first
+    );
+    assert_eq!(
+        renderer.misses, shaped,
+        "the same clamp is answered from what was measured"
+    );
+    // Another limit or width is its own answer, as a cold renderer cuts it.
+    let mut cold = crate::font_catalog::fixture_renderer();
+    assert_eq!(
+        renderer.clamp_to_lines_style(title, 120.0, 3, &style),
+        cold.clamp_to_lines_style(title, 120.0, 3, &style)
+    );
+    assert_eq!(
+        renderer.clamp_to_lines_style(title, 200.0, 2, &style),
+        cold.clamp_to_lines_style(title, 200.0, 2, &style)
+    );
+    renderer.bump_generation();
+    assert_eq!(
+        renderer.clamp_to_lines_style(title, 120.0, 2, &style),
+        first
+    );
+}

@@ -147,10 +147,6 @@ impl Toolchain {
     /// The environment Cargo needs to compile and link for `triple`: the
     /// NDK's clang as linker and C compiler, and its archiver. A variable the
     /// environment already sets (as the builder image does) is left alone.
-    ///
-    /// # Errors
-    ///
-    /// When no NDK is found and the environment names no linker.
     pub fn cargo_env(&self, triple: &str) -> Result<Vec<(String, OsString)>> {
         let upper = triple.to_ascii_uppercase().replace('-', "_");
         let lower = triple.replace('-', "_");
@@ -440,7 +436,6 @@ impl PackageManager {
         }
     }
 
-    /// The one command that installs `tools`.
     #[must_use]
     pub fn install_command(self, tools: &[SystemTool]) -> String {
         let packages = tools
@@ -692,10 +687,6 @@ pub struct SetupOptions {
 /// Studio default when there is none): the command-line tools, platform-tools,
 /// build-tools, the platform, the NDK, bundletool, and the Rust targets. A
 /// JDK is the one thing it cannot install; the report names the package.
-///
-/// # Errors
-///
-/// When a download or an installer fails.
 pub fn setup(options: SetupOptions) -> Result<DoctorReport> {
     let sdk = sdk_root().or_else(default_sdk_root).ok_or_else(|| {
         anyhow::anyhow!("cannot tell where to put the Android SDK; set $ANDROID_HOME")
@@ -884,9 +875,6 @@ pub struct AndroidMetadata {
 }
 
 impl AndroidMetadata {
-    /// # Errors
-    ///
-    /// When the manifest's id or version has no Android spelling.
     pub fn from_manifest(package: &str, manifest: &tilo_app_package::Manifest) -> Result<Self> {
         let id = &manifest.package.id;
         Ok(Self {
@@ -906,10 +894,6 @@ impl AndroidMetadata {
 
 /// An Android application id for a Tilo package id: at least two
 /// dot-separated parts, each a letter then letters, digits or `_`.
-///
-/// # Errors
-///
-/// When `id` has no such spelling after `-` becomes `_`.
 pub fn application_id(id: &str) -> Result<String> {
     let mapped = id.replace('-', "_");
     let parts: Vec<&str> = mapped.split('.').collect();
@@ -1522,10 +1506,6 @@ fn checkout(app_dir: &Path) -> Result<Checkout> {
 }
 
 /// Build a signed APK (and, when asked, a bundle) of the app at `start`.
-///
-/// # Errors
-///
-/// When preflight, the toolchain, Cargo or an Android build tool fails.
 pub fn build(start: &Path, request: &BuildRequest) -> Result<AndroidBuild> {
     let started = Instant::now();
     let app_dir = super::resolve_app_dir(start)?;
@@ -2084,12 +2064,6 @@ fn set_epoch(dir: &Path) -> Result<()> {
 /// `.tapp` carrying the APK for the registry, all in `dist/`. `--arch` picks
 /// one architecture; without it both are packaged, since the registry lists
 /// one build per architecture and a phone and an emulator want different ones.
-///
-/// # Errors
-///
-/// When the build, signing or packing fails, when an output exists without
-/// `force` (checked for every architecture before anything is built), or when
-/// `--output` names one file for several architectures.
 pub fn package(
     start: &Path,
     request: &PackageRequest,
@@ -2389,10 +2363,6 @@ impl Adb {
     }
 
     /// The device's primary architecture.
-    ///
-    /// # Errors
-    ///
-    /// When the device reports an ABI Tilo does not build for.
     pub fn arch(&self) -> Result<PackageArch> {
         let abi = self.shell(&["getprop", "ro.product.cpu.abi"])?;
         PackageArch::of_android_abi(&abi).ok_or_else(|| {
@@ -2436,10 +2406,6 @@ impl Adb {
     }
 
     /// Start the app's activity, stopping a running copy first.
-    ///
-    /// # Errors
-    ///
-    /// When the activity manager refuses.
     pub fn launch(&self, application_id: &str) -> Result<()> {
         self.stop(application_id);
         let component = format!("{application_id}/{ACTIVITY}");
@@ -2524,10 +2490,6 @@ fn build_for_device(
 
 /// `tilo-app run --platform android`: build a debug APK for the device,
 /// install it, start it and stream its log until it exits.
-///
-/// # Errors
-///
-/// When there is no device, or the build, install or launch fails.
 pub fn run_on_device(start: &Path, request: &DeviceRequest) -> Result<AndroidBuild> {
     let tools = Toolchain::discover();
     let adb = Adb::connect(&tools, request.device.as_deref())?;
@@ -2677,7 +2639,6 @@ mod tests {
         assert!(!fonts.join("NewCM10-Regular.otf").exists());
         assert!(fonts.join("NewCM10-Book.otf").is_file());
         assert!(fonts.join("NewCM08-Book.otf").is_file());
-        // Test fixtures stay out too.
         assert!(!fonts.join("AdwaitaSans-Regular.ttf").exists());
         assert!(fonts.join("TiloSans[wdth,wght].ttf").is_file());
         assert!(fonts.join("LICENSES/GUST-FONT-LICENSE.txt").is_file());
@@ -2956,7 +2917,6 @@ type = "gui"
             "`sudo apt-get install -y zip`"
         );
 
-        // An unknown system is told each family's command.
         let unknown = system_install_hint(None, &[SystemTool::Jdk]);
         for command in [
             "`sudo dnf install -y java-21-openjdk-devel`",

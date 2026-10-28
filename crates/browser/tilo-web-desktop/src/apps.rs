@@ -8,6 +8,7 @@
 /// Register every web-capable application with the page runtime, in
 /// launcher order.
 pub(crate) fn register() {
+    activity_split::register();
     api_tester_split::register();
     calculator_split::register();
     calendar_split::register();
@@ -29,12 +30,14 @@ pub(crate) fn register() {
     passwords_split::register();
     pdf_viewer_split::register();
     photos_split::register();
+    poker_split::register();
     scratchpad_split::register();
     sheets_split::register();
     shortcuts_split::register();
     slides_split::register();
     snippets_split::register();
     speed_test_split::register();
+    tasks_split::register();
     themes_split::register();
     totp_split::register();
     tube_split::register();
@@ -43,6 +46,38 @@ pub(crate) fn register() {
     video_player_split::register();
     weather_split::register();
     word_processor_split::register();
+}
+
+mod activity_split {
+    use std::ffi::c_void;
+
+    use ui::application::ApplicationDefinition;
+    use ui::application::registry::{self, Loading};
+
+    use crate::split::Callback;
+
+    #[link(wasm_import_module = "./__wasm_split.js")]
+    #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
+    unsafe extern "C" {
+        #[link_name = "__wasm_split_load_activity_8cab21a8cb9da4ea_definition"]
+        fn load(callback: Callback, data: *const c_void);
+        #[link_name = "__wasm_split_00___activity___00_import_8cab21a8cb9da4ea_definition"]
+        fn definition() -> *const ApplicationDefinition;
+    }
+
+    #[unsafe(export_name = "__wasm_split_00___activity___00_export_8cab21a8cb9da4ea_definition")]
+    #[allow(improper_ctypes_definitions, reason = "called only from Rust")]
+    extern "C" fn export() -> *const ApplicationDefinition {
+        activity::definition()
+    }
+
+    fn open() -> Loading {
+        Box::pin(crate::split::definition(load, definition))
+    }
+
+    pub(super) fn register() {
+        registry::defer("so.tilo.activity", "Activity", open);
+    }
 }
 
 mod api_tester_split {
@@ -717,6 +752,38 @@ mod photos_split {
     }
 }
 
+mod poker_split {
+    use std::ffi::c_void;
+
+    use ui::application::ApplicationDefinition;
+    use ui::application::registry::{self, Loading};
+
+    use crate::split::Callback;
+
+    #[link(wasm_import_module = "./__wasm_split.js")]
+    #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
+    unsafe extern "C" {
+        #[link_name = "__wasm_split_load_poker_2d70406de37a3068_definition"]
+        fn load(callback: Callback, data: *const c_void);
+        #[link_name = "__wasm_split_00___poker___00_import_2d70406de37a3068_definition"]
+        fn definition() -> *const ApplicationDefinition;
+    }
+
+    #[unsafe(export_name = "__wasm_split_00___poker___00_export_2d70406de37a3068_definition")]
+    #[allow(improper_ctypes_definitions, reason = "called only from Rust")]
+    extern "C" fn export() -> *const ApplicationDefinition {
+        poker::definition()
+    }
+
+    fn open() -> Loading {
+        Box::pin(crate::split::definition(load, definition))
+    }
+
+    pub(super) fn register() {
+        registry::defer("so.tilo.poker", "Poker", open);
+    }
+}
+
 mod scratchpad_split {
     use std::ffi::c_void;
 
@@ -909,6 +976,38 @@ mod speed_test_split {
     }
 }
 
+mod tasks_split {
+    use std::ffi::c_void;
+
+    use ui::application::ApplicationDefinition;
+    use ui::application::registry::{self, Loading};
+
+    use crate::split::Callback;
+
+    #[link(wasm_import_module = "./__wasm_split.js")]
+    #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
+    unsafe extern "C" {
+        #[link_name = "__wasm_split_load_tasks_29464e806c7d8ecb_definition"]
+        fn load(callback: Callback, data: *const c_void);
+        #[link_name = "__wasm_split_00___tasks___00_import_29464e806c7d8ecb_definition"]
+        fn definition() -> *const ApplicationDefinition;
+    }
+
+    #[unsafe(export_name = "__wasm_split_00___tasks___00_export_29464e806c7d8ecb_definition")]
+    #[allow(improper_ctypes_definitions, reason = "called only from Rust")]
+    extern "C" fn export() -> *const ApplicationDefinition {
+        tasks::definition()
+    }
+
+    fn open() -> Loading {
+        Box::pin(crate::split::definition(load, definition))
+    }
+
+    pub(super) fn register() {
+        registry::defer("so.tilo.tasks", "Tasks", open);
+    }
+}
+
 mod themes_split {
     use std::ffi::c_void;
 
@@ -969,7 +1068,7 @@ mod totp_split {
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.totp", "TOTP", open);
+        registry::defer("so.tilo.totp", "Authenticator", open);
     }
 }
 

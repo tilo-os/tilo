@@ -1,0 +1,3 @@
+Panic#2 Part2
+<6>[ 1842.004121] wlan: firmware crashed, recovering
+<1>[ 1843.211880] Unable to handle kernel NULL pointer dereference at virtual address 0000000000000010

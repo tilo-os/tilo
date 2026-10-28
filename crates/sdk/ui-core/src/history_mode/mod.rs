@@ -5,12 +5,32 @@
 //! historical renderer access to a live record, persistence, or dispatch.
 
 mod assets;
+
+/// Moves on whenever something reaches a History surface from outside a
+/// refresh of it: an asset or file reply another thread delivers, a request
+/// to open or close it, a command one of its controls queued, a width that
+/// changes its layout. A frame whose walk for History surfaces found none
+/// needing a refresh walks again only after news (or a change of the tree).
+static NEWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// [`NEWS`] as it stands.
+pub(crate) fn news() -> u64 {
+    NEWS.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Something reached a History surface ([`NEWS`]).
+pub(crate) fn note_news() {
+    NEWS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+}
+
 pub mod capability;
 pub mod checked_files;
+pub mod coverage;
 mod files_session;
 pub mod preview;
 pub mod restore;
 pub use assets::{HistoricalAssetRequest, HistoricalAssetResponse, HistoricalAssetSource};
+use tilo_sort::CompactSort as _;
 pub(crate) mod owner;
 pub mod registration;
 pub use owner::HistoryOwner;
@@ -20,6 +40,7 @@ pub(crate) mod frozen_root;
 pub use frozen_root::FrozenRootPreview;
 pub(crate) mod host;
 pub mod pending_controls;
+pub use coverage::{BinaryVersion, HistoricalGap, HistoricalSupport, TextRendering, TypeHistory};
 pub use preview::*;
 pub use registration::*;
 
@@ -181,6 +202,8 @@ pub struct HistoryController {
     entries: Vec<HistoryEntry>,
     /// The named runs of changes the document carries, as the timeline bands them.
     named: Vec<NamedRange>,
+    /// What members' devices wrote that changes did, by change.
+    descriptions: HashMap<HistoryEntryId, String>,
     projected_heads: Option<Vec<ChangeHash>>,
     observed_live_heads: Vec<ChangeHash>,
     selected: Option<SelectedPreview>,
@@ -258,6 +281,7 @@ impl HistoryController {
             source: source.with_max_entries(HISTORY_PAGE),
             entries: Vec::new(),
             named: Vec::new(),
+            descriptions: HashMap::new(),
             projected_heads: None,
             observed_live_heads: sorted_heads(live_heads),
             selected: None,
@@ -301,6 +325,10 @@ impl HistoryController {
         &self.named
     }
 
+    pub fn descriptions(&self) -> &HashMap<HistoryEntryId, String> {
+        &self.descriptions
+    }
+
     /// Committed activity at `live`'s frontier, in causal order, leaving
     /// this controller's projection and selection where they are.
     #[cfg(any(feature = "native", test))]
@@ -314,19 +342,13 @@ impl HistoryController {
 
     /// Reproject factual activity from committed graph state. An existing
     /// preview stays pinned to its exact bytes and heads.
-    ///
-    /// # Errors
-    ///
-    /// Name authors as the room's roster in `presence` names its
-    /// participants. Returns whether a name changed, so the next refresh
-    /// projects the history again with them.
     pub(crate) fn follow_roster(&mut self, presence: &crate::presence::PresenceCtx) -> bool {
         let mut roster: Vec<(String, String)> = presence
             .names
             .iter()
             .map(|(crate::permissions::UserId(id), name)| (id.clone(), name.clone()))
             .collect();
-        roster.sort();
+        roster.compact_sort();
         if roster == self.roster {
             return false;
         }
@@ -366,6 +388,7 @@ impl HistoryController {
         }
         let entries = self.source.entries(&mut projection);
         let named = read_named_ranges(&projection, self.source.authors());
+        self.descriptions = crate::history_source::descriptions::read_descriptions(&projection);
 
         self.has_earlier = projection.get_changes_meta(&[]).len() > self.window;
         self.projected_heads = Some(live_heads);
@@ -497,12 +520,6 @@ impl HistoryController {
 
     /// Validate a review token without changing the document. The host owns
     /// the separate authority check and the eventual canonical restore write.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`HistoryError`] when live work is uncommitted, the resource
-    /// or selection changed, the live frontier is stale, or the selection is
-    /// an external effect receipt rather than restorable content.
     pub fn validate_restore(
         &self,
         review: &RestoreReview,
@@ -574,7 +591,7 @@ fn committed_clone(live: &AutoCommit) -> AutoCommit {
 }
 
 pub(crate) fn sorted_heads(mut heads: Vec<ChangeHash>) -> Vec<ChangeHash> {
-    heads.sort_unstable();
+    heads.compact_sort();
     heads
 }
 
@@ -586,7 +603,7 @@ fn is_effect_receipt(entry: &HistoryEntry) -> bool {
 mod tests;
 
 #[cfg(test)]
-mod host_tests;
+pub(crate) mod host_tests;
 
 #[cfg(test)]
 pub(crate) mod focus_tests;
@@ -605,5 +622,8 @@ pub(crate) mod routes;
 /// Opaque retained framework surface used only by owning runner traversal.
 /// No construction, document, review or write authority is public on this type.
 #[doc(hidden)]
-pub use host::HistoryHost as FrameworkHistorySurface;
+/// A window's History as the windows that own one hand it to a visitor.
+pub(crate) type FrameworkHistorySurface = dyn host::HistoryChromeApi;
+pub(crate) use host::SIDE_PANEL_WIDTH;
+pub use host::{HISTORY, MakeHistory, builtin_history};
 pub(crate) mod embedded;

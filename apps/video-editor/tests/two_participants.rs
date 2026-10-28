@@ -179,7 +179,6 @@ fn participants_locate_and_track_each_other() {
         let mut ada = Participant::opening();
         let bo = Participant::joining(&ada);
 
-        // They are looking at the same project, or nothing below means anything.
         let shared = clip_ids(&bo);
         assert!(!shared.is_empty(), "the joining participant received clips");
         assert_eq!(
@@ -199,7 +198,6 @@ fn participants_locate_and_track_each_other() {
             "Ada had both a playhead and a selection to send, sent {sent}"
         );
 
-        // Where Bo now believes Ada is.
         let heads = vp::peer_playheads(&room);
         assert_eq!(heads.len(), 1, "exactly one other participant: {heads:?}");
         assert_eq!(heads[0].user, UserId("ada".to_string()));
@@ -460,7 +458,6 @@ fn participants_presence_reaches_the_other_screen() {
         ada.relay(&mut room, "ada");
         assert_eq!(vp::peer_clips(&room).len(), 1, "Ada starts with a clip");
 
-        // Escape clears the selection.
         ada.press("Escape");
         ada.frame(&PresenceCtx::empty());
         ada.relay(&mut room, "ada");

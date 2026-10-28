@@ -1,4 +1,3 @@
-//! Real bundled LevelDB fixtures, including native WAL updates and tombstones.
 use super::*;
 use std::os::unix::fs::symlink;
 

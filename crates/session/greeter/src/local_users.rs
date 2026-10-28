@@ -189,20 +189,18 @@ mod tests {
 
     #[test]
     fn local_user_discovery_selects_only_one_safe_interactive_user() {
-        // Phase `exactly_one_interactive_user_is_selected`.
         {
             let passwd = "root:x:0:0:root:/root:/bin/bash\n\
                           greetd:x:977:977::/var/lib/greetd:/usr/sbin/nologin\n\
-                          quickuser:x:1000:1000:Quinten Quick,,,:/home/quickuser:/bin/bash\n";
+                          tester:x:1000:1000:Ada Quick,,,:/home/tester:/bin/bash\n";
             assert_eq!(
                 select_login_user(passwd, "UID_MIN 1000\nUID_MAX 60000\n", Some(SHELLS)),
                 Some(LoginUser {
-                    username: "quickuser".into(),
-                    display_name: "Quinten Quick".into(),
+                    username: "tester".into(),
+                    display_name: "Ada Quick".into(),
                 })
             );
         }
-        // Phase `zero_or_multiple_users_never_guess`.
         {
             let none = "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1000:1000::/:/sbin/nologin\n";
             assert_eq!(select_login_user(none, "", Some(SHELLS)), None);
@@ -220,7 +218,6 @@ mod tests {
                 "several accounts are listed to choose from, in database order"
             );
         }
-        // Phase `uid_bounds_and_shell_allowlist_are_enforced`.
         {
             let passwd = "service:x:1500:1500::/srv/service:/bin/custom\n\
                           person:x:2000:2000::/home/person:/bin/bash\n";
@@ -230,7 +227,6 @@ mod tests {
                 Some("person".into())
             );
         }
-        // Phase `malformed_or_unsafe_records_fall_back`.
         {
             assert_eq!(select_login_user("broken:record", "", Some(SHELLS)), None);
             assert_eq!(

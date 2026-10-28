@@ -61,9 +61,8 @@ fn private_file(path: &Path, bound: u64) -> io::Result<Vec<u8>> {
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)?;
     let metadata = file.metadata()?;
-    // SAFETY: geteuid reads current process credentials.
     if !metadata.is_file()
-        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.mode() & 0o077 != 0
         || metadata.len() > bound
     {
@@ -259,9 +258,8 @@ impl Pending {
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(&package)?;
         let metadata = file.metadata()?;
-        // SAFETY: geteuid reads current process credentials.
         if !metadata.is_file()
-            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.uid() != rustix::process::geteuid().as_raw()
             || metadata.mode() & 0o077 != 0
             || metadata.len() != self.declaration.sealed_bytes
         {
@@ -359,7 +357,7 @@ impl Pending {
                     .map_err(|_| failure())?;
             }
             Err(error) => return Err(error),
-        };
+        }
         pin.sync_all()
     }
     pub(crate) fn poll(&mut self) -> bool {
@@ -454,14 +452,14 @@ pub(crate) mod tests {
             let bytes = serde_json::to_vec(&settings).unwrap();
             std::fs::write(&path, &bytes).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-            state_bytes += u64::try_from(bytes.len()).unwrap();
+            state_bytes = state_bytes.saturating_add(u64::try_from(bytes.len()).unwrap());
             selected.push(serde_json::json!({
                 "reference":format!("app/{id}/x86_64/stable"),
                 "state_path":relative,
                 "state_sha256":<[u8;32]>::from(Sha256::digest(&bytes)),
             }));
         }
-        let entries = selected.len() + 1;
+        let entries = selected.len().saturating_add(1);
         let metadata = serde_json::to_vec(&serde_json::json!({
             "schema":1,"selected_user_state":selected,
         }))
@@ -477,7 +475,9 @@ pub(crate) mod tests {
             filename: format!("applications-{operation}.sealed"),
             setup_binding: "a".repeat(256),
             sealed_bytes: u64::try_from(ciphertext.len()).unwrap(),
-            plaintext_bytes: u64::try_from(metadata.len()).unwrap() + state_bytes,
+            plaintext_bytes: u64::try_from(metadata.len())
+                .unwrap()
+                .saturating_add(state_bytes),
             entries,
             ciphertext_sha256: Sha256::digest(ciphertext).into(),
             manifest_sha256: Sha256::digest(&metadata).into(),
@@ -515,12 +515,13 @@ pub(crate) mod tests {
         (home, identity, declaration)
     }
     fn wait(pending: &mut Pending) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while pending.busy() {
-            assert!(std::time::Instant::now() < deadline, "worker did not exit");
+        tilo_test_env::wait_until("the worker to exit", || {
+            if !pending.busy() {
+                return true;
+            }
             pending.poll();
-            std::thread::sleep(Duration::from_millis(10));
-        }
+            false
+        });
     }
     #[test]
     fn actual_owned_helper_protocol_gates_completion_and_binds_saved_declaration() {
@@ -559,7 +560,7 @@ pub(crate) mod tests {
         assert!(!reopened.pending());
         let mut changed = declaration.clone();
         changed.manifest_sha256 = [9; 32];
-        assert!(Pending::open(home.path().into(), identity.clone(), changed).is_err());
+        assert!(Pending::open(home.path().into(), identity, changed).is_err());
         let bytes = std::fs::read(root(home.path()).join(&declaration.filename)).unwrap();
         assert_eq!(bytes, b"fixture ciphertext");
         assert_eq!(

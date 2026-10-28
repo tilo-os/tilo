@@ -19,7 +19,7 @@ use super::super::CapnpBrokerState;
 /// another device, not an agent, bot or app, not a Shortcut's step. Only
 /// they reach their other devices, so nobody gains a reach across devices
 /// they lack here.
-fn is_person_here(
+pub(super) fn is_person_here(
     caller: &Caller,
     origin: Option<&super::super::published_invocation::InvocationCaller>,
 ) -> bool {
@@ -83,25 +83,7 @@ impl CapnpBrokerState {
         let checked = own_device::Invocation::from_argument(&request.argument)
             .and_then(|invocation| invocation.check())
             .map_err(abandon)?;
-        // This descriptor describes forwarding, not the target action's contract:
-        // the receiving device resolves and authorizes that action independently.
-        let descriptor = tilo_actions::ActionDescriptor {
-            semantic_identity: None,
-            address: own_device::target().address,
-            resource_kind: own_device::RESOURCE.into(),
-            resource_label: "Device".into(),
-            action_label: "Invoke".into(),
-            description: None,
-            locus: tilo_actions::ExecutionLocus::default(),
-            kind: tilo_actions::OperationKind::Effect,
-            contract: tilo_actions::ActionContract {
-                kind: tilo_actions::ActionKind::Outside,
-                ..Default::default()
-            },
-            input: tilo_actions::InputSpec::None,
-            params: Vec::new(),
-            view: None,
-        };
+        let descriptor = forwarding_descriptor();
         let admitted = self
             .admit_host_action(
                 caller,
@@ -152,6 +134,34 @@ impl CapnpBrokerState {
     }
 }
 
+/// What forwarding an invocation to one of the person's own devices is, as
+/// one descriptor: forwarding, not the target action's contract, which the
+/// receiving device resolves and authorizes independently.
+fn forwarding_descriptor() -> tilo_actions::ActionDescriptor {
+    tilo_actions::ActionDescriptor {
+        semantic_identity: None,
+        address: own_device::target().address,
+        resource_kind: own_device::RESOURCE.into(),
+        resource_label: "Device".into(),
+        action_label: "Invoke".into(),
+        keywords: Vec::new(),
+        icon: None,
+        description: None,
+        locus: tilo_actions::ExecutionLocus::default(),
+        kind: tilo_actions::OperationKind::Effect,
+        contract: tilo_actions::ActionContract {
+            kind: tilo_actions::ActionKind::Outside,
+            ..Default::default()
+        },
+        input: tilo_actions::InputSpec::None,
+        params: Vec::new(),
+        view: None,
+    }
+}
+
+#[cfg(test)]
+mod foreign_ask_tests;
+
 #[cfg(test)]
 mod tests {
     use super::super::super::{BrokerChannels, CapnpBrokerState, FanoutState, PeerPublisher};
@@ -159,8 +169,8 @@ mod tests {
     use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
     use std::sync::{Arc, Mutex};
     use tilo_actions::remote::{
-        ActionHostError, Caller, Completer, InvokeArgument, InvokeRequest, Pending,
-        RemoteActionMessage, own_device, pending,
+        ActionHostError, Caller, Completer, Confirmation, ConfirmationQuestion, InvokeArgument,
+        InvokeRequest, Pending, RemoteActionMessage, own_device, pending,
     };
 
     const SETTINGS: &str = "so.tilo.settings";
@@ -198,13 +208,21 @@ mod tests {
             self.answers.lock().unwrap().push(answer);
             Ok(pending)
         }
+
+        fn ask_person(
+            &self,
+            _: &Caller,
+            _: &ConfirmationQuestion,
+        ) -> Result<Pending<Result<Confirmation, ActionHostError>>, ActionHostError> {
+            Err(ActionHostError::UnknownAction)
+        }
     }
 
     fn broker(network: Arc<Network>) -> (Arc<CapnpBrokerState>, String, String) {
         let owner = hex::encode([41; 32]);
         let mut workspace = Workspace::new(WorkspaceId(9), "Devices");
         workspace.set_owner(owner.clone());
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = CapnpBrokerState::new_configured(
@@ -253,7 +271,7 @@ mod tests {
     ) -> Result<tilo_actions::remote::InvocationReceipt, ActionHostError> {
         state
             .action_invoke(caller, None, None, request)
-            .wait_timeout(std::time::Duration::from_secs(5))
+            .wait_timeout(tilo_test_env::hang_bound())
             .ok()
             .flatten()
             .expect("admission answers at once")
@@ -339,7 +357,6 @@ mod tests {
     #[test]
     fn own_device_rechecks_authority_after_blocked_durable_admission() {
         use std::sync::{atomic::Ordering, mpsc};
-        use std::time::Duration;
         use tilo_actions::InvocationUpdate;
 
         for certified in [false, true] {
@@ -376,7 +393,7 @@ mod tests {
                     .unwrap()
                     .after_admission = Some(Box::new(move || {
                     entered.send(()).unwrap();
-                    resume.recv_timeout(Duration::from_secs(5)).unwrap();
+                    resume.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                 }));
                 let result = std::thread::scope(|scope| {
                     let state = f.state.clone();
@@ -385,7 +402,7 @@ mod tests {
                     let asked = &asked;
                     let worker =
                         scope.spawn(move || state.invoke_own_device(&caller, Some(&origin), asked));
-                    blocked.recv_timeout(Duration::from_secs(5)).unwrap();
+                    blocked.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                     match change {
                         "certificate" => f.authority.revoked.store(true, Ordering::SeqCst),
                         "execution" => f.caller.retire_execution(),

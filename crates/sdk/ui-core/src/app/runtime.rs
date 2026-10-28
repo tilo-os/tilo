@@ -17,6 +17,26 @@ use std::cell::{Cell, RefCell};
 use taffy::{NodeId, TaffyTree};
 use winit::window::CursorIcon;
 
+/// The mapped nodes that take part in history: those inside a bound
+/// component or a legacy tile, and widgets that show or ask for undo or
+/// report an action bracket. Found once per admitted map, so a frame's
+/// history sweep visits them and not every row of a long list.
+#[derive(Default)]
+pub(super) struct HistoryNodes {
+    /// The admission and map size these were found for.
+    pub(super) found_for: Option<(u64, usize)>,
+    pub(super) nodes: Vec<NodeId>,
+    /// Whether any mapped node is outside a bound component: the sweep then
+    /// keeps the transaction boundary such a node's status read made.
+    pub(super) any_unbound: bool,
+}
+
+/// What a placement of every widget saw: where the keyboard focus was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PlacedAll {
+    pub(super) focus: Option<NodeId>,
+}
+
 /// Retained layout and widget lookup state.
 #[cfg_attr(
     not(feature = "native"),
@@ -29,11 +49,27 @@ pub(super) struct LayoutRuntime {
     pub(super) taffy: TaffyTree<()>,
     pub(super) root_node: Option<NodeId>,
     pub(super) node_map: std::collections::HashMap<NodeId, *mut dyn Widget>,
+    /// Which `node_map` pointers were taken from the live tree
+    /// (`app::retained_layout`).
+    pub(super) adopted: crate::retained_widgets::Adopted,
+    /// How many builds' maps were admitted (`App::admit_layout_maps`).
+    pub(super) admissions: u64,
+    /// The mapped nodes the history sweep visits, and the admission and map
+    /// size they were found for (`App::history_sweep_nodes`).
+    pub(super) history_nodes: HistoryNodes,
     pub(super) layout_dirty: bool,
     /// Set when a widget reports `take_structure_dirty()`: without a taffy
     /// rebuild before the next layout pass, runtime-spawned widgets have no
     /// `NodeId` and `apply_layout` skips them.
     pub(super) structure_dirty: bool,
+    /// Set when the root's widgets report a change they carry out in place
+    /// ([`crate::widget::StructureChange::Children`]): the next layout pass
+    /// remounts their children in the retained tree instead of rebuilding
+    /// it, unless something rebuilds it first.
+    pub(super) remount: bool,
+    /// How many times widgets changed the retained tree in place: like
+    /// [`Self::rebuilds`], the widgets compared across a frame changed.
+    pub(super) remounts: u64,
     /// Diffed against `inner_size()` to catch a resize without a `Resized` event.
     pub(super) last_frame_size: Option<winit::dpi::PhysicalSize<u32>>,
     /// Last settled logical content size (the window inside `safe_area`);
@@ -41,6 +77,9 @@ pub(super) struct LayoutRuntime {
     pub(super) last_layout_logical: Option<(f64, f64)>,
     /// System chrome drawn over the window, which content stays clear of.
     pub(super) safe_area: crate::scale::SafeArea,
+    /// The row the runner draws the app's window-bar slots in, outside a
+    /// Tilo session, under the safe area's top (`native_runner::slot_bar`).
+    pub(super) slot_bar_inset: f64,
     /// Where the root is placed: the safe area's top-left corner.
     pub(super) content_origin: vello::kurbo::Point,
     /// How many times the taffy tree was rebuilt: a host comparing two
@@ -55,6 +94,26 @@ pub(super) struct LayoutRuntime {
     /// itself with the last one) was described: that host keeps the frame's
     /// damage instead of repainting whole.
     pub(super) frame_rebuilds_described: bool,
+    /// Where the last rebuild no widget describes was asked for, for a test
+    /// that tells why a frame repainted whole.
+    #[cfg(test)]
+    pub(super) undescribed_by: Option<&'static std::panic::Location<'static>>,
+    /// Frames whose layout failed, skipped, and when that was last logged.
+    pub(super) skipped_frames: crate::widget::SkippedFrames,
+    /// The last placement that placed every widget (`None` before one): a
+    /// focus move since places them all again, so a view revealing the
+    /// focused widget reads where it truly stands.
+    pub(super) placed_all: Option<PlacedAll>,
+    /// The last placement placed only what long collections show
+    /// ([`crate::widget::placing_again`]): a widget far from every view
+    /// stands where an earlier placement put it until the next full one
+    /// (`App::place_all`).
+    pub(super) placed_partly: bool,
+    /// What a host that draws only its frames' damage keeps from frame to
+    /// frame ([`crate::draw_cull`]).
+    pub(super) cull: crate::draw_cull::Culling,
+    /// What the frame's whole-tree walks last read.
+    pub(super) walks: TreeWalks,
 }
 
 impl LayoutRuntime {
@@ -63,23 +122,148 @@ impl LayoutRuntime {
             taffy: TaffyTree::new(),
             root_node: None,
             node_map: std::collections::HashMap::new(),
+            adopted: crate::retained_widgets::Adopted::default(),
+            admissions: 0,
+            history_nodes: HistoryNodes::default(),
             layout_dirty: true,
             structure_dirty: false,
+            remount: false,
+            remounts: 0,
             last_frame_size: None,
             last_layout_logical: None,
             safe_area: crate::scale::SafeArea::default(),
+            slot_bar_inset: 0.0,
             content_origin: vello::kurbo::Point::ORIGIN,
             rebuilds: 0,
             rebuild_described: true,
             frame_rebuilds_described: false,
+            #[cfg(test)]
+            undescribed_by: None,
+            skipped_frames: crate::widget::SkippedFrames::default(),
+            placed_all: None,
+            placed_partly: false,
+            cull: crate::draw_cull::Culling::default(),
+            walks: TreeWalks::default(),
         }
     }
 
     /// Rebuild the tree before the next layout, for a reason no widget
     /// describes: the frame that does it repaints whole.
+    #[track_caller]
     pub(super) fn request_rebuild(&mut self) {
         self.structure_dirty = true;
         self.rebuild_described = false;
+        #[cfg(test)]
+        {
+            self.undescribed_by = Some(std::panic::Location::caller());
+        }
+    }
+}
+
+/// Which retained widgets, declaring what, a frame's whole-tree walks read.
+/// What the widgets declare moves on with the resource generation (an
+/// update, a sync or an input that changed it:
+/// `App::invalidate_widget_resource_cache`), the widgets themselves with a
+/// rebuild or a remount, what the local actor may do with the permission
+/// generation, and what the components in the tree may do with the
+/// revision of the permissions their hosts share with them
+/// ([`crate::permissions::shared_revision`]). Equal generations are the
+/// same tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct TreeGeneration {
+    pub(super) resources: u64,
+    pub(super) rebuilds: u64,
+    pub(super) remounts: u64,
+    pub(super) permissions: u64,
+    pub(super) shared_permissions: u64,
+}
+
+/// What a frame's walks of the whole widget tree last read. A walk whose
+/// inputs are all as it last read them would find what it found then, so
+/// a frame that changed none of them (one only an animation asked for)
+/// skips it. Emptied with the widget resource cache.
+#[derive(Default)]
+pub(super) struct TreeWalks {
+    /// What control availability was last pushed into the tree from.
+    pub(super) availability: Option<AvailabilityWalk>,
+    /// What the document routes were last reconciled against.
+    pub(super) routes: Option<RouteInputs>,
+    /// What the last walk for History surfaces in the tree read and found.
+    pub(super) history: Option<HistoryWalk>,
+}
+
+/// Every input of pushing control availability into the tree.
+#[derive(PartialEq, Eq)]
+pub(super) struct AvailabilityInputs {
+    pub(super) tree: TreeGeneration,
+    pub(super) framework_input: bool,
+    pub(super) history_captures: bool,
+    /// The addresses the window's History door serves.
+    pub(super) history_door: std::collections::HashSet<tilo_actions::ActionAddress>,
+}
+
+/// What pushing control availability into the tree last read and found.
+pub(super) struct AvailabilityWalk {
+    pub(super) inputs: AvailabilityInputs,
+    /// What the action emitters were last refreshed against
+    /// (`ActionRuntime::last_control_availability`) as the walk left it:
+    /// anything that drops it asks for the walk again.
+    pub(super) controls: Option<(super::ResourceCacheKey, u64)>,
+    /// The bound components' resources could not be read: their controls
+    /// are refreshed again on the next frame.
+    pub(super) unread: bool,
+    /// When a bound component's permissions next change with time alone
+    /// (`PermissionContext::next_change_in`): the walk is taken again then,
+    /// and the loop wakes for it.
+    pub(super) changes_at: Option<crate::time::Instant>,
+}
+
+/// Every input of reconciling the document routes with the tree.
+#[derive(PartialEq)]
+pub(super) struct RouteInputs {
+    pub(super) tree: TreeGeneration,
+    pub(super) witness: Option<crate::collaboration::PrimaryRouteWitness>,
+    pub(super) autosave_generation: u64,
+    pub(super) document: (Vec<automerge::ChangeHash>, usize),
+}
+
+/// What the last walk for History surfaces read and found.
+pub(super) struct HistoryWalk {
+    pub(super) tree: TreeGeneration,
+    pub(super) status: Option<crate::widget::WindowStatus>,
+    /// The tree holds History surfaces, which the next walk looks at again
+    /// when anything they read moved since: news reached one
+    /// ([`crate::history_mode::news`]), the document, whether the window is
+    /// narrow, a surface's own refresh came due, or one needed a refresh.
+    pub(super) embedded: bool,
+    /// The window's own History found the root it registered.
+    pub(super) root_valid: bool,
+    /// What the surfaces read, as this walk read it.
+    pub(super) surfaces: HistorySurfaceInputs,
+    /// A surface needed a refresh.
+    pub(super) needed: bool,
+    /// When a surface asks for a refresh on its own, on its clock.
+    pub(super) due: Option<(crate::background::Background, crate::time::Instant)>,
+}
+
+/// What History surfaces read besides the tree and the window's status.
+#[derive(PartialEq)]
+pub(super) struct HistorySurfaceInputs {
+    pub(super) news: u64,
+    pub(super) document: (Vec<automerge::ChangeHash>, usize),
+    pub(super) narrow: bool,
+}
+
+impl HistoryWalk {
+    /// Whether the surfaces this walk found need looking at again.
+    pub(super) fn surfaces_owed(&self, inputs: &HistorySurfaceInputs) -> bool {
+        self.embedded
+            && (self.needed
+                || self.surfaces != *inputs
+                || self
+                    .due
+                    .as_ref()
+                    .is_some_and(|(clock, at)| clock.now() >= *at))
     }
 }
 
@@ -110,6 +294,12 @@ pub(super) struct InputRuntime {
     /// Where the pointer last moved, replayed before a press or release
     /// that follows a rebuild under a still pointer.
     pub(super) pointer_replay: crate::pointer_replay::PointerReplay,
+    /// Where the pointer is, in logical pixels of the app's surface.
+    pub(super) pointer_at: Option<vello::kurbo::Point>,
+    /// Where the person last pressed, while a press (not a key) is the last
+    /// thing they did: what they pressed is in the window there, which is the
+    /// window that asked for whatever the press opens.
+    pub(super) pressed_at: Option<vello::kurbo::Point>,
 }
 
 impl InputRuntime {
@@ -126,6 +316,8 @@ impl InputRuntime {
             tab_order_continues_in_host: false,
             pointer_buttons: 0,
             pointer_replay: crate::pointer_replay::PointerReplay::default(),
+            pointer_at: None,
+            pressed_at: None,
         }
     }
 }
@@ -138,8 +330,14 @@ impl InputRuntime {
 pub(super) struct ActionRuntime {
     pub(super) published_invocations: crate::invocation_scope::PublishedInvocationRuntime,
     pub(super) action_palette: Option<crate::action_palette::ActionPalette>,
+    /// The window the palette was opened from, when the app hosts several
+    /// (the desktop's tiles): the palette centres on it, not on the screen.
+    pub(super) palette_window: Option<vello::kurbo::Rect>,
     /// Stable opener identity, never a node or pointer from the modal's old tree.
     pub(super) ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
+    /// Why invocations the person made this pass did not run, said over the
+    /// window once the pass ends ([`super::App::refuse_visibly`]).
+    pub(super) refusals: Vec<String>,
     /// The control an accessibility action focused while the same action
     /// replaced widgets: focused again once the next layout admits them.
     pub(super) focus_after_rebuild: Option<crate::widget::layout::CompositionFocus>,
@@ -186,6 +384,10 @@ pub(super) struct ActionRuntime {
     /// A handled input left the surface to publish once the sync it asked
     /// for has run: the frame that runs it publishes.
     pub(super) action_surface_owed: bool,
+    /// What the last publication was derived from
+    /// ([`super::model_lifecycle::PublicationStamp`]); `None` when it cannot
+    /// be shown current.
+    pub(super) published_stamp: Option<super::model_lifecycle::PublicationStamp>,
     #[cfg(test)]
     pub(super) action_surface_publication_attempts: usize,
     /// Opaque, revision-bound continuation state for the broker directory.
@@ -202,6 +404,15 @@ pub(super) struct ActionRuntime {
     /// Each edit an effect submitted for its invoker that the host is still
     /// admitting, by broker request, to the effect invocation it continues.
     pub(super) follow_ups: std::collections::HashMap<u64, tilo_actions::InvocationId>,
+    /// Each invocation of another provider's action a control here is bound
+    /// to that the provider is still answering, by broker request.
+    pub(super) hosted_requests: std::collections::HashSet<u64>,
+    /// Resolutions asked for a resource still being read, answered once its
+    /// read lands ([`crate::resources::PublishesResources::resource_pending`]).
+    pub(super) awaited_resolutions: Vec<super::AwaitedResolution>,
+    /// Answers to broker invocations held, by wire id, until what they
+    /// caused in the app has landed ([`crate::wake::WakeHandle::owe`]).
+    pub(super) held_answers: Vec<(u64, tilo_actions::InvocationUpdate)>,
     /// Operations started from this window rather than by the broker.
     pub(super) local_invocations: std::collections::HashMap<
         tilo_actions::InvocationId,
@@ -212,6 +423,12 @@ pub(super) struct ActionRuntime {
     /// Requests to the session action host awaiting their answer, keyed by
     /// the answer they expect, to the local request id they correlate with.
     pub(super) broker_requests: std::collections::HashMap<BrokerReply, u64>,
+    /// Invocations of this app's own actions, in the order they were made,
+    /// waiting for the route to carry the surface that offers them. The host
+    /// resolves an invocation against the surface it last received from this
+    /// connection, so one sent ahead of that surface is refused as unknown.
+    pub(super) held_own_invocations:
+        std::collections::VecDeque<tilo_actions::remote::InvokeRequest>,
     /// Why the session action host last refused an invocation outright, so
     /// a fixture fails on the refusal instead of waiting out what it asked.
     #[cfg(any(test, feature = "test-support"))]
@@ -226,7 +443,6 @@ pub(super) struct ActionRuntime {
 /// Which answer from the session action host a request is waiting for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum BrokerReply {
-    /// The receipt for an invocation.
     Receipt(tilo_actions::InvocationId),
     /// The state of an invocation being observed.
     Update(tilo_actions::InvocationId),
@@ -237,7 +453,9 @@ impl ActionRuntime {
         Self {
             published_invocations: Default::default(),
             action_palette: None,
+            palette_window: None,
             ordinary_palette_return_focus: None,
+            refusals: Vec::new(),
             focus_after_rebuild: None,
             action_registry: tilo_actions::ActionRegistry::new(),
             action_registry_generation: 0,
@@ -264,15 +482,20 @@ impl ActionRuntime {
             last_published_actions: None,
             published_surface: None,
             action_surface_owed: false,
+            published_stamp: None,
             #[cfg(test)]
             action_surface_publication_attempts: 0,
             action_directory_cursors: std::collections::HashMap::new(),
             directed_invocations: std::collections::HashMap::new(),
             acting_for: std::collections::HashMap::new(),
             follow_ups: std::collections::HashMap::new(),
+            hosted_requests: std::collections::HashSet::new(),
+            awaited_resolutions: Vec::new(),
+            held_answers: Vec::new(),
             local_invocations: std::collections::HashMap::new(),
             pending_application_launches: std::collections::HashMap::new(),
             broker_requests: std::collections::HashMap::new(),
+            held_own_invocations: std::collections::VecDeque::new(),
             #[cfg(any(test, feature = "test-support"))]
             refused_broker_receipt: None,
             next_broker_request_id: Some(0),
@@ -286,6 +509,16 @@ impl ActionRuntime {
 pub(super) struct AccessibilityRuntime {
     pub(super) screen_reader: Option<crate::screen_reader::ScreenReader>,
     pub(super) screen_reader_modifier_down: bool,
+    /// Ctrl+Super+Enter and the two-volume-key hold, which turn the screen
+    /// reader on and off (`App::handle_screen_reader_chord`).
+    pub(super) screen_reader_chord: crate::screen_reader_chord::ScreenReaderChord,
+    /// Told the new state after the chord toggled the screen reader; when
+    /// set, it keeps the state instead of the person's settings file.
+    pub(super) on_screen_reader_chord: Option<Box<dyn FnMut(bool)>>,
+    /// The narrator the chord turned off, kept until the reader is turned on
+    /// again: its speech backends cut an utterance off when dropped, and it
+    /// is still saying that the screen reader is off.
+    pub(super) parting_screen_reader: Option<crate::screen_reader::ScreenReader>,
     pub(super) live_region_last: std::collections::HashMap<String, String>,
     pub(super) focus_trap_active: bool,
     pub(super) focus_before_trap: Option<NodeId>,
@@ -300,6 +533,9 @@ pub(super) struct AccessibilityRuntime {
     pub(super) a11y: crate::a11y::A11ySettings,
     pub(super) text_scale: f32,
     pub(super) ui_scale: f32,
+    /// The window's content zoom, multiplied into [`Self::ui_scale`] when
+    /// the theme is built (`crate::content_zoom`).
+    pub(super) zoom: crate::content_zoom::WindowZoom,
     pub(super) semantic_tree: crate::a11y_tree::SemanticTree,
     /// Whether anything [`Self::semantic_tree`] is read from may have
     /// changed since it was last refreshed: the document, a widget, the
@@ -323,6 +559,9 @@ impl AccessibilityRuntime {
         Self {
             screen_reader,
             screen_reader_modifier_down: false,
+            screen_reader_chord: crate::screen_reader_chord::ScreenReaderChord::new(),
+            on_screen_reader_chord: None,
+            parting_screen_reader: None,
             live_region_last: std::collections::HashMap::new(),
             focus_trap_active: false,
             focus_before_trap: None,
@@ -331,6 +570,7 @@ impl AccessibilityRuntime {
             a11y: crate::a11y::A11ySettings::default(),
             text_scale: 1.0,
             ui_scale: 1.0,
+            zoom: crate::content_zoom::WindowZoom::default(),
             semantic_tree: crate::a11y_tree::SemanticTree::new(),
             semantic_tree_stale: true,
             semantic_tree_marks: 0,
@@ -501,6 +741,10 @@ pub(super) struct WindowRuntime {
     /// system was last told.
     pub(super) minimum_width: Option<f64>,
     pub(super) minimum_width_stated: Option<f64>,
+    /// The size the root widget asked for, and the size last stated to the
+    /// window system.
+    pub(super) preferred_size: Option<(f64, f64)>,
+    pub(super) preferred_size_stated: Option<(f64, f64)>,
     pub(super) title: Option<String>,
     pub(super) app_id: Option<String>,
 }
@@ -512,6 +756,8 @@ impl WindowRuntime {
             fullscreen_active: false,
             minimum_width: None,
             minimum_width_stated: None,
+            preferred_size: None,
+            preferred_size_stated: None,
             title: None,
             app_id: None,
         }

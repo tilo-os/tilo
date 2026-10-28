@@ -37,7 +37,6 @@ fn native_focus_and_selection_follow_only_the_semantic_target() {
             app.inspect_node(title, |widget| widget.is_focused())
                 .unwrap()
         );
-        // Plain TextInput moves its selection without implicitly acquiring focus.
         app.dispatch_a11y_action(accesskit::NodeId(u64::from(body) + 1), &selection);
         assert_eq!(app.focused_node, Some(title));
         let root = app.layout.root_node.unwrap();

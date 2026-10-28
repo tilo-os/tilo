@@ -1,0 +1,11 @@
+// The person at the machine may set its time zone without a password: the
+// zone only changes how the time reads, and Settings' "Set automatically"
+// has the session set it to where the device is, with nobody there to type
+// one. Setting the clock itself still asks.
+polkit.addRule(function (action, subject) {
+    if (action.id === "org.freedesktop.timedate1.set-timezone" &&
+        subject.local && subject.active) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

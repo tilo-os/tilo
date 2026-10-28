@@ -60,7 +60,7 @@ raise SystemExit(7)
         self.assertEqual(scenario['interval_us'],16667)
         self.assertEqual(scenario['warmup_steps'],61)
         self.assertEqual(len(scenario['steps']),1261)
-        self.assertEqual(scenario['steps'][0],dict(kind='click',x=80.0,y=48.0))
+        self.assertEqual(scenario['steps'][0],dict(kind='find'),'Find opens the window bar\'s search')
         for i,step in enumerate(scenario['steps'][1:]):
             self.assertEqual(step,dict(kind='character',value='z') if i%2==0 else dict(kind='key',key='backspace'))
 

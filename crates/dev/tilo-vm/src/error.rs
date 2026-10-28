@@ -38,7 +38,7 @@ pub fn no_disk_help(local_build: Option<&str>) -> String {
         ),
     };
     format!(
-        "each architecture's lane of a main \"Release / OS\" run (.forgejo/workflows/build-image.yml) publishes its disk as soon as it passes: wait for the running one, or ask a human to dispatch it   |   for an image that already exists, ask a human to dispatch the \"Release / Dev VM disk\" workflow (.forgejo/workflows/dev-disk.yml)   |   or, if you may dispatch CI yourself: fgj workflow run dev-disk.yml -R tilo/tilo, then fgj run watch   |   or ask a human for a shared VM and use it: tilo-vm vm use <name>   |   {local}"
+        "t publishes main's dev disks, each architecture on its own: t dispatch publish-os-dev-disk-x86_64 --ref main (publish-os-dev-disk-aarch64 for ARM) if you may dispatch t, or ask a human who may   |   or ask a human for a shared VM and use it: tilo-vm vm use <name>   |   {local}"
     )
 }
 
@@ -384,10 +384,10 @@ impl CliError {
                 hint
             }
             Self::RootKeyRefused { install, credentials: true, .. } => format!(
-                "the key goes in at creation as the systemd credential ssh.authorized_keys.root, and this VM did not take it (created before that, or from another disk). Install it once, with the dev account's password from os/account.env (quickuser, tilo): {install}"
+                "the key goes in at creation as the systemd credential ssh.authorized_keys.root, and this VM did not take it (created before that, or from another disk). Install it once, with the dev account's password from os/account.env (tester, tilo): {install}"
             ),
             Self::RootKeyRefused { install, .. } => format!(
-                "this hypervisor has no credential channel, so root's key is installed once after the first boot, with the dev account's password from os/account.env (quickuser, tilo): {install}"
+                "this hypervisor has no credential channel, so root's key is installed once after the first boot, with the dev account's password from os/account.env (tester, tilo): {install}"
             ),
             Self::SudoRefused { vm, ssh, user, .. } => format!(
                 "tilo-vm runs tilo-vmd and its own commands as root, through sudo when it logs in as {user}; allow that once, typing {user}'s password on this terminal: tilo-vm vm add {vm} --ssh {ssh} --grant-sudo   (or log in as root: --ssh root@<host>)"
@@ -709,13 +709,13 @@ mod tests {
             CliError::RootKeyRefused {
                 vm: "dev".into(),
                 key: "/cfg/keys/dev_ed25519".into(),
-                install: "ssh -t quickuser@vm '...'".into(),
+                install: "ssh -t tester@vm '...'".into(),
                 credentials: true,
             },
             CliError::RootKeyRefused {
                 vm: "dev".into(),
                 key: "/cfg/keys/dev_ed25519".into(),
-                install: "ssh -t quickuser@vm '...'".into(),
+                install: "ssh -t tester@vm '...'".into(),
                 credentials: false,
             },
             CliError::SudoRefused {
@@ -1108,17 +1108,8 @@ mod tests {
                 local_build: None,
             }
             .hint();
-            assert!(without.contains("Release / Dev VM disk"), "{without}");
             assert!(
-                without.contains(".forgejo/workflows/build-image.yml"),
-                "{without}"
-            );
-            assert!(
-                without.contains(".forgejo/workflows/dev-disk.yml"),
-                "{without}"
-            );
-            assert!(
-                without.contains("fgj workflow run dev-disk.yml"),
+                without.contains("t dispatch publish-os-dev-disk-x86_64 --ref main"),
                 "{without}"
             );
             assert!(without.contains("tilo-vm vm use <name>"), "{without}");

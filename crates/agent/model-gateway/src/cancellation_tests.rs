@@ -42,6 +42,7 @@ async fn native_stop_retry() {
     ProviderConfig {
         profiles: vec![profile.clone()],
         default_profile: None,
+        ..Default::default()
     }
     .save()
     .unwrap();
@@ -119,7 +120,7 @@ async fn native_stop_retry() {
         drop(transport);
         drop(original);
     };
-    Box::pin(tokio::time::timeout(Duration::from_secs(4), async {
+    Box::pin(tokio::time::timeout(tilo_test_env::hang_bound(), async {
         tokio::join!(gateway, provider, client);
     }))
     .await
@@ -171,7 +172,7 @@ async fn queued_normal_requests_survive_unmatched_cancellation() {
         assert_eq!(outputs[2].output.as_deref(), Some("cancelled:999"));
         assert!(!outputs[3].ok);
     };
-    Box::pin(tokio::time::timeout(Duration::from_secs(2), async {
+    Box::pin(tokio::time::timeout(tilo_test_env::hang_bound(), async {
         tokio::join!(service, client);
     }))
     .await

@@ -1,5 +1,5 @@
-//! Which keyed address hash each guest joined from (7 days) and which
-//! hashes are cooling down after a removal (24 hours), kept on the
+//! Which keyed address hash each guest joined from (7 days), and which
+//! hashes and which people are cooling down after a removal (24 hours), kept on the
 //! persistent volume so a restart lifts neither a cooldown nor an address's
 //! guest join windows.
 
@@ -22,6 +22,11 @@ struct Joined {
 struct Stored {
     joins: BTreeMap<String, Joined>,
     cooldowns: BTreeMap<String, u64>,
+    /// People removed, until when: the door tells them they were removed
+    /// rather than blaming their address. Absent from a ledger written
+    /// before people were kept.
+    #[serde(default)]
+    removed_people: BTreeMap<String, u64>,
 }
 
 pub struct GuestLedger {
@@ -45,6 +50,9 @@ impl GuestLedger {
             .joins
             .retain(|_, joined| now_ms.saturating_sub(joined.at_ms) < REMEMBER_MS);
         self.stored.cooldowns.retain(|_, until| *until > now_ms);
+        self.stored
+            .removed_people
+            .retain(|_, until| *until > now_ms);
     }
 
     /// Replaces the ledger atomically, so a crash mid-write never leaves a
@@ -66,11 +74,16 @@ impl GuestLedger {
         self.save()
     }
 
-    /// A guest was removed or banned: cool down the address hash they
-    /// joined from. True when a cooldown was set.
+    /// A guest was removed or banned: cool the person down, and the address
+    /// hash they joined from. True when the address was known and cooled.
     pub fn removed(&mut self, user_public_key: &str, now_ms: u64) -> Result<bool> {
         self.prune(now_ms);
+        self.stored.removed_people.insert(
+            user_public_key.to_owned(),
+            now_ms.saturating_add(COOLDOWN_MS),
+        );
         let Some(joined) = self.stored.joins.remove(user_public_key) else {
+            self.save()?;
             return Ok(false);
         };
         self.stored
@@ -89,6 +102,14 @@ impl GuestLedger {
             .values()
             .filter(move |joined| joined.at_ms >= since_ms)
             .map(|joined| (joined.ip_hash.as_str(), joined.at_ms))
+    }
+
+    /// Whether the person was removed within the day.
+    pub fn person_removed(&self, user_public_key: &str, now_ms: u64) -> bool {
+        self.stored
+            .removed_people
+            .get(user_public_key)
+            .is_some_and(|until| *until > now_ms)
     }
 
     pub fn cooling_down(&self, ip_hash: &str, now_ms: u64) -> bool {
@@ -114,9 +135,12 @@ mod tests {
         assert!(ledger.removed("aa", 1_000).unwrap());
         assert!(ledger.cooling_down("hash-1", 1_000 + COOLDOWN_MS - 1));
         assert!(!ledger.cooling_down("hash-1", 1_000 + COOLDOWN_MS));
-        // It survives a restart of the service.
+        assert!(ledger.person_removed("aa", 1_000 + COOLDOWN_MS - 1));
+        assert!(!ledger.person_removed("aa", 1_000 + COOLDOWN_MS));
+        assert!(!ledger.person_removed("bb", 2_000));
         let reopened = GuestLedger::open(path).unwrap();
         assert!(reopened.cooling_down("hash-1", 2_000));
+        assert!(reopened.person_removed("aa", 2_000));
     }
 
     #[test]

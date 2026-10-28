@@ -4,11 +4,10 @@ layout import, display arrangement and hotplug."""
 from __future__ import annotations
 
 import json
-import time
 
 from .. import core
 from ..core import CheckFailed, Unobservable, check, expect
-from ..vm import VmError
+from ..vm import VmError, wait_until
 
 AREA = "basics"
 
@@ -26,10 +25,36 @@ def _named(action_id: str, names) -> bool:
     return action_id.rsplit("\x1f", 1)[-1] in names
 
 
+# What a listed action without a contract is taken to be: it declares no availability, so
+# nothing tells a caller it does not work, and it counts as offered.
+UNDECLARED = {"state": "available", "reason": "listed without a contract: no availability declared"}
+
+
+def _availability(action: dict) -> dict:
+    """An action row's declared availability. The listing carries rows without a contract
+    (`contract: null`), and those never say they are unavailable."""
+    return (action.get("contract") or {}).get("availability") or UNDECLARED
+
+
+# The provider of Settings' pages: its `page:<slug>` rows open Settings at that page.
+SETTINGS_PAGES = "settings-pages"
+
+
+def _shows_only(action: dict) -> bool:
+    """Whether a row only changes what is shown, so it is no toggle of the hardware: a view
+    or navigation (`operation_kind` View), an action whose contract only reads, or a row
+    that opens a Settings page (`page:bluetooth`, which launches Settings there and
+    declares no contract)."""
+    if str(action.get("operation_kind", "")).lower() == "view":
+        return True
+    if (action.get("contract") or {}).get("kind") == "read":
+        return True
+    return action.get("provider") == SETTINGS_PAGES and str(action.get("id", "")).startswith("page:")
+
+
 def _offered(ctx, names) -> list:
     """Every published action named one of `names`, with its availability."""
-    return [(a["id"], a["contract"]["availability"]) for a in ctx.vm.actions()
-            if _named(a["id"], names)]
+    return [(a["id"], _availability(a)) for a in ctx.vm.actions() if _named(a["id"], names)]
 
 
 def _action(ctx, query, action_id):
@@ -40,7 +65,7 @@ def _qs_targets(ctx, words):
     ctx.close_overlays()
     ctx.vm.invoke("actions", "quick-settings.open")
     ctx.wait_state(lambda s: core.overlays(s)["quick_settings"], 5, "quick settings open")
-    time.sleep(0.8)
+    ctx.wait_still()
     names = [t["name"] for t in ctx.vm.targets()]
     return [n for n in names if any(w in n.lower() for w in words)]
 
@@ -52,8 +77,8 @@ def _no_hardware_control(ctx, res, kind, query, action_id, args, words):
         raise Unobservable(f"this VM has {kind} hardware; the no-hardware case cannot be observed")
     problems = []
     a = _action(ctx, query, action_id)
-    res.metrics["action_availability"] = a and a["contract"]["availability"]
-    if a and a["contract"]["availability"].get("state") == "available":
+    res.metrics["action_availability"] = a and _availability(a)
+    if a and _availability(a).get("state") == "available":
         try:
             out = ctx.vm.invoke("actions", action_id, args)
             state = out.get("receipt", {}).get("update", {}).get("state")
@@ -103,9 +128,11 @@ def bluetooth(ctx, res):
         raise Unobservable("this VM has a Bluetooth adapter")
     # Settings' radio effects by name (`set-discovering` does not say
     # "bluetooth"), and every other Bluetooth action but the pairing prompts.
-    actions = [(a["id"], a["contract"]["availability"]) for a in ctx.vm.actions()
-               if ("bluetooth" in a["id"] and "pairing" not in a["id"])
-               or _named(a["id"], ("set-bluetooth", "set-discovering", "refresh-bluetooth"))]
+    # Rows that only show something (the Bluetooth settings page) are no toggle.
+    actions = [(a["id"], _availability(a)) for a in ctx.vm.actions()
+               if not _shows_only(a)
+               and (("bluetooth" in a["id"] and "pairing" not in a["id"])
+                    or _named(a["id"], ("set-bluetooth", "set-discovering", "refresh-bluetooth")))]
     res.metrics["actions"] = actions
     targets = _qs_targets(ctx, ("bluetooth",))
     res.metrics["quick_settings_targets"] = targets
@@ -120,14 +147,41 @@ def _settings(ctx) -> dict:
     return json.loads("\n".join(l for l in raw.splitlines() if not l.startswith("receipt:")) or "{}")
 
 
+def seat_keyboard(ctx) -> dict:
+    """The XKB sources the seat keymap is compiled from, as the state dump reports them."""
+    keyboard = (ctx.state().get("chrome") or {}).get("seat_keyboard")
+    if keyboard is None:
+        raise Unobservable("the state dump does not report the seat keyboard's XKB sources "
+                           "(chrome.seat_keyboard), so a layout change cannot be seen arriving")
+    return keyboard
+
+
+def write_input_settings(ctx, doc: dict, back_to: dict | None = None) -> None:
+    """Write `doc` as the session's settings and wait until the seat keymap is compiled
+    from it: from its `input.keyboard_layouts`, or, restoring, back to the `back_to`
+    snapshot of `seat_keyboard`."""
+    if back_to is None:
+        want = list((doc.get("input") or {}).get("keyboard_layouts") or [])
+        reached = lambda k: k.get("sources") == want  # noqa: E731
+        what = f"the seat keyboard on {want}"
+    else:
+        reached = lambda k: k == back_to  # noqa: E731
+        what = f"the seat keyboard back on {back_to.get('sources')}"
+    ctx.vm.write_home_file(".config/tilo/session/settings.json", json.dumps(doc, indent=2).encode())
+    ctx.wait_state(lambda s: reached((s.get("chrome") or {}).get("seat_keyboard") or {}), 10, what)
+
+
+def search_query(ctx) -> str:
+    return (ctx.state()["chrome"].get("palette") or {}).get("query") or ""
+
+
 def _typed_in_search(ctx, key: str) -> str:
     """The text a physical key press puts into the search field (read back from state-dump)."""
     ctx.close_overlays()
     ctx.vm.key("super+space")
     ctx.wait_state(lambda s: (s["chrome"].get("palette") or {}).get("visible"), 5, "search open")
     ctx.vm.key(key)
-    ctx.settle(0.8)
-    query = (ctx.state()["chrome"].get("palette") or {}).get("query") or ""
+    query = wait_until(lambda: search_query(ctx), 3, 0.2) or ""
     ctx.close_overlays()
     return query
 
@@ -137,12 +191,12 @@ def keyboard_layout(ctx, res):
     ctx.reset()
     doc = _settings(ctx)
     saved = dict(doc.get("input") or {})
+    keyboard = seat_keyboard(ctx)
     res.metrics["us_y"] = _typed_in_search(ctx, "y")
     doc.setdefault("input", {}).update(keyboard_layout="de:nodeadkeys",
                                        keyboard_layouts=["de:nodeadkeys"], compose_key="ralt")
-    ctx.vm.write_home_file(".config/tilo/session/settings.json", json.dumps(doc, indent=2).encode())
-    time.sleep(2.5)
     try:
+        write_input_settings(ctx, doc)
         # The physical Y key is `z` on a German layout; a US one types `y`.
         typed = _typed_in_search(ctx, "y")
         res.metrics["de_y"] = typed
@@ -150,8 +204,7 @@ def keyboard_layout(ctx, res):
     finally:
         doc = _settings(ctx)
         doc["input"] = saved
-        ctx.vm.write_home_file(".config/tilo/session/settings.json", json.dumps(doc, indent=2).encode())
-        time.sleep(2.5)
+        write_input_settings(ctx, doc, back_to=keyboard)
     expect(res.metrics["us_y"] == "y", f"with the default layout the Y key typed {res.metrics['us_y']!r}")
     expect(typed == "z", f"with de:nodeadkeys the physical Y key typed {typed!r}, not 'z'")
 

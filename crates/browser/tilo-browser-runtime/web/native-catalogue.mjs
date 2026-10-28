@@ -5,9 +5,11 @@
  * `ban`, `unban` on the room's governance resource, provider
  * `tilo.workspace`): they become the peer's `/rooms` requests
  * (`membership()`, see `membership.mjs`), which the host decides by the
- * room's policy. The answer is the invocation's receipt. It may also ask
- * the room's host for a record resource's `share-link` (`peer.actions`).
- * The page itself takes the same membership actions through the mount's
+ * room's policy. The answer is the invocation's receipt. Any other action
+ * the room's host runs (a room record's, `record:<app>:<record>`, or the
+ * room's own, `workspace:<room>`) goes to the host over the peer's carrier
+ * (`peer.actions`), and the host admits it by the person's own standing:
+ * the page grants nothing itself. The page itself takes the same membership actions through the mount's
  * door (`invokeRoomMembership`). */
 const GOVERNANCE_PROVIDER = 'tilo.workspace';
 const MEMBERSHIP = {'remove-member': 'remove', ban: 'ban', unban: 'unban'};
@@ -15,7 +17,11 @@ const MEMBERSHIP = {'remove-member': 'remove', ban: 'ban', unban: 'unban'};
 const membershipVerb = action => (typeof action === 'string' && Object.hasOwn(MEMBERSHIP, action) ? MEMBERSHIP[action] : undefined);
 /** Taking someone out of the room: run only on the person's confirmation. */
 const DESTRUCTIVE = new Set(['remove-member', 'ban']);
-const SHARE_LINK = 'share-link';
+/** Whether the room's host runs `provider`'s actions (beside its governance). */
+/** The person's answer to an action that asks first, as `peer.actions` takes it. */
+const confirmed = confirmation => (confirmation === 'Confirmed' ? {kind: 'confirm'}
+  : typeof confirmation?.Phrase === 'string' ? {kind: 'phrase', phrase: confirmation.Phrase} : null);
+const hostRuns = provider => typeof provider === 'string' && (provider.startsWith('record:') || provider.startsWith('workspace:'));
 
 /** The id of `room`'s governance resource (`room_governance_resource`). */
 export const roomGovernanceResource = room => `workspace.permissions:${room}`;
@@ -93,10 +99,10 @@ export function createNativeCatalogueBridge({take, deliver, actions, membership 
   const answer = (correlation, result) => send({CatalogueResponse:{correlation, result}});
   const receipt = (invocation, status) => send({Receipt:{invocation, status}});
   const rejected = (invocation, reason) => receipt(invocation, {Rejected:{error:{Unavailable:{reason}}}});
-  // `share-link` reads where a resource is shown and grants nothing, so an
-  // app may ask the room's host for it as the person (a chat message
-  // carrying a page). The host decides by the person's own grant.
-  function shareLink(invocation, target, argument) {
+  // The room's host runs the action as itself for the person it verified
+  // on the carrier, deciding by their own standing (a chat message asking
+  // for a page's `share-link`, a record's action from another app).
+  function hostRun({invocation, target, argument, confirmation}) {
     const connection = actions();
     if (!connection || invoking.size >= 4) {
       rejected(invocation, 'Room actions unavailable or busy');
@@ -107,7 +113,7 @@ export function createNativeCatalogueBridge({take, deliver, actions, membership 
     invoking.add(key);
     Promise.resolve().then(async () => {
       const ticket = connection.invoke({provider: target.provider, address: target.address}, argument ?? 'None',
-        {invocation: typeof invocation === 'string' ? invocation : undefined});
+        {invocation: typeof invocation === 'string' ? invocation : undefined, confirmation: confirmed(confirmation)});
       let entry = await ticket.done;
       for (let polls = 0; entry && !entry.terminal && polls < 20; polls++) entry = await ticket.status();
       const update = entry?.update;
@@ -119,13 +125,13 @@ export function createNativeCatalogueBridge({take, deliver, actions, membership 
   }
   function invoke(request) {
     const {invocation, target, argument} = request;
-    if (target?.address?.action === SHARE_LINK && target.provider?.startsWith('record:')) {
-      shareLink(invocation, target, argument);
+    if (hostRuns(target?.provider)) {
+      hostRun(request);
       return;
     }
     const verb = membershipVerb(target?.address?.action);
     if (target?.provider !== GOVERNANCE_PROVIDER || !verb) {
-      rejected(invocation, 'Only the room\'s membership actions run from an app here');
+      rejected(invocation, 'Only the room\'s host runs another app\'s actions here');
       return;
     }
     const person = argument?.Json?.person;

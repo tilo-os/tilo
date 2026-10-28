@@ -565,10 +565,6 @@ impl FileHistoryStore {
     }
 
     /// Write deferred mutations durably now.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the log write or its sync fails.
     pub fn flush(&self) -> Result<(), HistoryError> {
         let mut state = self.state.lock().map_err(|_| HistoryError::StatePoisoned)?;
         let result = self.write_lines(&mut state, None);
@@ -708,11 +704,6 @@ impl FileHistoryStore {
     /// Open and fully validate a durable history store: the snapshot (with
     /// recovery only from a retained generation that passes the same
     /// validation), then every log entry.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for I/O, malformed history, invalid graph/conflicts, a
-    /// damaged log, or damaged state without a valid retained generation.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, HistoryError> {
         let path = path.into();
         let mut state = match crate::durable_backup::read_primary(&path)? {
@@ -771,11 +762,6 @@ impl FileHistoryStore {
 
     /// Append one immutable version. Returns `false` for an exact replay and
     /// rejects an id reused with different bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when validation, ancestry, locking, or persistence
-    /// fails, or the version id is already bound to different content.
     pub fn append(&self, version: FileVersionV1) -> Result<bool, HistoryError> {
         let versions = [version];
         let appended = self.append_batch(&versions)?;
@@ -791,22 +777,12 @@ impl FileHistoryStore {
     /// are written as one durable log entry, and only then are they published
     /// in memory. A failure therefore exposes neither half of a multi-record
     /// history transition. Exact replays are reported as `false` per item.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid versions, missing/disconnected parents,
-    /// id collisions, poisoned state, or persistence failure.
     pub fn append_batch(&self, versions: &[FileVersionV1]) -> Result<Vec<bool>, HistoryError> {
         self.append_lease()?.append_batch(versions)
     }
 
     /// Persist an open or already-resolved conflict. Conflict records are
     /// immutable except for the explicit [`resolve`](Self::resolve) transition.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid/unknown conflict, an id collision,
-    /// poisoned state, or persistence failure.
     pub fn record_conflict(&self, conflict: FileConflictV1) -> Result<bool, HistoryError> {
         self.append_lease()?.record_conflict(conflict)
     }
@@ -814,11 +790,6 @@ impl FileHistoryStore {
     /// Resolve an open conflict. The result must already be a durable
     /// `ConflictResolution` version and its actor must match the resolution.
     /// Repeating the same resolution is idempotent; a different one is refused.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for unknown or invalid conflict/version state,
-    /// mismatched resolution provenance/actor/time, poisoned state, or I/O.
     pub fn resolve(
         &self,
         record_id: FileRecordId,
@@ -1100,7 +1071,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn history_appends_and_batches_are_exact_atomic_and_durable() {
-        // Phase `deferred_appends_are_one_log_line_written_when_the_batch_finishes`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("history.json");
@@ -1153,7 +1123,6 @@ mod tests {
                     .is_none()
             );
         }
-        // Phase `append_branches_and_restart_preserve_exact_heads`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("history.json");
@@ -1175,7 +1144,6 @@ mod tests {
             expected_heads.sort();
             assert_eq!(snapshot.heads, expected_heads);
         }
-        // Phase `missing_parent_and_global_id_collision_leave_disk_unchanged`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("history.json");
@@ -1197,7 +1165,6 @@ mod tests {
             ));
             assert_eq!(disk_state(&path), before);
         }
-        // Phase `multi_record_batch_is_all_or_nothing_and_survives_restart`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("history.json");
@@ -1262,7 +1229,6 @@ mod tests {
                 vec![destination_root, destination_delete]
             );
         }
-        // Phase `conflict_resolution_is_first_class_idempotent_and_durable`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("history.json");
@@ -1327,14 +1293,12 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn history_logs_read_legacy_and_fail_closed_on_damage() {
-        // Phase `a_whole_file_history_from_earlier_releases_is_read_and_extended`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("history.json");
             let record = FileRecordId::new();
             let root = version(record, vec![], FileProvenance::Create, 1);
             let edit = version(record, vec![root.id], FileProvenance::Edit, 2);
-            // Earlier releases rewrote this one document on every append.
             let mut legacy = HistoryState::default();
             let candidate = stage_versions(&legacy, &[root.clone(), edit.clone()]).unwrap();
             install_versions(&mut legacy, candidate);
@@ -1372,7 +1336,6 @@ mod tests {
                 vec![root, edit, next]
             );
         }
-        // Phase `a_torn_final_log_line_is_dropped_and_damage_before_it_fails_closed`.
         {
             use std::io::Write as _;
 
@@ -1419,7 +1382,6 @@ mod tests {
             ));
             assert_eq!(std::fs::read(&log).unwrap(), damaged, "evidence kept");
         }
-        // Phase `corrupt_heads_are_rejected_on_open`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("history.json");
@@ -1439,7 +1401,6 @@ mod tests {
                 Err(HistoryError::InvalidHeads)
             ));
         }
-        // Phase `xattr_projection_is_bounded_recent_and_round_trips`.
         {
             let dir = tempfile::tempdir().unwrap();
             let store = FileHistoryStore::open(dir.path().join("history.json")).unwrap();

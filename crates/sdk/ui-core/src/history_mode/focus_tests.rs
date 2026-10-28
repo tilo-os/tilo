@@ -1,11 +1,11 @@
-use super::{FrameworkHistorySurface, capability::FrameworkHistoryTopology};
+use super::{FrameworkHistorySurface, capability::FrameworkHistoryTopology, host::HistoryHost};
 use crate::widget::{Button, Column, Widget};
 use std::{cell::Cell, collections::HashMap, rc::Rc};
 use taffy::{NodeId, TaffyTree};
 
 /// Real History composition with a probe at its lifecycle enumeration boundary.
 pub(crate) struct FocusHistoryRoot {
-    pub(crate) history: FrameworkHistorySurface,
+    pub(crate) history: HistoryHost,
     pub(crate) live: Column,
     visits: Rc<Cell<usize>>,
 }
@@ -17,8 +17,7 @@ impl FocusHistoryRoot {
             live = live.push(Box::new(Button::new(&format!("row-{row}"), "Row")));
         }
         let visits = Rc::new(Cell::new(0));
-        let history =
-            FrameworkHistorySurface::new(super::host_tests::registration(), &state.doc).unwrap();
+        let history = HistoryHost::new(super::host_tests::registration(), &state.doc).unwrap();
         (
             Self {
                 history,

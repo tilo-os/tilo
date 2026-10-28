@@ -399,7 +399,6 @@ mod tests {
         assert_eq!(normalize_exif_orientation(source.clone(), Some(0)), source);
         assert_eq!(normalize_exif_orientation(source.clone(), Some(9)), source);
 
-        // The decoder reads every valid orientation from real JPEG bytes ...
         for orientation in 1..=8 {
             let jpeg = jpeg_with_orientation(orientation);
             assert_eq!(encoded_exif_orientation(&jpeg), Some(orientation));

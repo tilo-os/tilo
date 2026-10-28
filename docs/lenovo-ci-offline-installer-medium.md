@@ -1,6 +1,7 @@
 # CI signed-target offline installer media
 
-The normal Lenovo OS is built and signed by the `Release / OS` workflow. The
+The normal Lenovo OS is a signed Lenovo board release, which t does not build
+yet (`os-board-lenovo-83ed` builds the unsigned dev board image). The
 `Release / imager` workflow can wrap **that exact signed ARM64 child manifest**
 in a bootable installer medium for native ARM64 CI and Windows ARM64 WHPX tests.
 The Windows laptop does not build or upload an OS image.
@@ -48,7 +49,7 @@ Only after the respective cycle passes does it upload
 SHA-256 files. These offline jobs skip the separate raw imager bundle and its
 large qcow2-to-raw conversion. On Windows, verify the archive SHA-256,
 decompress once, verify
-the qcow2 SHA-256, then pass the qcow2 to `tilo-vm scenario install --medium`.
+the qcow2 SHA-256, then pass the qcow2 to `tilo device scenario install --medium`.
 Before using it as an install proof source, verify the accompanying
 `*.whpx-source.json` with `cosign verify-blob --offline --key keys/cosign.pub
 --bundle <json>.bundle --signature <json>.sig <json>`. This CI KMS signature

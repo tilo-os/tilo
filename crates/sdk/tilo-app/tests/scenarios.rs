@@ -300,7 +300,6 @@ fn scenarios_stage_the_resource_then_the_views_deterministically() {
         STAGED.with(|staged| staged.borrow_mut().clear());
         let mut app = TestApp::<PlaylistApp>::capture(Some("details")).unwrap();
         let frame = shown(&mut app);
-        // Two versions from the fixture, then the scenario's two actions.
         assert!(frame.contains("4 songs"), "{frame}");
         assert!(frame.contains("Selected: Freddie Freeloader"), "{frame}");
         assert!(frame.contains("Details open"), "{frame}");
@@ -312,7 +311,6 @@ fn scenarios_stage_the_resource_then_the_views_deterministically() {
         );
         // View state is not resource state: only the actions were written.
         assert_eq!(app.state().songs.len(), 4);
-        // The staged edits are saved by the time the frame is taken.
         assert!(frame.contains("Record Saved"), "{frame}");
     }
     // phase: a_plain_capture_stages_with_no_scenario
@@ -398,7 +396,6 @@ fn a_scenario_is_drawn_at_its_own_viewport_after_layout() {
     for (scenario, viewport) in [(Some("narrow"), [360, 720]), (None, [1024, 720])] {
         let mut app = TestApp::<PlaylistApp>::capture(scenario).unwrap();
         assert_eq!(app.harness().inspection().viewport, viewport);
-        // The surface staged once it had been laid out.
         let frame = shown(&mut app);
         let staged_width = frame
             .split(" px")

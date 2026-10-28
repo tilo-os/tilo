@@ -4,7 +4,6 @@
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use rand_core::Rng;
 
-/// `N` random bytes.
 pub(crate) fn bytes<const N: usize>() -> [u8; N] {
     let mut value = [0; N];
     UnwrapErr(SysRng).fill_bytes(&mut value);

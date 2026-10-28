@@ -75,6 +75,10 @@ impl Custody {
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
+            // A browser page keeps the key in the browser's own storage.
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            Self::System => "This browser's secret storage",
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             Self::System => "System keyring",
             // The vault is sealed, but its key sits unsealed beside it.
             Self::LocalFile => "Key file on this device, no keyring",
@@ -190,10 +194,6 @@ impl VaultFormat {
 
     /// Browser custody with acknowledged creation, serialized across tabs.
     /// The legacy format's key name and encoding remain authoritative.
-    ///
-    /// # Errors
-    /// Returns an error if key generation or browser custody fails, or if the
-    /// stored key is missing, malformed or unavailable for an existing vault.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     pub async fn load_or_create_page_key(&self, vault_exists: bool) -> Result<VaultKey, String> {
         let candidate = if vault_exists {

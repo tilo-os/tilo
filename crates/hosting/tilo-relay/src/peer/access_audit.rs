@@ -56,7 +56,6 @@ impl AccessAudit {
         }
     }
 
-    /// When the next audit is due.
     pub(super) const fn due(&self) -> Instant {
         self.due
     }
@@ -153,7 +152,6 @@ mod tests {
         audit.cover(&[7]);
         assert_eq!(audit.due(), Instant::now() + AUDIT_BACKSTOP);
 
-        // Ten idle seconds later nothing is due yet.
         tokio::time::advance(Duration::from_secs(10)).await;
         audit.cover(&[7]);
         assert!(audit.due() > Instant::now());

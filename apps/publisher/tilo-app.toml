@@ -16,7 +16,7 @@ x86_64 = "v3"
 aarch64 = "aarch64"
 
 [capabilities]
-optional = ["clipboard", "secrets", "threads"]
+optional = ["files.save", "clipboard", "secrets", "threads"]
 
 [resources]
 kinds = ["publisher.profile"]
@@ -38,8 +38,8 @@ hosts = ["apps.tilo.so"]
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@2"
-tilo-fs = "optional@2"
+collab = "optional@10"
+tilo-fs = "optional@10"
 
 [entrypoint]
 bin = "bin/publisher"

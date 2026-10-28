@@ -26,9 +26,6 @@ pub use app_cli::config::{
 /// The person's app repositories, through the app host. Without one (a
 /// test, a development run outside a session) the configuration directory
 /// the environment names is read, and nothing is ever written there.
-///
-/// # Errors
-/// Returns why the app host could not report them.
 pub fn repositories(
     host: Option<&app_host::client::BlockingClient>,
 ) -> Result<RegistriesFile, String> {
@@ -60,7 +57,6 @@ mod tests {
         env
     }
 
-    /// Registry config path, seeding and round-trips.
     #[test]
     fn registry_config_shares_the_desktop_path_seeds_and_round_trips() {
         // Case `the_store_reads_the_same_registry_file_the_desktop_does`.
@@ -90,7 +86,6 @@ mod tests {
             assert!(!td.path().join("registries.toml").exists());
         }
 
-        // Case `seed_written_when_missing`.
         {
             let td = TempDir::new().unwrap();
             let _g = scoped_dir(&td);
@@ -100,7 +95,6 @@ mod tests {
             assert!(td.path().join("registries.toml").exists());
         }
 
-        // Case `hand_edited_registries_roundtrip`.
         {
             let td = TempDir::new().unwrap();
             let _g = scoped_dir(&td);

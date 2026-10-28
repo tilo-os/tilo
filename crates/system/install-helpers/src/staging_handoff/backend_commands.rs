@@ -547,7 +547,6 @@ fn done(result: Result<()>) -> Outcome {
     result.map_or_else(failed, |()| ok(String::new()))
 }
 
-/// Runs one of [`COMMANDS`] with its arguments.
 #[must_use]
 pub fn run(command: &str, args: &[OsString]) -> Outcome {
     let words: Vec<&str> = args

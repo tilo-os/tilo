@@ -92,12 +92,15 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && dnf clean all
 
 # Copy binaries + systemd unit + tmpfiles snippet.
-COPY --from=builder /out/tilo-relay /usr/bin/tilo-relay
-COPY --from=builder /out/tilo-relay-admin /usr/bin/tilo-relay-admin
-COPY --from=builder /out/tilo-enroll /usr/bin/tilo-enroll
+COPY --from=builder /out/tilo-relay /usr/libexec/tilo/tilo-relay
+COPY --from=builder /out/tilo-relay-admin /usr/libexec/tilo/tilo-relay-admin
+COPY --from=builder /out/tilo-enroll /usr/libexec/tilo/tilo-enroll
 COPY --from=builder /out/tilo-home-peer-control /usr/libexec/tilo-home-peer-control
 COPY --from=builder /out/fs /usr/bin/fs
-RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enroll /usr/bin/fs /usr/libexec/tilo-home-peer-control
+RUN chmod 0755 /usr/libexec/tilo/tilo-relay /usr/libexec/tilo/tilo-relay-admin /usr/libexec/tilo/tilo-enroll /usr/bin/fs /usr/libexec/tilo-home-peer-control \
+    && for name in tilo-relay tilo-relay-admin tilo-enroll; do \
+         ln -s ../libexec/tilo/"$name" /usr/bin/"$name"; \
+       done
 
 COPY os/usr/lib/systemd/system/tilo-relay.service /usr/lib/systemd/system/tilo-relay.service
 COPY os/usr/lib/systemd/system/tilo-fs-replica.service /usr/lib/systemd/system/tilo-fs-replica.service

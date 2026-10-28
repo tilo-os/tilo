@@ -13,9 +13,6 @@ use tilo_vm_protocol::valid_package_name;
 
 /// The argv that installs `packages`, given which of the paths it asks
 /// about exist.
-///
-/// # Errors
-/// A package name that is not one, or no package manager this knows.
 pub fn install_argv(
     packages: &[String],
     exists: impl Fn(&Path) -> bool,

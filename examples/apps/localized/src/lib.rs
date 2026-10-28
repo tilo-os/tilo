@@ -85,14 +85,20 @@ impl ResourceApp for App {
         let reader = cx
             .input(p.reader.clone())
             .with_id("reader-input")
-            .with_placeholder("localized-reader-placeholder");
+            .with_placeholder(crate::locales::keys::LOCALIZED_READER_PLACEHOLDER);
         let name = cx.value_at(&p.reader);
         let books = cx.value_at(&p.books);
-        let add = cx.button("localized-add", Shelf::ADD_BOOK.invoke());
-        let remove = cx.button("localized-remove", Shelf::REMOVE_BOOK.invoke());
+        let add = cx.button(
+            crate::locales::keys::LOCALIZED_ADD,
+            Shelf::ADD_BOOK.invoke(),
+        );
+        let remove = cx.button(
+            crate::locales::keys::LOCALIZED_REMOVE,
+            Shelf::REMOVE_BOOK.invoke(),
+        );
         Box::new(ui::column![
             Text::new("localized-title").with_role(TextRole::Title),
-            labeled_field("localized-reader-label", reader),
+            labeled_field(crate::locales::keys::LOCALIZED_READER_LABEL, reader),
             ModelView::from_state(&name, |name| greeting(name)),
             ModelView::from_state(&books, |books| book_count(*books)),
             ui::row![remove, add],

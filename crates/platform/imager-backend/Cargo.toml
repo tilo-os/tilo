@@ -35,6 +35,10 @@ tilo-test-env = { path = "../../dev/test-env", optional = true }
 reqwest = { workspace = true, features = ["blocking"] }
 tilo-net = { workspace = true, features = ["blocking"] }
 tilo-seal = { path = "../../system/tilo-seal" }
+tilo-handoff = { path = "../tilo-handoff" }
+tilo-rollback = { path = "../../system/tilo-rollback" }
+tilo-crypto = { path = "../../system/tilo-crypto", features = ["pcr-prediction"] }
+getrandom.workspace = true
 tilo-ntfs-protocol = { path = "../../session/tilo-ntfs-protocol" }
 tempfile.workspace = true
 base64.workspace = true
@@ -50,6 +54,9 @@ crc32fast.workspace = true
 cap-fs-ext = "3.4.6"
 cap-primitives = "3.4.6"
 url.workspace = true
+mail-parser = "0.11.4"
+mime_guess.workspace = true
+fnv.workspace = true
 cloud-source-dav = { path = "../../system/cloud-source-dav" }
 tilo-dav = { path = "../../system/tilo-dav" }
 serde.workspace = true

@@ -59,10 +59,6 @@ thread_local! {
 /// `body` must leave nothing half-updated that outlives it, or whoever
 /// reads that state afterwards must tolerate it (poisoned locks read as
 /// unavailable, a dropped channel as closed).
-///
-/// # Errors
-///
-/// The panic payload when `body` panicked.
 pub fn isolate<R>(body: impl FnOnce() -> R) -> std::thread::Result<R> {
     struct Entered;
     impl Drop for Entered {

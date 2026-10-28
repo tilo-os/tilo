@@ -2,7 +2,10 @@
 use std::{
     io::Read as _,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use tilo_content::{ContentBackend, DirBackend};
 
@@ -14,6 +17,9 @@ const MAX_HISTORY_BLOCK: usize = 3 * 1024 * 1024;
 pub struct HistoryContent {
     backend: Arc<dyn ContentBackend>,
     root: PathBuf,
+    /// Whether the root and its entry in its parent have been flushed since
+    /// this store was opened.
+    root_durable: AtomicBool,
 }
 impl HistoryContent {
     /// Use the existing content implementation beside the actual state file.
@@ -26,6 +32,7 @@ impl HistoryContent {
         Self {
             backend: Arc::new(DirBackend::new(root.clone())),
             root,
+            root_durable: AtomicBool::new(false),
         }
     }
     /// Retain a block durably, before publishing its root.
@@ -37,11 +44,19 @@ impl HistoryContent {
             return Err("native history block capacity exceeded".into());
         }
         let hash = *blake3::hash(bytes).as_bytes();
+        let address = blake3::Hash::from_bytes(hash).to_hex().to_string();
+        let shard = self
+            .root
+            .join(address.get(..2).ok_or("invalid content address")?);
+        let path = shard.join(&address);
+        let present = path.is_file();
+        // The durable backend flushes a block it writes, then the shard
+        // holding its new name, and the root when it creates that shard.
         let stored = self
             .backend
             .put(&mut &*bytes, "application/vnd.tilo.owner-history+json")
             .map_err(|e| e.to_string())?;
-        if stored.hash != blake3::Hash::from_bytes(hash).to_hex().as_str()
+        if stored.hash != address
             || stored.len != u64::try_from(bytes.len()).map_err(|e| e.to_string())?
         {
             return Err("native history backend returned another block".into());
@@ -49,24 +64,27 @@ impl HistoryContent {
         if self.read(hash)? != bytes {
             return Err("retained native history content differs from its input".into());
         }
-        let address = blake3::Hash::from_bytes(hash).to_hex().to_string();
-        let shard = self
-            .root
-            .join(address.get(..2).ok_or("invalid content address")?);
-        // DirBackend verifies/streams the bytes; this owner additionally needs
-        // durable names, including new shard/root directory entries, before its
-        // state-file root can be acknowledged. Idempotent puts take this same barrier.
-        std::fs::File::open(shard.join(&address))
-            .and_then(|file| file.sync_all())
-            .map_err(|e| e.to_string())?;
-        for directory in [
-            shard.as_path(),
-            self.root.as_path(),
-            self.root
-                .parent()
-                .ok_or("history content parent is absent")?,
-        ] {
-            tilo_files::native::atomic::sync_directory(directory).map_err(|e| e.to_string())?;
+        // A block already here returns without that barrier: whoever wrote
+        // it may have stopped before it was durable.
+        if present {
+            std::fs::File::open(&path)
+                .and_then(|file| file.sync_all())
+                .map_err(|e| e.to_string())?;
+            tilo_files::native::atomic::sync_directory(&shard).map_err(|e| e.to_string())?;
+        }
+        // The backend never makes the root's own name durable, nor the names
+        // of shards an earlier process created and stopped before flushing.
+        // Once per store, before its first root is acknowledged, covers both.
+        if !self.root_durable.load(Ordering::Acquire) {
+            for directory in [
+                self.root.as_path(),
+                self.root
+                    .parent()
+                    .ok_or("history content parent is absent")?,
+            ] {
+                tilo_files::native::atomic::sync_directory(directory).map_err(|e| e.to_string())?;
+            }
+            self.root_durable.store(true, Ordering::Release);
         }
         Ok(hash)
     }
@@ -116,6 +134,7 @@ mod tests {
                 },
             )),
             root,
+            root_durable: AtomicBool::new(false),
         };
         let accepted = content.put(b"first");
         assert!(accepted.is_err());

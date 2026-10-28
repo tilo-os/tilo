@@ -120,7 +120,6 @@ mod tests {
             let heads_before = doc.get_heads();
             let _ = drain_writes(&write_rx); // ignore anything queued during seeding
 
-            // Press 'a' through the production keyboard path.
             send(&mut widget, &mut doc, &char_key("a"));
             doc.commit();
 
@@ -278,7 +277,6 @@ mod tests {
                 "`{id}` is unavailable once the process's input failed: {unavailable:?}"
             );
         }
-        // Moving the session elsewhere is what an ended session is for.
         assert!(
             !unavailable
                 .iter()

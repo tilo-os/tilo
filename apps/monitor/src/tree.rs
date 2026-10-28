@@ -37,7 +37,6 @@ pub enum SumMode {
 pub struct ProcNode {
     pub proc: ProcessInfo,
     pub children: Vec<usize>,
-    /// Own CPU% + the CPU% of every descendant.
     pub cpu_subtree: f32,
     /// Own memory + the memory of every descendant.
     pub mem_subtree: u64,
@@ -462,7 +461,6 @@ mod tests {
 
     #[test]
     fn forest_build_promotes_boundaries_keeps_orphans_and_survives_cycles() {
-        // Phase `forest_roots_and_orphans`.
         {
             // pid 1 is the init boundary, so its child is promoted to a top-level
             // root rather than nested under init; pid 99 points at a missing parent
@@ -487,7 +485,6 @@ mod tests {
             assert!(init.children.is_empty(), "init does not nest the world");
         }
 
-        // Phase `systemd_user_is_also_a_boundary`.
         {
             // A per-session `systemd --user` (name "systemd", not pid 1) must also
             // be a boundary so the user's whole session doesn't collapse under it.
@@ -511,7 +508,6 @@ mod tests {
             assert_eq!(shell.children.len(), 1, "editor stays under the shell");
         }
 
-        // Phase `cycle_in_ppid_does_not_hang`.
         {
             // Two processes that claim each other as parent — a corrupted reading.
             // build()/roll_up() must terminate and keep both.
@@ -525,7 +521,6 @@ mod tests {
 
     #[test]
     fn subtree_sums_drive_collapsed_rows_per_sum_mode() {
-        // Phase `subtree_sum_rolls_up_every_descendant`.
         {
             let f = Forest::build(&discord_tree());
             // discord (idx 0) subtree = 2 + 40 + 18 + 5 = 65 CPU.
@@ -538,7 +533,6 @@ mod tests {
             assert!((renderer.cpu_subtree - 45.0).abs() < 1e-3);
         }
 
-        // Phase `collapsed_parent_shows_summed_total_in_sum_mode`.
         {
             let f = Forest::build(&discord_tree());
             let expanded = HashSet::new(); // all collapsed
@@ -553,7 +547,6 @@ mod tests {
             assert!(rows[0].has_children && !rows[0].expanded);
         }
 
-        // Phase `per_process_mode_shows_own_usage_even_collapsed`.
         {
             let f = Forest::build(&discord_tree());
             let expanded = HashSet::new();
@@ -565,7 +558,6 @@ mod tests {
             );
         }
 
-        // Phase `summed_collapsed_total_changes_vs_per_process`.
         {
             // The headline assertion behind the toggle: the parent's displayed
             // CPU differs between the two modes (sum 65 vs own 2).
@@ -582,7 +574,6 @@ mod tests {
 
     #[test]
     fn flatten_expands_filters_with_ancestors_and_prunes_kernel_nodes() {
-        // Phase `expanding_reveals_children_with_their_own_usage`.
         {
             let f = Forest::build(&discord_tree());
             let mut expanded = HashSet::new();
@@ -600,7 +591,6 @@ mod tests {
             assert!((gpu.cpu - 18.0).abs() < 1e-3);
         }
 
-        // Phase `filter_keeps_match_and_ancestors_and_forces_open`.
         {
             let f = Forest::build(&discord_tree());
             let expanded = HashSet::new(); // nothing user-expanded
@@ -617,7 +607,6 @@ mod tests {
             );
         }
 
-        // Phase `kernel_pref_prunes_kernel_nodes`.
         {
             let mut procs = discord_tree();
             let mut kthread = p(50, None, "kworker/0", 1.0, 0);

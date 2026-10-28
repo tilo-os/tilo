@@ -51,11 +51,6 @@ pub trait AudioRuntimeControl: Send + Sync {
     fn capabilities(&self) -> RuntimeCapabilities;
 
     /// Set `sink_name`'s base volume and left/right balance.
-    ///
-    /// # Errors
-    ///
-    /// Returns a diagnostic message if the underlying volume-control command
-    /// is unavailable or rejects the sink name.
     fn set_balance(&self, sink_name: &str, base_volume: f32, balance: f32) -> Result<(), String>;
 
     /// Remap `sink_name` to a virtual mono-mix device and make it the

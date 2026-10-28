@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 # Published: the SDK's platform layer (tools/sdk/publish_check.py).
 publish = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
 description = "The current process and, later, child processes: one API on Linux, macOS and the web, where there are none."
@@ -17,12 +17,20 @@ native-editor = ["dep:runtime-portal"]
 # Independent jobs (`job`): a child process in a cgroup of its own below its
 # app's, through the session's app spawner.
 jobs = ["dep:runtime-portal"]
+# The host inputs' native fallback (`environment::process_environment`): what
+# a launcher passes through the process environment.
+native = ["dep:hex"]
 
 [dependencies]
+# The host inputs (`environment`): the message locale.
+unic-langid.workspace = true
+hex = { workspace = true, optional = true }
 runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", default-features = false, optional = true }
 tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 
 [target.'cfg(unix)'.dependencies]
+# Reading the login shell's PATH, bounded in time and size.
+bounded-command = { version = "0.1.0", path = "../../system/bounded-command" }
 # The rendezvous lock and the socket wait.
 tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
 libc.workspace = true
@@ -36,3 +44,4 @@ workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dev-dependencies]
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }

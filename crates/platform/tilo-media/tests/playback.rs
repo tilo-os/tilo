@@ -49,6 +49,26 @@ mod real {
         seen
     }
 
+    /// Pump until `done` holds of every distinct frame timestamp seen and the
+    /// engine, returning those timestamps.
+    fn pump_until(
+        e: &mut MediaEngine,
+        what: &str,
+        mut done: impl FnMut(&[u64], &MediaEngine) -> bool,
+    ) -> Vec<u64> {
+        let mut seen: Vec<u64> = Vec::new();
+        tilo_test_env::wait_until(what, || {
+            e.poll();
+            if let Some(f) = e.latest()
+                && seen.last() != Some(&f.pts_ms)
+            {
+                seen.push(f.pts_ms);
+            }
+            done(&seen, e)
+        });
+        seen
+    }
+
     #[test]
     fn playback_decodes_a_continuous_run_of_frames_rather_than_one_per_seek() {
         let mut e = engine();
@@ -57,24 +77,20 @@ mod real {
         e.play();
         assert!(e.is_playing());
 
-        let seen = pump(&mut e, Duration::from_millis(1_200));
+        // Fifteen pictures with nothing asked for after `play()`: the old
+        // seek-per-frame behaviour produced one picture per request, so it
+        // would stop at the first.
+        let seen = pump_until(
+            &mut e,
+            "fifteen pictures of continuous decode",
+            |seen, _| seen.len() >= 15,
+        );
         println!("decoder: {}", e.hw_report().describe());
         println!(
-            "{} distinct frames in 1.2s, first {:?} last {:?}",
+            "{} distinct frames, first {:?} last {:?}",
             seen.len(),
             seen.first(),
             seen.last()
-        );
-
-        // At 30fps, a second of real playback is ~30 pictures. Requiring well
-        // over a handful is what distinguishes continuous decode from the old
-        // seek-per-frame behaviour, which produced one picture per request.
-        assert!(
-            seen.len() >= 15,
-            "only {} frames arrived in 1.2s of playback; the pipeline is not \
-             decoding continuously. Decoder: {}",
-            seen.len(),
-            e.hw_report().describe()
         );
         // Timestamps must advance monotonically from where playback began.
         assert!(
@@ -95,21 +111,18 @@ mod real {
         let before = e.position_ms();
         e.play();
 
+        // The playhead moves (not a stalled counter)...
         let wall_start = Instant::now();
-        pump(&mut e, Duration::from_millis(1_000));
+        pump_until(&mut e, "the playhead to advance half a second", |_, e| {
+            e.position_ms().saturating_sub(before) >= 500
+        });
         let elapsed = u64::try_from(wall_start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let advanced = e.position_ms().saturating_sub(before);
         e.pause();
 
         println!("wall {elapsed}ms, playhead advanced {advanced}ms");
-        // A pipeline-clock-driven playhead tracks wall time. Generous bounds:
-        // this asserts "real time, not a stalled or free-running counter",
-        // not stopwatch precision on a loaded machine.
-        assert!(
-            advanced > elapsed / 3,
-            "the playhead advanced {advanced}ms over {elapsed}ms of playback — \
-             it is barely moving, so playback is not clock-driven"
-        );
+        // ...and no faster than the media clock: a pipeline clock runs at
+        // wall time, and a loaded machine can only make the wall time longer.
         assert!(
             advanced < elapsed * 3,
             "the playhead advanced {advanced}ms over {elapsed}ms — it is running \
@@ -122,7 +135,10 @@ mod real {
         let mut e = engine();
         let _ = decode_frame_at(&mut e, 5_000, "settle");
         e.play();
-        pump(&mut e, Duration::from_millis(400));
+        let started = e.position_ms();
+        pump_until(&mut e, "the playhead to advance", |_, e| {
+            e.position_ms() > started
+        });
         e.pause();
         assert!(!e.is_playing());
 
@@ -136,7 +152,9 @@ mod real {
         );
 
         e.play();
-        pump(&mut e, Duration::from_millis(400));
+        pump_until(&mut e, "the resumed playhead to advance", |_, e| {
+            e.position_ms() > held
+        });
         let resumed = e.position_ms();
         e.pause();
         assert!(

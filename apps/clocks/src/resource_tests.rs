@@ -469,3 +469,41 @@ fn history_says_what_each_clock_did() {
         ]
     );
 }
+
+#[test]
+fn editing_an_alarm_keeps_when_it_was_turned_on_and_its_repeat_days() {
+    let mut device = replica();
+    device
+        .apply(Clocks::ADD_ALARM.with((
+            "Wake up".into(),
+            7,
+            30,
+            vec![WeekdayKey::Mon, WeekdayKey::Fri],
+        )))
+        .unwrap();
+    let id = only_id(&device.state().unwrap().alarms);
+    device.set_now_ms(T0 + 120_000);
+    device
+        .apply(Clocks::EDIT_ALARM.with((id.clone(), "Gym".into(), 8, 0, vec![WeekdayKey::Tue])))
+        .unwrap();
+    let alarm = device.state().unwrap().alarms.get(&id).cloned().unwrap();
+    assert_eq!(alarm.label, "Gym");
+    assert_eq!((alarm.hour, alarm.minute), (8, 0));
+    assert_eq!(alarm.weekdays(), [WeekdayKey::Tue].into_iter().collect());
+    assert_eq!(
+        alarm.enabled_at_ms, T0,
+        "an edit adjusts the alarm rather than recreating it"
+    );
+    assert!(alarm.enabled);
+    assert!(
+        device
+            .apply(Clocks::EDIT_ALARM.with((
+                Id::from_raw("missing"),
+                "Nowhere".into(),
+                9,
+                0,
+                Vec::new(),
+            )))
+            .is_err()
+    );
+}

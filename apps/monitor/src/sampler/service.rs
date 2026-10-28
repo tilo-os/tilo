@@ -134,11 +134,15 @@ impl Sampler {
             // A sample, or paused: nothing is subscribed, nothing changes.
             return false;
         }
+        let interval = self.interval_ms;
         let Some(live) = self.live() else {
             return unavailable(model);
         };
         if live.subscription.refusal().is_some() {
             return refused(model);
+        }
+        if let Some(interval) = interval {
+            model.metrics.sample_interval_ms = interval;
         }
         match live.subscription.take() {
             Some(snapshot) => {
@@ -162,6 +166,10 @@ impl Sampler {
             self.interval_ms = Some(tilo_system_info::protocol::MAX_INTERVAL_MS);
         }
         self.live = None;
+        let interval = self.interval_ms;
+        if let Some(interval) = interval {
+            model.metrics.sample_interval_ms = interval;
+        }
         let changed = match self.live() {
             None => unavailable(model),
             Some(live) => match live.subscription.wait() {
@@ -232,6 +240,7 @@ fn refused(model: &mut MonitorModel) -> bool {
 pub(crate) fn fold(snapshot: &Snapshot, model: &mut MonitorModel) {
     if let Some(system) = &snapshot.system {
         let m = &mut model.metrics;
+        m.sampled_at = Some(ui::time::wall());
         m.cores = system.cpu.as_ref().map_or_else(
             || vec![0.0; system.host.logical_cpus as usize],
             |cpu| cpu.per_core.clone(),

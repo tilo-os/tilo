@@ -98,7 +98,6 @@ impl FileSig {
 pub(crate) struct Probes {
     /// Whole-file hashes of an item already in the store.
     pub(crate) verifications: AtomicUsize,
-    /// Full directory scans of the store.
     pub(crate) scans: AtomicUsize,
     /// Directory flushes.
     pub(crate) dir_syncs: AtomicUsize,

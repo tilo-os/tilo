@@ -107,11 +107,6 @@ impl StatePeer {
     /// Allocating legacy data projection, with no resource/owner qualification:
     /// the reference the bounded native projection is checked against.
     /// Host then device are supplied by the parent's authenticated source.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`PeerDeliveryPolicyError`] if a party is not current or a route read check
-    /// fails.
     pub fn delivery_policy_unqualified(
         &self,
         workspace: u64,

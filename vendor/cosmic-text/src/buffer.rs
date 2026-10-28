@@ -239,6 +239,46 @@ impl<'b> LayoutRunIter<'b> {
             line_top: 0.0,
         }
     }
+
+    /// Tilo: move on to the first run of logical line `line`, leaving the
+    /// iterator as calling [`Iterator::next`] past every run before it would,
+    /// without building those runs. A query about one paragraph of a long
+    /// text starts there instead of building a run for every row above it.
+    #[must_use]
+    pub fn skip_to_line(mut self, line: usize) -> Self {
+        while self.line_i < line {
+            let Some(buffer_line) = self.lines.get(self.line_i) else {
+                break;
+            };
+            // `next` ends the runs at a line not yet laid out.
+            if buffer_line.shape_opt().is_none() {
+                break;
+            }
+            let Some(layout) = buffer_line.layout_opt() else {
+                break;
+            };
+            while let Some(layout_line) = layout.get(self.layout_i) {
+                let line_height = layout_line.line_height_opt.unwrap_or(self.line_height);
+                if let Some(height) = self.height_opt {
+                    // `next` ends the runs at the first row below the
+                    // height: leave that row for it.
+                    let line_top = self.line_top - self.scroll;
+                    let glyph_height = layout_line.max_ascent + layout_line.max_descent;
+                    let centering_offset = (line_height - glyph_height) / 2.0;
+                    let line_y = line_top + centering_offset + layout_line.max_ascent;
+                    if line_y - layout_line.max_ascent > height {
+                        return self;
+                    }
+                }
+                self.layout_i += 1;
+                self.total_height += line_height;
+                self.line_top += line_height;
+            }
+            self.line_i += 1;
+            self.layout_i = 0;
+        }
+        self
+    }
 }
 
 impl<'b> Iterator for LayoutRunIter<'b> {

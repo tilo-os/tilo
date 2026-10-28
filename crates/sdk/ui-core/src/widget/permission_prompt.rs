@@ -100,7 +100,17 @@ pub struct PermissionPrompt {
     focused_choice: Option<PromptChoice>,
     has_keyboard_focus: bool,
     local_input: Option<LocalInputPrompt>,
+    /// The choices offered, in order, under their own words, when the
+    /// request is not the usual capability one ([`Self::with_choices`]).
+    own_choices: Option<OwnChoices>,
     icon: Option<crate::icons::Icon>,
+}
+
+/// A request's own subset of the four choices and what each is called.
+#[derive(Clone, Debug)]
+struct OwnChoices {
+    visible: Vec<PromptChoice>,
+    labels: Vec<String>,
 }
 
 /// Local input consent and controls preserve the editable field's keyboard owner.
@@ -128,8 +138,21 @@ impl PermissionPrompt {
             focused_choice: None,
             has_keyboard_focus: false,
             local_input: None,
+            own_choices: None,
             icon: None,
         }
+    }
+
+    /// Offer only `choices`, in that order, under their own labels — for a
+    /// request whose answers are not "once / this session / always", such as
+    /// "this tab / always in this workspace / don't allow". `Always` stays
+    /// the owner's alone.
+    #[must_use]
+    pub fn with_choices(mut self, choices: Vec<(PromptChoice, String)>) -> Self {
+        let (visible, labels) = choices.into_iter().unzip();
+        self.own_choices = Some(OwnChoices { visible, labels });
+        self.apply_layout_helper();
+        self
     }
 
     /// Two one-shot choices for a trusted local input surface. The translated
@@ -156,6 +179,9 @@ impl PermissionPrompt {
     }
 
     fn visible_choices(&self) -> &[PromptChoice] {
+        if let Some(own) = &self.own_choices {
+            return &own.visible;
+        }
         if let Some(local) = &self.local_input {
             if local.labels[0] == local.labels[1] {
                 return &[PromptChoice::Deny];
@@ -167,6 +193,15 @@ impl PermissionPrompt {
     }
 
     fn button_label(&self, choice: PromptChoice) -> String {
+        if let Some(own) = &self.own_choices
+            && let Some(label) = own
+                .visible
+                .iter()
+                .position(|offered| *offered == choice)
+                .and_then(|at| own.labels.get(at))
+        {
+            return label.clone();
+        }
         if let Some(local) = &self.local_input {
             match choice {
                 PromptChoice::Allow => return crate::i18n!(local.labels[0]),
@@ -247,6 +282,25 @@ impl PermissionPrompt {
         self.session_rect = Rect::new(session_x0, by, session_x1, by1);
         self.always_rect = Rect::new(always_x0, by, always_x1, by1);
         self.deny_rect = Rect::new(deny_x0, by, deny_x1, by1);
+        if let Some(own) = &self.own_choices {
+            // The offered choices fill the slots from the right, in order;
+            // the others take no space and no clicks.
+            let slots = [deny_x0, always_x0, session_x0, allow_x0];
+            let mut rects = [Rect::ZERO; 4];
+            for (slot, choice) in slots.iter().zip(own.visible.iter().rev()) {
+                let rect = Rect::new(*slot, by, *slot + BUTTON_WIDTH, by1);
+                if let Some(target) = rects.get_mut(Self::slot_of(*choice)) {
+                    *target = rect;
+                }
+            }
+            [
+                self.allow_rect,
+                self.session_rect,
+                self.always_rect,
+                self.deny_rect,
+            ] = rects;
+            return;
+        }
         if self.local_input.is_some() {
             self.allow_rect = Rect::new(always_x0, by, always_x1, by1);
             self.session_rect = Rect::ZERO;
@@ -254,6 +308,16 @@ impl PermissionPrompt {
             if !self.visible_choices().contains(&PromptChoice::Allow) {
                 self.allow_rect = Rect::ZERO;
             }
+        }
+    }
+
+    /// The index of `choice` among [`CHOICES`].
+    fn slot_of(choice: PromptChoice) -> usize {
+        match choice {
+            PromptChoice::Allow => 0,
+            PromptChoice::Session => 1,
+            PromptChoice::Always => 2,
+            PromptChoice::Deny => 3,
         }
     }
 
@@ -570,13 +634,21 @@ impl Widget for PermissionPrompt {
                 &cap_style,
             );
 
+            // The first choice offered is the primary (accent) one, unless
+            // refusing is all there is.
+            let primary = self
+                .visible_choices()
+                .first()
+                .copied()
+                .filter(|choice| *choice != PromptChoice::Deny);
             let buttons = [
-                (self.allow_rect, PromptChoice::Allow, true), // primary (accent)
-                (self.session_rect, PromptChoice::Session, false),
-                (self.always_rect, PromptChoice::Always, false),
-                (self.deny_rect, PromptChoice::Deny, false),
+                (self.allow_rect, PromptChoice::Allow),
+                (self.session_rect, PromptChoice::Session),
+                (self.always_rect, PromptChoice::Always),
+                (self.deny_rect, PromptChoice::Deny),
             ];
-            for (i, (rect, choice, is_primary)) in buttons.iter().enumerate() {
+            for (i, (rect, choice)) in buttons.iter().enumerate() {
+                let is_primary = primary == Some(*choice);
                 let is_disabled = matches!(choice, PromptChoice::Always) && !self.is_owner;
                 let is_hover = self.hover_idx.is_some_and(|h| usize::from(h) == i) && !is_disabled;
                 let is_focused = self.has_keyboard_focus && self.focused_choice == Some(*choice);
@@ -593,7 +665,7 @@ impl Widget for PermissionPrompt {
                     ButtonVisualState {
                         hover: is_hover,
                         disabled: is_disabled,
-                        primary: *is_primary,
+                        primary: is_primary,
                         focused: is_focused,
                     },
                 );
@@ -921,7 +993,6 @@ mod tests {
 
     #[test]
     fn permission_dialog_semantics_focus_and_owner_only_always() {
-        // Case `accessibility_reports_modal_dialog_with_request_name`.
         {
             use crate::a11y::Role;
             let p = PermissionPrompt::new("org.gnome.gedit".into(), "Camera access".into(), true);
@@ -939,7 +1010,6 @@ mod tests {
             assert_eq!(node.children[3].name.as_deref(), Some("Deny"));
         }
 
-        // Case `non_owner_prompt_exposes_always_as_disabled_and_traps_focus`.
         {
             let p = prompt_at(false);
             let node = Widget::accessibility(&p).expect("prompt is semantic");
@@ -950,7 +1020,6 @@ mod tests {
             assert_eq!(p.synthetic_accessibility_rect(&[3]), Some(p.deny_rect()));
         }
 
-        // Case `keyboard_focus_defaults_to_deny_and_at_can_activate_an_exact_choice`.
         {
             let mut p = prompt_at(false);
             Widget::set_focus(&mut p, true);
@@ -992,7 +1061,6 @@ mod tests {
             assert_eq!(p.pending_choice, None);
         }
 
-        // Case `build_layout_emits_fixed_height_node`.
         {
             // The overlay-host depends on this being exactly `PROMPT_HEIGHT` so
             // the strip's content shifts down by the right amount.
@@ -1030,9 +1098,48 @@ mod tests {
         p
     }
 
+    /// A request with its own answers offers exactly those, under its own
+    /// words: the missing choice takes no space and no clicks, and the
+    /// owner-only choice stays the owner's.
+    #[test]
+    fn a_prompt_offers_only_its_own_choices_under_its_own_words() {
+        let offered = |is_owner| {
+            let mut p =
+                PermissionPrompt::new("Terminal".into(), "Control the desktop".into(), is_owner)
+                    .with_choices(vec![
+                        (PromptChoice::Session, "This tab".into()),
+                        (PromptChoice::Always, "Always here".into()),
+                        (PromptChoice::Deny, "Don't allow".into()),
+                    ]);
+            p.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
+            p
+        };
+        let mut p = offered(true);
+        assert_eq!(p.allow_rect(), Rect::ZERO, "no one-time choice is offered");
+        assert!(p.session_rect().x1 <= p.always_rect().x0);
+        assert!(p.always_rect().x1 <= p.deny_rect().x0);
+        let names: Vec<String> = p
+            .accessibility()
+            .expect("a dialog")
+            .children
+            .iter()
+            .filter_map(|child| child.name.clone())
+            .collect();
+        assert_eq!(names, ["This tab", "Always here", "Don't allow"]);
+        let center = p.session_rect().center();
+        dispatch(&mut p, &cursor_at(center));
+        dispatch(&mut p, &mouse_press());
+        assert_eq!(p.pending_choice, Some(PromptChoice::Session));
+
+        let mut guest = offered(false);
+        let center = guest.always_rect().center();
+        dispatch(&mut guest, &cursor_at(center));
+        dispatch(&mut guest, &mouse_press());
+        assert_eq!(guest.pending_choice, None, "always stays the owner's");
+    }
+
     #[test]
     fn permission_buttons_set_exactly_their_pending_choice() {
-        // Case `click_allow_sets_pending_choice_to_allow`.
         {
             let mut p = prompt_at(false);
             let center = p.allow_rect().center();
@@ -1041,7 +1148,6 @@ mod tests {
             assert_eq!(p.pending_choice, Some(PromptChoice::Allow));
         }
 
-        // Case `click_session_sets_pending_choice_to_session`.
         {
             let mut p = prompt_at(false);
             let center = p.session_rect().center();
@@ -1050,7 +1156,6 @@ mod tests {
             assert_eq!(p.pending_choice, Some(PromptChoice::Session));
         }
 
-        // Case `always_button_disabled_for_non_owner_drops_clicks`.
         {
             let mut p = prompt_at(false);
             let center = p.always_rect().center();
@@ -1059,7 +1164,6 @@ mod tests {
             assert_eq!(p.pending_choice, None);
         }
 
-        // Case `always_button_active_for_owner_sets_choice_to_always`.
         {
             let mut p = prompt_at(true);
             let center = p.always_rect().center();
@@ -1068,7 +1172,6 @@ mod tests {
             assert_eq!(p.pending_choice, Some(PromptChoice::Always));
         }
 
-        // Case `deny_click_sets_pending_choice_to_deny`.
         {
             let mut p = prompt_at(false);
             let center = p.deny_rect().center();
@@ -1077,7 +1180,6 @@ mod tests {
             assert_eq!(p.pending_choice, Some(PromptChoice::Deny));
         }
 
-        // Case `click_outside_button_rects_does_not_set_choice`.
         {
             // Click on the icon (left edge of the bar), far from any
             // button rect.

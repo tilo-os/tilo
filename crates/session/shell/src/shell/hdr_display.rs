@@ -1,7 +1,7 @@
 //! Display capabilities for the receive-side `PeerView` and the output colour
 //! pipeline: can this output show PQ pixels natively, and how bright?
 //!
-//! Built from the sink's EDID ([`crate::wayland::edid::HdrDisplayInfo`]) and
+//! Built from the sink's EDID ([`tilo_wayland_ext::edid::HdrDisplayInfo`]) and
 //! from whether the compositor is actually driving the output in HDR. A
 //! presentation-surface probe cannot answer this: on DRM the compositor owns
 //! the scanout buffers, and a format being renderable says nothing about the
@@ -11,8 +11,8 @@
 //! an SDR panel and clips to black. Every uncertain path therefore returns
 //! [`DisplayCapabilities::sdr_default`].
 
-use crate::collab::colorimetry::{ColorPrimaries, TransferCharacteristics};
-use crate::wayland::edid::HdrDisplayInfo;
+use neighbour_wire::colorimetry::{ColorPrimaries, TransferCharacteristics};
+use tilo_wayland_ext::edid::HdrDisplayInfo;
 
 /// What the compositor can deliver to one output. Consumed by
 /// [`crate::shell::peer_view::PeerView::new_for_stream`] to pick between
@@ -107,23 +107,19 @@ mod tests {
 
     #[test]
     fn capabilities_follow_the_edid_and_the_active_signal() {
-        // Phase `an_sdr_sink_is_sdr_whatever_the_compositor_does`.
         assert_eq!(
             DisplayCapabilities::from_edid(&HdrDisplayInfo::default_sdr(), true),
             DisplayCapabilities::sdr_default()
         );
-        // Phase `an_hdr_sink_driven_in_sdr_is_still_sdr`.
         assert_eq!(
             DisplayCapabilities::from_edid(&hdr_sink(1000), false),
             DisplayCapabilities::sdr_default()
         );
-        // Phase `an_active_hdr_output_reports_its_edid_peak_and_gamut`.
         let active = DisplayCapabilities::from_edid(&hdr_sink(603), true);
         assert!(active.supports_pq_output);
         assert!(!active.supports_hlg_output, "Tilo signals PQ only");
         assert!(active.bt2020_gamut);
         assert!((active.max_luminance_nits - 603.0).abs() < f32::EPSILON);
-        // Phase `an_unknown_peak_assumes_the_lowest_displayhdr_tier`.
         let unknown = DisplayCapabilities::from_edid(&hdr_sink(0), true);
         assert!(
             (unknown.max_luminance_nits - f32::from(UNKNOWN_HDR_PEAK_NITS)).abs() < f32::EPSILON

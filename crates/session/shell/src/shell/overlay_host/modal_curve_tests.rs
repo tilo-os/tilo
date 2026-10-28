@@ -71,7 +71,6 @@ fn modal_transitions_pump_only_the_frames_they_need() {
         // motion rather than about the machine's load.
         let now = ui::time::now();
         assert!(!h.palette_transition.is_visible(now));
-        // Drive the open transition the way `draw` does.
         h.palette_transition.show(
             true,
             ui::motion::Appear::SPEC,
@@ -93,7 +92,7 @@ fn modal_transitions_pump_only_the_frames_they_need() {
 
     fn osd_sleeps_while_opaque_and_pumps_only_its_fade_tail() {
         use crate::shell::chrome_state::ChromeState;
-        use crate::shell::osd::{OSD_FADE, OSD_FADE_IN, OSD_HOLD, Osd};
+        use crate::shell::osd::{OSD_HOLD, Osd, osd_fade, osd_fade_in};
         use crate::shell::state::WorkspaceTree;
         use ui::widget::Container;
 
@@ -108,11 +107,11 @@ fn modal_transitions_pump_only_the_frames_they_need() {
             "the fade-in pumps its frames"
         );
         assert!(
-            !host.needs_animation_frame_at(raised_at + OSD_FADE_IN),
+            !host.needs_animation_frame_at(raised_at + osd_fade_in()),
             "the static hold must not repaint continuously"
         );
         let expiry = raised_at.checked_add(OSD_HOLD).unwrap();
-        assert!(host.needs_animation_frame_at(expiry.checked_sub(OSD_FADE).unwrap()));
+        assert!(host.needs_animation_frame_at(expiry.checked_sub(osd_fade()).unwrap()));
         assert!(
             host.needs_animation_frame_at(expiry.checked_sub(Duration::from_millis(1)).unwrap())
         );

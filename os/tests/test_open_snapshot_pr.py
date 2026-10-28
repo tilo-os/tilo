@@ -12,6 +12,7 @@ from pathlib import Path
 import sys
 import unittest
 from unittest import mock
+from restart_fixture import restart_fixture
 
 
 SCRIPT = Path(__file__).parents[1] / "dev" / "open-snapshot-pr.py"
@@ -39,18 +40,6 @@ def print_pins(kind, x86_ref, arm_ref):
     with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(out):
         assert MODULE.main() == 0
     return out.getvalue()
-
-
-def restart_fixture(test):
-    """Give the next subTest phase of a merged test the fresh fixture it had
-    as its own test: tear down, run cleanups, reset instance state, set up."""
-    test.tearDown()
-    test.doCleanups()
-    fresh = type(test)(test._testMethodName).__dict__
-    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
-    test.__dict__.clear()
-    test.__dict__.update(fresh, **keep)
-    test.setUp()
 
 
 class KernelSnapshotPullRequestTests(unittest.TestCase):
@@ -228,11 +217,11 @@ class KernelBuildrootSnapshotPullRequestTests(unittest.TestCase):
         with self.subTest(phase="promotion_writes_the_canonical_pin_file"):
             self.assertEqual(print_pins("kernel-buildroot", self.x86_ref, self.arm_ref),
                              MODULE.kernel_buildroot_contents(self.x86_ref, self.arm_ref))
-            script = (REPO / "os/dev/buildroot-snapshot.sh").read_text()
-            self.assertIn("kernel) key=KERNEL_BUILDROOT label=kernel promote_kind=kernel-buildroot",
-                          script)
-            self.assertIn('branch="automation/$kind-buildroot-snapshot-${snapshot_digest:0:16}"',
-                          script)
+            # t's pin-kernel-buildroot writes the pin file with exactly these contents.
+            script = (REPO / "tools/ci/publish/kernel-buildroot.sh").read_text()
+            self.assertIn('python3 os/dev/open-snapshot-pr.py pins kernel-buildroot '
+                          '--x86-ref "$x86" --arm-ref "$arm" > "$pins"', script)
+            self.assertIn("pins=os/kernel-buildroot-snapshot.env", script)
         restart_fixture(self)
         with self.subTest(phase="committed_pins_use_the_canonical_names"):
             committed = (REPO / "os/kernel-buildroot-snapshot.env").read_text()

@@ -32,7 +32,7 @@ pub(crate) fn edit(
             let heads = doc.get_heads();
             doc.put(ROOT, "offline-edit", value).unwrap();
             doc.commit_edit("fixture", "offline-edit");
-            view.peer().clone().publish_incremental(
+            view.peer().clone().publication_mut().publish_incremental(
                 "so.tilo.chat",
                 "",
                 doc.save_after(&heads),
@@ -135,6 +135,7 @@ fn checkpoint(
 ) {
     let key = SigningKey::from_bytes(&[61; 32]);
     for message in governor
+        .publication_mut()
         .durable_bootstrap_messages(&key, now, generation)
         .unwrap()
     {
@@ -259,6 +260,7 @@ fn native_outgoing_expired_incremental_and_snapshot_keep_original_until_real_dur
         let expected = remote.document_heads("so.tilo.chat", "");
         let governor_key = SigningKey::from_bytes(&[61; 32]);
         let acknowledgement = remote
+            .publication_mut()
             .durable_bootstrap_messages(&governor_key, later, 102)
             .unwrap();
         assert_eq!(
@@ -418,7 +420,7 @@ fn resend_known_history(
         .with_current(room, |view| {
             let mut doc =
                 AutoCommit::load(&view.peer().document("so.tilo.chat", "").unwrap()).unwrap();
-            view.peer().clone().publish_incremental(
+            view.peer().clone().publication_mut().publish_incremental(
                 "so.tilo.chat",
                 "",
                 doc.save_after(&[]),
@@ -929,7 +931,7 @@ fn native_outgoing_encoded_recovery_reserve_refuses_before_original_success() {
             let heads = doc.get_heads();
             doc.put(ROOT, "large-offline", text).unwrap();
             doc.commit_edit("fixture", "large-offline");
-            view.peer().clone().publish_incremental(
+            view.peer().clone().publication_mut().publish_incremental(
                 "so.tilo.chat",
                 "",
                 doc.save_after(&heads),
@@ -1008,6 +1010,7 @@ fn native_outgoing_sanitized_foreign_title_cannot_consume_recovery_reserve() {
                     app_id: "org.example.Editor".into(),
                     surface_id: 0xfeed_beef,
                 },
+                app_title: None,
             }],
             active_tab: 990_001,
             width: WindowWidth::Normal,
@@ -1074,7 +1077,7 @@ fn native_document_checkpoint_invalidates_old_authority_snapshot_without_grant_c
             tree.desktop
                 .workspaces
                 .iter()
-                .find(|slot| slot.room == room)
+                .find(|slot| slot.room() == room)
                 .expect("the enrolled owner must project its real room")
                 .sandbox
                 .clone(),
@@ -1089,7 +1092,7 @@ fn native_document_checkpoint_invalidates_old_authority_snapshot_without_grant_c
             .desktop
             .workspaces
             .iter()
-            .find(|slot| slot.room == room)
+            .find(|slot| slot.room() == room)
             .unwrap()
             .sandbox,
         capabilities,

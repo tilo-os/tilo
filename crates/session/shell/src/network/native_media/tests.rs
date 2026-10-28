@@ -73,3 +73,81 @@ fn only_the_rooms_actual_device_custody_opens_a_call() {
         assert_ne!(error, NOT_CONNECTED, "refused before any relay route");
     }
 }
+
+/// A bridge's participations are its guests, each as the person it
+/// carries, never the bridge's own person; the bridge itself listening
+/// only says the call is bridged.
+#[test]
+fn a_bridged_call_lists_its_guests_apart_from_its_people() {
+    use tilo_relay_protocol::voice::{
+        Bridged, CallState, CallSummary, Directions, Showing, VoiceParticipant,
+    };
+    let ana = [0xa1; 32];
+    let bridge = [0xb2; 32];
+    let participant = |user: [u8; 32], n: u8, bridged: Option<Bridged>| VoiceParticipant {
+        device_public_key: [n; 32],
+        user_public_key: user,
+        namespace: format!("{}/{}", "c".repeat(64), hex::encode([n; 32])),
+        publishes: true,
+        showing: Showing::default(),
+        bridged,
+    };
+    let discord = |account: Option<&str>, name: &str| Bridged {
+        service: "discord".into(),
+        account: account.map(str::to_owned),
+        name: name.into(),
+        avatar: None,
+        linked: None,
+    };
+    let call = |channel: &str, participants| CallSummary {
+        state: CallState {
+            call: [0xcc; 32],
+            epoch: 1,
+            active: true,
+            allowed: Directions::default(),
+        },
+        app_id: "so.tilo.chat".into(),
+        record_id: String::new(),
+        channel_id: channel.into(),
+        participants,
+    };
+    let calls = [
+        call(
+            "lounge",
+            vec![participant(bridge, 9, Some(discord(None, "Tilo")))],
+        ),
+        call(
+            "voice",
+            vec![
+                participant(ana, 1, None),
+                participant(bridge, 2, Some(discord(Some("7"), "Dana"))),
+                participant(bridge, 3, Some(discord(None, "Tilo"))),
+            ],
+        ),
+    ];
+    let rosters = registry::rosters_of(&calls, "so.tilo.chat", "");
+    assert_eq!(
+        rosters
+            .iter()
+            .map(|roster| (
+                roster.channel_id.as_str(),
+                roster.people.clone(),
+                roster
+                    .guests
+                    .iter()
+                    .map(|guest| (guest.id.clone(), guest.name.clone()))
+                    .collect::<Vec<_>>(),
+                roster.bridges.clone(),
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("lounge", vec![], vec![], vec!["discord".to_owned()]),
+            (
+                "voice",
+                vec![hex::encode(ana)],
+                vec![("discord:7".to_owned(), "Dana".to_owned())],
+                vec!["discord".to_owned()],
+            ),
+        ]
+    );
+}

@@ -140,10 +140,6 @@ impl Ini {
     }
 
     /// Parses `text`.
-    ///
-    /// # Errors
-    /// Text before the first section, a repeated section or option, or a
-    /// line that is neither a header, an option, a comment nor a continuation.
     pub fn parse(text: &str) -> Result<Self> {
         let mut ini = Self {
             defaults: Section {

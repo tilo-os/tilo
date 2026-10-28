@@ -25,6 +25,7 @@
 #[cfg(feature = "heap-probe")]
 pub mod heap;
 pub mod read;
+pub mod whole;
 mod write;
 
 pub use read::ReadTyped;
@@ -65,6 +66,20 @@ pub trait ApplyIncoming {
     ///
     /// As [`AutoCommit::load_incremental`].
     fn load_incoming(&mut self, data: &[u8]) -> Result<usize, AutomergeError>;
+
+    /// [`Self::load_incoming`] of `data` whole or not at all: every chunk of
+    /// it must parse ([`whole::check`]) before any is applied. Changes whose
+    /// dependencies are neither here nor in `data` are queued, as
+    /// [`AutoCommit::load_incremental`] queues them.
+    ///
+    /// # Errors
+    ///
+    /// A chunk that does not parse (the document is unchanged), or as
+    /// [`AutoCommit::load_incremental`].
+    fn load_incoming_whole(&mut self, data: &[u8]) -> Result<usize, AutomergeError> {
+        whole::check(data)?;
+        self.load_incoming(data)
+    }
 
     /// [`AutoCommit::merge`]: the hashes of the changes taken from `other`.
     ///
@@ -204,7 +219,6 @@ mod tests {
 
     #[test]
     fn incoming_wrappers_leave_the_document_raw_automerge_would() {
-        // Phase `every_path_leaves_the_document_it_would_have_without_the_wrapper`.
         {
             let mut remote = remote_with(20);
             let bytes = remote.save();
@@ -225,7 +239,6 @@ mod tests {
                 assert_eq!(doc.keys(ROOT).count(), 7);
             }
         }
-        // Phase `sync_reaches_the_peer`.
         {
             let mut remote = remote_with(5);
             let mut local = AutoCommit::new();
@@ -245,7 +258,6 @@ mod tests {
             }
             assert_eq!(local.get_heads(), remote.get_heads());
         }
-        // Phase `an_armed_diff_cursor_still_sees_the_incoming_changes`.
         {
             let mut local = AutoCommit::new();
             local.put(ROOT, "seed", 1).unwrap();
@@ -259,7 +271,6 @@ mod tests {
             let patches = local.diff_incremental();
             assert_eq!(patches.len(), 1, "{patches:?}");
         }
-        // Phase `isolating_and_integrating_keep_their_views`.
         {
             let mut doc = remote_with(3);
             let early = doc.get_heads();

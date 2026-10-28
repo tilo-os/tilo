@@ -13,12 +13,13 @@ pub enum NotesEffect {
     ///
     /// Read the selected and bound page identities, content-free body hashes,
     /// editor focus and caret without selecting a note or changing its body.
-    #[effect(view, returns, kind = "read")]
+    #[effect(view, returns, kind = "read", audience = "agents")]
     InspectEditor,
     /// Find note
     ///
     /// Find the notes whose title holds some text, exact matches first.
-    #[effect(view, returns, kind = "read")]
+    #[effect(view, returns, kind = "read", audience = "agents")]
+    #[effect(keywords = "search notes, look up note, go to note")]
     FindPage {
         #[param("Text of the title, ignoring case")]
         title: String,
@@ -27,7 +28,8 @@ pub enum NotesEffect {
     ///
     /// Find the blocks whose text holds some text, in one note or in every
     /// note, and answer the block ids to edit them by.
-    #[effect(view, returns, kind = "read")]
+    #[effect(view, returns, kind = "read", audience = "agents")]
+    #[effect(keywords = "search in note, find in page")]
     FindText {
         #[param("The text to find, ignoring case")]
         text: String,
@@ -38,21 +40,32 @@ pub enum NotesEffect {
     ///
     /// Return to the note shown before this one.
     #[effect(view)]
+    #[effect(icon = "arrow-left")]
     Back,
     /// Forward
     ///
     /// Go to the note shown after this one.
     #[effect(view)]
+    #[effect(icon = "arrow-right")]
     Forward,
     /// Import Markdown
     ///
     /// Choose a Markdown file and add it to the notebook as a note.
-    #[effect(job, cancellable, device_only)]
+    #[effect(attended, job, cancellable)]
+    #[effect(keywords = "open markdown, import md")]
+    #[effect(icon = "download")]
     ImportMarkdownFile,
+    /// Import Notion export
+    ///
+    /// Choose a Notion export and add every page in it to the notebook as one
+    /// action, so one undo takes the whole import back.
+    #[effect(attended, job, cancellable)]
+    #[effect(icon = "download")]
+    ImportNotionExport,
     /// Import Markdown content
     ///
     /// Add Markdown text to the notebook as a note, with no file to choose.
-    #[effect(returns)]
+    #[effect(returns, kind = "undoable", audience = "agents")]
     ImportMarkdownContent {
         #[param("Note title")]
         title: String,
@@ -62,15 +75,32 @@ pub enum NotesEffect {
     /// Export Markdown
     ///
     /// Save a note as a Markdown file, its images inside it.
-    #[effect(job, cancellable, device_only, row, item = pages)]
+    #[effect(attended, job, cancellable, row, item = pages)]
+    #[effect(keywords = "save as markdown, download, export md")]
+    #[effect(icon = "upload")]
     ExportMarkdown {
         #[param("The note")]
         page: Uuid,
     },
+    /// Export Markdown content
+    ///
+    /// Keep a note, or the whole notebook, as a Markdown file in the room's
+    /// content, its images inside it, and answer its content address. No
+    /// file is chosen or written: an agent hands the content on (a mail
+    /// attachment, a shared file) instead of reaching this device's disk.
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
+    ExportMarkdownContent {
+        #[param("The note; the whole notebook when neither it nor a title is given")]
+        page: Option<Uuid>,
+        #[param("The note's title, ignoring case, in place of its id")]
+        title: Option<String>,
+    },
     /// Insert image
     ///
     /// Choose an image and add it to a note.
-    #[effect(job, cancellable, device_only, row, item = pages)]
+    #[effect(attended, job, cancellable, row, item = pages)]
+    #[effect(keywords = "add picture, add photo, insert picture")]
+    #[effect(icon = "image")]
     InsertImage {
         #[param("The note")]
         page: Uuid,
@@ -78,23 +108,39 @@ pub enum NotesEffect {
     /// Copy note link
     ///
     /// Copy a link to a note that pastes into another note.
-    #[effect(device_only, row, item = pages)]
+    #[effect(row, item = pages)]
+    #[effect(keywords = "share link, link to note")]
+    #[effect(icon = "link")]
     CopyLink {
         #[param("The note")]
         page: Uuid,
     },
     /// Open link
     ///
-    /// Open a web or mail link in the person's browser.
-    #[effect(job, device_only)]
+    /// Open a web or mail link in the person's browser. What following a
+    /// link in a note asks for: a person clicks the link.
+    #[effect(job, audience = "agents")]
+    #[effect(icon = "external-link")]
     OpenLink {
         #[param("The address, http(s) or mailto")]
         url: String,
+    },
+    /// Open resource
+    ///
+    /// Open something another app keeps — a file, an event, a message — by
+    /// the address a link in a note gives it, and show it where it lives.
+    /// What following such a link asks for: a person clicks the link.
+    #[effect(view, audience = "agents")]
+    #[effect(icon = "external-link")]
+    OpenResource {
+        #[param("The resource's link address, as tilo://open#…")]
+        href: String,
     },
     /// Open note
     ///
     /// Show a note, and the block in it when one is named.
     #[effect(view, idempotent, item = pages)]
+    #[effect(icon = "file-text")]
     OpenNote {
         #[param("The note")]
         page: Uuid,
@@ -104,7 +150,8 @@ pub enum NotesEffect {
     /// Reveal block range
     ///
     /// Select an exact range in a note block without changing its text.
-    #[effect(view, idempotent, row, item = pages)]
+    #[effect(view, idempotent, row, item = pages, audience = "agents")]
+    #[effect(icon = "locate-fixed")]
     RevealBlockRange {
         #[param("The note")]
         page: Uuid,
@@ -121,6 +168,7 @@ pub enum NotesEffect {
     ///
     /// Show the notes carrying a tag.
     #[effect(view, idempotent, item = tags)]
+    #[effect(icon = "tag")]
     OpenTag {
         #[param("The tag")]
         tag: Uuid,

@@ -196,6 +196,7 @@ const SCENARIOS: &[&str] = &[
     "search-focus",
     "skeleton",
     "nowplaying",
+    "nowplaying-page",
     "queue",
     "lyrics",
     "downloading",
@@ -217,9 +218,16 @@ const SCENARIOS: &[&str] = &[
     "recommendations-home",
     "recommendations-feedback",
     "recommendations-empty",
+    "library",
+    "search",
+    "search-chips",
+    "search-remote-loading",
+    "search-actions",
+    "search-facet",
+    "kept-view",
 ];
 
-/// Framework app: the music widget is the surface over [`Music`].
+/// Framework app: the music widget is the surface over [`Library`].
 pub struct MusicShell;
 
 impl ResourceApp for MusicShell {
@@ -290,7 +298,32 @@ impl ResourceApp for MusicShell {
         // A search hit, or an agent's `open`, plays the song or shows the
         // page the row it names does.
         cx.on_open(app.opener());
-        cx.surface(app)
+        // The shell keeps the sidebar (the destinations, kept views and
+        // playlists as a list), its width, its drawer in a narrow window
+        // and its keys, and the transport across the window's foot: what
+        // plays belongs to the window, whatever page is open.
+        let places = ui::widget::NavFeed::new();
+        let transport = ui::widget::TransportFeed::new();
+        let pane = ui::LocalState::new(ui::widget::NavPane::Content);
+        let shell = ui::widget::NavShell::new()
+            .with_id("music-shell")
+            .content_kind(ui::widget::ContentKind::List)
+            .with_window_toolbar()
+            .with_pane_state(&pane);
+        let actions = app.transport_actions(&cx.actions());
+        let app = app.in_shell(&places, &transport, shell.window_bar_link(), &pane);
+        let sidebar = ui::widget::NavList::new(Vec::new())
+            .with_id("music.places")
+            .with_accessible_name("Music navigation")
+            .fed_by(&places);
+        Box::new(
+            shell
+                .sidebar(Box::new(sidebar))
+                .content(cx.surface(app))
+                .bottom_band(Box::new(ui::widget::MediaTransport::new(
+                    &transport, actions,
+                ))),
+        )
     }
 
     fn label(state: &Library) -> String {
@@ -312,6 +345,10 @@ impl ResourceSurface<Library, MusicEffect> for MusicApp {
 
     fn attach(&mut self, cx: SurfaceCx<Library>) {
         self.attach_dispatcher(cx.dispatcher());
+        self.attach_actions(cx.actions());
+        // The person's kept views follow them; the search wakes this window
+        // when the catalogue answers.
+        self.attach_views(cx.settings::<ui::framework::views::KeptViews>(), cx.waker());
         if cx.mode().is_live() {
             self.open_launch(&cx.launch());
         }
@@ -333,6 +370,15 @@ impl ResourceSurface<Library, MusicEffect> for MusicApp {
     }
 
     fn effect(&mut self, effect: MusicEffect, cx: &mut EffectCx<Library, Self>) -> EffectAnswer {
+        // The song that plays is the one playing as the effect runs, not
+        // the one a control saw when it was bound.
+        let effect = match effect {
+            MusicEffect::ToggleLikePlaying => match self.playing_track() {
+                Some(track) => MusicEffect::ToggleLike { track },
+                None => return Err("Nothing is playing".into()),
+            },
+            effect => effect,
+        };
         if let MusicEffect::ToggleLike { track } = &effect {
             if cx.dispatcher().read_only() {
                 return Err("Liking a song requires permission to edit the library".into());
@@ -383,6 +429,44 @@ mod tests {
 
     fn edit(edit: &tilo_resource::Edit<Library>) -> Invoke<Library> {
         Invoke::edit(edit).unwrap()
+    }
+
+    /// History stands beside Music's slots in the window's bar: no band of
+    /// the window's own above the page and no control of Music's own; the
+    /// bar's History opens the framework's History.
+    #[test]
+    fn history_is_the_window_bars_beside_musics_slots() {
+        use ui::widget::Widget as _;
+        let mut app = TestApp::<MusicShell>::capture_at(Some("nowplaying"), (1440, 810)).unwrap();
+        app.harness()
+            .set_theme(ui::theme::Theme::dark().with_ui_scale(1.5));
+        app.harness().relayout();
+        let surface = app.surface_mut::<MusicApp>();
+        assert!(
+            surface.get_rect().y0.abs() < f64::EPSILON,
+            "no History band above the page"
+        );
+        assert!(
+            !surface.children().into_iter().any(|child| child
+                .accessibility()
+                .is_some_and(|node| node.name.as_deref() == Some("History"))),
+            "Music holds no History control of its own"
+        );
+        assert!(
+            ui::window_toolbar::declared().is_some(),
+            "Music's controls are its window bar's slots"
+        );
+        assert_eq!(
+            app.harness().window_history_control(),
+            Some(ui::widget::HistoryControl::Closed),
+            "the window's bar offers History beside them"
+        );
+        app.harness().press_window_history().unwrap();
+        assert_eq!(
+            app.harness().window_history_control(),
+            Some(ui::widget::HistoryControl::Open),
+            "the bar's History opens the framework's History"
+        );
     }
 
     #[test]
@@ -528,6 +612,34 @@ mod tests {
             album,
             artist,
         })
+    }
+
+    /// Deleting a playlist runs at once, since Undo takes it back: the host
+    /// asks nothing, and one Undo brings the playlist back with its songs.
+    #[test]
+    fn deleting_a_playlist_runs_at_once_and_one_undo_brings_it_back() {
+        let mut app = TestApp::<MusicShell>::new().unwrap();
+        app.invoke(imported("yt:abc123")).unwrap();
+        app.invoke(Library::CREATE_PLAYLIST.with(library::CreatePlaylist {
+            name: "Road mix".into(),
+            track: Some("yt:abc123".into()),
+        }))
+        .unwrap();
+        let mix = app.state().playlists().next().unwrap().id.clone();
+
+        app.invoke(Library::DELETE_PLAYLIST.with(Id::from_raw(mix.as_str())))
+            .expect("an undoable delete asks nothing");
+        assert!(app.asking().is_none(), "the host asks nothing");
+        assert!(
+            app.state().playlist(&mix).is_none(),
+            "the delete lands at once"
+        );
+
+        assert!(app.undo(), "the delete is one undo step");
+        let state = app.state();
+        let back = state.playlist(&mix).expect("Undo brings the playlist back");
+        assert_eq!(back.name, "Road mix");
+        assert_eq!(back.track_ids(), ["yt:abc123"], "and its songs with it");
     }
 
     #[test]
@@ -876,3 +988,73 @@ mod tests {
 
 #[cfg(test)]
 mod model_tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// The walk's slices: a drive of one scenario walks dozens of actions,
+    /// so each slice is its own test and they run side by side.
+    const SLICES: usize = 6;
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// every `SLICES`th scenario from `slice`: none is advertised yet
+    /// handled only by a click. The scenarios stage fixtures; the app
+    /// someone opens acts on this machine, so it is not walked.
+    fn walk(slice: usize) {
+        for scenario in super::MusicShell::scenarios()
+            .iter()
+            .skip(slice)
+            .step_by(SLICES)
+        {
+            let mut app = TestApp::<super::MusicShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_0() {
+        walk(0);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_1() {
+        walk(1);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_2() {
+        walk(2);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_3() {
+        walk(3);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_4() {
+        walk(4);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_5() {
+        walk(5);
+    }
+
+    /// The window bar's sidebar button flips the sidebar on every click, in a
+    /// window wide enough to dock it and in a narrow one.
+    #[test]
+    fn the_window_bars_sidebar_button_flips_the_sidebar() {
+        ui::framework::testing::check_window_sidebar_button(
+            ui::framework::testing::TestApp::<super::MusicShell>::new,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+    }
+}

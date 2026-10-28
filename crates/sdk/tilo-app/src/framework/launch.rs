@@ -75,7 +75,6 @@ impl<'a> LaunchInput<'a> {
         self
     }
 
-    /// The same launch, continuing `handoff`'s playback.
     #[must_use]
     pub fn with_handoff(mut self, handoff: Option<&'a PlaybackHandoff>) -> Self {
         self.handoff = handoff;

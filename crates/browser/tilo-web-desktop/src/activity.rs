@@ -1,11 +1,11 @@
-//! The Activity pane (Catch up, Explore, Replay and Tasks), loaded the first
-//! time someone opens it.
+//! The activity model the desktop serves the Activity app, loaded the
+//! first time a window asks for it.
 //!
 //! Like an app's `definition()` (`crate::split`), the export below is the
 //! only way to `tilo_desktop_surface::open_activity`: the surface drives an
-//! open pane through its vtable, so the splitter moves the pane's code into
-//! its own module, which the runtime fetches through [`load`] the first time
-//! the pane opens (`tilo_browser_runtime::defer_activity_pane`).
+//! open model through its vtable, so the splitter moves the model's code
+//! into its own module, which the runtime fetches through [`load`] the
+//! first time it opens (`tilo_browser_runtime::defer_activity_pane`).
 
 use std::ffi::c_void;
 use std::future::Future;
@@ -21,13 +21,13 @@ use crate::split::Callback;
     reason = "the function pointer only passes between Rust"
 )]
 unsafe extern "C" {
-    #[link_name = "__wasm_split_load_activity_3d8495f7419df864_open"]
+    #[link_name = "__wasm_split_load_workspace_activity_3d8495f7419df864_open"]
     fn load_module(callback: Callback, data: *const c_void);
-    #[link_name = "__wasm_split_00___activity___00_import_3d8495f7419df864_open"]
+    #[link_name = "__wasm_split_00___workspace_activity___00_import_3d8495f7419df864_open"]
     fn open() -> OpenActivity;
 }
 
-#[unsafe(export_name = "__wasm_split_00___activity___00_export_3d8495f7419df864_open")]
+#[unsafe(export_name = "__wasm_split_00___workspace_activity___00_export_3d8495f7419df864_open")]
 #[allow(
     improper_ctypes_definitions,
     reason = "the function pointer only passes between Rust"

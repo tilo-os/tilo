@@ -7,7 +7,7 @@ Median semantic-launch to compositor-frame observation fell from
 Three alternating cold/seed pairs ran in optimized release binaries on Mesa
 26.2.3 / LLVM 22.1.8 llvmpipe, AMD EPYC 9R45. These are software-renderer
 results, not physical display latency or whole-OS boot gains.
-[Raw events, source/binary/archive hashes and qualification](production-mesa-seed-2026-10-07.json).
+[Raw events, source/binary/archive hashes and qualification](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/benchmarks/production-mesa-seed-2026-10-07.json).
 
 Unlike the earlier [fixture experiment](native-mesa-seed-2026-10-07.md), this
 run waits for the normal compositor to generate its archive, then launches

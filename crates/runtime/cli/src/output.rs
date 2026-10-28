@@ -35,10 +35,6 @@ impl OutputBuilder {
     }
 
     /// Write a bare line to the stream.
-    ///
-    /// # Errors
-    ///
-    /// Returns the underlying I/O error if the write to the stream fails.
     pub fn line<S: fmt::Display>(&self, text: S) -> io::Result<()> {
         self.write(|w| writeln!(w, "{text}"))
     }
@@ -46,10 +42,6 @@ impl OutputBuilder {
     /// Write text and a clickable hyperlink (OSC 8) on the same line; pipes
     /// and files fall back to `<label> [<url>]`. An empty label renders the
     /// URL itself as the anchor.
-    ///
-    /// # Errors
-    ///
-    /// Returns the underlying I/O error if the write to the stream fails.
     pub fn hyperlink(&self, label: &str, url: &str) -> io::Result<()> {
         self.write(|w| {
             if self.hyperlinks_active(w) {
@@ -66,10 +58,6 @@ impl OutputBuilder {
 
     /// Emit a `file://` hyperlink for the given path — a convenience wrapper
     /// over [`OutputBuilder::hyperlink`].
-    ///
-    /// # Errors
-    ///
-    /// Returns the underlying I/O error if the write to the stream fails.
     pub fn hyperlink_path<P: AsRef<std::path::Path>>(
         &self,
         label: &str,
@@ -119,30 +107,17 @@ pub fn output() -> OutputBuilder {
     }
 }
 
-/// Render an OSC 8 hyperlink to a string (no I/O), so tests/custom
-/// formatters can compose the sequence without `write!`.
-pub fn osc8(label: &str, url: &str) -> String {
-    format!("\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn output_defaults_to_stdout_with_osc8_hyperlinks() {
+    fn output_defaults_to_stdout_with_hyperlinks() {
         let b = output();
         assert!(b.hyperlinks);
-        // Stream default is stdout.
         match b.stream {
             Stream::Stdout => {}
             Stream::Stderr => panic!("expected stdout default"),
         }
-
-        let s = osc8("notes.md", "file:///tmp/notes.md");
-        assert!(s.contains("file:///tmp/notes.md"));
-        assert!(s.contains("notes.md"));
-        assert!(s.starts_with("\x1b]8;;"));
-        assert!(s.ends_with("\x1b]8;;\x1b\\"));
     }
 }

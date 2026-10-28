@@ -31,7 +31,6 @@ impl Source {
         }
     }
 
-    /// The source by its name.
     #[must_use]
     pub fn named(name: &str) -> Option<Self> {
         (name == Self::Rates.name()).then_some(Self::Rates)

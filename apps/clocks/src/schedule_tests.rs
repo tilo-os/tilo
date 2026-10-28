@@ -490,3 +490,66 @@ fn completed_one_shot_does_not_rearm_if_shared_settings_remain_enabled() {
         "a read-only collaborator still delivers a one-shot only once per device"
     );
 }
+
+#[test]
+fn snoozing_rings_the_same_alarm_once_more_and_survives_a_restart() {
+    let (clocks, id) = with_alarm(lunch(&[]));
+    let mut delivery = Delivery::default();
+    let noon = local(2026, 1, 15, 12, 0, 0);
+    assert!(
+        ring(&clocks, &mut delivery, local(2026, 1, 15, 11, 0, 0))
+            .due
+            .is_empty()
+    );
+    assert_eq!(ring(&clocks, &mut delivery, noon).due.len(), 1);
+    let alarm = clocks.alarms.get(&id).unwrap();
+    snooze(&mut delivery, &id, alarm, noon.timestamp_millis(), 5).unwrap();
+    assert!(
+        ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 4, 59))
+            .due
+            .is_empty(),
+        "a snooze waits its five minutes"
+    );
+    let mut reopened = restarted(&delivery);
+    let again = ring(&clocks, &mut reopened, local(2026, 1, 15, 12, 5, 0));
+    assert!(
+        matches!(again.due.as_slice(), [DueEvent::Alarm { label, .. }] if label == "Lunch"),
+        "a snooze rings once after being kept across a restart"
+    );
+    assert!(
+        ring(&clocks, &mut reopened, local(2026, 1, 15, 12, 5, 1))
+            .due
+            .is_empty(),
+        "the snoozed occurrence rings once"
+    );
+}
+
+#[test]
+fn editing_or_removing_an_alarm_cancels_its_snooze() {
+    let (mut clocks, id) = with_alarm(lunch(&[]));
+    let mut delivery = Delivery::default();
+    let noon = local(2026, 1, 15, 12, 0, 0);
+    ring(&clocks, &mut delivery, local(2026, 1, 15, 11, 0, 0));
+    ring(&clocks, &mut delivery, noon);
+    let alarm = clocks.alarms.get(&id).unwrap();
+    snooze(&mut delivery, &id, alarm, noon.timestamp_millis(), 5).unwrap();
+
+    let alarm = clocks.alarms.get_mut(&id).unwrap();
+    alarm.minute = 30;
+    assert!(
+        ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 5, 0))
+            .due
+            .is_empty(),
+        "moving the alarm cancels the occurrence snoozed under the old time"
+    );
+
+    let alarm = clocks.alarms.get(&id).unwrap();
+    snooze(&mut delivery, &id, alarm, noon.timestamp_millis(), 5).unwrap();
+    clocks.alarms.remove(&id);
+    assert!(
+        ring(&clocks, &mut delivery, local(2026, 1, 15, 12, 5, 0))
+            .due
+            .is_empty(),
+        "a deleted alarm has no snooze"
+    );
+}

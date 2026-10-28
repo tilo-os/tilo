@@ -98,8 +98,6 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
         a.set_theme(Theme::light());
         assert!(a.theme.reduce_motion);
         assert_eq!(a.text_scale(), 1.25);
-        // High contrast still wins over the freshly-set light base, in the
-        // base's polarity.
         assert_eq!(a.theme.name, "High contrast light");
     }
 
@@ -278,7 +276,7 @@ fn host_appearance_rethemes_through_the_appearance_intent() {
     assert_eq!(
         a.theme.tokens.colors.intent.you,
         Theme::light().tokens.colors.presence.hue(
-            crate::tokens::PresenceHue::nearest(vello::peniko::Color::from_rgb8(0xE0, 0x40, 0x80))
+            crate::tokens::nearest_presence_hue(vello::peniko::Color::from_rgb8(0xE0, 0x40, 0x80))
                 .expect("a pink has a hue")
         ),
         "the host accent is the person's own colour"
@@ -311,6 +309,7 @@ fn the_shell_s_window_appearance_dresses_the_theme_and_survives_rebuilds() {
     let told = WindowAppearance {
         workspace_hue: Some(40.0),
         your_colour: Some(PresenceHue::Violet),
+        corner_radius: None,
     };
     let message = crate::floating_surface::FloatingSurfaceHostMessage::appearance(&told);
     assert!(a.set_window_appearance(message.window_appearance().unwrap()));
@@ -345,6 +344,7 @@ fn the_shell_s_window_appearance_dresses_the_theme_and_survives_rebuilds() {
     a.set_window_appearance(WindowAppearance {
         workspace_hue: None,
         your_colour: Some(PresenceHue::Violet),
+        corner_radius: None,
     });
     assert_eq!(a.theme.tokens.colors.surfaces.content, neutral);
 }

@@ -779,7 +779,7 @@ mod tests {
 
     #[test]
     fn dropped_grant_retains_native_custody_until_confirmed_child_exit() {
-        use std::{io::Write, os::unix::net::UnixStream, time::Instant};
+        use std::{io::Write, os::unix::net::UnixStream};
         let request = tempfile::tempdir().unwrap();
         let root = request.path().to_path_buf();
         let file = File::create(root.join("held-medium")).unwrap();
@@ -815,9 +815,14 @@ mod tests {
             session: Mutex::new(None),
             inbox_active: AtomicBool::new(false),
         };
-        let before = Instant::now();
-        drop(grant);
-        assert!(before.elapsed() < std::time::Duration::from_millis(500));
+        // The child holds the medium until released below, so a drop that
+        // waited for it would never return.
+        let (dropped, done) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(grant);
+            let _ = dropped.send(());
+        });
+        tilo_test_env::recv("the grant to drop while the child holds the medium", &done);
         assert!(retirement_pending(&key));
         assert!(!retirement_ready(&key));
         assert!(!retirement_pending("unrelated-medium"));

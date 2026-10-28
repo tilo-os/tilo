@@ -156,6 +156,9 @@ class Row:
     status: str
     failing: bool
     note: str = ""
+    # The KPI missed a ceiling `enforce = true` names, which fails the run
+    # whatever its regression status is.
+    over_budget: bool = False
 
 
 def series(item: record.Record) -> str | None:
@@ -187,8 +190,36 @@ def budget_misses(item: record.Record, entry: dict[str, Any]) -> list[str]:
             for name in CEILINGS if name in entry and getattr(item, name) > float(entry[name])]
 
 
+def identity(item: record.Record) -> tuple[Any, ...]:
+    """What makes a record one measurement: the same KPI, environment, commit and start."""
+    return (item.kpi, item.env_key, item.commit, item.started_at, series(item))
+
+
+def stored(item: record.Record, history: list[record.Record]) -> record.Record | None:
+    """The store's copy of `item`, when this run brings a measurement the store already holds.
+
+    t keeps a measuring check's result, and its records, for as long as what it measures is
+    unchanged, so a release candidate whose change doesn't reach a group brings that group's
+    earlier records again. They were judged when they entered the store: judging them again
+    would count one measurement twice in its own baseline, and make a pending regression
+    fail on a second look at the same numbers."""
+    key = identity(item)
+    return next((h for h in reversed(history) if identity(h) == key), None)
+
+
 def judge(item: record.Record, history: list[record.Record], budgets: Budgets, accept: bool) -> Row:
     """Annotate one record with its verdict and say whether it fails the run."""
+    known = None if accept else stored(item, history)
+    if known is not None:
+        item.verdict = dict(known.verdict or {})
+        status = item.verdict.get("status", "new")
+        note = f"measured before, at {item.commit[:10]} ({item.started_at}): judged then"
+        entry = budgets.kpis.get(item.kpi)
+        misses = budget_misses(item, entry) if entry is not None and entry["unit"] == item.unit else []
+        enforced = bool(misses) and bool(entry.get("enforce", False))
+        if misses:
+            note += ("; over budget: " if enforced else "; over target: ") + "; ".join(misses)
+        return Row(item, item.kpi, status, status in FAILING or enforced, note, over_budget=enforced)
     matching = sorted((h for h in history if h.kpi == item.kpi and h.env_key == item.env_key),
                       key=lambda h: h.started_at)
     verdict: dict[str, Any] = {}
@@ -235,6 +266,8 @@ def judge(item: record.Record, history: list[record.Record], budgets: Budgets, a
             verdict["budget_enforced"] = enforced
             failing = failing or enforced
             notes.append(("over budget: " if enforced else "over target: ") + "; ".join(misses))
+            if enforced:
+                return Row(item, item.kpi, status, failing, "; ".join(notes), over_budget=True)
     if status == "regression-pending":
         notes.append("first regression; fails if the next run regresses too")
     return Row(item, item.kpi, status, failing, "; ".join(notes))
@@ -283,6 +316,10 @@ def summary(rows: list[Row]) -> str:
             continue
         verdict = item.verdict or {}
         status = f"**{row.status}**" if row.failing else row.status
+        # A record over its enforced ceiling fails the run although its own
+        # status (new, pass, accepted) reads as quiet.
+        if row.over_budget:
+            status = f"**over budget** ({row.status})"
         lines.append(
             f"| `{item.kpi}` | {'/'.join(item.env_key)} | {item.n} | {number(item.p50)} {item.unit} "
             f"| {number(item.p99)} {item.unit} | {number(verdict.get('baseline_p50'))} "
@@ -290,7 +327,7 @@ def summary(rows: list[Row]) -> str:
     kinds: dict[str, int] = {}
     for row in rows:
         if row.failing:
-            kind = row.status if row.status in {"missing", *FAILING} else "over budget"
+            kind = "over budget" if row.over_budget else row.status
             kinds[kind] = kinds.get(kind, 0) + 1
     detail = ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
     lines.append("")
@@ -343,8 +380,10 @@ def main(argv: list[str] | None = None, now: datetime.datetime | None = None) ->
     print(text, end="")
     if args.summary:
         args.summary.write_text(text, encoding="utf-8")
-    if args.publish_dir and current:
-        print(f"published {publish(current, args.publish_dir, args.run)}")
+    # Only what the store doesn't hold yet: a measurement enters it once.
+    fresh = [item for item in current if args.accept or stored(item, history) is None]
+    if args.publish_dir and fresh:
+        print(f"published {publish(fresh, args.publish_dir, args.run)}")
     return 1 if any(row.failing for row in rows) else 0
 
 

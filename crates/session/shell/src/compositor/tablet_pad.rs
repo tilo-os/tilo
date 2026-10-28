@@ -66,7 +66,6 @@ struct Pad {
     modes: Vec<u32>,
     /// One announcement per tablet seat that has seen this pad.
     instances: Vec<PadInstance>,
-    /// The pad object that holds focus, and the surface it entered.
     focus: Option<(ObjectId, WlSurface)>,
 }
 

@@ -177,11 +177,6 @@ impl WorkspaceContent {
 
     /// Bind the file version `manifest` as a job input and return the
     /// digest a job names it by.
-    ///
-    /// # Errors
-    ///
-    /// [`BindError`] when the content is unknown, not wholly local, or does
-    /// not match its manifest.
     pub async fn bind_file(&self, manifest: [u8; 32]) -> Result<[u8; 32], BindError> {
         Ok(self.bind_input(manifest).await?.0)
     }
@@ -206,10 +201,6 @@ impl WorkspaceContent {
     }
 
     /// The bytes of bound `digest`, re-read and re-checked.
-    ///
-    /// # Errors
-    ///
-    /// A diagnostic when the bound file can no longer be read as those bytes.
     pub async fn read(&self, digest: [u8; 32]) -> Result<Option<Vec<u8>>, String> {
         let Some(manifest) = self.manifest_of(digest) else {
             if let Some(scope) = self.blob_scope(digest) {
@@ -423,7 +414,6 @@ mod tests {
     async fn only_bound_files_are_served_and_outputs_become_file_versions() {
         let store = Arc::new(ContentStore::memory());
         let content = WorkspaceContent::new(Arc::clone(&store), tokio::runtime::Handle::current());
-        // Large enough to be file-backed, and a small one kept as loose blobs.
         for len in [3 * 1024 * 1024, 10_000] {
             let bytes: Vec<u8> = (0..len)
                 .map(|index| u8::try_from(index % 251).unwrap())
@@ -485,7 +475,6 @@ mod tests {
     async fn a_replica_holds_only_the_located_version_that_hashes_to_the_digest() {
         let root = tempfile::tempdir().unwrap();
         let replica = root.path().join("replica");
-        // The replica process keeps its store open throughout.
         let store = ContentStore::open(&replica).await.unwrap();
         let bytes: Vec<u8> = (0..2 * 1024 * 1024_u32)
             .map(|index| u8::try_from(index % 241).unwrap())
@@ -542,7 +531,6 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let replica = root.path().join("replica");
         let store = Arc::new(ContentStore::open(&replica).await.unwrap());
-        // Small enough to be loose blobs inside the store's database.
         let bytes: Vec<u8> = (0..200 * 1024_u32)
             .map(|index| u8::try_from(index % 241).unwrap())
             .collect();
@@ -664,7 +652,6 @@ mod tests {
             Err(BindError::NotLocal)
         );
 
-        // An output kept for the room is its media, and bound.
         let output = b"a thumbnail".to_vec();
         let made = *blake3::hash(&output).as_bytes();
         assert!(

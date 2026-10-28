@@ -16,6 +16,7 @@ fn notes(id: u64, title: &str) -> Tab {
             kind: AppKind::Terminal,
             label: title.into(),
         },
+        app_title: None,
     }
 }
 
@@ -127,17 +128,13 @@ fn a_close_whose_workspace_is_gone_is_skipped() {
     let mut tree = desktop();
     let home = tree.desktop.workspaces[0].id;
     let away = WorkspaceId::new();
-    tree.desktop.workspaces.push(Workspace {
-        id: away,
-        room: RoomId::new(),
-        name: "Away".into(),
-        strips: vec![Strip {
-            id: StripId::new(),
-            name: String::new(),
-            window_groups: vec![group(900, vec![notes(9, "Elsewhere")], WindowWidth::Normal)],
-        }],
-        ..tree.desktop.workspaces[0].clone()
-    });
+    let mut elsewhere = Workspace::in_room(away, RoomId::new(), "Away");
+    elsewhere.strips = vec![Strip {
+        id: StripId::new(),
+        name: String::new(),
+        window_groups: vec![group(900, vec![notes(9, "Elsewhere")], WindowWidth::Normal)],
+    }];
+    tree.desktop.workspaces.push(elsewhere);
     tree.desktop.active = away;
     tree.seed_doc_from_cache();
     let chrome = ChromeState::new(tree);

@@ -7,11 +7,10 @@ fn hosted_terminal_delayed_open_keeps_host_keyboard_input_responsive() {
     use std::io::{BufRead, Write};
     use std::os::unix::net::UnixStream;
     use std::sync::mpsc;
-    use std::time::{Duration, Instant};
 
     let (client, server) = UnixStream::pair().unwrap();
     client
-        .set_read_timeout(Some(Duration::from_millis(250)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let (request_sent, request_received) = mpsc::channel();
     let (release, delayed) = mpsc::channel();
@@ -30,14 +29,19 @@ fn hosted_terminal_delayed_open_keeps_host_keyboard_input_responsive() {
         reader.read_line(&mut request).unwrap();
         request_sent.send(request).unwrap();
         // A bound only for a broken test, not simulated startup latency.
-        if delayed.recv_timeout(Duration::from_secs(10)).is_ok() {
+        if delayed.recv_timeout(tilo_test_env::hang_bound()).is_ok() {
             (&server)
                 .write_all(b"{\"result\":\"no-runtime\",\"reason\":\"delayed readiness\"}\n")
                 .unwrap();
         }
     });
     let profile = tempfile::tempdir().unwrap();
-    let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+    let mut apps = InProcessApps::at(
+        profile.path(),
+        &profile.path().join("person"),
+        "test-person",
+    )
+    .unwrap();
     let component = apps
         .mount(
             terminal::definition(),
@@ -56,12 +60,7 @@ fn hosted_terminal_delayed_open_keeps_host_keyboard_input_responsive() {
     )
     .unwrap();
     host.relayout();
-    assert!(
-        request_received
-            .recv_timeout(Duration::from_secs(5))
-            .unwrap()
-            .contains("open-session")
-    );
+    assert!(tilo_test_env::recv("the open request", &request_received).contains("open-session"));
     let address = ui::bound_dispatch::BoundActionAddress {
         instance_id: TAB,
         address: tilo_actions::ActionAddress::new(terminal::Terminal::KIND, "inspect-session"),
@@ -86,15 +85,13 @@ fn hosted_terminal_delayed_open_keeps_host_keyboard_input_responsive() {
     );
     host.key("Escape");
     release.send(()).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while inspect(&mut host)["lifecycle"] == "opening" {
-        assert!(
-            Instant::now() < deadline,
-            "completion must reach the mounted component"
-        );
+    tilo_test_env::wait_until("completion to reach the mounted component", || {
+        if inspect(&mut host)["lifecycle"] != "opening" {
+            return true;
+        }
         host.relayout();
-        std::thread::yield_now();
-    }
+        false
+    });
     assert_eq!(inspect(&mut host)["lifecycle"], "no_runtime");
     assert_eq!(inspect(&mut host)["startup_reason"], "delayed readiness");
     assert_eq!(inspect(&mut host)["input_available"], false);
@@ -105,9 +102,13 @@ fn hosted_terminal_delayed_open_keeps_host_keyboard_input_responsive() {
 #[cfg(unix)]
 #[test]
 fn deferred_hosted_terminal_grant_reports_missing_ush_through_its_resource() {
-    use std::time::{Duration, Instant};
     let profile = tempfile::tempdir().unwrap();
-    let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+    let mut apps = InProcessApps::at(
+        profile.path(),
+        &profile.path().join("person"),
+        "test-person",
+    )
+    .unwrap();
     let component = apps
         .mount(
             terminal::definition(),
@@ -137,15 +138,16 @@ fn deferred_hosted_terminal_grant_reports_missing_ush_through_its_resource() {
             .value
             .unwrap()
     };
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while matches!(
-        inspect(&mut host)["lifecycle"].as_str(),
-        Some("unopened" | "opening")
-    ) {
-        assert!(Instant::now() < deadline, "missing service must complete");
+    tilo_test_env::wait_until("the missing service to complete", || {
+        if !matches!(
+            inspect(&mut host)["lifecycle"].as_str(),
+            Some("unopened" | "opening")
+        ) {
+            return true;
+        }
         host.relayout();
-        std::thread::yield_now();
-    }
+        false
+    });
     let state = inspect(&mut host);
     assert_eq!(state["lifecycle"], "no_runtime");
     assert_eq!(state["input_available"], false);

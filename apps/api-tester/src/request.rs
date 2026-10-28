@@ -13,11 +13,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use ui::icons::Icon;
-use ui::tokens::{Metrics, TextRole};
+use ui::tokens::TextRole;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Button, ButtonRole, Column, Container, Dropdown, Element, Field, Row, Scrollable, Text,
-    TextInput, TextInputKind, ToggleGroup,
+    Button, Column, Container, Dropdown, Element, Field, Row, Scrollable, Text, TextInput,
+    TextInputKind, ToggleGroup,
 };
 
 use crate::commands::{AuthField, Cmd, FormMode, FormTarget, Sink, Table};
@@ -96,8 +96,7 @@ fn body(text: &str) -> Element {
 // URL bar
 // ---------------------------------------------------------------------------
 
-/// The method, the URL, Save and Send on one row; the row wraps on a narrow
-/// window.
+/// The method and the URL on one row.
 pub(crate) fn url_bar(sink: &Sink) -> Element {
     let method = Dropdown::from_state(
         HttpMethod::ALL
@@ -122,30 +121,37 @@ pub(crate) fn url_bar(sink: &Sink) -> Element {
         &sink.url.borrow(),
         Workspace::paths().request.url,
     );
-    let save = Button::new("api.save-request", "Save")
-        .with_icon(Icon::Check)
-        .with_accessible_name("Save request")
+    Box::new(
+        Row::new().push(Box::new(method)).push(Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_flex_grow()
+                .with_child(url),
+        )),
+    )
+}
+
+/// Save and Send: the request's actions, which the window's bar shows.
+/// Save and Send — or Cancel, while a request is on its way, so a server
+/// that never answers is never a locked app.
+pub(crate) fn request_actions(sink: &Sink, sending: bool) -> Element {
+    let save = Button::icon_only("api.save-request", Icon::Check, "Save request")
         .tooltip("Save this request to a collection")
-        .on_effect(pusher(
+        // It opens the save form; the save it leads to is its own action.
+        .on_own_device_effect(pusher(
             sink,
             Cmd::OpenForm(FormMode::SaveRequest, FormTarget::default()),
         ));
-    let send = sink.send(Button::new("api.send", "Send").role(ButtonRole::Primary));
-    // The endpoint keeps room to read: the URL never gets narrower than a few
-    // words, so on a narrow window the row wraps and the URL takes a line.
-    Box::new(
-        Row::new()
-            .push(Box::new(method))
-            .push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_flex_grow()
-                    .with_min_width(Metrics::BASE.min_pointer_target * 10.0)
-                    .with_child(url),
-            ))
-            .push(Box::new(save))
-            .push(Box::new(send)),
-    )
+    let action = if sending {
+        sink.effect(
+            Button::icon_only("api.cancel-send", Icon::X, "Cancel request")
+                .tooltip("Stop waiting for the server"),
+            &crate::actions::ApiTesterEffect::CancelSend,
+        )
+    } else {
+        sink.send(Button::icon_only("api.send", Icon::Send, "Send"))
+    };
+    Box::new(Row::new().push(Box::new(save)).push(Box::new(action)))
 }
 
 /// What the `{{variables}}` in the URL resolve to, as one quiet line. Empty
@@ -205,7 +211,7 @@ pub(crate) fn section(
     sink: &Sink,
 ) -> Built {
     let tab_sink = sink.clone();
-    let tabs = ToggleGroup::new(
+    let tabs = ui::widget::ViewTabs::new(
         RequestTab::ALL
             .iter()
             .map(|t| Segment::new(t.label()))

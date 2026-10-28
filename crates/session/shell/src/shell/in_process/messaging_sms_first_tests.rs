@@ -1,4 +1,3 @@
-//! The real default loan, original Passwords decision and private native D-Bus.
 use super::*;
 use crate::shell::in_process::messaging::sms_first;
 use std::collections::HashMap;
@@ -218,7 +217,7 @@ impl sms_first::Source for Source {
             receipt
                 .lock()
                 .unwrap()
-                .recv_timeout(std::time::Duration::from_secs(10))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .map_err(|_| SendError::Unavailable)?;
         }
         Ok(())
@@ -261,6 +260,7 @@ fn empty_native_messages_sim_choice_protected_review_receive_reply_and_revoke() 
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = crate::shell::in_process::InProcessApps::native_for_profile(
         &rig.root.path().join("sms-apps"),
+        &rig.root.path().join("sms-apps").join("person"),
         &rig.owner.principal,
         socket,
     )
@@ -294,7 +294,7 @@ fn empty_native_messages_sim_choice_protected_review_receive_reply_and_revoke() 
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |_| {
+            .wait_until(tilo_test_env::hang_bound(), |_| {
                 apps.pump_messaging_records();
                 sms_source.held.load(Ordering::Acquire)
             })
@@ -475,7 +475,7 @@ fn enroll(
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |_| {
+            .wait_until(tilo_test_env::hang_bound(), |_| {
                 apps.pump_messaging_records();
                 mounted.client.account_state(&account) == AccountState::Ready
             })
@@ -526,11 +526,11 @@ fn receive_reply(
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |h| {
+            .wait_until(tilo_test_env::hang_bound(), |h| {
                 apps.pump_messaging_records();
                 h.a11y_nodes()
                     .iter()
-                    .any(|(_, n)| n.label() == Some("private SIM arrival"))
+                    .any(|(_, n)| speaks(n.label(), "private SIM arrival"))
             })
     );
     let reply = MessagesEffect::Send {
@@ -549,7 +549,7 @@ fn receive_reply(
             .harness
             .a11y_nodes()
             .iter()
-            .any(|(_, n)| n.label() == Some("private SIM reply"))
+            .any(|(_, n)| speaks(n.label(), "private SIM reply"))
     );
     assert!(!mounted.harness.dump_json().contains("private SIM"));
     assert!(!mounted.harness.dump_json().contains("8901000000000000001"));
@@ -583,6 +583,7 @@ fn restart(
     drop(apps);
     let mut apps = crate::shell::in_process::InProcessApps::native_for_profile(
         &rig.root.path().join("sms-apps"),
+        &rig.root.path().join("sms-apps").join("person"),
         &rig.owner.principal,
         rig.root.path().join("sms-first.sock"),
     )
@@ -605,7 +606,7 @@ fn restart(
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |_| {
+            .wait_until(tilo_test_env::hang_bound(), |_| {
                 apps.pump_messaging_records();
                 mounted.client.account_state(account) == AccountState::Ready
             }),
@@ -647,11 +648,11 @@ fn restart(
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |h| {
+            .wait_until(tilo_test_env::hang_bound(), |h| {
                 apps.pump_messaging_records();
                 h.a11y_nodes()
                     .iter()
-                    .any(|(_, n)| n.label() == Some("private SIM reply"))
+                    .any(|(_, n)| speaks(n.label(), "private SIM reply"))
             }),
         "the same account history must return after restart"
     );

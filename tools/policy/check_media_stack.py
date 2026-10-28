@@ -318,11 +318,17 @@ def check(root: Path = ROOT) -> list[Violation]:
 def main() -> int:
     found = check() + stale_environments()
     if found:
-        print("GStreamer is the only media stack, and no shipped image carries Cisco's OpenH264:")
+        print(
+            "GStreamer is the only media stack, and no shipped image carries Cisco's OpenH264:",
+            file=sys.stderr,
+        )
         for violation in found:
-            print(f"  {violation}")
+            print(violation)
         return 1
-    print("No in-tree codec crates (openh264, ffmpeg-next); no shipped image installs Cisco's OpenH264.")
+    print(
+        "No in-tree codec crates (openh264, ffmpeg-next); no shipped image installs Cisco's OpenH264.",
+        file=sys.stderr,
+    )
     return 0
 
 

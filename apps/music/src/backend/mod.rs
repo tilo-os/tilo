@@ -106,7 +106,6 @@ pub struct AlbumHit {
     pub cover_url: String,
 }
 
-/// An artist returned by a search.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArtistHit {
     /// `YouTube` channel id (e.g. `UC…`) — the key [`MusicBackend::artist`] fetches.
@@ -118,7 +117,6 @@ pub struct ArtistHit {
     pub avatar_url: String,
 }
 
-/// A playlist returned by a search.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlaylistHit {
     /// YouTube-Music playlist browse id (e.g. `PL…` / `RDCLAK…`).
@@ -212,7 +210,6 @@ impl HomeContent {
     }
 }
 
-/// One album on an artist page.
 #[derive(Clone, Debug)]
 pub struct ArtistAlbum {
     pub id: String,
@@ -460,6 +457,27 @@ pub trait MusicBackend: Send + Sync {
         Ok(SearchBundle::default())
     }
 
+    /// The catalogue's quick answer for a query being typed: the few songs,
+    /// albums, artists and playlists its suggestions name, in a fraction of
+    /// the time [`Self::search_all`] takes. The search shows them first and
+    /// the full answer after. Offline and by default there is none.
+    ///
+    /// # Errors
+    ///
+    /// Live: a network failure or an unparseable response.
+    fn search_quick(&self, _query: &str) -> Result<SearchBundle, BackendError> {
+        Ok(SearchBundle::default())
+    }
+
+    /// Open the connection to the catalogue before the first query: the
+    /// person focused the search field. Blocks; runs off the UI thread.
+    fn warm(&self) {}
+
+    /// The catalogue's name, as its section of search results is headed.
+    fn catalogue_label(&self) -> &'static str {
+        "YouTube Music"
+    }
+
     /// Resolve a video id to a directly-playable audio stream. Offline errors;
     /// live returns a real googlevideo media URL.
     ///
@@ -559,7 +577,6 @@ mod tests {
 
     #[test]
     fn default_backend_is_offline_empty_and_cannot_stream() {
-        // Phase `default_backend_is_offline_and_cannot_stream`.
         {
             let b = default_backend();
             assert!(!b.is_live());
@@ -570,7 +587,6 @@ mod tests {
             assert!(b.resolve_audio("dQw4w9WgXcQ").is_err());
         }
 
-        // Phase `default_backend_multi_type_search_is_empty_bundle`.
         {
             let b = default_backend();
             // The multi-type search shape exists on the real trait; offline it just
@@ -584,7 +600,6 @@ mod tests {
             assert!(bundle.top.is_none());
         }
 
-        // Phase `preferred_backend_offline_build_notes_and_is_offline`.
         {
             // A deliberately feature-minimal build remains honest and offline;
             // the ordinary default build has `live` enabled.

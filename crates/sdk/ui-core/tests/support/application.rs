@@ -9,7 +9,9 @@ use tilo_ui::application::{
 use tilo_ui::application_view::InstanceViewStore;
 use tilo_ui::launch::LaunchError;
 use tilo_ui::local_state::LocalState;
-use tilo_ui::permissions::{ActionKind, PermissionContext, PermissionScope, UserId};
+use tilo_ui::permissions::{
+    ActionKind, PermissionContext, PermissionScope, SharedPermissions, UserId,
+};
 use tilo_ui::record::{RecordCheckout, RecordKind, RecordOwners, RecordStore};
 use tilo_ui::view::ViewContribution;
 use tilo_ui::wake::WakeHandle;
@@ -223,17 +225,23 @@ pub fn captured_handles() -> Vec<WakeHandle> {
 pub fn local_state() -> LocalState<String> {
     LOCAL.with_borrow(|v| v.clone().unwrap())
 }
-pub fn permissions() -> Rc<RefCell<PermissionContext>> {
-    Rc::new(RefCell::new(
-        PermissionContext::stranger("probe-author").at_unix_time(100),
-    ))
+pub fn permissions() -> SharedPermissions {
+    SharedPermissions::new(PermissionContext::stranger("probe-author").at_unix_time(100))
+}
+/// The author as the room's Owner: everything is allowed, so an outside
+/// effect runs without asking.
+pub fn owner_permissions() -> SharedPermissions {
+    SharedPermissions::new(
+        PermissionContext::member("probe-author", tilo_ui::permissions::Role::Owner)
+            .at_unix_time(100),
+    )
 }
 /// The author as an Editor of the room: may make undoable changes.
-pub fn editor_permissions() -> Rc<RefCell<PermissionContext>> {
-    Rc::new(RefCell::new(
+pub fn editor_permissions() -> SharedPermissions {
+    SharedPermissions::new(
         PermissionContext::member("probe-author", tilo_ui::permissions::Role::Editor)
             .at_unix_time(100),
-    ))
+    )
 }
 pub fn author() -> UserId {
     UserId("probe-author".into())
@@ -246,14 +254,15 @@ pub fn denied_scope() -> PermissionScope {
 }
 pub fn definition(create: tilo_ui::application::ComponentFactory) -> ApplicationDefinition {
     ApplicationDefinition {
-        app_id: APP,
-        title: "Probe",
+        app_id: APP.into(),
+        title: "Probe".into(),
         icon: IconDescriptor::Glyph("P"),
         record_kind: RecordKind::new("probe"),
         required: vec![],
         optional: vec![],
         opens: &[],
         room_record: false,
+        opens_before_record: false,
         create,
     }
 }
@@ -276,11 +285,11 @@ pub fn runner_inputs() -> tilo_ui::application::ComponentRunnerInputs {
         text_renderer: tilo_ui::TextRenderer::with_font_catalog(&catalog).unwrap(),
     }
 }
-pub fn runner_permissions() -> Rc<RefCell<PermissionContext>> {
-    Rc::new(RefCell::new(
+pub fn runner_permissions() -> SharedPermissions {
+    SharedPermissions::new(
         PermissionContext::member("probe-author", tilo_ui::permissions::Role::Owner)
             .at_unix_time(100),
-    ))
+    )
 }
 pub struct ProbeHost {
     pub owners: RecordOwners,
@@ -291,6 +300,22 @@ pub struct ProbeHost {
 }
 impl ProbeHost {
     pub fn new() -> Self {
+        Self::over(RecordOwners::new)
+    }
+
+    /// A host whose record store writes nothing until a test flushes it:
+    /// a test can hold a save under way for as long as it checks what a
+    /// pending save does, however slowly a loaded machine runs it.
+    pub fn holding_writes() -> Self {
+        Self::over(|root| {
+            RecordOwners::with_store(std::rc::Rc::new(app_state::FsStore::with_debounce(
+                root,
+                std::time::Duration::from_secs(3600),
+            )))
+        })
+    }
+
+    fn over(owners: impl FnOnce(std::path::PathBuf) -> RecordOwners) -> Self {
         CALLS.set(0);
         OPERATIONS.with_borrow_mut(Vec::clear);
         COMMITTED_ACTION.set(None);
@@ -301,7 +326,7 @@ impl ProbeHost {
         NATIVE_LIFECYCLE.with_borrow_mut(Vec::clear);
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
-        let mut owners = RecordOwners::new(root.clone());
+        let mut owners = owners(root.clone());
         let records = owners.open(APP, ROOM).unwrap();
         let views = Rc::new(InstanceViewStore::new(root, DEVICE, ROOM).unwrap());
         Self {
@@ -332,7 +357,7 @@ impl ProbeHost {
         definition: &ApplicationDefinition,
         instance: u64,
         target: &LaunchTarget,
-        permissions: Rc<RefCell<PermissionContext>>,
+        permissions: SharedPermissions,
     ) -> Result<HostContext, LaunchError> {
         HostContext::prepare(
             definition,
@@ -539,7 +564,8 @@ impl Widget for ProbeRoot {
         dyn tilo_ui::search::capability::SearchSource,
         dyn tilo_ui::view::capability::ViewState,
         dyn tilo_ui::undo::UndoPoints,
-        dyn tilo_ui::undo::CommittedActions
+        dyn tilo_ui::undo::CommittedActions,
+        dyn tilo_ui::host_operation::ResourceOperations
     );
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -550,52 +576,6 @@ impl Widget for ProbeRoot {
         });
     }
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["probe.view", "probe.effect", "probe.pending"]
-    }
-    fn start_operation(
-        &mut self,
-        op: &tilo_ui::host_operation::ResourceOperation<'_>,
-        _: &mut tilo_ui::widget::Edits<'_>,
-        _: &ObjId,
-    ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
-        let Some(tilo_ui::host_operation::OperationRequest { kind, type_id, .. }) = op.unscoped()
-        else {
-            return Ok(None);
-        };
-        if !self.local_resource_operation_handlers().contains(&type_id) {
-            return Ok(None);
-        }
-        if type_id == "probe.pending" {
-            self.operations.borrow_mut().push("pending".into());
-            return Ok(Some(
-                tilo_ui::host_operation::ResourceOperationStart::Accepted,
-            ));
-        }
-        self.operations.borrow_mut().push(format!("{kind:?}"));
-        Ok(Some(
-            tilo_ui::host_operation::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            ),
-        ))
-    }
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancel: bool,
-        _: &AutoCommit,
-        _: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if !cancel {
-            return None;
-        }
-        assert!(!self.local.writer().try_set("cancelled after close".into()));
-        self.operations.borrow_mut().push("cancelled".into());
-        Some(tilo_actions::InvocationUpdate::Cancelled {
-            invocation,
-            message: None,
-        })
-    }
     fn sync(&mut self, _: &AppModel, _: &ModelPath) {
         assert!(self.operational, "construction must project read-only");
         self.local_snapshot = self.local.with(Clone::clone);
@@ -647,6 +627,57 @@ impl Widget for ProbeRoot {
     }
     fn set_focus(&mut self, focused: bool) {
         self.focused = focused;
+    }
+}
+
+impl tilo_ui::host_operation::ResourceOperations for ProbeRoot {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["probe.view", "probe.effect", "probe.pending"]
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &tilo_ui::host_operation::ResourceOperation<'_>,
+        _: &mut tilo_ui::widget::Edits<'_>,
+        _: &ObjId,
+    ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
+        let Some(tilo_ui::host_operation::OperationRequest { kind, type_id, .. }) = op.unscoped()
+        else {
+            return Ok(None);
+        };
+        if !tilo_ui::host_operation::local_resource_operation_handlers(self).contains(&type_id) {
+            return Ok(None);
+        }
+        if type_id == "probe.pending" {
+            self.operations.borrow_mut().push("pending".into());
+            return Ok(Some(
+                tilo_ui::host_operation::ResourceOperationStart::Accepted,
+            ));
+        }
+        self.operations.borrow_mut().push(format!("{kind:?}"));
+        Ok(Some(
+            tilo_ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        ))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancel: bool,
+        _: &AutoCommit,
+        _: &ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        if !cancel {
+            return None;
+        }
+        assert!(!self.local.writer().try_set("cancelled after close".into()));
+        self.operations.borrow_mut().push("cancelled".into());
+        Some(tilo_actions::InvocationUpdate::Cancelled {
+            invocation,
+            message: None,
+        })
     }
 }
 
@@ -814,10 +845,10 @@ impl tilo_ui::resources::PublishesResources for ProbeRoot {
                         &ProbeAction("confirmed".into()),
                     )
                     .unwrap()
+                    // A question one Confirm answers: a typed name is only
+                    // for an irreversible action, and names what it loses.
                     .with_contract(tilo_actions::ActionContract {
-                        confirmation: tilo_actions::ConfirmationPolicy::Phrase {
-                            phrase: "JA".into(),
-                        },
+                        confirmation: tilo_actions::ConfirmationPolicy::Confirm,
                         ..tilo_actions::ActionContract::default()
                     }),
                 ),

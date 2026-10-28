@@ -40,7 +40,6 @@ pub struct InstalledApp {
     pub opens_extensions: Vec<String>,
     /// Concrete normalized MIME claims from `[providers].mime`.
     pub opens_mime_types: Vec<String>,
-    /// Normalized URI schemes from `[providers].schemes`.
     pub opens_uri_schemes: Vec<String>,
     /// `[providers].secondary`: another app claiming the same resource is
     /// the default for it.
@@ -51,6 +50,26 @@ pub struct InstalledApp {
 }
 
 impl InstalledApp {
+    /// The capabilities its signed manifest declares (`[capabilities]`,
+    /// required and optional), read from the manifest on disk; none when
+    /// the manifest is gone or unreadable. Read when a host decides a grant
+    /// on one, not kept for every app.
+    #[must_use]
+    pub fn declared_capabilities(&self) -> Vec<String> {
+        let Ok(source) = std::fs::read_to_string(&self.manifest_path) else {
+            return Vec::new();
+        };
+        let Ok(manifest) = tilo_app_package::manifest::Manifest::from_toml_str(&source) else {
+            return Vec::new();
+        };
+        let capabilities = manifest.capabilities;
+        capabilities
+            .required
+            .into_iter()
+            .chain(capabilities.optional)
+            .collect()
+    }
+
     /// The application `entry` installs, read through its manifest. `None`
     /// when the manifest is missing (the payload was deleted behind the
     /// registry's back) or unreadable.
@@ -149,6 +168,17 @@ impl InstalledApp {
                 .chain(&declared.optional)
                 .any(|name| name == capability)
         })
+    }
+
+    /// The icon file the signed manifest's `[package] icon` names, in the
+    /// installed payload; `None` for a package without one or an unreadable
+    /// manifest. Validation keeps the name a plain relative path inside the
+    /// payload, so the join cannot leave it.
+    #[must_use]
+    pub fn icon_path(&self) -> Option<PathBuf> {
+        let icon = self.signed_manifest()?.package.icon?;
+        let path = self.payload_root.join(icon);
+        path.is_file().then_some(path)
     }
 
     fn signed_manifest(&self) -> Option<tilo_app_package::manifest::Manifest> {
@@ -341,6 +371,53 @@ mod tests {
         assert!(!tool.has_gui);
         assert_eq!(tool.display_name, "Tool");
         assert!(tool.offers.is_empty());
+    }
+
+    #[test]
+    fn the_signed_icon_is_the_file_in_the_installed_payload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let user = tmp.path().join("store");
+        std::fs::create_dir_all(&user).unwrap();
+        let notes = install(
+            tmp.path(),
+            "so.tilo.lang.notes",
+            &manifest(
+                "id = \"so.tilo.lang.notes\"\nversion = \"0.1.0\"\nkind = \"app\"\n\
+                 icon = \"icon.svg\"",
+                "[entrypoint]\nbin = \"bin/tilolang-app\"\ntype = \"gui\"\n",
+            ),
+        );
+        let plain = install(
+            tmp.path(),
+            "so.tilo.plain",
+            &manifest(
+                "id = \"so.tilo.plain\"\nversion = \"1.0.0\"\nkind = \"app\"",
+                "[entrypoint]\nbin = \"bin/plain\"\ntype = \"gui\"\n",
+            ),
+        );
+        let mut rows = String::new();
+        for package in [&notes, &plain] {
+            write!(
+                rows,
+                "[[entry]]\nid = {:?}\npayload_root = {:?}\nmanifest_path = {:?}\n\n",
+                package.id,
+                package.payload_root.display().to_string(),
+                package.manifest_path.display().to_string(),
+            )
+            .unwrap();
+        }
+        std::fs::write(package_store::Layout::new(&user).registry(), rows).unwrap();
+        let catalog = Catalog::at(&user, None);
+        let app = read_one(&catalog, "so.tilo.lang.notes").unwrap().unwrap();
+        assert_eq!(
+            app.icon_path(),
+            None,
+            "an icon the payload lacks is no icon"
+        );
+        std::fs::write(notes.payload_root.join("icon.svg"), "<svg/>").unwrap();
+        assert_eq!(app.icon_path(), Some(notes.payload_root.join("icon.svg")));
+        let plain = read_one(&catalog, "so.tilo.plain").unwrap().unwrap();
+        assert_eq!(plain.icon_path(), None);
     }
 
     #[test]

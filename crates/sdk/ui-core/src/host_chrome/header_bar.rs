@@ -106,7 +106,11 @@ impl HeaderBar {
                 menu_commands.push(None);
             }
             previous = Some(command.group);
-            menu.push(MenuItem::selection(command.label.clone()).with_enabled(command.enabled));
+            menu.push(
+                MenuItem::selection(command.label.clone())
+                    .for_action(command.binding.address().clone())
+                    .with_enabled(command.enabled),
+            );
             menu_commands.push(command.invocation());
         }
 

@@ -12,7 +12,7 @@ libexec_dir=${TILO_LIBEXEC_DIR:-/usr/libexec}
     exit 2
 }
 
-for file in /usr/bin/tilo-shell /usr/bin/tilo-launcher /usr/bin/tilo-import-folders \
+for file in /usr/bin/tilo-shell /usr/libexec/tilo/tilo-launcher /usr/bin/tilo-import-folders \
             "$libexec_dir/tilo-unlock-helper" "$libexec_dir/tilo-session" \
             "$libexec_dir/tilo-session-runner" \
             "$libexec_dir/tilo-flight-recorder" \
@@ -64,7 +64,7 @@ grep -Fxq "Exec=/usr/bin/tilo-import-folders --import-folders" "$(path /usr/shar
 grep -Fxq "TryExec=/usr/bin/tilo-import-folders" "$(path /usr/share/applications/tilo-import-folders.desktop)"
 "$(path /usr/bin/tilo-import-folders)" --tilo-package-smoke
 
-for elf in /usr/bin/tilo-shell /usr/bin/tilo-launcher /usr/bin/tilo-import-folders "$libexec_dir/tilo-unlock-helper" \
+for elf in /usr/bin/tilo-shell /usr/libexec/tilo/tilo-launcher /usr/bin/tilo-import-folders "$libexec_dir/tilo-unlock-helper" \
            "$libexec_dir/tilo-flight-recorder" "$libexec_dir/tilo-session-report"; do
     elf_description=$(LC_ALL=C file "$(path "$elf")")
     case ${TILO_EXPECT_ARCH:-} in

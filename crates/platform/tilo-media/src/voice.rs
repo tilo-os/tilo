@@ -506,7 +506,7 @@ impl JitterBuffer {
         out
     }
     /// The publishers heard talking at `now`: frames arriving back to back
-    /// within the last [`HEARD_FOR`], not a silent publisher's comfort noise.
+    /// within the last `HEARD_FOR`, not a silent publisher's comfort noise.
     pub fn heard(&self, now: Instant) -> impl Iterator<Item = &PublicationId> {
         self.publishers
             .values()

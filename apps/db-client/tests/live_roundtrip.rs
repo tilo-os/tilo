@@ -81,7 +81,6 @@ fn postgres_real_round_trip_and_cancellation() {
             "CREATE failed: {:?}",
             s.status
         );
-        // DDL is non-select.
         assert!(create.is_none_or(|r| !r.is_select));
 
         s.run_query(&format!(
@@ -161,7 +160,10 @@ fn postgres_real_round_trip_and_cancellation() {
         s.block_until_idle();
         let bounded = s.query_result.as_ref().expect("bounded select result");
         assert_eq!(bounded.rows.len(), MAX_QUERY_ROWS);
-        assert!(bounded.truncated, "the sentinel row must mark truncation");
+        assert!(
+            bounded.truncation == Some(db_client::model::Truncation::RowLimit),
+            "the sentinel row must mark truncation"
+        );
         assert_eq!(bounded.rows[0][0].display(), "1");
         assert_eq!(
             bounded.rows[MAX_QUERY_ROWS - 1][0].display(),
@@ -179,7 +181,8 @@ fn postgres_real_round_trip_and_cancellation() {
         let mut s = Session::new();
         s.add_connection_blocking(postgres_profile("live-pg-cancel"));
         assert!(s.connected, "postgres connect failed: {:?}", s.status);
-        s.run_query("SELECT pg_sleep(30)");
+        // A day-long sleep: only the cancel can end it within the hang bound.
+        s.run_query("SELECT pg_sleep(86400)");
         tilo_test_env::wait_until("the worker to publish the active PostgreSQL query", || {
             s.cancel_in_flight_query()
         });
@@ -187,8 +190,8 @@ fn postgres_real_round_trip_and_cancellation() {
         s.block_until_idle();
         let stopped = cancelled.elapsed();
         assert!(
-            stopped < std::time::Duration::from_secs(10),
-            "cancelling took {stopped:?}; the 30 s PostgreSQL sleep was not stopped"
+            stopped < tilo_test_env::hang_bound(),
+            "cancelling took {stopped:?}; the PostgreSQL sleep was not stopped"
         );
         assert!(!s.busy());
         assert!(matches!(s.status, db_client::session::RunStatus::Idle));
@@ -256,7 +259,8 @@ fn mysql_real_round_trip_and_cancellation() {
         let mut s = Session::new();
         s.add_connection_blocking(mysql_profile("live-mysql-cancel"));
         assert!(s.connected, "mysql connect failed: {:?}", s.status);
-        s.run_query("SELECT SLEEP(30)");
+        // A day-long sleep: only the cancel can end it within the hang bound.
+        s.run_query("SELECT SLEEP(86400)");
         tilo_test_env::wait_until("the worker to publish the active MySQL query", || {
             s.cancel_in_flight_query()
         });
@@ -264,8 +268,8 @@ fn mysql_real_round_trip_and_cancellation() {
         s.block_until_idle();
         let stopped = cancelled.elapsed();
         assert!(
-            stopped < std::time::Duration::from_secs(10),
-            "cancelling took {stopped:?}; the 30 s MySQL sleep was not stopped"
+            stopped < tilo_test_env::hang_bound(),
+            "cancelling took {stopped:?}; the MySQL sleep was not stopped"
         );
         assert!(!s.busy());
         assert!(matches!(s.status, db_client::session::RunStatus::Idle));

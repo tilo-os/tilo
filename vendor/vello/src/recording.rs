@@ -72,6 +72,9 @@ pub enum Command {
     /// Commands the data to be uploaded to the given image.
     UploadImage(ImageProxy, Vec<u8>),
     WriteImage(ImageProxy, [u32; 2], ImageData),
+    /// Writes one rect (x, y, width, height) of an image's pixels to where
+    /// the image is in the given image (Tilo patch).
+    WriteImageRegion(ImageProxy, [u32; 2], ImageData, [u32; 4]),
     Download(BufferProxy),
     /// Commands to clear the buffer from an offset on for a length of the given size.
     /// If the size is [None], it clears until the end.
@@ -170,6 +173,18 @@ impl Recording {
 
     pub fn write_image(&mut self, proxy: ImageProxy, x: u32, y: u32, image: ImageData) {
         self.push(Command::WriteImage(proxy, [x, y], image));
+    }
+
+    /// Writes the rect `region` (x, y, width, height) of `image`, which is
+    /// at `x`, `y` in `proxy` (Tilo patch).
+    pub fn write_image_region(
+        &mut self,
+        proxy: ImageProxy,
+        [x, y]: [u32; 2],
+        image: ImageData,
+        region: [u32; 4],
+    ) {
+        self.push(Command::WriteImageRegion(proxy, [x, y], image, region));
     }
 
     pub fn dispatch<R>(&mut self, shader: ShaderId, wg_size: (u32, u32, u32), resources: R)

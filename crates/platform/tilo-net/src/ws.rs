@@ -117,10 +117,6 @@ impl WebSocket {
     }
 
     /// Close the socket with a normal closure.
-    ///
-    /// # Errors
-    ///
-    /// When the close frame could not be sent.
     pub async fn close(mut self) -> Result<(), NetError> {
         self.inner.close().await
     }

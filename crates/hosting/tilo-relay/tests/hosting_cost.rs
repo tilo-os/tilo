@@ -1,7 +1,7 @@
 //! What one keystroke costs the host: bytes on the wire, bytes on disk.
 //!
 //! One-character edits take the production path end to end: the toolkit's
-//! Automerge change, `StatePeer::publish_incremental`, the host retention
+//! Automerge change, `PeerPublicationMut::publish_incremental`, the host retention
 //! classifier, `RelayCoeditSession::publish_retained_delta` on a real
 //! `RelayClient`, and the relay's authenticated ingress, retention and
 //! fan-out. A subscriber reads the frames the relay actually writes it, whose
@@ -26,7 +26,7 @@
 #![allow(
     clippy::cast_possible_truncation,
     clippy::arithmetic_side_effects,
-    reason = "byte counts, file counts and microseconds of a bounded 1,000-edit run fit every \
+    reason = "byte counts, file counts and microseconds of a bounded 256-edit run fit every \
               conversion and sum"
 )]
 #![allow(
@@ -60,17 +60,23 @@ const ROUTES: [(&str, &str); 4] = [
     ("so.tilo.sheets", "tab:0000000000000003"),
     ("so.tilo.code-editor", "tab:0000000000000004"),
 ];
-const KEYSTROKES: usize = 1_000;
+/// Eight words in each document: every keystroke is a durable relay commit,
+/// whose barriers take a tenth of a second or more on a busy CI disk. What
+/// is gated is the size of single frames, which more keystrokes repeat:
+/// 1,000 of them took 5 to 16 minutes and measured 2 to 3 B more at the
+/// medians and maxima, as their later edits' larger counters took more
+/// bytes. Each document still grows to the compactor's 64-entry check.
+const KEYSTROKES: usize = 256;
 /// Characters in each document before the first keystroke (~10 kB).
 const DOCUMENT_CHARS: usize = 10_000;
 
 /// Ceiling for the median one-character keystroke frame uncoded:
 /// 481 B measured on Linux CI before every change named its action, plus
 /// the keystroke's compact continuation of its word's gesture (~60 B; a
-/// cleartext op carries no second copy of it). Measured here: 544 B.
+/// cleartext op carries no second copy of it). Measured here: 542 B.
 const BUDGET_COMPACT_FRAME_P50_BYTES: u64 = 550;
 /// Ceiling for the largest such frame, a word's first keystroke carrying
-/// the gesture's full entry in its compact form: measured 673 B, held to
+/// the gesture's full entry in its compact form: measured 599 B, held to
 /// the 697 B of the frame before changes named their actions.
 const BUDGET_COMPACT_FRAME_MAX_BYTES: u64 = 697;
 /// Ceiling for the median keystroke frame as the relay writes it, coded
@@ -190,7 +196,6 @@ async fn subscribe(
     (endpoint, connection, send, recv)
 }
 
-/// A delta's fields.
 #[derive(Debug, PartialEq, Eq)]
 struct DeltaFields {
     workspace_id: u64,
@@ -428,6 +433,8 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
     let mut coded_frame_bytes = Vec::with_capacity(KEYSTROKES);
     let mut delivery_us = Vec::with_capacity(KEYSTROKES);
     let mut warm = None;
+    let fsyncs_before = tilo_relay::store::fsyncs();
+    let typing = Instant::now();
     for keystroke in 0..KEYSTROKES {
         let route = keystroke % ROUTES.len();
         let (app, record) = ROUTES[route];
@@ -437,6 +444,7 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
         let change = doc.save_after(&heads);
         change_bytes.push(change.len() as u64);
         let message = owner
+            .publication_mut()
             .publish_incremental(app, record, change, &author.sk, SystemTime::now())
             .unwrap();
         let (channel, kind) = neighbour_wire::retention(&message, false).unwrap();
@@ -488,6 +496,8 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
             warm = Some(footprint(&store));
         }
     }
+    let typed_ms = typing.elapsed().as_millis();
+    let fsyncs = tilo_relay::store::fsyncs() - fsyncs_before;
     let after = footprint(&store);
     let warm = warm.unwrap();
 
@@ -550,7 +560,7 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
          frame_bytes_uncoded_p50={new} frame_bytes_uncoded_max={new_max} \
          frame_bytes_p50={coded} frame_bytes_max={coded_max} retained_files={retained_files} \
          retained_bytes_per_keystroke={retained_per} other_bytes_growth={growth} \
-         delivery_us_p50={p50} delivery_us_p99={p99}",
+         delivery_us_p50={p50} delivery_us_p99={p99} fsyncs={fsyncs} typed_ms={typed_ms}",
         routes = ROUTES.len(),
         change = percentile(&change_bytes, 50),
         message = percentile(&message_bytes, 50),

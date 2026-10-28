@@ -239,7 +239,7 @@ impl Fixture {
         let scope = AirDropScope {
             peer_id: 41,
             channel: "local-files-channel".into(),
-            workspace: workspace.room.to_string(),
+            workspace: workspace.room().to_string(),
             person: "airdrop-local-person".into(),
         };
         let queue = PortalDialogQueue::default();
@@ -250,7 +250,8 @@ impl Fixture {
             queue.clone(),
             Arc::new(move || presence.load(Ordering::Acquire)),
             true,
-        );
+        )
+        .with_process_timeout(tilo_test_env::hang_bound());
         Self {
             home,
             _settings: settings,
@@ -324,15 +325,8 @@ impl Drop for Fixture {
     }
 }
 
-fn wait(mut condition: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while !condition() {
-        assert!(
-            start.elapsed() < Duration::from_secs(20),
-            "observable production operation timed out"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
+fn wait(condition: impl FnMut() -> bool) {
+    tilo_test_env::wait_until("the observable production operation", condition);
 }
 
 fn extracted(archive: &[u8]) -> Vec<u8> {
@@ -592,7 +586,7 @@ fn verified_airdrop_staging_keeps_the_approved_inode_alive_until_attempt_end() {
         .map(|entry| entry.unwrap().path())
         .find(|path| std::fs::read_link(path).is_ok_and(|target| target == fixture.path))
         .expect("approved source descriptor");
-    let staged = StagedFile::new(source, &|| true).unwrap();
+    let staged = StagedFile::new(source, &|| true, tilo_test_env::hang_bound()).unwrap();
     std::fs::remove_file(&fixture.path).unwrap();
     std::fs::write(&fixture.path, b"replacement").unwrap();
     let retained =
@@ -615,7 +609,7 @@ fn verified_airdrop_helper_receives_only_scoped_descriptors_and_no_ambient_crede
         .env()
         .set("TILO_AIRDROP_TEST_SECRET", "fictional-credential");
     let source = SecureNearbySource::open_beneath(fixture.root.path(), &fixture.path).unwrap();
-    let staged = StagedFile::new(source, &|| true).unwrap();
+    let staged = StagedFile::new(source, &|| true, tilo_test_env::hang_bound()).unwrap();
     let private = File::open(&fixture.path).unwrap();
     // SAFETY: fcntl duplicates our fixture file into a fresh owned descriptor.
     let private_fd = unsafe { libc::fcntl(private.as_raw_fd(), libc::F_DUPFD, 64) };
@@ -641,7 +635,7 @@ print(json.dumps({{"ambient": "TILO_AIRDROP_TEST_SECRET" in os.environ,
     );
     let mut command = command_base(&script);
     inherit_descriptors(&mut command, Some(staged.file.as_raw_fd()), None);
-    let reply = supervise(command, &|| true).unwrap();
+    let reply = supervise(command, &|| true, tilo_test_env::hang_bound()).unwrap();
     assert!(private.metadata().is_ok());
     assert_eq!(reply["ambient"], false);
     assert_eq!(reply["private_open"], false);

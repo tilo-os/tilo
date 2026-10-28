@@ -65,8 +65,7 @@ Do not hide expert capability behind a global “advanced mode.” Prefer a stab
 ### VPN
 
 - Quick Settings shows connection state and connects or disconnects an existing profile.
-- Settings lists profiles and owns the normal connect/disconnect experience.
-- VPN Studio owns importing WireGuard/OpenVPN material, DNS and routing policy, kill-switch rules, and diagnostics.
+- Settings → Network → VPN owns the whole experience: the profiles with their switches, each profile's page (its settings, export, delete), and adding one (a WireGuard tunnel from generated keys or a pasted file, a profile of an installed NetworkManager plugin's type, or a file import). There is no separate VPN app.
 - NetworkManager is the runtime source of truth. Every surface calls the same typed network action boundary; none shells out independently or maintains a second connection model.
 
 ### Themes

@@ -3,7 +3,7 @@
     clippy::arithmetic_side_effects,
     reason = "in a test these are the assertion, not a hazard"
 )]
-use std::{cell::RefCell, rc::Rc};
+use std::rc::Rc;
 use tilo_desktop::composition::{DesktopSurface, SurfaceChrome};
 use tilo_desktop::resolver::{ApplicationCatalogTileResolver, ComponentContextSource, TileRequest};
 use tilo_desktop_model::{
@@ -31,7 +31,7 @@ impl ComponentContextSource for Host {
         request: &TileRequest<'_>,
         target: &LaunchTarget,
     ) -> Result<(HostContext, RestoreInput), ui::launch::LaunchError> {
-        let records = self.owners.open(definition.app_id, "room").unwrap();
+        let records = self.owners.open(definition.app_id(), "room").unwrap();
         let context = HostContext::prepare(
             definition,
             HostContextInputs {
@@ -39,10 +39,12 @@ impl ComponentContextSource for Host {
                 views: self.views.clone(),
                 device_id: "device".into(),
                 instance_id: request.tab.id,
-                permissions: Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
-                    "author",
-                    ui::permissions::Role::Owner,
-                ))),
+                permissions: ui::permissions::SharedPermissions::new(
+                    ui::permissions::PermissionContext::member(
+                        "author",
+                        ui::permissions::Role::Owner,
+                    ),
+                ),
                 author: ui::permissions::UserId("author".into()),
                 action_context: tilo_actions::ActionContext::default(),
             },
@@ -72,9 +74,9 @@ fn fixture() -> (
     for (i, definition) in definitions.into_iter().enumerate() {
         catalog.register(definition).unwrap();
         let id = u64::try_from(i).unwrap() + 10;
-        let store = owners.open(definition.app_id, "room").unwrap();
+        let store = owners.open(definition.app_id(), "room").unwrap();
         let checkout = tilo_desktop::records::component_record(
-            definition.app_id,
+            definition.app_id(),
             id,
             definition.record_kind.clone(),
         );
@@ -91,9 +93,10 @@ fn fixture() -> (
             id,
             title: format!("Renamed {i}"),
             tile: TileContent::AppPlaceholder {
-                kind: AppKind::Other(definition.app_id.into()),
+                kind: AppKind::Other(definition.app_id().into()),
                 label: "display-only".into(),
             },
+            app_title: None,
         });
     }
     let mut ws = Workspace::new(WorkspaceId(1), "Work");
@@ -323,7 +326,6 @@ fn inactive_chat_and_notes_actions_reach_their_actual_records_and_settle() {
             "Shared desktop page",
         ),
     ] {
-        // Chat keeps its messages in parts beside its record.
         let record = if app == "so.tilo.chat" {
             chat::parts::part(0)
         } else {

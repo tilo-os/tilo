@@ -8,7 +8,7 @@ use crate::{ChatApp, identity::LocalIdentity};
 use std::{
     io::{Read, Write},
     os::{fd::AsFd, unix::net::UnixStream},
-    time::{Duration, Instant},
+    time::Instant,
 };
 use ui::models::{Message, ModelResponse, Models, Role, StopReason, Usage};
 
@@ -85,7 +85,7 @@ fn answer(peer: &mut UnixStream, text: &str) {
 }
 
 fn chat(client: &UnixStream) -> (ChatApp, crate::testing::Room) {
-    let backend = tilo_model_gateway::runtime_client::from_descriptor_selection(
+    let backend = tilo_model_client::runtime_client::from_descriptor_selection(
         client.as_fd(),
         "chat-profile".into(),
         "chat-model".into(),
@@ -118,7 +118,7 @@ fn pump_until(
     doc: &mut crate::testing::Room,
     done: impl Fn(&ChatApp, &crate::testing::Room) -> bool,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         app.pump_model();
         app.land(doc);
@@ -138,7 +138,7 @@ fn pump_until(
 fn native_chat_descriptor_setup_completes_actual_conversation() {
     let (client, mut gateway) = UnixStream::pair().unwrap();
     gateway
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let server = std::thread::spawn(move || {
         complete_request(&mut gateway);
@@ -162,7 +162,7 @@ fn native_chat_descriptor_setup_completes_actual_conversation() {
 fn native_chat_stop_retains_partial_and_retries_on_same_descriptor() {
     let (client, mut gateway) = UnixStream::pair().unwrap();
     gateway
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let server = std::thread::spawn(move || {
         let id = complete_request(&mut gateway);

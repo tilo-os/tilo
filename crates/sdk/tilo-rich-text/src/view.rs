@@ -111,8 +111,21 @@ impl RichTextView {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.host
-            .draw(scene, transform, text, theme, &PresenceCtx::empty());
+        self.draw_with_presence(scene, transform, text, theme, &PresenceCtx::empty());
+    }
+
+    /// [`Self::draw`] with collaborators' carets and selections in the
+    /// words, where `presence` places them by paragraph id: text shown,
+    /// not edited, here while someone else edits it.
+    pub fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.host.draw(scene, transform, text, theme, presence);
     }
 }
 
@@ -159,7 +172,6 @@ mod tests {
         large.set_transform(Affine::scale(0.5));
         let large_h = large.layout(box_rect, &theme, &mut text);
         assert!(large_h > small_h * 2.0, "{large_h} vs {small_h}");
-        // Laid out at its own size, reported where it is drawn.
         assert!((large.rect().x0 - 50.0).abs() < 1e-9);
         assert!((large.rect().width() - 300.0).abs() < 1e-9);
         assert_eq!(large.editor_mut().text_align(), ui::TextAlign::Center);

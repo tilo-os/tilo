@@ -100,9 +100,7 @@ mod tests {
         assert_eq!(&b[20..24], &16u32.to_be_bytes());
         let len = b.len();
         assert_eq!(&b[len - 8..len - 4], b"IEND");
-        // The IEND CRC every PNG ends with.
         assert_eq!(&b[len - 4..], &[0xAE, 0x42, 0x60, 0x82]);
-        // The IHDR CRC covers its tag and data.
         assert_eq!(&b[29..33], &crc32(&b[12..29]).to_be_bytes());
     }
 

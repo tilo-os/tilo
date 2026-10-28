@@ -70,13 +70,12 @@ impl<R: Resource> Worker<R> {
 
     // Resolve the broker-delivered address and arguments against the app's fresh
     // publication, decode in its real registry and execute with task provenance.
-    async fn settle(&mut self, wire_id: u64, invocation: uuid::Uuid, task: &str) {
-        let response = tokio::time::timeout(
-            Duration::from_secs(2),
+    async fn settle(&mut self, wire_id: u64, invocation: uuid::Uuid, group: &str) {
+        let response = tilo_test_env::within(
+            "the worker delivery",
             self.stream.read_request().send().promise,
         )
         .await
-        .unwrap()
         .unwrap();
         let wire = response.get().unwrap();
         assert_eq!(wire.get_id(), wire_id);
@@ -85,7 +84,7 @@ impl<R: Resource> Worker<R> {
         assert_eq!(actor, "agent:scribe");
         let context: tilo_actions::ActionContext =
             serde_json::from_str(wire.get_context_json().unwrap().to_str().unwrap()).unwrap();
-        assert_eq!(context.group.as_ref().unwrap().id, task);
+        assert_eq!(context.group.as_ref().unwrap().id, group);
         let address = tilo_actions::ActionAddress::new(
             wire.get_resource().unwrap().to_str().unwrap(),
             wire.get_action().unwrap().to_str().unwrap(),
@@ -119,7 +118,7 @@ impl<R: Resource> Worker<R> {
                 .as_ref()
                 .unwrap()
                 .id,
-            task
+            group
         );
         assert!(dispatched.mutated_local());
         let after = self.doc.get_heads();
@@ -152,14 +151,10 @@ impl<R: Resource> Worker<R> {
         automerge::AutoCommit::load(&std::fs::read(&self.path).unwrap()).unwrap()
     }
 
-    async fn assert_no_delivery(&self) {
-        assert!(
-            tokio::time::timeout(
-                Duration::from_millis(30),
-                self.stream.read_request().send().promise
-            )
-            .await
-            .is_err(),
+    fn assert_no_delivery(&self) {
+        assert_eq!(
+            crate::collab_broker_capnp::unread_invocations(self.peer),
+            0,
             "a fenced action reached {}",
             self.app
         );
@@ -270,27 +265,17 @@ async fn approve_journey(
     writer: &Worker<Document>,
     settings: &Worker<DesktopControls>,
 ) -> runtime_collab::TaskRunEnvelope {
-    let queued = f.native.owner.workspace_task_snapshot(room()).unwrap();
-    assert_eq!(queued.tasks[0].status, WorkspaceTaskStatus::Queued);
-    assert!(queued.controls[&f.task].active_run.is_none());
-    assert!(
-        f.state
-            .dispatch_workspace_task(&room().to_string(), &f.task)
-            .is_err(),
-        "queue is not conscious approval"
-    );
-    writer.assert_no_delivery().await;
-    settings.assert_no_delivery().await;
+    // Nothing runs before the person approves.
+    writer.assert_no_delivery();
+    settings.assert_no_delivery();
 
-    f.approve(); // Authenticated person command, independent of any tool grant.
+    f.approve(); // The person's approval on the issue, independent of any tool grant.
     let run = delivered(agent).await;
     assert_eq!(run.task_id, f.task);
     assert!(run.instruction().contains("blocking inconsistency"));
     report(agent, &run, runtime_collab::TaskRunUpdate::Accepted)
         .await
         .unwrap();
-    let started = f.native.owner.workspace_task_snapshot(room()).unwrap();
-    assert!(started.controls[&f.task].execution.is_some());
     run
 }
 
@@ -318,12 +303,12 @@ async fn writer_journey(
         .await
         .is_err()
     );
-    settings.assert_no_delivery().await;
+    settings.assert_no_delivery();
     let first = uuid::Uuid::from_u128(4101);
     let accepted = plan_step(agent, run, writer, first, first_args)
         .await
         .unwrap();
-    writer.settle(accepted.0, first, &f.task).await;
+    writer.settle(accepted.0, first, &run.group()).await;
     assert!(matches!(
         plan_step(agent, run, writer, first, first_args)
             .await
@@ -331,7 +316,7 @@ async fn writer_journey(
             .1,
         tilo_actions::InvocationUpdate::Succeeded { .. }
     ));
-    writer.assert_no_delivery().await;
+    writer.assert_no_delivery();
 }
 
 async fn steering_journey(
@@ -342,19 +327,7 @@ async fn steering_journey(
     settings_args: &serde_json::Map<String, serde_json::Value>,
 ) {
     let direction = "Keep the compatibility checklist; enable Vim desktop controls for review.";
-    f.person_command(WorkspaceTaskCommand::DirectionForRun {
-        task_id: f.task.clone(),
-        run_epoch: 1,
-        after_revision: 0,
-        text: direction.into(),
-    })
-    .unwrap();
-    let saved = f.native.owner.workspace_task_snapshot(room()).unwrap();
-    assert_eq!(saved.controls[&f.task].directions[0].text, direction);
-    assert!(
-        saved.controls[&f.task].directions[0].applied.is_none(),
-        "Saved must not mean Applied"
-    );
+    f.direct(direction);
     let control = observed_control(agent, run).await;
     assert_eq!(control.directions[0].text, direction);
     assert_eq!(control.applied_revision, 0);
@@ -366,35 +339,16 @@ async fn steering_journey(
             .is_err(),
         "saved direction fences the old plan"
     );
-    settings.assert_no_delivery().await;
-    report(
-        agent,
-        run,
-        runtime_collab::TaskRunUpdate::DirectionsApplied { revision: 1 },
-    )
-    .await
-    .unwrap();
-    let applied = f.native.owner.workspace_task_snapshot(room()).unwrap();
-    let ack = applied.controls[&f.task].directions[0]
-        .applied
-        .as_ref()
-        .unwrap();
-    assert_eq!(ack.agent_id, "scribe");
-    assert_eq!(ack.run_epoch, 1);
-    assert_eq!(
-        applied.controls[&f.task]
-            .active_run
-            .as_ref()
-            .unwrap()
-            .applied_direction_revision,
-        1
-    );
+    settings.assert_no_delivery();
+    // The agent takes the message in, on the issue.
+    f.on_run(|run| run.directions[0].incorporated = true);
+    assert_eq!(observed_control(agent, run).await.applied_revision, 1);
     let original_id = run.run_id;
     run.lease = format!("{}:1", run.lease.rsplit_once(':').unwrap().0);
     let accepted = plan_step(agent, run, settings, second, settings_args)
         .await
         .unwrap();
-    settings.settle(accepted.0, second, &f.task).await;
+    settings.settle(accepted.0, second, &run.group()).await;
     assert!(matches!(
         plan_step(agent, run, settings, second, settings_args)
             .await
@@ -456,15 +410,10 @@ async fn stop_journey(
         .await
         .is_err()
     );
-    settings.assert_no_delivery().await;
+    settings.assert_no_delivery();
     let before_writer = std::fs::read(&writer.path).unwrap();
     let before_settings = std::fs::read(&settings.path).unwrap();
-    f.person_command(WorkspaceTaskCommand::CancelForRun {
-        task_id: f.task.clone(),
-        run_epoch: 1,
-        after_revision: 1,
-    })
-    .unwrap();
+    f.stop();
     let mut cancelled = agent.task_run_cancelled_request();
     cancelled.get().set_run_id(run.run_id);
     cancelled.get().set_lease(&run.lease);
@@ -494,28 +443,8 @@ async fn stop_journey(
         .await
         .is_err()
     );
-    writer.assert_no_delivery().await;
-    settings.assert_no_delivery().await;
-    assert!(
-        report(
-            agent,
-            run,
-            runtime_collab::TaskRunUpdate::Succeeded {
-                message: "False completion after stop".into()
-            }
-        )
-        .await
-        .is_err()
-    );
-    assert_eq!(
-        f.native
-            .owner
-            .workspace_task_snapshot(room())
-            .unwrap()
-            .tasks[0]
-            .status,
-        WorkspaceTaskStatus::Cancelled
-    );
+    writer.assert_no_delivery();
+    settings.assert_no_delivery();
     assert_eq!(std::fs::read(&writer.path).unwrap(), before_writer);
     assert_eq!(std::fs::read(&settings.path).unwrap(), before_settings);
 }

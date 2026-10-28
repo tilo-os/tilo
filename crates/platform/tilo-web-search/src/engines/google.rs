@@ -39,7 +39,6 @@ pub struct Token {
     experiments: String,
 }
 
-/// The request for a fresh [`Token`].
 pub(crate) fn token_request() -> Option<EngineRequest> {
     let mut request =
         EngineRequest::get("https://cse.google.com/cse/cse.js", &[("cx", ENGINE_ID)])?;
@@ -69,7 +68,7 @@ pub(crate) fn parse_token(script: &str) -> Option<Token> {
     })
 }
 
-pub(super) fn request(query: &str) -> Option<EngineRequest> {
+pub(super) fn request(query: &str, safe: super::SafeMode) -> Option<EngineRequest> {
     let mut request = EngineRequest::get(
         "https://cse.google.com/cse/element/v1",
         &[
@@ -77,7 +76,13 @@ pub(super) fn request(query: &str) -> Option<EngineRequest> {
             ("num", RESULTS),
             ("cx", ENGINE_ID),
             ("q", query),
-            ("safe", "off"),
+            (
+                "safe",
+                match safe {
+                    super::SafeMode::Off => "off",
+                    super::SafeMode::Strict => "active",
+                },
+            ),
             // The element answers only as JSONP; without a callback it
             // serves an HTML page.
             ("callback", "_"),
@@ -198,7 +203,7 @@ mod tests {
 
     #[test]
     fn a_query_carries_the_token() {
-        let mut url = request("rust").unwrap().url;
+        let mut url = request("rust", crate::engines::SafeMode::Off).unwrap().url;
         authorize(
             &mut url,
             &Token {

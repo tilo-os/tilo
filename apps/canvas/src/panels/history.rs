@@ -88,7 +88,6 @@ fn ago(time_ms: i64) -> String {
     ui::widget::history::format_relative_time(at, ui::time::wall())
 }
 
-/// The panel.
 pub fn panel(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let versions = cx.history(LISTED);
     let tools = tools.clone();
@@ -331,7 +330,7 @@ mod tests {
         HistoryVersion {
             change: change.into(),
             action: action.into(),
-            author: run.unwrap_or("quinten").into(),
+            author: run.unwrap_or("ada").into(),
             run: run.map(Into::into),
             ..HistoryVersion::default()
         }

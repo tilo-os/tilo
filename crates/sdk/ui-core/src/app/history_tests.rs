@@ -210,7 +210,6 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
         layout(&mut app);
         assert_eq!(app.state.doc.base_heads(), heads);
         assert_eq!(app.state.doc.pending_ops(), ops);
-        // Opening the panel then closing the actual entry preserves the editor.
         let close = named(&mut app, "History");
         app.dispatch_a11y_action(close, &crate::a11y::Action::Activate);
         layout(&mut app);
@@ -342,7 +341,7 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
         let violations = tilo_actions::validate_surface(
             &declared,
             &app.actions.action_registry,
-            &app.root_widget.resource_operation_handlers(),
+            &crate::widget::resource_operation_handlers(&*app.root_widget),
         );
         assert!(violations.is_empty(), "{violations:?}");
         let export = crate::accesskit_bridge::resource_action_node_id("live", "export");
@@ -861,15 +860,15 @@ fn owned_routes_isolate_documents_and_admit_only_custodied_bytes() {
     }
 }
 
-struct RoutedOwners {
-    app: App,
-    records: crate::RecordStore,
-    bindings: Vec<crate::bound_dispatch::CallbackBinding>,
+pub(crate) struct RoutedOwners {
+    pub(crate) app: App,
+    pub(crate) records: crate::RecordStore,
+    pub(crate) bindings: Vec<crate::bound_dispatch::CallbackBinding>,
     _owners: crate::record::RecordOwners,
     _temp: tempfile::TempDir,
 }
 impl RoutedOwners {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         use crate::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
         use crate::application_test_support::{
             APP, author, provenance, runner_permissions, runner_probe_definition,
@@ -1296,14 +1295,15 @@ impl RoutedPrimary {
             .unwrap(),
         );
         let definition = ApplicationDefinition {
-            app_id: "dev.tilo.primary-probe",
-            title: "Primary Probe",
+            app_id: "dev.tilo.primary-probe".into(),
+            title: "Primary Probe".into(),
             icon: crate::widget::IconDescriptor::Glyph("P"),
             record_kind: crate::RecordKind::new("primary.probe"),
             required: vec![],
             optional: vec![],
             opens: &[],
             room_record: false,
+            opens_before_record: false,
             create: primary_routed_factory,
         };
         let target = LaunchTarget::PrimaryNew;
@@ -1314,9 +1314,9 @@ impl RoutedPrimary {
                 views,
                 device_id: "D".into(),
                 instance_id: 70,
-                permissions: std::rc::Rc::new(std::cell::RefCell::new(
+                permissions: crate::permissions::SharedPermissions::new(
                     crate::permissions::PermissionContext::permissive(),
-                )),
+                ),
                 author: crate::permissions::UserId("primary-author".into()),
                 action_context: tilo_actions::ActionContext::default(),
             },
@@ -4116,7 +4116,7 @@ impl PaletteHistoryOwner {
                 },
             )
         };
-        spec.contract.confirmation = tilo_actions::ConfirmationPolicy::Phrase {
+        spec.type_mut().contract.confirmation = tilo_actions::ConfirmationPolicy::Phrase {
             phrase: PALETTE_CONFIRMATION.into(),
         };
         if self
@@ -4125,7 +4125,7 @@ impl PaletteHistoryOwner {
             .load(std::sync::atomic::Ordering::SeqCst)
             == 2
         {
-            spec.contract.availability = tilo_actions::Availability::Unavailable {
+            spec.type_mut().contract.availability = tilo_actions::Availability::Unavailable {
                 code: "fixture-unavailable".into(),
                 reason: "Current action unavailable".into(),
             };
@@ -4216,7 +4216,10 @@ impl PaletteHistoryOwner {
 }
 
 impl crate::widget::Widget for PaletteHistoryOwner {
-    crate::provides!(dyn crate::resources::PublishesResources);
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
 
     fn name(&self) -> &str {
         "Palette history owner"
@@ -4265,11 +4268,15 @@ impl crate::widget::Widget for PaletteHistoryOwner {
     ) {
         self.text.handle_event(event, ctx);
     }
+}
+
+impl crate::widget::ResourceOperations for PaletteHistoryOwner {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         [PALETTE_TEXT_OPERATION.into(), PALETTE_JSON_OPERATION.into()]
             .into_iter()
             .collect()
     }
+
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -4282,7 +4289,7 @@ impl crate::widget::Widget for PaletteHistoryOwner {
         else {
             return Ok(None);
         };
-        if !self.resource_operation_handlers().contains(type_id) {
+        if !crate::widget::resource_operation_handlers(self).contains(type_id) {
             return Ok(None);
         }
         self.state
@@ -4347,6 +4354,22 @@ fn palette_enter(app: &mut App) {
         winit::event::ElementState::Pressed,
     );
     assert!(app.action_palette_handle_key(&event));
+}
+
+/// Go ahead with the typed confirmation through its own button, past
+/// Cancel: Return in the field for the name stays the safe answer.
+fn palette_confirm(app: &mut App) {
+    for key in [
+        winit::keyboard::NamedKey::Tab,
+        winit::keyboard::NamedKey::Tab,
+        winit::keyboard::NamedKey::Enter,
+    ] {
+        let event = crate::synthetic_input::key_input(
+            &winit::keyboard::Key::Named(key),
+            winit::event::ElementState::Pressed,
+        );
+        assert!(app.action_palette_handle_key(&event));
+    }
 }
 
 fn palette_history_round_trip(app: &mut App) {
@@ -4415,7 +4438,7 @@ fn managed_palette_draft_identity_preserves_text_and_json_editor_and_refuses_cha
             .as_mut()
             .unwrap()
             .set_query(PALETTE_CONFIRMATION);
-        palette_enter(&mut app);
+        palette_confirm(&mut app);
 
         let starts = state.starts.lock().unwrap().len();
         assert_eq!(starts, usize::from(should_start), "{action}:{mutation}");
@@ -4426,7 +4449,9 @@ fn managed_palette_draft_identity_preserves_text_and_json_editor_and_refuses_cha
             );
         } else {
             let snapshot = editor_snapshot(&app);
-            assert_eq!(snapshot.0, PALETTE_CONFIRMATION);
+            // The name was typed in the confirmation's own plain field,
+            // never in the search field.
+            assert_eq!(snapshot.0, "");
             assert_eq!(snapshot.2, "ready");
             assert!(
                 app.actions
@@ -4457,7 +4482,7 @@ fn managed_palette_exact_text_and_nested_json_recheck_alias_and_handler_around_f
         (
             "json",
             r#"{"alias":"production","nested":{"route":{"shard":7}}}"#,
-            "handler-after-wrong-phrase",
+            "handler-changed-before-going-ahead",
             false,
         ),
     ] {
@@ -4494,13 +4519,7 @@ fn managed_palette_exact_text_and_nested_json_recheck_alias_and_handler_around_f
             "History return requires a fresh phrase: {action}:{mutation}"
         );
 
-        if mutation == "handler-after-wrong-phrase" {
-            app.actions
-                .action_palette
-                .as_mut()
-                .unwrap()
-                .set_query("wrong");
-            palette_enter(&mut app);
+        if mutation == "handler-changed-before-going-ahead" {
             assert_eq!(state.starts.lock().unwrap().len(), 0);
             state
                 .handler_epoch
@@ -4511,7 +4530,7 @@ fn managed_palette_exact_text_and_nested_json_recheck_alias_and_handler_around_f
             .as_mut()
             .unwrap()
             .set_query(PALETTE_CONFIRMATION);
-        palette_enter(&mut app);
+        palette_confirm(&mut app);
         assert_eq!(
             state.starts.lock().unwrap().len(),
             usize::from(should_start),
@@ -4591,7 +4610,7 @@ impl ComponentControlOwner {
                     .unwrap()
             },
         );
-        spec.contract.confirmation = self.confirmation.clone();
+        spec.type_mut().contract.confirmation = self.confirmation.clone();
         if self.entered.is_some() {
             spec = spec
                 .execution(tilo_actions::ExecutionMode::Background { cancellable: false })
@@ -4804,7 +4823,8 @@ impl crate::widget::AppWidget for ComponentControlOwner {
 impl crate::widget::Widget for ComponentControlOwner {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
     );
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -4854,9 +4874,13 @@ impl crate::widget::Widget for ComponentControlOwner {
     ) {
         self.text.handle_event(event, ctx);
     }
+}
+
+impl crate::widget::ResourceOperations for ComponentControlOwner {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         [self.operation.clone()].into_iter().collect()
     }
+
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -4887,6 +4911,7 @@ impl crate::widget::Widget for ComponentControlOwner {
             tilo_actions::ActionOutput::default(),
         )))
     }
+
     fn poll_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -5140,9 +5165,9 @@ fn component_control_root(
             host_person: crate::permissions::UserId("component-control-author".into()),
             records: records.clone(),
             checkout,
-            permissions: std::rc::Rc::new(std::cell::RefCell::new(
+            permissions: crate::permissions::SharedPermissions::new(
                 crate::permissions::PermissionContext::permissive(),
-            )),
+            ),
             author: crate::permissions::UserId("component-control-author".into()),
             operation_context: tilo_actions::ActionContext::default(),
             writes_as_author: false,
@@ -5641,7 +5666,7 @@ fn palette_two_round_trips_preserve_original_exact_witness() {
             .as_mut()
             .unwrap()
             .set_query(PALETTE_CONFIRMATION);
-        palette_enter(&mut app);
+        palette_confirm(&mut app);
         assert_eq!(state.starts.lock().unwrap().len(), 0, "{changed}");
         assert!(
             retained.history_witness == original.history_witness,
@@ -5667,7 +5692,7 @@ fn palette_named_text_parameter_survives_history_and_confirmation() {
         .as_mut()
         .unwrap()
         .set_query(PALETTE_CONFIRMATION);
-    palette_enter(&mut app);
+    palette_confirm(&mut app);
     let starts = state.starts.lock().unwrap();
     assert_eq!(starts.len(), 1);
     assert_eq!(
@@ -5808,7 +5833,7 @@ fn palette_reentry_cannot_replace_exact_component_owner() {
         .as_mut()
         .unwrap()
         .set_query(PALETTE_CONFIRMATION);
-    palette_enter(&mut app);
+    palette_confirm(&mut app);
     assert_eq!(old[0].starts.get(), 0);
     assert_eq!(new[0].starts.get(), 0);
     let retained =
@@ -6550,7 +6575,8 @@ impl crate::widget::Widget for CustodyControlsRoot {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
-        dyn crate::record::capability::RecordScoped
+        dyn crate::record::capability::RecordScoped,
+        dyn crate::widget::ResourceOperations
     );
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -6633,11 +6659,15 @@ impl crate::widget::Widget for CustodyControlsRoot {
     fn children_mut(&mut self) -> Vec<&mut (dyn crate::widget::Widget + '_)> {
         vec![self.child.as_mut()]
     }
+}
+
+impl crate::widget::ResourceOperations for CustodyControlsRoot {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        let mut handlers = self.child.resource_operation_handlers();
+        let mut handlers = crate::widget::resource_operation_handlers(&*self.child);
         handlers.insert("fixture.control".into());
         handlers
     }
+
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -6648,7 +6678,8 @@ impl crate::widget::Widget for CustodyControlsRoot {
             .unscoped()
             .filter(|request| request.type_id == "fixture.control")
         else {
-            return self.child.start_operation(
+            return crate::widget::start_operation(
+                &mut *self.child,
                 op,
                 &mut crate::widget::Edits::lend(doc.document_mut()),
                 path,
@@ -6775,7 +6806,7 @@ fn custody_matrix_app_with_confirmation(
     use crate::widget::toggle_group::Segment;
     use crate::widget::*;
     let mut resource = custody_matrix_spec(kind);
-    resource.actions[0].contract.confirmation = confirmation;
+    resource.actions[0].type_mut().contract.confirmation = confirmation;
     let unit = || {
         tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |()| {
             serde_json::Map::new()
@@ -8154,7 +8185,6 @@ fn control_custody_core_unbound_tile_foreign_attachment_preserves_owner() {
             "old retained raw handle cannot route to B"
         );
         drop(lease);
-        // Legitimate presentation reparenting stays in A's exact incarnation.
         crate::widget::controls::install_control_custody(
             &mut tile,
             &right,

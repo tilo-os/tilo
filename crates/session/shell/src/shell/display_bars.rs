@@ -30,6 +30,11 @@ pub struct DisplayBars {
     rect: Rect,
     /// Last pointer position, so a button event reaches the bar under it.
     cursor: Option<Point>,
+    /// The bar the pointer was last over, which hears the move that takes
+    /// the pointer off it: a bar lifts the control under the last point it
+    /// heard, so one that heard only moves over itself kept that control
+    /// lifted after the pointer had gone.
+    hovered: Option<u32>,
     /// The bar that took the last press, so its release lands there too.
     pressed: Option<u32>,
 }
@@ -41,6 +46,7 @@ impl DisplayBars {
             bars: Vec::new(),
             rect: Rect::ZERO,
             cursor: None,
+            hovered: None,
             pressed: None,
         }
     }
@@ -147,6 +153,12 @@ impl Widget for DisplayBars {
     }
 
     ui::rect_geometry!();
+    /// Sized by its style alone (no `measure`): nothing it changes needs
+    /// taffy to measure it again, and saying it does re-solved the layout of
+    /// everything above it on every frame.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
 
     fn draw(
         &mut self,
@@ -170,7 +182,14 @@ impl Widget for DisplayBars {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = ctx.logical(position);
                 self.cursor = Some(p);
-                self.bar_under(p)
+                let under = self.bar_under(p);
+                let left = std::mem::replace(&mut self.hovered, under);
+                if let Some(left) = left.filter(|left| Some(*left) != under)
+                    && let Some((_, bar)) = self.bars.iter_mut().find(|(id, _)| *id == left)
+                {
+                    bar.handle_event(event, ctx);
+                }
+                under
             }
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Pressed,

@@ -30,7 +30,9 @@
 //! (`overlay_host::desk`).
 
 pub mod calendar;
-pub mod layout;
+/// Where the widgets wait: the edge layout they share with the people
+/// overlay.
+pub use tilo_desktop::desk_edges as layout;
 pub mod system_monitor;
 pub mod team;
 
@@ -65,17 +67,16 @@ pub const REACH_HOLD: Duration = Duration::from_millis(600);
 /// back, so a hand that overshoots its edge by a few pixels does not lose it.
 pub const LEAVE_GRACE: Duration = Duration::from_millis(300);
 
-/// How a widget comes and goes is the standard ambient motion
-/// ([`ui::motion::Ambient`]): it leaves at once (the person started typing,
-/// covered the desk or let go of Super, and something leaving has nothing to
-/// say), arrives unasked slowly and opacity only, and arrives asked for
-/// (reaching for its edge, Super, a click) quickly.
+// How a widget comes and goes is the standard ambient motion
+// (`ui::motion::Ambient`): it leaves at once (the person started typing,
+// covered the desk or let go of Super, and something leaving has nothing to
+// say), arrives unasked slowly and opacity only, and arrives asked for
+// (reaching for its edge, Super, a click) quickly.
 
 /// The space kept clear around the text caret, so a widget near it never
 /// sits on the line being typed.
 pub const CARET_CLEARANCE: f64 = ui::tokens::Spacing::BASE.s6 as f64;
 
-/// One of a widget's three forms.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Form {
     #[default]
@@ -85,19 +86,7 @@ pub enum Form {
 }
 
 /// One widget as laid out this frame, in desktop coordinates.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Slot {
-    pub id: WidgetId,
-    /// Where its glance form sits.
-    pub glance: Rect,
-    /// Where its open card sits.
-    pub open: Rect,
-    /// Where a pointer reaching for it comes to rest: the glance form and
-    /// the strip of edge behind it.
-    pub reach: Rect,
-    /// Whether it has anything to show (a player, someone else here).
-    pub has_content: bool,
-}
+pub type Slot = layout::Slot<WidgetId>;
 
 /// Everything besides the board's own history that decides the forms.
 #[derive(Clone, Copy, Debug)]
@@ -131,9 +120,7 @@ pub struct DeskBoard {
     /// The pointer is still in the reach zone of the widget it reached for:
     /// the reach holds without a timer until it moves.
     in_reach: bool,
-    /// The widget opened on purpose.
     opened: Option<WidgetId>,
-    /// When the pointer left the opened card.
     left_open: Option<Instant>,
     /// The glance form the pointer is resting on, since when.
     rest: Option<(WidgetId, Instant)>,
@@ -193,7 +180,6 @@ impl DeskBoard {
         }
     }
 
-    /// A pointer sample at `p`.
     pub fn on_pointer(&mut self, p: Point, now: Instant, slots: &[Slot]) {
         self.pointer = Some(p);
         let reachable: Vec<&Slot> = slots.iter().filter(|slot| slot.has_content).collect();
@@ -245,7 +231,6 @@ impl DeskBoard {
         }
     }
 
-    /// The pointer left the display.
     pub fn pointer_left(&mut self, now: Instant) {
         self.pointer = None;
         self.in_reach = false;
@@ -269,7 +254,6 @@ impl DeskBoard {
         self.left_open = None;
     }
 
-    /// The widget open on purpose, if any.
     #[must_use]
     pub fn opened(&self) -> Option<WidgetId> {
         self.opened

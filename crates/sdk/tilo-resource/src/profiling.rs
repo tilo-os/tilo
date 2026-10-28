@@ -4,19 +4,21 @@
 //! [`Phase::start`] or [`measure`]; a test wraps an interaction in
 //! [`observe`] and reads every scope that ran, aggregated by name. Scopes may
 //! nest, so their durations are not additive. Without an active observation a
-//! scope reads no clock, and builds without `test-support` record nothing.
+//! scope reads no clock: one thread-local read.
+//!
+//! A running app observes the same scopes across one key's journey, from the
+//! key to the frame answering it ([`begin_live`], [`take_live`]): the
+//! window's `INPUT-FRAME` record (`ui_core::input_frame`) names the work a
+//! keystroke did, in production builds.
 
-#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
-pub use recorder::{Sample, observe, unobserved};
+#[cfg(not(target_arch = "wasm32"))]
+pub use recorder::{Phase, Sample, begin_live, observe, take_live, unobserved};
 
-#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
-pub use recorder::Phase;
-
-/// A named scope, recorded when it drops inside an active observation.
-#[cfg(not(all(feature = "test-support", not(target_arch = "wasm32"))))]
+/// A named scope; the web build records none.
+#[cfg(target_arch = "wasm32")]
 pub struct Phase;
 
-#[cfg(not(all(feature = "test-support", not(target_arch = "wasm32"))))]
+#[cfg(target_arch = "wasm32")]
 impl Phase {
     /// Open the scope `_name`; it closes when the value drops.
     #[inline]
@@ -25,9 +27,7 @@ impl Phase {
         Self
     }
 
-    /// Close the scope here, before the end of its block. Not `const`: a
-    /// `const fn` cannot drop a value, and whether this build's `Phase`
-    /// has a destructor must never decide whether the crate compiles.
+    /// Close the scope here, before the end of its block.
     #[inline]
     #[allow(
         clippy::missing_const_for_fn,
@@ -42,15 +42,14 @@ impl Phase {
 /// work a debug build does only to verify the production path (re-running
 /// what that path proved it could skip) is not the path an observation
 /// measures.
-#[cfg(not(all(feature = "test-support", not(target_arch = "wasm32"))))]
+#[cfg(target_arch = "wasm32")]
 #[inline]
 pub fn unobserved<T>(operation: impl FnOnce() -> T) -> T {
     operation()
 }
 
-/// One named scope's total over an observation; a build without
-/// `test-support` records none.
-#[cfg(not(all(feature = "test-support", not(target_arch = "wasm32"))))]
+/// One named scope's total over an observation; the web build records none.
+#[cfg(target_arch = "wasm32")]
 #[derive(Debug)]
 pub struct Sample {
     /// Static operation name.
@@ -61,12 +60,26 @@ pub struct Sample {
     pub calls: usize,
 }
 
-/// Run `operation`; a build without `test-support` records no scope, so
-/// what it observed is empty.
-#[cfg(not(all(feature = "test-support", not(target_arch = "wasm32"))))]
+/// Run `operation`; the web build records no scope, so what it observed is
+/// empty.
+#[cfg(target_arch = "wasm32")]
 #[inline]
 pub fn observe<T>(operation: impl FnOnce() -> T) -> (T, Vec<Sample>) {
     (operation(), Vec::new())
+}
+
+/// Start observing this thread's scopes until [`take_live`]; the web build
+/// records none.
+#[cfg(target_arch = "wasm32")]
+#[inline]
+pub fn begin_live() {}
+
+/// What this thread's scopes did since [`begin_live`]; the web build
+/// records none.
+#[cfg(target_arch = "wasm32")]
+#[inline]
+pub fn take_live() -> Vec<Sample> {
+    Vec::new()
 }
 
 /// Run `operation` as the scope `phase`.
@@ -76,7 +89,7 @@ pub fn measure<T>(phase: &'static str, operation: impl FnOnce() -> T) -> T {
     operation()
 }
 
-#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod recorder {
     use std::cell::RefCell;
     use tilo_clock::Instant;
@@ -182,11 +195,28 @@ mod recorder {
         operation()
     }
 
+    /// Start observing this thread's scopes, across events and frames,
+    /// until [`take_live`]: a running app's record of one key's journey.
+    /// An observation already active (a test's) is left as it is.
+    pub fn begin_live() {
+        RECORDS.with(|records| {
+            let mut records = records.borrow_mut();
+            if records.is_none() {
+                *records = Some(Capture::default());
+            }
+        });
+    }
+
+    /// Every scope that ran since [`begin_live`], by name, ending the
+    /// observation. Past [`MAX_PHASES`] names the rest are left out.
+    pub fn take_live() -> Vec<Sample> {
+        RECORDS
+            .with(RefCell::take)
+            .map(|capture| capture.rows)
+            .unwrap_or_default()
+    }
+
     /// Run the real operation and return every scope it ran, by name.
-    ///
-    /// # Panics
-    /// Panics for a nested observation, a lost recorder, or more distinct
-    /// scope names than one observation keeps.
     pub fn observe<T>(operation: impl FnOnce() -> T) -> (T, Vec<Sample>) {
         RECORDS.with(|records| {
             let mut records = records.borrow_mut();
@@ -204,10 +234,10 @@ mod recorder {
     }
 }
 
-#[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::recorder::MAX_PHASES;
-    use super::{Phase, measure, observe, unobserved};
+    use super::{Phase, begin_live, measure, observe, take_live, unobserved};
 
     #[test]
     fn recording_is_opt_in_and_aggregates_nested_scopes_by_name() {
@@ -258,6 +288,21 @@ mod tests {
             })
         });
         assert!(result.is_err());
+        assert!(observe(|| ()).1.is_empty());
+    }
+
+    #[test]
+    fn a_live_observation_spans_calls_until_taken() {
+        drop(Phase::start("before"));
+        begin_live();
+        drop(Phase::start("key"));
+        measure("frame", || drop(Phase::start("key")));
+        let calls: Vec<_> = take_live()
+            .iter()
+            .map(|sample| (sample.phase, sample.calls))
+            .collect();
+        assert_eq!(calls, [("key", 2), ("frame", 1)]);
+        assert!(take_live().is_empty(), "taking it ended it");
         assert!(observe(|| ()).1.is_empty());
     }
 }

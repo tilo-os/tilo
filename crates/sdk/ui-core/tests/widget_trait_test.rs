@@ -51,6 +51,7 @@ fn widget_trait_defaults_presence_draw_and_token_radius() {
             ui_scale: 1.0,
             caret_width: 2.0,
             forced_colors: false,
+            surface: None,
             tokens: t,
         };
         assert_eq!(theme.radius_standard, 99.0);

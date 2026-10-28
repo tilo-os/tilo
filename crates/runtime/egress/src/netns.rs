@@ -172,9 +172,6 @@ impl Netns {
     /// (`bwrap --unshare-net`), held still with `--block-fd` while the
     /// supervisor attaches. The caller must own the process's user
     /// namespace (have created it, or its parent).
-    ///
-    /// # Errors
-    /// Returns the error opening `/proc/<pid>/ns/{user,net}`.
     pub fn of_process(pid: u32) -> io::Result<Self> {
         let pid = libc::pid_t::try_from(pid)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "pid out of range"))?;
@@ -302,8 +299,6 @@ fn socketpair() -> io::Result<(OwnedFd, OwnedFd)> {
     Ok(unsafe { (OwnedFd::from_raw_fd(a), OwnedFd::from_raw_fd(b)) })
 }
 
-// --- the forked children: raw system calls only ---------------------------
-
 /// The current `errno`, as reported to the parent.
 unsafe fn errno() -> u32 {
     // SAFETY: `__errno_location` returns this thread's errno slot.
@@ -337,7 +332,6 @@ pub(crate) unsafe fn close_others(keep: [RawFd; 2]) {
     }
 }
 
-/// Send `words` and `fds` over `sock`, then exit.
 unsafe fn send_and_exit(sock: RawFd, words: [u32; 4], fds: &[RawFd]) -> ! {
     #[repr(C, align(8))]
     struct Control([u8; 64]);

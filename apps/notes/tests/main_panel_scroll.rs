@@ -161,9 +161,10 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
         let (content_bottom, panel_bottom) = panel(&mut app, |panel| {
             (panel.editor().content_bottom(), panel.get_rect().y1)
         });
+        let gutter = f64::from(Theme::dark().tokens.spacing.rhythm.group);
         assert!(
-            content_bottom <= panel_bottom - 44.0,
-            "the final row must remain above the save status, not underneath it"
+            content_bottom <= panel_bottom - gutter + 1.0,
+            "the final row keeps one gutter above the window's foot: {content_bottom} of {panel_bottom}"
         );
 
         // Scroll back up past the top: clamps at 0.
@@ -186,24 +187,13 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
             app.harness()
                 .relayout_themed((1000, 1000), Theme::dark().with_text_scale(scale))
                 .unwrap();
-            let mut renderer = crate::component_support::renderer();
-            renderer.set_text_scale(scale);
-            let (_, pill_height) = ui::status_bubble::pill_size(
-                "Saved",
-                &mut renderer,
-                &Theme::dark().with_text_scale(scale),
-                0.0,
-            );
             let window_bottom = surface(&mut app, |notes| notes.get_rect().y1);
-            let pill_top = window_bottom
-                - f64::from(Theme::dark().with_text_scale(scale).tokens.spacing.s4)
-                - pill_height;
             let content_bottom = panel(&mut app, |panel| panel.editor().content_bottom());
-            let gap = pill_top - content_bottom;
+            let gap = window_bottom - content_bottom;
             let theme = Theme::dark().with_text_scale(scale);
             assert!(
                 (gap - f64::from(theme.tokens.spacing.rhythm.group)).abs() <= 1.0,
-                "at {scale}x, last row ends at {content_bottom} of {pill_top}: {gap}px is not one gutter"
+                "at {scale}x, last row ends at {content_bottom} of {window_bottom}: {gap}px is not one gutter"
             );
         }
     }
@@ -445,11 +435,7 @@ fn enter_at_the_end_of_a_long_note_keeps_the_caret_clear_of_the_bottom() {
     };
     dispatch(&mut app, &key(winit::keyboard::NamedKey::End));
     app.harness().relayout_at((1000, 400)).unwrap();
-    let mut renderer = crate::component_support::renderer();
-    let (_, pill_height) = ui::status_bubble::pill_size("Saved", &mut renderer, &theme, 0.0);
-    let margin = f64::from(theme.tokens.spacing.s4)
-        + pill_height
-        + f64::from(theme.tokens.spacing.rhythm.group);
+    let margin = f64::from(theme.tokens.spacing.rhythm.group);
     let blocks = last + 1;
     for press in 1..=8 {
         dispatch(&mut app, &key(winit::keyboard::NamedKey::Enter));
@@ -472,4 +458,117 @@ fn enter_at_the_end_of_a_long_note_keeps_the_caret_clear_of_the_bottom() {
              padding inside the panel {bounds:?}"
         );
     }
+}
+
+/// One touchpad (pixel) wheel event of a two-finger gesture.
+fn swipe(phase: winit::event::TouchPhase, dy: f64) -> WindowEvent {
+    WindowEvent::MouseWheel {
+        device_id: winit::event::DeviceId::dummy(),
+        delta: winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(
+            0.0, dy,
+        )),
+        phase,
+    }
+}
+
+/// Two fingers lifted while moving leave the note gliding, as every other
+/// scroll surface does: the body goes on in the frames the glide asks for,
+/// slows and stops, and a press on the body catches it.
+#[test]
+fn a_touchpad_swipe_lifted_while_moving_glides_and_comes_to_rest() {
+    use winit::event::TouchPhase::{Ended, Moved, Started};
+    let start = ui::time::now();
+    let at = |frame: u32| start + ui::time::Duration::from_millis(16 * u64::from(frame));
+    let lift = |app: &mut TestApp<NotesShell>| {
+        ui::time::testing::with_monotonic_time(start, || {
+            app.harness().send(&pointer(Point::new(500.0, 200.0)));
+            app.harness().send(&swipe(Started, 0.0));
+            for _ in 0..6 {
+                app.harness().send(&swipe(Moved, -30.0));
+            }
+            app.harness().send(&swipe(Ended, 0.0));
+        });
+    };
+
+    let mut app = note_at(&tall_body(), 1000, 300, 1.0);
+    lift(&mut app);
+    let lifted = scroll_y(&mut app);
+    assert_eq!(lifted, 180.0, "the fingers move the body 1:1");
+    let mut frames = 0;
+    let mut previous = lifted;
+    while frames < 600 && ui::time::testing::with_monotonic_time(at(frames + 1), || app.frame()) {
+        frames += 1;
+        let now = scroll_y(&mut app);
+        assert!(now >= previous, "a glide goes on the way the fingers went");
+        previous = now;
+    }
+    let rest = scroll_y(&mut app);
+    assert!(
+        rest > lifted + 50.0,
+        "lifted while moving, the note glides on: {lifted} -> {rest} over {frames} frames"
+    );
+    assert!(
+        frames < 600,
+        "the glide comes to rest and asks for no more frames"
+    );
+
+    // A press on the body catches a glide in progress.
+    let mut app = note_at(&tall_body(), 1000, 300, 1.0);
+    lift(&mut app);
+    ui::time::testing::with_monotonic_time(at(1), || app.frame());
+    app.harness()
+        .send(&mouse(winit::event::ElementState::Pressed));
+    app.harness()
+        .send(&mouse(winit::event::ElementState::Released));
+    let caught = scroll_y(&mut app);
+    for frame in 2..20 {
+        ui::time::testing::with_monotonic_time(at(frame), || app.frame());
+    }
+    assert_eq!(scroll_y(&mut app), caught, "a press stops the glide");
+}
+
+/// A finger flicked up a touchscreen and lifted while moving leaves the note
+/// gliding, as a touchpad swipe does. The lift reaches the body twice, as
+/// the scroll's end and as the finger's own contact: the second must not
+/// catch the glide the first started. A finger put back down catches it.
+#[test]
+fn a_touchscreen_flick_lifted_while_moving_glides_and_a_finger_down_catches_it() {
+    use winit::event::TouchPhase::{Ended, Moved, Started};
+    let start = ui::time::now();
+    let at = |frame: u32| start + ui::time::Duration::from_millis(16 * u64::from(frame));
+    let flick = |app: &mut TestApp<NotesShell>| {
+        ui::time::testing::with_monotonic_time(start, || {
+            let harness = app.harness();
+            harness.touch(0, Started, 500.0, 280.0);
+            for step in 1..=6 {
+                harness.touch(0, Moved, 500.0, 280.0 - 30.0 * f64::from(step));
+            }
+            harness.touch(0, Ended, 500.0, 100.0);
+        });
+    };
+
+    let mut app = note_at(&tall_body(), 1000, 300, 1.0);
+    flick(&mut app);
+    let lifted = ui::time::testing::with_monotonic_time(start, || scroll_y(&mut app));
+    assert_eq!(lifted, 180.0, "the finger moves the body 1:1");
+    for frame in 1..30 {
+        ui::time::testing::with_monotonic_time(at(frame), || app.frame());
+    }
+    let glided = scroll_y(&mut app);
+    assert!(
+        glided > lifted + 50.0,
+        "lifted while moving, the note glides on: {lifted} -> {glided}"
+    );
+
+    let mut app = note_at(&tall_body(), 1000, 300, 1.0);
+    flick(&mut app);
+    ui::time::testing::with_monotonic_time(at(1), || app.frame());
+    ui::time::testing::with_monotonic_time(at(1), || {
+        app.harness().touch(1, Started, 500.0, 150.0);
+    });
+    let caught = scroll_y(&mut app);
+    for frame in 2..20 {
+        ui::time::testing::with_monotonic_time(at(frame), || app.frame());
+    }
+    assert_eq!(scroll_y(&mut app), caught, "a finger down stops the glide");
 }

@@ -28,6 +28,7 @@ use rustypipe::model::{
     AlbumItem, AlbumType, ArtistId, ArtistItem, AudioCodec, AudioFormat, AudioStream, MusicItem,
     MusicPlaylistItem, Thumbnail, TrackItem,
 };
+use tilo_innertube as innertube;
 
 use crate::backend::{
     AlbumHit, AlbumKind, AlbumPage, ArtistAlbum, ArtistHit, ArtistPage, BackendError, HomeContent,
@@ -56,11 +57,6 @@ pub struct RustyPipeBackend {
 impl RustyPipeBackend {
     /// Audio resolves via the iOS/TV player clients, which need no `PoToken`,
     /// so rustypipe's `BotGuard` path stays disabled.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`BackendError`] if the app runtime or the rustypipe
-    /// client fails to build.
     pub fn new() -> Result<Self, BackendError> {
         let rt = ui::rt::try_app().map_err(|e| BackendError(format!("tokio runtime: {e}")))?;
         // rustypipe's reqwest client takes the process-default TLS provider.
@@ -392,6 +388,48 @@ async fn resolve_rangeable(video_id: &str) -> Option<ResolvedStream> {
     })
 }
 
+/// The catalogue's items as a bundle: the first item is the hero card, the
+/// rest bucketed by type in ranking order.
+fn bundle_of(items: Vec<MusicItem>) -> SearchBundle {
+    let mut bundle = SearchBundle::default();
+    // YouTube Music returns the top-result card first, so the first item is
+    // the hero. Bucket the rest by type, preserving ranking order.
+    for (i, item) in items.into_iter().take(SEARCH_RESULT_LIMIT).enumerate() {
+        match item {
+            MusicItem::Track(t) => {
+                let hit = map_track_item(t);
+                if i == 0 && bundle.top.is_none() {
+                    bundle.top = Some(SearchTop::Track(hit.clone()));
+                }
+                bundle.tracks.push(hit);
+            }
+            MusicItem::Album(a) => {
+                let hit = map_album_hit(a);
+                if i == 0 && bundle.top.is_none() {
+                    bundle.top = Some(SearchTop::Album(hit.clone()));
+                }
+                bundle.albums.push(hit);
+            }
+            MusicItem::Artist(a) => {
+                let hit = map_artist_hit(a);
+                if i == 0 && bundle.top.is_none() {
+                    bundle.top = Some(SearchTop::Artist(hit.clone()));
+                }
+                bundle.artists.push(hit);
+            }
+            MusicItem::Playlist(p) => {
+                let hit = map_playlist_hit(p);
+                if i == 0 && bundle.top.is_none() {
+                    bundle.top = Some(SearchTop::Playlist(hit.clone()));
+                }
+                bundle.playlists.push(hit);
+            }
+            MusicItem::User(_) => {}
+        }
+    }
+    bundle
+}
+
 impl MusicBackend for RustyPipeBackend {
     fn name(&self) -> &'static str {
         "youtube-music (live)"
@@ -403,7 +441,7 @@ impl MusicBackend for RustyPipeBackend {
 
     fn search_tracks(&self, query: &str) -> SearchOutcome {
         let q = self.rp.query();
-        let res = self.block("music search", async { q.music_search_tracks(query).await })?;
+        let res = self.block("music search", innertube::music_search_tracks(&q, query))?;
         Ok(res
             .items
             .items
@@ -413,53 +451,29 @@ impl MusicBackend for RustyPipeBackend {
             .collect())
     }
 
+    fn warm(&self) {
+        // The suggestion endpoint is the smallest request InnerTube answers:
+        // it opens the TLS connection and fetches the client's version
+        // before the first character is typed.
+        let q = self.rp.query();
+        if let Err(error) = self.block("warm", innertube::music_search_suggestion(&q, "a")) {
+            tracing::debug!(%error, "music: warming the catalogue connection failed");
+        }
+    }
+
+    fn search_quick(&self, query: &str) -> Result<SearchBundle, BackendError> {
+        let q = self.rp.query();
+        let res = self.block(
+            "music suggestions",
+            innertube::music_search_suggestion(&q, query),
+        )?;
+        Ok(bundle_of(res.items))
+    }
+
     fn search_all(&self, query: &str) -> Result<SearchBundle, BackendError> {
         let q = self.rp.query();
-        let res = self.block("music search", async { q.music_search_main(query).await })?;
-
-        let mut bundle = SearchBundle::default();
-        // YouTube Music returns the top-result card first, so the first item is
-        // the hero. Bucket the rest by type, preserving ranking order.
-        for (i, item) in res
-            .items
-            .items
-            .into_iter()
-            .take(SEARCH_RESULT_LIMIT)
-            .enumerate()
-        {
-            match item {
-                MusicItem::Track(t) => {
-                    let hit = map_track_item(t);
-                    if i == 0 && bundle.top.is_none() {
-                        bundle.top = Some(SearchTop::Track(hit.clone()));
-                    }
-                    bundle.tracks.push(hit);
-                }
-                MusicItem::Album(a) => {
-                    let hit = map_album_hit(a);
-                    if i == 0 && bundle.top.is_none() {
-                        bundle.top = Some(SearchTop::Album(hit.clone()));
-                    }
-                    bundle.albums.push(hit);
-                }
-                MusicItem::Artist(a) => {
-                    let hit = map_artist_hit(a);
-                    if i == 0 && bundle.top.is_none() {
-                        bundle.top = Some(SearchTop::Artist(hit.clone()));
-                    }
-                    bundle.artists.push(hit);
-                }
-                MusicItem::Playlist(p) => {
-                    let hit = map_playlist_hit(p);
-                    if i == 0 && bundle.top.is_none() {
-                        bundle.top = Some(SearchTop::Playlist(hit.clone()));
-                    }
-                    bundle.playlists.push(hit);
-                }
-                MusicItem::User(_) => {}
-            }
-        }
-        Ok(bundle)
+        let res = self.block("music search", innertube::music_search_main(&q, query))?;
+        Ok(bundle_of(res.items.items))
     }
 
     fn resolve_audio(&self, video_id: &str) -> ResolveOutcome {
@@ -478,7 +492,7 @@ impl MusicBackend for RustyPipeBackend {
         // when the player endpoint accepts this client, but is PoToken/SABR-
         // gated and may only serve the first ~1-minute segment.
         let q = self.rp.query();
-        let player = self.block("player", async { q.player(video_id).await })?;
+        let player = self.block("player", innertube::player(&q, video_id))?;
         let best = best_audio(&player.audio_streams)
             .ok_or_else(|| BackendError("no playable audio streams".to_string()))?;
         if !crate::backend::trusted_googlevideo_url(&best.url) {
@@ -519,9 +533,9 @@ impl MusicBackend for RustyPipeBackend {
         // Charts drive the primary sections (top + trending songs, top artists,
         // genre playlists); new albums come from a second endpoint. Both are
         // real YouTube-Music browse responses.
-        let charts = self.block("music charts", async { q.music_charts(None).await })?;
+        let charts = self.block("music charts", innertube::music_charts(&q, None))?;
         let new_albums = self
-            .block("new albums", async { q.music_new_albums().await })
+            .block("new albums", innertube::music_new_albums(&q))
             .unwrap_or_default();
 
         let mut sections = Vec::new();
@@ -577,9 +591,10 @@ impl MusicBackend for RustyPipeBackend {
 
     fn artist(&self, artist_id: &str) -> Result<ArtistPage, BackendError> {
         let q = self.rp.query();
-        let a = self.block("music artist", async {
-            q.music_artist(artist_id, false).await
-        })?;
+        let a = self.block(
+            "music artist",
+            innertube::music_artist(&q, artist_id, false),
+        )?;
         let tracks = a
             .tracks
             .into_iter()
@@ -620,7 +635,7 @@ impl MusicBackend for RustyPipeBackend {
 
     fn album(&self, album_id: &str) -> Result<AlbumPage, BackendError> {
         let q = self.rp.query();
-        let al = self.block("music album", async { q.music_album(album_id).await })?;
+        let al = self.block("music album", innertube::music_album(&q, album_id))?;
         let artist_name = artists_name(&al.artists, al.by_va);
         let cover = cover_url(&al.cover, 400);
         let tracks = al
@@ -642,9 +657,7 @@ impl MusicBackend for RustyPipeBackend {
 
     fn playlist(&self, playlist_id: &str) -> Result<PlaylistPage, BackendError> {
         let q = self.rp.query();
-        let pl = self.block("music playlist", async {
-            q.music_playlist(playlist_id).await
-        })?;
+        let pl = self.block("music playlist", innertube::music_playlist(&q, playlist_id))?;
         let owner = pl.channel.as_ref().map_or_else(
             || {
                 if pl.from_ytm {
@@ -688,7 +701,6 @@ mod bounded_transport_tests {
 
     #[test]
     fn live_transport_is_bounded_utf8_safe_and_signature_capable() {
-        // Phase `native_quickjs_bindings_execute_stream_signature_operations`.
         #[cfg(all(windows, target_arch = "aarch64"))]
         {
             let runtime = rquickjs::Runtime::new().expect("native QuickJS runtime");
@@ -707,7 +719,6 @@ mod bounded_transport_tests {
             });
         }
 
-        // Phase `live_request_deadline_cancels_a_stalled_future`.
         {
             let result = block_with_deadline(
                 ui::rt::app(),

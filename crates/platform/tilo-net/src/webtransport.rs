@@ -79,6 +79,10 @@ impl Session {
     /// # Errors
     ///
     /// [`NetError::Closed`] once the session has ended.
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "the written-out bound keeps the future `Send` on every target"
+    )]
     pub fn open_bi(
         &self,
     ) -> impl Future<Output = Result<(SendStream, RecvStream), NetError>> + Send + '_ {
@@ -93,6 +97,10 @@ impl Session {
     /// # Errors
     ///
     /// [`NetError::Closed`] once the session has ended.
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "the written-out bound keeps the future `Send` on every target"
+    )]
     pub fn accept_bi(
         &self,
     ) -> impl Future<Output = Result<(SendStream, RecvStream), NetError>> + Send + '_ {
@@ -107,6 +115,10 @@ impl Session {
     /// # Errors
     ///
     /// [`NetError::Closed`] once the session has ended.
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "the written-out bound keeps the future `Send` on every target"
+    )]
     pub fn open_uni(&self) -> impl Future<Output = Result<SendStream, NetError>> + Send + '_ {
         async move { Ok(SendStream(self.inner.open_uni().await?)) }
     }
@@ -116,6 +128,10 @@ impl Session {
     /// # Errors
     ///
     /// [`NetError::Closed`] once the session has ended.
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "the written-out bound keeps the future `Send` on every target"
+    )]
     pub fn accept_uni(&self) -> impl Future<Output = Result<RecvStream, NetError>> + Send + '_ {
         async move { Ok(RecvStream(self.inner.accept_uni().await?)) }
     }
@@ -148,7 +164,6 @@ impl Session {
     }
 }
 
-/// The sending half of a stream.
 pub struct SendStream(backend::SendStream);
 
 impl std::fmt::Debug for SendStream {

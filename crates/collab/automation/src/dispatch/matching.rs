@@ -60,6 +60,12 @@ pub enum Skipped {
     TooDeep {
         depth: u8,
     },
+    /// The change was a run's, and the shortcut that made it would fire on
+    /// its own work: these two shortcuts would run each other forever.
+    Loop {
+        /// The shortcut whose run made the change, which this one would run.
+        through: String,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -81,6 +87,10 @@ pub fn dispatch(armed: &[Armed<'_>], event: Event<'_>) -> Dispatched {
             let key = armed.firer.key();
             if self_triggered(&armed.firer, event) {
                 out.skipped.push((key, index, Skipped::SelfTriggered));
+                continue;
+            }
+            if let Some(through) = looped(&armed.firer, event) {
+                out.skipped.push((key, index, Skipped::Loop { through }));
                 continue;
             }
             let cause = cause_for(&armed.firer, event);
@@ -139,9 +149,12 @@ fn matches(trigger: &TriggerSpec, armed: &Armed<'_>, event: Event<'_>) -> bool {
             },
             Event::Record(change),
         ) => {
+            // Housekeeping fires only a trigger that names its action: a
+            // record's readers marking it read change nothing a trigger on
+            // the record's changes acts on.
             change.kind == *kind
                 && actor_counts(*by, change.actor.kind)
-                && ((actions.is_empty() && fields.is_empty())
+                && ((actions.is_empty() && fields.is_empty() && !change.housekeeping)
                     || verbs_of(&change.did)
                         .iter()
                         .any(|verb| actions.contains(verb))
@@ -171,6 +184,9 @@ fn matches(trigger: &TriggerSpec, armed: &Armed<'_>, event: Event<'_>) -> bool {
         ) => {
             matches!(armed.firer, Firer::Bot { .. })
                 && connector_matches(app_id, source, filter, fired)
+        }
+        (TriggerSpec::AppEvent { app_id, kind }, Event::AppEvent(declared)) => {
+            declared.app_id == *app_id && declared.kind == *kind
         }
         _ => false,
     }
@@ -206,6 +222,21 @@ fn self_triggered(firer: &Firer<'_>, event: Event<'_>) -> bool {
     match firer {
         Firer::Bot { .. } => change.actor.id == firer.key(),
         Firer::Shortcut { shortcut, .. } => change.shortcut.as_deref() == Some(*shortcut),
+    }
+}
+
+/// The shortcut a change came from when firing on it would run this
+/// shortcut into that one's run and back: the change a shortcut made is
+/// not one its own run is watching for. Only a shortcut's own save-time
+/// check sees a chain between shortcuts it can look up; a shortcut calling
+/// another, or a bot's own loop, is caught here, at the run.
+fn looped(firer: &Firer<'_>, event: Event<'_>) -> Option<String> {
+    match (firer, event) {
+        (Firer::Shortcut { shortcut, .. }, Event::Record(change)) => change
+            .shortcut
+            .clone()
+            .filter(|through| through != shortcut),
+        _ => None,
     }
 }
 

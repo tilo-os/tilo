@@ -44,6 +44,7 @@ impl PolicyData {
                 .cloned()
                 .collect(),
         }
+        .with_current_roles()
     }
 }
 impl From<AutoCommit> for CachedDocument {

@@ -1,0 +1,316 @@
+//! A live window opens on its pane without reading every other area of
+//! Settings first, and loses nothing for it: the pane shown
+//! accepts what it accepted, a row of an area not yet read is still
+//! reached, and a few frames after the first the window publishes exactly
+//! what reading every area up front published.
+//!
+//! Each case compares a window that puts its reads off, as one reaching
+//! the device does, with one that reads every area before its first frame,
+//! as a screenshot or a test does, both over the same stand-ins.
+
+use std::collections::BTreeSet;
+
+use crate::SettingsShell;
+use crate::categories::Category;
+use crate::effects::{defer_area_reads_in_tests, pane_row_id};
+
+use crate::settings_app::SettingsApp;
+use ui::framework::testing::TestApp;
+
+/// A window that reads every area before its first frame.
+fn reading_first() -> TestApp<SettingsShell> {
+    TestApp::<SettingsShell>::new().expect("settings opens headlessly")
+}
+
+/// A window that reads its areas as one reaching the device does.
+fn reading_after() -> TestApp<SettingsShell> {
+    defer_area_reads_in_tests(true);
+    let app = TestApp::<SettingsShell>::new();
+    defer_area_reads_in_tests(false);
+    app.expect("settings opens headlessly")
+}
+
+/// The areas that have read, by profiling name.
+fn read(app: &mut TestApp<SettingsShell>) -> Vec<&'static str> {
+    app.surface::<SettingsApp, _>(|settings| {
+        crate::area::registry()
+            .live_areas
+            .iter()
+            .filter(|area| (area.is_open)(settings))
+            .map(|area| area.name)
+            .collect()
+    })
+    .expect("the settings surface is mounted")
+}
+
+/// `resource` as inert data, children included: what agents, the palette
+/// and accessibility read.
+fn outline(resource: &tilo_actions::Resource) -> serde_json::Value {
+    let mut own = resource.clone();
+    own.children.clear();
+    serde_json::json!({
+        "id": resource.id.as_str(),
+        "kind": resource.kind,
+        "label": resource.label,
+        "detail": resource.presentation.as_ref().and_then(|presentation| presentation.detail.clone()),
+        "actions": tilo_actions::door::survey(&[own]),
+        "views": resource.views.len(),
+        "children": resource.children.iter().map(outline).collect::<Vec<_>>(),
+    })
+}
+
+/// What the window publishes: its resource tree and every action on it.
+fn published(app: &mut TestApp<SettingsShell>) -> (serde_json::Value, serde_json::Value) {
+    let resources = app.harness().resources().iter().map(outline).collect();
+    (resources, app.agent_surface())
+}
+
+/// Print leaf differences before the full assertion, whose large resource
+/// forest can exceed the CI log's per-line limit.
+fn report_resource_difference(deferred_tree: &serde_json::Value, eager_tree: &serde_json::Value) {
+    fn flatten(
+        value: &serde_json::Value,
+        rows: &mut std::collections::BTreeMap<String, serde_json::Value>,
+    ) {
+        if let Some(id) = value.get("id").and_then(serde_json::Value::as_str) {
+            let mut row = value.clone();
+            row.as_object_mut()
+                .expect("resource outline is an object")
+                .remove("children");
+            rows.insert(id.to_owned(), row);
+        }
+        if let Some(children) = value.get("children").and_then(serde_json::Value::as_array) {
+            for child in children {
+                flatten(child, rows);
+            }
+        }
+    }
+    fn compare(left: &serde_json::Value, right: &serde_json::Value, path: &str) {
+        match (left, right) {
+            (serde_json::Value::Object(a), serde_json::Value::Object(b)) => {
+                for key in a.keys().chain(b.keys().filter(|key| !a.contains_key(*key))) {
+                    compare(
+                        a.get(key).unwrap_or(&serde_json::Value::Null),
+                        b.get(key).unwrap_or(&serde_json::Value::Null),
+                        &format!("{path}/{key}"),
+                    );
+                }
+            }
+            (serde_json::Value::Array(a), serde_json::Value::Array(b)) => {
+                if a.len() != b.len() {
+                    eprintln!("SETTINGS_AREA_DIFF {path}/length {} {}", a.len(), b.len());
+                }
+                for (i, (left, right)) in a.iter().zip(b).enumerate() {
+                    compare(left, right, &format!("{path}/{i}"));
+                }
+            }
+            _ if left != right => eprintln!("SETTINGS_AREA_DIFF {path} {left} {right}"),
+            _ => {}
+        }
+    }
+
+    let mut deferred = std::collections::BTreeMap::new();
+    let mut eager = std::collections::BTreeMap::new();
+    for row in deferred_tree.as_array().expect("resource forest") {
+        flatten(row, &mut deferred);
+    }
+    for row in eager_tree.as_array().expect("resource forest") {
+        flatten(row, &mut eager);
+    }
+    let changes = deferred
+        .keys()
+        .chain(eager.keys())
+        .collect::<std::collections::BTreeSet<_>>();
+    for id in changes {
+        match (deferred.get(id), eager.get(id)) {
+            (Some(left), Some(right)) => compare(left, right, id),
+            (left, right) => eprintln!(
+                "SETTINGS_AREA_ROW_PRESENCE {id} {} {}",
+                left.is_some(),
+                right.is_some()
+            ),
+        }
+    }
+}
+
+/// Every node a screen reader is told about: its role, its name and
+/// whether it accepts input.
+fn controls(app: &mut TestApp<SettingsShell>) -> Vec<(String, Option<String>, bool)> {
+    app.harness()
+        .a11y_nodes()
+        .into_iter()
+        .map(|(_, node)| {
+            (
+                format!("{:?}", node.role()),
+                node.label().map(str::to_owned),
+                node.is_disabled(),
+            )
+        })
+        .collect()
+}
+
+/// Every resource id the live window publishes before its first frame:
+/// what its first control-availability refresh built.
+fn before_the_first_frame(deferred: bool) -> BTreeSet<String> {
+    fn collect(resources: &[tilo_actions::Resource], ids: &mut BTreeSet<String>) {
+        for resource in resources {
+            ids.insert(resource.id.as_str().to_owned());
+            collect(&resource.children, ids);
+        }
+    }
+    defer_area_reads_in_tests(deferred);
+    let ids = ui::framework::testing::inspect_live_window::<SettingsShell, _>(|app| {
+        let mut ids = BTreeSet::new();
+        collect(&app.collect_resources(), &mut ids);
+        ids
+    });
+    defer_area_reads_in_tests(false);
+    ids.expect("settings opens as a live window")
+}
+
+#[test]
+fn the_first_refresh_reads_only_the_pane_shown() {
+    let whole = before_the_first_frame(false);
+    let first = before_the_first_frame(true);
+    assert!(
+        first.is_subset(&whole),
+        "nothing is published that reading first does not: {:?}",
+        first.difference(&whole).collect::<Vec<_>>()
+    );
+    for category in Category::ALL {
+        assert!(
+            first.contains(&pane_row_id(*category)),
+            "{} opens from the first frame",
+            category.slug()
+        );
+    }
+    let put_off = whole.difference(&first).collect::<Vec<_>>();
+    assert!(
+        put_off.contains(&&"settings.display-output:eDP-1".to_owned()),
+        "an area the pane shown does not read is put off: {put_off:?}"
+    );
+    // The first pane is Network: every row it shows is published at once.
+    assert!(
+        put_off.iter().all(|id| ![
+            "settings.network",
+            "settings.vpn",
+            "network.wifi",
+            "vpn.connection"
+        ]
+        .iter()
+        .any(|prefix| id.starts_with(prefix))),
+        "the pane shown publishes its rows from the first frame: {put_off:?}"
+    );
+}
+
+#[test]
+fn the_pane_shown_accepts_what_it_accepts_when_every_area_read_first() {
+    let mut first = reading_first();
+    let mut window = reading_after();
+    assert_eq!(
+        read(&mut first).len(),
+        crate::area::registry().live_areas.len(),
+        "reading first reads every area before the first frame"
+    );
+    let shown = controls(&mut window);
+    assert!(
+        shown.iter().any(|(_, _, disabled)| !disabled),
+        "the pane shown has controls that accept input"
+    );
+    assert_eq!(
+        shown,
+        controls(&mut first),
+        "every control of the pane shown accepts what it accepts when every area read first"
+    );
+}
+
+#[test]
+fn a_window_publishes_every_area_a_little_after_its_first_frame() {
+    let mut first = reading_first();
+    first.settle();
+    let whole = published(&mut first);
+    let mut window = reading_after();
+    assert_ne!(
+        published(&mut window).0,
+        whole.0,
+        "the first frame publishes only the areas that have read"
+    );
+    // The areas whose reads block read on the background executor and
+    // wake the window when they end; the others read a sync at a
+    // time. `wait_until` drives frames and parks on the executor between
+    // them, as the host's event loop sleeps until a wake.
+    let deadline = tilo_test_env::hang_deadline();
+    while read(&mut window).len() < crate::area::registry().live_areas.len() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "every area reads after the first frame: {:?}",
+            read(&mut window)
+        );
+        window
+            .harness()
+            .wait_until(ui::time::Duration::from_millis(50), |_| false);
+    }
+    window.settle();
+    let settled = published(&mut window);
+    // Compare with a window that reads first now, beside the one that has
+    // just read: the device's account file both take in is shared with
+    // the tests running beside this one.
+    let mut first = reading_first();
+    first.settle();
+    let whole = published(&mut first);
+    if settled.0 != whole.0 {
+        report_resource_difference(&settled.0, &whole.0);
+    }
+    assert_eq!(
+        settled.0, whole.0,
+        "the resource tree is the one reading first published"
+    );
+    assert_eq!(
+        settled.1, whole.1,
+        "every published action is the one reading first published"
+    );
+}
+
+/// The host asks for a pending host intent on every turn of its event
+/// loop, the first before the first frame. Asking reads no
+/// display: a display move is only pending in a model an effect has read.
+#[test]
+fn asking_for_a_host_intent_reads_no_display() {
+    let mut window = reading_after();
+    let intent = window
+        .surface::<SettingsApp, _>(|settings| {
+            <SettingsApp as ui::framework::ResourceSurface<
+                crate::resource::Settings,
+                crate::effects::SettingsEffect,
+            >>::take_host_intent(settings)
+        })
+        .expect("the settings surface is mounted");
+    assert!(intent.is_none(), "nothing was asked of the host");
+    assert!(
+        !read(&mut window).contains(&"settings.rows.displays"),
+        "asking for a host intent leaves Displays unread"
+    );
+}
+
+#[test]
+fn an_action_on_a_row_of_an_area_not_yet_read_reaches_it() {
+    let mut window = reading_after();
+    assert!(!read(&mut window).contains(&"settings.rows.displays"));
+    window
+        .call_on(
+            "settings.display-output:eDP-1",
+            "set-output-scale",
+            serde_json::json!({"scale": "200%"}),
+        )
+        .expect("an address an agent kept reaches the display before its area is published");
+    window.settle();
+    let staged = window
+        .call("inspect-display-configuration", serde_json::json!({}))
+        .expect("display observation is declared")
+        .expect("observation returned");
+    assert_eq!(
+        staged["staged_configuration"]["outputs"]["eDP-1"]["scale"],
+        2.0
+    );
+    assert!(read(&mut window).contains(&"settings.rows.displays"));
+}

@@ -285,10 +285,6 @@ pub fn assert_one_undo_boundary_reverts(
 
 /// The first resource, depth-first, whose id is `resource`, or failing that
 /// whose kind is `resource`.
-///
-/// # Panics
-///
-/// When no published resource matches.
 pub fn find_resource<'a>(resources: &'a [Resource], resource: &str) -> &'a Resource {
     fn walk<'a>(
         resources: &'a [Resource],
@@ -308,10 +304,6 @@ pub fn find_resource<'a>(resources: &'a [Resource], resource: &str) -> &'a Resou
 }
 
 /// The action `action` on the resource [`find_resource`] picks for `resource`.
-///
-/// # Panics
-///
-/// When no resource matches or it publishes no such action.
 pub fn find_spec<'a>(
     resources: &'a [Resource],
     resource: &str,
@@ -366,17 +358,18 @@ fn prompted_argument(spec: &ActionSpec, text: &str) -> Option<(String, ArgValue)
 /// an immediate spec, or a prompted spec's build of `arg`. The external
 /// invocation path (binding arguments against the spec's parameters) must
 /// agree, and is checked here too.
-///
-/// # Panics
-///
-/// When `arg` is given for an immediate spec, missing for a prompted one, or
-/// the external path builds a different action.
 pub fn spec_encoding(spec: &ActionSpec, arg: Option<&str>) -> EncodedAction {
-    let (palette, supplied) = match (&spec.input, arg) {
-        (ActionInput::Immediate(encoded), None) => (encoded.as_ref().clone(), Vec::new()),
-        (ActionInput::Deferred { build, .. }, None) => (build(), Vec::new()),
-        (ActionInput::Prompted { build, .. }, Some(arg)) => (
-            build(arg),
+    let built = |encoded: Option<EncodedAction>| {
+        encoded.unwrap_or_else(|| panic!("`{}` builds nothing from its input", spec.id))
+    };
+    let (palette, supplied) = match (spec.input(), arg) {
+        (ActionInput::Immediate(_), None) => (
+            built(spec.encode_immediate().map(std::sync::Arc::unwrap_or_clone)),
+            Vec::new(),
+        ),
+        (ActionInput::Deferred { .. }, None) => (built(spec.build_deferred()), Vec::new()),
+        (ActionInput::Prompted { .. }, Some(arg)) => (
+            built(spec.build_text(arg)),
             prompted_argument(spec, arg).into_iter().collect(),
         ),
         (ActionInput::Immediate(_) | ActionInput::Deferred { .. }, Some(_)) => {
@@ -429,10 +422,6 @@ pub fn assert_spec_encodes_as(spec: &ActionSpec, arg: Option<&str>, expected: &E
 /// passing vacuously; an app that publishes only effect and view operations
 /// passes an empty registry. Prompted document actions need an argument, so
 /// their replay and undo belong in named `replay`/`undo` entries.
-///
-/// # Panics
-///
-/// When the surface is empty or invalid, or any action breaks the contract.
 pub fn assert_every_immediate_action_honours_contract(
     seed: &AutoCommit,
     registry: &ActionRegistry,
@@ -450,9 +439,10 @@ pub fn assert_every_immediate_action_honours_contract(
     let mut swept: usize = 0;
     for flat in tilo_actions::flatten(resources) {
         let spec = flat.action;
-        let ActionInput::Immediate(encoded) = &spec.input else {
+        let Some(encoded) = spec.encode_immediate() else {
             continue;
         };
+        let encoded = encoded.as_ref();
         if spec.kind != OperationKind::Document || !spec.contract.availability.is_available() {
             continue;
         }
@@ -487,10 +477,6 @@ pub fn assert_every_immediate_action_honours_contract(
 
 /// Assert the Ctrl+K palette, loaded with `resources`, offers a row for each
 /// of `labels` when the user types it.
-///
-/// # Panics
-///
-/// When a label finds no row.
 pub fn assert_ctrl_k_publishes(resources: &[Resource], labels: &[&str]) {
     let mut palette = ActionPalette::new();
     palette.load_open_resources(resources);
@@ -697,7 +683,6 @@ mod tests {
         Set(String),
         /// Writes a fresh random value: diverges on replay.
         Random,
-        /// Writes nothing.
         Nothing,
         /// Writes a key and deletes it again: ops, but no visible change.
         Churn,
@@ -797,8 +782,6 @@ mod tests {
         }
     }
 
-    /// Every contract check fails loudly, with its own message, on the
-    /// action shape it exists to catch.
     #[test]
     #[allow(
         clippy::too_many_lines,

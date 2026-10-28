@@ -76,7 +76,6 @@ impl DeviceRevocations for RevocationList {
 /// Whom a route trusts: its relay and this device, while neither is revoked.
 #[derive(Clone)]
 pub struct RouteTrust {
-    /// The relay's device key.
     pub relay: DeviceKey,
     /// This device's key.
     pub device: DeviceKey,
@@ -159,7 +158,6 @@ pub struct OffloadIdentity {
     pub user_public_key: [u8; 32],
     /// This device's certificate.
     pub device_cert: DeviceCert,
-    /// This device's key.
     pub device_signing_key: ed25519_dalek::SigningKey,
     /// The person's device revocations as this device knows them, read
     /// again whenever the route decides whom to trust.
@@ -169,7 +167,6 @@ pub struct OffloadIdentity {
 /// Everything a device's offload route is started from.
 #[derive(Clone)]
 pub struct DeviceOffloadConfig {
-    /// The relay.
     pub relay: OffloadRelay,
     /// This device.
     pub identity: OffloadIdentity,
@@ -220,6 +217,26 @@ pub fn home_relay<'a>(
         }
     }
     best
+}
+
+/// Every relay among `registrations` that places compute for `room` on a
+/// device of `user`, in registry order, and the room's relay workspace:
+/// the registered home peers of `user` with an advertised endpoint that
+/// retain the room's workspace. `None` when none does, or `room` is not a
+/// room id.
+#[must_use]
+pub fn room_relays(
+    registrations: &[HomePeerRegistration],
+    user: [u8; 32],
+    room: &str,
+) -> Option<(u64, Vec<OffloadRelay>)> {
+    let workspace = tilo_relay_protocol::room_workspace_id(room).ok()?;
+    let relays: Vec<OffloadRelay> = registrations
+        .iter()
+        .filter(|registration| registration.relay_workspace_ids.contains(&workspace))
+        .filter_map(|registration| registered_relay(registration, user))
+        .collect();
+    (!relays.is_empty()).then_some((workspace, relays))
 }
 
 /// `registration` as a relay of `user` this device can dial, or `None`.
@@ -368,6 +385,8 @@ pub struct DeviceOffload {
     /// Why the route was torn down, once it is: every run in flight ends on
     /// it.
     torn_down: watch::Sender<Option<String>>,
+    /// Whether it has started or failed to.
+    settled: watch::Sender<bool>,
 }
 
 /// Where a [`DeviceOffload`] is.
@@ -420,6 +439,7 @@ impl DeviceOffload {
             phase: RwLock::new(Phase::Starting),
             trust,
             torn_down: watch::Sender::new(None),
+            settled: watch::Sender::new(false),
         });
         let weak: Weak<Self> = Arc::downgrade(&offload);
         runtime.spawn(async move {
@@ -440,6 +460,7 @@ impl DeviceOffload {
                     Phase::Failed(error)
                 }
             };
+            offload.settled.send_replace(true);
             drop(offload);
             keep_trusted(weak).await;
         });
@@ -456,6 +477,15 @@ impl DeviceOffload {
             Phase::Up(_) => Some(Ok(())),
             Phase::Failed(error) | Phase::TornDown(error) => Some(Err(error.clone())),
         }
+    }
+
+    /// Wait, at most `within`, until the route has started or failed to;
+    /// then [`Self::started`].
+    pub async fn wait_started(&self, within: Duration) -> Option<Result<(), String>> {
+        let mut settled = self.settled.subscribe();
+        // The sender lives as long as `self`; a timeout leaves it starting.
+        let _ = tokio::time::timeout(within, settled.wait_for(|settled| *settled)).await;
+        self.started()
     }
 
     /// The route while it is up, or why every offloadable action runs here.

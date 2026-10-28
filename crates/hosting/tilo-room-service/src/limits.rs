@@ -82,6 +82,31 @@ impl JoinRates {
         per_ten_minutes: 30,
         per_day: usize::MAX,
     };
+
+    /// Addresses left on a wait list: a person types theirs once, maybe
+    /// again after a typo, and a household or office shares an address, so
+    /// 5 per 10 minutes and 20 per day; a script filling the list with
+    /// made-up addresses gets no further from one address.
+    pub const WAIT_LIST: Self = Self {
+        per_ten_minutes: 5,
+        per_day: 20,
+    };
+
+    /// Wait-list entries taken off by their removal secret: a person does
+    /// it once, maybe again after joining from another browser, so 10 per
+    /// 10 minutes and 50 per day; guessing at secrets gets no further.
+    pub const WAIT_LIST_REMOVALS: Self = Self {
+        per_ten_minutes: 10,
+        per_day: 50,
+    };
+
+    /// Confirmation links opened and doors asking where an entry stands:
+    /// each page load of a door that holds a secret asks once, so 30 per 10
+    /// minutes and 300 per day.
+    pub const WAIT_LIST_LOOKUPS: Self = Self {
+        per_ten_minutes: 30,
+        per_day: 300,
+    };
 }
 
 /// Sliding windows of joins per address hash.
@@ -200,6 +225,19 @@ impl Seats {
         self.online
     }
 
+    /// Whether [`Self::take`] would hold a seat at `now_ms`, holding none.
+    pub fn free(&self, now_ms: u64) -> bool {
+        let held = self
+            .held
+            .iter()
+            .filter(|taken| now_ms.saturating_sub(**taken) < SEAT_HOLD_MS)
+            .count();
+        usize::try_from(self.online)
+            .unwrap_or(usize::MAX)
+            .saturating_add(held)
+            < self.cap
+    }
+
     /// Holds a seat at `now_ms`, or `false` when the room is full.
     pub fn take(&mut self, now_ms: u64) -> bool {
         while self
@@ -215,6 +253,23 @@ impl Seats {
         }
         self.held.push_back(now_ms);
         true
+    }
+
+    /// Stands every held seat at `now_ms`, as if it had just been taken:
+    /// a test's way to keep guests a loaded runner admitted minutes apart
+    /// from lapsing before it asks the room to be full, without a clock
+    /// every page of the room reads.
+    #[cfg(test)]
+    pub fn stand_seats_at(&mut self, now_ms: u64) {
+        for taken in &mut self.held {
+            *taken = now_ms;
+        }
+    }
+
+    /// How many seats are held and not yet filled by somebody online.
+    #[cfg(test)]
+    pub fn held(&self) -> usize {
+        self.held.len()
     }
 
     /// Gives back a seat held for an admission that was not answered.
@@ -259,7 +314,9 @@ mod tests {
     fn a_seat_nobody_used_frees_after_its_hold() {
         let mut seats = Seats::new(1);
         assert!(seats.take(0));
+        assert!(!seats.free(SEAT_HOLD_MS - 1));
         assert!(!seats.take(SEAT_HOLD_MS - 1));
+        assert!(seats.free(SEAT_HOLD_MS));
         assert!(seats.take(SEAT_HOLD_MS));
     }
     use std::net::IpAddr;

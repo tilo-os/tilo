@@ -981,7 +981,6 @@ mod tests {
 
         // --- phase: birthday_handles_year_less_month_day ---
         {
-            // Typed MM-DD, and both vCard truncated forms, land on MonthDay.
             assert_eq!(
                 Birthday::parse("12-10"),
                 Some(Birthday::MonthDay { month: 12, day: 10 })

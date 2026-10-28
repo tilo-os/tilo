@@ -22,55 +22,6 @@ const TRANSPORT_NAMES: [(TransportAction, &str); 5] = [
 ];
 
 impl VideoEditorApp {
-    /// Execute a top-bar command through the same helpers the pointer uses.
-    /// Visibility is checked again at activation time so a delayed assistive
-    /// technology event cannot fire Split after a resize hid that button.
-    pub(super) fn a11y_topbar_action(&mut self, action: &ui::a11y::Action, rest: &[u64]) -> bool {
-        use ui::a11y::{Action, hash_key};
-        let Some(&key) = rest.first() else {
-            return false;
-        };
-        let r = self.regions();
-        if self.bin_overlay_is_open() && key != hash_key(&TOPBAR_BIN_KEY) {
-            return false;
-        }
-        match action {
-            Action::Focus => [
-                (TOPBAR_BIN_KEY, r.menu_btn.width() > 0.0),
-                (TOPBAR_INSPECTOR_KEY, r.inspector_btn.width() > 0.0),
-                (TOPBAR_IMPORT_KEY, r.import_btn.width() > 0.0),
-                (TOPBAR_SPLIT_KEY, r.split_btn.width() > 0.0),
-                (TOPBAR_EXPORT_KEY, r.export_btn.width() > 0.0),
-            ]
-            .iter()
-            .any(|(name, visible)| *visible && hash_key(name) == key),
-            Action::Activate => {
-                if key == hash_key(&TOPBAR_BIN_KEY) && r.menu_btn.width() > 0.0 {
-                    self.toggle_bin();
-                    return true;
-                }
-                if key == hash_key(&TOPBAR_INSPECTOR_KEY) && r.inspector_btn.width() > 0.0 {
-                    self.toggle_inspector();
-                    return true;
-                }
-                if key == hash_key(&TOPBAR_IMPORT_KEY) && r.import_btn.width() > 0.0 {
-                    self.trigger_import();
-                    return true;
-                }
-                if key == hash_key(&TOPBAR_SPLIT_KEY) && r.split_btn.width() > 0.0 {
-                    self.split_selected();
-                    return true;
-                }
-                if key == hash_key(&TOPBAR_EXPORT_KEY) && r.export_btn.width() > 0.0 {
-                    self.presentation.export_open = true;
-                    return true;
-                }
-                false
-            }
-            _ => false,
-        }
-    }
-
     /// The media rows the bin currently lists, in painted order.
     pub(super) fn a11y_bin_items(&self) -> Vec<MediaId> {
         // `bin_order`, not the project's own order: that is the order the rows
@@ -457,6 +408,16 @@ impl VideoEditorApp {
                     .with_state(AccessState::new().focusable(can).disabled(!can)),
             );
         }
+        // The preview hint's Go to clip, where it is drawn.
+        if let Some(rect) = self.go_to_clip_button(&self.regions()) {
+            buttons.push(
+                AccessNode::new(Role::Button)
+                    .with_name(super::go_to_clip::GO_TO_CLIP_LABEL)
+                    .with_bounds(rect)
+                    .with_key(ui::a11y::hash_key(&super::go_to_clip::GO_TO_CLIP_KEY))
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        }
         let mut node = VideoEditorApp::a11y_pane(Pane::Transport, buttons);
         // The playhead is a live readout: it changes without focus moving, so
         // it rides on the pane as a value the reader can re-read on demand.
@@ -544,6 +505,7 @@ impl VideoEditorApp {
                     .with_key(0),
             );
         }
+        tracks.extend(self.a11y_timeline_empty(&self.regions()));
         // The master strip, as the first thing in the pane. A reader meets
         // the mix's state before the lanes, which is the order the screen
         // puts it in — and when it has clipped, the node is a *button*,
@@ -1078,101 +1040,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// The export dialog as a real dialog: modal, named, and reporting its own
-    /// progress. It traps focus while open (see `Widget::traps_focus`).
-    /// The project button, as a reader meets it.
-    ///
-    /// The dot on the button and this node say the same thing: a sighted user
-    /// sees a badge, a reader hears [`PROJECT_UNSAVED`]. Neither is given the
-    /// tidier story — and when the topbar is too narrow to paint the control
-    /// at all, the node says that instead of offering a button nobody can
-    /// press.
-    pub(super) fn a11y_project(&self) -> AccessNode {
-        let visible = self.regions().project_btn.width() > 0.0;
-        let mut node = AccessNode::new(Role::Button)
-            .with_name(self.project_label())
-            .with_value(self.project_status_line())
-            .with_key(ui::a11y::hash_key(&"project"))
-            .with_state(AccessState::new().focusable(visible));
-        node = if !visible {
-            node.with_description("Not shown at this width — use Ctrl+O to open, Ctrl+S to save")
-        } else if self.project_is_dirty() {
-            node.with_description(PROJECT_UNSAVED)
-        } else {
-            node
-        };
-        node
-    }
-
-    /// The command strip is custom-painted, so it needs an explicit semantic
-    /// toolbar rather than relying on the visible labels. In particular, the
-    /// compact layout hides Split and turns both side panes into icons; a
-    /// reader must get the exact same currently-operable controls as a pointer.
-    pub(super) fn a11y_topbar(&self) -> AccessNode {
-        let r = self.regions();
-        let mut kids = Vec::new();
-        if r.menu_btn.width() > 0.0 {
-            kids.push(
-                AccessNode::new(Role::ToggleButton)
-                    .with_name("Toggle media bin")
-                    .with_value("B")
-                    .with_hashed_key(TOPBAR_BIN_KEY)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .checked(self.bin_flap.is_open(self.bin_layout())),
-                    ),
-            );
-        }
-        if self.bin_overlay_is_open() {
-            return AccessNode::new(Role::Toolbar)
-                .with_name("Video editor commands")
-                .with_key(ui::a11y::hash_key(&TOPBAR_A11Y_KEY))
-                .with_children(kids);
-        }
-        if r.inspector_btn.width() > 0.0 {
-            kids.push(
-                AccessNode::new(Role::ToggleButton)
-                    .with_name("Toggle inspector")
-                    .with_value("Ctrl+I")
-                    .with_hashed_key(TOPBAR_INSPECTOR_KEY)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .checked(self.inspector_flap.is_open(self.inspector_split())),
-                    ),
-            );
-        }
-        kids.push(
-            AccessNode::new(Role::Button)
-                .with_name("Import media")
-                .with_value("Ctrl+Shift+O")
-                .with_hashed_key(TOPBAR_IMPORT_KEY)
-                .with_state(AccessState::new().focusable(true)),
-        );
-        if r.split_btn.width() > 0.0 {
-            kids.push(
-                AccessNode::new(Role::Button)
-                    .with_name("Split at playhead")
-                    .with_value("S")
-                    .with_hashed_key(TOPBAR_SPLIT_KEY)
-                    .with_state(AccessState::new().focusable(true)),
-            );
-        }
-        kids.push(
-            AccessNode::new(Role::Button)
-                .with_name("Export video")
-                .with_value("Ctrl+E")
-                .with_hashed_key(TOPBAR_EXPORT_KEY)
-                .with_state(AccessState::new().focusable(true)),
-        );
-        kids.extend(self.history.accessibility(r.history_btn));
-        AccessNode::new(Role::Toolbar)
-            .with_name("Editor commands")
-            .with_hashed_key(TOPBAR_A11Y_KEY)
-            .with_children(kids)
-    }
-
     /// The unsaved-work question, carrying the same three answers the card
     /// paints and the same account of what each one costs.
     pub(super) fn a11y_discard_dialog(&self) -> AccessNode {
@@ -1272,19 +1139,34 @@ impl VideoEditorApp {
                     self.export.estimate_label(&self.project),
                 ))
                 .with_key(0),
-            AccessNode::new(Role::Button)
-                .with_name("Start export")
-                .with_key(1)
-                .with_state(
-                    AccessState::new()
-                        .focusable(true)
-                        .disabled(!self.export_is_offered()),
-                ),
-            AccessNode::new(Role::Button)
-                .with_name("Close export")
-                .with_key(2)
-                .with_state(AccessState::new().focusable(true)),
         ];
+        // The same actions the card paints: while a render runs, only its
+        // Cancel; otherwise Export and Close.
+        if self.export_running() {
+            kids.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Cancel export")
+                    .with_key(2)
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        } else {
+            kids.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Start export")
+                    .with_key(1)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .disabled(!self.export_is_offered()),
+                    ),
+            );
+            kids.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Close export")
+                    .with_key(2)
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        }
         if let ExportStatus::Rendering { progress } = self.export_status {
             kids.push(
                 AccessNode::new(Role::ProgressBar)
@@ -1298,16 +1180,27 @@ impl VideoEditorApp {
             );
         }
         if let ExportStatus::Failed { reason } = &self.export_status {
-            // The compact topbar chip is intentionally elided, but it must
-            // never be the only place the reason exists. Ctrl+E opens this
-            // dialog from the keyboard and this value is deliberately the
-            // complete worker/encoder message for a screen reader.
+            // The window bar's Export opens this dialog, as Ctrl+E does from
+            // the keyboard, and this value is
+            // deliberately the complete worker/encoder message for a screen
+            // reader.
             kids.push(
                 AccessNode::new(Role::StaticText)
                     .with_name("Export failure details")
                     .with_value(reason.clone())
                     .with_key(ui::a11y::hash_key(&"export.failure-details"))
                     .with_live(ui::a11y::Politeness::Assertive),
+            );
+        } else if let Some(reason) = self.export_blocker() {
+            // Why Export is withdrawn, where the painted dialog says it too:
+            // the button is disabled, and a disabled button that names no
+            // reason is a wall.
+            kids.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name("Why export cannot run")
+                    .with_value(reason)
+                    .with_key(ui::a11y::hash_key(&"export.blocked"))
+                    .with_live(ui::a11y::Politeness::Polite),
             );
         }
         AccessNode::new(Role::Dialog)
@@ -1353,8 +1246,6 @@ impl VideoEditorApp {
             .with_state(AccessState::new().modal(true))
             .with_children(kids)
     }
-
-    // ---- keyboard navigation ---------------------------------------------
 
     /// Move to the next / previous pane, clamping each pane's cursor to what it
     /// currently holds so Tab never lands on a row that has since been deleted.
@@ -1703,41 +1594,8 @@ impl VideoEditorApp {
                 });
             }
         }
-        if r.project_btn.area() > 0.0 && r.project_btn.contains(p) {
-            // The one control here whose label is not fixed: it names the
-            // project, so the tooltip carries the verb the label cannot.
-            return Some("Open, save, or switch project");
-        }
-        if r.export_btn.contains(p) {
-            return Some("Export video (Ctrl+E)");
-        }
-        if self.export_chip_is_shown() && r.export_chip.contains(p) {
-            // The chip is 176px wide, so a long failure is elided in it. The
-            // hover carries the whole thing rather than making the reason
-            // something only the dialog knows — and the accessible node
-            // carries it too, for a reader who cannot hover.
-            return match &self.export_status {
-                ExportStatus::Failed { reason } => Some(reason.as_str()),
-                ExportStatus::Done { path } => Some(path.as_str()),
-                _ => Some("Export in progress — press to show it"),
-            };
-        }
-        if r.import_btn.contains(p) {
-            return Some("Import media (Ctrl+Shift+O)");
-        }
-        if r.split_btn.contains(p) {
-            return Some("Split at playhead (S)");
-        }
-        if r.menu_btn.area() > 0.0 && r.menu_btn.contains(p) {
-            return Some("Toggle media bin (B)");
-        }
-        if r.inspector_btn.area() > 0.0 && r.inspector_btn.contains(p) {
-            return Some("Toggle inspector (Ctrl+I)");
-        }
         None
     }
-
-    // ---- routed accessibility actions ------------------------------------
 
     #[allow(
         clippy::indexing_slicing,
@@ -1783,6 +1641,13 @@ impl VideoEditorApp {
         let Some(&key) = rest.first() else {
             return false;
         };
+        if key == hash_key(&super::go_to_clip::GO_TO_CLIP_KEY) {
+            return match action {
+                Action::Focus => true,
+                Action::Activate => self.go_to_clip(),
+                _ => false,
+            };
+        }
         // History first: its keys are hashed from the verb, so they cannot
         // collide with the transport's positional ones.
         for which in [ui::UndoRequest::Undo, ui::UndoRequest::Redo] {
@@ -1821,6 +1686,9 @@ impl VideoEditorApp {
         // The master strip's node. Activating it is the same walk the red
         // chip does under the pointer — one route, so a reader and a mouse
         // land in the same place.
+        if track_key == hash_key(&super::timeline_empty::TIMELINE_EMPTY_KEY) {
+            return self.a11y_timeline_empty_action(action, rest.get(1..).unwrap_or_default());
+        }
         if track_key == hash_key(&MIX_METER_KEY) {
             return match action {
                 Action::Focus => true,
@@ -2070,17 +1938,24 @@ impl VideoEditorApp {
             // press worked anyway. The undo path above already refuses
             // properly; this now matches it.
             (1, Action::Activate) => {
-                if self.export_is_offered() {
+                if self.export_is_offered() && !self.export_running() {
                     self.request_export();
                     true
                 } else {
                     false
                 }
             }
-            // Closing is safe now that the render reports from the chip and
-            // its own live region whether or not this dialog is up.
+            // While a render runs this is its Cancel, as the card paints it.
+            // Otherwise it closes, which is safe: the render reports from its
+            // own live region whether or not this dialog is up.
             (2, Action::Activate) => {
-                self.presentation.export_open = false;
+                if self.export_running() {
+                    if let Some(job) = self.export_job.as_ref() {
+                        job.cancel();
+                    }
+                } else {
+                    self.presentation.export_open = false;
+                }
                 true
             }
             (_, Action::Focus) => true,

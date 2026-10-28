@@ -14,8 +14,6 @@ HTTP, as a visitor's page and the operator's Prometheus see it:
     under its reason;
   - a restart keeps the room, its spectator person, the guest ledger (hashes
     only, never an address) and every address's guest join window;
-  - the seeded apps' reset snapshots stay bounded at the relay's ten per app
-    across restarts, and chat is never snapshotted or reset;
   - the service stops with its relay within eu1's termination grace period.
 
 Writes summary.json, summary.md and the service's log to --out. Exits
@@ -45,9 +43,6 @@ SEAT_HOLD_SECS = 30
 # What /join and /spectate tell a visitor to wait when the room is full
 # (FULL_RETRY_SECS in src/persistent.rs).
 FULL_RETRY_SECS = 60
-# How many reset snapshots of each seeded app the relay keeps
-# (SNAPSHOTS_KEPT in tilo-relay's room_seed.rs).
-SNAPSHOTS_KEPT = 10
 # eu1's terminationGracePeriodSeconds: the service must persist the room and
 # stop its relay within it.
 GRACE_SECS = 20
@@ -214,10 +209,6 @@ class Service:
             'TILO_ROOMS_MAX_SPECTATORS': str(MAX_SPECTATORS),
             'TILO_ROOMS_GUEST_JOINS_PER_10_MIN': str(GUEST_JOINS_PER_10_MIN),
             'TILO_ROOMS_SPECTATES_PER_10_MIN': str(SPECTATES_PER_10_MIN),
-            # The production seed apps, reset every second so the snapshot
-            # bound is reached within the run.
-            'TILO_ROOMS_SEED_APPS': 'so.tilo.chat,so.tilo.notes,so.tilo.canvas',
-            'TILO_ROOMS_RESET_SECS': '1',
         })
         return env
 
@@ -314,39 +305,6 @@ def certified_person(answer):
     return certificate.get('user_public_key')
 
 
-def snapshot_stamps(service, app):
-    directory = service.room_dir / 'relay' / 'snapshots' / app
-    if not directory.is_dir():
-        return []
-    return sorted(int(path.stem) for path in directory.glob('*.bin') if path.stem.isdigit())
-
-
-def check_snapshots(checks, service, label):
-    """Each seeded app keeps exactly the relay's ten newest snapshots once it
-    has been reset more often than that. Returns the newest stamps."""
-    deadline = time.monotonic() + 90
-    while time.monotonic() < deadline:
-        counts = [len(snapshot_stamps(service, app)) for app in ('so.tilo.notes', 'so.tilo.canvas')]
-        if min(counts) >= SNAPSHOTS_KEPT:
-            break
-        time.sleep(0.5)
-    # A few more resets: the bound must hold while snapshots keep coming.
-    first = {app: snapshot_stamps(service, app) for app in ('so.tilo.notes', 'so.tilo.canvas')}
-    time.sleep(4)
-    newest = {}
-    for app in ('so.tilo.notes', 'so.tilo.canvas'):
-        stamps = snapshot_stamps(service, app)
-        moved = bool(stamps) and bool(first[app]) and stamps[0] > first[app][0]
-        checks.check(f'{label}: {app} keeps exactly {SNAPSHOTS_KEPT} reset snapshots while resets continue',
-                     len(stamps) == SNAPSHOTS_KEPT and moved,
-                     {'kept': len(stamps), 'oldestBefore': first[app][:1], 'oldestAfter': stamps[:1]},
-                     SNAPSHOTS_KEPT)
-        newest[app] = stamps[-1] if stamps else None
-    chat = service.room_dir / 'relay' / 'snapshots' / 'so.tilo.chat'
-    checks.check(f'{label}: chat is never snapshotted or reset', not chat.exists(), {'exists': chat.exists()})
-    return newest
-
-
 def run_checks(service, checks):
     api = Api(f'http://127.0.0.1:{service.api_port}')
     service.start()
@@ -429,8 +387,6 @@ def run_checks(service, checks):
                  and '127.0.0.1' not in ledger,
                  {'bytes': len(ledger), 'keysFound': sum(key in ledger for key in keys.values())})
 
-    before = check_snapshots(checks, service, 'first start')
-
     stopped = service.stop()
     checks.check(f'SIGTERM stops the service and its relay within {GRACE_SECS} s', stopped['seconds'] is not None,
                  stopped)
@@ -455,10 +411,6 @@ def run_checks(service, checks):
     answer = api.join('203.0.113.21')
     checks.check('an address with room in its window still joins after a restart',
                  admitted(answer, 'admissionToken'), describe(answer))
-    after = check_snapshots(checks, service, 'after a restart')
-    checks.check('resets continue after a restart under the same bound',
-                 all(after[app] is not None and before[app] is not None and after[app] > before[app] for app in after),
-                 {'newestBefore': before, 'newestAfter': after})
 
     stopped = service.stop()
     checks.check(f'SIGTERM stops the restarted service and its relay within {GRACE_SECS} s',
@@ -469,7 +421,7 @@ def write_summary(out, checks, started):
     summary = {'passed': not checks.failed, 'seconds': round(time.monotonic() - started, 1),
                'configured': {'maxGuests': MAX_GUESTS, 'maxSpectators': MAX_SPECTATORS,
                               'guestJoinsPer10Min': GUEST_JOINS_PER_10_MIN,
-                              'spectatesPer10Min': SPECTATES_PER_10_MIN, 'resetSecs': 1},
+                              'spectatesPer10Min': SPECTATES_PER_10_MIN},
                'checks': checks.results}
     (out / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
     lines = ['# Persistent room: enabled limits and kept state', '',

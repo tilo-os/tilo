@@ -34,6 +34,8 @@ pub mod metadata;
 pub mod model;
 pub mod note_header;
 pub mod notebook;
+pub mod notion;
+mod outline;
 pub mod read;
 pub mod resource;
 mod save_notice;
@@ -68,3 +70,8 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 }
 
 mod columns;
+
+#[cfg(test)]
+mod action_icons_tests;
+#[cfg(test)]
+mod action_keywords_tests;

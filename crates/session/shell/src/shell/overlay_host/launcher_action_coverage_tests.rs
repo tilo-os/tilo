@@ -169,7 +169,7 @@ fn workspace_create_address_creates_and_selects_one_owned_empty_room() {
     let created = tree.desktop.active_workspace().unwrap();
     assert_eq!(created.name, "Browser acceptance");
     assert_eq!(created.owner().map(String::as_str), Some("shell-fixture"));
-    assert_ne!(created.room, tree.desktop.workspaces[0].room);
+    assert_ne!(created.room(), tree.desktop.workspaces[0].room());
     assert!(
         created
             .strips
@@ -184,7 +184,7 @@ fn workspace_create_address_creates_and_selects_one_owned_empty_room() {
     assert_eq!(
         created.policy.grants,
         tilo_action_policy::roles::room_role_grants(
-            &created.room.to_string(),
+            &created.room().to_string(),
             &tilo_action_policy::Subject::Role(tilo_action_policy::Role::Owner),
         ),
         "only the default role grants are present"

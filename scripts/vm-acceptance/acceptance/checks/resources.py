@@ -262,6 +262,17 @@ def describe_painters(by: dict[str, int]) -> str:
     return ", ".join(f"{label} {n}" for label, n in by.items())
 
 
+def loop_wakes(rows: list[dict]) -> dict[str, int]:
+    """Loop ticks by what ended the park before them (the trace's `wake` column): `io`
+    for a readable fd (a client, input, a worker ping), else the deadline that fired.
+    An idle loop over budget names its waker without the window's trace file."""
+    out: dict[str, int] = {}
+    for r in rows:
+        label = str(r.get("wake") or "") or "unrecorded"
+        out[label] = out.get(label, 0) + 1
+    return dict(sorted(out.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
 def named_threads(sample: dict, names: tuple[str, ...], seconds: float) -> list[dict]:
     """Every thread called one of `names` in any of the slot user's processes over the
     window, summed per process and name: its CPU and context switches. A thread started
@@ -298,6 +309,7 @@ def measure(ctx, seconds: int, name: str | None = None, threads: tuple[str, ...]
         "seconds": seconds,
         **summarize(sample, seconds),
         "shell_loop_ticks_per_s": round(len(rows) / seconds, 2),
+        "loop_woke_by": loop_wakes(rows),
         "frames_painted": len(painted),
         "painted_by": painters(painted),
         **({"named_threads": named_threads(sample, threads, seconds)} if threads else {}),
@@ -588,6 +600,45 @@ def record_shell_parts(ctx, report: dict, variant: str = "") -> None:
         ctx.record(f"memory.shell_threads{suffix}", "count", [threads], what="compositor threads")
 
 
+def describe_shell_parts(report: dict, n: int = 6) -> str:
+    """The compositor's memory by kind, for a failure text: glibc's heap in use and free
+    (free heap still counts as resident until it is trimmed), then the largest mapping
+    classes. A failed check keeps no files, so this is what says where an over-budget
+    compositor's memory is."""
+    parts = shell_parts_mib(report)
+    heap = [f"{k.replace('malloc_', 'heap ').replace('_', ' ')} {parts.pop(k)} MiB"
+            for k in ("malloc_in_use", "malloc_free") if k in parts]
+    rest = [f"{k} {v} MiB" for k, v in list(parts.items())[:n]]
+    peak = (report.get("status_kib") or {}).get("VmHWM")
+    peak_text = [f"peak RSS {round(peak / 1024)} MiB"] if peak else []
+    return ", ".join(heap + rest + peak_text)
+
+
+HEAP_MILESTONE = re.compile(r"HEAP-MILESTONE what=(\S+) in_use_mib=(\d+) free_mib=(\d+)")
+
+
+def heap_milestones(log: str, trims: int = 3) -> str:
+    """The compositor's `HEAP-MILESTONE` lines (glibc heap in use/free at each step of its
+    startup, its renderer's first frame and each trim) as one fragment: every startup step
+    and the last `trims` trims, `start 4/0, backend-ready 9/1, …, trim 251/168`. Which step
+    the heap grew at, and whether it kept growing after."""
+    seen = [(m[1], f"{m[1]} {m[2]}/{m[3]}") for m in HEAP_MILESTONE.finditer(log)]
+    steps = [text for what, text in seen if what != "trim"]
+    trimmed = [text for what, text in seen if what == "trim"]
+    if len(trimmed) > trims:
+        trimmed = ["…"] + trimmed[-trims:]
+    return ", ".join(steps + trimmed)
+
+
+def heap_timeline(ctx) -> str:
+    """`heap_milestones` of the session log, or an empty string when it has none."""
+    try:
+        log = ctx.vm.exec(f'grep -a "HEAP-MILESTONE" "{core.SESSION_LOG}"; true', check=False)
+    except Exception:  # noqa: BLE001 - evidence only; the check's verdict stands without it
+        return ""
+    return heap_milestones(log)
+
+
 def shell_idle_anon_problems(anon_mib: float, budgets: dict) -> list[str]:
     """The idle compositor's anonymous RSS against `shell_idle_anon_mb`."""
     budget = budgets["shell_idle_anon_mb"]
@@ -668,6 +719,7 @@ def _open_several(ctx, apps: tuple[str, ...] = FOUR_APPS, name: str = "R"):
             groups[app] = group["id"]
         except core.CheckFailed as e:
             failed[app] = str(e)[:300]
+    # A fixed window: an app that closes on its own within it is not measured as running.
     time.sleep(8)
     # Terminal's shell runs once its guest is built, which on an account's first session
     # imports the environment's runtime first. Waiting for it keeps that
@@ -693,11 +745,17 @@ def _open_several(ctx, apps: tuple[str, ...] = FOUR_APPS, name: str = "R"):
     ctx.facts["apps_failed_to_open"] = failed
     opened = [app for app in groups if app not in closed]
     ctx.facts["apps_open_for_memory"] = opened
+    ctx.facts["apps_open_groups"] = {app: groups[app] for app in opened}
     if failed or closed:
         problems = [f"{app}: {why}" for app, why in failed.items()]
         problems.extend(f"{app}: closed on its own after opening" for app in closed)
         raise core.Unobservable("could not establish the app workload: " + "; ".join(problems))
     return opened
+
+
+def still_open(state: dict, groups: dict | None) -> bool:
+    """Whether every window group `_open_several` opened (app → group id) is still there."""
+    return bool(groups) and all(core.group_by_id(state, gid) is not None for gid in groups.values())
 
 
 def software_renderer(ctx) -> bool:
@@ -737,21 +795,24 @@ def _budget_problems(m, budgets, prefix, software=False):
         problems.append(f"{m['frames_painted']} frames painted while idle > {budgets[f'{prefix}_frames']}"
                         + (f" ({why})" if why else ""))
     if m["shell_loop_ticks_per_s"] > budgets["idle_loop_ticks_per_s"]:
-        problems.append(f"compositor loop woke {m['shell_loop_ticks_per_s']}/s > {budgets['idle_loop_ticks_per_s']}/s")
+        woke = describe_painters(m.get("loop_woke_by") or {})
+        problems.append(f"compositor loop woke {m['shell_loop_ticks_per_s']}/s > {budgets['idle_loop_ticks_per_s']}/s"
+                        + (f" (woken by {woke})" if woke else ""))
     if m["user_cpu_pct_total"] > budgets[f"{prefix}_user_cpu_pct"]:
         top = ", ".join(f"{p['comm']} {p['cpu_pct']}%" for p in m["top"][:4])
         problems.append(f"session CPU {m['user_cpu_pct_total']}% > {budgets[f'{prefix}_user_cpu_pct']}% ({top})")
     return problems
 
 
-def ush_problems(ush: dict | None, shell_s: float | None, budgets: dict) -> list[str]:
+def ush_problems(ush: dict | None, shell_s: float | None, budgets: dict) -> tuple[list[str], list[str]]:
     """Terminal's shell runtime against its idle budget: an idle Terminal,
-    its shell running and nothing typed, costs `tilo-ush` almost nothing."""
+    its shell running and nothing typed, costs `tilo-ush` almost nothing.
+    (what did not work, what went over budget)."""
     if shell_s is None:
         return [f"Terminal's shell did not run within {core.TERMINAL_SHELL_S} s, so tilo-ush "
-                "was not measured idle (its first-session import may still have been running)"]
+                "was not measured idle (its first-session import may still have been running)"], []
     if ush is None:
-        return ["no tilo-ush process of the slot user ran while Terminal was open"]
+        return ["no tilo-ush process of the slot user ran while Terminal was open"], []
     problems = []
     busiest = describe_threads(ush["thread_groups"])
     if ush["cpu_pct"] > budgets["idle_apps_ush_cpu_pct"]:
@@ -763,10 +824,10 @@ def ush_problems(ush: dict | None, shell_s: float | None, budgets: dict) -> list
                          if g["ctxt_switches_per_s"] > 0)
         problems.append(f"tilo-ush woke {ush['wakeups_per_s']}/s > "
                         f"{budgets['idle_apps_ush_wakeups_per_s']}/s ({woke})")
-    return problems
+    return [], problems
 
 
-def _ush_idle(ctx, res, m: dict, budgets: dict) -> list[str]:
+def _ush_idle(ctx, res, m: dict, budgets: dict) -> tuple[list[str], list[str]]:
     """Record and judge tilo-ush in R02's window, once Terminal's shell has run."""
     ush, shell_s = m["ush"], m["terminal_shell_s"]
     if shell_s is not None and ush is not None:
@@ -779,14 +840,15 @@ def _ush_idle(ctx, res, m: dict, budgets: dict) -> list[str]:
 @check("R01", AREA, "Idle with no apps: compositor asleep, no frames, little CPU")
 def idle_empty(ctx, res):
     ctx.reset()
-    time.sleep(5)
+    ctx.wait_still(5)
     m = measure(ctx, ctx.config["idle_seconds"], "R01")
     m["guest_ram_used_mib"] = guest_ram_used_mib(ctx)
     res.metrics.update(m, renderer=ctx.facts.get("renderer"))
     ctx.write("R01-idle-empty.json", json.dumps(m, indent=1))
     if m["shell_cpu_pct"] is not None:
         _record_idle(ctx, m, m["guest_ram_used_mib"])
-    problems = _budget_problems(m, ctx.config["budgets"], "idle", software_renderer(ctx))
+    problems = []
+    over = _budget_problems(m, ctx.config["budgets"], "idle", software_renderer(ctx))
     # The compositor's own memory with no window open: R03's figure less this one is
     # what four windows cost.
     try:
@@ -798,7 +860,7 @@ def idle_empty(ctx, res):
         res.metrics["shell_anon_rss_mib"] = smaps["anon_rss_mib"]
         ctx.record("memory.shell_anon_mib.empty", "MiB", [smaps["anon_rss_mib"]])
         _record_shell_shm(ctx, res, smaps)
-        problems += shell_idle_anon_problems(smaps["anon_rss_mib"], ctx.config["budgets"])
+        over += shell_idle_anon_problems(smaps["anon_rss_mib"], ctx.config["budgets"])
     # What the idle RAM is made of, every user's processes and cgroups.
     try:
         fp = footprint(ctx)
@@ -816,7 +878,12 @@ def idle_empty(ctx, res):
         ctx.write("R01-shell-memory-map.json", json.dumps(report, indent=1))
         record_shell_parts(ctx, report)
         res.metrics["shell_parts_mib"] = shell_parts_mib(report)
-    expect(not problems, "; ".join(problems))
+        if any(p.startswith("idle compositor anonymous RSS") for p in over):
+            over.append(f"compositor memory by kind: {describe_shell_parts(report)}")
+            timeline = heap_timeline(ctx)
+            if timeline:
+                over.append(f"compositor heap in use/free MiB over time: {timeline}")
+    core.judge(problems, over)
 
 
 def _record_shell_shm(ctx, res, smaps: dict, variant: str = "") -> None:
@@ -861,9 +928,12 @@ def idle_apps(ctx, res):
     if m["shell_cpu_pct"] is not None and len(opened) == 4:
         _record_idle(ctx, m, m["guest_ram_used_mib"], "four_apps")
     ctx.facts["apps_open_for_memory"] = opened
-    problems = _budget_problems(m, ctx.config["budgets"], "idle_apps", software_renderer(ctx))
+    problems = []
+    over = _budget_problems(m, ctx.config["budgets"], "idle_apps", software_renderer(ctx))
     if "so.tilo.terminal" in opened:
-        problems += _ush_idle(ctx, res, m, ctx.config["budgets"])
+        ush_problems_, ush_over = _ush_idle(ctx, res, m, ctx.config["budgets"])
+        problems += ush_problems_
+        over += ush_over
     try:
         fp = footprint(ctx)
     except core.Unobservable as e:
@@ -879,7 +949,7 @@ def idle_apps(ctx, res):
                         "(see R-apps-closed-after-open.log)")
     if len(opened) + len(closed) < 4:
         problems.append(f"only {len(opened) + len(closed)} of 4 apps opened ({opened + closed})")
-    expect(not problems, "; ".join(problems))
+    core.judge(problems, over)
 
 
 def _record_memory(ctx, m: dict) -> None:
@@ -898,7 +968,9 @@ def _record_memory(ctx, m: dict) -> None:
 @check("R03", AREA, "Memory: each open app's cgroup and the compositor stay within budget")
 def mem(ctx, res):
     opened = ctx.facts.get("apps_open_for_memory", [])
-    if set(opened) != set(FOUR_APPS):
+    if set(opened) != set(FOUR_APPS) or not still_open(ctx.state(), ctx.facts.get("apps_open_groups")):
+        # R02's windows are gone when its session restarted (every window goes with it):
+        # measuring then finds no app at all, so open them again.
         opened = _open_several(ctx)
     m = memory(ctx, opened)
     res.metrics.update(apps=m["apps"], shell=m["shell"], session_memory_mb=m["session_memory_mb"],
@@ -916,7 +988,16 @@ def mem(ctx, res):
         ctx.write("R03-shell-smaps.json", json.dumps(smaps, indent=1))
         _record_shell_shm(ctx, res, smaps, "four_apps")
     if m["shell"]["anon_rss_mb"] > b["shell_anon_mb"]:
-        problems.append(f"compositor anonymous RSS {m['shell']['anon_rss_mb']} MB > {b['shell_anon_mb']} MB")
+        over = f"compositor anonymous RSS {m['shell']['anon_rss_mb']} MB > {b['shell_anon_mb']} MB"
+        try:
+            report = shell_memory_map(ctx)
+        except core.Unobservable:
+            problems.append(over)
+        else:
+            ctx.write("R03-shell-memory-map.json", json.dumps(report, indent=1))
+            timeline = heap_timeline(ctx)
+            problems.append(f"{over} ({describe_shell_parts(report)}"
+                            + (f"; heap in use/free MiB over time: {timeline}" if timeline else "") + ")")
     big = [p for p in m["procs"] if p["comm"] != "shell" and (p["anon_rss_mb"] or 0) > b["process_anon_mb"]]
     if big:
         problems.append("over the per-process anonymous RSS budget: " +
@@ -945,7 +1026,7 @@ def mem(ctx, res):
                         "memory was not measured (see R-apps-closed-after-open.log)")
     # The same idle desktop once the apps have closed: what they leave behind.
     try:
-        after = _footprint_after_close(ctx)
+        after = _footprint_after_close(ctx, opened)
     except core.Unobservable as e:
         unobserved.append(f"memory after the apps closed: {e}")
     else:
@@ -980,7 +1061,9 @@ def mem(ctx, res):
         raise core.Unobservable("; ".join(unobserved))
 
 
-AFTER_CLOSE_SETTLE_S = 5
+# The compositor trims at most every 10 s, and up to 5 s after the closes that asked
+# (crates/session/shell/src/shell/heap_trim.rs).
+AFTER_CLOSE_TRIM_S = 20
 
 # The slot user's per-user runtime builds and app store, in bytes: what downloaded
 # runtimes and apps hold on disk once collection after each change ran (#4114,
@@ -1025,15 +1108,39 @@ def record_disk(ctx) -> dict:
     return disk
 
 
-def _footprint_after_close(ctx) -> dict:
-    """Close every window, wait for the apps' processes to exit and the compositor to
-    settle (it trims its heap after a close), then read the footprint."""
+def _footprint_after_close(ctx, apps: list[str]) -> dict:
+    """Close every window, wait for `apps`' processes to exit and for the compositor's heap
+    trim after the closes, then read the footprint. Only the apps the check opened: a
+    session's own host agents (the geoclue agent) run in the launcher's scope too and never
+    close."""
+    trims = _heap_trim(ctx.state())["trims"]
     ctx.reset()
-    gone = wait_until(lambda: not any(p["app"] for p in core.processes(ctx)["procs"].values()), 20, 1.0)
-    if not gone:
-        raise core.Unobservable("app processes were still running 20 s after their windows closed")
-    time.sleep(AFTER_CLOSE_SETTLE_S)
+    last: dict = {}
+
+    def gone():
+        last["left"] = sorted({f"{p['app']}:{p['comm']}" for p in core.processes(ctx)["procs"].values()
+                               if p["app"] in apps})
+        return not last["left"]
+
+    if not wait_until(gone, 20, 1.0):
+        raise core.Unobservable("app processes were still running 20 s after their windows closed: "
+                                + ", ".join(last.get("left", [])[:8]))
+
+    def trimmed():
+        now = _heap_trim(ctx.state())
+        return now["trims"] > trims and not now["pending"]
+
+    # Not every close frees enough to ask for a trim: without one the footprint is read as is.
+    ctx.facts["heap_trimmed_after_close"] = bool(wait_until(trimmed, AFTER_CLOSE_TRIM_S, 0.5))
     return footprint(ctx)
+
+
+def _heap_trim(st: dict) -> dict:
+    trim = (st.get("chrome") or {}).get("heap_trim")
+    if trim is None:
+        raise core.Unobservable("the state dump does not report the compositor's heap trim "
+                                "(chrome.heap_trim), so the footprint after a close cannot wait for it")
+    return trim
 
 
 @check("R04", AREA, "Frame CPU p50/p95/p99 during overview, focus and workspace interactions")
@@ -1041,8 +1148,10 @@ def frame_work(ctx, res):
     ctx.reset()
     for _ in range(2):
         ctx.new_terminal_window()
-    time.sleep(2)
+    ctx.wait_still(5)
     mark = core.trace_mark(ctx)
+    # The interactions below are paced as a person's; the pauses are the workload.
+    evidence_mark, cpu_before = core.session_log_mark(ctx), core.cpu_ticks(ctx)
     for _ in range(3):
         ctx.vm.key("super+Tab")
         time.sleep(0.8)
@@ -1080,10 +1189,13 @@ def frame_work(ctx, res):
             problems.append(f"frame CPU {pct} {st[f'cpu_ms_{pct}']} ms > {b[f'work_ms_{pct}']} ms")
         if display.get("hardware") and st[f"work_ms_{pct}"] > b[f"work_ms_{pct}"]:
             problems.append(f"frame wall time {pct} {st[f'work_ms_{pct}']} ms > {b[f'work_ms_{pct}']} ms")
-    expect(not problems, "; ".join(problems) + f" [renderer: {ctx.facts.get('renderer')}]")
+    where = f" [renderer: {ctx.facts.get('renderer')}]"
+    if problems:
+        where += core.frame_pacing_evidence(ctx, "R04", evidence_mark, cpu_before)
+    core.judge([], problems, where)
 
 
-# -- the installed-desktop gates of build-image.yml, on this run's VM -------------
+# -- the installed-desktop gates of os-acceptance-{arch}, on this run's VM ---------
 
 # Test tooling the image does not ship: the run copies it from the checkout into the guest.
 BOOT_GATE = Path(__file__).resolve().parents[4] / "os/tests/boot_performance_gate.sh"
@@ -1135,10 +1247,17 @@ def boot(ctx, res):
     ctx.record("boot.to_greeter_s", "s", [gate["to_greeter_s"]], what="kernel+userspace, firmware excluded")
     for phase in ("kernel", "initrd", "userspace"):
         ctx.record(f"boot.{phase}_s", "s", [gate.get(f"{phase}_s")])
-    problems = [] if gate["exit"] == 0 else [f"the boot gate failed: {said}"]
-    problems += boot_attribution(ctx, res)
+    problems, over = [], []
+    if gate["exit"] != 0:
+        # The gate's budget is its last judgement and the only one after which it names the
+        # time to the greeter as over it; every other refusal is the boot's.
+        late = gate["to_greeter_s"] > budget and "rebuilt caches" not in text
+        (over if late else problems).append(f"the boot gate failed: {said}")
+    wrong, slow = boot_attribution(ctx, res)
+    problems += wrong
+    over += slow
     boot_kernel_log(ctx, res)
-    expect(not problems, "; ".join(problems))
+    core.judge(problems, over)
 
 
 # The kernel's own log of this boot, written whole, and the boots the persistent journal
@@ -1224,10 +1343,17 @@ echo "== blame"; systemd-analyze blame --no-pager | grep -v '\.device$' | head -
 echo "== stamps"
 echo "userspace_us=$(systemctl show -p UserspaceTimestampMonotonic --value)"
 echo "greetd_us=$(systemctl show greetd.service -p ActiveEnterTimestampMonotonic --value)"
+awk '$1 == "cpu" {print "cpu_ticks=" ($2+$3+$4+$5+$6+$7+$8+$9); print "steal_ticks=" $9}' /proc/stat
 echo "== end"
 """
 CHAIN_UNIT = re.compile(r"([A-Za-z0-9_@:.\\-]+\.(?:service|target|mount|socket|device|swap|path|timer|slice))[ @]")
 STAMP = re.compile(r"^(userspace|greetd)_us=(\d+)$", re.M)
+CHAIN_TIMES = re.compile(r"@(\d+(?:\.\d+)?)(ms|s)(?: \+(\d+(?:\.\d+)?)(ms|s))?")
+TICKS = re.compile(r"^(cpu|steal)_ticks=(\d+)$", re.M)
+
+
+def _secs(value: str, unit: str) -> float:
+    return float(value) / 1000 if unit == "ms" else float(value)
 # Nothing the greeter needs comes from the network: greetd waits for
 # systemd-user-sessions.service, which upstream orders After=network.target, so a network
 # start job queued before logins are allowed holds the greeter until NetworkManager is up.
@@ -1246,10 +1372,22 @@ def parse_boot_analysis(text: str) -> dict:
             sections[name] = []
         elif name is not None:
             sections[name].append(line)
-    chain = [m.group(1) for line in sections.get("critical-chain greetd.service", [])
-             if (m := CHAIN_UNIT.search(line + " "))]
+    chain, timed = [], []
+    for line in sections.get("critical-chain greetd.service", []):
+        if not (m := CHAIN_UNIT.search(line + " ")):
+            continue
+        chain.append(m.group(1))
+        t = CHAIN_TIMES.search(line)
+        at = f"@{_secs(t[1], t[2]):.1f}s" if t else ""
+        took = f" +{_secs(t[3], t[4]):.1f}s" if t and t[3] else ""
+        timed.append(f"{m.group(1)} {at}{took}".strip())
     stamps = {k: int(v) for k, v in STAMP.findall(text)}
-    out = {"greeter_chain": chain}
+    out = {"greeter_chain": chain, "greeter_chain_timed": timed}
+    ticks = {k: int(v) for k, v in TICKS.findall(text)}
+    if ticks.get("cpu"):
+        # The share of the guest's CPU time the host took back (steal) since boot: a boot
+        # slow because the host was busy shows it here, a slow unit does not.
+        out["boot_steal_pct"] = round(100 * ticks.get("steal", 0) / ticks["cpu"], 1)
     if stamps.get("greetd"):
         out["greeter_s"] = round(stamps["greetd"] / 1e6, 3)
         if stamps.get("userspace"):
@@ -1257,9 +1395,10 @@ def parse_boot_analysis(text: str) -> dict:
     return out
 
 
-def boot_attribution(ctx, res) -> list[str]:
+def boot_attribution(ctx, res) -> tuple[list[str], list[str]]:
     """Write the boot's attribution as evidence, record greetd's start, and name what has no
-    business on the greeter's critical chain or holds the greeter past its userspace budget."""
+    business on the greeter's critical chain, and what holds the greeter past its userspace
+    budget: (what is wrong, what went over budget)."""
     text = ctx.vm.root_exec(BOOT_ANALYSIS, timeout=120)
     ctx.write("R06-boot-analysis.txt", text)
     ctx.write("R06-boot-plot.svg", ctx.vm.root_exec("systemd-analyze plot", timeout=120))
@@ -1273,10 +1412,13 @@ def boot_attribution(ctx, res) -> list[str]:
     budget = ctx.config["budgets"]["userspace_to_greeter_s"]
     problems = [f"{unit} is on the greeter's critical chain" for unit in analysis["greeter_chain"]
                 if unit in GREETER_NEEDS_NO]
+    over = []
     if analysis.get("userspace_to_greeter_s", 0) > budget:
-        problems.append(f"userspace took {analysis['userspace_to_greeter_s']} s to the greeter > {budget} s "
-                        f"(chain: {' <- '.join(analysis['greeter_chain'][:6])})")
-    return problems
+        steal = analysis.get("boot_steal_pct")
+        over.append(f"userspace took {analysis['userspace_to_greeter_s']} s to the greeter > {budget} s "
+                        f"(chain: {' <- '.join(analysis['greeter_chain_timed'][:8])}"
+                        + (f"; guest CPU steal since boot {steal}%" if steal is not None else "") + ")")
+    return problems, over
 
 
 RENDER_REPORT = "/usr/libexec/tilo-session-report"
@@ -1287,7 +1429,7 @@ RENDER_UNOBSERVABLE = ("no session flight record", "the compositor logged no DRM
 def render_gate(ctx, res):
     """The release gate's render check on this run's session: direct GPU scanout where
     the renderer shares the scanout GPU, and every DRM render phase and the painted
-    frames' main-thread work within the budgets build-image.yml holds a KVM guest to."""
+    frames' main-thread work within the budgets os-acceptance-{arch} holds a KVM guest to."""
     b = ctx.config["budgets"]
     text = ctx.vm.exec(f"{RENDER_REPORT} --render-gate --render-budget-ms {b['render_frame_ms']} "
                        f"--frame-work-budget-ms {b['render_frame_work_ms']} 2>&1; echo GATE-EXIT=$?",
@@ -1419,17 +1561,21 @@ def sign_in_to_desktop(ctx, res):
         if steps["usable_s"] > budget:
             problems.append(f"{label} sign-in took {steps['usable_s']} s to a usable desktop > {budget} s "
                             f"({steps})")
-    expect(not problems, "; ".join(problems) + f" [renderer: {ctx.facts.get('renderer')}]")
+    core.judge([], problems, f" [renderer: {ctx.facts.get('renderer')}]")
 
 
 # -- an idle shared workspace (R09) ------------------------------------------
 
 # A workspace is natively committed only when a relay of another device governs it: one
 # of the person's hosts, which may not own workspaces itself (a host that may is a node,
-# whose rooms are stewarded, not committed). The run makes one in the guest, as a person
-# enrolls a home server: the relay's own key, certified out of band by the slot identity's
-# root with the host capability and recorded as its home peer, then `invitation.issue`
-# on a fresh workspace, which shares it on that relay and enrolls this device into it.
+# whose rooms are stewarded, not committed). The run makes one in the guest the way a person
+# adds a home server: the server runs `tilo-enroll pair` as the relay's own account, the
+# person's device answers with `tilo-enroll approve` (what Settings runs through the
+# home-peer broker), which certifies the server as a host, records it as a home peer and
+# hands it the bundle with the device's filesystem ticket, and the relay starts on that
+# bundle. Then `invitation.issue` on a fresh workspace shares it on that relay and enrolls
+# this device into it. The slot must be the VM's person (`slot create --identity device`):
+# the approval needs the machine's certified device key and its running fs.
 HOME_RELAY_DIR = "tilo-acceptance-home-relay"
 HOME_RELAY_UNIT = "tilo-acceptance-home-relay"
 HOME_RELAY_LABEL = "Acceptance home relay"
@@ -1441,61 +1587,90 @@ SHARED_APPS = ("so.tilo.notes", "so.tilo.file-explorer")
 # (`tilo-collab-broker-capnp`) and each app's collaboration shovel (`ui-collab-shovel`).
 BROKER_THREAD = "tilo-collab-bro"
 SHOVEL_THREAD = "ui-collab-shove"
+ENROLL = "/usr/libexec/tilo/tilo-enroll"
+# The machine's identity tree, which the VM's person owns.
+MACHINE_IDENTITY = "/var/lib/tilo"
+HOME_PEERS = f"{MACHINE_IDENTITY}/peers/home-peers.json"
+# Where the relay's directory goes: a root-owned runtime directory.
+RELAY_RUNTIME = "/run"
 
-# As the slot user, in a fresh owner-only directory of its runtime dir: the relay's
-# device key, printed as one JSON line with its relay's endpoint id.
-HOME_RELAY_KEY = r"""
+# As root: a fresh directory the relay's account owns, its device key (printed as one JSON
+# line with its relay's endpoint id), and `tilo-enroll pair` started as a transient unit
+# of that account, soliciting the person's approval on the LAN.
+HOME_RELAY_PAIR = r"""
 exec 2>&1
 set -eu
-d="${XDG_RUNTIME_DIR:?}/__DIR__"
-load=$(systemctl --user show __UNIT__.service --property=LoadState --value)
-if [ "$load" != not-found ]; then
-  systemctl --user stop __UNIT__.service
-fi
+d=__RUN__/__DIR__
+# A relay left by an earlier run that refuses to stop keeps its state: never delete it under
+# a running relay.
+for u in __UNIT__.service __UNIT__-pair.service; do
+  load=$(systemctl show "$u" --property=LoadState --value)
+  if [ "$load" != not-found ]; then
+    systemctl stop "$u"
+  fi
+done
+systemctl reset-failed __UNIT__.service __UNIT__-pair.service 2>/dev/null || true
 rm -rf "$d"
-mkdir -m 700 "$d"
-mkdir -m 700 "$d/identity" "$d/state" "$d/records"
-tilo-enroll device-key --identity-root "$d/identity"
+mkdir -m 750 "$d" "$d/identity" "$d/state"
+chown -R tilo-relay:tilo-relay "$d"
+runuser -u tilo-relay -- __ENROLL__ device-key --identity-root "$d/identity"
+systemd-run --quiet --unit=__UNIT__-pair --uid=tilo-relay --gid=tilo-relay \
+  -p RemainAfterExit=yes \
+  __ENROLL__ pair --identity-root "$d/identity" --label __LABEL__ --timeout 150 \
+  --home-peer-output "$d/home-peer.toml"
+echo "HOME-RELAY pairing"
 """
 
-# The slot identity's root certifies the relay's key as a host and records it as a home
-# peer listening on loopback; the relay installs its certificate and starts as a transient
-# unit of the slot user's manager, ready once it has bound its endpoint. A slot without a
-# throwaway identity root is refused: this never enrolls a host into a real identity.
+# As the VM's person: approve the server that solicits, and no other.
+HOME_RELAY_APPROVE = r"""
+exec 2>&1
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+__ENROLL__ approve --identity-root __MACHINE__ \
+  --identity-dir "${XDG_CONFIG_HOME:-$HOME/.config}/tilo/identity" --timeout 120 \
+  --expected-device __DEVICE__ --expected-service __SERVICE__ && echo "HOME-RELAY approved"
+"""
+
+# As root: once the pairing has finished, the relay starts on the bundle it received, as a
+# transient unit of its account, ready once it has bound its endpoint.
 HOME_RELAY_START = r"""
 exec 2>&1
 set -eu
-d="${XDG_RUNTIME_DIR:?}/__DIR__"
-root="${TILO_IDENTITY_ROOT:-}"
-[ -n "$root" ] || { echo "HOME-RELAY no-identity-root"; exit 0; }
-export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
-tilo-enroll certify --identity-root "$root" --identity-dir "${XDG_CONFIG_HOME:-$HOME/.config}/tilo/identity" \
-  --device __DEVICE__ --label __LABEL__ --capability host --capability read-all \
-  --home-peer-service __SERVICE__ --home-peer-addr 127.0.0.1:__PORT__ --out "$d/host.cert"
-tilo-enroll install-cert --identity-root "$d/identity" --identity-dir "$d/records" --cert "$d/host.cert"
+d=__RUN__/__DIR__
+for _ in $(seq 60); do
+  [ "$(systemctl show -p SubState --value __UNIT__-pair.service)" = running ] || break
+  sleep 1
+done
+systemctl show -p Result -p ExecMainStatus __UNIT__-pair.service
+journalctl -u __UNIT__-pair.service --no-pager -o cat | tail -n 40
+grep -q '^ticket' "$d/home-peer.toml" 2>/dev/null || { echo "HOME-RELAY no-bundle"; exit 0; }
 cat > "$d/relay.toml" <<TOML
 identity_root = "$d/identity"
 state_root = "$d/state"
 full_replica_status = "$d/full-replica-status.json"
 home_peer_bundle = "$d/home-peer.toml"
-iroh_listen = "127.0.0.1:__PORT__"
+iroh_listen = "0.0.0.0:__PORT__"
 TOML
-systemd-run --user --quiet --collect --unit=__UNIT__ --service-type=notify -p TimeoutStartSec=60 \
-  /usr/bin/tilo-relay --config "$d/relay.toml" run
+chown tilo-relay:tilo-relay "$d/relay.toml"
+systemd-run --quiet --collect --unit=__UNIT__ --uid=tilo-relay --gid=tilo-relay \
+  --service-type=notify -p TimeoutStartSec=60 \
+  /usr/libexec/tilo/tilo-relay --config "$d/relay.toml" run
 echo "HOME-RELAY started"
 """
 
 HOME_RELAY_STOP = r"""
-d="${XDG_RUNTIME_DIR:?}/__DIR__"
-journalctl --user -u __UNIT__ --no-pager -o short-monotonic 2>/dev/null | tail -n 200 | cut -c1-400
-load=$(systemctl --user show __UNIT__.service --property=LoadState --value) || exit $?
-if [ "$load" != not-found ]; then
-  systemctl --user stop __UNIT__.service || exit $?
-fi
+d=__RUN__/__DIR__
+journalctl -u __UNIT__-pair.service -u __UNIT__.service --no-pager -o short-monotonic 2>/dev/null \
+  | tail -n 200 | cut -c1-400
+# A relay that refuses to stop keeps its directory, and the failure is the step's.
+for u in __UNIT__.service __UNIT__-pair.service; do
+  load=$(systemctl show "$u" --property=LoadState --value) || exit $?
+  if [ "$load" != not-found ]; then
+    systemctl stop "$u" || exit $?
+  fi
+done
+systemctl reset-failed __UNIT__.service __UNIT__-pair.service 2>/dev/null
 rm -rf "$d"
 """
-
-HOME_PEERS = '"${TILO_IDENTITY_ROOT:?}/peers/home-peers.json"'
 
 # What the compositor said about launches, authorship and the native owner while R09 ran:
 # an app that never opens in a committed workspace is refused on that path.
@@ -1506,42 +1681,51 @@ SHARED_SESSION_LOG = (
 
 
 def _guest(script: str, **values) -> str:
-    for key, value in {"DIR": HOME_RELAY_DIR, "UNIT": HOME_RELAY_UNIT, **values}.items():
+    for key, value in {"DIR": HOME_RELAY_DIR, "UNIT": HOME_RELAY_UNIT, "ENROLL": ENROLL,
+                       "MACHINE": MACHINE_IDENTITY, "RUN": RELAY_RUNTIME, **values}.items():
         script = script.replace(f"__{key}__", str(value))
     return script
 
 
 def home_relay_port(uid: int) -> int:
-    """The loopback port the slot's relay listens on: one per slot user, so two slots of a
-    shared VM never contend, and below Linux's ephemeral range."""
+    """The port the slot's relay listens on: one per slot user, so two slots of a shared VM
+    never contend, and below Linux's ephemeral range."""
     return 24000 + uid % 8000
 
 
 def start_home_relay(ctx) -> dict:
-    """Make the slot identity's home relay and start it; return its device key, relay
-    endpoint id and port. Raises Unobservable when the guest cannot."""
-    out = ctx.vm.exec(_guest(HOME_RELAY_KEY), check=False)
+    """Enroll a home relay into the VM's person as production does and start it; return its
+    device key, relay endpoint id and port. Raises Unobservable when the guest cannot."""
+    try:
+        out = ctx.vm.root_exec(_guest(HOME_RELAY_PAIR, LABEL=shlex.quote(HOME_RELAY_LABEL)))
+    except VmError as e:
+        raise core.Unobservable(f"the home server's pairing could not be set up: {e}") from e
+    ctx.write("R09-home-relay-pair.txt", out)
     try:
         key = first_json(out)
         device, service = key["device_public_key"], key["relay_service_node_id"]
     except (VmError, KeyError, TypeError, ValueError) as e:
         raise core.Unobservable(f"tilo-enroll device-key gave no relay key: {out.strip()[-300:]!r}") from e
     try:
+        if "HOME-RELAY pairing" not in out:
+            raise core.Unobservable(f"the home server's pairing did not start: {out.strip()[-400:]!r}")
+        approved = ctx.vm.exec(_guest(HOME_RELAY_APPROVE, DEVICE=device, SERVICE=service),
+                               timeout=180, check=False)
+        ctx.write("R09-home-relay-approve.txt", approved)
+        if "HOME-RELAY approved" not in approved:
+            raise core.Unobservable("the VM's person did not approve the home server "
+                                    f"(tilo-enroll approve): {approved.strip()[-400:]!r}")
         port = home_relay_port(ctx.vm.slot_uid())
-        out = ctx.vm.exec(_guest(HOME_RELAY_START, DEVICE=device, SERVICE=service, PORT=port,
-                                 LABEL=shlex.quote(HOME_RELAY_LABEL)), timeout=180, check=False)
+        out = ctx.vm.root_exec(_guest(HOME_RELAY_START, PORT=port), timeout=180)
         ctx.write("R09-home-relay-setup.txt", out)
-        if "HOME-RELAY no-identity-root" in out:
-            raise core.Unobservable("the slot has no identity root of its own (TILO_IDENTITY_ROOT): "
-                                    "R09 enrolls a host only into a throwaway identity")
-        if "--home-peer-service" in out and "unexpected argument" in out:
-            raise core.Unobservable("the image's tilo-enroll cannot record a home peer out of band "
-                                    "(it predates `certify --home-peer-service`)")
+        if "HOME-RELAY no-bundle" in out:
+            raise core.Unobservable("the home server was approved but received no bundle with the "
+                                    f"device's filesystem ticket: {out.strip()[-400:]!r}")
         if "HOME-RELAY started" not in out:
             raise core.Unobservable(f"the home relay did not start: {out.strip()[-400:]!r}")
         return {"device": device, "service": service, "port": port}
     except Exception as exc:
-        # Certification may already have persisted the home peer before startup fails.
+        # The approval may already have recorded the home peer before startup fails.
         try:
             stop_home_relay(ctx, device)
         except Exception as cleanup:
@@ -1565,7 +1749,7 @@ def without_home_peer(text: str, device: str) -> str | None:
 def stop_home_relay(ctx, device: str | None) -> None:
     """Stop the relay, keep its journal as evidence, and remove its home-peer entry so a
     slot that runs the suite again does not keep dialling relays that are gone."""
-    ctx.write("R09-home-relay.log", ctx.vm.exec(_guest(HOME_RELAY_STOP)))
+    ctx.write("R09-home-relay.log", ctx.vm.root_exec(_guest(HOME_RELAY_STOP)))
     if device is None:
         return
     text = ctx.vm.exec(f"cat {HOME_PEERS} 2>/dev/null; true", check=False)
@@ -1573,7 +1757,7 @@ def stop_home_relay(ctx, device: str | None) -> None:
     if rest is not None:
         blob = base64.b64encode(rest.encode()).decode()
         ctx.vm.exec(f"f={HOME_PEERS}; echo {blob} | base64 -d > \"$f.acc-tmp\" && "
-                    "chmod 644 \"$f.acc-tmp\" && mv -f \"$f.acc-tmp\" \"$f\"")
+                    "chmod 664 \"$f.acc-tmp\" && mv -f \"$f.acc-tmp\" \"$f\"")
 
 
 def committed_workspace(state: dict, host_device: str) -> dict | None:
@@ -1625,7 +1809,8 @@ def invoke_settled(ctx, provider: str, action: str, args: dict, timeout: float =
 
 def _select_workspace(ctx, wid) -> None:
     if ctx.state()["workspace_tree"]["active"] != wid:
-        ctx.vm.invoke("actions", f"workspace.select.{wid}")
+        room = next(w["room"] for w in ctx.state()["workspace_tree"]["workspaces"] if w["id"] == wid)
+        ctx.vm.invoke("actions", f"workspace.select.{room}")
         ctx.wait_state(lambda s: s["workspace_tree"]["active"] == wid, 8, f"workspace {wid} active")
 
 

@@ -70,7 +70,7 @@ fn responsive_nav_publication_tracks_layout_model_and_revocation() {
     let temp = tempfile::tempdir().unwrap();
     let room = uuid::Uuid::new_v4().to_string();
     let mut owners = crate::record::RecordOwners::new(temp.path().into());
-    let records = owners.open(definition.app_id, &room).unwrap();
+    let records = owners.open(definition.app_id(), &room).unwrap();
     let views = Rc::new(
         crate::application_view::InstanceViewStore::new(
             temp.path().into(),
@@ -202,8 +202,9 @@ fn responsive_nav_publication_tracks_layout_model_and_revocation() {
             .is_some_and(|actions| !actions.is_empty()),
         "replacing the navigation tree must not withdraw the native publication"
     );
-    *owner.permissions.borrow_mut() =
-        crate::permissions::PermissionContext::stranger("probe-author").at_unix_time(100);
+    owner
+        .permissions
+        .set(crate::permissions::PermissionContext::stranger("probe-author").at_unix_time(100));
     app.publish_action_surface();
     assert!(
         app.actions

@@ -26,7 +26,8 @@ mod kept;
 mod preferences;
 pub mod resource;
 pub mod shared;
-pub use app::{PlayerApp, source_for_argument, source_for_path};
+pub use app::PlayerApp;
+pub use app::source::{source_for_argument, source_for_path};
 pub use resource::VideoPlayerShell;
 pub use shared::Library;
 

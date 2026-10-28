@@ -96,7 +96,7 @@ intended owner's profile: publisher and fleet trust are checked again, including
 on cached images. Host paths in the returned JSON are local observations, not
 collaborative resource identifiers.
 
-`tilo-install image add --publisher KEY` trusts that key for that admission only;
+`tilo app runtime image add --publisher KEY` trusts that key for that admission only;
 it does not change subsequent image-reader trust. A device or relay normally
 uses its enrolled publisher. A developer probe may use the existing
 `TILO_USH_TRUSTED_PUBLISHER` setting scoped to its own private profile. This does

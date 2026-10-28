@@ -14,11 +14,24 @@ path = "src/lib.rs"
 name = "tilo-desktop-scan"
 path = "src/bin/tilo-desktop-scan.rs"
 
+[features]
+# Read a downloaded AppImage's embedded entry and icon. The compositor, which
+# notices downloaded programs, enables it; the app runtime, which links this
+# crate for the entries alone, keeps the codecs out.
+appimage = ["dep:flate2", "dep:ruzstd", "dep:lzma-rust2"]
+
 [dependencies]
 blake3.workspace = true
+# Reading a downloaded AppImage's embedded name and icon from its squashfs
+# (`appimage`): the codecs AppImage runtimes compress with, all pure Rust.
+flate2 = { workspace = true, optional = true }
+ruzstd = { version = "0.9.1", default-features = false, features = ["std"], optional = true }
+lzma-rust2 = { version = "0.23.0", default-features = false, features = ["std", "xz"], optional = true }
 serde.workspace = true
 serde_json.workspace = true
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+# The scan is kept current by a worker watching the application directories.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", features = ["watch"] }
 thiserror = { workspace = true }
 url.workspace = true
 tilo-paths.workspace = true

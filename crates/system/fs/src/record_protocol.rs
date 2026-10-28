@@ -229,10 +229,6 @@ pub enum RecordProtocolResponseV1 {
 /// cannot leak backend details onto the wire.
 pub trait RecordMutationSink: Send + Sync {
     /// Durably project one accepted mutation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when projection is rejected or unavailable.
     fn record_mutation(
         &self,
         _repository: &RecordRepository,
@@ -244,10 +240,6 @@ pub trait RecordMutationSink: Send + Sync {
     /// Reconcile repository-wide invariants after a mutation whose visibility
     /// may depend on more than this exact record (currently signed
     /// multi-record transactions). The default keeps simple sinks compatible.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when reconciliation is rejected or unavailable.
     fn reconcile_repository(
         &self,
         _repository: &RecordRepository,
@@ -312,10 +304,6 @@ impl std::fmt::Debug for RecordProtocol {
 
 impl RecordProtocol {
     /// Construct a protocol handler bound to one certified local endpoint.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the endpoint does not match the certified device.
     pub fn new(
         endpoint: Endpoint,
         credentials: PeerCredentials,
@@ -845,10 +833,6 @@ impl std::fmt::Debug for RecordProtocolClient {
 
 impl RecordProtocolClient {
     /// Construct a client bound to one certified local endpoint.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the endpoint does not match the certified device.
     pub fn new(
         endpoint: Endpoint,
         credentials: PeerCredentials,
@@ -865,11 +849,6 @@ impl RecordProtocolClient {
     }
 
     /// Dial a named invite's separately supplied endpoint.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when authentication, transport, encoding, or protocol
-    /// validation fails.
     pub async fn request_named(
         &self,
         server: iroh_base::EndpointAddr,
@@ -882,11 +861,6 @@ impl RecordProtocolClient {
 
     /// Validate an endpoint-bound copied link before dialing its signed
     /// endpoint. The secret-bearing URI is constructed only after validation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when link validation, authentication, transport,
-    /// encoding, or protocol validation fails.
     pub async fn request_bearer_link(
         &self,
         link: &FileShareLinkV2,
@@ -905,11 +879,6 @@ impl RecordProtocolClient {
     }
 
     /// Send a direct bearer invite over the already authenticated transport.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when authentication, transport, encoding, or protocol
-    /// validation fails.
     pub async fn request_bearer_invite(
         &self,
         server: iroh_base::EndpointAddr,
@@ -931,11 +900,6 @@ impl RecordProtocolClient {
     /// revision. Verification is bound to the mutually authenticated server,
     /// caller nonce, exact revision, and this client's device identity before
     /// any observation is returned to availability policy.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the request is denied or the response fails
-    /// authentication, transport, or receipt verification.
     pub async fn request_bearer_link_replica_ack(
         &self,
         link: &FileShareLinkV2,
@@ -957,11 +921,6 @@ impl RecordProtocolClient {
 
     /// Dial `server` and authenticate both ends once, for a stream of
     /// requests. See [`RecordProtocolStream`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the connection or the peer authentication
-    /// fails, or the server is not the endpoint asked for.
     pub async fn open_stream(
         &self,
         server: iroh_base::EndpointAddr,
@@ -1142,11 +1101,6 @@ impl RecordProtocolStream {
     }
 
     /// Send `operation` for a named invite.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stream has ended, or on transport,
-    /// encoding or timeout failure.
     pub async fn request_named(
         &mut self,
         invite: FileInviteV1,
@@ -1158,12 +1112,6 @@ impl RecordProtocolStream {
 
     /// Send `operation` for a copied link, validated first. The link must
     /// name the endpoint this stream is connected to.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the link is invalid or names another
-    /// endpoint, the stream has ended, or on transport, encoding or
-    /// timeout failure.
     pub async fn request_bearer_link(
         &mut self,
         link: &FileShareLinkV2,
@@ -1455,8 +1403,10 @@ mod tests {
 
     pub(super) async fn party() -> Party {
         let n = NEXT_PARTY.fetch_add(1, Ordering::Relaxed);
-        let device_seed = *blake3::hash(&n.to_le_bytes()).as_bytes();
-        let root_seed = *blake3::hash(&n.wrapping_add(99_999).to_le_bytes()).as_bytes();
+        // Fresh keys: a counter restarts in every test process, and equal
+        // endpoint ids in two processes reach each other through the relay.
+        let device_seed = iroh::SecretKey::generate().to_bytes();
+        let root_seed = iroh::SecretKey::generate().to_bytes();
         let device = SigningKey::from_bytes(&device_seed);
         let root = SigningKey::from_bytes(&root_seed);
         let now = unix_now_ns();
@@ -1595,7 +1545,7 @@ mod tests {
                 .connect(server.endpoint.addr(), TILO_FS_RECORD_ALPN)
                 .await
                 .unwrap();
-            let (mut raw_send, _raw_recv) = raw_connection.open_bi().await.unwrap();
+            let (mut raw_send, mut raw_recv) = raw_connection.open_bi().await.unwrap();
             let premature = RecordProtocolRequestV1 {
                 protocol_version: RECORD_PROTOCOL_VERSION,
                 credential: RecordProtocolCredentialV1::Named(token.clone()),
@@ -1608,8 +1558,14 @@ mod tests {
                 .unwrap();
             raw_send.write_all(&bytes).await.unwrap();
             raw_send.finish().unwrap();
+            // Its answer, or the connection closing, ends the stream once
+            // the server has read the request and dealt with it.
+            let _ = tilo_test_env::within(
+                "the server to answer the unauthenticated request",
+                raw_recv.read_to_end(64 * 1024),
+            )
+            .await;
         }
-        tokio::time::sleep(Duration::from_millis(30)).await;
         assert!(registry.is_empty());
         assert!(repository.is_empty());
 
@@ -2132,7 +2088,6 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_or_malformed_frames_are_rejected_without_allocating() {
-        // Phase `oversized_request_is_rejected_without_allocating_payload`.
         {
             use tokio::io::AsyncWriteExt;
             let (mut writer, mut reader) = tokio::io::duplex(16);
@@ -2152,7 +2107,6 @@ mod tests {
             ));
             write.await.unwrap();
         }
-        // Phase `client_rejects_oversized_response_without_allocating_payload`.
         {
             use tokio::io::AsyncWriteExt;
             let (mut writer, mut reader) = tokio::io::duplex(16);
@@ -2172,7 +2126,6 @@ mod tests {
             ));
             write.await.unwrap();
         }
-        // Phase `client_rejects_malformed_response`.
         {
             use tokio::io::AsyncWriteExt;
             let (mut writer, mut reader) = tokio::io::duplex(16);

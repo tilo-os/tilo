@@ -1,6 +1,6 @@
 # Downloaded development layers
 
-`tilo-vm swap-artifact` consumes an upstream native CI job's downloaded layer
+`tilo device swap-artifact` consumes an upstream native CI job's downloaded layer
 streams. It never builds, invokes Cargo metadata, selects a builder, pulls a CI
 image, or falls back to an installed layer. Acceptance runs it from the exact
 source checkout that produced the artifacts.
@@ -13,10 +13,12 @@ an unprivileged user's worktree of a root-owned CI clone, whose shared object
 store it may not read, still answers; when HEAD cannot be read at all the
 refusal carries git's own words.
 
-The CLI that runs it need not be the source's own. vm-acceptance builds the
-consumer from the workflow's checkout and runs it in the ref's checkout: the
-code under test does not verify its own artifacts, and a branch that predates
-a consumer fix can still be tested. The ref's own tilo-vm remains the packer.
+The CLI that runs it need not be the source's own. t's vm-acceptance-cohort
+builds the consumer from main's head (vm-cohort-verifier-x86_64) and runs it in
+the checkout of the commit under test: the code under test does not verify its
+own artifacts, and a branch that predates a consumer fix can still be tested.
+The commit's own tilo-vm remains the packer (vm-cohort-x86_64,
+tools/ci/vm-cohort.sh).
 
 ```sh
 tilo-vm --json swap-artifact apps+runtime --slot acceptance \
@@ -26,11 +28,13 @@ tilo-vm --json swap-artifact apps+runtime --slot acceptance \
   --receipt-sha256 "$UPSTREAM_MANIFEST_SHA256"
 ```
 
-The expected source, immutable builder, workflow API run ID, attempt and manifest
-digest come from the authenticated upstream job. Computing the expected manifest
-digest from the downloaded file itself does not establish its identity. Transfer
-uses the existing same-run CI artifact service; the CLI adds no keys, grants,
-publisher authorities or transport.
+The expected source, immutable builder, run ID, attempt and manifest digest come
+from the upstream job: on t, the producer's `handoff.json`, which t hands with the
+layers only to the checks that need that producer's result (t numbers no runs, so
+the producer names its handoff with a random run ID). Computing the expected
+manifest digest from the downloaded file itself does not establish its identity.
+Transfer is t's outputs of a need; the CLI adds no keys, grants, publisher
+authorities or transport.
 
 The receipt schema is `tilo.vm.layer-artifacts/v1`. Unknown fields are rejected.
 An example with placeholders follows; a complete cohort has one layer entry each

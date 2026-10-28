@@ -26,8 +26,15 @@ use tilo_moq::relay::{Denied, Direction, LoopbackRelay, RelayAuthority, SessionA
 
 const CALL: &str = "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1";
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+/// Polls `condition` on the runtime until it holds; only a hang fails it.
+async fn settle(what: &str, mut condition: impl FnMut() -> bool) {
+    tilo_test_env::within(what, async {
+        while !condition() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+}
 fn namespace(who: char) -> String {
     format!("{CALL}/{}", who.to_string().repeat(64))
 }
@@ -282,7 +289,7 @@ async fn chat_semantic_call_commands_drive_consented_real_native_call_audio() {
         .desktop
         .workspaces
         .remove(0);
-    let room = workspace.room.to_string();
+    let room = workspace.room().to_string();
     let (grants, _) = GrantStoreHandle::test_with_workspace(workspace);
     let prompts = PromptQueueHandle::new(PromptResolver::Channel);
     let mut capture = CaptureBroker::new();
@@ -300,8 +307,6 @@ async fn chat_semantic_call_commands_drive_consented_real_native_call_audio() {
         super::super::personal_continuity::DeviceId::new("device-audio").unwrap(),
     );
     assert!(service.install_consent(grants, prompts.clone()));
-    // This person chose to join calls muted; they turn the microphone on.
-    service.preferences().remember(true);
     let evidence = Arc::new(Evidence::default());
     assert!(service.install_factory(Arc::new(AudioFactory {
         relay: relay.clone(),
@@ -347,23 +352,24 @@ async fn chat_semantic_call_commands_drive_consented_real_native_call_audio() {
         channel_id: "voice".into(),
     });
     assert!(joined.muted);
-    let deadline = tilo_test_env::hang_deadline();
-    while command(Command::Status).state != State::Live {
-        assert!(
-            Instant::now() < deadline,
-            "native call did not go live within the hang bound"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    settle("the native call to go live", || {
+        command(Command::Status).state == State::Live
+    })
+    .await;
+    // Nothing captured and nothing sent: no audio can reach the listener.
+    tick();
     listener.drain();
     assert!(
         prompts.drain().is_empty(),
         "joining never prompts for the microphone"
     );
     assert_eq!(
-        (listener.frames, evidence.starts.load(Ordering::SeqCst)),
-        (0, 0)
+        (
+            listener.frames,
+            evidence.starts.load(Ordering::SeqCst),
+            evidence.sent.load(Ordering::SeqCst)
+        ),
+        (0, 0, 0)
     );
 
     // A declined "Request microphone" never starts capture or audio.
@@ -375,12 +381,19 @@ async fn chat_semantic_call_commands_drive_consented_real_native_call_audio() {
         .reply
         .send(PromptOutcome::Deny)
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    settle("the call to take the declined consent", || {
+        command(Command::Status).issue == Some(Issue::PermissionDenied)
+    })
+    .await;
     tick();
     listener.drain();
     assert_eq!(
-        (listener.frames, evidence.starts.load(Ordering::SeqCst)),
-        (0, 0)
+        (
+            listener.frames,
+            evidence.starts.load(Ordering::SeqCst),
+            evidence.sent.load(Ordering::SeqCst)
+        ),
+        (0, 0, 0)
     );
     assert!(!command(Command::Status).capture_active);
 
@@ -395,54 +408,47 @@ async fn chat_semantic_call_commands_drive_consented_real_native_call_audio() {
         .send(PromptOutcome::AllowOnce)
         .unwrap();
     let mut first_audio_ms = None;
-    let deadline = tilo_test_env::hang_deadline();
-    while Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(20)).await;
+    settle("fifty decoded tone frames at the listener", || {
         tick();
         listener.drain();
         if first_audio_ms.is_none() && listener.tone > 0 {
             first_audio_ms = Some(approved_at.elapsed().as_millis());
         }
-        if listener.tone >= 50 {
-            break;
-        }
-    }
+        listener.tone >= 50
+    })
+    .await;
     assert_eq!(evidence.starts.load(Ordering::SeqCst), 1);
     assert!(command(Command::Status).capture_active);
-    assert!(
-        listener.tone >= 50,
-        "the listener decoded only {} tone frames within the hang bound",
-        listener.tone
-    );
     let audible = (listener.frames, listener.tone);
 
     // "Mute microphone": capture/publication stop before the command returns.
     command(Command::SetMuted { muted: true });
     assert!(evidence.stops.load(Ordering::SeqCst) >= 1);
     let sent_at_mute = evidence.sent.load(Ordering::SeqCst);
-    tokio::time::sleep(Duration::from_millis(250)).await; // in-flight frames drain
+    // The stop took the send lock, so the capture loop has sent its last
+    // packet: the listener can hear nothing beyond what was sent before it.
+    tick();
     listener.drain();
-    let after_mute = listener.frames;
-    tokio::time::sleep(Duration::from_millis(600)).await;
-    listener.drain();
-    assert_eq!(listener.frames, after_mute, "no audio after mute");
+    assert!(!command(Command::Status).capture_active);
     assert_eq!(
         evidence.sent.load(Ordering::SeqCst),
         sent_at_mute,
         "no capture after mute"
+    );
+    assert!(
+        u64::try_from(listener.frames).unwrap() <= sent_at_mute,
+        "no audio after mute: heard {} frames of {sent_at_mute} sent",
+        listener.frames
     );
 
     // "Leave call": the backend and its transport are closed.
     command(Command::Leave);
     tick();
     assert!(!command(Command::Status).capture_active);
-    let leave_started = std::time::Instant::now();
-    while leave_started.elapsed() < HANG_BOUND {
-        if evidence.closes.load(Ordering::SeqCst) > 0 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    settle("leave to close the native backend", || {
+        evidence.closes.load(Ordering::SeqCst) > 0
+    })
+    .await;
     assert!(
         evidence.closes.load(Ordering::SeqCst) >= 1,
         "leave closes the native backend"
@@ -454,7 +460,7 @@ async fn chat_semantic_call_commands_drive_consented_real_native_call_audio() {
             "joinedMutedFramesReceived": 0,
             "declinedConsentFramesReceived": 0,
             "afterConsent": {"framesReceived": audible.0, "toneFrames": audible.1, "firstToneMsAfterConsent": first_audio_ms, "packetsSent": sent_at_mute},
-            "afterMuteNewFrames": listener.frames - after_mute,
+            "framesHeardAfterMute": listener.frames - audible.0,
             "captureStarts": evidence.starts.load(Ordering::SeqCst),
             "captureStops": evidence.stops.load(Ordering::SeqCst),
             "backendCloses": evidence.closes.load(Ordering::SeqCst),

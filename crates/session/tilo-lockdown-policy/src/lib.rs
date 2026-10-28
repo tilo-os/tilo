@@ -111,11 +111,6 @@ fn shared_policy(path: &PathBuf) -> Arc<SharedPolicy> {
 
 /// Register `listener` for every policy committed at `path`, delivering the
 /// current policy to it first.
-///
-/// # Errors
-///
-/// Fails when called from inside an observer callback or when an observer
-/// lock is poisoned.
 pub fn watch_policy_at(path: PathBuf, listener: &Arc<PolicyListener>) -> std::io::Result<()> {
     watch_policy_with_hook(path, listener, || ())
 }

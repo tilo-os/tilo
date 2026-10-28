@@ -42,10 +42,6 @@ impl Connect {
     /// What a session for this room must be pinned to now: the host hint,
     /// this device's certificate, the revocations to dial with and the
     /// owner's continuity.
-    ///
-    /// # Errors
-    /// Custody differs from the enrollment, this device may no longer act in
-    /// the room, or its host is revoked.
     pub fn material(
         &self,
         identity: &HostIdentity,
@@ -64,16 +60,37 @@ impl Connect {
             for entry in entries.into_iter().chain(view.peer().revocations()) {
                 revocations.insert(entry).map_err(|e| e.to_string())?;
             }
-            if revocations.is_revoked(&view.transport_hint().host.device_public_key) {
+            if revocations.is_revoked(&view.transport_hint()?.host.device_public_key) {
                 return Err("native relay host is revoked".into());
             }
             Ok((
-                view.transport_hint().clone(),
+                view.transport_hint()?.clone(),
                 cert,
                 revocations,
                 view.continuity(),
             ))
         })
+    }
+    /// The renewal of the certificate the room's record holds, when this
+    /// device's custody holds one: the device proves its membership with it
+    /// ([`crate::enroll::renew_membership`]) before its sessions dial again,
+    /// as [`Self::material`] refuses custody that differs from the record.
+    ///
+    /// # Errors
+    /// The room is not held here or custody cannot be read.
+    pub fn renewal(&self, identity: &HostIdentity) -> Result<Option<DeviceCert>, String> {
+        self.owner.with_current(self.room, |view| {
+            if view.governed_here() {
+                return Ok(None);
+            }
+            let (cert, _) = identity.current_native_material(view.workspace())?;
+            Ok(crate::renewal::renews(&cert, view.device()).then_some(cert))
+        })
+    }
+    /// The owner of the room's record.
+    #[must_use]
+    pub fn owner(&self) -> &NativeWorkspaceOwner {
+        &self.owner
     }
 }
 /// A live session's pin; closed when the session ends.
@@ -174,7 +191,7 @@ impl Scope {
         }
         self.connect.owner.with_current(self.connect.room, |view| {
             if view.device() != &self.device
-                || view.transport_hint() != &self.hint
+                || view.transport_hint()? != &self.hint
                 || view.continuity() != self.continuity()
             {
                 return Err("native refresh current owner changed".into());
@@ -271,7 +288,7 @@ impl Scope {
             std::time::SystemTime::now(),
             |view, outgoing| {
                 if view.device() != &self.device
-                    || view.transport_hint() != &self.hint
+                    || view.transport_hint()? != &self.hint
                     || view.continuity() != self.continuity()
                 {
                     return Err("native publication authority changed".into());
@@ -353,9 +370,6 @@ impl Input {
         self.retained
     }
     /// Observe the actual committed owner generation, without granting admission.
-    ///
-    /// # Errors
-    /// The enrolled room is unavailable or fenced.
     pub fn generation(&self) -> Result<u64, String> {
         self.scope
             .connect
@@ -367,15 +381,43 @@ impl Input {
     ///
     /// # Errors
     /// The session closed or its pin changed, or admission refuses it.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the live flag stays locked through admission so a close cannot interleave"
-    )]
     pub fn admit(
         &self,
         identity: &HostIdentity,
     ) -> Result<tilo_peer_state::AdmissionReport, String> {
-        let live = self
+        Self::admit_all(std::slice::from_ref(self), identity)?
+            .pop()
+            .ok_or_else(|| "native owner admitted no input".to_owned())?
+    }
+    /// Whether `other` came over the same relay session as this one: what
+    /// [`Self::admit_all`] admits together.
+    #[must_use]
+    pub fn same_session(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.scope, &other.scope)
+    }
+    /// Admit `inputs`, all of one relay session, in the order they came, in
+    /// one commit of the owner, while the session is still live and pinned
+    /// to the owner's current material: each is authorized as one alone is,
+    /// and a burst of them persists once. One report per input.
+    ///
+    /// # Errors
+    /// The inputs span sessions, the session closed or its pin changed, or
+    /// the commit failed: no input is admitted.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the live flag stays locked through admission so a close cannot interleave"
+    )]
+    pub fn admit_all(
+        inputs: &[Self],
+        identity: &HostIdentity,
+    ) -> Result<Vec<Result<tilo_peer_state::AdmissionReport, String>>, String> {
+        let Some(first) = inputs.first() else {
+            return Ok(Vec::new());
+        };
+        if !inputs.iter().all(|input| first.same_session(input)) {
+            return Err("native relay inputs of different sessions".into());
+        }
+        let live = first
             .scope
             .live
             .lock()
@@ -383,27 +425,29 @@ impl Input {
         if !*live {
             return Err("native relay session closed".into());
         }
-        let (hint, device, _, continuity) = self.scope.connect.material(identity)?;
-        if !self.scope.pinned_to(&hint, &device, continuity) {
+        let (hint, device, _, continuity) = first.scope.connect.material(identity)?;
+        if !first.scope.pinned_to(&hint, &device, continuity) {
             return Err("native relay pin changed".into());
         }
-        let origin = if self.retained {
-            TransportOrigin::RetainedRelayDelta(self.author)
-        } else {
-            TransportOrigin::RelayDelta(self.author)
-        };
-        self.scope.connect.owner.receive(
-            self.room(),
-            origin,
-            self.msg.clone(),
-            std::time::SystemTime::now(),
-        )
+        let batch = inputs
+            .iter()
+            .map(|input| {
+                let origin = if input.retained {
+                    TransportOrigin::RetainedRelayDelta(input.author)
+                } else {
+                    TransportOrigin::RelayDelta(input.author)
+                };
+                (origin, input.msg.clone())
+            })
+            .collect();
+        first
+            .scope
+            .connect
+            .owner
+            .receive_batch(first.room(), batch, std::time::SystemTime::now())
     }
     /// The author's current standing in the room: the room's policy, and
     /// the bound on a device not theirs.
-    ///
-    /// # Errors
-    /// The room is fenced or the author is not a member.
     pub fn standing(&self) -> Result<tilo_action_policy::Standing, String> {
         self.scope.connect.owner.with_current(self.room(), |view| {
             view.peer()
@@ -633,7 +677,6 @@ mod dial_error_tests {
     use super::DialError;
     use tilo_relay_session::ClientError;
 
-    // USER REQUIREMENT (2026-10-19): "If a v6 client meets the v5 relay, the user must see a clear "update needed" state, never a silent empty room."
     #[test]
     fn a_host_at_another_version_stays_a_version_mismatch_through_the_dial() {
         let behind = neighbour_wire::PEER_PROTOCOL_VERSION - 1;
@@ -641,8 +684,6 @@ mod dial_error_tests {
             DialError::from(ClientError::PeerVersion { theirs: behind }),
             DialError::PeerVersion { theirs: behind }
         );
-        // Over a site's HTTPS routes, from a host that predates versioned
-        // handshakes too.
         let unversioned = tilo_relay_protocol::auth::UNVERSIONED_PEER_PROTOCOL;
         assert_eq!(
             DialError::from(ClientError::Https(

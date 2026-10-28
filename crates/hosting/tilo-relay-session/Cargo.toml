@@ -23,6 +23,8 @@ ignored = ["getrandom", "getrandom03"]
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 # Frame codec, co-edit payloads and the device-signer seam.
 tilo-relay-client = { path = "../tilo-relay-client" }
+# The remote-action vocabulary a room's governance answers in.
+tilo-actions = { path = "../../collab/actions" }
 # Delivery v2/v3, private actions and the workspace join contract.
 tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }

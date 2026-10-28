@@ -300,7 +300,6 @@ fn parse_unix_diag(message: &[u8]) -> Option<UnixDiagEntry> {
     Some(entry)
 }
 
-/// Inodes of every socket held by a process of `group`.
 fn process_group_socket_inodes(group: libc::pid_t) -> HashSet<u64> {
     let mut inodes = HashSet::new();
     let Ok(processes) = fs::read_dir("/proc") else {

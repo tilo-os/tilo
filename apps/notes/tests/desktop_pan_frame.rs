@@ -50,6 +50,7 @@ fn six_notes(
                 label: "Notes".into(),
                 note: String::new(),
             },
+            app_title: None,
         })
         .collect();
     let ids: Vec<TabId> = tabs.iter().map(|tab| tab.id).collect();
@@ -80,7 +81,7 @@ fn six_notes(
         harness.relayout();
     }
     assert!(arrived.borrow().is_empty(), "every tab took its component");
-    harness.set_coalesce_wheel_frames(true);
+    harness.set_coalesce_input_frames(true);
     (harness, handle)
 }
 
@@ -225,14 +226,14 @@ fn assert_pan_frames(harness: &mut FrameHarness, handle: &DesktopHandle) {
 
     // Any change still reaches its own frame: a click into a window syncs
     // the windows and publishes undo on the frame that shows it.
-    // The move onto the window changes nothing a frame reads, so its frame
-    // is a pan frame too and replays the windows; the press draws them again
-    // before it reaches a widget.
+    // The move onto the window leaves its frame to the page's next one, as
+    // a browser host does; the press draws the replayed windows again before
+    // it reaches a widget.
     let ((), rows) = observe(|| harness.click_at(300.0, 450.0));
     assert_eq!(
         calls(&rows, "ui.settle_replayed_draws"),
-        2,
-        "the replayed windows are drawn again before the move and the press: {rows:?}"
+        1,
+        "the replayed windows are drawn again before the press: {rows:?}"
     );
     assert!(
         calls(&rows, "ui.frame_sync") > 0 && calls(&rows, "ui.publish_undo_status") > 0,

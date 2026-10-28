@@ -68,6 +68,7 @@ impl Session {
         self.merged = inputs.model().merged_text();
         self.merge = Some(inputs);
         self.resolutions.clear();
+        self.written.clear();
     }
 
     /// Take ours for a change.
@@ -97,6 +98,10 @@ impl Session {
     ) -> Result<(), Refusal> {
         let (model, index) = self.change(hunk)?;
         self.merged = compose_custom(&model, index, &text);
+        // Recorded, so the result is still what the record composes and the
+        // other changes can still take a side.
+        self.resolutions.remove(&index.to_string());
+        self.written.insert(index.to_string(), text);
         Ok(())
     }
 }
@@ -129,6 +134,7 @@ impl Session {
     fn take(&mut self, hunk: u64, choice: HunkChoice) -> Result<(), Refusal> {
         let (model, index) = self.change(hunk)?;
         self.merged = compose_choice(&model, index, choice);
+        self.written.remove(&index.to_string());
         self.resolutions.insert(index.to_string(), choice);
         Ok(())
     }
@@ -256,6 +262,8 @@ pub struct DiffmergeShell;
 impl ResourceApp for DiffmergeShell {
     type Resource = Session;
     const ID: &'static str = "so.tilo.diffmerge";
+    // Each window shows what it opened, never another window's.
+    const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Diff & Merge";
     const ICON: Option<&'static str> = Some("diffmerge");
     fn label(state: &Session) -> String {
@@ -281,10 +289,11 @@ impl ResourceApp for DiffmergeShell {
     }
 
     fn scenarios() -> &'static [&'static str] {
-        &["empty", "diff", "merge", "error", "status"]
+        &["empty", "diff", "merge", "folders", "error", "status"]
     }
 
-    /// Every scenario but the empty one shows the bundled samples.
+    /// Every scenario but the empty one shows the bundled samples; the
+    /// folder listing shows the sample tree comparison instead.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Session>> {
         if name == Some("empty") {
             return Vec::new();
@@ -322,3 +331,26 @@ impl ResourceSurface<Session, DiffmergeEffect> for DiffMergeApp {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::DiffmergeShell::scenarios() {
+            let mut app = TestApp::<super::DiffmergeShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+}

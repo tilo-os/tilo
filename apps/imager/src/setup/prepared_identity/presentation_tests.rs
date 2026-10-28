@@ -1,4 +1,3 @@
-//! The identity service feeds the frontend's shared avatar painter.
 use std::sync::Arc;
 use tilo_identity_host::provisioning::IdentityStorage;
 

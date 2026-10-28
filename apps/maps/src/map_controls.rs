@@ -60,7 +60,7 @@ pub(super) enum MapControlAction {
     ZoomIn,
     ZoomOut,
     Locate,
-    ToggleTraffic,
+    Layers,
 }
 
 #[derive(Clone, Copy)]
@@ -101,7 +101,7 @@ impl Layout {
             MapControlAction::ZoomIn => self.zoom_in,
             MapControlAction::ZoomOut => self.zoom_out,
             MapControlAction::Locate => self.locate,
-            MapControlAction::ToggleTraffic => self.traffic,
+            MapControlAction::Layers => self.traffic,
         }
     }
 }
@@ -112,18 +112,18 @@ impl MapControlAction {
         Self::ZoomIn,
         Self::ZoomOut,
         Self::Locate,
-        Self::ToggleTraffic,
+        Self::Layers,
     ];
 
     /// What the control is called: its accessible name and its tooltip.
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            Self::History => "History",
-            Self::ZoomIn => "Zoom in",
-            Self::ZoomOut => "Zoom out",
-            Self::Locate => "My location",
-            Self::ToggleTraffic => "Traffic",
-        }
+    pub(super) fn label(self) -> String {
+        crate::failure::t(match self {
+            Self::History => "maps-history",
+            Self::ZoomIn => "maps-zoom-in",
+            Self::ZoomOut => "maps-zoom-out",
+            Self::Locate => "maps-use-my-location",
+            Self::Layers => "maps-map-layers",
+        })
     }
 
     fn icon(self) -> Icon {
@@ -132,7 +132,7 @@ impl MapControlAction {
             Self::ZoomIn => Icon::Plus,
             Self::ZoomOut => Icon::Minus,
             Self::Locate => Icon::LocateFixed,
-            Self::ToggleTraffic => Icon::Layers,
+            Self::Layers => Icon::Layers,
         }
     }
 }
@@ -223,14 +223,14 @@ impl MapControls {
         &mut self,
         point: Point,
         suppressed: bool,
-        extra_targets: impl IntoIterator<Item = (Rect, &'static str)>,
+        extra_targets: impl IntoIterator<Item = (Rect, String)>,
         now: Instant,
     ) -> bool {
         let old_hover = self.hovered;
         self.hovered = (!suppressed).then(|| self.hit_test(point)).flatten();
         let own_target = self
             .hovered
-            .map(|action| (self.layout().rect(action), action.label().to_string()));
+            .map(|action| (self.layout().rect(action), action.label()));
         let target = if suppressed {
             None
         } else {
@@ -238,7 +238,6 @@ impl MapControls {
                 extra_targets
                     .into_iter()
                     .find(|(rect, _)| rect.contains(point))
-                    .map(|(rect, label)| (rect, label.to_string()))
             })
         };
         let tooltip_changed = self.tooltip.on_pointer(target, now);
@@ -254,8 +253,8 @@ impl MapControls {
     }
 
     /// Paint the column: icon buttons on their raised face so they read over
-    /// any basemap tone. The traffic toggle stands on the selection lift
-    /// while on.
+    /// any basemap tone. The layers button stands on the selection lift
+    /// while a layer (traffic) is on.
     pub(super) fn draw(
         &self,
         scene: &mut Scene,
@@ -269,16 +268,17 @@ impl MapControls {
                 continue;
             }
             let on = match action {
-                MapControlAction::ToggleTraffic => self.traffic_enabled,
+                MapControlAction::Layers => self.traffic_enabled,
                 MapControlAction::History => self.history.is_some_and(HistoryControl::is_open),
                 _ => false,
             };
+            let label = action.label();
             Button::paint(
                 scene,
                 transform,
                 text,
                 theme,
-                &ButtonFace::icon_only(layout.rect(action), action.icon(), action.label())
+                &ButtonFace::icon_only(layout.rect(action), action.icon(), &label)
                     .role(ButtonRole::Secondary)
                     .hovered(self.hovered == Some(action))
                     .toggled(on),
@@ -327,14 +327,13 @@ mod tests {
 
     #[test]
     fn map_controls_own_hit_testing_hover_gaps_and_traffic_state() {
-        // Phase `every_drawn_control_hit_tests_to_one_semantic_action`.
         {
             let controls = controls();
             for action in [
                 MapControlAction::ZoomIn,
                 MapControlAction::ZoomOut,
                 MapControlAction::Locate,
-                MapControlAction::ToggleTraffic,
+                MapControlAction::Layers,
             ] {
                 assert_eq!(
                     controls.hit_test(controls.rect(action).center()),
@@ -344,7 +343,6 @@ mod tests {
             assert_eq!(controls.hit_test(Point::new(640.0, 400.0)), None);
         }
 
-        // Phase `hover_and_tooltip_state_are_owned_by_the_component`.
         {
             let mut controls = controls();
             let zoom = controls.rect(MapControlAction::ZoomIn);
@@ -368,7 +366,7 @@ mod tests {
             let zoom_in = controls.rect(MapControlAction::ZoomIn);
             let zoom_out = controls.rect(MapControlAction::ZoomOut);
             let locate = controls.rect(MapControlAction::Locate);
-            let traffic = controls.rect(MapControlAction::ToggleTraffic);
+            let traffic = controls.rect(MapControlAction::Layers);
             assert_eq!(zoom_out.y0 - zoom_in.y1, f64::from(sp.s2));
             assert_eq!(locate.y0 - zoom_out.y1, f64::from(sp.s3));
             assert_eq!(traffic.y0 - locate.y1, f64::from(sp.s3));
@@ -385,7 +383,6 @@ mod tests {
             }
         }
 
-        // Phase `the_history_control_heads_the_column_while_offered`.
         {
             let mut controls = controls();
             let sp = Theme::dark().tokens.spacing;
@@ -401,12 +398,11 @@ mod tests {
                 controls.hit_test(history.center()),
                 Some(MapControlAction::History)
             );
-            let traffic = controls.rect(MapControlAction::ToggleTraffic);
+            let traffic = controls.rect(MapControlAction::Layers);
             assert_eq!(traffic.y1 - history.y0, controls.column_height());
             assert_eq!(controls.rects().count(), 5);
         }
 
-        // Phase `traffic_visual_state_is_not_duplicated_in_the_app`.
         {
             let mut controls = controls();
             assert!(!controls.traffic_enabled());

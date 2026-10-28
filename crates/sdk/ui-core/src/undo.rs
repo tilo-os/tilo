@@ -13,13 +13,13 @@
 //!
 //! * **Host → widget.** Once per frame the host publishes an [`UndoStatus`] to
 //!   every laid-out widget via
-//!   [`UndoControl::set_undo_status`](crate::undo::UndoControl::set_undo_status). A
+//!   [`UndoControl::set_undo_status`]. A
 //!   widget stores it (embed an [`UndoAccess`]) and reads it from `draw` and —
 //!   the part that matters for assistive technology — from `accessibility`,
 //!   which only gets `&self`.
 //! * **Widget → host.** A widget records an [`UndoRequest`], and the host
 //!   drains it via
-//!   [`UndoControl::take_undo_request`](crate::undo::UndoControl::take_undo_request)
+//!   [`UndoControl::take_undo_request`]
 //!   and performs it through `App::perform_undo`
 //!   — the *same* method the Ctrl+Z key handler calls. There is one undo
 //!   implementation, so a button and the shortcut cannot drift apart.
@@ -33,7 +33,7 @@
 //! There is a third channel in the same family, one step earlier: an app whose
 //! edits are dispatched [`tilo_actions`](crate::action_host) actions reports the
 //! bracket around them through
-//! [`CommittedActions::take_committed_action`](crate::undo::CommittedActions::take_committed_action),
+//! [`CommittedActions::take_committed_action`],
 //! and [`record_dispatched_action`] is where a host turns that into the undo
 //! entry the two halves above then see. It sweeps `node_map` for the same
 //! reason they do.
@@ -53,7 +53,6 @@ pub(crate) const EDIT_OPERATION: &str = "tilo.host.edit";
 /// promise an action the shortcut would refuse.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UndoStatus {
-    /// There is an action this user can undo.
     pub can_undo: bool,
     /// There is an action this user can redo.
     pub can_redo: bool,
@@ -85,7 +84,6 @@ impl UndoStatus {
         }
     }
 
-    /// The summary for the verb `which`, if any.
     pub fn summary(&self, which: UndoRequest) -> Option<&str> {
         match which {
             UndoRequest::Undo => self.undo_summary.as_deref(),
@@ -256,10 +254,13 @@ pub fn record_dispatched_action<S: std::hash::BuildHasher>(
 }
 
 /// Bound host variant. The exclusive owner keeps root and both maps stable.
+/// `order` names the mapped nodes to visit: every node that can report a
+/// bracket (a bound or legacy node, a [`CommittedActions`] widget), or all.
 pub(crate) unsafe fn record_dispatched_action_bound(
     state: &mut crate::state::State,
     root: *mut dyn crate::widget::Widget,
     nodes: &std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
+    order: impl IntoIterator<Item = taffy::NodeId>,
     bindings: &crate::bound_dispatch::BoundNodeMap,
     author: &crate::permissions::UserId,
     authority: &crate::permissions::PermissionContext,
@@ -279,7 +280,10 @@ pub(crate) unsafe fn record_dispatched_action_bound(
     // SAFETY: the root and every node pointer are live for this exclusive sweep.
     visited.insert(unsafe { crate::widget::node_sweep_identity(root) });
     let mut bound_changed = false;
-    for (&node, &pointer) in nodes {
+    for node in order {
+        let Some(&pointer) = nodes.get(&node) else {
+            continue;
+        };
         // SAFETY: as above; no other borrow of this node is live.
         if !visited.insert(unsafe { crate::widget::node_sweep_identity(pointer) }) {
             continue;
@@ -405,8 +409,6 @@ pub trait LocalUndo {
     /// The component retains this invocation and reports its actual native ACK
     /// through `poll_local_undo_operation`. Required hosted custody continues to
     /// be declined by the generic adapter; this interface supplies no grant.
-    /// # Errors
-    /// Returns the original field's admission refusal.
     fn start_local_undo_operation(
         &mut self,
         _invocation: tilo_actions::InvocationId,
@@ -481,7 +483,6 @@ pub fn take_committed_action(
         .take_committed_action()
 }
 
-/// Whether `widget` keeps its last undo step open.
 pub fn keeps_undo_step_open(widget: &(impl crate::widget::Widget + ?Sized)) -> bool {
     crate::widget::capability::capability::<dyn CommittedActions>(widget)
         .is_some_and(CommittedActions::keeps_undo_step_open)
@@ -495,6 +496,11 @@ pub fn set_undo_status(
     if let Some(control) = crate::widget::capability::capability_mut::<dyn UndoControl>(widget) {
         control.set_undo_status(status);
     }
+}
+
+/// Whether `widget` shows the undo status: [`set_undo_status`] reaches it.
+pub(crate) fn takes_undo_status(widget: &mut (impl crate::widget::Widget + ?Sized)) -> bool {
+    crate::widget::capability::capability_mut::<dyn UndoControl>(widget).is_some()
 }
 
 /// The undo or redo `widget` asked for, if any.
@@ -722,7 +728,7 @@ mod tests {
 
     #[test]
     fn deferred_native_history_waits_for_original_ack_and_preserves_document() {
-        use crate::widget::{Edits, ResourceOperation, ResourceOperationStart, Widget};
+        use crate::widget::{Edits, ResourceOperation, ResourceOperationStart};
         let mut widget = NativeHistoryProbe::default();
         let mut doc = automerge::AutoCommit::new();
         let original = doc.get_heads();
@@ -735,42 +741,57 @@ mod tests {
             EDIT_OPERATION,
             &payload,
         );
-        assert!(
-            widget
-                .resource_operation_handlers()
-                .contains(EDIT_OPERATION)
-        );
+        assert!(crate::widget::resource_operation_handlers(&widget).contains(EDIT_OPERATION));
         assert_eq!(
-            widget
-                .start_operation(&operation, &mut Edits::lend(&mut doc), &automerge::ROOT)
-                .unwrap(),
+            crate::widget::start_operation(
+                &mut widget,
+                &operation,
+                &mut Edits::lend(&mut doc),
+                &automerge::ROOT
+            )
+            .unwrap(),
             Some(ResourceOperationStart::Accepted)
         );
         assert!(
-            widget
-                .poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                .is_none()
+            crate::widget::poll_resource_operation(
+                &mut widget,
+                invocation,
+                false,
+                &doc,
+                &automerge::ROOT
+            )
+            .is_none()
         );
         widget.acknowledged = true;
         assert!(
-            widget
-                .poll_resource_operation(other, false, &doc, &automerge::ROOT)
-                .is_none()
+            crate::widget::poll_resource_operation(
+                &mut widget,
+                other,
+                false,
+                &doc,
+                &automerge::ROOT
+            )
+            .is_none()
         );
         assert!(
-            matches!(widget.poll_resource_operation(invocation, false, &doc, &automerge::ROOT), Some(tilo_actions::InvocationUpdate::Succeeded { invocation: completed, .. }) if completed == invocation)
+            matches!(crate::widget::poll_resource_operation(&mut widget, invocation, false, &doc, &automerge::ROOT), Some(tilo_actions::InvocationUpdate::Succeeded { invocation: completed, .. }) if completed == invocation)
         );
         assert!(
-            widget
-                .poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                .is_none()
+            crate::widget::poll_resource_operation(
+                &mut widget,
+                invocation,
+                false,
+                &doc,
+                &automerge::ROOT
+            )
+            .is_none()
         );
         assert_eq!(doc.get_heads(), original);
     }
 
     #[test]
     fn deferred_native_history_cancellation_does_not_report_success() {
-        use crate::widget::{Edits, ResourceOperation, Widget};
+        use crate::widget::{Edits, ResourceOperation};
         let mut widget = NativeHistoryProbe::default();
         let mut doc = automerge::AutoCommit::new();
         let invocation = tilo_actions::InvocationId::new();
@@ -781,23 +802,31 @@ mod tests {
             EDIT_OPERATION,
             &payload,
         );
-        widget
-            .start_operation(&operation, &mut Edits::lend(&mut doc), &automerge::ROOT)
-            .unwrap();
+        crate::widget::start_operation(
+            &mut widget,
+            &operation,
+            &mut Edits::lend(&mut doc),
+            &automerge::ROOT,
+        )
+        .unwrap();
         assert!(
-            matches!(widget.poll_resource_operation(invocation, true, &doc, &automerge::ROOT), Some(tilo_actions::InvocationUpdate::Cancelled { invocation: canceled, .. }) if canceled == invocation)
+            matches!(crate::widget::poll_resource_operation(&mut widget, invocation, true, &doc, &automerge::ROOT), Some(tilo_actions::InvocationUpdate::Cancelled { invocation: canceled, .. }) if canceled == invocation)
         );
         widget.acknowledged = true;
         assert!(
-            widget
-                .poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                .is_none()
+            crate::widget::poll_resource_operation(
+                &mut widget,
+                invocation,
+                false,
+                &doc,
+                &automerge::ROOT
+            )
+            .is_none()
         );
     }
 
     #[test]
     fn undo_access_publishes_status_and_refuses_unavailable_verbs_once() {
-        // Case `unused_undo_status_is_not_evaluated`.
         {
             let mut spacer = crate::widget::Spacer::new();
             crate::undo::set_undo_status(&mut spacer, &mut || {
@@ -805,7 +834,6 @@ mod tests {
             });
         }
 
-        // Case `undo_button_requests_and_publishes_status`.
         {
             use crate::widget::Widget;
             let mut button = crate::widget::UndoButton::undo();
@@ -822,7 +850,6 @@ mod tests {
             );
         }
 
-        // Case `a_request_for_an_unavailable_verb_is_refused_and_enqueues_nothing`.
         {
             let mut access = UndoAccess::new();
             // Nothing published yet: an empty history.
@@ -841,7 +868,6 @@ mod tests {
             assert_eq!(access.take_request(), None);
         }
 
-        // Case `taking_a_request_clears_it_so_one_activation_is_one_undo`.
         {
             let mut access = UndoAccess::new();
             access.publish(&status(true, true));
@@ -866,7 +892,6 @@ mod tests {
 
     #[test]
     fn undo_shortcuts_and_descriptions_never_promise_a_missing_action() {
-        // Case `the_shortcut_table_is_the_one_binding_both_hosts_read`.
         {
             use crate::platform::{Platform, PlatformConventions};
             let linux = PlatformConventions::new(Platform::Linux);
@@ -887,7 +912,6 @@ mod tests {
             assert_eq!(super::shortcut(mac, "y", true, false), None);
         }
 
-        // Case `description_never_promises_an_action_that_is_not_there`.
         {
             let empty = UndoStatus::empty();
             assert_eq!(empty.description(UndoRequest::Undo), "Nothing to undo");

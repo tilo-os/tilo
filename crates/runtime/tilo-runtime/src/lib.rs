@@ -14,6 +14,8 @@ use std::{
     process::{Child, Command},
 };
 
+pub mod adapter_tools;
+pub mod adapters;
 mod apps;
 pub mod cli;
 pub mod computer;
@@ -60,8 +62,6 @@ pub type Joiner = std::sync::Arc<dyn Fn(&str) -> io::Result<String> + Send + Syn
 pub trait MediaReader: Send + Sync {
     /// The bytes of `hash` as `app_id` stored them; `Ok(None)` when that app
     /// may not read them or they are not here.
-    /// # Errors
-    /// Returns connection errors.
     fn read(&self, app_id: &str, hash: &str) -> io::Result<Option<Vec<u8>>>;
 }
 
@@ -131,8 +131,6 @@ pub trait RuntimeServices: Sized {
     /// The profile's fixed actor, as which MCP callers act.
     fn actor(&self) -> &str;
 
-    /// # Errors
-    /// Returns an error when the action broker is unavailable.
     fn action_host(&self) -> io::Result<Self::ActionHost>;
 
     /// Construct one transport run for this exact configured audience. Hosts
@@ -160,8 +158,6 @@ pub trait RuntimeServices: Sized {
     }
 
     /// Spawn `command` as `app_id`, connected to this session's services.
-    /// # Errors
-    /// Returns handshake, descriptor or process-spawn errors.
     fn launch(&self, app_id: &str, command: Command) -> io::Result<Child>;
 
     /// Where MCP answers read the content apps stored; `None` for a host

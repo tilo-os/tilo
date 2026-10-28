@@ -120,6 +120,88 @@ pub const VK_ICD_FILENAMES_ENV: &str = "VK_ICD_FILENAMES";
 /// adapter and device creation per app start on the Snapdragon X here.
 pub const NO_DEVICE_SELECT_ENV: &str = "NODEVICE_SELECT";
 
+/// Mesa's Windows-compatibility switch ([`SiteIntegration`]).
+pub const SITE_INTEGRATION_ENV: &str = "mesa_vk_map_memory_placed";
+
+/// What a driver can do for Windows code running under a translation layer,
+/// named by the value [`SITE_INTEGRATION_ENV`] takes.
+///
+/// A D3D translation layer has to hand a guest program memory at an address
+/// the program picked. Two extensions provide it:
+///
+/// - `VK_EXT_map_memory_placed` (turnip, Honeykrisp) places a host
+///   allocation with **target buffers**, and the Vulkan memory model gives
+///   that placement the `bufferDeviceAddress` guarantees a guest heap needs.
+/// - `VK_KHR_map_memory2` places an allocation without target buffers, but
+///   the memory then carries no device address of its own.
+///
+/// Mesa gates both behind this one switch, so the launcher sets it only
+/// when the driver itself advertises the feature. Which driver has which
+/// extension is the driver's business: the launcher asks, never assumes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SiteIntegration {
+    /// Placement with target buffers (`VK_EXT_map_memory_placed`).
+    #[serde(rename = "target-buffers")]
+    TargetBuffers,
+    /// Placement without target buffers.
+    #[serde(rename = "placed")]
+    Placed,
+}
+
+impl SiteIntegration {
+    /// The value [`SITE_INTEGRATION_ENV`] takes.
+    #[must_use]
+    pub fn value(self) -> String {
+        match self {
+            Self::TargetBuffers => "target-buffers".to_owned(),
+            Self::Placed => "placed".to_owned(),
+        }
+    }
+}
+
+/// One feature field a driver must report `VK_TRUE`.
+///
+/// Asking a device several features at once means chaining extension
+/// structures onto `VkPhysicalDeviceFeatures2` and reading each field back.
+/// Naming the field keeps that query in one place and lets the tests and the
+/// selection reason about features without touching Vulkan pointers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Feature {
+    /// `VkPhysicalDeviceBufferDeviceAddressFeatures::bufferDeviceAddress`.
+    BufferDeviceAddress,
+    /// `VkPhysicalDeviceMapMemoryPlacedFeaturesEXT::memoryMapPlaced`.
+    MemoryMapPlaced,
+    /// `VkPhysicalDeviceMapMemoryPlacedFeaturesEXT::memoryMapRangePlaced`.
+    MemoryMapRangePlaced,
+    /// `VkPhysicalDeviceMapMemoryPlacedFeaturesEXT::memoryUnmapReserve`.
+    MemoryUnmapReserve,
+}
+
+/// The site integration the claiming driver advertises, if it can place
+/// memory at all.
+///
+/// A driver that will not say, or says only some of it, is left alone: the
+/// switch is an opt-in whose failure mode is a graphics stack that stops
+/// working, so only every feature of one path turns it on.
+fn site_integrator(claim: Option<&Claim>, probe: &impl IcdProbe) -> Option<SiteIntegration> {
+    let claim = claim?;
+    let has = |features: &[Feature]| probe.advertises(&claim.manifest, &claim.device, features);
+    // Target buffers are the stronger of the two, and a driver with both
+    // takes the same path either way, so they are asked for first.
+    if has(&[
+        Feature::BufferDeviceAddress,
+        Feature::MemoryMapPlaced,
+        Feature::MemoryMapRangePlaced,
+        Feature::MemoryUnmapReserve,
+    ]) == Ok(true)
+    {
+        return Some(SiteIntegration::TargetBuffers);
+    }
+    has(&[Feature::MemoryMapPlaced])
+        .eq(&Ok(true))
+        .then_some(SiteIntegration::Placed)
+}
+
 /// Directories the EGL vendor JSONs are installed in, most-specific
 /// first. `/etc` overrides `/usr` by GLVND's own convention.
 #[cfg(target_os = "linux")]
@@ -187,6 +269,11 @@ pub struct GpuSelection {
     /// read-only at [`SANDBOX_PIPELINE_SEED_DIR`] when it exists.
     #[serde(default)]
     pub pipeline_seed: Option<PathBuf>,
+    /// The Windows-compatibility site integration this driver supports
+    /// ([`SiteIntegration`]). `None` for a driver that cannot place memory,
+    /// which is every native GPU, so the environment is unchanged there.
+    #[serde(default)]
+    pub site_integration: Option<SiteIntegration>,
     /// Human-readable record of everything that was *not* pinned and why —
     /// otherwise invisible until a tile renders black.
     pub notes: Vec<String>,
@@ -205,6 +292,9 @@ impl GpuSelection {
             out.push((VK_DRIVER_FILES_ENV, p.display().to_string()));
             out.push((VK_ICD_FILENAMES_ENV, p.display().to_string()));
             out.push((NO_DEVICE_SELECT_ENV, "1".to_owned()));
+        }
+        if let Some(site) = &self.site_integration {
+            out.push((SITE_INTEGRATION_ENV, site.value()));
         }
         out
     }
@@ -380,6 +470,26 @@ pub trait IcdProbe {
     /// A reason for the selection's notes when the library cannot be
     /// loaded or its instance cannot be created.
     fn devices(&self, manifest: &Path, library: &Path) -> Result<Vec<VulkanDevice>, String>;
+
+    /// Whether the physical device the ICD at `manifest` names `device`
+    /// advertises every feature in `features` (`VK_TRUE` for each).
+    ///
+    /// The default answers `false`: a probe that scripts devices describes
+    /// none, and "not advertised" is the safe answer everywhere this is
+    /// read — it leaves the environment alone rather than switching on
+    /// something the driver cannot do.
+    ///
+    /// # Errors
+    ///
+    /// A reason the question could not be put to that device.
+    fn advertises(
+        &self,
+        _manifest: &Path,
+        _device: &str,
+        _features: &[Feature],
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
 }
 
 /// `(major, minor)` of a device node.
@@ -426,6 +536,7 @@ pub fn select_for_node(node: &Path, search: &IcdSearch) -> GpuSelection {
             vulkan_icd_json: None,
             vulkan_device: None,
             pipeline_seed: None,
+            site_integration: None,
             notes: vec![format!(
                 "asking the installed Vulkan drivers about {} failed: {why}; leaving the \
                  EGL/Vulkan loaders at their own defaults",
@@ -439,6 +550,7 @@ pub fn select_for_node(node: &Path, search: &IcdSearch) -> GpuSelection {
             vulkan_icd_json: None,
             vulkan_device: None,
             pipeline_seed: None,
+            site_integration: None,
             notes: vec![format!(
                 "cannot stat {}: {error}; leaving the EGL/Vulkan loaders at their own defaults",
                 node.display()
@@ -552,6 +664,7 @@ pub fn inherited_selection(node: &Path) -> Option<GpuSelection> {
         vulkan_icd_json: Some(vulkan_icd_json),
         vulkan_device: None,
         pipeline_seed: None,
+        site_integration: None,
         notes: Vec::new(),
     })
 }
@@ -605,10 +718,6 @@ impl SoftwarePin {
 
 /// The software pin from the manifests installed under `search`, or why
 /// there is none (no lavapipe manifest, or several).
-///
-/// # Errors
-///
-/// A line for the boot log when lavapipe has not exactly one manifest.
 pub fn software_pin(search: &IcdSearch) -> Result<SoftwarePin, String> {
     let vulkan_icd_json = unique_manifest_for(
         &search.vulkan_icd_dirs,
@@ -709,6 +818,7 @@ pub fn select_for_device(
             None
         }
     };
+    let site_integration = site_integrator(claim.as_ref(), probe);
     let (vulkan_icd_json, vulkan_device) = claim.map_or((None, None), |claim| {
         (Some(claim.manifest), Some(claim.device))
     });
@@ -719,6 +829,7 @@ pub fn select_for_device(
         vulkan_icd_json,
         vulkan_device,
         pipeline_seed: None,
+        site_integration,
         notes,
     }
 }
@@ -828,7 +939,7 @@ fn egl_vendor_after(claim: Option<&Claim>, search: &IcdSearch) -> Result<PathBuf
 /// the loader, so one answer belongs to exactly one manifest.
 #[cfg(target_os = "linux")]
 mod loaded {
-    use super::{IcdProbe, VulkanDevice};
+    use super::{Feature, IcdProbe, VulkanDevice};
     use ash::vk;
 
     use std::path::Path;
@@ -839,43 +950,120 @@ mod loaded {
     type NegotiateFn = unsafe extern "system" fn(*mut u32) -> vk::Result;
 
     impl IcdProbe for LoadedIcdProbe {
-        #[allow(
-            unsafe_code,
-            reason = "the Vulkan ICD interface is a C ABI reached through dlopen"
-        )]
         fn devices(&self, _manifest: &Path, library: &Path) -> Result<Vec<VulkanDevice>, String> {
-            // SAFETY: loading a Vulkan ICD runs its initialisers, exactly
-            // as the Vulkan loader would in this process a moment later.
-            let lib = unsafe { libloading::Library::new(library) }
-                .map_err(|error| format!("cannot load: {error}"))?;
-            // SAFETY: the symbol names and signatures are the ICD
-            // interface's, fixed by the Vulkan loader-driver contract.
-            let get_instance_proc_addr = unsafe {
-                if let Ok(negotiate) =
-                    lib.get::<NegotiateFn>(b"vk_icdNegotiateLoaderICDInterfaceVersion\0")
-                {
-                    let mut version = 5u32;
-                    let _ = negotiate(&raw mut version);
-                }
-                *lib.get::<vk::PFN_vkGetInstanceProcAddr>(b"vk_icdGetInstanceProcAddr\0")
-                    .map_err(|error| format!("not a Vulkan ICD: {error}"))?
-            };
-            // Mesa drivers register exit handlers; unloading one would run
-            // them against freed code. Keep it, as the loader does.
-            std::mem::forget(lib);
-            // SAFETY: `get_instance_proc_addr` is the ICD's own entry point,
-            // kept alive by the library forgotten above.
-            let entry = unsafe { entry_of(get_instance_proc_addr) }?;
-            let app = vk::ApplicationInfo::default().api_version(vk::API_VERSION_1_1);
-            let create = vk::InstanceCreateInfo::default().application_info(&app);
-            // SAFETY: a plain instance with no layers or extensions.
-            let instance = unsafe { entry.create_instance(&create, None) }
-                .map_err(|error| format!("vkCreateInstance: {error}"))?;
-            let result = devices_of(&instance);
-            // SAFETY: nothing created from the instance outlives this call.
-            unsafe { instance.destroy_instance(None) };
-            result
+            with_instance(library, vk::API_VERSION_1_1, devices_of)
         }
+
+        fn advertises(
+            &self,
+            manifest: &Path,
+            device: &str,
+            features: &[Feature],
+        ) -> Result<bool, String> {
+            // The loader hands `library_path` to `dlopen` exactly as an
+            // absolute path or a bare soname, so the launcher does the
+            // same rather than trust the caller's spelling.
+            let library = super::manifest_library_path(manifest)
+                .ok_or_else(|| format!("{}: unreadable manifest", manifest.display()))?;
+            with_instance(&library, vk::API_VERSION_1_2, |instance| {
+                advertised(instance, device, features)
+            })
+        }
+    }
+
+    /// Load an ICD's library, open an instance at `api_version`, hand it to
+    /// `ask`, and destroy it. The one path both probes take, so a driver
+    /// that cannot be loaded is reported the same way either way.
+    #[allow(
+        unsafe_code,
+        reason = "the Vulkan ICD interface is a C ABI reached through dlopen"
+    )]
+    fn with_instance<T>(
+        library: &Path,
+        api_version: u32,
+        ask: impl FnOnce(&ash::Instance) -> Result<T, String>,
+    ) -> Result<T, String> {
+        // SAFETY: loading a Vulkan ICD runs its initialisers, exactly as
+        // the Vulkan loader would in this process a moment later.
+        let lib = unsafe { libloading::Library::new(library) }
+            .map_err(|error| format!("cannot load: {error}"))?;
+        // SAFETY: the symbol names and signatures are the ICD interface's,
+        // fixed by the Vulkan loader-driver contract.
+        let get_instance_proc_addr = unsafe {
+            if let Ok(negotiate) =
+                lib.get::<NegotiateFn>(b"vk_icdNegotiateLoaderICDInterfaceVersion\0")
+            {
+                let mut version = 5u32;
+                let _ = negotiate(&raw mut version);
+            }
+            *lib.get::<vk::PFN_vkGetInstanceProcAddr>(b"vk_icdGetInstanceProcAddr\0")
+                .map_err(|error| format!("not a Vulkan ICD: {error}"))?
+        };
+        // Mesa drivers register exit handlers; unloading one would run them
+        // against freed code. Keep it, as the loader does.
+        std::mem::forget(lib);
+        // SAFETY: `get_instance_proc_addr` is the ICD's own entry point,
+        // kept alive by the library forgotten above.
+        let entry = unsafe { entry_of(get_instance_proc_addr) }?;
+        let app = vk::ApplicationInfo::default().api_version(api_version);
+        let create = vk::InstanceCreateInfo::default().application_info(&app);
+        // SAFETY: a plain instance with no layers or extensions.
+        let instance = unsafe { entry.create_instance(&create, None) }
+            .map_err(|error| format!("vkCreateInstance: {error}"))?;
+        let result = ask(&instance);
+        // SAFETY: nothing created from the instance outlives this call.
+        unsafe { instance.destroy_instance(None) };
+        result
+    }
+
+    /// Whether the device called `target` answered `VK_TRUE` for every
+    /// feature in `features`.
+    ///
+    /// Every structure a [`Feature`] lives in is chained onto one features
+    /// query whatever was asked for; a structure the driver does not know is
+    /// left `VK_FALSE`, which is the answer an absent feature should give.
+    #[allow(unsafe_code, reason = "Vulkan physical-device queries are a C ABI")]
+    fn advertised(
+        instance: &ash::Instance,
+        target: &str,
+        features: &[Feature],
+    ) -> Result<bool, String> {
+        if features.is_empty() {
+            return Ok(true);
+        }
+        // SAFETY: `instance` is live for the whole call.
+        let physical = unsafe { instance.enumerate_physical_devices() }
+            .map_err(|error| format!("vkEnumeratePhysicalDevices: {error}"))?;
+        for device in physical {
+            // SAFETY: `device` came from this instance.
+            let properties = unsafe { instance.get_physical_device_properties(device) };
+            if properties
+                .device_name_as_c_str()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default()
+                != target
+            {
+                continue;
+            }
+            let mut address = vk::PhysicalDeviceBufferDeviceAddressFeatures::default();
+            let mut placed = vk::PhysicalDeviceMapMemoryPlacedFeaturesEXT::default();
+            let mut asked = vk::PhysicalDeviceFeatures2::default()
+                .push_next(&mut address)
+                .push_next(&mut placed);
+            // SAFETY: the device is live and the chained structures are
+            // locals of this frame.
+            unsafe { instance.get_physical_device_features2(device, &mut asked) };
+            let has = |feature: Feature| match feature {
+                Feature::BufferDeviceAddress => address.buffer_device_address,
+                Feature::MemoryMapPlaced => placed.memory_map_placed,
+                Feature::MemoryMapRangePlaced => placed.memory_map_range_placed,
+                Feature::MemoryUnmapReserve => placed.memory_unmap_reserve,
+            };
+            return Ok(features.iter().all(|feature| has(*feature) == vk::TRUE));
+        }
+        Err(format!(
+            "the driver no longer reports a device named `{target}`"
+        ))
     }
 
     /// The Vulkan entry an ICD's `get_instance_proc_addr` opens, or why it
@@ -1046,6 +1234,30 @@ mod tests {
         }
     }
 
+    /// A probe whose driver advertises exactly `features`; asking for any
+    /// feature outside them is answered `false`, as an unsupported extension
+    /// answers.
+    struct Advertises(HashMap<&'static str, Vec<VulkanDevice>>, Vec<Feature>);
+
+    impl IcdProbe for Advertises {
+        fn devices(&self, _manifest: &Path, library: &Path) -> Result<Vec<VulkanDevice>, String> {
+            let name = library.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            self.0
+                .get(name)
+                .cloned()
+                .ok_or_else(|| format!("cannot load {name}"))
+        }
+
+        fn advertises(
+            &self,
+            _manifest: &Path,
+            _device: &str,
+            features: &[Feature],
+        ) -> Result<bool, String> {
+            Ok(features.iter().all(|feature| self.1.contains(feature)))
+        }
+    }
+
     fn device(name: &str, render_node: Option<(u64, u64)>) -> VulkanDevice {
         VulkanDevice {
             name: name.to_owned(),
@@ -1062,6 +1274,7 @@ mod tests {
             vulkan_icd_json: Some(PathBuf::from("/usr/share/vulkan/icd.d/x.json")),
             vulkan_device: None,
             pipeline_seed: None,
+            site_integration: None,
             notes: Vec::new(),
         };
         assert!(
@@ -1109,7 +1322,6 @@ mod tests {
         assert!(pin.env().contains(&(VK_ICD_FILENAMES_ENV, lavapipe)));
         assert_eq!(pin.manifest_files().len(), 2);
 
-        // What a launch reads back from the compositor's environment.
         assert_eq!(
             software_pin_from(
                 Some(pin.vulkan_icd_json.clone().into()),
@@ -1397,6 +1609,145 @@ mod tests {
         assert_eq!(
             manifest_library_path(&dir.join("rel.json")),
             Some(dir.join("../lib/libvulkan_radeon.so"))
+        );
+    }
+
+    /// A tree where a driver reports the node, with `advertised` as the
+    /// features it answers `VK_TRUE` for.
+    fn placement_tree(tmp: &Path, advertised: Vec<Feature>) -> (IcdSearch, Advertises) {
+        let search = fixture(
+            tmp,
+            &[("50_mesa.json", "libEGL_mesa.so.0")],
+            &[
+                (&host_icd_name("asahi"), "/usr/lib64/libvulkan_asahi.so"),
+                (&host_icd_name("lvp"), "/usr/lib64/libvulkan_lvp.so"),
+            ],
+        );
+        let probe = Advertises(
+            HashMap::from([
+                (
+                    "libvulkan_asahi.so",
+                    vec![device("Apple M1 (G13G B0)", Some(RENDER_D128))],
+                ),
+                ("libvulkan_lvp.so", vec![device("llvmpipe", None)]),
+            ]),
+            advertised,
+        );
+        (search, probe)
+    }
+
+    fn selection_for(spelled: &str, search: &IcdSearch, probe: &Advertises) -> GpuSelection {
+        select_for_device(
+            Path::new("/dev/dri/renderD128"),
+            RENDER_D128,
+            Some(spelled.to_owned()),
+            search,
+            probe,
+        )
+    }
+
+    #[test]
+    fn a_driver_that_places_memory_gets_the_site_integration_switch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (search, probe) = placement_tree(
+            tmp.path(),
+            vec![
+                Feature::BufferDeviceAddress,
+                Feature::MemoryMapPlaced,
+                Feature::MemoryMapRangePlaced,
+                Feature::MemoryUnmapReserve,
+            ],
+        );
+        let sel = selection_for("asahi", &search, &probe);
+        assert_eq!(sel.site_integration, Some(SiteIntegration::TargetBuffers));
+        assert!(
+            sel.env()
+                .contains(&(SITE_INTEGRATION_ENV, "target-buffers".to_owned())),
+            "{:?}",
+            sel.env()
+        );
+    }
+
+    #[test]
+    fn placement_without_target_buffers_is_reported_as_placement_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (search, probe) = placement_tree(
+            tmp.path(),
+            vec![Feature::MemoryMapPlaced, Feature::MemoryMapRangePlaced],
+        );
+        assert_eq!(
+            selection_for("asahi", &search, &probe).site_integration,
+            Some(SiteIntegration::Placed)
+        );
+    }
+
+    #[test]
+    fn a_partial_placement_advertisement_is_not_enough_for_target_buffers() {
+        // `memoryMapPlaced` and a placed range, but no unmap reservation:
+        // the range could be handed out twice, so this is placement only.
+        let tmp = tempfile::tempdir().unwrap();
+        let (search, probe) = placement_tree(
+            tmp.path(),
+            vec![
+                Feature::BufferDeviceAddress,
+                Feature::MemoryMapPlaced,
+                Feature::MemoryMapRangePlaced,
+            ],
+        );
+        assert_eq!(
+            selection_for("asahi", &search, &probe).site_integration,
+            Some(SiteIntegration::Placed)
+        );
+    }
+
+    #[test]
+    fn a_driver_that_cannot_place_memory_leaves_the_switch_alone() {
+        // A native GPU: it claims the node and pins its loaders, and the
+        // variable a translation layer reads never appears.
+        let tmp = tempfile::tempdir().unwrap();
+        let (search, probe) = placement_tree(tmp.path(), vec![Feature::BufferDeviceAddress]);
+        let sel = selection_for("asahi", &search, &probe);
+        assert!(sel.vulkan_icd_json.is_some(), "{:?}", sel.notes);
+        assert_eq!(sel.site_integration, None);
+        assert!(
+            !sel.env()
+                .iter()
+                .any(|(key, _)| *key == SITE_INTEGRATION_ENV),
+            "{:?}",
+            sel.env()
+        );
+    }
+
+    #[test]
+    fn an_unpinned_session_never_sets_the_site_integration_switch() {
+        // Nothing claims the node, so there is no driver to ask and the
+        // environment stays exactly as the loaders leave it.
+        let tmp = tempfile::tempdir().unwrap();
+        let (search, probe) = placement_tree(
+            tmp.path(),
+            vec![
+                Feature::BufferDeviceAddress,
+                Feature::MemoryMapPlaced,
+                Feature::MemoryMapRangePlaced,
+                Feature::MemoryUnmapReserve,
+            ],
+        );
+        let elsewhere = Advertises(
+            HashMap::from([(
+                "libvulkan_asahi.so",
+                vec![device("Apple M1 (G13G B0)", Some((226, 129)))],
+            )]),
+            probe.1,
+        );
+        let sel = selection_for("asahi", &search, &elsewhere);
+        assert!(sel.is_empty());
+        assert_eq!(sel.site_integration, None);
+        assert!(
+            !sel.env()
+                .iter()
+                .any(|(key, _)| *key == SITE_INTEGRATION_ENV),
+            "{:?}",
+            sel.env()
         );
     }
 

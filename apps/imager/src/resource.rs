@@ -144,8 +144,9 @@ pub enum ImagerEffect {
         #[param(secret, "Password chosen while preparing this Tilo installation")]
         password: String,
     },
-    /// Erase drive and write image.
-    #[effect(job, cancellable)]
+    /// Erase drive and write image. Offered on each drive it may write,
+    /// where the host asks for the drive's name before it runs.
+    #[effect(job, cancellable, row)]
     Write {
         #[param("Device path of the reviewed target drive, e.g. /dev/sdb")]
         device: String,
@@ -202,22 +203,21 @@ pub enum ImagerEffect {
         drive: String,
     },
     /// Choose a mounted folder on the verified installer medium for prepared setup.
-    #[effect(job, device_only)]
+    #[effect(attended, job)]
     ChoosePreparedFilesystem,
     /// Retry automatic delivery to the verified installer's EFI filesystem.
-    #[effect(returns, device_only)]
+    #[effect(returns)]
     RetryPreparedDelivery,
     /// Return to the preserved guided preparation and renew changed home contents.
-    #[effect(returns, device_only)]
+    #[effect(returns)]
     ReviewChangedPreparedFiles,
     /// Deliver authenticated prepared setup to the exact verified medium.
-    #[effect(returns, device_only)]
+    #[effect(returns)]
     DeliverPreparedSetup {
         #[param(secret, "Granted mounted root of the verified installer medium")]
         mounted_root: String,
     },
     /// Cancel prepared setup delivery and wait for cleanup.
-    #[effect(device_only)]
     CancelPreparedDelivery,
 }
 
@@ -313,7 +313,7 @@ static SCENARIOS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::
 fn sample_iso() -> Source {
     Source {
         kind: crate::model::SourceKind::IsoFile,
-        path: "/home/quinten/Downloads/Fedora-Workstation-Live-42.iso".into(),
+        path: "/home/user/Downloads/Fedora-Workstation-Live-42.iso".into(),
         name: "Fedora-Workstation-Live-42.iso".into(),
         size: 2_113_929_216,
         label: "Fedora-WS-Live-42-1-1".into(),
@@ -334,6 +334,7 @@ fn review(sources: &[Source]) -> Vec<Invoke<Imager>> {
 impl ResourceApp for ImagerShell {
     type Resource = Imager;
     const ID: &'static str = "so.tilo.imager";
+    const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Disks];
     const TITLE: &'static str = "Tilo Installer";
     const ICON: Option<&'static str> = Some("imager");
     #[cfg(feature = "installation")]
@@ -669,7 +670,6 @@ mod tests {
             "select-source",
             "clear-source",
             "field-edit",
-            "write",
             "status",
             "export-config",
             "set-wifi-psk",
@@ -682,14 +682,9 @@ mod tests {
         ] {
             assert!(root_ids.contains(&id), "{id} in {root_ids:?}");
         }
-        let write = root
-            .actions
-            .iter()
-            .find(|action| action.id == "write")
-            .unwrap();
         assert!(
-            !write.contract.availability.is_available(),
-            "no privileged writer in tests"
+            !root_ids.contains(&"write"),
+            "a write is offered only on the drive it erases, behind its name"
         );
 
         let drive = find(&resources, "imager.target:demo-sandisk-ultra").expect("the USB stick");
@@ -761,10 +756,13 @@ mod tests {
         })
         .unwrap();
         assert!(
-            app.effect(&ImagerEffect::Write {
-                device: "/dev/sdb".into(),
-                confirmation: "sdb".into(),
-            })
+            app.effect_on_confirmed(
+                "imager.target:demo-sandisk-ultra",
+                &ImagerEffect::Write {
+                    device: "/dev/sdb".into(),
+                    confirmation: "sdb".into(),
+                }
+            )
             .is_err(),
             "the write is refused without the privileged writer"
         );
@@ -862,7 +860,6 @@ mod tests {
             .unwrap();
         assert!(app.state().profile.enroll_local_identity);
         let enabled_document = app.read_document(|doc| doc.clone().save());
-        // The edit turning enrollment off, with its value replaced.
         let with_value = |value: serde_json::Value| {
             fn replace(json: &mut serde_json::Value, value: &serde_json::Value) {
                 match json {
@@ -1049,18 +1046,9 @@ mod tests {
             .iter()
             .find(|action| action.id == "write")
             .unwrap();
-        assert_eq!(
-            write.contract.availability.is_available(),
-            find(&resources, Imager::KIND)
-                .unwrap()
-                .actions
-                .iter()
-                .find(|action| action.id == "write")
-                .unwrap()
-                .contract
-                .availability
-                .is_available(),
-            "a row's write is unavailable only when every write is"
+        assert!(
+            !write.contract.availability.is_available(),
+            "no privileged writer in tests"
         );
         assert!(matches!(
             app.call_on(

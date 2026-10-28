@@ -46,11 +46,11 @@ def check(root: Path = ROOT) -> list[str]:
     for package in lock.get("package", []):
         name = package["name"]
         if name in FORBIDDEN:
-            found.append(f"Cargo.lock contains {name} {package['version']}")
+            found.append(f"Cargo.lock: contains {name} {package['version']}")
         for entry in package.get("dependencies", []):
             dependency = entry.split()[0]
             if dependency in FORBIDDEN:
-                found.append(f"{name} {package['version']} depends on {dependency}")
+                found.append(f"Cargo.lock: {name} {package['version']} depends on {dependency}")
     return sorted(found)
 
 
@@ -59,12 +59,16 @@ def main() -> int:
     if found:
         print(
             "Tilo carries no telemetry, analytics or crash-upload client "
-            "(docs/architecture/security.md, docs/policies.md):"
+            "(docs/architecture/security.md, docs/policies.md):",
+            file=sys.stderr,
         )
         for line in found:
-            print(f"  {line}")
+            print(line)
         return 1
-    print("No telemetry, analytics or crash-upload client in the dependency graph.")
+    print(
+        "No telemetry, analytics or crash-upload client in the dependency graph.",
+        file=sys.stderr,
+    )
     return 0
 
 

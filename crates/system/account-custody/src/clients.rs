@@ -10,12 +10,15 @@
 use std::sync::OnceLock;
 
 use serde::Deserialize;
-use tilo_oauth::{Provider, RedirectPorts, Registration};
+use tilo_oauth::{Provider, Redirect, RedirectPorts, Refresh, Registration};
 
 use crate::providers::{Capability, OAuthCloud, OAuthIssuer, OAuthUse};
 
 /// The committed defaults.
 const DEFAULTS: &str = include_str!("../oauth-clients.toml");
+
+/// Where a Copilot subscription's GitHub token is traded for Copilot tokens.
+pub const COPILOT_TOKEN_ENDPOINT: &str = "https://api.github.com/copilot_internal/v2/token";
 
 /// The scopes each use of one client asks for. An empty list: this issuer
 /// is not used for that.
@@ -29,6 +32,7 @@ pub struct Scopes {
     pub music: Vec<String>,
     pub music_streaming: Vec<String>,
     pub models: Vec<String>,
+    pub model_downloads: Vec<String>,
 }
 
 impl Scopes {
@@ -41,6 +45,7 @@ impl Scopes {
             Capability::Music => &self.music,
             Capability::MusicStreaming => &self.music_streaming,
             Capability::Models => &self.models,
+            Capability::ModelDownloads => &self.model_downloads,
         }
     }
 }
@@ -53,6 +58,12 @@ pub struct ClientEntry {
     pub client_secret: String,
     /// Empty: any free loopback port.
     pub redirect_ports: Vec<u16>,
+    /// The redirect's host when the issuer registered one other than
+    /// `127.0.0.1`; empty for that.
+    pub redirect_host: String,
+    /// The redirect's path when the issuer registered one other than
+    /// `/oauth`; empty for that.
+    pub redirect_path: String,
     pub paste_code_fallback: bool,
     pub scopes: Scopes,
 }
@@ -65,13 +76,13 @@ pub struct ClientTable {
     pub microsoft: ClientEntry,
     pub dropbox: ClientEntry,
     pub spotify: ClientEntry,
+    pub openai: ClientEntry,
+    pub github: ClientEntry,
+    pub huggingface: ClientEntry,
 }
 
 impl ClientTable {
     /// Parse a table in the format of `oauth-clients.toml`.
-    ///
-    /// # Errors
-    /// The TOML error, when the text is not a valid table.
     pub fn parse(text: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(text)
     }
@@ -87,13 +98,15 @@ impl ClientTable {
         })
     }
 
-    /// The entry of `issuer`.
     pub fn client(&self, issuer: OAuthIssuer) -> &ClientEntry {
         match issuer {
             OAuthIssuer::Google => &self.google,
             OAuthIssuer::Microsoft => &self.microsoft,
             OAuthIssuer::Dropbox => &self.dropbox,
             OAuthIssuer::Spotify => &self.spotify,
+            OAuthIssuer::OpenAi => &self.openai,
+            OAuthIssuer::GitHub => &self.github,
+            OAuthIssuer::HuggingFace => &self.huggingface,
         }
     }
 
@@ -110,10 +123,19 @@ impl ClientTable {
             .of(oauth_use.capability)
     }
 
-    /// The issuer's descriptor with the scopes of `oauth_use`.
+    /// The issuer's descriptor with the scopes of `oauth_use`. A GitHub
+    /// grant for models is a Copilot subscription's: it is renewed by
+    /// trading the GitHub token for a Copilot token.
     pub fn descriptor(&self, oauth_use: OAuthUse) -> Provider {
+        let refresh = match (oauth_use.issuer, oauth_use.capability) {
+            (OAuthIssuer::GitHub, Capability::Models) => Refresh::CopilotToken {
+                endpoint: COPILOT_TOKEN_ENDPOINT.into(),
+            },
+            _ => Refresh::RefreshToken,
+        };
         Provider {
             scopes: self.scopes(oauth_use).to_vec(),
+            refresh,
             ..oauth_use.issuer.endpoints()
         }
     }
@@ -142,6 +164,13 @@ impl ClientTable {
                 RedirectPorts::Any
             } else {
                 RedirectPorts::Registered(entry.redirect_ports.clone())
+            },
+            redirect: {
+                let default = Redirect::default();
+                Redirect {
+                    host: non_empty(&entry.redirect_host).unwrap_or(default.host),
+                    path: non_empty(&entry.redirect_path).unwrap_or(default.path),
+                }
             },
             paste_code_fallback: entry.paste_code_fallback,
         })
@@ -261,12 +290,62 @@ mod tests {
                 .is_empty()
         );
         assert!(!table.is_configured(OAuthUse::mail(OAuthIssuer::Dropbox)));
-        // Gmail and Drive are the same Google client.
         let (gmail, gmail_client) = table.config(GMAIL).unwrap();
         let (drive, drive_client) = table.config(OAuthCloud::GoogleDrive.oauth_use()).unwrap();
         assert_eq!(gmail_client, drive_client);
         assert_eq!(gmail.token_endpoint, drive.token_endpoint);
         assert_ne!(gmail.scopes, drive.scopes);
+    }
+
+    #[test]
+    fn the_model_subscriptions_sign_in_as_their_issuers_require() {
+        let table = ClientTable::parse(DEFAULTS).expect("oauth-clients.toml");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_OAUTH_OPENAI_CLIENT_ID")
+            .remove("TILO_OAUTH_GITHUB_CLIENT_ID")
+            .remove("TILO_OAUTH_HUGGINGFACE_CLIENT_ID");
+        let chatgpt = OAuthUse::new(OAuthIssuer::OpenAi, Capability::Models);
+        let (provider, client) = table.config(chatgpt).expect("ChatGPT is configured");
+        assert_eq!(client.redirect_ports, RedirectPorts::Registered(vec![1455]));
+        assert_eq!(client.redirect.host, "localhost");
+        assert_eq!(client.redirect.path, "/auth/callback");
+        assert!(
+            provider
+                .scopes
+                .iter()
+                .any(|scope| scope == "offline_access")
+        );
+        assert_eq!(provider.refresh, Refresh::RefreshToken);
+
+        let copilot = OAuthUse::new(OAuthIssuer::GitHub, Capability::Models);
+        let (provider, client) = table.config(copilot).expect("Copilot is configured");
+        assert!(provider.device_authorization_endpoint.is_some());
+        assert_eq!(
+            provider.refresh,
+            Refresh::CopilotToken {
+                endpoint: COPILOT_TOKEN_ENDPOINT.into()
+            }
+        );
+        assert_eq!(client.redirect, Redirect::default());
+        // A GitHub grant for anything else would be refreshed as usual.
+        assert_eq!(
+            table
+                .descriptor(OAuthUse::identity(OAuthIssuer::GitHub))
+                .refresh,
+            Refresh::RefreshToken
+        );
+
+        // Hugging Face signs in for downloads on any loopback port of its
+        // registered `/callback`, with a device code where there is no
+        // browser; its registration has no inference scope.
+        let downloads = OAuthUse::new(OAuthIssuer::HuggingFace, Capability::ModelDownloads);
+        let (provider, client) = table.config(downloads).expect("Hugging Face is configured");
+        assert_eq!(provider.scopes, ["openid", "profile", "gated-repos"]);
+        assert!(provider.device_authorization_endpoint.is_some());
+        assert_eq!(client.redirect_ports, RedirectPorts::Any);
+        assert_eq!(client.redirect.path, "/callback");
+        assert_eq!(client.secret(), None);
+        assert!(!table.is_configured(OAuthUse::new(OAuthIssuer::HuggingFace, Capability::Models)));
     }
 
     #[test]

@@ -88,8 +88,6 @@ pub(crate) fn render_resolved(snap: &Resolved<'_>, opts: HtmlOptions) -> String 
     out
 }
 
-// ---- styles -----------------------------------------------------------------
-
 /// Emit the document's named styles as a `<style>` block of CSS
 /// classes. Empty string when there are no styles.
 fn render_styles(snap: &Resolved<'_>) -> String {
@@ -153,8 +151,6 @@ fn style_class(id: &str) -> String {
         .collect();
     format!("qdoc-style-{safe}")
 }
-
-// ---- block rendering --------------------------------------------------------
 
 fn indent_for(opts: &HtmlOptions, depth: usize) -> String {
     opts.indent.repeat(depth)
@@ -262,8 +258,6 @@ fn render_code(out: &mut String, block: &BlockView, opts: &HtmlOptions, depth: u
     out.push_str("</code></pre>\n");
 }
 
-// ---- lists ------------------------------------------------------------------
-
 /// CSS `list-style-type` for an ordered list's `num_format`.
 fn list_style_type(num_format: &str) -> &'static str {
     match num_format {
@@ -370,8 +364,6 @@ fn close_list(out: &mut String, level: i64, ordered: bool, opts: &HtmlOptions, d
     let _ = writeln!(out, "{pad}{tag}");
 }
 
-// ---- tables -----------------------------------------------------------------
-
 fn render_table(
     out: &mut String,
     snap: &Resolved<'_>,
@@ -407,8 +399,6 @@ fn render_table(
     let _ = writeln!(out, "{pad}</table>");
 }
 
-// ---- images -----------------------------------------------------------------
-
 fn render_image(
     out: &mut String,
     snap: &Resolved<'_>,
@@ -443,8 +433,6 @@ fn render_image(
     }
 }
 
-// ---- block-level attributes -------------------------------------------------
-
 /// Compose the attribute string for a block element: the resolved style
 /// class plus a best-effort `text-align` from an `align` attr.
 fn block_attrs(block: &BlockView) -> String {
@@ -467,8 +455,6 @@ fn block_attrs(block: &BlockView) -> String {
     }
     out
 }
-
-// ---- inline marks -----------------------------------------------------------
 
 /// Render `text` with qdoc's canonical character-offset mark traversal.
 fn render_inline(text: &str, marks: &[MarkSpan]) -> String {
@@ -571,8 +557,6 @@ fn mark_tags(active: &[&MarkSpan]) -> (String, String) {
     (open, close)
 }
 
-// ---- value helpers ----------------------------------------------------------
-
 fn attr_as_str(val: &AttrVal) -> String {
     match val {
         AttrVal::Str(s) => s.clone(),
@@ -663,8 +647,6 @@ fn sanitize_href(href: &str) -> String {
     }
     trimmed.to_string()
 }
-
-// ---- HTML escaping ----------------------------------------------------------
 
 #[cfg(test)]
 mod tests;

@@ -361,7 +361,6 @@ mod tests {
              a byte search would report as an empty page",
         );
 
-        // The control.
         assert!(
             !found.iter().any(|(_, t)| t.contains("gamma")),
             "a table must not claim a row that was never written into it",

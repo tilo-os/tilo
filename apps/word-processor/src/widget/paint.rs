@@ -25,6 +25,7 @@ use ui::permissions::UserId;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
+use ui::widget::paint_damage::PaintParts;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
@@ -38,8 +39,8 @@ use super::{
 };
 
 impl WordProcessorWidget {
-    /// Chrome bands above the canvas — toolbar, Find bar,
-    /// ruler — plus the canvas/page geometry they reserve around. The first
+    /// Chrome bands above the canvas — the Find bar and the ruler (the
+    /// commands are the window bar's) — plus the canvas/page geometry they reserve around. The first
     /// pass of [`Self::draw`].
     pub(super) fn draw_frame_chrome(
         &mut self,
@@ -49,13 +50,12 @@ impl WordProcessorWidget {
         theme: &Theme,
         full: Rect,
     ) -> FrameGeometry {
-        let tb_h = Self::toolbar_band_height(theme);
         self.layout_bar_height = Self::status_band_height(theme);
         let below = Rect::new(
             full.x0,
-            full.y0 + tb_h,
+            full.y0,
             full.x1,
-            (full.y1 - self.layout_bar_height).max(full.y0 + tb_h),
+            (full.y1 - self.layout_bar_height).max(full.y0),
         );
         let column = self.resolve_drawers(theme, below);
         let available = column.width();
@@ -75,25 +75,19 @@ impl WordProcessorWidget {
             };
             self.zoom.set(fit);
         }
-        let tb = Rect::new(full.x0, full.y0, full.x1, full.y0 + tb_h);
-        self.tool_band = tb;
-        self.draw_toolbar(scene, transform, text_renderer, theme, tb);
 
         // No bottom status strip: its readout floats as a transient component,
         // so the content spans down to the layout bar and
         // reclaims the strip's height. The layout bar now sits at the very bottom.
-        let content_bottom = full.y1.max(full.y0 + tb_h);
+        let content_bottom = full.y1.max(full.y0);
         self.layout_bar_height = Self::status_band_height(theme);
-        let layout_bar_top = (content_bottom - self.layout_bar_height).max(full.y0 + tb_h);
+        let layout_bar_top = (content_bottom - self.layout_bar_height).max(full.y0);
         // The page's column: what the docked outline and inspector leave.
         let canvas_left = column.x0;
         let canvas_right = column.x1.max(canvas_left + 1.0);
-        // Reserve + draw the crash-recovery banner (when staged) and the Find
-        // bar (when open), stacked directly under the toolbar. The find bar
-        // is measured against the canvas width it will span first, so the
-        // band it reserves (one row, or two when the controls would run off
-        // the window) is the band it paints.
-        let find_h = self.draw_find_bar(
+        // Reserve + draw the failed-save banner (when shown) at the top of
+        // the page's column.
+        let banner_h = self.draw_save_error(
             scene,
             transform,
             text_renderer,
@@ -101,11 +95,11 @@ impl WordProcessorWidget {
             &UtilityBarsGeometry {
                 left: canvas_left,
                 right: canvas_right,
-                top: full.y0 + tb_h,
+                top: full.y0,
             },
         );
         // Reserve the horizontal ruler band (when on) out of the canvas top, below
-        // the find bar. It is drawn with the *unscaled* `transform` so it stays a
+        // the banner. It is drawn with the *unscaled* `transform` so it stays a
         // fixed-height strip while the page scrolls/zooms; its tick + marker
         // positions are mapped through the zoom so they track the page edge.
         let ruler_h = if self.view.ruler_visible {
@@ -115,7 +109,7 @@ impl WordProcessorWidget {
         };
         let canvas = Rect::new(
             canvas_left,
-            full.y0 + tb_h + find_h + ruler_h,
+            full.y0 + banner_h + ruler_h,
             canvas_right,
             layout_bar_top,
         );
@@ -145,6 +139,8 @@ impl WordProcessorWidget {
         // unscaled canvas. Scaling about the canvas centre then keeps both page
         // edges visible in auto-fit mode instead of pinning the left edge and
         // clipping the right.
+        self.page_margin_scale =
+            super::pagination::margin_scale(page_w, mobile_page, accessible_page);
         let page_x = f64::midpoint(canvas.x0, page_right) - page_w / 2.0;
         let page_top = canvas.y0 + PAGE_TOP;
         let content_x = page_x + m.left;
@@ -154,12 +150,7 @@ impl WordProcessorWidget {
         // page edge geometry just computed, plus the caret paragraph's indent +
         // tab stops from the cached block views.
         if ruler_h > 0.0 {
-            let band = Rect::new(
-                canvas_left,
-                full.y0 + tb_h + find_h,
-                canvas_right,
-                canvas.y0,
-            );
+            let band = Rect::new(canvas_left, full.y0 + banner_h, canvas_right, canvas.y0);
             self.draw_ruler(scene, transform, text_renderer, theme, band, page_x, page_w);
         } else {
             self.ruler.clear();
@@ -224,29 +215,18 @@ impl WordProcessorWidget {
         }
     }
 
-    /// Push the canvas clip, then draw each discrete page sheet: shadow +
+    /// Draw each discrete page sheet (the caller clips them to the canvas): shadow +
     /// paper, header/footer running bands (with the active edit-context band
     /// highlighted), and the default "Page N" indicator when there's no footer
     /// of its own. Returns the reference (first) page's rect in screen space.
     pub(super) fn draw_page_sheets(
         &mut self,
         scene: &mut Scene,
-        transform: Affine,
         text_renderer: &mut TextRenderer,
         fg: &FrameGeometry,
         num_pages: usize,
         sy: f64,
     ) -> Rect {
-        // Clip the document to the canvas so scrolled content never paints over
-        // the toolbar / status bar.
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &fg.canvas,
-        );
-
         // Discrete page sheets (shadow + paper) stacked with `PAGE_GAP`. Each
         // sheet draws the page header inside its top-margin band and the footer
         // inside its bottom-margin band (page-number fields resolved to this
@@ -480,124 +460,157 @@ impl WordProcessorWidget {
     /// the passes after this one render.
     pub(super) fn draw_page_content(
         &mut self,
+        parts: &mut PaintParts,
         scene: &mut Scene,
-        fg: &FrameGeometry,
+        (transform, fg): (Affine, &FrameGeometry),
         text_renderer: &mut TextRenderer,
         input: &PageContentInput<'_>,
     ) -> Pass2Markers {
-        let PageContentInput {
-            laid,
-            cache: new_cache,
-            multi_selection: multi_sel,
-            spell_by_block,
-            note_numbers: note_nums,
-        } = *input;
-        let mut page_notes: HashMap<usize, Vec<usize>> = HashMap::new();
-        let mut comment_markers: Vec<(String, f64, f64)> = Vec::new();
-        let mut change_markers: Vec<(String, f64, f64)> = Vec::new();
+        let mut markers = Pass2Markers {
+            page_notes: HashMap::new(),
+            comment_markers: Vec::new(),
+            change_markers: Vec::new(),
+        };
 
         // Pass 2: draw cell borders, bullets, selection, text, caret. Everything
         // here renders through `fg.ctf` (the zoom transform) so page content scales
         // while the surrounding chrome stays at 100%.
-        for l in laid {
-            if l.kind == "image" {
-                self.draw_laid_image(scene, fg, text_renderer, l);
-                continue;
-            }
-            if let Some(bx) = l.cell_box {
-                self.draw_laid_cell_box(scene, fg, bx, l.cell_row);
-            }
-
-            if l.kind == "fidelity" {
-                Self::draw_laid_fidelity(
-                    scene,
-                    fg,
-                    text_renderer,
-                    l,
-                    &self.chrome,
-                    &self.paper_theme,
-                );
-                continue;
-            }
-
-            Self::draw_laid_bullet(scene, fg, text_renderer, l);
-
-            // The shaped text lives in the layout cache (built in pass 1), keyed
-            // by block id. Every normal/cell entry was inserted there.
-            let Some((_, layout)) = new_cache.get(&l.id) else {
-                continue;
-            };
-            // Layout-relative geometry is measured from `layout_y` (= the on-screen
-            // y of the shaped layout's origin). For an unsplit block this equals
-            // `y_top`; for a slice of a page-split block it is offset so the carried
-            // lines land in this slice's band.
-            let ly = l.layout_y;
-            // A split slice clips its drawing to its own band so lines belonging to
-            // the block's other slices (drawn from the same layout via `ly`) never
-            // bleed onto this page. Unsplit blocks (`clip == None`) draw unclipped.
-            let clipped = l.clip.is_some();
-            if let Some(band) = l.clip {
-                scene.push_layer(
-                    Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    1.0,
-                    fg.ctf,
-                    &band,
-                );
-            }
-
-            let item = LaidItemCtx { l, layout, ly };
-            self.draw_laid_text(
-                scene,
-                fg,
-                text_renderer,
-                &item,
-                multi_sel,
-                &mut comment_markers,
+        // Each laid block is a part of its own, bounded by the paper's width
+        // over its band (bullets, change bars and its table cell included)
+        // and what its marks reach past it (spelling squiggles, an image's
+        // handles): a typed character repaints its paragraph.
+        let page_to_widget = self.zoom.transform(Affine::IDENTITY);
+        // What its marks reach past it, in content pixels: a spelling
+        // squiggle under its last line, a selected image's 5 px corner
+        // handles with their stroke.
+        let reach = f64::from(self.desk_theme.tokens.spacing.s2);
+        for l in input.laid {
+            let mut band = Rect::new(
+                fg.page_x,
+                l.y_top,
+                fg.page_x + fg.page_w,
+                l.y_top + l.height,
             );
-            self.draw_laid_change_decos(scene, fg, &item, &mut change_markers);
-            self.draw_laid_notes_and_spellcheck(
+            if let Some(cell) = l.cell_box {
+                band = band.union(cell);
+            }
+            let bounds = page_to_widget
+                .transform_rect_bbox(band.inflate(reach, reach))
+                .intersect(fg.canvas);
+            parts.draw(
                 scene,
-                fg,
-                text_renderer,
-                &item,
-                NotesSpellcheckInput {
-                    spell_by_block,
-                    note_numbers: note_nums,
-                    page_notes: &mut page_notes,
+                format!("word-block-{}-{}", l.id, l.page),
+                bounds,
+                |scene| {
+                    ui::paint::clipped(scene, transform, fg.canvas, |scene| {
+                        self.draw_laid_block(scene, fg, text_renderer, l, input, &mut markers);
+                    });
                 },
             );
-
-            if self.lifecycle.focused
-                && l.id == self.inner.caret.block
-                && !self.inner.has_selection()
-            {
-                let byte = l.caret_byte(self.inner.caret.offset);
-                let (cx, cy, ch) = layout.caret_geometry(byte);
-                let caret = Rect::new(
-                    l.text_x + f64::from(cx),
-                    ly + f64::from(cy),
-                    l.text_x + f64::from(cx) + CARET_WIDTH,
-                    ly + f64::from(cy) + f64::from(ch),
-                );
-                self.ime_rect = Some(fg.ctf.transform_rect_bbox(caret));
-                scene.fill(
-                    Fill::NonZero,
-                    fg.ctf,
-                    self.chrome.paper_accent,
-                    None,
-                    &caret,
-                );
-            }
-            if clipped {
-                scene.pop_layer();
-            }
         }
 
-        Pass2Markers {
-            page_notes,
-            comment_markers,
-            change_markers,
+        markers
+    }
+
+    /// One laid block of pass 2: its cell border, bullet, selection, text,
+    /// change and note decorations, and the caret when it is in it.
+    fn draw_laid_block(
+        &mut self,
+        scene: &mut Scene,
+        fg: &FrameGeometry,
+        text_renderer: &mut TextRenderer,
+        l: &Laid,
+        input: &PageContentInput<'_>,
+        markers: &mut Pass2Markers,
+    ) {
+        let PageContentInput {
+            cache: new_cache,
+            multi_selection: multi_sel,
+            spell_by_block,
+            note_numbers: note_nums,
+            ..
+        } = *input;
+        if l.kind == "image" {
+            self.draw_laid_image(scene, fg, text_renderer, l);
+            return;
+        }
+        if let Some(bx) = l.cell_box {
+            self.draw_laid_cell_box(scene, fg, bx, l.cell_row);
+        }
+
+        if l.kind == "fidelity" {
+            Self::draw_laid_fidelity(scene, fg, text_renderer, l, &self.chrome, &self.paper_theme);
+            return;
+        }
+
+        Self::draw_laid_bullet(scene, fg, text_renderer, l);
+
+        // The shaped text lives in the layout cache (built in pass 1), keyed
+        // by block id. Every normal/cell entry was inserted there.
+        let Some((_, layout)) = new_cache.get(&l.id) else {
+            return;
+        };
+        // Layout-relative geometry is measured from `layout_y` (= the on-screen
+        // y of the shaped layout's origin). For an unsplit block this equals
+        // `y_top`; for a slice of a page-split block it is offset so the carried
+        // lines land in this slice's band.
+        let ly = l.layout_y;
+        // A split slice clips its drawing to its own band so lines belonging to
+        // the block's other slices (drawn from the same layout via `ly`) never
+        // bleed onto this page. Unsplit blocks (`clip == None`) draw unclipped.
+        let clipped = l.clip.is_some();
+        if let Some(band) = l.clip {
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                fg.ctf,
+                &band,
+            );
+        }
+
+        let item = LaidItemCtx { l, layout, ly };
+        self.draw_laid_text(
+            scene,
+            fg,
+            text_renderer,
+            &item,
+            multi_sel,
+            &mut markers.comment_markers,
+        );
+        self.draw_laid_change_decos(scene, fg, &item, &mut markers.change_markers);
+        self.draw_laid_notes_and_spellcheck(
+            scene,
+            fg,
+            text_renderer,
+            &item,
+            NotesSpellcheckInput {
+                spell_by_block,
+                note_numbers: note_nums,
+                page_notes: &mut markers.page_notes,
+            },
+        );
+
+        if self.lifecycle.focused && l.id == self.inner.caret.block && !self.inner.has_selection() {
+            let byte = l.caret_byte(self.inner.caret.offset);
+            let (cx, cy, ch) = layout.caret_geometry(byte);
+            let caret = Rect::new(
+                l.text_x + f64::from(cx),
+                ly + f64::from(cy),
+                l.text_x + f64::from(cx) + CARET_WIDTH,
+                ly + f64::from(cy) + f64::from(ch),
+            );
+            self.ime_rect = Some(fg.ctf.transform_rect_bbox(caret));
+            scene.fill(
+                Fill::NonZero,
+                fg.ctf,
+                self.chrome.paper_accent,
+                None,
+                &caret,
+            );
+        }
+        if clipped {
+            scene.pop_layer();
         }
     }
 
@@ -861,7 +874,7 @@ impl WordProcessorWidget {
         }
 
         // Find-match highlights (under the text).
-        if self.find.is_open() {
+        if self.find.is_active() {
             let ranges: Vec<(usize, usize)> = self
                 .find
                 .matches()
@@ -1262,10 +1275,12 @@ impl WordProcessorWidget {
     /// offset, the overflow and the visible window share one unit, so page
     /// zoom cannot distort the thumb.
     pub(super) fn canvas_scroll_metrics(&self) -> ui::widget::ScrollMetrics {
+        // The room before the start that the window's search opens counts
+        // as content, so the offset is never negative.
         ui::widget::ScrollMetrics::new(
-            self.max_scroll + self.scroll_viewport,
+            self.max_scroll + self.find_inset + self.scroll_viewport,
             self.scroll_viewport,
-            self.scroll_y,
+            self.scroll_y + self.find_inset,
         )
     }
 

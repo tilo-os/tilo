@@ -163,7 +163,6 @@ const APP_PY: &str = r#"#!/usr/bin/env python3
 
 from typing import List
 
-
 def primes_below(limit: int) -> List[int]:
     """Return every prime strictly below `limit`."""
     if limit < 2:
@@ -176,13 +175,11 @@ def primes_below(limit: int) -> List[int]:
                 sieve[j] = False
     return [i for i, is_prime in enumerate(sieve) if is_prime]
 
-
 if __name__ == "__main__":
     print("Hello, world! \U0001F40D")
     print(primes_below(20))
 "#;
 
-/// The sample project's folder name.
 pub const NAME: &str = "ferris-cli";
 
 /// RTL file opened by the hardware capture, never seeded into a live project.
@@ -214,9 +211,6 @@ endmodule
 ";
 
 /// Write the sample project's files into a new folder at `root`.
-///
-/// # Errors
-/// Returns why a folder or file could not be written.
 pub fn write(root: &std::path::Path) -> std::io::Result<()> {
     use crate::model::NodeKind;
     let project = build();

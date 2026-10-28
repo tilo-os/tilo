@@ -3,6 +3,19 @@ feedback-describe = What happened, and what did you expect?
 feedback-about = About { $app }
 feedback-context = Include which app this is about
 feedback-screenshot = Include one masked screenshot of this app
+feedback-recording = Include a recording of what happened
+feedback-recording-scope = The { $app } record as it was at { $from }, then { $steps ->
+    [one] its one change
+   *[other] each of its { $steps } changes
+} until { $to }, with who made { $steps ->
+    [one] it
+   *[other] them
+}. Whoever can read the report can step through them.
+feedback-recording-included = Recording of { $app } from { $from } to { $to }, { $steps ->
+    [one] one change
+   *[other] { $steps } changes
+}
+feedback-remove-recording = Leave the recording out
 feedback-privacy = Only what you include is sent. Review it and hide anything private before sending.
 feedback-review = Review what will be sent
 feedback-remove-screenshot = Remove screenshot
@@ -23,3 +36,26 @@ feedback-busy = Feedback is busy. Try again.
 feedback-capture-unavailable = This app cannot provide a private screenshot. Uncheck the screenshot option and review again.
 feedback-capture-changed = The app changed during capture. Review again to capture its current state.
 feedback-reviewed-text = { $value }
+feedback-report-title = Report a problem
+feedback-report-intro = This goes to the feedback channel, where members can read it and +1 it. Nothing leaves this device until you press Send.
+feedback-pick-title = { $number }. { $part }
+feedback-pick-note = What’s wrong here? (optional)
+feedback-report-describe = Anything else to add? (optional)
+feedback-slow = This was slow (attach recent frame timings)
+feedback-report-check = Check what will be sent
+feedback-report-check-first = Check the report to see exactly what will be sent.
+feedback-report-outgoing = Exactly what will be sent
+feedback-report-was-sent = What was sent
+feedback-report-picture = The picked parts, with their content masked
+feedback-report-hidden = Hidden from the report
+feedback-redaction-hidden = { $kind } { $value }
+feedback-redaction-shown = Shown: { $value }
+feedback-redaction-show = Show
+feedback-redaction-hide = Hide
+feedback-redaction-always = Always hidden
+feedback-check-rules = Checked on this device by rules. No model is set up to look further.
+feedback-check-pending = Checked by rules. { $model } is looking for anything else personal…
+feedback-check-model-clear = Checked by rules and { $model }, which found nothing more.
+feedback-check-model-added = Checked by rules and { $model }, which hid more.
+feedback-check-model-failed = Checked by rules. { $model } could not check it; the rules’ review stands.
+feedback-report-send = Send

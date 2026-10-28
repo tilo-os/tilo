@@ -14,7 +14,7 @@
 //! * [`details`] is what an app's page adds (localized description,
 //!   screenshots, releases, size, licence, permissions), fetched by the
 //!   [`fetcher`] thread when the page opens and kept on disk;
-//! * blocking is the shared [`app_catalogue::BlockList`] desktop search
+//! * blocking is the shared [`ui::registry::BlockList`] desktop search
 //!   hides apps by too: the person's own list and the device's and
 //!   workspace's policies. Blocked apps are listed nowhere;
 //! * [`Home`] and [`search`] decide what the screens list and in which order,
@@ -29,8 +29,8 @@ use std::collections::{BTreeMap, HashSet};
 
 use ui::search::{FieldWeight, ListIndex};
 
-pub use app_catalogue::{BlockList, Blocker};
 pub use details::{AppDetails, Permission, Release};
+pub use ui::registry::{BlockList, Blocker};
 
 use crate::model::{StoreItem, StoreSource};
 
@@ -87,10 +87,16 @@ pub fn is_bot(item: &StoreItem) -> bool {
 }
 
 /// Whether `item` is something a person opens from the Store's lists: an
-/// app, not a bot or a runtime component.
+/// app, not a bot, a runtime component or a language pack, and one this
+/// device can run. An app with no build for this device's processor is left
+/// out of what is browsed (Home's shelves and the categories) and found by
+/// search instead, which says it is not available here.
 #[must_use]
 pub fn is_listed_app(item: &StoreItem) -> bool {
-    !is_bot(item) && !ui::registry::is_runtime_package_id(&item.id)
+    !is_bot(item)
+        && !ui::registry::is_runtime_package_id(&item.id)
+        && !ui::registry::is_language_pack_package_id(&item.id)
+        && !item.not_built_for_this_device()
 }
 
 /// The source an app states on its row and page, in the person's words.
@@ -100,6 +106,18 @@ pub fn source_label(item: &StoreItem) -> String {
         StoreSource::Tilo { .. } => ui::i18n!("store-source-tilo"),
         StoreSource::Flathub => ui::i18n!("store-source-flathub"),
         StoreSource::FlatpakRemote { title, .. } => title.clone(),
+    }
+}
+
+/// The line under an app's name in a list: its source, or that it is not
+/// available for this device when its source has no build for this
+/// device's processor (its page says why).
+#[must_use]
+pub fn list_caption(item: &StoreItem) -> String {
+    if item.not_built_for_this_device() {
+        ui::i18n!("store-not-for-this-device")
+    } else {
+        source_label(item)
     }
 }
 
@@ -367,11 +385,17 @@ pub fn search(
         .zip(ranks)
         .filter_map(|(item, rank)| Some((item, rank?)))
         .filter(|(item, _)| !blocks.is_blocked(&item.id))
-        .filter(|(item, _)| !ui::registry::is_runtime_package_id(&item.id))
+        .filter(|(item, _)| {
+            !ui::registry::is_runtime_package_id(&item.id)
+                && !ui::registry::is_language_pack_package_id(&item.id)
+        })
         .collect();
     hits.sort_by_key(|(item, rank)| {
         (
             std::cmp::Reverse(*rank),
+            // An app this device can run before an equally good one it
+            // cannot.
+            item.not_built_for_this_device(),
             source_order(item),
             std::cmp::Reverse(item.installed.is_installed()),
             item.name.to_lowercase(),
@@ -450,7 +474,6 @@ mod tests {
         );
         assert_eq!(home.recent, ["org.example.Second", "org.example.Popular"]);
         assert!(home.updates.is_empty(), "no shelf without real updates");
-        // A refresh that changes the ranking keeps the shelf where it was.
         let mut items = items;
         items[0].listing.featured_rank = Some(0);
         items[1].listing.featured_rank = Some(5);
@@ -461,7 +484,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "apps can of course be blocked in the app store"
     /// Only the person's own block is theirs to lift; a policy's stays.
     #[test]
     fn the_person_unblocks_only_what_they_blocked() {
@@ -491,7 +513,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "apps can of course be blocked in the app store"
     #[test]
     fn search_answers_locally_with_apps_and_bots_apart_and_tilo_first() {
         let mut bot = tilo("so.tilo.bot.notes-digest", "Notes digest");
@@ -526,5 +547,71 @@ mod tests {
         assert!(!found.apps.iter().any(|id| id == "so.tilo.blocked-notes"));
         assert_eq!(found.bots, ["so.tilo.bot.notes-digest"]);
         assert!(search(&index, "  ", &items, &blocks).is_empty());
+    }
+
+    /// Steam is on Flathub for `x86_64` only. On another processor it must
+    /// not vanish: search finds it, says it is not available for this device
+    /// and why, and nothing offers to install it. Browsing, which shows what
+    /// a person can get, leaves it out.
+    #[test]
+    fn an_app_without_a_build_for_this_processor_is_found_and_says_why() {
+        crate::resource::STORE_CATALOG.ensure();
+        let mut steam = app("com.valvesoftware.Steam", "Steam", StoreSource::Flathub);
+        steam.categories = vec!["Game".into()];
+        steam.listing.featured_rank = Some(0);
+        steam.listing.updated_at_unix = 50;
+        steam.listing.arches = vec!["different-device".into()];
+        let mut native = app("org.example.Steam", "Steam", StoreSource::Flathub);
+        native.categories = vec!["Game".into()];
+        native.listing.arches = vec![std::env::consts::ARCH.into()];
+        let unknown = app("org.example.Unknown", "Unknown", StoreSource::Flathub);
+        let items = vec![steam.clone(), native, unknown.clone()];
+        let blocks = BlockList::empty();
+
+        let index = ListIndex::default();
+        let found = search(&index, "steam", &items, &blocks);
+        assert_eq!(
+            found.apps,
+            ["org.example.Steam", "com.valvesoftware.Steam"],
+            "found, after an equally good app this device runs"
+        );
+        assert!(steam.not_built_for_this_device());
+        assert!(
+            !unknown.not_built_for_this_device(),
+            "a source that names no processors is not read as unavailable"
+        );
+        assert_eq!(list_caption(&steam), "Not available for this device");
+        assert_eq!(list_caption(&unknown), "Flathub");
+        let reason = steam
+            .not_built_for_this_device_reason()
+            .expect("the page says why");
+        assert!(
+            reason.starts_with("Steam is only built for different-device"),
+            "{reason}"
+        );
+        let (code, why) = steam
+            .unavailable_action(crate::model::ActionKind::FlatpakInstall)
+            .expect("installing is refused, not offered");
+        assert_eq!(code, "not_available_for_this_device");
+        assert_eq!(why, reason);
+        assert!(!steam.allows_action(crate::model::ActionKind::FlatpakInstall, true));
+
+        let home = Home::compute(&items, &blocks);
+        assert!(!home.featured.iter().any(|id| id == &steam.id));
+        assert!(!home.recent.iter().any(|id| id == &steam.id));
+        assert!(home.categories.contains(&("Game".to_owned(), 1)));
+        assert_eq!(in_category(&items, &blocks, "Game"), ["org.example.Steam"]);
+
+        let mut installed = steam;
+        installed.installed = InstalledState::Installed {
+            version: "1".into(),
+            available: "1".into(),
+            pinned: false,
+            user_managed: true,
+        };
+        assert!(
+            !installed.not_built_for_this_device(),
+            "an installed app runs here, however it got here"
+        );
     }
 }

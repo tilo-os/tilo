@@ -25,6 +25,42 @@ mod device_pairing;
 mod enrollment_tokens;
 mod identity_admin;
 mod native_identity;
+mod quick_settings;
+mod shortcuts;
+mod strips;
+mod tabs;
+mod windows;
+mod workspaces;
+pub(crate) use quick_settings::QS_MUTE_ID;
+use quick_settings::{
+    DISPLAY_BRIGHTNESS_STEP, LEVEL_STEPS, QS_DISPLAY_BRIGHTNESS_PREFIX, QS_MUTE_KEYWORDS,
+    QS_TOGGLES, QUICK_SETTINGS_ACTIONS, apply_quick_settings_effect, display_brightness_connector,
+    level_badge, quick_settings_params, radio_is_on, stepped, validated_percent,
+};
+pub(crate) use quick_settings::{
+    QS_AIRPLANE_ID, QS_BLUETOOTH_ID, QS_BRIGHTNESS_ID, QS_POWER_ID, QS_VOLUME_ID, QS_VPN_ID,
+    QS_WIFI_ID, SharedQsActions, SharedQsDispatcher, ValidatedQsActions,
+};
+use shortcuts::ACTION_SHORTCUTS;
+pub(crate) use shortcuts::action_shortcut;
+
+use strips::{
+    STRIP_CREATE_PARAMS, STRIP_MOVE_PARAMS, STRIP_REMOVE_PARAMS, STRIP_RENAME_PARAMS, create_strip,
+    move_strip, remove_strip, rename_strip,
+};
+pub(crate) use strips::{STRIP_NAME_MAX_CHARS, valid_strip_name};
+use tabs::{
+    TAB_MOVE_TO_WORKSPACE_PARAMS, TAB_RENAME_PARAMS, move_focused_tab_to_workspace,
+    rename_focused_tab,
+};
+use windows::{
+    GROUP_MOVE_TO_STRIP_ID, GROUP_MOVE_TO_STRIP_PARAMS, group_move_to_strip_params,
+    move_group_to_strip, no_window, other_display_needed, request_group_shortcut,
+    request_toggle_maximize, window_outcome,
+};
+use workspaces::{
+    WORKSPACE_DELETE_PARAMS, delete_workspace, move_workspace, workspace_delete_params,
+};
 
 use crate::shell::shared_display_actions;
 
@@ -51,8 +87,8 @@ fn workspace_create_context(
         .ok_or_else(|| ActionError::Refused("there is no active workspace context".into()))?;
     let context = (
         workspace.id,
-        workspace.room,
-        state.local_user_for_room(&workspace.room),
+        workspace.room(),
+        state.local_user_for_room(&workspace.room()),
     );
     drop(tree);
     Ok(context)
@@ -71,117 +107,34 @@ fn create_workspace(state: &mut ChromeState, args: &ActionArgs) -> Result<(), Ac
     Ok(())
 }
 
-const STRIP_CREATE_PARAMS: &[ActionParam] = &[ActionParam::optional(
+/// What `workspace.rename` must be told.
+const WORKSPACE_RENAME_PARAMS: &[ActionParam] = &[ActionParam::required(
     "name",
     ParamType::Text,
-    "1 to 48 characters without control characters. Omit to use the localized default name.",
+    "The workspace's new name: 1 to 120 characters without control characters.",
 )];
 
-const STRIP_RENAME_PARAMS: &[ActionParam] = &[
-    ActionParam::optional(
-        "name",
-        ParamType::Text,
-        "The new name: 1 to 48 characters without control characters. Omit to open the \
-         strip switcher's name field on the focused strip for a person to type it.",
-    ),
-    ActionParam::optional(
-        "strip",
-        ParamType::Integer,
-        "Which strip of the active workspace, counting from 1. Defaults to the focused strip.",
-    ),
-];
-
-const STRIP_MOVE_PARAMS: &[ActionParam] = &[
-    ActionParam::required(
-        "strip",
-        ParamType::Integer,
-        "Which strip of the active workspace to move, counting from 1 at the top.",
-    ),
-    ActionParam::required(
-        "position",
-        ParamType::Integer,
-        "Where it ends up, counting from 1 at the top; past the last strip means the bottom.",
-    ),
-];
-
-/// Longest strip name a person or an agent may give, in characters: what the
-/// strip switcher's row shows without eliding most of it.
-pub(crate) const STRIP_NAME_MAX_CHARS: usize = 48;
-
-/// A strip name as given, trimmed, or `None` when it is empty, too long or
-/// holds control characters.
-pub(crate) fn valid_strip_name(supplied: &str) -> Option<&str> {
+/// Rename the workspace on screen, as its name field in the workspace menu
+/// and its settings does.
+fn rename_workspace(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
+    let supplied = args.text("name").unwrap_or_default();
     let name = supplied.trim();
-    (!name.is_empty()
-        && name.chars().count() <= STRIP_NAME_MAX_CHARS
-        && !supplied.chars().any(char::is_control))
-    .then_some(name)
-}
-
-fn create_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
-    let default_name = t("search-action-strip-create-default-name");
-    let supplied = args.text("name").unwrap_or(&default_name);
-    let name = valid_strip_name(supplied)
-        .ok_or_else(|| ActionError::Refused(t("search-action-strip-invalid-name")))?;
-    state
-        .create_strip(name)
-        .map(|_| ())
-        .map_err(ActionError::Refused)
-}
-
-fn rename_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
-    let Some(supplied) = args.text("name") else {
-        if args.integer("strip").is_some() {
-            return Err(ActionError::Refused(t("search-action-strip-invalid-name")));
-        }
-        state.request_strip_rename();
-        return Ok(());
-    };
-    let name = valid_strip_name(supplied)
-        .ok_or_else(|| ActionError::Refused(t("search-action-strip-invalid-name")))?;
-    let strip = match args.integer("strip") {
-        None => state.focused_strip_id(),
-        Some(index) => usize::try_from(index)
-            .ok()
-            .and_then(|index| index.checked_sub(1))
-            .and_then(|index| {
-                let tree = state.tree();
-                let id = tree.desktop.active_workspace()?.strips.get(index)?.id;
-                drop(tree);
-                Some(id)
-            }),
+    if name.is_empty() || name.chars().count() > 120 || supplied.chars().any(char::is_control) {
+        return Err(ActionError::Explained(t(
+            "search-action-workspace-create-invalid-name",
+        )));
     }
-    .ok_or_else(|| ActionError::Refused(t("search-action-strip-rename-missing")))?;
-    state
-        .rename_strip(strip, name)
-        .map_err(ActionError::Refused)
-}
-
-/// Move a strip of the active workspace to another place in its stack: the
-/// overview's Move up and Move down, for an agent or a script.
-fn move_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
-    let missing = || ActionError::Refused(t("search-action-strip-rename-missing"));
-    let index_of = |key: &str| {
-        args.integer(key)
-            .and_then(|n| usize::try_from(n).ok())
-            .and_then(|n| n.checked_sub(1))
-    };
-    let from = index_of("strip").ok_or_else(missing)?;
-    let to = index_of("position").ok_or_else(missing)?;
-    let (strip, before) = {
-        let tree = state.tree();
-        let strips = &tree.desktop.active_workspace().ok_or_else(missing)?.strips;
-        let strip = strips.get(from).ok_or_else(missing)?.id;
-        let others: Vec<_> = strips
-            .iter()
-            .map(|s| s.id)
-            .filter(|id| *id != strip)
-            .collect();
-        (strip, others.get(to).copied())
-    };
-    state
-        .move_strip(strip, before)
-        .map_err(ActionError::Refused)
+    let refused = || ActionError::Refused(t("search-action-workspace-rename-refused"));
+    if !state.may_rename_active_workspace() {
+        return Err(refused());
+    }
+    state.rename_active_workspace(name);
+    let renamed = state
+        .tree()
+        .desktop
+        .active_workspace()
+        .is_some_and(|workspace| workspace.name == name);
+    if renamed { Ok(()) } else { Err(refused()) }
 }
 
 /// What `record.bring` must be told.
@@ -257,7 +210,7 @@ const IDENTITY_SELECT_PARAMS: &[ActionParam] = &[
     ActionParam::required(
         "id",
         ParamType::Text,
-        "The identity's 64-character public-key fingerprint.",
+        "The identity to use in this workspace.",
     ),
     ActionParam::required(
         "confirm",
@@ -265,6 +218,94 @@ const IDENTITY_SELECT_PARAMS: &[ActionParam] = &[
         "Confirm delegating workspace administration to this identity.",
     ),
 ];
+
+/// The parameters `action` asks for now. Choosing the identity a workspace
+/// uses offers the identities this device has, each by its name and avatar;
+/// nobody types a fingerprint. Choosing a strip offers the active
+/// workspace's strips by name, and a deletion's confirmation reads as what
+/// it does.
+fn live_params(action: &Action, state: &ChromeState) -> Vec<ActionParam> {
+    match action.id {
+        "identity.select" => {}
+        GROUP_MOVE_TO_STRIP_ID => return group_move_to_strip_params(state),
+        "workspace.delete" => return workspace_delete_params(),
+        _ => return action.params.to_vec(),
+    }
+    let identities = crate::identity_registry::IdentityRegistryStore::from_env()
+        .and_then(|store| store.load_reconciled_cached())
+        .map(|registry| {
+            registry
+                .identities
+                .values()
+                .map(|profile| (profile.id.clone(), identity_label(&profile.display_name)))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    identity_select_params(&identities)
+}
+
+/// The choice that sets up this device's first identity, offered when it
+/// has none.
+pub(crate) const IDENTITY_SETUP_CHOICE: &str = "setup";
+
+/// [`IDENTITY_SELECT_PARAMS`], its identity one of `identities`
+/// (`(id, name)`), each read as its name with its avatar. With none, the one
+/// choice is the next step: "Set up your identity", which needs no
+/// confirmation, since it delegates nothing yet.
+pub(crate) fn identity_select_params(identities: &[(String, String)]) -> Vec<ActionParam> {
+    if identities.is_empty() {
+        let id = IDENTITY_SELECT_PARAMS
+            .iter()
+            .find(|param| param.name == "id")
+            .cloned()
+            .map(|mut param| {
+                param.description = t("search-action-identity-none").into();
+                param.with_labelled_choices([(
+                    IDENTITY_SETUP_CHOICE,
+                    t("search-action-identity-setup"),
+                )])
+            });
+        return id.into_iter().collect();
+    }
+    IDENTITY_SELECT_PARAMS
+        .iter()
+        .map(|param| {
+            if param.name != "id" {
+                return param.clone();
+            }
+            param
+                .clone()
+                .with_labelled_choices(identities.iter().cloned())
+                .choosing_people(identities.iter().map(|(id, _)| id.clone()))
+        })
+        .collect()
+}
+
+/// Ask for the first-identity setup: only on a device with no identity, as
+/// the chooser offers it.
+fn request_identity_setup(st: &mut ChromeState) -> Result<(), ActionError> {
+    let has_identity = crate::identity_registry::IdentityRegistryStore::from_env()
+        .and_then(|store| store.load_reconciled())
+        .is_ok_and(|registry| !registry.identities.is_empty());
+    if has_identity {
+        return Err(ActionError::Refused(
+            "this device has an identity already; choose it".into(),
+        ));
+    }
+    st.overlays.identity_setup = true;
+    Ok(())
+}
+
+/// How an identity reads in the chooser: its name, or "Unnamed identity"
+/// for one minted before it had one.
+fn identity_label(display_name: &str) -> String {
+    let name = display_name.trim();
+    if name.is_empty() {
+        t("search-action-identity-unnamed")
+    } else {
+        name.to_owned()
+    }
+}
 
 const SEARCH_PROVIDER_SET_PARAMS: &[ActionParam] = &[
     ActionParam::required(
@@ -360,6 +401,7 @@ const VIEW_ACTION_IDS: &[&str] = &[
     "quick-settings.devices",
     "quick-settings.network",
     "quick-settings.bluetooth",
+    "notifications.open",
     "projection.open",
     "projection.close",
     "capture.open",
@@ -368,7 +410,6 @@ const VIEW_ACTION_IDS: &[&str] = &[
     "room.activity.explore",
     "room.activity.replay",
     "room.activity.acknowledge",
-    "room.activity.tasks",
     "tab.menu",
     "tab.drag.cancel",
     "room.activity.morning.toggle",
@@ -385,18 +426,15 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
     if let Some(contract) = dedicated_contract(id) {
         return contract;
     }
-    if let Some(contract) = super::system_settings::contract_for(id) {
-        return contract;
-    }
     let mut contract = ActionContract::default();
     match id {
         "shortcut-help.toggle" | "overview.toggle" => {
             contract = ActionContract::view();
             contract.retry = RetryPolicy::AtMostOnce;
-            contract.reversible = true;
         }
         id if VIEW_ACTION_IDS.contains(&id) => contract = ActionContract::view(),
-        "workspace.create" | "strip.create" | "strip.rename" | "strip.move" => {
+        "workspace.create" | "workspace.rename" | "strip.create" | "strip.rename"
+        | "strip.move" | "strip.remove" | "tab.rename" => {
             contract = workspace_create_contract();
         }
         "identity.connect" | "identity.select" | "identity.device.revoke" => {
@@ -420,14 +458,17 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         }
         // Its host stops the bot and uninstalls it; adding it again is a
         // new request.
-        BOT_REMOVE_ID => {
-            contract.kind = ActionKind::Outside;
-            contract.risk = RiskLevel::Destructive;
-            contract.confirmation = ConfirmationPolicy::Confirm;
-            contract.retry = RetryPolicy::AtMostOnce;
-        }
-        // Ends the agent's access at once; undone only by admitting it again.
-        "agent.remove" => {
+        // Ends the bot's or the agent's access at once; undone only by
+        // admitting it again.
+        // The app leaves the device; what of the person's it held goes to
+        // the Trash, never further.
+        // The workspace leaves the person's list on every device; a room
+        // another device hosts is left, and joined again only through it.
+        BOT_REMOVE_ID
+        | "agent.remove"
+        | APP_UNINSTALL_ID
+        | APP_REMOVE_FROM_APPS_ID
+        | "workspace.delete" => {
             contract.kind = ActionKind::Outside;
             contract.risk = RiskLevel::Destructive;
             contract.confirmation = ConfirmationPolicy::Confirm;
@@ -446,19 +487,23 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "tab.open-beside"
         | "tab.split-right"
         | "tab.move-to-new-group"
+        | "tab.move-to-workspace"
         | "tab.close"
+        | "group.close"
         | "tab.reopen" => {
             contract.kind = ActionKind::Undoable;
-            contract.reversible = true;
         }
-        "notifications.dnd.toggle"
+        // Clearing notifications is undone by bringing them back while the
+        // undo lasts.
+        "notifications.clear"
+        | "notifications.clear.undo"
+        | "notifications.dnd.toggle"
         | "appearance.theme.dark"
         | "appearance.theme.light"
-        | "appearance.high-contrast"
-        | "appearance.language" => {
+        | "appearance.language"
+        | BLUETOOTH_PAIRING_DECLINE_ID => {
             contract.kind = ActionKind::Undoable;
             contract.retry = RetryPolicy::AtMostOnce;
-            contract.reversible = true;
         }
         QS_BRIGHTNESS_ID | QS_VOLUME_ID | QS_WIFI_ID | QS_POWER_ID | QS_VPN_ID
         | QS_BLUETOOTH_ID | QS_AIRPLANE_ID => {
@@ -471,21 +516,18 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | DISPLAY_KEEP_ID
         | DISPLAY_REVERT_ID
         | shared_display_actions::INCLUDE_ID => contract = display_layout_contract(),
-        BLUETOOTH_PAIRING_DECLINE_ID => {
-            contract.kind = ActionKind::Undoable;
-            contract.retry = RetryPolicy::AtMostOnce;
-        }
         // Navigation and focus each advance one step when repeated.
         id if id.starts_with("navigation.axis.") || WINDOW_FOCUS_ACTION_IDS.contains(&id) => {
             contract = ActionContract::view();
             contract.retry = RetryPolicy::AtMostOnce;
-            contract.reversible = true;
         }
-        // Layout, undone by the opposite move.
-        id if WINDOW_LAYOUT_ACTION_IDS.contains(&id) => {
+        // Layout, and the order of the person's workspaces, undone by the
+        // opposite move.
+        id if WINDOW_LAYOUT_ACTION_IDS.contains(&id)
+            || matches!(id, "workspace.move-earlier" | "workspace.move-later") =>
+        {
             contract.kind = ActionKind::Undoable;
             contract.retry = RetryPolicy::AtMostOnce;
-            contract.reversible = true;
         }
         _ => {}
     }
@@ -501,9 +543,8 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "peer.pair-device" => tilo_actions::OperationKind::View,
         id if VIEW_ACTION_IDS.contains(&id) => tilo_actions::OperationKind::View,
         "record.bring" | "peer.invite.named" | "agent.invite" | "agent.remove"
-        | "workspace.create" | "strip.create" | "strip.rename" | "strip.move" => {
-            tilo_actions::OperationKind::Document
-        }
+        | "workspace.create" | "workspace.rename" | "strip.create" | "strip.rename"
+        | "strip.move" | "strip.remove" | "tab.rename" => tilo_actions::OperationKind::Document,
         _ if id.contains("#ownership.") => tilo_actions::OperationKind::Document,
         _ if WINDOW_FOCUS_ACTION_IDS.contains(&id) || id.starts_with("navigation.axis.") => {
             tilo_actions::OperationKind::View
@@ -517,7 +558,7 @@ pub(crate) fn current_shell_action_authorized(state: &ChromeState, id: &str) -> 
     let Some(workspace) = tree.desktop.active_workspace() else {
         return false;
     };
-    let user = state.local_user_for_room(&workspace.room);
+    let user = state.local_user_for_room(&workspace.room());
     let authorized = shell_action_authorized_for(workspace, &workspace.actor_for_person(&user), id);
     drop(tree);
     authorized
@@ -569,9 +610,9 @@ fn active_identity(
             .desktop
             .active_workspace()
             .ok_or_else(|| ActionError::Refused("no active workspace".into()))?;
-        let actor = state.local_user_for_room(&workspace.room);
+        let actor = state.local_user_for_room(&workspace.room());
         (
-            workspace.room,
+            workspace.room(),
             actor.clone(),
             workspace.may_govern_at(
                 &actor,
@@ -698,7 +739,7 @@ fn apply_ownership_proposal(
         .tree()
         .desktop
         .active_workspace()
-        .map(|workspace| workspace.room.to_string())
+        .map(|workspace| workspace.room().to_string())
         .ok_or_else(|| ActionError::Refused("no active workspace".into()))?;
     let mut proposal = collab_types::OwnershipTransferProposalV1 {
         version: collab_types::OWNERSHIP_TRANSFER_VERSION,
@@ -845,13 +886,13 @@ fn active_admin_workspace(
     let Some(workspace) = tree.desktop.active_workspace() else {
         return Err(ActionError::Refused("no active workspace".into()));
     };
-    let actor = state.local_user_for_room(&workspace.room);
+    let actor = state.local_user_for_room(&workspace.room());
     let may_administer = workspace.may_govern_at(
         &actor,
         tilo_action_policy::roles::governance::GRANT,
         tilo_clock::unix_now(),
     );
-    let (workspace_id, room) = (workspace.id, workspace.room);
+    let (workspace_id, room) = (workspace.id, workspace.room());
     drop(tree);
     if !may_administer {
         return Err(ActionError::Refused(format!(
@@ -899,7 +940,7 @@ fn name_invited_peer(state: &ChromeState, args: &ActionArgs) -> Result<String, A
         let Some(room) = tree
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room)
+            .map(crate::shell::state::Workspace::room)
         else {
             return Err(ActionError::Refused(
                 "there is no workspace here to invite anyone into".into(),
@@ -962,6 +1003,101 @@ const BOT_REMOVE_PARAMS: &[ActionParam] = &[
     ),
 ];
 
+/// Uninstalling an app from the person's apps ([`crate::shell::app_list`]).
+pub(crate) const APP_UNINSTALL_ID: &str = "app.uninstall";
+/// Taking an app off the person's apps without uninstalling it: a part of
+/// the system, or a downloaded program, whose file stays.
+pub(crate) const APP_REMOVE_FROM_APPS_ID: &str = "app.remove-from-apps";
+
+const APP_UNINSTALL_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "app",
+        ParamType::Text,
+        "The app: a Tilo package id, a desktop-file id or a Flatpak id, as Files' Applications place and search list it.",
+    ),
+    ActionParam::optional(
+        "remove_data",
+        ParamType::Boolean,
+        "For a Flatpak: move its data (~/.var/app/<id>) to the Trash too. On unless set to false.",
+    ),
+    ActionParam::optional(
+        "confirm",
+        ParamType::Boolean,
+        "Uninstall now. Without it the person is asked first, in the uninstall sheet.",
+    ),
+];
+
+const APP_REMOVE_FROM_APPS_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "app",
+        ParamType::Text,
+        "The app, a part of the system or a downloaded program (whose file stays), as Files' Applications place and search list it.",
+    ),
+    ActionParam::optional(
+        "confirm",
+        ParamType::Boolean,
+        "Take it off the person's apps now. Without it the person is asked first.",
+    ),
+];
+
+/// `app.uninstall` and `app.remove-from-apps`: one action wherever it is
+/// asked for. Without `confirm` the person is asked in the shell's sheet,
+/// as Files, search and the Store ask; with it, it runs.
+fn uninstall_app(args: &ActionArgs, remove_from_apps: bool) -> Result<(), ActionError> {
+    use os_actions::AppRemoval;
+    let id = args.text("app").unwrap_or_default().trim().to_owned();
+    if id.is_empty() {
+        return Err(ActionError::Refused("name the app".into()));
+    }
+    // Taking a downloaded program's entry off the person's apps leaves its
+    // file where it is and can be undone by adding it again: nothing to ask.
+    if remove_from_apps
+        && let Some(item) = crate::shell::app_list::find(&id)
+        && matches!(
+            item.source,
+            crate::shell::app_list::AppSource::Downloaded { .. }
+        )
+    {
+        return crate::shell::app_list::remove_from_apps(item).map_err(ActionError::Refused);
+    }
+    if args.boolean("confirm") != Some(true) {
+        crate::shell::app_list::ask(&id);
+        return Ok(());
+    }
+    let Some(item) = crate::shell::app_list::find(&id) else {
+        return Err(ActionError::Refused(
+            if crate::shell::app_list::settling() {
+                format!("the app list is still being read; ask again for {id}")
+            } else {
+                format!("{id} is not in the person's apps")
+            },
+        ));
+    };
+    match (item.removal(), remove_from_apps) {
+        (AppRemoval::RemoveFromApps, false) => {
+            return Err(ActionError::Refused(format!(
+                "{} is part of the system and cannot be uninstalled; {APP_REMOVE_FROM_APPS_ID} takes it off the person's apps",
+                item.name
+            )));
+        }
+        (AppRemoval::Uninstall | AppRemoval::UninstallWithData, true) => {
+            return Err(ActionError::Refused(format!(
+                "{} can be uninstalled; {APP_UNINSTALL_ID} does that",
+                item.name
+            )));
+        }
+        (AppRemoval::None, _) => {
+            return Err(ActionError::Refused(format!(
+                "{} comes with the system and stays",
+                item.name
+            )));
+        }
+        _ => {}
+    }
+    let remove_data = args.boolean("remove_data").unwrap_or(true);
+    crate::shell::app_list::uninstall(item, remove_data).map_err(ActionError::Refused)
+}
+
 /// The label of the system action `id` when an app may prepare it for the
 /// person ([`ui::search::SearchOffer`]): only adding a bot, which the person
 /// still confirms in the palette.
@@ -1016,7 +1152,7 @@ fn publish_listing(
         .tree()
         .desktop
         .active_workspace()
-        .map(|workspace| workspace.room)
+        .map(crate::shell::state::Workspace::room)
         .and_then(|room| match state.publication(room) {
             Some(crate::shell::chrome_state::PublicationState::Known(known)) => {
                 Some(known.default_role)
@@ -1055,114 +1191,14 @@ const PEER_INVITE_NAMED_PARAMS: &[ActionParam] = &[
     ),
 ];
 
-/// Workspace membership and invitations, under the canonical ids and
-/// parameter names of `tilo_action_broker::collaboration_admin`. The shell
-/// adds `confirm` to each (its door requires an explicit confirmation for
-/// privileged, sensitive and destructive actions) and an optional
-/// `recipient` to `invitation.issue`; `invitation_params_follow_the_canonical_definitions`
-/// keeps the rest identical.
-mod membership_actions {
-    use super::{ActionParam, ParamType};
-    pub(super) use tilo_action_broker::collaboration_admin::{
-        CANCEL_ACTION, ISSUE_ACTION, LIST_ACTION, REMOVE_ACTION, SET_ROLE_ACTION,
-    };
-
-    /// Return a pending invitation's original token again. Shell-only: the
-    /// canonical surface has no resend.
-    pub(super) const RESEND_ACTION: &str = "invitation.resend";
-
-    /// The invitation actions, which run through the peer-sync network.
-    pub(super) const INVITATION_ACTION_IDS: &[&str] =
-        &[ISSUE_ACTION, CANCEL_ACTION, LIST_ACTION, RESEND_ACTION];
-
-    /// Parameters the shell declares beyond the canonical ones.
-    pub(super) const SHELL_ONLY_PARAMS: &[&str] = &["confirm", "recipient"];
-
-    /// The relay refuses an invitation that lives longer than this.
-    pub(super) const MAX_INVITATION_LIFETIME_SECONDS: u64 = 30 * 24 * 60 * 60;
-
-    /// Longest display name an invitation may record.
-    pub(super) const MAX_INVITEE_NAME_CHARS: usize = 80;
-
-    const CONFIRM: ActionParam = ActionParam::required(
-        "confirm",
-        ParamType::Boolean,
-        "Confirm this workspace administration request.",
-    );
-    const ROLE: ActionParam =
-        ActionParam::required("role", ParamType::Text, "viewer, commenter, or editor");
-    const PARTICIPANT: ActionParam = ActionParam::required(
-        "participant_id",
-        ParamType::Text,
-        "Participant person-root identifier",
-    );
-    const INVITE_ID: ActionParam =
-        ActionParam::required("invite_id", ParamType::Text, "Invitation digest");
-
-    pub(super) const MEMBER_ROLE_SET_PARAMS: &[ActionParam] = &[PARTICIPANT, ROLE, CONFIRM];
-    pub(super) const MEMBER_REMOVE_PARAMS: &[ActionParam] = &[PARTICIPANT, CONFIRM];
-    pub(super) const INVITATION_ISSUE_PARAMS: &[ActionParam] = &[
-        ROLE,
-        ActionParam::required(
-            "expires_in_seconds",
-            ParamType::Integer,
-            "Invitation lifetime",
-        ),
-        ActionParam::optional("invitee_name", ParamType::Text, "Optional display name"),
-        ActionParam::optional(
-            "recipient",
-            ParamType::Text,
-            "The invitee's 64-character person key (or `tilo-identity:` card). \
-             When given, only that person's devices can redeem the invitation.",
-        ),
-        CONFIRM,
-    ];
-    pub(super) const INVITATION_ID_PARAMS: &[ActionParam] = &[INVITE_ID, CONFIRM];
-    pub(super) const INVITATION_LIST_PARAMS: &[ActionParam] = &[CONFIRM];
-}
-
+mod membership_actions;
+// Its ids, parameters and its two decoders travel with it.
 use membership_actions::{
     CANCEL_ACTION as INVITATION_CANCEL_ID, INVITATION_ACTION_IDS,
     ISSUE_ACTION as INVITATION_ISSUE_ID, LIST_ACTION as INVITATION_LIST_ID,
     REMOVE_ACTION as MEMBER_REMOVE_ID, RESEND_ACTION as INVITATION_RESEND_ID,
-    SET_ROLE_ACTION as MEMBER_ROLE_SET_ID,
+    SET_ROLE_ACTION as MEMBER_ROLE_SET_ID, collaboration_contract, collaboration_operation,
 };
-
-/// The shell's contract for a membership or invitation action: permission,
-/// risk and result exactly as the canonical definition declares, with the
-/// shell door's explicit confirmation and at-most-once retry (this
-/// transport carries no caller-supplied deduplication key).
-fn collaboration_contract(id: &str) -> Option<tilo_actions::ActionContract> {
-    let canonical = match id {
-        INVITATION_ISSUE_ID | INVITATION_RESEND_ID => INVITATION_ISSUE_ID,
-        INVITATION_CANCEL_ID | INVITATION_LIST_ID | MEMBER_ROLE_SET_ID | MEMBER_REMOVE_ID => id,
-        _ => return None,
-    };
-    let mut contract = tilo_action_broker::collaboration_admin::action_definitions()
-        .into_iter()
-        .find(|definition| definition.id == canonical)?
-        .contract;
-    contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
-    contract.retry = tilo_actions::RetryPolicy::AtMostOnce;
-    Some(contract)
-}
-
-/// Decode a membership or invitation action's arguments with the canonical
-/// parser, so the shell accepts exactly what every other door accepts.
-fn collaboration_operation(
-    canonical_id: &str,
-    args: &ActionArgs,
-) -> Result<tilo_action_broker::collaboration_admin::CollaborationAdminOperation, ActionError> {
-    let mut json = args.to_json();
-    for shell_only in membership_actions::SHELL_ONLY_PARAMS {
-        json.remove(*shell_only);
-    }
-    tilo_action_broker::collaboration_admin::parse_operation(
-        canonical_id,
-        Some(&serde_json::Value::Object(json).to_string()),
-    )
-    .map_err(ActionError::Refused)
-}
 
 fn participant(id: &str) -> Result<crate::shell::state::UserId, ActionError> {
     let id = id.trim();
@@ -1375,16 +1411,20 @@ const WINDOW_FOCUS_ACTION_IDS: &[&str] = &[
     "strip.focus-nth",
 ];
 
-/// Relative window-management actions that rearrange the desk.
+/// Window-management actions that rearrange the desk. Each tells its
+/// caller once the overlay host ran it whether anything changed
+/// ([`window_outcome`]).
 const WINDOW_LAYOUT_ACTION_IDS: &[&str] = &[
     "group.move-left",
     "group.move-right",
     "group.move-to-strip-previous",
     "group.move-to-strip-next",
+    GROUP_MOVE_TO_STRIP_ID,
     "group.move-to-display-previous",
     "group.move-to-display-next",
     "group.maximize",
     "group.restore",
+    "group.toggle-maximize",
     "group.fullscreen",
     "group.narrower",
     "group.wider",
@@ -1403,38 +1443,29 @@ fn request_window_shortcut(
     Ok(())
 }
 
-/// Store an appearance change the action `action` made, then apply it.
-fn persist_appearance(
+/// Dark, light or automatic mode, keeping whichever theme the person chose
+/// for it, changed through the appearance section's field edits on behalf
+/// of the action `invoked_by`. Choosing a mode leaves high contrast.
+pub(super) fn set_mode(
     st: &mut ChromeState,
-    action: &str,
-    write: settings_store::SectionWrite,
+    mode: &str,
+    invoked_by: &settings_store::InvokingAction,
 ) -> Result<(), ActionError> {
-    write
-        .commit_by(&settings_store::ChangeOrigin::action(action))
-        .map_err(|err| ActionError::Refused(err.to_string()))?;
-    crate::shell::i18n::apply_configured_locale();
+    use crate::shell::settings_records::{address, change, set_field};
+    let edit = address("settings.appearance", "field-edit");
+    change(&edit, &set_field("mode", &mode.into()), false, invoked_by)?;
+    change(
+        &edit,
+        &set_field("high_contrast", &false.into()),
+        false,
+        invoked_by,
+    )?;
     st.note_appearance_change();
     Ok(())
 }
 
-/// Dark or light mode, keeping whichever theme the person chose for it.
-/// Choosing a mode leaves high contrast.
-pub(super) fn set_mode(st: &mut ChromeState, action: &str, mode: &str) -> Result<(), ActionError> {
-    use settings_store::appearance::{HIGH_CONTRAST, MODE};
-    let write = settings_store::SectionWrite::new()
-        .set(&MODE, &Some(mode.to_string()))
-        .set(&HIGH_CONTRAST, &false);
-    persist_appearance(st, action, write)
-}
-
-/// High contrast in the current mode's polarity.
-fn set_high_contrast(st: &mut ChromeState) -> Result<(), ActionError> {
-    let write =
-        settings_store::SectionWrite::new().set(&settings_store::appearance::HIGH_CONTRAST, &true);
-    persist_appearance(st, "appearance.high-contrast", write)
-}
-
 fn set_language(st: &mut ChromeState, requested: &str) -> Result<(), ActionError> {
+    use crate::shell::settings_records::{address, change, set_field};
     let language = match requested.trim() {
         "en" | "en-US" | "english" | "English" => "en-US",
         "de" | "de-DE" | "german" | "German" | "deutsch" | "Deutsch" => "de-DE",
@@ -1444,11 +1475,15 @@ fn set_language(st: &mut ChromeState, requested: &str) -> Result<(), ActionError
             )));
         }
     };
-    let write = settings_store::SectionWrite::new().set(
-        &settings_store::appearance::LANGUAGE,
-        &Some(language.to_string()),
-    );
-    persist_appearance(st, "appearance.language", write)
+    change(
+        &address("settings.appearance", "field-edit"),
+        &set_field("language", &language.into()),
+        false,
+        &settings_store::InvokingAction::action("appearance.language"),
+    )?;
+    crate::shell::i18n::apply_configured_locale();
+    st.note_appearance_change();
+    Ok(())
 }
 
 /// One action row. `id` is the palette command id (`overview.toggle`,
@@ -1462,6 +1497,10 @@ struct Action {
     label: &'static str,
     /// Catalogue key of the row's subtitle.
     subtitle: &'static str,
+    /// Catalogue key of the other words people use for the action ("dark
+    /// mode", "night" for Dark appearance), a comma-separated list in every
+    /// language: search finds the row by them as by its label.
+    keywords: &'static str,
     /// Empty for everything that only needs to be told to happen.
     params: &'static [ActionParam],
     apply: fn(&mut ChromeState, &ActionArgs) -> Result<(), ActionError>,
@@ -1472,12 +1511,14 @@ const fn chrome(
     id: &'static str,
     label: &'static str,
     subtitle: &'static str,
+    keywords: &'static str,
     apply: fn(&mut ChromeState, &ActionArgs) -> Result<(), ActionError>,
 ) -> Action {
     Action {
         id,
         label,
         subtitle,
+        keywords,
         params: &[],
         apply,
     }
@@ -1489,18 +1530,21 @@ impl Action {
             "dictation.toggle",
             "shortcut-name-dictation-toggle",
             "dictation-action-start-detail",
+            "search-kw-dictation-toggle",
             |st, _| request_window_shortcut(st, ShortcutAction::DictationToggle),
         ),
         chrome(
             "dictation.finish",
             "shortcut-name-dictation-finish",
             "dictation-action-finish-detail",
+            "search-kw-dictation-finish",
             |st, _| request_window_shortcut(st, ShortcutAction::DictationFinish),
         ),
         chrome(
             "dictation.cancel",
             "shortcut-name-dictation-cancel",
             "dictation-action-cancel-detail",
+            "search-kw-dictation-cancel",
             |st, _| request_window_shortcut(st, ShortcutAction::DictationCancel),
         ),
         // "emoji" or a lone ":" in search: the same picker Super+. opens.
@@ -1508,12 +1552,49 @@ impl Action {
             "emoji.picker",
             "search-action-emoji-picker",
             "search-action-emoji-picker-subtitle",
+            "search-kw-emoji-picker",
             |st, _| request_window_shortcut(st, ShortcutAction::EmojiPicker),
+        ),
+        // The same switch Super+Alt+Space makes, on the keyboard last typed on.
+        chrome(
+            "input.source.next",
+            "shortcut-name-next-input-source",
+            "search-action-next-input-source-subtitle",
+            "search-kw-input-source-next",
+            |st, _| {
+                st.switch_to_next_input_source()
+                    .map(drop)
+                    .ok_or_else(|| ActionError::Explained(t("input-source-next-none")))
+            },
+        ),
+        // The steps Super+Alt+8, = and - take, so the magnifier is reachable
+        // from the palette, an agent and a screen reader, not only by chord.
+        chrome(
+            "magnifier.toggle",
+            "search-action-magnifier-toggle",
+            "search-action-magnifier-toggle-subtitle",
+            "search-kw-magnifier-toggle",
+            |st, _| request_window_shortcut(st, ShortcutAction::ToggleMagnifier),
+        ),
+        chrome(
+            "magnifier.zoom-in",
+            "search-action-magnifier-zoom-in",
+            "search-action-magnifier-zoom-in-subtitle",
+            "search-kw-magnifier-zoom-in",
+            |st, _| request_window_shortcut(st, ShortcutAction::MagnifierZoomIn),
+        ),
+        chrome(
+            "magnifier.zoom-out",
+            "search-action-magnifier-zoom-out",
+            "search-action-magnifier-zoom-out-subtitle",
+            "search-kw-magnifier-zoom-out",
+            |st, _| request_window_shortcut(st, ShortcutAction::MagnifierZoomOut),
         ),
         chrome(
             "navigation.axis.enable",
             "search-action-axis-enable",
             "search-action-axis-enable-subtitle",
+            "search-kw-navigation-axis-enable",
             |st, _| {
                 st.set_axis_navigation_enabled(true);
                 Ok(())
@@ -1523,6 +1604,7 @@ impl Action {
             "navigation.axis.disable",
             "search-action-axis-disable",
             "search-action-axis-disable-subtitle",
+            "search-kw-navigation-axis-disable",
             |st, _| {
                 st.set_axis_navigation_enabled(false);
                 Ok(())
@@ -1532,6 +1614,7 @@ impl Action {
             "navigation.axis.gather",
             "search-action-axis-gather",
             "search-action-axis-gather-subtitle",
+            "search-kw-navigation-axis-gather",
             |st, _| {
                 if !st.axis_navigation_enabled() {
                     return Err(ActionError::Explained(t("axis-navigation-disabled")));
@@ -1545,12 +1628,21 @@ impl Action {
             "feedback.open",
             "search-action-feedback-open",
             "search-action-feedback-open-subtitle",
+            "search-kw-feedback-open",
             |st, _| crate::shell::feedback_entry::open(st),
+        ),
+        chrome(
+            "feedback.point",
+            "search-action-feedback-point",
+            "search-action-feedback-point-subtitle",
+            "search-kw-feedback-point",
+            |st, _| crate::shell::feedback_entry::point(st),
         ),
         chrome(
             "overview.toggle",
             "search-action-overview-toggle",
             "search-action-overview-toggle-subtitle",
+            "search-kw-overview-toggle",
             |st, _| {
                 st.overlays.overview = !st.overlays.overview;
                 Ok(())
@@ -1560,6 +1652,7 @@ impl Action {
             "settings.open",
             "search-action-settings-open",
             "search-action-settings-open-subtitle",
+            "search-kw-settings-open",
             |st, _| {
                 st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::General);
                 Ok(())
@@ -1569,6 +1662,7 @@ impl Action {
             "settings.members.open",
             "search-action-settings-members-open",
             "search-action-settings-members-open-subtitle",
+            "search-kw-settings-members-open",
             |st, _| {
                 st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::Members);
                 Ok(())
@@ -1578,6 +1672,7 @@ impl Action {
             "settings.privacy.open",
             "search-action-settings-privacy-open",
             "search-action-settings-privacy-open-subtitle",
+            "search-kw-settings-privacy-open",
             |st, _| {
                 st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::Permissions);
                 Ok(())
@@ -1587,6 +1682,7 @@ impl Action {
             "settings.apps.open",
             "search-action-settings-apps-open",
             "search-action-settings-apps-open-subtitle",
+            "search-kw-settings-apps-open",
             |st, _| {
                 st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::Apps);
                 Ok(())
@@ -1596,6 +1692,7 @@ impl Action {
             id: "identity.connect",
             label: "search-action-identity-connect",
             subtitle: "search-action-identity-connect-subtitle",
+            keywords: "search-kw-identity-connect",
             params: IDENTITY_CONNECT_PARAMS,
             apply: |st, args| {
                 require_explicit_confirmation(args, "connect this identity")?;
@@ -1649,10 +1746,14 @@ impl Action {
             id: "identity.select",
             label: "search-action-identity-select",
             subtitle: "search-action-identity-select-subtitle",
+            keywords: "search-kw-identity-select",
             params: IDENTITY_SELECT_PARAMS,
             apply: |st, args| {
-                require_explicit_confirmation(args, "select this identity")?;
                 let identity_id = args.text("id").unwrap_or_default().trim();
+                if identity_id == IDENTITY_SETUP_CHOICE {
+                    return request_identity_setup(st);
+                }
+                require_explicit_confirmation(args, "select this identity")?;
                 let (workspace_id, room, actor) = active_admin_workspace(st)?;
                 let store = crate::identity_registry::IdentityRegistryStore::from_env()
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
@@ -1690,6 +1791,7 @@ impl Action {
             "identity.devices.copy",
             "search-action-identity-devices-copy",
             "search-action-identity-devices-copy-subtitle",
+            "search-kw-identity-devices-copy",
             |st, _| {
                 let (_, profile) = active_identity(st)?;
                 let fleet = crate::device_fleet::DeviceFleetStore::from_env()
@@ -1724,6 +1826,7 @@ impl Action {
             id: enrollment_tokens::DEVICE_ENROLL_ID,
             label: "search-action-identity-device-enroll",
             subtitle: "search-action-identity-device-enroll-subtitle",
+            keywords: "search-kw-identity-device-enroll",
             params: enrollment_tokens::ENROLL_PARAMS,
             apply: |st, args| {
                 enrollment_tokens::mint_for_person(
@@ -1737,6 +1840,7 @@ impl Action {
             id: enrollment_tokens::HOME_PEER_ENROLL_ID,
             label: "search-action-identity-home-peer-enroll",
             subtitle: "search-action-identity-home-peer-enroll-subtitle",
+            keywords: "search-kw-identity-home-peer-enroll",
             params: enrollment_tokens::ENROLL_PARAMS,
             apply: |st, args| {
                 enrollment_tokens::mint_for_person(
@@ -1750,6 +1854,7 @@ impl Action {
             id: device_pairing::DISCOVER_ID,
             label: "search-action-identity-device-pair-discover",
             subtitle: "search-action-identity-device-pair-discover-subtitle",
+            keywords: "search-kw-identity-device-pair-discover",
             params: device_pairing::DISCOVER_PARAMS,
             apply: |_, _| Err(pairing_needs_lifecycle()),
         },
@@ -1757,6 +1862,7 @@ impl Action {
             id: device_pairing::APPROVE_ID,
             label: "search-action-identity-device-pair-approve",
             subtitle: "search-action-identity-device-pair-approve-subtitle",
+            keywords: "search-kw-identity-device-pair-approve",
             params: device_pairing::APPROVE_PARAMS,
             apply: |_, _| Err(pairing_needs_lifecycle()),
         },
@@ -1764,13 +1870,31 @@ impl Action {
             id: device_pairing::REJECT_ID,
             label: "search-action-identity-device-pair-reject",
             subtitle: "search-action-identity-device-pair-reject-subtitle",
+            keywords: "search-kw-identity-device-pair-reject",
             params: device_pairing::REJECT_PARAMS,
+            apply: |_, _| Err(pairing_needs_lifecycle()),
+        },
+        Action {
+            id: device_pairing::ASKING_ID,
+            label: "search-action-identity-device-pair-asking",
+            subtitle: "search-action-identity-device-pair-asking-subtitle",
+            keywords: "search-kw-identity-device-pair-asking",
+            params: device_pairing::ASKING_PARAMS,
+            apply: |_, _| Err(pairing_needs_lifecycle()),
+        },
+        Action {
+            id: device_pairing::ANSWER_ID,
+            label: "search-action-identity-device-pair-answer",
+            subtitle: "search-action-identity-device-pair-answer-subtitle",
+            keywords: "search-kw-identity-device-pair-answer",
+            params: device_pairing::ANSWER_PARAMS,
             apply: |_, _| Err(pairing_needs_lifecycle()),
         },
         Action {
             id: identity_admin::LIST_ID,
             label: "search-action-identity-list",
             subtitle: "search-action-identity-list-subtitle",
+            keywords: "search-kw-identity-list",
             params: crate::shell::identity_admin::LIST_PARAMS,
             apply: |_, _| Err(identity_needs_lifecycle()),
         },
@@ -1778,6 +1902,7 @@ impl Action {
             id: identity_admin::ACTIVATE_ID,
             label: "search-action-identity-activate",
             subtitle: "search-action-identity-activate-subtitle",
+            keywords: "search-kw-identity-activate",
             params: crate::shell::identity_admin::ACTIVATE_PARAMS,
             apply: |_, _| Err(identity_needs_lifecycle()),
         },
@@ -1785,6 +1910,7 @@ impl Action {
             id: identity_admin::REMOVE_ID,
             label: "search-action-identity-remove",
             subtitle: "search-action-identity-remove-subtitle",
+            keywords: "search-kw-identity-remove",
             params: crate::shell::identity_admin::REMOVE_PARAMS,
             apply: |_, _| Err(identity_needs_lifecycle()),
         },
@@ -1792,6 +1918,7 @@ impl Action {
             id: identity_admin::PROTECT_ID,
             label: "search-action-identity-protect",
             subtitle: "search-action-identity-protect-subtitle",
+            keywords: "search-kw-identity-protect",
             params: crate::shell::identity_admin::PROTECT_PARAMS,
             apply: |_, _| Err(identity_needs_lifecycle()),
         },
@@ -1799,6 +1926,7 @@ impl Action {
             id: identity_admin::DEVICES_ID,
             label: "search-action-identity-devices-list",
             subtitle: "search-action-identity-devices-list-subtitle",
+            keywords: "search-kw-identity-devices-list",
             params: crate::shell::identity_admin::DEVICES_PARAMS,
             apply: |_, _| Err(identity_needs_lifecycle()),
         },
@@ -1806,6 +1934,7 @@ impl Action {
             id: identity_admin::HOME_PEER_REMOVE_ID,
             label: "search-action-identity-home-peer-remove",
             subtitle: "search-action-identity-home-peer-remove-subtitle",
+            keywords: "search-kw-identity-home-peer-remove",
             params: crate::shell::identity_admin::HOME_PEER_REMOVE_PARAMS,
             apply: |_, _| Err(identity_needs_lifecycle()),
         },
@@ -1813,6 +1942,7 @@ impl Action {
             id: identity_admin::HOME_PEER_RETRY_ID,
             label: "search-action-identity-home-peer-retry",
             subtitle: "search-action-identity-home-peer-retry-subtitle",
+            keywords: "search-kw-identity-home-peer-retry-removals",
             params: crate::shell::identity_admin::HOME_PEER_RETRY_PARAMS,
             apply: |_, _| Err(identity_needs_lifecycle()),
         },
@@ -1820,6 +1950,7 @@ impl Action {
             id: "identity.device.revoke",
             label: "search-action-identity-device-revoke",
             subtitle: "search-action-identity-device-revoke-subtitle",
+            keywords: "search-kw-identity-device-revoke",
             params: DEVICE_REVOKE_PARAMS,
             apply: |st, args| {
                 if args.boolean("confirm") != Some(true) {
@@ -1846,6 +1977,7 @@ impl Action {
             "quick-settings.open",
             "search-action-quick-settings-open",
             "search-action-quick-settings-open-subtitle",
+            "search-kw-quick-settings-open",
             |st, _| {
                 st.open_quick_settings();
                 Ok(())
@@ -1855,8 +1987,9 @@ impl Action {
             "quick-settings.clipboard",
             "search-action-quick-settings-clipboard",
             "search-action-quick-settings-clipboard-subtitle",
+            "search-kw-quick-settings-clipboard",
             |st, _| {
-                st.open_quick_settings_section(crate::shell::quick_settings::QsSection::Clipboard);
+                st.open_quick_settings_section(tilo_quick_settings::QsSection::Clipboard);
                 Ok(())
             },
         ),
@@ -1864,8 +1997,9 @@ impl Action {
             "quick-settings.network",
             "qs-network-details",
             "search-action-quick-settings-network-subtitle",
+            "search-kw-quick-settings-network",
             |st, _| {
-                st.open_quick_settings_section(crate::shell::quick_settings::QsSection::Wifi);
+                st.open_quick_settings_section(tilo_quick_settings::QsSection::Wifi);
                 Ok(())
             },
         ),
@@ -1873,8 +2007,9 @@ impl Action {
             "quick-settings.bluetooth",
             "qs-bluetooth-details",
             "search-action-quick-settings-bluetooth-subtitle",
+            "search-kw-quick-settings-bluetooth",
             |st, _| {
-                st.open_quick_settings_section(crate::shell::quick_settings::QsSection::Bluetooth);
+                st.open_quick_settings_section(tilo_quick_settings::QsSection::Bluetooth);
                 Ok(())
             },
         ),
@@ -1882,8 +2017,9 @@ impl Action {
             "quick-settings.devices",
             "search-action-quick-settings-devices",
             "search-action-quick-settings-devices-subtitle",
+            "search-kw-quick-settings-devices",
             |st, _| {
-                st.open_quick_settings_section(crate::shell::quick_settings::QsSection::Devices);
+                st.open_quick_settings_section(tilo_quick_settings::QsSection::Devices);
                 Ok(())
             },
         ),
@@ -1891,6 +2027,7 @@ impl Action {
             "projection.open",
             "search-action-projection-open",
             "search-action-projection-open-subtitle",
+            "search-kw-projection-open",
             |st, _| {
                 st.open_projection();
                 Ok(())
@@ -1900,6 +2037,7 @@ impl Action {
             "projection.close",
             "search-action-projection-close",
             "search-action-projection-close-subtitle",
+            "search-kw-projection-close",
             |st, _| {
                 st.close_projection();
                 Ok(())
@@ -1909,12 +2047,14 @@ impl Action {
             shared_display_actions::INSPECT_ID,
             "search-action-shared-display-inspect",
             "search-action-shared-display-inspect-subtitle",
+            "search-kw-display-shared-inspect",
             |_, _| Ok(()),
         ),
         Action {
             id: shared_display_actions::INCLUDE_ID,
             label: "search-action-shared-display-include",
             subtitle: "search-action-shared-display-include-subtitle",
+            keywords: "search-kw-display-shared-include",
             params: shared_display_actions::INCLUDE_PARAMS,
             apply: |state, args| {
                 let revision = args
@@ -1934,54 +2074,63 @@ impl Action {
             DISPLAY_EXTEND_ID,
             "search-action-display-layout-extend",
             "search-action-display-layout-extend-subtitle",
+            "search-kw-display-layout-extend",
             |st, _| stage_display_layout(st, DisplayLayoutMode::Extend),
         ),
         chrome(
             DISPLAY_MIRROR_ID,
             "search-action-display-layout-mirror",
             "search-action-display-layout-mirror-subtitle",
+            "search-kw-display-layout-mirror",
             |st, _| stage_display_layout(st, DisplayLayoutMode::Mirror),
         ),
         chrome(
             DISPLAY_BUILTIN_ONLY_ID,
             "search-action-display-layout-builtin-only",
             "search-action-display-layout-builtin-only-subtitle",
+            "search-kw-display-layout-builtin-only",
             |st, _| stage_display_layout(st, DisplayLayoutMode::BuiltinOnly),
         ),
         chrome(
             DISPLAY_EXTERNAL_ONLY_ID,
             "search-action-display-layout-external-only",
             "search-action-display-layout-external-only-subtitle",
+            "search-kw-display-layout-external-only",
             |st, _| stage_display_layout(st, DisplayLayoutMode::ExternalOnly),
         ),
         chrome(
             DISPLAY_OUTPUTS_INSPECT_ID,
             "search-action-display-outputs-inspect",
             "search-action-display-outputs-inspect-subtitle",
+            "search-kw-display-outputs-inspect",
             |_, _| Ok(()),
         ),
         chrome(
             DISPLAY_KEEP_ID,
             "search-action-display-change-keep",
             "search-action-display-change-keep-subtitle",
+            "search-kw-display-change-keep",
             |_, _| settle_display_change(true),
         ),
         chrome(
             DISPLAY_REVERT_ID,
             "search-action-display-change-revert",
             "search-action-display-change-revert-subtitle",
+            "search-kw-display-change-revert",
             |_, _| settle_display_change(false),
         ),
         chrome(
             BLUETOOTH_PAIRING_DECLINE_ID,
             "search-action-bluetooth-pairing-decline",
             "search-action-bluetooth-pairing-decline-subtitle",
+            "search-kw-bluetooth-pairing-decline",
             |_, _| decline_bluetooth_pairing(),
         ),
         chrome(
             "capture.open",
             "search-action-capture-open",
             "search-action-capture-open-subtitle",
+            "search-kw-capture-open",
             |st, _| {
                 st.overlays.capture = true;
                 Ok(())
@@ -1991,6 +2140,7 @@ impl Action {
             id: "capture.screenshot.send",
             label: "search-action-capture-screenshot-send",
             subtitle: "search-action-capture-screenshot-send-subtitle",
+            keywords: "search-kw-capture-screenshot-send",
             params: SCREENSHOT_SEND_PARAMS,
             apply: |st, args| {
                 let target = args.text("target").unwrap_or_default().trim();
@@ -2011,6 +2161,7 @@ impl Action {
             "collaborators.open",
             "search-action-collaborators-open",
             "search-action-collaborators-open-subtitle",
+            "search-kw-collaborators-open",
             |st, _| {
                 st.overlays.collaborators = true;
                 Ok(())
@@ -2020,6 +2171,7 @@ impl Action {
             id: "presence.follow",
             label: "search-action-presence-follow",
             subtitle: "search-action-presence-follow-subtitle",
+            keywords: "search-kw-presence-follow",
             params: PRESENCE_FOLLOW_PARAMS,
             apply: |st, args| {
                 let id = args.text("collaborator").unwrap_or_default().trim();
@@ -2044,6 +2196,7 @@ impl Action {
             "presence.follow.stop",
             "search-action-presence-follow-stop",
             "search-action-presence-follow-stop-subtitle",
+            "search-kw-presence-follow-stop",
             |st, _| {
                 st.push_presence_request(
                     crate::shell::chrome_state::PresenceRequest::StopFollowing,
@@ -2055,6 +2208,7 @@ impl Action {
             id: "presence.status.set",
             label: "search-action-presence-status-set",
             subtitle: "search-action-presence-status-set-subtitle",
+            keywords: "search-kw-presence-status-set",
             params: PRESENCE_STATUS_PARAMS,
             apply: |st, args| {
                 let text = args.text("text").unwrap_or_default().trim();
@@ -2076,6 +2230,7 @@ impl Action {
             id: "presence.status-sharing.set",
             label: "search-action-presence-status-sharing-set",
             subtitle: "search-action-presence-status-sharing-set-subtitle",
+            keywords: "search-kw-presence-status-sharing-set",
             params: PRESENCE_SHARING_PARAMS,
             apply: |st, args| {
                 let mode = match args
@@ -2104,6 +2259,7 @@ impl Action {
             id: "presence.wave",
             label: "search-action-presence-wave",
             subtitle: "search-action-presence-wave-subtitle",
+            keywords: "search-kw-presence-wave",
             params: PRESENCE_FOLLOW_PARAMS,
             apply: |st, args| {
                 let id = args.text("collaborator").unwrap_or_default().trim();
@@ -2128,6 +2284,7 @@ impl Action {
             id: "presence.availability.set",
             label: "search-action-presence-availability-set",
             subtitle: "search-action-presence-availability-set-subtitle",
+            keywords: "search-kw-presence-availability-set",
             params: PRESENCE_AVAILABILITY_PARAMS,
             apply: |st, args| {
                 let chosen = match args
@@ -2156,6 +2313,7 @@ impl Action {
             id: "presence.visibility.set",
             label: "search-action-presence-visibility-set",
             subtitle: "search-action-presence-visibility-set-subtitle",
+            keywords: "search-kw-presence-visibility-set",
             params: PRESENCE_VISIBILITY_PARAMS,
             apply: |st, args| {
                 let choice = match args
@@ -2174,7 +2332,12 @@ impl Action {
                         ));
                     }
                 };
-                let Some(room) = st.tree().desktop.active_workspace().map(|w| w.room) else {
+                let Some(room) = st
+                    .tree()
+                    .desktop
+                    .active_workspace()
+                    .map(crate::shell::state::Workspace::room)
+                else {
                     return Err(ActionError::Refused("no workspace is open".into()));
                 };
                 st.push_presence_request(
@@ -2187,6 +2350,7 @@ impl Action {
             "room.activity.open",
             "search-action-room-activity-open",
             "search-action-room-activity-open-subtitle",
+            "search-kw-room-activity-open",
             |st, _| {
                 st.open_room_activity(None);
                 Ok(())
@@ -2198,6 +2362,7 @@ impl Action {
             "peer.invite",
             "search-action-peer-invite",
             "search-action-peer-invite-subtitle",
+            "search-kw-peer-invite",
             |st, _| {
                 st.push_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::PromptInvite);
                 Ok(())
@@ -2209,6 +2374,7 @@ impl Action {
             "peer.connect",
             "search-action-peer-connect",
             "search-action-peer-connect-subtitle",
+            "search-kw-peer-connect",
             |st, _| {
                 st.push_peer_sync_request(
                     crate::shell::overlay_host::PeerSyncAction::BrowseDirectory,
@@ -2220,6 +2386,7 @@ impl Action {
             "peer.pair-device",
             "search-action-pair-device",
             "search-action-pair-device-subtitle",
+            "search-kw-peer-pair-device",
             |st, _| {
                 st.push_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::PairDevice);
                 Ok(())
@@ -2234,6 +2401,7 @@ impl Action {
             id: "peer.invite.named",
             label: "search-action-peer-invite-named",
             subtitle: "search-action-peer-invite-named-subtitle",
+            keywords: "search-kw-peer-invite-named",
             params: PEER_INVITE_NAMED_PARAMS,
             apply: |st, args| {
                 let name = name_invited_peer(st, args)?;
@@ -2256,6 +2424,7 @@ impl Action {
             id: WORKSPACE_PUBLISH_ID,
             label: "search-action-workspace-publish",
             subtitle: "search-action-workspace-publish-subtitle",
+            keywords: "search-kw-workspace-publish",
             params: WORKSPACE_PUBLISH_PARAMS,
             apply: |st, args| {
                 let listing = publish_listing(st, args)?;
@@ -2268,6 +2437,7 @@ impl Action {
             id: WORKSPACE_UNPUBLISH_ID,
             label: "search-action-workspace-unpublish",
             subtitle: "search-action-workspace-unpublish-subtitle",
+            keywords: "search-kw-workspace-unpublish",
             params: &[],
             apply: |st, _| {
                 st.publish_active_workspace(None);
@@ -2281,6 +2451,7 @@ impl Action {
             id: BOT_ADD_ID,
             label: "search-action-bot-add",
             subtitle: "search-action-bot-add-subtitle",
+            keywords: "search-kw-bot-add",
             params: BOT_ADD_PARAMS,
             apply: |st, args| {
                 require_explicit_confirmation(args, "add this bot")?;
@@ -2296,9 +2467,26 @@ impl Action {
             },
         },
         Action {
+            id: APP_UNINSTALL_ID,
+            label: "search-action-app-uninstall",
+            subtitle: "search-action-app-uninstall-subtitle",
+            keywords: "search-kw-app-uninstall",
+            params: APP_UNINSTALL_PARAMS,
+            apply: |_, args| uninstall_app(args, false),
+        },
+        Action {
+            id: APP_REMOVE_FROM_APPS_ID,
+            label: "search-action-app-remove-from-apps",
+            subtitle: "search-action-app-remove-from-apps-subtitle",
+            keywords: "search-kw-app-remove-from-apps",
+            params: APP_REMOVE_FROM_APPS_PARAMS,
+            apply: |_, args| uninstall_app(args, true),
+        },
+        Action {
             id: BOT_REMOVE_ID,
             label: "search-action-bot-remove",
             subtitle: "search-action-bot-remove-subtitle",
+            keywords: "search-kw-bot-remove",
             params: BOT_REMOVE_PARAMS,
             apply: |st, args| {
                 require_explicit_confirmation(args, "remove this bot")?;
@@ -2316,6 +2504,7 @@ impl Action {
             id: WORKSPACE_REPORT_ID,
             label: "search-action-workspace-report",
             subtitle: "search-action-workspace-report-subtitle",
+            keywords: "search-kw-workspace-report",
             params: WORKSPACE_REPORT_PARAMS,
             apply: |st, args| {
                 let reason = args.text("reason").unwrap_or_default().trim().to_owned();
@@ -2326,7 +2515,7 @@ impl Action {
                     .tree()
                     .desktop
                     .active_workspace()
-                    .map(|workspace| workspace.room)
+                    .map(crate::shell::state::Workspace::room)
                     .ok_or_else(|| ActionError::Refused("no active workspace".into()))?;
                 st.push_peer_sync_request(
                     crate::shell::overlay_host::PeerSyncAction::ReportWorkspace { room, reason },
@@ -2340,6 +2529,7 @@ impl Action {
             id: MEMBER_ROLE_SET_ID,
             label: "search-action-member-role-set",
             subtitle: "search-action-member-role-set-subtitle",
+            keywords: "search-kw-member-role-set",
             params: membership_actions::MEMBER_ROLE_SET_PARAMS,
             apply: apply_member_role_set,
         },
@@ -2347,6 +2537,7 @@ impl Action {
             id: MEMBER_REMOVE_ID,
             label: "search-action-member-remove",
             subtitle: "search-action-member-remove-subtitle",
+            keywords: "search-kw-member-remove",
             params: membership_actions::MEMBER_REMOVE_PARAMS,
             apply: apply_member_remove,
         },
@@ -2357,6 +2548,7 @@ impl Action {
             id: INVITATION_ISSUE_ID,
             label: "search-action-invitation-issue",
             subtitle: "search-action-invitation-issue-subtitle",
+            keywords: "search-kw-invitation-issue",
             params: membership_actions::INVITATION_ISSUE_PARAMS,
             apply: invitation_requires_lifecycle_dispatch,
         },
@@ -2364,6 +2556,7 @@ impl Action {
             id: INVITATION_LIST_ID,
             label: "search-action-invitation-list",
             subtitle: "search-action-invitation-list-subtitle",
+            keywords: "search-kw-invitation-list",
             params: membership_actions::INVITATION_LIST_PARAMS,
             apply: invitation_requires_lifecycle_dispatch,
         },
@@ -2371,6 +2564,7 @@ impl Action {
             id: INVITATION_RESEND_ID,
             label: "search-action-invitation-resend",
             subtitle: "search-action-invitation-resend-subtitle",
+            keywords: "search-kw-invitation-resend",
             params: membership_actions::INVITATION_ID_PARAMS,
             apply: invitation_requires_lifecycle_dispatch,
         },
@@ -2378,6 +2572,7 @@ impl Action {
             id: INVITATION_CANCEL_ID,
             label: "search-action-invitation-cancel",
             subtitle: "search-action-invitation-cancel-subtitle",
+            keywords: "search-kw-invitation-cancel",
             params: membership_actions::INVITATION_ID_PARAMS,
             apply: invitation_requires_lifecycle_dispatch,
         },
@@ -2389,6 +2584,7 @@ impl Action {
             id: "agent.invite",
             label: "search-action-agent-invite",
             subtitle: "search-action-agent-invite-subtitle",
+            keywords: "search-kw-agent-invite",
             params: AGENT_INVITE_PARAMS,
             apply: |st, args| {
                 use tilo_action_policy::roles::AgentPreset;
@@ -2415,7 +2611,7 @@ impl Action {
                     let Some((ws_id, room, held)) = tree
                         .desktop
                         .active_workspace()
-                        .map(|w| (w.id, w.room.to_string(), w.policy.grants.clone()))
+                        .map(|w| (w.id, w.room().to_string(), w.policy.grants.clone()))
                     else {
                         return Err(ActionError::Refused(
                             "there is no workspace here to add an agent to".into(),
@@ -2449,6 +2645,7 @@ impl Action {
             id: crate::shell::membership::AGENT_REMOVE_ACTION,
             label: "search-action-agent-remove",
             subtitle: "search-action-agent-remove-subtitle",
+            keywords: "search-kw-agent-remove",
             params: AGENT_REMOVE_PARAMS,
             apply: |st, args| {
                 // Case-folded like `agent.invite`, which admitted it.
@@ -2465,6 +2662,7 @@ impl Action {
             "tab.new.terminal.here",
             "search-action-tab-new-terminal-here",
             "search-action-tab-new-terminal-here-subtitle",
+            "search-kw-tab-new-terminal-here",
             |st, _| {
                 crate::shell::window_actions::new_terminal(
                     st,
@@ -2477,6 +2675,7 @@ impl Action {
             "window.new.terminal",
             "search-action-window-new-terminal",
             "search-action-window-new-terminal-subtitle",
+            "search-kw-window-new-terminal",
             |st, _| {
                 crate::shell::window_actions::new_terminal(
                     st,
@@ -2489,6 +2688,7 @@ impl Action {
             "tab.duplicate",
             "search-action-tab-duplicate",
             "search-action-tab-duplicate-subtitle",
+            "search-kw-tab-duplicate",
             |st, _| {
                 crate::shell::window_actions::duplicate_active_tab(st).map_or_else(
                     |err| {
@@ -2506,6 +2706,7 @@ impl Action {
             id: "tab.open-beside",
             label: "search-action-tab-open-beside",
             subtitle: "search-action-tab-open-beside-subtitle",
+            keywords: "search-kw-tab-open-beside",
             params: TAB_OPEN_BESIDE_PARAMS,
             apply: |st, args| {
                 let app = args.text("app").unwrap_or_default().trim().to_owned();
@@ -2533,6 +2734,7 @@ impl Action {
             "tab.menu",
             "search-action-tab-menu",
             "search-action-tab-menu-subtitle",
+            "search-kw-tab-menu",
             |st, _| {
                 if st.session_locked() || crate::shell::window_actions::active_tab_id(st).is_none()
                 {
@@ -2547,6 +2749,7 @@ impl Action {
             "tab.drag.cancel",
             "search-action-tab-drag-cancel",
             "search-action-tab-drag-cancel-subtitle",
+            "search-kw-tab-drag-cancel",
             |st, _| {
                 if st.session_locked() {
                     return Err(ActionError::Explained(t(
@@ -2561,6 +2764,7 @@ impl Action {
             "tab.close",
             "search-action-tab-close",
             "search-action-tab-close-subtitle",
+            "search-kw-tab-close",
             |st, _| {
                 crate::shell::window_actions::close_active_tab(st).map_err(|err| {
                     let message = err.user_message();
@@ -2569,10 +2773,19 @@ impl Action {
                 })
             },
         ),
+        Action {
+            id: "tab.rename",
+            label: "search-action-tab-rename",
+            subtitle: "search-action-tab-rename-subtitle",
+            keywords: "search-kw-tab-rename",
+            params: TAB_RENAME_PARAMS,
+            apply: rename_focused_tab,
+        },
         chrome(
             "tab.reopen",
             "search-action-tab-reopen",
             "search-action-tab-reopen-subtitle",
+            "search-kw-tab-reopen",
             |st, _| {
                 st.reopen_closed_tab().map(|_| ()).ok_or_else(|| {
                     ActionError::Refused("no closed tab to reopen in this workspace".into())
@@ -2583,6 +2796,7 @@ impl Action {
             "tab.split-right",
             "search-action-tab-split-right",
             "search-action-tab-split-right-subtitle",
+            "search-kw-tab-split-right",
             |st, _| {
                 crate::shell::window_actions::split_active_tab(
                     st,
@@ -2600,30 +2814,35 @@ impl Action {
             "window.focus-previous",
             "search-action-window-focus-previous",
             "search-action-window-focus-previous-subtitle",
+            "search-kw-window-focus-previous",
             |st, _| request_window_shortcut(st, ShortcutAction::FocusPreviousWindow),
         ),
         chrome(
             "window.focus-next",
             "search-action-window-focus-next",
             "search-action-window-focus-next-subtitle",
+            "search-kw-window-focus-next",
             |st, _| request_window_shortcut(st, ShortcutAction::FocusNextWindow),
         ),
         chrome(
             "strip.focus-previous",
             "search-action-strip-focus-previous",
             "search-action-strip-focus-previous-subtitle",
+            "search-kw-strip-focus-previous",
             |st, _| request_window_shortcut(st, ShortcutAction::PreviousStrip),
         ),
         chrome(
             "strip.focus-next",
             "search-action-strip-focus-next",
             "search-action-strip-focus-next-subtitle",
+            "search-kw-strip-focus-next",
             |st, _| request_window_shortcut(st, ShortcutAction::NextStrip),
         ),
         Action {
             id: "strip.create",
             label: "search-action-strip-create",
             subtitle: "search-action-strip-create-subtitle",
+            keywords: "search-kw-strip-create",
             params: STRIP_CREATE_PARAMS,
             apply: create_strip,
         },
@@ -2631,6 +2850,7 @@ impl Action {
             id: "strip.rename",
             label: "search-action-strip-rename",
             subtitle: "search-action-strip-rename-subtitle",
+            keywords: "search-kw-strip-rename",
             params: STRIP_RENAME_PARAMS,
             apply: rename_strip,
         },
@@ -2638,122 +2858,214 @@ impl Action {
             id: "strip.move",
             label: "search-action-strip-move",
             subtitle: "search-action-strip-move-subtitle",
+            keywords: "search-kw-strip-move",
             params: STRIP_MOVE_PARAMS,
             apply: move_strip,
+        },
+        Action {
+            id: "strip.remove",
+            label: "search-action-strip-remove",
+            subtitle: "search-action-strip-remove-subtitle",
+            keywords: "search-kw-strip-remove",
+            params: STRIP_REMOVE_PARAMS,
+            apply: remove_strip,
         },
         Action {
             id: "workspace.create",
             label: "search-action-workspace-create",
             subtitle: "search-action-workspace-create-subtitle",
+            keywords: "search-kw-workspace-create",
             params: WORKSPACE_CREATE_PARAMS,
             apply: create_workspace,
         },
+        Action {
+            id: "workspace.rename",
+            label: "search-action-workspace-rename",
+            subtitle: "search-action-workspace-rename-subtitle",
+            keywords: "search-kw-workspace-rename",
+            params: WORKSPACE_RENAME_PARAMS,
+            apply: rename_workspace,
+        },
+        Action {
+            id: "workspace.delete",
+            label: "search-action-workspace-delete",
+            subtitle: "search-action-workspace-delete-subtitle",
+            keywords: "search-kw-workspace-delete",
+            params: WORKSPACE_DELETE_PARAMS,
+            apply: delete_workspace,
+        },
+        chrome(
+            "workspace.move-earlier",
+            "search-action-workspace-move-earlier",
+            "search-action-workspace-move-earlier-subtitle",
+            "search-kw-workspace-move-earlier",
+            |st, _| move_workspace(st, -1),
+        ),
+        chrome(
+            "workspace.move-later",
+            "search-action-workspace-move-later",
+            "search-action-workspace-move-later-subtitle",
+            "search-kw-workspace-move-later",
+            |st, _| move_workspace(st, 1),
+        ),
         chrome(
             "workspace.previous",
             "search-action-workspace-previous",
             "search-action-workspace-previous-subtitle",
+            "search-kw-workspace-previous",
             |st, _| request_window_shortcut(st, ShortcutAction::PreviousWorkspace),
         ),
         chrome(
             "workspace.next",
             "search-action-workspace-next",
             "search-action-workspace-next-subtitle",
+            "search-kw-workspace-next",
             |st, _| request_window_shortcut(st, ShortcutAction::NextWorkspace),
         ),
         chrome(
             "tab.previous",
             "search-action-tab-previous",
             "search-action-tab-previous-subtitle",
+            "search-kw-tab-previous",
             |st, _| request_window_shortcut(st, ShortcutAction::PreviousTab),
         ),
         chrome(
             "tab.next",
             "search-action-tab-next",
             "search-action-tab-next-subtitle",
+            "search-kw-tab-next",
             |st, _| request_window_shortcut(st, ShortcutAction::NextTab),
         ),
         chrome(
             "group.move-left",
             "search-action-group-move-left",
             "search-action-group-move-left-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupLeft),
+            "search-kw-group-move-left",
+            |st, _| request_group_shortcut(st, ShortcutAction::MoveGroupLeft),
         ),
         chrome(
             "group.move-right",
             "search-action-group-move-right",
             "search-action-group-move-right-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupRight),
+            "search-kw-group-move-right",
+            |st, _| request_group_shortcut(st, ShortcutAction::MoveGroupRight),
         ),
         chrome(
             "group.move-to-strip-previous",
             "search-action-group-move-to-strip-previous",
             "search-action-group-move-to-strip-previous-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupToPreviousStrip),
+            "search-kw-group-move-to-strip-previous",
+            |st, _| request_group_shortcut(st, ShortcutAction::MoveGroupToPreviousStrip),
         ),
         chrome(
             "group.move-to-strip-next",
             "search-action-group-move-to-strip-next",
             "search-action-group-move-to-strip-next-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupToNextStrip),
+            "search-kw-group-move-to-strip-next",
+            |st, _| request_group_shortcut(st, ShortcutAction::MoveGroupToNextStrip),
+        ),
+        Action {
+            id: GROUP_MOVE_TO_STRIP_ID,
+            label: "search-action-group-move-to-strip",
+            subtitle: "search-action-group-move-to-strip-subtitle",
+            keywords: "search-kw-group-move-to-strip",
+            params: GROUP_MOVE_TO_STRIP_PARAMS,
+            apply: move_group_to_strip,
+        },
+        chrome(
+            "group.close",
+            "search-action-group-close",
+            "search-action-group-close-subtitle",
+            "search-kw-group-close",
+            |st, _| {
+                use crate::shell::window_actions::{TabActionError, close_active_group};
+                close_active_group(st).map_err(|err| match err {
+                    TabActionError::NoActiveTab => no_window(),
+                    other => ActionError::Explained(other.user_message()),
+                })
+            },
         ),
         chrome(
             "group.move-to-display-previous",
             "search-action-group-move-to-display-previous",
             "search-action-group-move-to-display-previous-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupToPreviousDisplay),
+            "search-kw-group-move-to-display-previous",
+            |st, _| {
+                other_display_needed(st)?;
+                request_group_shortcut(st, ShortcutAction::MoveGroupToPreviousDisplay)
+            },
         ),
         chrome(
             "group.move-to-display-next",
             "search-action-group-move-to-display-next",
             "search-action-group-move-to-display-next-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupToNextDisplay),
+            "search-kw-group-move-to-display-next",
+            |st, _| {
+                other_display_needed(st)?;
+                request_group_shortcut(st, ShortcutAction::MoveGroupToNextDisplay)
+            },
+        ),
+        chrome(
+            "group.toggle-maximize",
+            "search-action-group-toggle-maximize",
+            "search-action-group-toggle-maximize-subtitle",
+            "search-kw-group-toggle-maximize",
+            |st, _| request_toggle_maximize(st),
         ),
         chrome(
             "group.maximize",
             "search-action-group-maximize",
             "search-action-group-maximize-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::ToggleMaximize),
+            "search-kw-group-maximize",
+            |st, _| request_group_shortcut(st, ShortcutAction::MaximizeWindow),
         ),
         chrome(
             "group.restore",
             "search-action-group-restore",
             "search-action-group-restore-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::RestoreWindow),
+            "search-kw-group-restore",
+            |st, _| request_group_shortcut(st, ShortcutAction::RestoreWindow),
         ),
         chrome(
             "group.fullscreen",
             "search-action-group-fullscreen",
             "search-action-group-fullscreen-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::ToggleFullscreen),
+            "search-kw-group-fullscreen",
+            |st, _| request_group_shortcut(st, ShortcutAction::ToggleFullscreen),
         ),
         chrome(
             "group.narrower",
             "search-action-group-narrower",
             "search-action-group-narrower-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::ResizeNarrower),
+            "search-kw-group-narrower",
+            |st, _| request_group_shortcut(st, ShortcutAction::ResizeNarrower),
         ),
         chrome(
             "group.wider",
             "search-action-group-wider",
             "search-action-group-wider-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::ResizeWider),
+            "search-kw-group-wider",
+            |st, _| request_group_shortcut(st, ShortcutAction::ResizeWider),
         ),
         chrome(
             "tab.move-to-group-previous",
             "search-action-tab-move-to-group-previous",
             "search-action-tab-move-to-group-previous-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::AttachTabLeft),
+            "search-kw-tab-move-to-group-previous",
+            |st, _| request_group_shortcut(st, ShortcutAction::AttachTabLeft),
         ),
         chrome(
             "tab.move-to-group-next",
             "search-action-tab-move-to-group-next",
             "search-action-tab-move-to-group-next-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::AttachTabRight),
+            "search-kw-tab-move-to-group-next",
+            |st, _| request_group_shortcut(st, ShortcutAction::AttachTabRight),
         ),
         Action {
             id: "window.focus-nth",
             label: "search-action-window-focus-nth",
             subtitle: "search-action-window-focus-nth-subtitle",
+            keywords: "search-kw-window-focus-nth",
             params: WINDOW_FOCUS_NTH_PARAMS,
             apply: |st, args| {
                 let action = args
@@ -2772,6 +3084,7 @@ impl Action {
             id: "strip.focus-nth",
             label: "search-action-strip-focus-nth",
             subtitle: "search-action-strip-focus-nth-subtitle",
+            keywords: "search-kw-strip-focus-nth",
             params: STRIP_FOCUS_NTH_PARAMS,
             apply: |st, args| {
                 let action = args
@@ -2790,6 +3103,7 @@ impl Action {
             "tab.move-to-new-group",
             "search-action-tab-move-to-new-group",
             "search-action-tab-move-to-new-group-subtitle",
+            "search-kw-tab-move-to-new-group",
             |st, _| {
                 crate::shell::window_actions::split_active_tab(
                     st,
@@ -2803,37 +3117,89 @@ impl Action {
                 })
             },
         ),
+        Action {
+            id: "tab.move-to-workspace",
+            label: "search-action-tab-move-to-workspace",
+            subtitle: "search-action-tab-move-to-workspace-subtitle",
+            keywords: "search-kw-tab-move-to-workspace",
+            params: TAB_MOVE_TO_WORKSPACE_PARAMS,
+            apply: move_focused_tab_to_workspace,
+        },
         chrome(
             "notifications.dnd.toggle",
             "search-action-notifications-dnd-toggle",
             "search-action-notifications-dnd-toggle-subtitle",
+            "search-kw-notifications-dnd-toggle",
             |st, _| {
                 st.toggle_dnd();
                 Ok(())
             },
         ),
         chrome(
+            "notifications.open",
+            "search-action-notifications-open",
+            "search-action-notifications-open-subtitle",
+            "search-kw-notifications-open",
+            |st, _| {
+                st.open_quick_settings_level(tilo_quick_settings::QsLevel::Notifications);
+                Ok(())
+            },
+        ),
+        chrome(
+            "notifications.clear",
+            "search-action-notifications-clear",
+            "search-action-notifications-clear-subtitle",
+            "search-kw-notifications-clear",
+            |st, _| {
+                if st.notification_log().history().is_empty() {
+                    return Err(ActionError::Refused(
+                        "there are no notifications to clear".into(),
+                    ));
+                }
+                st.clear_notification_history();
+                Ok(())
+            },
+        ),
+        chrome(
+            "notifications.clear.undo",
+            "search-action-notifications-clear-undo",
+            "search-action-notifications-clear-undo-subtitle",
+            "search-kw-notifications-clear-undo",
+            |st, _| {
+                if st.undo_notification_history_clear() {
+                    Ok(())
+                } else {
+                    Err(ActionError::Refused(
+                        "no cleared notifications can be brought back".into(),
+                    ))
+                }
+            },
+        ),
+        chrome(
             "appearance.theme.dark",
             "search-action-appearance-theme-dark",
             "search-action-appearance-theme-dark-subtitle",
-            |st, _| set_mode(st, "appearance.theme.dark", "dark"),
+            "search-kw-appearance-theme-dark",
+            |st, _| {
+                let invoked_by = settings_store::InvokingAction::action("appearance.theme.dark");
+                set_mode(st, "dark", &invoked_by)
+            },
         ),
         chrome(
             "appearance.theme.light",
             "search-action-appearance-theme-light",
             "search-action-appearance-theme-light-subtitle",
-            |st, _| set_mode(st, "appearance.theme.light", "light"),
-        ),
-        chrome(
-            "appearance.high-contrast",
-            "search-action-appearance-high-contrast",
-            "search-action-appearance-high-contrast-subtitle",
-            |st, _| set_high_contrast(st),
+            "search-kw-appearance-theme-light",
+            |st, _| {
+                let invoked_by = settings_store::InvokingAction::action("appearance.theme.light");
+                set_mode(st, "light", &invoked_by)
+            },
         ),
         Action {
             id: "appearance.language",
             label: "search-action-appearance-language",
             subtitle: "search-action-appearance-language-subtitle",
+            keywords: "search-kw-appearance-language",
             params: LANGUAGE_PARAMS,
             apply: |st, args| {
                 let language = args.text("language").unwrap_or_default();
@@ -2851,6 +3217,7 @@ impl Action {
             id: "record.bring",
             label: "search-action-record-bring",
             subtitle: "search-action-record-bring-subtitle",
+            keywords: "search-kw-record-bring",
             params: RECORD_BRING_PARAMS,
             apply: |st, args| {
                 let id = args.text("id").unwrap_or_default();
@@ -2874,9 +3241,9 @@ impl Action {
                 let workspace = tree.desktop.active_workspace().ok_or_else(|| {
                     ActionError::Refused("no active workspace accepts the record".into())
                 })?;
-                let user = st.local_user_for_room(&workspace.room);
+                let user = st.local_user_for_room(&workspace.room());
                 let actor = workspace.actor_for_person(&user);
-                let target = (workspace.id, workspace.room, actor);
+                let target = (workspace.id, workspace.room(), actor);
                 drop(tree);
                 st.push_tracked_record_request(id, kind, target.0, target.1, target.2);
                 Ok(())
@@ -2889,6 +3256,7 @@ impl Action {
             "shortcut-help.toggle",
             "search-action-shortcut-help-toggle",
             "search-action-shortcut-help-toggle-subtitle",
+            "search-kw-shortcut-help-toggle",
             |st, _| {
                 st.overlays.shortcut_help = !st.overlays.shortcut_help;
                 Ok(())
@@ -2898,418 +3266,13 @@ impl Action {
             "desktop-tour.open",
             "search-action-desktop-tour-open",
             "search-action-desktop-tour-open-subtitle",
+            "search-kw-desktop-tour-open",
             |st, _| {
                 st.overlays.desktop_tour = true;
                 Ok(())
             },
         ),
     ];
-}
-
-pub(crate) struct SharedQsDispatcher {
-    actions: std::cell::RefCell<Rc<dyn crate::shell::quick_settings::actions::QsActions>>,
-    availability: std::cell::Cell<crate::shell::quick_settings::actions::QsActionAvailability>,
-    radio_job: std::cell::RefCell<Option<crate::shell::quick_settings::radio::RadioTicket>>,
-    radio_wake: std::cell::RefCell<Option<crate::session_runtime::Wake>>,
-}
-
-impl SharedQsDispatcher {
-    pub(crate) fn new(
-        actions: Rc<dyn crate::shell::quick_settings::actions::QsActions>,
-        availability: crate::shell::quick_settings::actions::QsActionAvailability,
-    ) -> Self {
-        Self {
-            actions: std::cell::RefCell::new(actions),
-            availability: std::cell::Cell::new(availability),
-            radio_job: std::cell::RefCell::new(None),
-            radio_wake: std::cell::RefCell::new(None),
-        }
-    }
-
-    pub(crate) fn replace(
-        &self,
-        actions: Rc<dyn crate::shell::quick_settings::actions::QsActions>,
-        availability: crate::shell::quick_settings::actions::QsActionAvailability,
-    ) {
-        if let Some(job) = self.radio_job.borrow().as_ref() {
-            job.retire();
-        }
-        *self.actions.borrow_mut() = actions;
-        self.availability.set(availability);
-    }
-
-    pub(crate) fn set_radio_wake(&self, wake: crate::session_runtime::Wake) {
-        *self.radio_wake.borrow_mut() = Some(wake);
-    }
-
-    pub(crate) fn observe_radio_availability(&self, radios: &os_actions::RadioState) {
-        let mut availability = self.availability.get();
-        availability.wifi = radios.wifi_available;
-        availability.airplane_mode = radios.wifi_available || radios.wwan_available;
-        self.availability.set(availability);
-    }
-
-    pub(crate) fn start_radio(
-        &self,
-        change: os_actions::RadioChange,
-        chrome: &Chrome,
-    ) -> Result<Option<crate::shell::quick_settings::radio::RadioTicket>, String> {
-        let id = match change {
-            os_actions::RadioChange::Wifi(_) => QS_WIFI_ID,
-            os_actions::RadioChange::Airplane(_) => QS_AIRPLANE_ID,
-        };
-        if !self.action_available(id) {
-            return Err("radio action is unavailable".into());
-        }
-        if self.radio_job.borrow().is_some() {
-            return Err("a radio change is already pending".into());
-        }
-        let actions = self.actions.borrow().clone();
-        if let Some(work) = actions.prepare_radio_change(change) {
-            let job = crate::shell::quick_settings::radio::RadioTicket::start(
-                change,
-                work,
-                self.radio_wake.borrow().clone(),
-            )?;
-            *self.radio_job.borrow_mut() = Some(job.clone());
-            let mut state = chrome.borrow_mut();
-            state.quick_settings.radio_change_pending = true;
-            state.quick_settings.radio_change = Some(change);
-            state.bump();
-            Ok(Some(job))
-        } else {
-            let radios = change.run(actions.as_ref())?;
-            crate::shell::quick_settings::radio::apply(change, Ok(radios), chrome);
-            Ok(None)
-        }
-    }
-
-    pub(crate) fn take_radio_completion(
-        &self,
-    ) -> Option<crate::shell::quick_settings::radio::RadioTicket> {
-        let mut pending = self.radio_job.borrow_mut();
-        if !pending.as_ref()?.finished() {
-            return None;
-        }
-        let _ = pending.as_ref()?.result()?;
-        pending.take()
-    }
-
-    /// What the Quick Settings rows are built from; see [`QuickSettingsKey`].
-    fn catalogue_key(&self) -> QuickSettingsKey {
-        QuickSettingsKey {
-            backend: Rc::as_ptr(&*self.actions.borrow()).cast::<()>().addr(),
-            availability: self.availability.get(),
-            radio_pending: self.radio_job.borrow().is_some(),
-        }
-    }
-
-    fn action_available(&self, id: &str) -> bool {
-        let available = self.availability.get();
-        match id {
-            QS_BRIGHTNESS_ID => available.brightness,
-            QS_VOLUME_ID => available.volume,
-            QS_WIFI_ID => available.wifi,
-            QS_POWER_ID => available.power_profile,
-            QS_VPN_ID => available.vpn,
-            QS_BLUETOOTH_ID => available.bluetooth,
-            QS_AIRPLANE_ID => available.airplane_mode,
-            _ => false,
-        }
-    }
-}
-
-pub(crate) type SharedQsActions = Rc<SharedQsDispatcher>;
-
-pub(crate) const QS_BRIGHTNESS_ID: &str = "quick-settings.brightness.set";
-pub(crate) const QS_VOLUME_ID: &str = "quick-settings.volume.set";
-pub(crate) const QS_WIFI_ID: &str = "quick-settings.wifi.set-enabled";
-pub(crate) const QS_POWER_ID: &str = "quick-settings.power-profile.set";
-pub(crate) const QS_VPN_ID: &str = "quick-settings.vpn.set-enabled";
-pub(crate) const QS_BLUETOOTH_ID: &str = "quick-settings.bluetooth.set-enabled";
-pub(crate) const QS_AIRPLANE_ID: &str = "quick-settings.airplane-mode.set-enabled";
-
-fn quick_settings_params(id: &str) -> Vec<ActionParam> {
-    let percent = || {
-        ActionParam::required_owned(
-            "percent",
-            ParamType::Number,
-            "Exact percentage from 0 through 100.",
-        )
-        .with_schema(serde_json::json!({"minimum": 0, "maximum": 100}))
-    };
-    match id {
-        QS_BRIGHTNESS_ID => vec![
-            percent(),
-            ActionParam::optional_owned(
-                "display",
-                ParamType::Text,
-                "Connector of the monitor to set, e.g. eDP-1 or DP-2, as wl_output names it. \
-                 Omitted: the built-in panel, else the first monitor.",
-            )
-            .with_schema(serde_json::json!({"minLength": 1, "maxLength": 64})),
-        ],
-        QS_VOLUME_ID => vec![percent()],
-        QS_WIFI_ID => vec![ActionParam::required_owned(
-            "enabled",
-            ParamType::Boolean,
-            "Whether the Wi-Fi radio should be enabled.",
-        )],
-        QS_BLUETOOTH_ID => vec![ActionParam::required_owned(
-            "enabled",
-            ParamType::Boolean,
-            "Whether the Bluetooth radio should be powered.",
-        )],
-        QS_AIRPLANE_ID => vec![ActionParam::required_owned(
-            "enabled",
-            ParamType::Boolean,
-            "Whether airplane mode should turn the wireless radios off.",
-        )],
-        QS_POWER_ID => vec![
-            ActionParam::required_owned("profile", ParamType::Text, "The host power profile.")
-                .with_choices(["saver", "balanced", "performance"]),
-        ],
-        QS_VPN_ID => vec![
-            ActionParam::required_owned(
-                "name",
-                ParamType::Text,
-                "Exact configured VPN connection name.",
-            )
-            .with_schema(serde_json::json!({"minLength": 1, "maxLength": 255})),
-            ActionParam::required_owned(
-                "enabled",
-                ParamType::Boolean,
-                "Whether the named VPN connection should be enabled.",
-            ),
-        ],
-        _ => Vec::new(),
-    }
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "validated hardware percentages are bounded to 0..=100 before this f64-to-f32 provider conversion"
-)]
-fn validated_percent(args: &ActionArgs) -> f32 {
-    args.number("percent").unwrap_or_default() as f32
-}
-
-fn apply_quick_settings_effect(
-    id: &str,
-    actions: &dyn crate::shell::quick_settings::actions::QsActions,
-    args: &ActionArgs,
-) -> Result<(), ActionError> {
-    let result = match id {
-        QS_BRIGHTNESS_ID => match args.text("display") {
-            Some(display) => actions.set_display_brightness(display, validated_percent(args)),
-            None => actions.set_brightness(validated_percent(args)),
-        },
-        QS_VOLUME_ID => actions.set_volume(validated_percent(args)),
-        QS_WIFI_ID => actions.set_wifi(args.boolean("enabled").unwrap_or(false)),
-        QS_BLUETOOTH_ID => actions.set_bluetooth(args.boolean("enabled").unwrap_or(false)),
-        QS_AIRPLANE_ID => actions.set_airplane_mode(args.boolean("enabled").unwrap_or(false)),
-        QS_POWER_ID => {
-            let profile = match args.text("profile") {
-                Some("saver") => crate::shell::quick_settings::actions::PowerProfile::Saver,
-                Some("balanced") => crate::shell::quick_settings::actions::PowerProfile::Balanced,
-                Some("performance") => {
-                    crate::shell::quick_settings::actions::PowerProfile::Performance
-                }
-                _ => return Err(ActionError::Refused("invalid power profile".into())),
-            };
-            actions.set_power_profile(profile)
-        }
-        QS_VPN_ID => actions.set_vpn_connection(
-            args.text("name").unwrap_or_default(),
-            args.boolean("enabled").unwrap_or(false),
-        ),
-        _ => return Err(ActionError::Refused("unknown Quick Settings effect".into())),
-    };
-    result.map_err(ActionError::Refused)
-}
-
-/// UI adapter for the callable Quick Settings slice. The root panel and its
-/// drill-ins still own presentation state, while these effects bind the
-/// same typed parameters and call the same provider path as external action
-/// invocation. Operations outside this slice pass through unchanged.
-pub(crate) struct ValidatedQsActions<'a> {
-    inner: &'a dyn crate::shell::quick_settings::actions::QsActions,
-}
-
-impl<'a> ValidatedQsActions<'a> {
-    pub(crate) fn new(inner: &'a dyn crate::shell::quick_settings::actions::QsActions) -> Self {
-        Self { inner }
-    }
-
-    fn dispatch(
-        &self,
-        id: &str,
-        values: impl IntoIterator<Item = (String, crate::shell::search::action_api::ArgValue)>,
-    ) -> Result<(), String> {
-        let args = ActionArgs::bind(&quick_settings_params(id), values)
-            .map_err(|error| error.to_string())?;
-        apply_quick_settings_effect(id, self.inner, &args).map_err(|error| error.to_string())
-    }
-}
-
-impl crate::shell::quick_settings::actions::QsActions for ValidatedQsActions<'_> {
-    fn prepare_radio_change(
-        &self,
-        change: os_actions::RadioChange,
-    ) -> Option<os_actions::RadioWork> {
-        self.inner.prepare_radio_change(change)
-    }
-
-    fn apply_radio_change(
-        &self,
-        change: os_actions::RadioChange,
-    ) -> Result<Option<os_actions::RadioState>, String> {
-        self.inner.apply_radio_change(change)
-    }
-
-    fn set_brightness(&self, percent: f32) -> Result<(), String> {
-        self.dispatch(
-            QS_BRIGHTNESS_ID,
-            [(
-                "percent".into(),
-                crate::shell::search::action_api::ArgValue::Number(f64::from(percent)),
-            )],
-        )
-    }
-
-    fn set_display_brightness(&self, connector: &str, percent: f32) -> Result<(), String> {
-        self.dispatch(
-            QS_BRIGHTNESS_ID,
-            [
-                (
-                    "percent".into(),
-                    crate::shell::search::action_api::ArgValue::Number(f64::from(percent)),
-                ),
-                (
-                    "display".into(),
-                    crate::shell::search::action_api::ArgValue::Text(connector.to_owned()),
-                ),
-            ],
-        )
-    }
-
-    fn set_volume(&self, percent: f32) -> Result<(), String> {
-        self.dispatch(
-            QS_VOLUME_ID,
-            [(
-                "percent".into(),
-                crate::shell::search::action_api::ArgValue::Number(f64::from(percent)),
-            )],
-        )
-    }
-
-    fn set_wifi(&self, enabled: bool) -> Result<(), String> {
-        self.dispatch(
-            QS_WIFI_ID,
-            [(
-                "enabled".into(),
-                crate::shell::search::action_api::ArgValue::Boolean(enabled),
-            )],
-        )
-    }
-
-    fn set_power_profile(
-        &self,
-        profile: crate::shell::quick_settings::actions::PowerProfile,
-    ) -> Result<(), String> {
-        let profile = match profile {
-            crate::shell::quick_settings::actions::PowerProfile::Saver => "saver",
-            crate::shell::quick_settings::actions::PowerProfile::Balanced => "balanced",
-            crate::shell::quick_settings::actions::PowerProfile::Performance => "performance",
-        };
-        self.dispatch(
-            QS_POWER_ID,
-            [(
-                "profile".into(),
-                crate::shell::search::action_api::ArgValue::Text(profile.into()),
-            )],
-        )
-    }
-
-    fn set_vpn_connection(&self, name: &str, enabled: bool) -> Result<(), String> {
-        self.dispatch(
-            QS_VPN_ID,
-            [
-                (
-                    "name".into(),
-                    crate::shell::search::action_api::ArgValue::Text(name.into()),
-                ),
-                (
-                    "enabled".into(),
-                    crate::shell::search::action_api::ArgValue::Boolean(enabled),
-                ),
-            ],
-        )
-    }
-
-    fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
-        self.inner.connect_wifi(ssid, password)
-    }
-
-    fn set_bluetooth(&self, enabled: bool) -> Result<(), String> {
-        self.dispatch(
-            QS_BLUETOOTH_ID,
-            [(
-                "enabled".into(),
-                crate::shell::search::action_api::ArgValue::Boolean(enabled),
-            )],
-        )
-    }
-
-    fn connect_bluetooth(&self, address: &str) -> Result<(), String> {
-        self.inner.connect_bluetooth(address)
-    }
-
-    fn disconnect_bluetooth(&self, address: &str) -> Result<(), String> {
-        self.inner.disconnect_bluetooth(address)
-    }
-
-    fn set_wired(&self, enabled: bool) -> Result<(), String> {
-        self.inner.set_wired(enabled)
-    }
-
-    fn set_airplane_mode(&self, enabled: bool) -> Result<(), String> {
-        self.dispatch(
-            QS_AIRPLANE_ID,
-            [(
-                "enabled".into(),
-                crate::shell::search::action_api::ArgValue::Boolean(enabled),
-            )],
-        )
-    }
-
-    fn set_hotspot(&self, enabled: bool) -> Result<(), String> {
-        self.inner.set_hotspot(enabled)
-    }
-
-    fn set_mobile_broadband(&self, enabled: bool) -> Result<(), String> {
-        self.inner.set_mobile_broadband(enabled)
-    }
-
-    fn toggle_mute(&self) -> Result<(), String> {
-        self.inner.toggle_mute()
-    }
-
-    fn set_mute(&self, muted: bool) -> Result<(), String> {
-        self.inner.set_mute(muted)
-    }
-
-    fn brightness(&self) -> Result<f32, String> {
-        self.inner.brightness()
-    }
-
-    fn keyboard_backlight(&self) -> Result<os_actions::KeyboardBacklight, String> {
-        self.inner.keyboard_backlight()
-    }
-
-    fn set_keyboard_backlight(&self, level: u32) -> Result<(), String> {
-        self.inner.set_keyboard_backlight(level)
-    }
 }
 
 pub(crate) const DISPLAY_EXTEND_ID: &str = "display.layout.extend";
@@ -3343,6 +3306,8 @@ fn action_available(id: &str, chrome: &ChromeState, display_waiting: bool) -> bo
         "presence.follow.stop" => chrome.search_context.following,
         DISPLAY_KEEP_ID | DISPLAY_REVERT_ID => display_waiting,
         "dictation.finish" | "dictation.cancel" => chrome.search_context.dictating,
+        "notifications.clear" => !chrome.notification_log().history().is_empty(),
+        "notifications.clear.undo" => chrome.can_undo_notification_history_clear(),
         BLUETOOTH_PAIRING_DECLINE_ID => crate::bluetooth::PairingPromptHandle::global()
             .current()
             .is_some(),
@@ -3482,8 +3447,6 @@ fn display_layout_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
         kind: tilo_actions::ActionKind::Undoable,
         retry: tilo_actions::RetryPolicy::Idempotent,
-        // An unconfirmed layout restores itself; Revert undoes it at once.
-        reversible: true,
         ..tilo_actions::ActionContract::default()
     }
 }
@@ -3492,7 +3455,6 @@ fn quick_settings_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
         kind: tilo_actions::ActionKind::Undoable,
         retry: tilo_actions::RetryPolicy::Idempotent,
-        reversible: false,
         ..tilo_actions::ActionContract::default()
     }
 }
@@ -3587,7 +3549,7 @@ struct CatalogueState {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct QuickSettingsKey {
     backend: usize,
-    availability: crate::shell::quick_settings::actions::QsActionAvailability,
+    availability: tilo_quick_settings::actions::QsActionAvailability,
     radio_pending: bool,
 }
 
@@ -3597,10 +3559,10 @@ impl ActionsProvider {
             search_preferences: None,
             provider_catalog: None,
             qs_actions: Rc::new(SharedQsDispatcher::new(
-                Rc::new(crate::shell::quick_settings::actions::UnavailableQsActions),
-                crate::shell::quick_settings::actions::QsActionAvailability::default(),
+                Rc::new(tilo_quick_settings::actions::UnavailableQsActions),
+                tilo_quick_settings::actions::QsActionAvailability::default(),
             )),
-            ranker: ListIndex::default(),
+            ranker: ListIndex::default().with_ranks(ui::search::system::action_ranks),
             catalogue: std::cell::RefCell::default(),
             #[cfg(test)]
             builds: Rc::default(),
@@ -3616,7 +3578,7 @@ impl ActionsProvider {
             search_preferences: Some(search_preferences),
             provider_catalog: Some(provider_catalog),
             qs_actions,
-            ranker: ListIndex::default(),
+            ranker: ListIndex::default().with_ranks(ui::search::system::action_ranks),
             catalogue: std::cell::RefCell::default(),
             #[cfg(test)]
             builds: Rc::default(),
@@ -3661,6 +3623,24 @@ impl Default for ActionsProvider {
 /// The provider id the shell's own actions are addressed by.
 pub(crate) const PROVIDER_ID: &str = "actions";
 
+/// The id of the action selecting the workspace `id` names in its form from
+/// before action ids named the room (`workspace.select.<number>`): that
+/// number is a workspace's id here, or one a workspace carried before
+/// ([`crate::shell::state::WorkspaceTree::resolve_workspace`]). `None` for
+/// any other id.
+fn current_workspace_select(
+    id: &str,
+    chrome: &crate::shell::chrome_state::ChromeState,
+) -> Option<String> {
+    let number: u64 = id.strip_prefix("workspace.select.")?.parse().ok()?;
+    let room = {
+        let tree = chrome.tree();
+        tree.resolve_workspace(crate::shell::state::WorkspaceId(number))
+            .and_then(|workspace| tree.room_of(workspace))
+    }?;
+    Some(format!("workspace.select.{room}"))
+}
+
 impl SearchProvider for ActionsProvider {
     fn row_icon(&self, result: &SearchResult) -> Option<ui::icons::Icon> {
         action_icon(&result.id)
@@ -3674,8 +3654,8 @@ impl SearchProvider for ActionsProvider {
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::Action]
     }
-    fn available_in_active_app_scope(&self) -> bool {
-        true
+    fn toggles_in_place(&self, result: &SearchResult) -> bool {
+        toggles_in_place(&result.id)
     }
     fn adjustable(&self, result: &SearchResult) -> bool {
         matches!(result.id.as_str(), QS_VOLUME_ID | QS_BRIGHTNESS_ID)
@@ -3777,8 +3757,15 @@ impl SearchProvider for ActionsProvider {
                 })
         } else {
             let catalogue = self.catalogue(&ctx);
-            match catalogue.by_id.get(id) {
-                Some(&at) => catalogue.rows.get(at).cloned(),
+            // An action id from before ids named the room selects the
+            // workspace that number named, through the device's aliases.
+            let current = current_workspace_select(id, ctx.chrome);
+            let lookup = current.as_deref().unwrap_or(id);
+            match catalogue.by_id.get(lookup) {
+                Some(&at) => catalogue.rows.get(at).cloned().map(|mut row| {
+                    id.clone_into(&mut row.id);
+                    row
+                }),
                 None => crate::shell::notification::alarm_action_rows(ctx.chrome)
                     .into_iter()
                     .find(|row| row.id == id),
@@ -3811,6 +3798,7 @@ impl SearchProvider for ActionsProvider {
                 &row.title.to_lowercase(),
                 &row.subtitle.clone().unwrap_or_default().to_lowercase(),
                 &row.id,
+                Vec::new(),
             );
         }
         let withheld = if asks_about_search_sources(ctx.needle) {
@@ -3908,7 +3896,12 @@ impl ActionsProvider {
                 "search-brightness-display",
                 &[("display", display.name.as_str().into())],
             );
-            candidates.record(&title.to_lowercase(), &subtitle.to_lowercase(), &id);
+            candidates.record(
+                &title.to_lowercase(),
+                &subtitle.to_lowercase(),
+                &id,
+                Vec::new(),
+            );
             out.push(SearchResult {
                 id,
                 title,
@@ -3957,7 +3950,12 @@ impl ActionsProvider {
                 },
             ) as Rc<crate::shell::search::OpenFn>;
             let title = t(step.title);
-            candidates.record(&title.to_lowercase(), "", step.id);
+            candidates.record(
+                &title.to_lowercase(),
+                "",
+                step.id,
+                declared_keywords(step.keywords),
+            );
             out.push(SearchResult {
                 id: step.id.to_string(),
                 title,
@@ -3975,7 +3973,12 @@ impl ActionsProvider {
         {
             let actions = Rc::clone(&self.qs_actions);
             let title = t("search-step-volume-mute");
-            candidates.record(&title.to_lowercase(), "", QS_MUTE_ID);
+            candidates.record(
+                &title.to_lowercase(),
+                "",
+                QS_MUTE_ID,
+                declared_keywords(QS_MUTE_KEYWORDS),
+            );
             out.push(SearchResult {
                 id: QS_MUTE_ID.to_string(),
                 title,
@@ -4129,7 +4132,7 @@ impl ActionsProvider {
                             let Some(workspace) = tree.desktop.active_workspace() else {
                                 return Err(ActionError::Refused("no active workspace".into()));
                             };
-                            let user = state.local_user_for_room(&workspace.room);
+                            let user = state.local_user_for_room(&workspace.room());
                             let actor = workspace.actor_for_person(&user);
                             if !shell_action_authorized_for(workspace, &actor, "record.bring") {
                                 return Err(ActionError::Refused(
@@ -4137,7 +4140,7 @@ impl ActionsProvider {
                                         .into(),
                                 ));
                             }
-                            let located = (workspace.id, workspace.room, actor);
+                            let located = (workspace.id, workspace.room(), actor);
                             drop(tree);
                             located
                         };
@@ -4451,7 +4454,23 @@ impl ActionsProvider {
                         outcome
                     },
                 ) as Rc<crate::shell::search::OpenFn>;
-                (on_open, None)
+                // A rearrangement the overlay host carries out answers once
+                // it ran, with whether anything moved.
+                let on_begin_invoke = WINDOW_LAYOUT_ACTION_IDS.contains(&action_id).then(|| {
+                    let open = Rc::clone(&on_open);
+                    Rc::new(
+                        move |doc: &mut ui::widget::Edits<'_>,
+                              root: &automerge::ObjId,
+                              chrome: &Chrome,
+                              args: &ActionArgs| {
+                            let from = chrome.borrow().window_requests_queued();
+                            open(doc, root, chrome, args)?;
+                            let outcomes = chrome.borrow_mut().answer_window_requests_since(from);
+                            Ok(window_outcome(action_id, outcomes))
+                        },
+                    ) as Rc<crate::shell::search::BeginInvokeFn>
+                });
+                (on_open, on_begin_invoke)
             };
             Some(SearchResult {
                 facts: Vec::new(),
@@ -4464,7 +4483,7 @@ impl ActionsProvider {
                 subtitle: Some(subtitle),
                 badge: state_badge(action.id, ctx.chrome),
                 score,
-                params: action.params.to_vec(),
+                params: live_params(action, ctx.chrome),
                 contract: Some(shell_action_contract(action.id)),
                 on_open,
                 on_invoke: match action.id {
@@ -4512,6 +4531,7 @@ impl ActionsProvider {
                     _ => None,
                 },
                 on_begin_invoke,
+                resource: None,
             })
         }
     }
@@ -4523,43 +4543,6 @@ impl ActionsProvider {
         reason = "the catalog lists every shell action with its contract in one table-like pass"
     )]
     fn build_catalogue(&self, ctx: SearchContext<'_>, key: CatalogueKey) -> Catalogue {
-        const QUICK_SETTINGS_ACTIONS: &[(&str, &str, &str)] = &[
-            (
-                QS_BRIGHTNESS_ID,
-                "search-action-quick-settings-brightness-set",
-                "search-action-quick-settings-brightness-set-subtitle",
-            ),
-            (
-                QS_VOLUME_ID,
-                "search-action-quick-settings-volume-set",
-                "search-action-quick-settings-volume-set-subtitle",
-            ),
-            (
-                QS_WIFI_ID,
-                "search-action-quick-settings-wifi-set-enabled",
-                "search-action-quick-settings-wifi-set-enabled-subtitle",
-            ),
-            (
-                QS_POWER_ID,
-                "search-action-quick-settings-power-profile-set",
-                "search-action-quick-settings-power-profile-set-subtitle",
-            ),
-            (
-                QS_VPN_ID,
-                "search-action-quick-settings-vpn-set-enabled",
-                "search-action-quick-settings-vpn-set-enabled-subtitle",
-            ),
-            (
-                QS_BLUETOOTH_ID,
-                "search-action-quick-settings-bluetooth-set-enabled",
-                "search-action-quick-settings-bluetooth-set-enabled-subtitle",
-            ),
-            (
-                QS_AIRPLANE_ID,
-                "search-action-quick-settings-airplane-mode-set-enabled",
-                "search-action-quick-settings-airplane-mode-set-enabled-subtitle",
-            ),
-        ];
         #[cfg(test)]
         self.builds.set(self.builds.get().wrapping_add(1));
         let mut out = Vec::new();
@@ -4572,6 +4555,7 @@ impl ActionsProvider {
                     &row.title.to_lowercase(),
                     &row.subtitle.as_deref().unwrap_or_default().to_lowercase(),
                     &row.id,
+                    declared_keywords(action.keywords),
                 );
                 out.push(row);
             }
@@ -4586,6 +4570,7 @@ impl ActionsProvider {
                 &descriptor.label.to_lowercase(),
                 &format!("{subtitle} {keywords}").to_lowercase(),
                 &descriptor.id,
+                Vec::new(),
             );
             let score = 0;
             let request = descriptor.request;
@@ -4610,19 +4595,106 @@ impl ActionsProvider {
                 }),
                 on_invoke: None,
                 on_begin_invoke: None,
+                resource: None,
             });
+        }
+        // Each archived workspace: bring it back, or delete it with its
+        // room, as workspace settings offer.
+        let archived: Vec<(crate::shell::state::RoomId, String)> = ctx
+            .chrome
+            .tree()
+            .archived_workspaces
+            .iter()
+            .map(|workspace| (workspace.room(), workspace.name.clone()))
+            .collect();
+        for (room, name) in archived {
+            for delete in [false, true] {
+                let (id, title, subtitle) = if delete {
+                    (
+                        format!("workspace.archived.delete.{room}"),
+                        t_args(
+                            "search-action-archived-delete",
+                            &[("workspace", name.clone().into())],
+                        ),
+                        t("search-action-archived-delete-subtitle"),
+                    )
+                } else {
+                    (
+                        format!("workspace.archived.restore.{room}"),
+                        t_args(
+                            "search-action-archived-restore",
+                            &[("workspace", name.clone().into())],
+                        ),
+                        t("search-action-archived-restore-subtitle"),
+                    )
+                };
+                candidates.record(
+                    &title.to_lowercase(),
+                    &subtitle.to_lowercase(),
+                    &id,
+                    declared_keywords(if delete {
+                        "search-kw-workspace-archived-delete"
+                    } else {
+                        "search-kw-workspace-archived-restore"
+                    }),
+                );
+                let mut contract = tilo_actions::ActionContract::view();
+                if delete {
+                    contract.kind = tilo_actions::ActionKind::Outside;
+                    contract.risk = tilo_actions::RiskLevel::Destructive;
+                    contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+                    contract.retry = tilo_actions::RetryPolicy::AtMostOnce;
+                }
+                out.push(SearchResult {
+                    facts: Vec::new(),
+                    shortcut: None,
+                    kind: ResourceKind::Action,
+                    operation_kind: tilo_actions::OperationKind::View,
+                    provider_id: self.id().into(),
+                    id,
+                    title,
+                    subtitle: Some(subtitle),
+                    badge: None,
+                    score: 0,
+                    params: vec![],
+                    contract: Some(contract),
+                    on_open: Rc::new(move |_, _, chrome, _| {
+                        let mut state = chrome.borrow_mut();
+                        let done = if delete {
+                            state.delete_archived_workspace(room)
+                        } else {
+                            state.restore_archived_workspace(room)
+                        };
+                        if done {
+                            Ok(())
+                        } else {
+                            Err(ActionError::Refused(
+                                "that archived workspace is not here".into(),
+                            ))
+                        }
+                    }),
+                    on_invoke: None,
+                    on_begin_invoke: None,
+                    resource: None,
+                });
+            }
         }
         let morning = ctx.chrome.tree().active_workspace().map(|workspace| {
             (
                 workspace.id,
-                workspace.room,
+                workspace.room(),
                 crate::shell::room_activity::morning_source_actions(workspace),
             )
         });
         if let Some((workspace, room, actions)) = morning {
             for (id, label) in actions {
                 let subtitle = t("activity-morning-description");
-                candidates.record(&label.to_lowercase(), &subtitle.to_lowercase(), &id);
+                candidates.record(
+                    &label.to_lowercase(),
+                    &subtitle.to_lowercase(),
+                    &id,
+                    Vec::new(),
+                );
                 let command = id.starts_with(tilo_desktop::activity::morning::MORNING_REFRESH)
                     || id.starts_with(tilo_desktop::activity::morning::MORNING_DRAFT);
                 let kind = if command {
@@ -4657,7 +4729,7 @@ impl ActionsProvider {
                         if !state
                             .tree()
                             .active_workspace()
-                            .is_some_and(|active| active.id == workspace && active.room == room)
+                            .is_some_and(|active| active.id == workspace && active.room() == room)
                         {
                             return Err(ActionError::Refused("Workspace changed".into()));
                         }
@@ -4667,6 +4739,7 @@ impl ActionsProvider {
                     }),
                     on_invoke: None,
                     on_begin_invoke: None,
+                    resource: None,
                 });
             }
         }
@@ -4682,12 +4755,6 @@ impl ActionsProvider {
                 "search-action-activity-acknowledge",
                 "search-action-activity-acknowledge-subtitle",
                 "search-action-activity-acknowledge-keywords",
-            ),
-            (
-                tilo_desktop::activity::ACTIVITY_TASKS,
-                "search-action-activity-tasks",
-                "search-action-catch-up-tasks-subtitle",
-                "search-action-activity-tasks-keywords",
             ),
             (
                 tilo_desktop::activity::HISTORY_COMPARE,
@@ -4715,6 +4782,7 @@ impl ActionsProvider {
                 &label.to_lowercase(),
                 &format!("{subtitle} {keywords}").to_lowercase(),
                 id,
+                Vec::new(),
             );
             out.push(SearchResult {
                 facts: Vec::new(),
@@ -4737,12 +4805,18 @@ impl ActionsProvider {
                 }),
                 on_invoke: None,
                 on_begin_invoke: None,
+                resource: None,
             });
         }
-        for &(id, label_key, subtitle_key) in QUICK_SETTINGS_ACTIONS {
+        for &(id, label_key, subtitle_key, keywords_key) in QUICK_SETTINGS_ACTIONS {
             let label = t(label_key);
             let subtitle = t(subtitle_key);
-            candidates.record(&label.to_lowercase(), &subtitle.to_lowercase(), id);
+            candidates.record(
+                &label.to_lowercase(),
+                &subtitle.to_lowercase(),
+                id,
+                declared_keywords(keywords_key),
+            );
             let score = 0;
             let actions = self.qs_actions.actions.borrow().clone();
             let available = self.qs_actions.action_available(id);
@@ -4788,7 +4862,9 @@ impl ActionsProvider {
                                         let Some(result) = job.result() else {
                                             return Ok(None);
                                         };
-                                        job.apply(&chrome);
+                                        crate::shell::chrome_state::ChromeState::apply_radio_ticket(
+                                            &chrome, &job,
+                                        );
                                         result.map_err(ActionError::Refused)?;
                                         Ok(Some(crate::shell::search::ActionReceipt::completed()))
                                     });
@@ -4844,7 +4920,9 @@ impl ActionsProvider {
                             }
                         }
                         QS_VOLUME_ID => {
-                            state.quick_settings.volume = validated_percent(args) / 100.0;
+                            state
+                                .quick_settings
+                                .set_volume_level(validated_percent(args) / 100.0);
                         }
                         QS_WIFI_ID => {
                             state.quick_settings.wifi = args.boolean("enabled") == Some(true);
@@ -4858,11 +4936,11 @@ impl ActionsProvider {
                         }
                         QS_POWER_ID => {
                             state.quick_settings.power_profile = match args.text("profile") {
-                                Some("saver") => crate::shell::quick_settings::PowerProfile::Saver,
+                                Some("saver") => tilo_quick_settings::PowerProfile::Saver,
                                 Some("performance") => {
-                                    crate::shell::quick_settings::PowerProfile::Performance
+                                    tilo_quick_settings::PowerProfile::Performance
                                 }
-                                _ => crate::shell::quick_settings::PowerProfile::Balanced,
+                                _ => tilo_quick_settings::PowerProfile::Balanced,
                             };
                         }
                         QS_VPN_ID => {
@@ -4881,6 +4959,7 @@ impl ActionsProvider {
                 }),
                 on_invoke: None,
                 on_begin_invoke,
+                resource: None,
             });
         }
         // One-step switches for the radios: "wifi" finds the Wi-Fi switch, not a
@@ -4927,7 +5006,12 @@ impl ActionsProvider {
                     },
                 ) as Rc<crate::shell::search::BeginInvokeFn>
             });
-            candidates.record(&title.to_lowercase(), &subtitle.to_lowercase(), toggle_id);
+            candidates.record(
+                &title.to_lowercase(),
+                &subtitle.to_lowercase(),
+                toggle_id,
+                declared_keywords(toggle.keywords),
+            );
             out.push(SearchResult {
                 id: toggle_id.to_string(),
                 title,
@@ -4964,6 +5048,7 @@ impl ActionsProvider {
                         &action.label.to_lowercase(),
                         &subtitle.to_lowercase(),
                         &action.id,
+                        action.keywords.clone(),
                     );
                     let score = 0;
                     let action_id = action.id.clone();
@@ -4975,12 +5060,12 @@ impl ActionsProvider {
                         operation_kind: tilo_actions::OperationKind::Document,
                         provider_id: self.id().to_string(),
                         id: format!("{}#{}", resource.id.as_str(), action.id),
-                        title: action.label,
+                        title: action.label.clone(),
                         subtitle: Some(subtitle),
                         badge: None,
                         score,
                         params,
-                        contract: Some(action.contract),
+                        contract: Some(action.contract.clone()),
                         on_open: Rc::new(move |_doc, _root, chrome: &Chrome, arguments| {
                             let mut state = chrome.borrow_mut();
                             apply_ownership_action(&state, &action_id, arguments)?;
@@ -4989,6 +5074,7 @@ impl ActionsProvider {
                         }),
                         on_invoke: None,
                         on_begin_invoke: None,
+                        resource: None,
                     });
                 }
             }
@@ -5017,6 +5103,7 @@ impl ActionsProvider {
                         &action.label.to_lowercase(),
                         &subtitle.to_lowercase(),
                         &action.id,
+                        action.keywords.clone(),
                     );
                     let score = 0;
                     let spec = action.clone();
@@ -5028,12 +5115,12 @@ impl ActionsProvider {
                         operation_kind: tilo_actions::OperationKind::Document,
                         provider_id: self.id().to_string(),
                         id: format!("{}#{}", resource_id, action.id),
-                        title: action.label,
+                        title: action.label.clone(),
                         subtitle: Some(subtitle),
                         badge: None,
                         score,
                         params,
-                        contract: Some(action.contract),
+                        contract: Some(action.contract.clone()),
                         on_open: Rc::new(move |_doc, _root, chrome: &Chrome, arguments| {
                             let mut state = chrome.borrow_mut();
                             apply_governance_action(&state, &spec, arguments)?;
@@ -5042,6 +5129,7 @@ impl ActionsProvider {
                         }),
                         on_invoke: None,
                         on_begin_invoke: None,
+                        resource: None,
                     });
                 }
             }
@@ -5052,7 +5140,12 @@ impl ActionsProvider {
             let label = t("search-action-search-provider-set");
             let subtitle = t("search-action-search-provider-set-subtitle");
             {
-                candidates.record(&label.to_lowercase(), &subtitle.to_lowercase(), id);
+                candidates.record(
+                    &label.to_lowercase(),
+                    &subtitle.to_lowercase(),
+                    id,
+                    Vec::new(),
+                );
                 let score = 0;
                 let preferences = Rc::clone(preferences);
                 out.push(SearchResult {
@@ -5094,6 +5187,7 @@ impl ActionsProvider {
                     }),
                     on_invoke: None,
                     on_begin_invoke: None,
+                    resource: None,
                 });
             }
             if let Some(catalog) = &self.provider_catalog {
@@ -5124,6 +5218,7 @@ impl ActionsProvider {
                         &format!("{subtitle} {}", t("search-action-provider-keywords"))
                             .to_lowercase(),
                         &id,
+                        Vec::new(),
                     );
                     let score = 0;
                     let preferences = Rc::clone(preferences);
@@ -5159,6 +5254,7 @@ impl ActionsProvider {
                         }),
                         on_invoke: None,
                         on_begin_invoke: None,
+                        resource: None,
                     });
                 }
                 source_switches.end = out.len();
@@ -5216,7 +5312,6 @@ fn workspace_view_copy(
     let activity = |view: ActivityView| {
         let subtitle = match view {
             ActivityView::CatchUp => "search-action-activity-catch-up-subtitle",
-            ActivityView::Tasks => "search-action-activity-tasks-subtitle",
             ActivityView::Explore => "search-action-activity-explore-subtitle",
             ActivityView::Replay => "search-action-activity-replay-subtitle",
         };
@@ -5232,16 +5327,11 @@ fn workspace_view_copy(
     }
 }
 
-/// The words people use for the action `id`, in every language the shell
-/// has ("dark mode", "dunkelmodus", "night"): what a person types who does
-/// not know what the row is called. Missing for an action means it is found
-/// by its label alone.
-pub(crate) fn action_keywords(id: &str) -> Vec<String> {
-    crate::shell::i18n::words_in_every_locale(&format!(
-        "{}{}",
-        crate::shell::i18n::KEYWORD_PREFIX,
-        id.replace(['.', '_', ':'], "-")
-    ))
+/// The words a declaration's keywords message lists, in every language the
+/// shell has ("dark mode", "dunkelmodus", "night"): what a person types who
+/// does not know what the row is called.
+fn declared_keywords(key: &str) -> Vec<String> {
+    crate::shell::i18n::words_in_every_locale(key)
 }
 
 /// Actions that change a setting the row itself shows, so choosing one
@@ -5262,7 +5352,6 @@ pub(crate) fn action_icon(id: &str) -> Option<ui::icons::Icon> {
         ("quick-settings", Icon::Settings2),
         ("appearance.theme.dark", Icon::Moon),
         ("appearance.theme.light", Icon::Sun),
-        ("appearance.high-contrast", Icon::Contrast),
         ("appearance.language", Icon::Globe),
         ("appearance", Icon::Palette),
         ("notifications", Icon::Bell),
@@ -5281,12 +5370,19 @@ pub(crate) fn action_icon(id: &str) -> Option<ui::icons::Icon> {
         ("room.activity", Icon::History),
         ("record", Icon::FileText),
         ("tab.close", Icon::Trash2),
+        ("group.close", Icon::Trash2),
+        ("workspace.delete", Icon::Trash2),
+        ("tab.rename", Icon::Pencil),
         ("tab.reopen", Icon::RotateCcw),
         ("tab.split-right", Icon::Columns2),
         ("tab.new.terminal", Icon::SquareTerminal),
         ("window.new.terminal", Icon::SquareTerminal),
         ("group.fullscreen", Icon::Maximize2),
         ("group.maximize", Icon::Maximize2),
+        ("group.toggle-maximize", Icon::Maximize2),
+        ("magnifier.zoom-in", Icon::ZoomIn),
+        ("magnifier.zoom-out", Icon::ZoomOut),
+        ("magnifier", Icon::Search),
         ("tab", Icon::AppWindow),
         ("window", Icon::AppWindow),
         ("group", Icon::AppWindow),
@@ -5316,7 +5412,6 @@ pub(crate) fn toggles_in_place(id: &str) -> bool {
         "notifications.dnd.toggle"
             | "appearance.theme.dark"
             | "appearance.theme.light"
-            | "appearance.high-contrast"
             | "navigation.axis.enable"
             | "navigation.axis.disable"
     ) || QS_TOGGLES.iter().any(|toggle| toggle.id == id)
@@ -5324,239 +5419,8 @@ pub(crate) fn toggles_in_place(id: &str) -> bool {
         || id == QS_MUTE_ID
 }
 
-/// The shortcut that does what an action does, as the active keyboard
-/// layout spells it, when the desktop has one: the catalogue id in
-/// [`settings_store::keyboard_shortcuts`] and the action it matches.
-const ACTION_SHORTCUTS: &[(&str, &str)] = &[
-    ("overview.toggle", "workspace-overview"),
-    ("quick-settings.open", "quick-settings"),
-    ("quick-settings.clipboard", "clipboard-history"),
-    ("shortcut-help.toggle", "shortcut-help"),
-    ("window.focus-previous", "focus-previous-window"),
-    ("window.focus-next", "focus-next-window"),
-    ("tab.previous", "previous-tab"),
-    ("tab.next", "next-tab"),
-    ("tab.menu", "tab-menu"),
-    ("tab.reopen", "reopen-closed-tab"),
-    ("strip.focus-previous", "previous-strip"),
-    ("strip.focus-next", "next-strip"),
-    ("workspace.previous", "previous-workspace"),
-    ("workspace.next", "next-workspace"),
-    ("group.move-left", "move-group-left"),
-    ("group.move-right", "move-group-right"),
-    (
-        "group.move-to-strip-previous",
-        "move-group-to-previous-strip",
-    ),
-    ("group.move-to-strip-next", "move-group-to-next-strip"),
-    (
-        "group.move-to-display-previous",
-        "move-group-to-previous-display",
-    ),
-    ("group.move-to-display-next", "move-group-to-next-display"),
-    ("group.maximize", "toggle-maximize"),
-    ("group.restore", "restore-window"),
-    ("group.fullscreen", "toggle-fullscreen"),
-    ("group.narrower", "resize-narrower"),
-    ("group.wider", "resize-wider"),
-    ("window.new.terminal", "open-terminal"),
-    ("dictation.toggle", "dictation-toggle"),
-    ("dictation.finish", "dictation-finish"),
-    ("dictation.cancel", "dictation-cancel"),
-    ("capture.open", "fixed-capture-screenshot"),
-    ("room.activity.open", "fixed-workspace-history"),
-    ("lock", "lock"),
-    ("emoji.picker", "emoji-picker"),
-];
-
-/// `shortcut_id`'s current chord as the active layout's keycaps spell it,
-/// from `config`.
-pub(crate) fn shortcut_text(
-    config: &settings_store::hardware::ShortcutConfig,
-    shortcut_id: &str,
-) -> Option<String> {
-    // `entry` constructs every shortcut and its defaults before selecting one.
-    // A palette row needs only its current chord, not that entire catalogue.
-    if let Some(action) = ShortcutAction::ALL
-        .into_iter()
-        .find(|action| action.id() == shortcut_id)
-    {
-        return config
-            .bindings
-            .get(&action)
-            .map(crate::shell::keyboard_shortcuts::chord_text);
-    }
-    settings_store::keyboard_shortcuts::FIXED_SHORTCUTS
-        .iter()
-        .find(|shortcut| shortcut.id == shortcut_id)?
-        .chords()
-        .first()
-        .map(crate::shell::keyboard_shortcuts::chord_text)
-}
-
-/// The shortcut shown beside the action `id`, if it has one.
-pub(crate) fn action_shortcut(
-    config: &settings_store::hardware::ShortcutConfig,
-    id: &str,
-) -> Option<String> {
-    ACTION_SHORTCUTS
-        .iter()
-        .find(|(action, _)| *action == id)
-        .and_then(|(_, shortcut)| shortcut_text(config, shortcut))
-}
-
-/// A Quick Settings radio offered as a one-step toggle: the set-enabled
-/// action it drives, its own id, and the catalogue keys of its row's title
-/// and subtitle.
-struct QsToggle {
-    set_enabled: &'static str,
-    id: &'static str,
-    /// The switch's name; its state is the row's pill.
-    name: &'static str,
-    subtitle: &'static str,
-}
-
-/// A step up or down a Quick Settings level: "louder", "dimmer". The row
-/// runs the level's own set action with the live level moved by `delta`
-/// percent, so it is one Enter (or one more) instead of typing a number.
-struct LevelStep {
-    id: &'static str,
-    /// The set action whose level it moves.
-    level: &'static str,
-    delta: f32,
-    title: &'static str,
-}
-
-const LEVEL_STEPS: &[LevelStep] = &[
-    LevelStep {
-        id: "quick-settings.volume.up",
-        level: QS_VOLUME_ID,
-        delta: 5.0,
-        title: "search-step-volume-up",
-    },
-    LevelStep {
-        id: "quick-settings.volume.down",
-        level: QS_VOLUME_ID,
-        delta: -5.0,
-        title: "search-step-volume-down",
-    },
-    LevelStep {
-        id: "quick-settings.brightness.up",
-        level: QS_BRIGHTNESS_ID,
-        delta: 10.0,
-        title: "search-step-brightness-up",
-    },
-    LevelStep {
-        id: "quick-settings.brightness.down",
-        level: QS_BRIGHTNESS_ID,
-        delta: -10.0,
-        title: "search-step-brightness-down",
-    },
-];
-
-/// Muting is its own row: a step to zero would forget the level.
-pub(crate) const QS_MUTE_ID: &str = "quick-settings.volume.mute";
-
-/// One display's brightness row: `quick-settings.brightness.on.DP-2`.
-const QS_DISPLAY_BRIGHTNESS_PREFIX: &str = "quick-settings.brightness.on.";
-
-/// How far ←/→ moves one display's brightness row: the brightness keys'
-/// step, as "brighter" and "dimmer" take.
-const DISPLAY_BRIGHTNESS_STEP: f32 = ui::tokens::Layout::BASE.display_brightness_step;
-
-/// The connector a display's brightness row sets, from its id.
-fn display_brightness_connector(id: &str) -> Option<&str> {
-    id.strip_prefix(QS_DISPLAY_BRIGHTNESS_PREFIX)
-        .filter(|connector| !connector.is_empty())
-}
-
-/// The display the person works on, when the desktop spans several and its
-/// brightness can be set: what "brighter" and "dimmer" adjust.
-fn focused_brightness(
-    state: &ChromeState,
-) -> Option<&crate::shell::chrome_state::DisplayBrightness> {
-    let focused = state.quick_settings.focused_display.as_deref()?;
-    state
-        .quick_settings
-        .displays
-        .iter()
-        .find(|display| display.connector == focused)
-}
-
-/// The live level, in percent, of the Quick Settings set action `level`:
-/// for brightness, the level of the display the person works on.
-fn level_percent(state: &ChromeState, level: &str) -> f32 {
-    let share = if level == QS_VOLUME_ID {
-        state.quick_settings.volume
-    } else {
-        focused_brightness(state).map_or(state.quick_settings.brightness, |display| display.level)
-    };
-    (share * 100.0).round()
-}
-
-/// `"40 %"`: a level as its row's pill says it.
-fn level_badge(state: &ChromeState, level: &str) -> String {
-    t_args(
-        "search-level-percent",
-        &[("percent", f64::from(level_percent(state, level)).into())],
-    )
-}
-
-/// The arguments that set `level` to its live value moved by `delta`.
-fn stepped(
-    params: &[ActionParam],
-    chrome: &Chrome,
-    level: &str,
-    delta: f32,
-) -> Result<ActionArgs, ActionError> {
-    let mut arguments = serde_json::Map::new();
-    {
-        let state = chrome.borrow();
-        let percent = (level_percent(&state, level) + delta).clamp(0.0, 100.0);
-        arguments.insert("percent".into(), serde_json::json!(f64::from(percent)));
-        // "Brighter" acts on the display the person works on.
-        if level == QS_BRIGHTNESS_ID
-            && let Some(display) = focused_brightness(&state)
-        {
-            arguments.insert("display".into(), serde_json::json!(display.connector));
-        }
-    }
-    ActionArgs::bind_json(params, &arguments).map_err(ActionError::Arguments)
-}
-
-/// The Quick Settings radios offered as one-step toggles.
-const QS_TOGGLES: &[QsToggle] = &[
-    QsToggle {
-        set_enabled: QS_WIFI_ID,
-        id: "quick-settings.wifi.toggle",
-        name: "search-toggle-wifi",
-        subtitle: "search-toggle-wifi-subtitle",
-    },
-    QsToggle {
-        set_enabled: QS_BLUETOOTH_ID,
-        id: "quick-settings.bluetooth.toggle",
-        name: "search-toggle-bluetooth",
-        subtitle: "search-toggle-bluetooth-subtitle",
-    },
-    QsToggle {
-        set_enabled: QS_AIRPLANE_ID,
-        id: "quick-settings.airplane-mode.toggle",
-        name: "search-toggle-airplane-mode",
-        subtitle: "search-toggle-airplane-mode-subtitle",
-    },
-];
-
-/// Whether the radio `set_enabled_id` drives is on now.
-fn radio_is_on(state: &ChromeState, set_enabled_id: &str) -> bool {
-    match set_enabled_id {
-        QS_WIFI_ID => state.quick_settings.wifi,
-        QS_BLUETOOTH_ID => state.quick_settings.bluetooth,
-        _ => state.quick_settings.radios.airplane_mode,
-    }
-}
-
 /// `ON` or `OFF`, as the search-source switches say it.
-fn on_off_badge(on: bool) -> String {
+pub(super) fn on_off_badge(on: bool) -> String {
     t(if on {
         "search-action-provider-badge-on"
     } else {
@@ -5576,9 +5440,6 @@ fn state_badge(id: &str, state: &ChromeState) -> Option<String> {
         "navigation.axis.disable" => {
             (!state.axis_navigation_enabled()).then(|| t("search-badge-state-current"))
         }
-        "appearance.high-contrast" => HIGH_CONTRAST
-            .from_document(&settings_store::load())
-            .then(|| on_off_badge(true)),
         "appearance.theme.dark" | "appearance.theme.light" => {
             let document = settings_store::load();
             let mode = MODE.from_document(&document);
@@ -5603,15 +5464,16 @@ pub(super) const ACTION_ID_WEIGHT: FieldWeight = FieldWeight::new(90);
 struct ActionCandidates(Vec<Vec<(String, FieldWeight)>>);
 
 impl ActionCandidates {
-    /// Record the searchable text of the row pushed next.
-    fn record(&mut self, label: &str, subtitle: &str, id: &str) {
+    /// Record the searchable text of the row pushed next: its label, id
+    /// and subtitle, and the other words its declaration gives for it.
+    fn record(&mut self, label: &str, subtitle: &str, id: &str, keywords: Vec<String>) {
         let mut row = vec![
             (label.to_owned(), FieldWeight::TITLE),
             (id.to_owned(), ACTION_ID_WEIGHT),
             (subtitle.to_owned(), FieldWeight::SUBTITLE),
         ];
         row.extend(
-            action_keywords(id)
+            keywords
                 .into_iter()
                 .map(|word| (word, FieldWeight::KEYWORD)),
         );
@@ -5661,6 +5523,9 @@ fn fence_native_selection(
 }
 
 #[cfg(test)]
+mod keyword_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::shell::state::FreshId as _;
@@ -5679,7 +5544,7 @@ mod tests {
             .desktop
             .active_workspace()
             .unwrap()
-            .room;
+            .room();
         let standup = serde_json::json!({
             "entry": "so.tilo.bots.standup",
             "version": "1.2.0",
@@ -5689,7 +5554,7 @@ mod tests {
             "nothing is asked of the workspace before the person confirms"
         );
         assert!(chrome.borrow_mut().take_peer_sync_requests().is_empty());
-        let mut confirmed = standup.clone();
+        let mut confirmed = standup;
         confirmed["confirm"] = true.into();
         invoke_shell_action(&chrome, BOT_ADD_ID, &confirmed).unwrap();
         assert_eq!(
@@ -5936,58 +5801,7 @@ mod tests {
     }
 
     /// A session with a room this machine administers — what `agent.invite` needs.
-    #[test]
-    fn strip_move_puts_a_strip_where_it_is_told_and_refuses_a_strip_that_is_not_there() {
-        let chrome = chrome_with_room();
-        for name in ["Main", "Second", "Third"] {
-            chrome.borrow_mut().create_strip(name).expect("a strip");
-        }
-        let names = || {
-            chrome
-                .borrow()
-                .tree()
-                .desktop
-                .active_workspace()
-                .map(|workspace| {
-                    workspace
-                        .strips
-                        .iter()
-                        .map(|strip| strip.name.clone())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
-        };
-        let before = names();
-        let count = before.len();
-        assert!(count >= 3, "{before:?}");
-        invoke_shell_action(
-            &chrome,
-            "strip.move",
-            &serde_json::json!({ "strip": count, "position": 1 }),
-        )
-        .expect("the last strip moves to the top");
-        let moved = names();
-        assert_eq!(moved.first(), before.last(), "{moved:?}");
-        invoke_shell_action(
-            &chrome,
-            "strip.move",
-            &serde_json::json!({ "strip": 1, "position": count + 5 }),
-        )
-        .expect("past the end means the bottom");
-        assert_eq!(names(), before);
-        assert!(
-            invoke_shell_action(
-                &chrome,
-                "strip.move",
-                &serde_json::json!({ "strip": count + 1, "position": 1 }),
-            )
-            .is_err(),
-            "there is no such strip"
-        );
-        assert_eq!(names(), before);
-    }
-
-    fn chrome_with_room() -> crate::shell::chrome_state::Chrome {
+    pub(super) fn chrome_with_room() -> crate::shell::chrome_state::Chrome {
         use crate::shell::state::{Workspace, WorkspaceId};
         let mut tree = WorkspaceTree::default();
         let id = WorkspaceId::new();
@@ -6004,7 +5818,7 @@ mod tests {
         )
     }
 
-    fn action_results(
+    pub(super) fn action_results(
         provider: &ActionsProvider,
         chrome: &Chrome,
     ) -> Vec<crate::shell::search::SearchResult> {
@@ -6043,7 +5857,6 @@ mod tests {
             DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
         };
         use std::sync::mpsc;
-        use std::time::Duration;
         let _home = tilo_test_env::TestHome::new().unwrap();
         let paths = settings_store::SessionPaths::configured().unwrap();
         let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
@@ -6064,7 +5877,9 @@ mod tests {
             tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
         let (sent, received) = mpsc::channel();
         let release = std::thread::spawn(move || {
-            let responsive = received.recv_timeout(Duration::from_millis(500)).is_ok();
+            // Held until the dispatch returns: a dispatch that waits on it
+            // only ends at the hang bound, and then fails below.
+            let responsive = received.recv_timeout(tilo_test_env::hang_bound()).is_ok();
             drop(lock);
             responsive
         });
@@ -6266,6 +6081,7 @@ mod tests {
         use settings_store::hardware::{
             DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
         };
+        use std::os::unix::fs::PermissionsExt as _;
         for id in [DISPLAY_KEEP_ID, DISPLAY_REVERT_ID] {
             let _home = tilo_test_env::TestHome::new().unwrap();
             let paths = settings_store::SessionPaths::configured().unwrap();
@@ -6280,7 +6096,6 @@ mod tests {
             // The copy stays readable (an unreadable copy may hold another
             // process's edit and blocks the write), but its directory takes
             // no new file, so only the copy's replacement fails.
-            use std::os::unix::fs::PermissionsExt as _;
             let copy_dir = paths.copy.parent().unwrap().to_path_buf();
             assert_ne!(Some(copy_dir.as_path()), paths.device.parent());
             let writable = std::fs::metadata(&copy_dir).unwrap().permissions();
@@ -6394,20 +6209,20 @@ mod tests {
                 assert!(!state.overlays.ws_settings);
                 assert_eq!(
                     state.quick_settings.current_level(),
-                    &crate::shell::quick_settings::QsLevel::Root
+                    &tilo_quick_settings::QsLevel::Root
                 );
             }
 
             invoke_action(&results, "quick-settings.clipboard", &chrome);
             assert_eq!(
                 chrome.borrow().quick_settings.section,
-                Some(crate::shell::quick_settings::QsSection::Clipboard)
+                Some(tilo_quick_settings::QsSection::Clipboard)
             );
 
             invoke_action(&results, "quick-settings.devices", &chrome);
             assert_eq!(
                 chrome.borrow().quick_settings.section,
-                Some(crate::shell::quick_settings::QsSection::Devices)
+                Some(tilo_quick_settings::QsSection::Devices)
             );
         }
 
@@ -6465,9 +6280,10 @@ mod tests {
                 .find(|r| r.id == "room.activity.open")
                 .expect("typing 'activity' must surface the room-activity action");
             assert_eq!(action.title, "Show workspace activity");
-            let activity_tab =
-                || crate::shell::tab_binding::active_workspace_activity_tab(&c.borrow().tree());
-            assert!(activity_tab().is_none(), "starts closed");
+            assert!(
+                c.borrow_mut().take_activity_open_request().is_none(),
+                "starts closed"
+            );
             (action.on_open)(
                 &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
@@ -6476,12 +6292,12 @@ mod tests {
             )
             .expect("a nullary chrome action must run");
             assert!(
-                activity_tab().is_some(),
-                "invoking the exported action opens the workspace's Activity tab"
+                c.borrow_mut().take_activity_open_request().is_some(),
+                "invoking the exported action opens the Activity app"
             );
             assert!(
                 !c.borrow().overlays.room_activity,
-                "Activity is a tab, not a modal that captures input"
+                "Activity is an app's window, not a modal that captures input"
             );
             assert!(
                 !c.borrow().overlays.collaborators,
@@ -6805,7 +6621,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_palette_builds_the_catalogue_once() {
+    fn typing_builds_the_catalogue_once() {
         // The catalogue is rebuilt when the settings document changes, and
         // which document that is follows the environment: hold it still, as
         // every test that changes either does, or a neighbour's settings
@@ -6834,24 +6650,10 @@ mod tests {
             )
         };
 
-        let empty = grouped("");
-        let suggestions = empty
-            .iter()
-            .filter(|group| group.kind == ResourceKind::Action)
-            .flat_map(|group| group.results.iter().map(|result| result.id.as_str()))
-            .collect::<Vec<_>>();
-        assert!(
-            suggestions.contains(&"room.activity.open")
-                && suggestions.contains(&"shortcut-help.toggle"),
-            "the empty palette looks its suggestions up: {suggestions:?}"
-        );
-        assert_eq!(
-            builds.get(),
-            1,
-            "one fan-out query and its suggestion lookups share one build"
-        );
-        grouped("");
-        assert_eq!(builds.get(), 1, "nothing changed, so nothing is rebuilt");
+        // Nothing typed is the launcher, which actions are not part of: it
+        // asks the catalogue nothing.
+        assert!(grouped("").is_empty(), "no action is suggested unasked");
+        assert_eq!(builds.get(), 0, "the launcher builds no catalogue");
         for needle in ["d", "da", "dar"] {
             assert!(!grouped(needle).is_empty(), "{needle:?} finds actions");
         }
@@ -6860,7 +6662,11 @@ mod tests {
             .flat_map(|group| group.results)
             .any(|result| result.id == "appearance.theme.dark");
         assert!(found, "\"dark\" finds the dark theme");
-        assert_eq!(builds.get(), 1, "typing narrows the retained rows");
+        assert_eq!(
+            builds.get(),
+            1,
+            "built once, typing narrows the retained rows"
+        );
     }
 
     #[test]
@@ -6908,6 +6714,57 @@ mod tests {
         let state = chrome.borrow();
         assert!(!provider.hidden_from_people(&finish, "fi", &state));
         assert!(!provider.hidden_from_people(&close, "close", &state));
+    }
+
+    /// Action ids name the room a workspace is; an id of the form from
+    /// before (`workspace.select.<number>`) still selects the workspace that
+    /// number names, and one a workspace carried before it was joined to its
+    /// room's own workspace selects that one.
+    #[test]
+    fn a_workspace_action_named_by_its_old_number_still_selects_it() {
+        let _env = tilo_test_env::lock();
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let (workspace, room) = chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|active| (active.id, active.room()))
+            .expect("fixture");
+        let old = crate::shell::state::WorkspaceId(0x5eed);
+        chrome
+            .borrow()
+            .tree_mut()
+            .workspace_aliases
+            .insert(old, room);
+        let doc = AutoCommit::new();
+        let state = chrome.borrow();
+        let ctx = || SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle: "",
+            wanted: &[ResourceKind::Action],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let current = provider
+            .resolve(&format!("workspace.select.{room}"), ctx())
+            .expect("the room names its workspace's action");
+        for legacy in [workspace, old] {
+            let id = format!("workspace.select.{}", legacy.0);
+            let row = provider
+                .resolve(&id, ctx())
+                .unwrap_or_else(|| panic!("{id} resolves"));
+            assert_eq!(row.id, id, "answered under the id it was asked by");
+            assert_eq!(row.title, current.title, "the same workspace's action");
+        }
+        assert!(
+            provider
+                .resolve("workspace.select.123456789", ctx())
+                .is_none()
+        );
     }
 
     #[test]
@@ -7028,28 +6885,6 @@ mod tests {
     }
 
     #[test]
-    fn shortcut_text_matches_rebound_fixed_and_unassigned_chords() {
-        let mut config = settings_store::hardware::ShortcutConfig::default();
-        config.bindings.insert(
-            ShortcutAction::NextWorkspace,
-            settings_store::hardware::KeyChord::parse("Super+Alt+n").expect("valid test chord"),
-        );
-        config.bindings.remove(&ShortcutAction::PreviousWorkspace);
-        for entry in settings_store::keyboard_shortcuts::catalogue(&config) {
-            assert_eq!(
-                shortcut_text(&config, entry.id),
-                entry
-                    .chords
-                    .first()
-                    .map(crate::shell::keyboard_shortcuts::chord_text),
-                "{} keeps its configured, fixed or unassigned chord",
-                entry.id,
-            );
-        }
-        assert_eq!(shortcut_text(&config, "no.such.shortcut"), None);
-    }
-
-    #[test]
     fn workspace_action_invocations_do_not_rebuild_the_palette_catalogue() {
         use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
         use crate::shell::state::{Workspace, WorkspaceId};
@@ -7140,11 +6975,11 @@ mod tests {
             use crate::shell::state::{Workspace, WorkspaceId};
             let state = chrome.borrow();
             let mut tree = state.tree_mut();
-            let first_room = tree.desktop.active_workspace().expect("fixture").room;
+            let first_room = tree.desktop.active_workspace().expect("fixture").room();
             let id = WorkspaceId::new();
             let mut workspace = Workspace::new(id, "Second");
             workspace.set_owner("shell-fixture");
-            let room = workspace.room;
+            let room = workspace.room();
             tree.desktop.workspaces.push(workspace);
             drop(tree);
             (first_room, id, room)
@@ -7176,7 +7011,7 @@ mod tests {
             let state = chrome.borrow();
             let tree = state.tree();
             let workspace = tree.desktop.active_workspace().expect("fixture");
-            let located = (workspace.id, workspace.room);
+            let located = (workspace.id, workspace.room());
             drop(tree);
             located
         };
@@ -7185,7 +7020,7 @@ mod tests {
         let switch_to = |provider: &ActionsProvider| {
             row(
                 &rows_for(provider, &chrome, ""),
-                &format!("workspace.select.{}", workspace_id.0),
+                &format!("workspace.select.{workspace_room}"),
             )
             .map(|row| row.title.clone())
             .expect("every workspace can be switched to")
@@ -7234,7 +7069,7 @@ mod tests {
             .desktop
             .active_workspace()
             .expect("fixture")
-            .room;
+            .room();
         assert_ne!(other_room, workspace_room);
         let other_proposal = rows_for(&provider, &other, "ownership")
             .into_iter()
@@ -7272,7 +7107,7 @@ mod tests {
             .desktop
             .active_workspace()
             .expect("workspace")
-            .room;
+            .room();
         let handle = chrome.borrow().tree_handle();
         handle.write().room_authority.insert(
             room,
@@ -7347,7 +7182,7 @@ mod tests {
         let first = Rc::new(RecordingQsActions::default());
         let slot = Rc::new(SharedQsDispatcher::new(
             first.clone(),
-            crate::shell::quick_settings::actions::QsActionAvailability::all(),
+            tilo_quick_settings::actions::QsActionAvailability::all(),
         ));
         let provider = ActionsProvider::with_shared_qs_actions(Rc::clone(&slot));
         let chrome = chrome_with_room();
@@ -7375,7 +7210,7 @@ mod tests {
         let second = Rc::new(RecordingQsActions::default());
         slot.replace(
             second.clone(),
-            crate::shell::quick_settings::actions::QsActionAvailability::all(),
+            tilo_quick_settings::actions::QsActionAvailability::all(),
         );
         set_volume(&provider).expect("the second backend sets the volume");
         assert_eq!(
@@ -7394,9 +7229,9 @@ mod tests {
         assert!(volume_available(&provider));
         slot.replace(
             second,
-            crate::shell::quick_settings::actions::QsActionAvailability {
+            tilo_quick_settings::actions::QsActionAvailability {
                 volume: false,
-                ..crate::shell::quick_settings::actions::QsActionAvailability::all()
+                ..tilo_quick_settings::actions::QsActionAvailability::all()
             },
         );
         assert!(!volume_available(&provider), "the volume control went away");
@@ -7422,7 +7257,6 @@ mod tests {
             "room.activity.explore",
             "room.activity.replay",
             "room.activity.acknowledge",
-            "room.activity.tasks",
         ] {
             assert!(
                 out.iter().any(|action| action.id == id
@@ -7491,12 +7325,7 @@ mod tests {
             &ActionArgs::none(),
         );
         assert!(matches!(result, Err(ActionError::Explained(_))));
-        assert!(
-            chrome
-                .borrow_mut()
-                .take_shortcut_action_requests()
-                .is_empty()
-        );
+        assert!(chrome.borrow_mut().take_window_requests().is_empty());
     }
 
     #[test]
@@ -7830,9 +7659,14 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn theme_and_language_actions_are_searchable_and_write_the_settings_store() {
+        use settings_store::appearance::{HIGH_CONTRAST, MODE};
+        // The person's settings records, kept apart from every other test's.
+        let _home = tilo_test_env::TestHome::new().unwrap();
         let config = tempfile::tempdir().expect("isolated settings");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_CONFIG_HOME", config.path());
+        // The session keeps the person's settings, as it does in a session.
+        let paths = settings_store::SessionPaths::beside(config.path().join("settings.json"));
+        let records = settings_store::SessionSettings::open(paths).expect("records");
+        let _settings = crate::shell::test_support::install_settings(std::sync::Arc::new(records));
 
         let provider = ActionsProvider::new();
         let chrome = chrome_with_room();
@@ -7865,39 +7699,22 @@ mod tests {
             "appearance.theme.light"
         );
         assert_eq!(
-            id_of("high contrast", "appearance.high-contrast"),
-            "appearance.high-contrast"
-        );
-        assert_eq!(
             id_of("language", "appearance.language"),
             "appearance.language"
         );
 
+        // Unset reads as dark, so a change to dark is shown from light: a
+        // field edit stores only what differs from what is read now.
+        invoke_action(&query("light theme"), "appearance.theme.light", &chrome);
+        assert_eq!(MODE.get().as_deref(), Some("light"));
+        let generation = chrome.borrow().appearance_generation;
         invoke_action(&query("dark theme"), "appearance.theme.dark", &chrome);
         assert!(
-            chrome.borrow().appearance_generation > 0,
+            chrome.borrow().appearance_generation > generation,
             "theme actions must wake the live frame, not only write the store"
         );
-        let appearance = settings_store::load_section("appearance");
-        assert_eq!(
-            appearance.get("mode").and_then(serde_json::Value::as_str),
-            Some("dark")
-        );
-        assert_eq!(
-            appearance
-                .get("high_contrast")
-                .and_then(serde_json::Value::as_bool),
-            Some(false)
-        );
-
-        invoke_action(&query("high contrast"), "appearance.high-contrast", &chrome);
-        let appearance = settings_store::load_section("appearance");
-        assert_eq!(
-            appearance
-                .get("high_contrast")
-                .and_then(serde_json::Value::as_bool),
-            Some(true)
-        );
+        assert_eq!(MODE.get().as_deref(), Some("dark"));
+        assert!(!HIGH_CONTRAST.get());
 
         let language = query("language")
             .into_iter()
@@ -7927,7 +7744,9 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    fn a_theme_action_records_its_action_id_with_both_leaves_it_sets() {
+    fn a_theme_action_records_the_field_edits_it_makes_with_both_leaves() {
+        // The person's settings records, kept apart from every other test's.
+        let _home = tilo_test_env::TestHome::new().unwrap();
         let config = tempfile::tempdir().expect("isolated settings");
         let paths = settings_store::SessionPaths::beside(config.path().join("settings.json"));
         let records = settings_store::SessionSettings::open(paths.clone()).expect("records");
@@ -7948,18 +7767,34 @@ mod tests {
                 doc_root: &automerge::ROOT,
             })
         };
+        // High contrast on, so choosing a mode changes both leaves.
+        settings_store::appearance::HIGH_CONTRAST
+            .set(true)
+            .expect("high contrast on");
+        let before =
+            std::fs::read_to_string(paths.change_log()).map_or(0, |log| log.lines().count());
         invoke_action(&rows, "appearance.theme.light", &chrome);
 
         let log = std::fs::read_to_string(paths.change_log()).expect("change log");
         let entries: Vec<serde_json::Value> = log
             .lines()
+            .skip(before)
             .map(|line| serde_json::from_str(line).expect("one JSON entry per line"))
             .collect();
         let mut leaves: Vec<_> = entries
             .iter()
             .map(|entry| {
                 assert_eq!(entry["section"], "appearance");
-                assert_eq!(entry["action"], "appearance.theme.light");
+                // The palette changes settings through Settings' own field
+                // edits, so each leaf names the edit that set it, and the
+                // palette action that ran it: "light mode, from the palette"
+                // stays distinct from the same edit made in Settings.
+                assert_eq!(entry["action"], "settings.appearance/field-edit");
+                assert_eq!(
+                    entry["invoked_by"],
+                    serde_json::json!({ "action": "appearance.theme.light" }),
+                    "{entry}"
+                );
                 assert_eq!(entry["via"], "session");
                 (
                     entry["leaf"].as_str().unwrap_or_default(),
@@ -7974,7 +7809,7 @@ mod tests {
                 ("high_contrast", serde_json::json!(false)),
                 ("mode", serde_json::json!("light")),
             ],
-            "one merge sets both leaves, each attributed to the action"
+            "the action sets both leaves, each attributed to its field edit and the palette action"
         );
         assert_eq!(
             settings_store::load_at(&paths.copy)["appearance"]["mode"],
@@ -8509,7 +8344,7 @@ mod tests {
                     tilo_actions::ActionKind::Undoable,
                     "{id} rearranges the shared desk"
                 );
-                assert!(contract.reversible);
+                assert!(contract.can_be_undone());
                 assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
             }
         }
@@ -8593,7 +8428,12 @@ mod tests {
                         .any(|parameter| parameter.name == "confirm")
                 );
             }
-            assert!(!quick_settings_contract().reversible);
+            // A setting applied on the device itself is undone by undoing
+            // the change, never by the workspace's own undo.
+            assert_eq!(
+                quick_settings_contract().kind,
+                tilo_actions::ActionKind::Undoable
+            );
             assert_eq!(
                 shell_action_kind("agent.invite"),
                 tilo_actions::OperationKind::Document
@@ -8606,9 +8446,9 @@ mod tests {
 
         // Phase `quick_settings_contracts_follow_each_production_mechanism`.
         {
-            let dispatcher: Rc<dyn crate::shell::quick_settings::actions::QsActions> =
+            let dispatcher: Rc<dyn tilo_quick_settings::actions::QsActions> =
                 Rc::new(RecordingQsActions::default());
-            let availability = crate::shell::quick_settings::actions::QsActionAvailability {
+            let availability = tilo_quick_settings::actions::QsActionAvailability {
                 brightness: false,
                 volume: true,
                 wifi: false,
@@ -8650,20 +8490,14 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
-    // brightness etc. should in general be raised on the correct (?)
-    // screen(s)… in consistent positions… also how to handle brightness
-    // controls on multiple screens" — search lists one brightness row per
-    // display, ←/→ adjusts it in place, and "brighter" acts on the display
-    // the person works on.
     #[test]
     fn search_has_a_brightness_row_per_display_and_brighter_moves_the_focused_one() {
-        use crate::shell::chrome_state::DisplayBrightness;
+        use tilo_quick_settings::DisplayBrightness;
         let recorder = Rc::new(RecordingQsActions::default());
-        let dispatcher: Rc<dyn crate::shell::quick_settings::actions::QsActions> = recorder.clone();
+        let dispatcher: Rc<dyn tilo_quick_settings::actions::QsActions> = recorder.clone();
         let provider = ActionsProvider::with_shared_qs_actions(Rc::new(SharedQsDispatcher::new(
             dispatcher,
-            crate::shell::quick_settings::actions::QsActionAvailability::all(),
+            tilo_quick_settings::actions::QsActionAvailability::all(),
         )));
         let chrome = chrome_with_room();
         {
@@ -8747,7 +8581,7 @@ mod tests {
         fail: std::cell::Cell<bool>,
     }
 
-    impl crate::shell::quick_settings::actions::QsActions for RecordingQsActions {
+    impl tilo_quick_settings::actions::QsActions for RecordingQsActions {
         fn set_brightness(&self, percent: f32) -> Result<(), String> {
             self.calls
                 .borrow_mut()
@@ -8798,7 +8632,7 @@ mod tests {
 
         fn set_power_profile(
             &self,
-            profile: crate::shell::quick_settings::actions::PowerProfile,
+            profile: tilo_quick_settings::actions::PowerProfile,
         ) -> Result<(), String> {
             self.calls.borrow_mut().push(format!("power:{profile:?}"));
             self.result()
@@ -8832,11 +8666,10 @@ mod tests {
         // Phase `typed_quick_settings_effects_use_the_injected_dispatcher_exactly`.
         {
             let recorder = Rc::new(RecordingQsActions::default());
-            let dispatcher: Rc<dyn crate::shell::quick_settings::actions::QsActions> =
-                recorder.clone();
+            let dispatcher: Rc<dyn tilo_quick_settings::actions::QsActions> = recorder.clone();
             let slot = Rc::new(SharedQsDispatcher::new(
                 dispatcher,
-                crate::shell::quick_settings::actions::QsActionAvailability::all(),
+                tilo_quick_settings::actions::QsActionAvailability::all(),
             ));
             let provider = ActionsProvider::with_shared_qs_actions(slot);
             let chrome = chrome_with_room();
@@ -8983,7 +8816,7 @@ mod tests {
 
         // Phase `quick_settings_ui_adapter_and_external_effect_share_typed_dispatch`.
         {
-            use crate::shell::quick_settings::actions::QsActions as _;
+            use tilo_quick_settings::actions::QsActions as _;
 
             let recorder = Rc::new(RecordingQsActions::default());
             let ui = ValidatedQsActions::new(recorder.as_ref());
@@ -9018,7 +8851,7 @@ mod tests {
                     crate::shell::search::action_api::ArgValue::Boolean(true),
                 )],
             );
-            ui.set_power_profile(crate::shell::quick_settings::actions::PowerProfile::Saver)
+            ui.set_power_profile(tilo_quick_settings::actions::PowerProfile::Saver)
                 .expect("valid UI value dispatches");
             external(
                 QS_POWER_ID,
@@ -9250,9 +9083,9 @@ mod tests {
 
     #[test]
     fn radio_semantic_actions_wait_for_real_work_and_report_success_or_refusal() {
-        use crate::shell::quick_settings::radio::fixture::Fixture;
         use crate::shell::search::InvocationDisposition;
         use crate::shell::search::action_api::{ArgValue, ResourceRef};
+        use tilo_quick_settings::radio::fixture::Fixture;
         for (id, change) in [
             (QS_WIFI_ID, os_actions::RadioChange::Wifi(true)),
             (QS_AIRPLANE_ID, os_actions::RadioChange::Airplane(true)),
@@ -9261,7 +9094,7 @@ mod tests {
                 let fixture = Fixture::new();
                 let slot = Rc::new(SharedQsDispatcher::new(
                     Rc::new(fixture.dispatcher),
-                    crate::shell::quick_settings::actions::QsActionAvailability::all(),
+                    tilo_quick_settings::actions::QsActionAvailability::all(),
                 ));
                 let (wake_tx, wake_rx) = std::sync::mpsc::channel();
                 slot.set_radio_wake(Arc::new(move || {
@@ -9290,10 +9123,7 @@ mod tests {
                     panic!("starting radio work cannot manufacture completion");
                 };
                 assert_eq!(
-                    fixture
-                        .entered
-                        .recv_timeout(std::time::Duration::from_secs(5))
-                        .unwrap(),
+                    tilo_test_env::recv("the radio work to start", &fixture.entered),
                     change
                 );
                 assert!(poll().unwrap().is_none());
@@ -9320,15 +9150,13 @@ mod tests {
                     "a stale descriptor cannot admit a second radio mutation"
                 );
                 fixture.release.send(outcome.clone()).unwrap();
-                wake_rx
-                    .recv_timeout(std::time::Duration::from_secs(5))
-                    .unwrap();
+                tilo_test_env::recv("the radio work's wake", &wake_rx);
                 assert_radio_outcome(&poll, &chrome, change, &outcome);
                 assert!(!chrome.borrow().quick_settings.radio_change_pending);
                 let completion = slot
                     .take_radio_completion()
                     .expect("host consumes same owned receipt");
-                completion.apply(&chrome);
+                crate::shell::chrome_state::ChromeState::apply_radio_ticket(&chrome, &completion);
                 assert!(slot.take_radio_completion().is_none());
                 let restored = radio_catalog(&registry, &chrome, &doc);
                 assert!(matches!(
@@ -9346,12 +9174,12 @@ mod tests {
 
     #[test]
     fn radio_semantic_admission_rechecks_current_dispatcher_and_workspace_authority() {
-        use crate::shell::quick_settings::radio::fixture::Fixture;
         use crate::shell::search::action_api::{ArgValue, ResourceRef};
+        use tilo_quick_settings::radio::fixture::Fixture;
         let fixture = Fixture::new();
         let slot = Rc::new(SharedQsDispatcher::new(
             Rc::new(fixture.dispatcher.clone()),
-            crate::shell::quick_settings::actions::QsActionAvailability::all(),
+            tilo_quick_settings::actions::QsActionAvailability::all(),
         ));
         let mut registry = crate::shell::search::SearchRegistry::new();
         registry.register(Rc::new(ActionsProvider::with_shared_qs_actions(
@@ -9365,7 +9193,7 @@ mod tests {
             .unwrap();
         slot.replace(
             Rc::new(fixture.dispatcher.clone()),
-            crate::shell::quick_settings::actions::QsActionAvailability::default(),
+            tilo_quick_settings::actions::QsActionAvailability::default(),
         );
         assert!(
             action
@@ -9380,7 +9208,7 @@ mod tests {
         assert!(fixture.entered.try_recv().is_err());
         slot.replace(
             Rc::new(fixture.dispatcher.clone()),
-            crate::shell::quick_settings::actions::QsActionAvailability::all(),
+            tilo_quick_settings::actions::QsActionAvailability::all(),
         );
         chrome
             .borrow_mut()
@@ -9433,7 +9261,7 @@ mod tests {
     /// exact address in a catalog, then bind and run its JSON arguments.
     /// Every action stays selectable, so the provider's own authority
     /// check is the one under test.
-    fn invoke_shell_action(
+    pub(super) fn invoke_shell_action(
         chrome: &Chrome,
         id: &str,
         args: &serde_json::Value,
@@ -9585,7 +9413,7 @@ mod tests {
                 )
                 .expect("the owner admits the delegate");
                 let set_role = tilo_action_policy::roles::governance_action(
-                    &ws.room.to_string(),
+                    &ws.room().to_string(),
                     tilo_action_policy::roles::governance::SET_ROLE,
                 );
                 ws.govern_as_at(
@@ -9944,16 +9772,105 @@ mod tests {
             PeerSyncRequest::ListPendingInvitations
         );
     }
+    /// The notification centre's controls are actions too: an agent or a
+    /// screen reader opens the list, clears it and brings it back as a click
+    /// on "Clear all" and its Undo do, by address, with nothing to click.
+    #[test]
+    fn notifications_open_clear_and_come_back_by_action() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let resolve = |id: &str| {
+            let document = AutoCommit::new();
+            let state = chrome.borrow();
+            provider
+                .resolve(
+                    id,
+                    SearchContext {
+                        query_scope: None,
+                        include_programmatic: true,
+                        needle: "",
+                        wanted: &[ResourceKind::Action],
+                        chrome: &state,
+                        doc: &document,
+                        doc_root: &automerge::ROOT,
+                    },
+                )
+                .unwrap_or_else(|| panic!("{id} is published"))
+        };
+        let run = |result: &crate::shell::search::SearchResult| {
+            let mut document = AutoCommit::new();
+            (result.on_open)(
+                &mut ui::widget::Edits::lend(&mut document),
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none(),
+            )
+        };
+
+        let open = resolve("notifications.open");
+        assert_eq!(open.operation_kind, tilo_actions::OperationKind::View);
+        run(&open).expect("opening the list always works");
+        {
+            let state = chrome.borrow();
+            assert!(state.overlays.quick_settings);
+            assert_eq!(
+                state.quick_settings.nav_stack.last(),
+                Some(&tilo_quick_settings::QsLevel::Notifications)
+            );
+        }
+
+        let clear = resolve("notifications.clear");
+        assert!(
+            matches!(run(&clear), Err(ActionError::Refused(_))),
+            "an empty list says there is nothing to clear"
+        );
+        let id = chrome.borrow_mut().push_notification("Build finished", "");
+        chrome.borrow_mut().dismiss_notification(id);
+        assert_eq!(chrome.borrow().notification_history().len(), 1);
+        run(&clear).expect("a list with something in it clears");
+        assert!(chrome.borrow().notification_history().is_empty());
+        assert!(chrome.borrow().can_undo_notification_history_clear());
+
+        let undo = resolve("notifications.clear.undo");
+        run(&undo).expect("what was just cleared comes back");
+        let state = chrome.borrow();
+        assert_eq!(state.notification_history().len(), 1);
+        assert_eq!(state.notification_history()[0].title, "Build finished");
+        assert!(!state.can_undo_notification_history_clear());
+        drop(state);
+        assert!(
+            matches!(run(&undo), Err(ActionError::Refused(_))),
+            "nothing is left to bring back"
+        );
+        for id in ["notifications.clear", "notifications.clear.undo"] {
+            assert_eq!(
+                shell_action_contract(id).kind,
+                tilo_actions::ActionKind::Undoable,
+                "{id}"
+            );
+        }
+
+        // The undo lasts its eight seconds whether or not anything painted.
+        let id = chrome.borrow_mut().push_notification("Backup done", "");
+        chrome.borrow_mut().dismiss_notification(id);
+        run(&clear).expect("a list with something in it clears");
+        let ended = ui::time::now() + tilo_desktop::notifications::CLEAR_UNDO_WINDOW;
+        ui::time::testing::with_monotonic_time(ended, || {
+            let offered = action_available("notifications.clear.undo", &chrome.borrow(), false);
+            assert!(!offered && matches!(run(&undo), Err(ActionError::Refused(_))));
+        });
+    }
+
     #[test]
     fn radio_details_navigation_actions_are_views_and_do_not_toggle_radios() {
         for (id, section) in [
             (
                 "quick-settings.network",
-                crate::shell::quick_settings::QsSection::Wifi,
+                tilo_quick_settings::QsSection::Wifi,
             ),
             (
                 "quick-settings.bluetooth",
-                crate::shell::quick_settings::QsSection::Bluetooth,
+                tilo_quick_settings::QsSection::Bluetooth,
             ),
         ] {
             let provider = ActionsProvider::new();
@@ -9975,7 +9892,7 @@ mod tests {
                 // The list opens in place on the root page.
                 assert_eq!(
                     state.quick_settings.nav_stack,
-                    [crate::shell::quick_settings::QsLevel::Root]
+                    [tilo_quick_settings::QsLevel::Root]
                 );
                 assert_eq!(state.quick_settings.section, Some(section));
                 assert_eq!(
@@ -9984,5 +9901,46 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn workspace_rename_names_the_workspace_on_screen_and_refuses_a_bad_name() {
+        let chrome = chrome_with_room();
+        let name = || {
+            chrome
+                .borrow()
+                .tree()
+                .desktop
+                .active_workspace()
+                .map(|workspace| workspace.name.clone())
+        };
+        invoke_shell_action(
+            &chrome,
+            "workspace.rename",
+            &serde_json::json!({ "name": "  Thesis  " }),
+        )
+        .expect("the person here may rename their workspace");
+        assert_eq!(name().as_deref(), Some("Thesis"));
+        for bad in ["", "   ", "Line\nbreak"] {
+            assert!(
+                invoke_shell_action(
+                    &chrome,
+                    "workspace.rename",
+                    &serde_json::json!({ "name": bad }),
+                )
+                .is_err(),
+                "{bad:?} is no name"
+            );
+        }
+        assert!(
+            invoke_shell_action(
+                &chrome,
+                "workspace.rename",
+                &serde_json::json!({ "name": "x".repeat(121) }),
+            )
+            .is_err(),
+            "a name is at most 120 characters"
+        );
+        assert_eq!(name().as_deref(), Some("Thesis"));
     }
 }

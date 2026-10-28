@@ -1,6 +1,3 @@
-//! A session peer that serves another workspace's namespace, validly
-//! signed, gets none of it applied.
-
 use super::*;
 use crate::namespace::ROOT_INO;
 use crate::sync::bind_certified_test_endpoint;

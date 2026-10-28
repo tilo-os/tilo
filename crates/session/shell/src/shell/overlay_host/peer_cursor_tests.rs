@@ -32,6 +32,7 @@ fn one_group_seed() -> WorkspaceTree {
                     kind: AppKind::Terminal,
                     label: "Terminal".into(),
                 },
+                app_title: None,
             }],
             // A group's active tab has to name a tab it has; `0`
             // names nothing, and the resolvers read this.
@@ -70,7 +71,7 @@ fn active_key(tree: &WorkspaceTree) -> PresenceKey {
         .workspaces
         .iter()
         .find(|w| w.id == tree.desktop.active)
-        .map(|w| w.room.to_string())
+        .map(|w| w.room().to_string())
         .expect("the seed has an active workspace");
     PresenceKey::Workspace { id: room }
 }
@@ -187,6 +188,7 @@ fn following_a_peer_tracks_their_tab_binds_views_and_releases_on_local_intent() 
                         kind: AppKind::Other("Plan".into()),
                         label: "Plan".into(),
                     },
+                    app_title: None,
                 }],
                 active_tab: target_tab,
                 focus_history: Vec::new(),
@@ -212,7 +214,7 @@ fn following_a_peer_tracks_their_tab_binds_views_and_releases_on_local_intent() 
         tree.desktop.workspaces[0]
             .collaborators
             .push(Collaborator::with_active_tab("ada", "Ada", target_tab).with_session(77));
-        let expected_room = tree.desktop.workspaces[0].room;
+        let expected_room = tree.desktop.workspaces[0].room();
         let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let captured = std::rc::Rc::clone(&calls);
@@ -239,7 +241,7 @@ fn following_a_peer_tracks_their_tab_binds_views_and_releases_on_local_intent() 
         tree.desktop.workspaces[0]
             .collaborators
             .push(Collaborator::with_active_tab("ada", "Ada", target_tab).with_session(77));
-        let expected_room = tree.desktop.workspaces[0].room;
+        let expected_room = tree.desktop.workspaces[0].room();
         let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -268,7 +270,7 @@ fn following_a_peer_tracks_their_tab_binds_views_and_releases_on_local_intent() 
         tree.desktop.workspaces[0]
             .collaborators
             .push(Collaborator::with_active_tab("ada", "Ada", target_tab).with_session(77));
-        let room = tree.desktop.workspaces[0].room;
+        let room = tree.desktop.workspaces[0].room();
         let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let captured = std::rc::Rc::clone(&calls);
@@ -300,7 +302,7 @@ fn following_a_peer_tracks_their_tab_binds_views_and_releases_on_local_intent() 
         tree.desktop.workspaces[0]
             .collaborators
             .push(Collaborator::with_active_tab("ada", "Ada", target_tab).with_session(77));
-        let expected_room = tree.desktop.workspaces[0].room;
+        let expected_room = tree.desktop.workspaces[0].room();
         let next_workspace = WorkspaceId::new();
         tree.desktop
             .workspaces
@@ -402,7 +404,7 @@ fn following_draws_no_stray_stroke_across_the_work() {
 fn follow_waits_for_the_live_row_before_recording_its_target() {
     let tree = one_group_seed();
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-    let room = tree.desktop.workspaces[0].room;
+    let room = tree.desktop.workspaces[0].room();
     let strip = tree.desktop.workspaces[0].strips[0].id;
     let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let captured = std::rc::Rc::clone(&calls);
@@ -424,6 +426,7 @@ fn follow_waits_for_the_live_row_before_recording_its_target() {
                     kind: AppKind::Other("Chat".into()),
                     label: "Chat".into(),
                 },
+                app_title: None,
             }],
             active_tab: 201,
             focus_history: Vec::new(),
@@ -493,7 +496,7 @@ fn following_cross_app_context_releases_all_apps_when_the_peer_or_window_leaves(
     ] {
         let tree = cross_app_follow_tree();
         let strip = tree.desktop.workspaces[0].strips[0].id;
-        let room = tree.desktop.workspaces[0].room;
+        let room = tree.desktop.workspaces[0].room();
         let fanout = std::sync::Arc::new(crate::shell::collab_broker::FanoutState::new());
         let dispatcher = crate::shell::collab_broker::SessionFollowDispatcher::new(
             std::sync::Arc::clone(&fanout),
@@ -509,7 +512,8 @@ fn following_cross_app_context_releases_all_apps_when_the_peer_or_window_leaves(
                 fanout.subscribe_rooms(
                     vec![subscribed_room],
                     Box::new(move |event, _| {
-                        if let ui::collaboration::CollabEvent::FollowChanged { peer_id } = event {
+                        if let runtime_collab::event::CollabEvent::FollowChanged { peer_id } = event
+                        {
                             events.lock().unwrap().push((app, peer_id.clone()));
                         }
                     }),
@@ -527,7 +531,6 @@ fn following_cross_app_context_releases_all_apps_when_the_peer_or_window_leaves(
         );
         {
             let mut state = chrome.borrow_mut();
-            // The same remote session moves from Chat into Terminal.
             state.tree_mut().desktop.workspaces[0].collaborators[0].active_tab = Some(1);
             state.bump();
         }
@@ -556,7 +559,7 @@ fn following_cross_app_context_releases_all_apps_when_the_peer_or_window_leaves(
         assert!(host.reconcile_followed_peer());
         assert!(host.followed_peer.is_none());
         assert!(host.followed_room.is_none());
-        assert_eq!(host.follow_stop_rect, Rect::ZERO);
+        assert_eq!(host.follow_banner.stop_rect(), Rect::ZERO);
         let received = events.lock().unwrap();
         for app in [0, 1] {
             assert_eq!(
@@ -599,6 +602,7 @@ fn cross_app_follow_tree() -> WorkspaceTree {
                     kind: AppKind::Other("Chat".into()),
                     label: "Chat".into(),
                 },
+                app_title: None,
             }],
             active_tab: 201,
             focus_history: Vec::new(),
@@ -607,4 +611,59 @@ fn cross_app_follow_tree() -> WorkspaceTree {
         .collaborators
         .push(Collaborator::with_active_tab("ada", "Ada", 201).with_session(77));
     tree
+}
+
+/// Someone followed opens a window: where they are reaches this device
+/// before the window does. The view keeps following and goes there once
+/// the window arrives, instead of letting go.
+#[test]
+fn follow_waits_for_a_window_the_followed_person_just_opened() {
+    let mut tree = one_group_seed();
+    tree.desktop.workspaces[0]
+        .collaborators
+        .push(Collaborator::with_active_tab("ada", "Ada", 201).with_session(77));
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    host.set_followed_peer(Some("ada".into()));
+    host.reconcile_followed_peer();
+    assert_eq!(
+        host.followed_peer.as_deref(),
+        Some("ada"),
+        "a window not here yet is no reason to stop"
+    );
+    assert_eq!(
+        chrome.borrow().active_tab_id(),
+        Some(1),
+        "nothing to go to yet"
+    );
+    {
+        let state = chrome.borrow();
+        let mut tree = state.tree_mut();
+        tree.desktop.workspaces[0].strips[0]
+            .window_groups
+            .push(StateGroup {
+                id: 200,
+                width: StateWidth::Normal,
+                maximized: false,
+                tabs: vec![Tab {
+                    id: 201,
+                    title: "Chat".into(),
+                    tile: TileContent::AppPlaceholder {
+                        kind: AppKind::Other("Chat".into()),
+                        label: "Chat".into(),
+                    },
+                    app_title: None,
+                }],
+                active_tab: 201,
+                focus_history: Vec::new(),
+            });
+    }
+    chrome.borrow_mut().bump();
+    host.resync_strips_from_tree();
+    host.reconcile_followed_peer();
+    assert_eq!(
+        chrome.borrow().active_tab_id(),
+        Some(201),
+        "the window arrived"
+    );
+    assert_eq!(host.followed_peer.as_deref(), Some("ada"));
 }

@@ -38,6 +38,8 @@ use sha2::{Digest as _, Sha256};
 
 #[cfg(feature = "client")]
 pub mod client;
+#[cfg(feature = "client")]
+pub mod device;
 #[cfg(any(test, feature = "fake"))]
 pub mod fake;
 #[cfg(test)]
@@ -75,6 +77,23 @@ pub struct Provider {
     /// `token_access_type=offline`, which make the provider issue a refresh
     /// token.
     pub authorization_params: Vec<(String, String)>,
+    /// How an access token is renewed from the grant.
+    pub refresh: Refresh,
+    /// RFC 8628 device authorization endpoint, for an issuer whose client
+    /// signs in with a device code rather than a browser redirect.
+    pub device_authorization_endpoint: Option<String>,
+}
+
+/// How a grant's access token is renewed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Refresh {
+    /// RFC 6749 §6: the refresh token at the token endpoint.
+    #[default]
+    RefreshToken,
+    /// GitHub Copilot: the grant's long-lived GitHub token is traded for a
+    /// short-lived Copilot token by `GET endpoint` authorised with
+    /// `token <GitHub token>`, answered with `{"token", "expires_at"}`.
+    CopilotToken { endpoint: String },
 }
 
 impl Provider {
@@ -98,6 +117,26 @@ pub enum RedirectPorts {
     Registered(Vec<u16>),
 }
 
+/// The host and path of the loopback redirect URI. Most issuers match only
+/// the port they are told, or none; one that registered a fixed URI also
+/// matches these.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Redirect {
+    /// `127.0.0.1`, or `localhost` for an issuer registered with that.
+    pub host: String,
+    /// The path, `/oauth` unless the issuer registered another.
+    pub path: String,
+}
+
+impl Default for Redirect {
+    fn default() -> Self {
+        Self {
+            host: "127.0.0.1".into(),
+            path: loopback::REDIRECT_PATH.into(),
+        }
+    }
+}
+
 /// What a provider's developer console issued for this app.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Registration {
@@ -108,6 +147,8 @@ pub struct Registration {
     /// not a credential; PKCE protects the code.
     pub client_secret: Option<String>,
     pub redirect_ports: RedirectPorts,
+    /// The loopback redirect's host and path.
+    pub redirect: Redirect,
     /// When no registered port is free, let the person paste the code the
     /// provider displays instead (providers whose `redirect_uri` is
     /// optional: Dropbox).
@@ -150,6 +191,7 @@ impl fmt::Debug for Registration {
             .field("client_id", &self.client_id)
             .field("client_secret", &self.secret().map(|_| "<set>"))
             .field("redirect_ports", &self.redirect_ports)
+            .field("redirect", &self.redirect)
             .field("paste_code_fallback", &self.paste_code_fallback)
             .finish_non_exhaustive()
     }
@@ -501,6 +543,8 @@ mod tests {
                 ("access_type".into(), "offline".into()),
                 ("prompt".into(), "consent".into()),
             ],
+            refresh: Refresh::RefreshToken,
+            device_authorization_endpoint: None,
         }
     }
 

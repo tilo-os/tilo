@@ -137,13 +137,9 @@ impl UPowerMonitor {
     ///
     /// # Errors
     ///
-    /// Property read failures fall back to defaults (`0`/`false`), so a flaky
-    /// D-Bus read yields a stale reading rather than an error.
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped to 0.0..=100.0 immediately before the cast, so it always fits a u8"
-    )]
+    /// Returns an error when the charge or the charging state of a present
+    /// battery cannot be read: a reading made up of defaults (`0%`) would
+    /// look like an empty battery and take the critical action.
     pub async fn battery_snapshot(&self) -> zbus::Result<BatterySnapshot> {
         let dev_type: u32 = self.display.get_property("Type").await.unwrap_or(0);
         let present: bool = self
@@ -154,23 +150,15 @@ impl UPowerMonitor {
         if !matches!(dev_type, DEVICE_TYPE_BATTERY | DEVICE_TYPE_UPS) || !present {
             return Ok(BatterySnapshot::absent());
         }
-        let percentage: f64 = self.display.get_property("Percentage").await.unwrap_or(0.0);
-        let state_code: u32 = self.display.get_property("State").await.unwrap_or(0);
-        Ok(BatterySnapshot {
-            present: true,
-            percent: percentage.round().clamp(0.0, 100.0) as u8,
-            state: BatteryState::from_upower(state_code),
-        })
+        battery_reading(
+            self.display.get_property("Percentage").await,
+            self.display.get_property("State").await,
+        )
     }
 
     /// Read the aggregate power source using `UPower`'s display-device
     /// contract. No model, serial, process, or application metadata crosses
     /// into the durable history record.
-    ///
-    /// # Errors
-    ///
-    /// Property read failures fall back to defaults rather than propagating a
-    /// D-Bus error.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -191,7 +179,8 @@ impl UPowerMonitor {
         if !present {
             return Ok(None);
         }
-        let percentage: f64 = self.display.get_property("Percentage").await.unwrap_or(0.0);
+        // A charge that cannot be read is not recorded as an empty battery.
+        let percentage: f64 = self.display.get_property("Percentage").await?;
         let health: f64 = self.display.get_property("Capacity").await.unwrap_or(0.0);
         Ok(Some(PowerHistorySample {
             kind,
@@ -264,9 +253,47 @@ impl UPowerMonitor {
     }
 }
 
+/// A present battery's reading from its charge and charging state, both of
+/// which must have been read.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to 0.0..=100.0 immediately before the cast, so it always fits a u8"
+)]
+fn battery_reading(
+    percentage: zbus::Result<f64>,
+    state: zbus::Result<u32>,
+) -> zbus::Result<BatterySnapshot> {
+    Ok(BatterySnapshot {
+        present: true,
+        percent: percentage?.round().clamp(0.0, 100.0) as u8,
+        state: BatteryState::from_upower(state?),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_charge_that_cannot_be_read_is_no_reading_and_never_a_critical_battery() {
+        fn failed<T>() -> zbus::Result<T> {
+            Err(zbus::Error::Failure("UPower did not answer".into()))
+        }
+        let policy = crate::policy::PowerPolicy::default();
+        let discharging = 2;
+        assert!(battery_reading(failed(), Ok(discharging)).is_err());
+        assert!(battery_reading(Ok(50.0), failed()).is_err());
+
+        let mut monitor = crate::battery::BatteryMonitor::new();
+        let read = battery_reading(Ok(4.4), Ok(discharging)).expect("both read");
+        assert_eq!(read.percent, 4);
+        assert_eq!(
+            monitor.evaluate(&read, &policy),
+            vec![crate::battery::BatteryEvent::Critical(4)],
+            "a real 4% still takes the critical action"
+        );
+    }
 
     async fn monitor_or_skip(ctx: &str) -> Option<UPowerMonitor> {
         match UPowerMonitor::connect().await {
@@ -307,7 +334,6 @@ mod tests {
             if !present {
                 assert!(!closed, "no lid ⇒ not closed");
             }
-            // OnBattery is a plain bool either way.
             let _ = m.on_battery().await.expect("OnBattery");
         }
         // Phase `history_samples_are_anonymous_and_in_range`.

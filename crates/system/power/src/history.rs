@@ -77,10 +77,6 @@ pub fn load_ups_history() -> BatteryHistory {
         .unwrap_or_default()
 }
 
-/// # Errors
-///
-/// Returns an error if no private per-user state directory is available (no `XDG_STATE_HOME`
-/// and no resolvable home directory), or if serialising or writing the history file fails.
 pub fn record_power_history(
     kind: PowerSourceKind,
     capacity: u32,
@@ -218,7 +214,6 @@ mod tests {
 
     #[test]
     fn history_is_bounded_private_atomic_and_anonymous() {
-        // Phase `cadence_and_retention_are_bounded`.
         {
             let mut history = BatteryHistory::default();
             assert!(history.record(BatteryHistoryPoint {
@@ -249,7 +244,6 @@ mod tests {
                 })
             );
         }
-        // Phase `durable_file_is_private_atomic_and_schema_contains_no_identity`.
         {
             use std::os::unix::fs::PermissionsExt;
             let dir = tempfile::tempdir().unwrap();
@@ -286,7 +280,6 @@ mod tests {
             health: None,
             on_ac: false,
         };
-        // A point from an earlier session is on disk.
         assert!(record_power_history_at(&path, point(1_000)).unwrap());
 
         let mut writer = PowerHistoryWriter::in_state_home(Some(dir.path().to_path_buf()));

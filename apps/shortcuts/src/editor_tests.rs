@@ -113,7 +113,7 @@ fn the_proposed_grant_is_the_least_each_step_needs() {
     let steps = vec![
         list(),
         create(&json!({})),
-        step(json!({"id": "ai", "step": "ai", "transform": "summarise",
+        step(json!({"id": "ai", "step": "ai", "prompt": "Summarise this",
                     "input": {"literal": "x"}})),
         list(),
     ];
@@ -143,8 +143,8 @@ fn the_proposed_grant_is_the_least_each_step_needs() {
             ),
             (
                 tilo_automation::AGENT_APP_ID.into(),
-                "summarise".into(),
-                tilo_action_policy::ActionKind::Read
+                tilo_automation::AGENT_FREEFORM_ACTION.into(),
+                tilo_action_policy::ActionKind::Undoable
             ),
         ]
     );
@@ -243,5 +243,142 @@ fn a_step_is_titled_by_what_it_does_and_placed_by_where_it_acts() {
     assert_eq!(
         context(&unknown, &catalog).as_deref(),
         Some("Gone no longer offers this action")
+    );
+}
+
+/// An empty draft is not "ready to save", and neither is one whose steps'
+/// actions could not be read: the editor says what is missing instead.
+#[test]
+fn the_save_status_says_what_is_missing() {
+    use crate::view::{EditorInput, save_blocker};
+    use ui::Arrival;
+    let id = ui::prelude::Id::from_raw("d");
+    let input = |steps: Vec<Step>, catalogue: Arrival<()>| EditorInput {
+        draft: Some((id.clone(), draft(steps))),
+        catalogue,
+        ..EditorInput::default()
+    };
+    assert_eq!(
+        save_blocker(&input(Vec::new(), Arrival::Ready(()))).as_deref(),
+        Some("Add a step to save this shortcut"),
+        "an empty draft does nothing"
+    );
+    assert!(
+        save_blocker(&input(vec![list()], Arrival::local()))
+            .is_some_and(|why| why.starts_with("Reading")),
+        "steps wait for the actions they choose from"
+    );
+    assert!(
+        save_blocker(&input(vec![list()], Arrival::Failed("x".into())))
+            .is_some_and(|why| why.starts_with("Can't save here")),
+        "an unreadable catalogue is said plainly"
+    );
+    assert_eq!(save_blocker(&input(vec![list()], Arrival::Ready(()))), None);
+}
+
+/// A catalogue read nothing answered is explained in the person's words,
+/// not as the client's refusal.
+#[test]
+fn an_unanswered_catalogue_is_explained_plainly() {
+    let unanswered = ui::tilo_actions::remote::ActionHostError::Unavailable {
+        reason: ui::remote_actions::CATALOGUE_UNANSWERED.into(),
+    };
+    let message = crate::door::catalogue_refusal(&unanswered);
+    assert!(
+        message.starts_with("Nothing in this workspace answered"),
+        "{message}"
+    );
+    assert!(!message.contains("remote actions"), "{message}");
+}
+
+/// A step that holds steps of its own: `if true then …`.
+fn condition(steps: &serde_json::Value) -> Step {
+    step(json!({"id": "maybe", "step": "if", "cond": {"truthy": {"literal": true}}, "then": steps}))
+}
+
+#[test]
+fn a_step_rests_one_level_deeper_in_the_block_of_the_step_above_it() {
+    let top = vec![condition(&json!([])), list()];
+    assert_eq!(
+        nest_into(&top, "1"),
+        Some(Nesting {
+            block: "0.then".to_owned(),
+            index: 0
+        }),
+        "the condition holds nothing yet, so the step is its first"
+    );
+
+    // Past whatever the block above already holds, so adding a step to a
+    // condition that has some keeps the order it has.
+    let filled = vec![condition(&json!([create(&json!({}))])), list()];
+    assert_eq!(
+        nest_into(&filled, "1"),
+        Some(Nesting {
+            block: "0.then".to_owned(),
+            index: 1
+        })
+    );
+
+    // A step already inside a block nests into its neighbour's block.
+    let inside = vec![
+        condition(&json!([condition(&json!([])), list()])),
+        condition(&json!([])),
+    ];
+    assert_eq!(
+        nest_into(&inside, "0.then.1"),
+        Some(Nesting {
+            block: "0.then.0.then".to_owned(),
+            index: 0
+        })
+    );
+}
+
+#[test]
+fn a_step_has_nowhere_deeper_to_go_without_a_step_above_that_holds_steps() {
+    let steps = vec![list(), list()];
+    assert_eq!(nest_into(&steps, "0"), None, "nothing is above the first");
+    assert_eq!(
+        nest_into(&steps, "1"),
+        None,
+        "the step above holds no steps"
+    );
+    let repeated = vec![step(
+        json!({"id": "each", "step": "for_each", "items": {"literal": []}, "item": "it", "body": []}),
+    )];
+    assert_eq!(
+        nest_into(&repeated, "0"),
+        None,
+        "a repeat at the top has nothing above it either"
+    );
+    let two = vec![
+        step(
+            json!({"id": "each", "step": "for_each", "items": {"literal": []}, "item": "it", "body": []}),
+        ),
+        list(),
+    ];
+    assert_eq!(
+        nest_into(&two, "1"),
+        Some(Nesting {
+            block: "0.each".to_owned(),
+            index: 0
+        }),
+        "a repeat nests into what it repeats over"
+    );
+}
+
+#[test]
+fn a_step_lifts_out_just_after_the_step_whose_block_it_was_in() {
+    assert_eq!(
+        lift_out("0.then.1"),
+        Some(Nesting {
+            block: String::new(),
+            index: 1
+        }),
+        "it lands after the condition it was inside"
+    );
+    assert_eq!(
+        lift_out("0"),
+        None,
+        "a step at the top level has nowhere to lift to"
     );
 }

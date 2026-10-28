@@ -5,6 +5,7 @@ Run once per clone: the settings live in the clone's config, so every worktree o
 The hooks are .githooks/ (pre-commit, commit-msg, and pre-push, which runs t's push gate); the
 merge drivers resolve generated files (.gitattributes, .githooks/merge-generated).
 """
+import argparse
 from pathlib import Path
 import subprocess
 import sys
@@ -50,7 +51,6 @@ def install(root):
         raise ValueError(result.stderr.strip())
     if git(root, "config", "--get", "core.hooksPath").stdout.strip() != ".githooks":
         raise ValueError("Hook installation could not be verified.")
-    # Merge drivers run from the top of the working tree being merged.
     for driver, mode in MERGE_DRIVERS.items():
         for key, value in (("name", "generated file: take main's side, then regenerate"),
                            ("driver", f".githooks/merge-generated {mode} %O %A %B %P %L")):
@@ -60,7 +60,9 @@ def install(root):
     return scope
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.parse_args(argv)
     result = git(Path.cwd(), "rev-parse", "--show-toplevel")
     if result.returncode:
         print("Run this installer inside a Tilo checkout.", file=sys.stderr)

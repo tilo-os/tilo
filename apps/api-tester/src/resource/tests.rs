@@ -154,11 +154,10 @@ fn verbs_make_open_save_and_remove_records() {
             request: request.clone(),
         })
     };
-    assert!(
-        workspace.apply(delete()).is_err(),
-        "deleting asks for confirmation"
-    );
-    workspace.apply_confirmed(delete()).unwrap();
+    // Undo takes a deletion back, so it runs at once.
+    workspace
+        .apply(delete())
+        .expect("an undoable delete runs at once");
     assert!(
         workspace
             .apply(Workspace::OPEN_REQUEST.with(workspace::OpenRequest {
@@ -191,7 +190,6 @@ fn verbs_make_open_save_and_remove_records() {
     assert!(workspace.state().unwrap().collections.is_empty());
 }
 
-/// The builder's request is edited field by field, rows by their ids.
 #[test]
 fn field_edits_change_the_builder_and_rows_in_place() {
     let mut workspace = seeded();
@@ -313,6 +311,99 @@ fn sent_requests_are_history_that_opens_again() {
     );
 }
 
+/// A sent request is kept as a saved one with what it sent, without moving
+/// the builder; forgetting it is a deletion Undo takes back, so nobody is
+/// asked first (`APP-api-tester-04`).
+#[test]
+fn a_sent_request_saves_as_a_request_or_is_forgotten() {
+    let mut workspace = seeded();
+    workspace
+        .apply(Workspace::RECORD_SENT.with(workspace::RecordSent {
+            method: "POST".into(),
+            url: "https://api.example.com/users?token=secret".into(),
+            status: 201,
+            duration_ms: 7,
+        }))
+        .unwrap();
+    let state = workspace.state().unwrap();
+    let (sent, _) = state.history.iter().next().unwrap();
+    let (sent, collection) = (sent.clone(), collection_id(&workspace));
+    assert!(
+        state.saved(&sent).is_none(),
+        "the history is not a collection"
+    );
+    // What the builder holds, which saving from the history must not move.
+    let builder = state.request.url.clone();
+    drop(state);
+
+    workspace
+        .apply(Workspace::SAVE_SENT.with(workspace::SaveSent {
+            collection: collection.clone(),
+            sent: sent.clone(),
+            name: None,
+        }))
+        .unwrap();
+    let state = workspace.state().unwrap();
+    let (_, saved) = state
+        .collections
+        .get(&collection)
+        .unwrap()
+        .requests
+        .iter()
+        .find(|(_, request)| request.name.contains("/users"))
+        .expect("the sent request is a saved one");
+    let saved = saved.clone();
+    assert_eq!(saved.method, HttpMethod::Post);
+    assert!(
+        saved.url.starts_with("https://api.example.com/users"),
+        "the address came along: {}",
+        saved.url
+    );
+    assert!(
+        !saved.name.contains("token"),
+        "the name leaves out the query: {}",
+        saved.name
+    );
+    assert_eq!(
+        state.request.url, builder,
+        "saving from the history leaves the builder alone"
+    );
+    drop(state);
+
+    // The history's own row offers both, and forgetting one is a deletion
+    // Undo takes back: nobody is asked first.
+    let tree = workspace.published().unwrap();
+    let history = child(&tree, &item_resource_id::<Workspace>("history", &sent));
+    for verb in ["open-sent", "delete-sent"] {
+        let action = history
+            .actions
+            .iter()
+            .find(|action| action.id == verb)
+            .unwrap_or_else(|| panic!("a history row offers {verb}"));
+        assert!(
+            action.contract.can_be_undone(),
+            "{verb}: Undo brings the entry back"
+        );
+        assert!(
+            !action.contract.requires_confirmation(),
+            "{verb} asks nobody"
+        );
+    }
+
+    workspace
+        .apply(Workspace::DELETE_SENT.with(sent.clone()))
+        .unwrap();
+    let state = workspace.state().unwrap();
+    assert!(
+        !state.history.contains(&sent),
+        "the entry is out of the history"
+    );
+    assert!(
+        state.collections.get(&collection).unwrap().requests.len() == 2,
+        "the saved request stays"
+    );
+}
+
 /// A credential never reaches the record: a request's auth keeps its scheme
 /// and public fields, a secret variable carries no value.
 #[test]
@@ -364,7 +455,6 @@ fn credentials_never_enter_the_record() {
     );
 }
 
-/// The active environment names one the workspace has.
 #[test]
 fn the_active_environment_names_an_environment() {
     let mut workspace = seeded();
@@ -586,8 +676,9 @@ fn history_entries_render_as_the_apps_sentences() {
         serde_json::json!({}),
     )
     .unwrap();
+    // Undo takes a deletion back, so it runs at once.
     app.call_by(agent, &item, "delete-collection", serde_json::json!({}))
-        .expect_err("deleting asks for confirmation");
+        .expect("an undoable delete runs at once");
 
     let sentences = app.sentences(app.history().iter().filter(|entry| {
         entry
@@ -604,14 +695,15 @@ fn history_entries_render_as_the_apps_sentences() {
             "Saved a request to Billing",
             "Created the environment Staging",
             "Switched to the environment Staging",
+            "Deleted the collection Billing",
         ]
     );
 }
 
-/// Deleting from the window asks once, in the host's dialog: the window has
-/// no confirmation sheet of its own, and nothing is deleted before consent.
+/// Deleting from the window asks nothing, of its own or through the host:
+/// Undo takes the deletion back, so it runs at once and is one undo step.
 #[test]
-fn deleting_from_the_window_asks_the_host_once() {
+fn deleting_from_the_window_runs_at_once_and_undo_brings_it_back() {
     let mut app = TestApp::<ApiTesterShell>::new().unwrap();
     for invoke in crate::seed::workspace() {
         app.invoke(invoke).unwrap();
@@ -630,7 +722,6 @@ fn deleting_from_the_window_asks_the_host_once() {
     })
     .unwrap();
     app.settle();
-    assert_eq!(count(&app), before, "deleting waits for consent");
     assert!(
         !app.harness()
             .inspection_json()
@@ -638,13 +729,11 @@ fn deleting_from_the_window_asks_the_host_once() {
             .contains("Delete this request?"),
         "the window asks nothing of its own"
     );
-    app.harness().type_text("CONFIRM");
-    app.harness().key("Enter");
-    app.settle();
+    assert!(app.asking().is_none(), "nor does the host");
     assert_eq!(
         count(&app),
         before - 1,
-        "the confirmed delete applied: {:?}",
+        "the delete applied: {:?}",
         app.harness().control_failures()
     );
     assert!(app.undo(), "the delete is one undo step");

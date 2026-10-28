@@ -17,7 +17,7 @@ pub(crate) struct Navigation {
     manual_pan: Option<(StripId, GroupId)>,
     /// What started the change being laid out, until the layout showing it
     /// has run.
-    transition: Option<MotionSource>,
+    pub(crate) transition: Option<MotionSource>,
     /// What started the latest focus change, until it is framed: a reveal
     /// can wait for a layout pass that places its group.
     reveal_source: Option<MotionSource>,
@@ -119,6 +119,13 @@ impl DesktopSurface {
         self.push_motion_source(source);
     }
 
+    /// What started the change being laid out ([`Self::begin_transition`]),
+    /// until the layout that shows it has run.
+    #[must_use]
+    pub fn transition_source(&self) -> Option<MotionSource> {
+        self.navigation.transition
+    }
+
     fn push_motion_source(&mut self, source: MotionSource) {
         for strip in self.strip_ids() {
             if let Some(row) = self.row_mut(strip) {
@@ -148,13 +155,7 @@ impl DesktopSurface {
     /// Hosts call this after applying local intents. The tree owns the local
     /// selection; this compositor-independent layer only presents it.
     pub fn sync_navigation(&mut self, tree: &DesktopTree) {
-        let active_strip = tree.active_workspace().and_then(|workspace| {
-            tree.active_strip
-                .get(&workspace.id)
-                .copied()
-                .filter(|id| workspace.strips.iter().any(|strip| strip.id == *id))
-                .or_else(|| workspace.strips.first().map(|strip| strip.id))
-        });
+        let active_strip = tree.active_strip_id();
         if self.navigation.active_strip != active_strip
             && let Some(strip) = active_strip
         {
@@ -304,10 +305,17 @@ impl DesktopSurface {
             }
             if let Some(row) = self.row_mut(strip) {
                 if let Some(opened) = beside {
-                    row.scroll_groups_into_view_animated(group, opened, ui::time::now(), source);
+                    row.scroll_groups_into_view_animated(
+                        group,
+                        opened,
+                        ui::motion::frame_now(),
+                        source,
+                    );
                 } else {
-                    row.scroll_group_into_view_animated(group, ui::time::now(), source);
+                    row.scroll_group_into_view_animated(group, ui::motion::frame_now(), source);
                 }
+                // The pan starts after the row was placed in this layout.
+                ui::widget::note_layout_moved();
             }
             if opened.is_some() {
                 self.navigation.opened.retain(|(s, _)| *s != strip);

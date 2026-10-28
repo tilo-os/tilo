@@ -58,7 +58,6 @@ mod tests {
 
     #[test]
     fn the_factory_always_returns_a_named_speaker() {
-        // Phase `factory_always_returns_a_speaker`.
         {
             // Must not panic regardless of whether a daemon / espeak-ng is present.
             let mut s = default_speaker();
@@ -71,7 +70,6 @@ mod tests {
                 "speech-dispatcher" | "espeak-ng" | "null"
             ));
         }
-        // Phase `select_reports_a_known_backend_name`.
         {
             let (_s, name) = select_speaker();
             assert!(matches!(name, "speech-dispatcher" | "espeak-ng" | "null"));

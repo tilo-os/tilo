@@ -575,7 +575,6 @@ mod tests {
 
     #[test]
     fn styles_and_list_styles_resolve() {
-        // Phase `resolves_named_heading_and_text_styles`.
         {
             let xml = br#"<office:document-styles>
             <office:styles>
@@ -609,7 +608,6 @@ mod tests {
                     .any(|(n, _)| n == "strong")
             );
         }
-        // Phase `detects_ordered_list_style`.
         {
             let xml = br#"<office:automatic-styles>
             <text:list-style style:name="L1"><text:list-level-style-number text:level="1"/></text:list-style>

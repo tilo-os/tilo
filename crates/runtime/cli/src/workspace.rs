@@ -164,14 +164,12 @@ mod tests {
 
     #[test]
     fn the_workspace_root_env_drives_resolution_and_availability() {
-        // With the root set, paths resolve under it.
         {
             let mut env = without_tilo_env();
             env.set(TILO_WORKSPACE_ROOT_ENV, "/tmp/tilo-ws");
             let p = resolve_workspace_path("notes/inbox.md").unwrap();
             assert_eq!(p, PathBuf::from("/tmp/tilo-ws/notes/inbox.md"));
         }
-        // Without it, paths fall back to the standalone state dir.
         {
             let mut env = without_tilo_env();
             let tmp = tempfile::tempdir().unwrap();
@@ -184,7 +182,6 @@ mod tests {
                 "parent dir should be pre-created"
             );
         }
-        // Availability reflects the env.
         {
             let mut env = without_tilo_env();
             assert!(!is_workspace_available());

@@ -39,8 +39,13 @@ fn qualified_root() -> &'static Path {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
     ROOT.get_or_init(|| {
         let root = std::env::var_os(ROOT_VAR).map_or_else(default_root, PathBuf::from);
-        std::fs::create_dir_all(&root)
-            .unwrap_or_else(|error| panic!("create test root {}: {error}", root.display()));
+        let created = std::fs::create_dir_all(&root);
+        assert!(
+            created.is_ok(),
+            "create test root {}: {:?}",
+            root.display(),
+            created.err()
+        );
         assert_qualified(&root);
         root
     })
@@ -82,9 +87,13 @@ fn default_root() -> PathBuf {
         .ancestors()
         .find(|dir| dir.file_name().is_some_and(|name| name == "deps"))
         .and_then(|deps| deps.parent())
-        .and_then(|profile| profile.parent())
-        .unwrap_or_else(|| panic!("{} is not inside a cargo target directory", exe.display()));
-    target.join("test-fs").join("imager")
+        .and_then(|profile| profile.parent());
+    assert!(
+        target.is_some(),
+        "{} is not inside a cargo target directory",
+        exe.display()
+    );
+    target.unwrap().join("test-fs").join("imager")
 }
 
 /// A fresh temporary directory on a qualified filesystem, removed on drop.

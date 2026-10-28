@@ -246,6 +246,7 @@ impl Component {
             icon_url: self.remote_icon,
             resource_types: Vec::new(),
             actions: Vec::new(),
+            not_built_for_this_device: false,
         })
     }
 }
@@ -362,10 +363,6 @@ impl Parser<'_> {
 }
 
 /// The applications of an `AppStream` collection read from `input`.
-///
-/// # Errors
-///
-/// The XML is malformed.
 pub fn parse(
     input: impl BufRead,
     source: &AppstreamSource,

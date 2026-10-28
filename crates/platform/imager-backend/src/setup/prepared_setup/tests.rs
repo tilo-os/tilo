@@ -471,6 +471,9 @@ fn authenticated_large_manifest_preserves_actual_retained_home_metadata() {
     .unwrap();
     plan.home_policy = crate::setup::migration_handoff::HomePolicy::AccessReadWrite;
     plan.flatpak_inventory = Some(serde_json::from_slice(&inventory.bytes().unwrap()).unwrap());
+    plan.home_exclusions = vec![crate::setup::migration_store::NativePath::encode(
+        std::path::Path::new("Documents/Private"),
+    )];
     let identity = PreparedIdentity::create(
         &root.join("identity"),
         "Ada",
@@ -516,6 +519,18 @@ fn authenticated_large_manifest_preserves_actual_retained_home_metadata() {
             .as_plan()
             .flatpak_inventory,
         Some(serde_json::from_slice(&inventory.bytes().unwrap()).unwrap())
+    );
+    assert_eq!(
+        review
+            .manifest()
+            .retained_home
+            .as_ref()
+            .unwrap()
+            .as_plan()
+            .home_exclusion_paths()
+            .unwrap(),
+        vec![std::path::PathBuf::from("Documents/Private")],
+        "the sealed manifest keeps the reviewed folder exclusion"
     );
 }
 
@@ -1115,4 +1130,185 @@ fn authenticated_geometry_keeps_home_only_shape_and_refuses_unadmitted_inventory
     let error = declaration.authenticated_source_plans().unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     assert!(!temp.path().join("tilo-imager").exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn selected_mail_only_reaches_the_target_mail_store_through_the_authenticated_package() {
+    use crate::account_sources::SourceRoots;
+    use crate::account_transfer::{PasswordSealedThunderbird, ThunderbirdSelection};
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    let root = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let root = root.path();
+    let home = root.join("mail-source");
+    private(&home);
+    let profile = home.join(".thunderbird/abc.default");
+    std::fs::create_dir_all(profile.join("ImapMail/imap.example.test")).unwrap();
+    std::fs::write(
+        home.join(".thunderbird/profiles.ini"),
+        "[Profile0]\nName=Personal\nIsRelative=1\nPath=abc.default\n",
+    )
+    .unwrap();
+    std::fs::write(
+        profile.join("prefs.js"),
+        r#"user_pref("mail.accountmanager.accounts", "account1");
+user_pref("mail.account.account1.server", "server1");
+user_pref("mail.account.account1.identities", "id1");
+user_pref("mail.server.server1.type", "imap");
+user_pref("mail.server.server1.hostname", "imap.example.test");
+user_pref("mail.server.server1.directory-rel", "[ProfD]ImapMail/imap.example.test");
+user_pref("mail.identity.id1.fullName", "Personal");
+user_pref("ldap_2.servers.history.filename", "abook.sqlite");
+user_pref("ldap_2.servers.history.description", "Personal addresses");
+user_pref("calendar.registry.personal.name", "Personal calendar");
+user_pref("calendar.registry.personal.filename", "calendar-data.local.sqlite");
+"#,
+    )
+    .unwrap();
+    let message = |id: &str, subject: &str| {
+        format!(
+            "From - Mon Jan 01 00:00:00 2024\r\nFrom: Ada <ada@example.test>\r\nSubject: {subject}\r\nDate: Mon, 01 Jan 2024 00:00:00 +0000\r\nMessage-ID: <{id}@example.test>\r\n\r\nBody.\r\n"
+        )
+    };
+    std::fs::write(
+        profile.join("ImapMail/imap.example.test/Inbox"),
+        message("kept", "Kept mail"),
+    )
+    .unwrap();
+    std::fs::write(
+        profile.join("ImapMail/imap.example.test/Drafts"),
+        message("excluded", "Excluded draft"),
+    )
+    .unwrap();
+    std::fs::write(profile.join("abook.sqlite"), b"selected address book").unwrap();
+    std::fs::write(
+        profile.join("calendar-data.local.sqlite"),
+        b"selected calendar",
+    )
+    .unwrap();
+    let inventory = crate::account_sources::discover(&SourceRoots {
+        home: home.clone(),
+        config: home.join(".config"),
+    });
+    let reviewed = inventory.thunderbird_reviewed[0].clone();
+    let drafts = reviewed.accounts[0]
+        .folders
+        .iter()
+        .find(|folder| folder.inventory.hierarchy.last().map(String::as_str) == Some("Drafts"))
+        .unwrap()
+        .inventory
+        .source_id
+        .clone();
+    let mut selection = ThunderbirdSelection::all(&reviewed);
+    selection.accounts[0]
+        .folders
+        .retain(|folder| folder != &drafts);
+    selection.validate(&reviewed).unwrap();
+    let artifact =
+        PasswordSealedThunderbird::seal(&reviewed, &selection, PASSWORD, b"mail-operation")
+            .unwrap();
+    assert!(
+        !String::from_utf8_lossy(artifact.as_bytes()).contains("Kept mail"),
+        "the carrier is ciphertext"
+    );
+    assert_eq!(
+        PasswordSealedThunderbird::from_bytes(artifact.as_bytes())
+            .unwrap()
+            .open(b"a completely different password", b"mail-operation")
+            .unwrap_err(),
+        crate::account_transfer::ConnectionError::CredentialUnavailable
+    );
+    let staging = root.join("mail-staging");
+    private(&staging);
+    let identity = PreparedIdentity::create(
+        &root.join("mail-identity-source"),
+        "Ada",
+        [1, 2, 3],
+        IdentityStorage::Files,
+    )
+    .unwrap();
+    identity
+        .export(
+            &staging.join(IDENTITY_FILE),
+            Zeroizing::new(String::from_utf8(PASSWORD.to_vec()).unwrap()),
+        )
+        .unwrap();
+    let filename = "mail-selected.sealed";
+    std::fs::write(staging.join(filename), artifact.as_bytes()).unwrap();
+    std::fs::set_permissions(
+        staging.join(filename),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let mut manifest =
+        Manifest::new("mail-operation".into(), identity.public_key(), vec![]).unwrap();
+    manifest.mail.push(MailHandoff {
+        filename: filename.into(),
+        selection,
+        sealed_bytes: artifact.as_bytes().len() as u64,
+        ciphertext_sha256: Sha256::digest(artifact.as_bytes()).into(),
+    });
+    manifest.write(&staging).unwrap();
+    let sealed_package = package(root, &staging, "selected-mail.sealed");
+    let review = PreparedSetupReview::open(
+        &sealed_package,
+        PASSWORD,
+        &root.join("mail-quarantine"),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let target = root.join("mail-target");
+    private(&target);
+    assert!(
+        review
+            .import_mail(&target, b"a completely different password")
+            .is_err(),
+        "the target mail store is untouched without the preparation password"
+    );
+    assert!(!target.join(".config/tilo").exists());
+    let receipts = review.import_mail(&target, PASSWORD).unwrap();
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].address_books, 1);
+    assert_eq!(receipts[0].calendars, 1);
+    let account = &receipts[0].accounts[0];
+    assert_eq!(
+        account.folders.len(),
+        1,
+        "the excluded folder is not imported"
+    );
+    let cache = target.join(".cache/so.tilo.mail/mail");
+    let mut found = String::new();
+    fn collect(path: &Path, found: &mut String) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                collect(&entry.path(), found);
+            } else if let Ok(text) = std::fs::read_to_string(entry.path()) {
+                found.push_str(&text);
+            }
+        }
+    }
+    if cache.exists() {
+        collect(&cache, &mut found);
+    }
+    assert!(found.contains("Kept mail"));
+    assert!(
+        !found.contains("Excluded draft"),
+        "an excluded folder must never reach the target Mail store"
+    );
+    let retained = target.join(".local/share/tilo/mail-import/thunderbird");
+    let mut retained_text = String::new();
+    if retained.exists() {
+        collect(&retained, &mut retained_text);
+    }
+    assert!(!retained_text.contains("Excluded draft"));
+    assert_eq!(
+        std::fs::read(profile.join("ImapMail/imap.example.test/Drafts")).unwrap(),
+        message("excluded", "Excluded draft").into_bytes(),
+        "the excluded original stays untouched"
+    );
+    let again = review.import_mail(&target, PASSWORD).unwrap();
+    assert!(again[0].accounts.iter().all(|account| !account.created));
 }

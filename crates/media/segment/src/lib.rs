@@ -1,7 +1,7 @@
 //! Cutting a subject out of a picture.
 //!
 //! A [`Matte`] says how much of each pixel belongs to the subject, `0..=1`.
-//! [`SubjectModel`] (with the `infer` feature) finds one with a local
+//! `SubjectModel` (with the `infer` feature) finds one with a local
 //! salient-object model; [`refine_edge`] pulls any matte's edge onto the
 //! picture's own edges, so fur and hair keep their wisps and a hard edge is
 //! not left a pixel out in the background; [`defringe`] takes the

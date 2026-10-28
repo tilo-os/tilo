@@ -113,9 +113,6 @@ impl FocusChanges {
 
 /// Connect the keyboard to the session. `wake` wakes the app when the input
 /// method reports a focus change.
-///
-/// # Errors
-/// The input method is required and the compositor does not offer it.
 pub(crate) fn connect(choice: InputMethodChoice, wake: WakeHandle) -> Result<Connection, String> {
     let im = match choice {
         InputMethodChoice::Off => None,
@@ -149,7 +146,11 @@ pub(crate) fn connect(choice: InputMethodChoice, wake: WakeHandle) -> Result<Con
             invoke_context: Box::new(|_, _| {
                 Err("contextual input actions require the trusted input method".into())
             }),
-            output: Box::new(move |output| injector.send(&emulator.symbols(&output))),
+            output: Box::new(move |output| {
+                for keypress in emulator.keypresses(&output) {
+                    injector.press(keypress);
+                }
+            }),
         });
     };
     tracing::info!("osk: auto-show via input-method-v2");
@@ -272,7 +273,7 @@ fn deliver(
         match step {
             Step::Preedit(text) => im.set_preedit(&text),
             Step::Commit(text) => im.commit_text(&text),
-            Step::Key(symbol) => keys.send(&[symbol]),
+            Step::Key(keypress) => keys.press(keypress),
             Step::Barrier(Channel::InputMethod) => {
                 im.sync();
                 read_socket = true;
@@ -290,7 +291,6 @@ mod tests {
     use std::os::fd::OwnedFd;
     use std::os::unix::net::UnixStream;
     use std::sync::atomic::AtomicUsize;
-    use std::time::{Duration, Instant};
 
     /// Stands in for the input-method client: reads what the "compositor"
     /// wrote to the socket and hands out the events queued for it.
@@ -320,17 +320,6 @@ mod tests {
         }
     }
 
-    fn until(what: &str, mut done: impl FnMut() -> bool) {
-        let start = Instant::now();
-        while !done() {
-            assert!(
-                start.elapsed() < Duration::from_secs(5),
-                "timed out: {what}"
-            );
-            std::thread::sleep(Duration::from_millis(1));
-        }
-    }
-
     #[test]
     fn the_focus_thread_sleeps_until_the_input_method_speaks() {
         let (compositor, client) = UnixStream::pair().expect("socketpair");
@@ -354,9 +343,8 @@ mod tests {
             WakeHandle::new(),
             context_send,
         );
-        until("the first read", || polls.load(Ordering::SeqCst) == 1);
+        tilo_test_env::wait_until("the first read", || polls.load(Ordering::SeqCst) == 1);
 
-        // Phase `no_event_no_wakeup`.
         #[cfg(target_os = "linux")]
         {
             let tid = thread
@@ -365,41 +353,34 @@ mod tests {
                 .expect("the thread read once");
             tilo_test_env::idle::assert_stays_asleep(&tid.to_string(), "focus thread");
         }
-        std::thread::sleep(Duration::from_millis(100));
         assert_eq!(
             polls.load(Ordering::SeqCst),
             1,
             "with no input-method event the focus thread does not read again"
         );
 
-        // Phase `an_event_on_the_socket_is_read_at_once`.
         queued.lock().expect("queued").push(ImEvent::Activate);
         (&compositor).write_all(&[0]).expect("compositor writes");
-        let shown = changes
-            .recv_timeout(Duration::from_secs(5))
-            .expect("the activation is reported");
+        let shown = tilo_test_env::recv("the activation is reported", &changes);
         assert_eq!(shown.visibility_changed, Some(true));
-        until("one read per event", || polls.load(Ordering::SeqCst) == 2);
+        tilo_test_env::wait_until("one read per event", || polls.load(Ordering::SeqCst) == 2);
 
-        // Phase `events_the_ui_thread_read_are_collected_on_its_nudge`.
         queued.lock().expect("queued").push(ImEvent::Deactivate);
         nudge.nudge();
-        let hidden = changes
-            .recv_timeout(Duration::from_secs(5))
-            .expect("the nudge collects the deactivation");
+        let hidden = tilo_test_env::recv("the nudge collects the deactivation", &changes);
         assert_eq!(hidden.visibility_changed, Some(false));
 
-        // Phase `a_closed_compositor_ends_the_thread_after_its_last_words`.
         queued.lock().expect("queued").push(ImEvent::Activate);
         (&compositor).write_all(&[0]).expect("compositor writes");
         drop(compositor);
-        let last = changes
-            .recv_timeout(Duration::from_secs(5))
-            .expect("what the compositor sent before hanging up is read");
+        let last = tilo_test_env::recv(
+            "what the compositor sent before hanging up is read",
+            &changes,
+        );
         assert_eq!(last.visibility_changed, Some(true));
         assert!(
             matches!(
-                changes.recv_timeout(Duration::from_secs(5)),
+                changes.recv_timeout(tilo_test_env::hang_bound()),
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
             ),
             "the focus thread ends when the compositor hangs up"
@@ -428,7 +409,7 @@ mod tests {
         );
         drop(nudge);
         assert!(matches!(
-            changes.recv_timeout(Duration::from_secs(5)),
+            changes.recv_timeout(tilo_test_env::hang_bound()),
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
         ));
     }

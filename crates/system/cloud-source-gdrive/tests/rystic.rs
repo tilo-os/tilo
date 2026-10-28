@@ -1,6 +1,3 @@
-//! Opt-in production-adapter checks against a dedicated Google Drive twin.
-//! See docs/testing/rystic-gdrive-feedback.md for startup and invocation.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

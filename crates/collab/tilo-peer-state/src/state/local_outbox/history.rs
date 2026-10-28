@@ -455,9 +455,6 @@ struct Merged {
 /// changes it lacks, as `Automerge::merge` takes them. With `keys`, the
 /// publications of `parts`, a merge of all but the last few is remembered:
 /// the next edit adds one publication, so its merge is that one's changes.
-///
-/// # Errors
-/// There is no part, or a part's changes do not apply.
 pub(super) fn merged(
     keys: Option<&[Key]>,
     parts: &[Arc<Automerge>],

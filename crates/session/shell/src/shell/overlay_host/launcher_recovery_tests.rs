@@ -193,7 +193,7 @@ fn palette_recovery_production_render_matrix() {
         .join("../../../target/launcher-recovery-review");
     std::fs::create_dir_all(&output).expect("capture output");
     let mut visible_variants = Vec::new();
-    for (name, width, height, theme) in [
+    for (name, width, height, theme) in vec![
         ("dark", 1280, 800, Theme::dark()),
         ("light", 1280, 800, Theme::light()),
         ("high-contrast", 1280, 800, Theme::high_contrast()),
@@ -205,7 +205,9 @@ fn palette_recovery_production_render_matrix() {
             Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
         ),
         ("narrow", 480, 600, Theme::dark()),
-    ] {
+    ]
+    .into_boxed_slice()
+    {
         let (mut h, attempts, _) = recovery_fixture();
         settle_with_theme(&mut h, f64::from(width), f64::from(height), &theme);
         assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Enter))));

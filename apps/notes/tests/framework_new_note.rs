@@ -107,6 +107,25 @@ fn the_sidebar_plus_creates_a_root_note() {
     assert_eq!(page_count(&app), 2, "and another on a second click");
 }
 
+/// The header's "+" opens the new note with its title taking the keyboard,
+/// as Ctrl+N does: what is typed next names the note.
+#[test]
+fn the_header_plus_opens_the_new_note_to_be_named() {
+    use crate::framework_support::surface;
+    let mut app = fresh();
+    let plus = app.harness().targets()["new-note"];
+    app.harness().click_at(plus.center().x, plus.center().y);
+    app.settle();
+    assert!(
+        surface(&mut app, |notes| notes.main_title_editing_for_test()),
+        "the new note's title takes the keyboard"
+    );
+    app.harness().type_text("Groceries");
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(app.read_document(read::list_pages)[0].title, "Groceries");
+}
+
 #[test]
 fn the_published_surface_validates_as_the_host_checks_it() {
     let mut app = fresh();
@@ -172,10 +191,6 @@ fn a_note_made_over_actions_publishes_its_edits_and_they_edit_it() {
     assert!(violations.is_empty(), "after the edit: {violations:#?}");
 }
 
-/// A script creating several notes in a row, each before the notebook
-/// republishes, appends each after the last. Every create used to take the
-/// first place, so the second left two notes at one position and the app
-/// refused to show the notebook at all.
 #[test]
 fn notes_made_one_after_another_over_actions_stay_in_order() {
     let mut app = fresh();

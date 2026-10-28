@@ -60,10 +60,15 @@ fi
 grep -Fq 'tilo-image-trust bootc-status-field "$1"' "$deployment"
 grep -Fq 'tilo-image-trust bootc-status-field "$2"' "$deployment"
 grep -Fq 'status="$(bootc_status_json)"' "$deployment"
+# Every deployment `list` shows comes from one bootc status snapshot, read
+# field by field through the Rust parser.
 for deployment_kind in booted staged rollback; do
-  grep -Fq "image_label \"\$status\" $deployment_kind" "$deployment"
+  grep -Fq "print_deployment \"\$esp\" \"\$status\" $deployment_kind" "$deployment"
 done
-grep -Fq 'status_field "$status" booted-composefs' "$deployment"
+for role_field in image version timestamp composefs; do
+  grep -Fq "status_field \"\$status\" \"\$role-$role_field\"" "$deployment"
+done
+grep -Fq 'status_field "$1" "$2-image"' "$deployment"
 grep -Fq 'bootc_field staged-composefs' "$deployment"
 if grep -Eq 'python(3)?[[:space:]]+-c|eval[[:space:]]*\(' "$deployment"; then
   echo 'deployment bootc authority parsing still permits Python or eval' >&2
@@ -123,6 +128,10 @@ printf '%s\n' "\${TILO_TEST_UKI_CMDLINE:-quiet composefs=sha512:$verity tilo.gen
 EOF
 cat >"$work/bin/tilo-image-trust" <<'EOF'
 #!/usr/bin/env bash
+if [[ $1 == bootc-status-field ]]; then
+  [[ $2 == booted-image ]] && printf '%s\n' "${TILO_TEST_FOLLOWING:-registry.tilo.so/tilo/tilo-vm:x86_64-ci}"
+  exit 0
+fi
 if [[ $1 == parse-bootc-status ]]; then
   status="$(cat)"
   [[ $status == *'"status"'* ]] || exit 1
@@ -139,6 +148,12 @@ if [[ $1 == renew-under-update-lock ]]; then
 fi
 printf '%s\n' "$*" >"$TILO_TEST_VERIFY_ARGS"
 [[ ${TILO_TEST_REJECT:-0} != 1 ]]
+EOF
+# The channel names what the update follows (tilo-update-channel next); nothing: the origin.
+cat >"$work/bin/channel" <<'EOF'
+#!/usr/bin/env bash
+[[ $1 == next && -n ${TILO_TEST_CHANNEL_NEXT:-} ]] && printf '%s\n' "$TILO_TEST_CHANNEL_NEXT"
+exit 0
 EOF
 cat >"$work/bin/chronyc" <<'EOF'
 #!/usr/bin/env bash
@@ -172,6 +187,7 @@ run_update() {
     TILO_IMAGE_TRUST_CHRONY_CONFIG="$work/chrony.conf" \
     TILO_IMAGE_TRUST_UPDATE_LOCK="${TILO_IMAGE_TRUST_UPDATE_LOCK:-$work/update.lock}" \
     TILO_IMAGE_TRUST_SUCCESSOR="$work/bin/successor" \
+    TILO_IMAGE_TRUST_CHANNEL="$work/bin/channel" \
     TILO_IMAGE_TRUST_GATE="$work/bin/image-trust-gate" \
     TILO_TEST_GATE_SOURCE="$repo/os/usr/libexec/tilo-image-trust-staged" \
     TILO_TEST_DIGEST="$digest" TILO_TEST_VERITY="${TILO_TEST_VERITY_OVERRIDE-$verity}" \
@@ -185,6 +201,15 @@ run_gate
 test ! -e "$work/verify.args"
 run_update --quiet
 grep -Fqx 'upgrade --quiet' "$work/bootc.calls"
+rm -f "$work/bootc.calls"
+
+# A channel naming the image bootc already follows upgrades it; naming another (the device chose
+# another channel, or a developer pinned a build) switches to it, through the same path.
+TILO_TEST_CHANNEL_NEXT=registry.tilo.so/tilo/tilo-vm:x86_64-ci run_update --quiet
+grep -Fqx 'upgrade --quiet' "$work/bootc.calls"
+rm -f "$work/bootc.calls"
+TILO_TEST_CHANNEL_NEXT=registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci-x86_64 run_update --quiet
+grep -Fqx 'switch --quiet registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci-x86_64' "$work/bootc.calls"
 rm -f "$work/bootc.calls"
 
 # Arming takes this same lock. Even before the marker exists, an update must
@@ -262,6 +287,12 @@ rm -f "$work/bootc.calls"
 run_update --apply --quiet >/dev/null
 sed -n '1p' "$work/bootc.calls" | grep -Fqx 'upgrade --download-only --quiet'
 sed -n '2p' "$work/bootc.calls" | grep -Fqx 'upgrade --from-downloaded --apply --quiet'
+rm -f "$work/bootc.calls"
+
+# With owner trust armed a channel switch is gated like an upgrade.
+TILO_TEST_CHANNEL_NEXT=registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci-x86_64 run_update --quiet >/dev/null
+sed -n '1p' "$work/bootc.calls" | grep -Fqx 'switch --download-only --quiet registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci-x86_64'
+sed -n '2p' "$work/bootc.calls" | grep -Fqx 'switch --from-downloaded --quiet'
 rm -f "$work/bootc.calls"
 
 TILO_TEST_NO_STAGED=1 run_update --quiet >/dev/null

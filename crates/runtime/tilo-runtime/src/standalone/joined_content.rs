@@ -8,13 +8,14 @@
 use super::Joined;
 use neighbour_wire::NeighbourMsg;
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 use tilo_action_broker::{
     record_content::{
-        ContentPeer, ContentPeers, ContentPiece, ContentScope, ContentShelf, RouteContent,
+        ContentPeer, ContentPeers, ContentPiece, ContentScope, ContentShelf, ContentSources,
+        RouteContent,
     },
     route::CrdtRoute,
 };
@@ -123,6 +124,43 @@ impl ContentPeers for JoinedPeers {
             let _ = live.publish_record_content(device, frame);
         }
     }
+
+    fn lacks(&self, route: &CrdtRoute, peer: ContentPeer, hash: &str) {
+        let Some(room) = RoomId::parse(&route.cluster_id) else {
+            return;
+        };
+        let (Some(live), Some(device)) = (self.0.live(room), self.0.requesters.device(room, peer))
+        else {
+            return;
+        };
+        let message = NeighbourMsg::RecordContentLacks {
+            responder: self.0.own_handle(),
+            requester: peer,
+            app_id: route.app_id.clone(),
+            cluster_id: route.cluster_id.clone(),
+            hash: hash.to_owned(),
+        };
+        if let Ok(frame) = postcard::to_allocvec(&message) {
+            let _ = live.publish_record_content(device, frame);
+        }
+    }
+
+    /// The host the room's session is connected to, and the members it
+    /// reports connected: this device reaches them only through it.
+    fn sources(&self, route: &CrdtRoute) -> ContentSources {
+        let Some(room) = RoomId::parse(&route.cluster_id) else {
+            return ContentSources::default();
+        };
+        ContentSources {
+            peers: self.0.live_members(room).iter().map(peer_handle).collect(),
+            hosts: self
+                .0
+                .live_host(room)
+                .map(|host| peer_handle(&host))
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+        }
+    }
 }
 
 /// The profile's record-content service: its content store, served on
@@ -183,8 +221,27 @@ impl Joined {
         true
     }
 
-    /// A piece of content another member sent this device through the host.
+    /// A piece of content another member sent this device through the
+    /// host, or word that a device keeps none of what this one asked for.
     pub(super) fn content_arrived(&self, room: RoomId, from: [u8; 32], frame: &[u8]) {
+        if let Ok(NeighbourMsg::RecordContentLacks {
+            responder,
+            requester,
+            app_id,
+            cluster_id,
+            hash,
+        }) = postcard::from_bytes(frame)
+        {
+            if responder == peer_handle(&from)
+                && requester == self.own_handle()
+                && RoomId::parse(&cluster_id) == Some(room)
+                && let Some(content) = self.content.get().cloned()
+            {
+                let route = CrdtRoute::app(app_id, cluster_id);
+                tilo_rt::app().spawn_blocking(move || content.peer_lacks(&route, responder, &hash));
+            }
+            return;
+        }
         let Ok(NeighbourMsg::RecordContentPiece {
             responder,
             requester,

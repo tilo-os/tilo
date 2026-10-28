@@ -418,7 +418,7 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
     );
     assert!(package_store::list_installed().unwrap().is_empty());
     assert!(!app_cli::runtime_installed(&needed));
-    let absent = std::process::Command::new(env!("CARGO_BIN_EXE_app"))
+    let absent = std::process::Command::new(tilo_test_env::package_binary!("app"))
         .args(["runtime", "install", &needed, "--repo", "local"])
         .output()
         .unwrap();
@@ -458,7 +458,7 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
     let second = snapshot(vec![app_entry, runtime_entry], &owner, Some(&first));
     served.put("/entries", serde_json::to_vec(&second).unwrap());
 
-    let explicit = std::process::Command::new(env!("CARGO_BIN_EXE_app"))
+    let explicit = std::process::Command::new(tilo_test_env::package_binary!("app"))
         .args(["runtime", "install", &needed, "--repo", "local"])
         .output()
         .unwrap();
@@ -494,7 +494,7 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
             .unwrap()
             .is_intact()
     );
-    let repeat = std::process::Command::new(env!("CARGO_BIN_EXE_app"))
+    let repeat = std::process::Command::new(tilo_test_env::package_binary!("app"))
         .args(["runtime", "install", &needed, "--repo", "local"])
         .output()
         .unwrap();
@@ -674,7 +674,7 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
         Some(&fourth),
     );
     served.put("/entries", serde_json::to_vec(&newer).unwrap());
-    let update = std::process::Command::new(env!("CARGO_BIN_EXE_app"))
+    let update = std::process::Command::new(tilo_test_env::package_binary!("app"))
         .args(["runtime", "install", &new_needed, "--repo", "local"])
         .output()
         .unwrap();
@@ -708,7 +708,7 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
         b"tampered",
     )
     .unwrap();
-    let damaged = std::process::Command::new(env!("CARGO_BIN_EXE_app"))
+    let damaged = std::process::Command::new(tilo_test_env::package_binary!("app"))
         .args(["runtime", "install", &new_needed, "--repo", "local"])
         .output()
         .unwrap();

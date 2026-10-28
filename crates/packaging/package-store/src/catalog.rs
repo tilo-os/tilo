@@ -247,9 +247,7 @@ impl Catalog {
 /// One app's copy in each store.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Layers {
-    /// The copy the user installed or updated to.
     pub user: Option<InstalledPackage>,
-    /// The copy the system image ships.
     pub image: Option<InstalledPackage>,
     /// The system interfaces the user's copy requires that this OS does not
     /// serve. While any are listed the image's copy runs, if there is one.
@@ -575,7 +573,6 @@ mod tests {
 
         // Were the system registry read again, this would now fail to parse.
         std::fs::write(system.path().join("registry.toml"), "[[entry]]\nid = 3\n").unwrap();
-        // The user's registry is still read on every lookup.
         let mine = store_with(&["so.tilo.mine"]);
         std::fs::copy(
             mine.path().join("registry.toml"),
@@ -588,7 +585,6 @@ mod tests {
         );
         assert!(long_lived.find("so.tilo.calculator").unwrap().is_some());
 
-        // A fresh catalogue reads the store as it now is.
         assert!(matches!(
             catalog(system.path(), user.path()).list(),
             Err(CatalogError::Registry(RegistryError::Parse { .. }))
@@ -625,11 +621,9 @@ mod tests {
             ("so.tilo.clocks", "0.1.10", false),
         ]);
         let user = versioned_store(&[
-            // Updated past the image.
             ("so.tilo.settings", "0.1.12", false),
             // The image has since shipped a newer one.
             ("so.tilo.notes", "0.1.9", false),
-            // Rolled back below the image on purpose.
             ("so.tilo.files", "0.1.8", true),
         ]);
         let catalog = catalog(system.path(), user.path());
@@ -705,7 +699,6 @@ mod tests {
             )
         };
 
-        // An OS serving the update's contract runs the update.
         let newer_os = on_os(2);
         let row = newer_os.find("so.tilo.settings").unwrap().unwrap();
         assert_eq!((row.version.as_str(), row.system), ("0.2.0", false));
@@ -728,7 +721,6 @@ mod tests {
             layers.user_unmet[0].to_string(),
             "system@2 (this system provides system@1)"
         );
-        // Still the user's to remove.
         assert_eq!(layers.user.as_ref().unwrap().version, "0.2.0");
 
         // A rollback hold does not override the contract either.
@@ -738,7 +730,6 @@ mod tests {
         let row = catalog.find("so.tilo.settings").unwrap().unwrap();
         assert!(row.system);
 
-        // Removing the update leaves the image's copy, on either OS.
         std::fs::write(user.path().join("registry.toml"), "").unwrap();
         for os in [on_os(1), on_os(2)] {
             let row = os.find("so.tilo.settings").unwrap().unwrap();

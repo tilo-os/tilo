@@ -72,9 +72,7 @@ fn api_server(
     let base = format!("http://{}", listener.local_addr().unwrap());
     let worker = std::thread::spawn(move || {
         for (expected, reply) in replies {
-            let deadline = std::time::Instant::now()
-                .checked_add(std::time::Duration::from_secs(15))
-                .unwrap();
+            let deadline = tilo_test_env::hang_deadline();
             let (mut stream, _) = loop {
                 match listener.accept() {
                     Ok(pair) => break pair,
@@ -89,7 +87,7 @@ fn api_server(
                 }
             };
             stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(15)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let mut bytes = Vec::new();
             while !bytes.ends_with(b"\r\n\r\n") {
@@ -550,9 +548,7 @@ fn wait_for_actual_expiry(root: &Path, id: &AccountId) {
         .obtained_at
         .checked_add(stored.tokens.expires_in)
         .unwrap();
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(5))
-        .unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

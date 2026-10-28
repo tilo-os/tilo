@@ -264,17 +264,14 @@ mod tests {
     use super::*;
     #[test]
     fn dynamic_launcher_restricts_targets_and_icons() {
-        // Phase `web_targets_are_restricted_to_http`.
         assert!(safe_web_target("https://example.test"));
         assert!(!safe_web_target("file:///tmp/a"));
         assert!(!safe_web_target("http://example.test"));
-        // Phase `generated_icons_are_bounded_gbytes_icons`.
         {
             let icon = tilo_icon(1);
             assert!(valid_icon(&icon));
             assert!(icon_bytes(&icon).is_some_and(|bytes| bytes.starts_with(b"<svg")));
         }
-        // Phase `non_bytes_icon_serializations_are_rejected_without_path_access`.
         {
             let path_icon = OwnedValue::try_from(Value::new((
                 "file",

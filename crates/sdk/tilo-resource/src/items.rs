@@ -84,13 +84,26 @@
 //! }
 //! # fn main() {}
 //! ```
+//!
+//! A label joined from several fields names each of them once: naming one
+//! twice would label an item by a field that is not there.
+//!
+//! ```compile_fail
+//! use tilo_resource::Model;
+//!
+//! #[derive(Model, Default)]
+//! #[model(label = "first first")]
+//! pub struct Person { pub first: String, pub last: String }
+//! # fn main() {}
+//! ```
 
 use std::any::TypeId;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
-use tilo_actions::{ActionArgs, ActionParam, ActionSpec, ExecutionLocus};
+use tilo_actions::{ActionArgs, ActionParam, ActionSpec, ActionType, ExecutionLocus, Target};
 
 use crate::collection::Id;
 use crate::resource::Resource;
@@ -186,6 +199,16 @@ pub fn item_resource_id<R: Resource>(field: &str, item: &Id) -> String {
 /// app.
 pub fn item_resource_id_in(kind: &str, field: &str, item: &Id) -> String {
     format!("{kind}/{field}/{item}")
+}
+
+/// The kind an item published under `resource_id` has, `<kind>.<field>`,
+/// read from its id, `<kind>/<field>/<item>`; `None` for an id naming no
+/// item of a top-level collection.
+pub fn item_kind(resource_id: &str) -> Option<String> {
+    let (collection, item) = resource_id.rsplit_once('/')?;
+    let (kind, field) = collection.split_once('/')?;
+    (!kind.is_empty() && !field.is_empty() && !field.contains('/') && !item.is_empty())
+        .then(|| format!("{kind}.{field}"))
 }
 
 /// The item an item resource id names, if it is one of `R`'s.
@@ -320,7 +343,11 @@ fn build_item(
             crate::Segment::Item(id.clone()),
         ];
         child = child.with_children(crate::child::nested_children(
-            vocabulary, item, &parent, &path,
+            vocabulary,
+            item,
+            &parent,
+            &path,
+            Some(label),
         ));
     }
     child
@@ -349,12 +376,24 @@ pub const RENAME: &str = "rename";
 /// "Rename" on an item whose `#[model(label)]` is a plain text field: the
 /// field edit that sets it, asking for the new name, so the palette and
 /// agents offer what a person would otherwise type into the item's title.
+/// Its type is kept once per collection, bound to the item's id.
 fn rename_spec(vocabulary: &'static Vocabulary, field: &str, id: &Id) -> Option<ActionSpec> {
-    use crate::path::{EditOp, Segment};
-    use crate::shape::Shape;
+    thread_local! {
+        static KEPT: RefCell<crate::kept::KeptByPath> = RefCell::default();
+    }
     if !vocabulary.edits {
         return None;
     }
+    let key = ((vocabulary.type_id)(), field.to_owned());
+    crate::kept::kept_type(&KEPT, key, || rename_type(vocabulary, field))
+        .map(|ty| ty.bind(Target::new(id.clone())))
+}
+
+/// The type of [`rename_spec`] on the items of the collection `field`, whose
+/// target is the item's [`Id`].
+fn rename_type(vocabulary: &'static Vocabulary, field: &str) -> Option<Arc<ActionType>> {
+    use crate::path::{EditOp, Segment};
+    use crate::shape::Shape;
     let collection = (vocabulary.shape)()?
         .fields()
         .iter()
@@ -367,24 +406,10 @@ fn rename_spec(vocabulary: &'static Vocabulary, field: &str, id: &Id) -> Option<
     if collection.readonly || label.readonly || !plain_text {
         return None;
     }
-    let path = vec![
-        Segment::Field(collection.key.to_owned()),
-        Segment::Item(id.clone()),
-        Segment::Field(label.key.to_owned()),
-    ];
+    let (collection_key, label_key) = (collection.key, label.key);
     let param = label.name;
-    let build: crate::vocabulary::Builds = Arc::new(move |args, now_ms| {
-        let Some(tilo_actions::ArgValue::Text(name)) = args.get(param) else {
-            return Err(format!("missing `{param}`"));
-        };
-        let edit = crate::Edit::<()>::new(
-            path.clone(),
-            EditOp::Set {
-                value: serde_json::Value::String(name.clone()),
-            },
-        );
-        crate::resource::stamped_edit(vocabulary, edit, now_ms)
-    });
+    // What the action is; its builder is the type's, below, which reads the
+    // item from the target.
     let decl = Declaration::new(
         vocabulary,
         RENAME,
@@ -394,9 +419,29 @@ fn rename_spec(vocabulary: &'static Vocabulary, field: &str, id: &Id) -> Option<
             tilo_actions::ParamType::Text,
             label.title,
         )],
-        build,
+        Arc::new(|_, _| Err("bound to no item".to_owned())),
     );
-    Some(crate::resource::declaration_spec(&decl))
+    let spec = crate::resource::spec_of_declaration_on(&decl, move |target, args, now_ms| {
+        let Some(tilo_actions::ArgValue::Text(name)) = args.get(param) else {
+            return Err(format!("missing `{param}`"));
+        };
+        let Some(id) = target.get::<Id>() else {
+            return Err("bound to no item".to_owned());
+        };
+        let path = vec![
+            Segment::Field(collection_key.to_owned()),
+            Segment::Item(id.clone()),
+            Segment::Field(label_key.to_owned()),
+        ];
+        let edit = crate::Edit::<()>::new(
+            path,
+            EditOp::Set {
+                value: serde_json::Value::String(name.clone()),
+            },
+        );
+        crate::resource::stamped_edit(vocabulary, edit, now_ms)
+    });
+    Some(Arc::clone(spec.action_type()))
 }
 
 /// What a published resource is, as text: its identity, its actions with
@@ -415,7 +460,7 @@ pub fn fingerprint(resource: &tilo_actions::Resource) -> String {
         let _ = write!(
             out,
             "|{}:{}:{:?}:{}",
-            spec.id, spec.label, spec.kind, spec.contract.reversible
+            spec.id, spec.label, spec.kind, spec.contract.kind
         );
         for param in spec.params() {
             let _ = write!(out, ",{}:{:?}:{}", param.name, param.ty, param.required);
@@ -686,12 +731,17 @@ pub fn item_child_id<R: Resource>(collection: &ItemCollection, id: &Id) -> Strin
 }
 
 /// [`Resource::children`] in the parts a publisher can keep between
-/// versions ([`Resource::children_parts`]): the children that are not
-/// items, then one per item of `items` carrying `item_actions`
-/// ([`item_children`]).
+/// versions ([`Resource::children_parts`]): children built afresh, children
+/// kept while they are unchanged, then one per item of `items` carrying
+/// `item_actions` ([`item_children`]).
 pub struct ChildrenParts {
-    /// The children before the items, built afresh.
+    /// The children before the kept ones, built afresh.
     pub others: Vec<tilo_actions::Resource>,
+    /// The record's nested resources and derived ones
+    /// ([`crate::derived::published`]): the very same, and each the very
+    /// same, while they are unchanged, so a publisher holding what it built
+    /// of them keeps it.
+    pub kept: Rc<[Rc<tilo_actions::Resource>]>,
     /// The record's collections, each item with its label.
     pub items: Vec<ItemCollection>,
     /// The actions offered on items.
@@ -772,12 +822,13 @@ fn nested_item(
 }
 
 /// [`Resource::children_offer_bound`] of a record whose children are
-/// `others` followed by its [`item_children`]: the declarations offered
-/// bound on `others` or on the items of a collection, known from how many
-/// items each collection holds (`sizes`, by field) without building a child
-/// per item.
+/// `others`, its `derived` resources, then its [`item_children`]: the
+/// declarations offered bound on `others`, on a derived resource or on the
+/// items of a collection, known from how many items each collection holds
+/// (`sizes`, by field) without building a child per item.
 pub fn offered_on_items<R: Resource>(
     others: &[tilo_actions::Resource],
+    derived: &crate::derived::PublishedDerived,
     sizes: &[(&'static str, usize)],
     actions: &[ItemAction],
     nested: &dyn Fn(&ItemAction) -> bool,
@@ -791,7 +842,7 @@ pub fn offered_on_items<R: Resource>(
         }
         declared.push((decl.id, names));
     }
-    offered_on_items_of(others, sizes, actions, &declared, nested)
+    offered_on_items_of(others, derived, sizes, actions, &declared, nested)
 }
 
 /// [`offered_on_items`] over the declarations `declared` (id and parameter
@@ -799,6 +850,7 @@ pub fn offered_on_items<R: Resource>(
 /// `nested` says such an item is published.
 fn offered_on_items_of(
     others: &[tilo_actions::Resource],
+    derived: &crate::derived::PublishedDerived,
     sizes: &[(&'static str, usize)],
     actions: &[ItemAction],
     declared: &[(&'static str, Vec<&str>)],
@@ -833,7 +885,10 @@ fn offered_on_items_of(
                 kept < params.len() && nested(action)
             }
         });
-        if on_items || offered_bound_as(others, id, params.len()) {
+        if on_items
+            || offered_bound_as(others, id, params.len())
+            || derived.offers_bound(id, params.len())
+        {
             offered.push(*id);
         }
     }
@@ -865,20 +920,43 @@ pub fn bound<N: AsRef<str>>(decl: &Declaration, values: &[(N, serde_json::Value)
     bound_to(decl, owned)
 }
 
-/// [`bound`] with its values owned.
+/// [`bound`] with its values owned: the type of `decl` with those parameters
+/// bound, kept once for every item it is bound on, bound to `values`.
 fn bound_to(decl: &Declaration, values: Vec<(String, serde_json::Value)>) -> ActionSpec {
-    let params = unbound_params(&decl.params, &values);
+    thread_local! {
+        static KEPT: std::cell::RefCell<crate::kept::KeptTypes<BoundKey>> =
+            std::cell::RefCell::default();
+    }
+    let names: Vec<String> = values.iter().map(|(name, _)| name.clone()).collect();
+    let key = (decl.resource, decl.id, decl.refines, names);
+    // The values are the item's, so the target holds them and the type
+    // only names them; the spec fixes them for a caller that repeats one.
+    crate::kept::kept_type(&KEPT, key, || bound_type(decl, &values))
+        .bind(Target::new(values.clone()))
+        .with_bound(values)
+}
+
+/// Which bound type of a declaration: the kind of resource it is declared
+/// on, its id, whether it refines one, and the names of its bound parameters.
+type BoundKey = (&'static str, &'static str, bool, Vec<String>);
+
+/// The values a bound spec's [`Target`] holds, by parameter.
+type BoundValues = Vec<(String, serde_json::Value)>;
+
+/// The type of `decl` with the parameters `values` names bound by its target.
+fn bound_type(decl: &Declaration, values: &[(String, serde_json::Value)]) -> Arc<ActionType> {
+    let params = unbound_params(&decl.params, values);
     let all = decl.params.clone();
     let build = Arc::clone(&decl.build);
-    let mut spec = ActionSpec::typed(
+    let spec = ActionSpec::typed_on(
         decl.id,
         decl.label.clone(),
         decl.label.clone(),
         ExecutionLocus::ClientLocal,
         params,
-        move |args| {
+        move |target, args| {
             let mut arguments = args.to_json();
-            for (name, value) in &values {
+            for (name, value) in target.get::<BoundValues>().into_iter().flatten() {
                 // An optional parameter bound to nothing is left out.
                 if !value.is_null() {
                     arguments.insert(name.clone(), value.clone());
@@ -892,16 +970,8 @@ fn bound_to(decl: &Declaration, values: Vec<(String, serde_json::Value)>) -> Act
         },
     )
     .of_kind(decl.kind);
-    if decl.kind == crate::ActionKind::Undoable {
-        spec = spec.reversible();
-    }
-    finish_bound(
-        spec,
-        decl.field,
-        decl.description.as_ref(),
-        decl.destructive,
-        decl.result.as_ref(),
-    )
+    let spec = finish_bound(spec, decl);
+    Arc::clone(spec.action_type())
 }
 
 /// The parameters of `params` that `values` leaves to the caller.
@@ -917,25 +987,30 @@ fn unbound_params(
 }
 
 /// What a bound spec carries over from its declaration.
-fn finish_bound(
-    mut spec: ActionSpec,
-    field: Option<&'static str>,
-    description: Option<&String>,
-    destructive: bool,
-    result: Option<&tilo_actions::ResultSpec>,
-) -> ActionSpec {
-    if let Some(field) = field {
+fn finish_bound(mut spec: ActionSpec, decl: &Declaration) -> ActionSpec {
+    if let Some(field) = decl.field {
         spec = spec.below_field(field);
     }
-    if let Some(description) = description {
+    if let Some(description) = &decl.description {
         spec = spec.with_description(description.clone());
     }
-    if destructive {
+    // On its item it is the same act, in the same picture.
+    spec.type_mut().icon.clone_from(&decl.icon);
+    // Offered to whom it is declared for, housekept and undone as declared:
+    // `#[action(audience = "people", item = ...)]` is no agent's on its item
+    // either. Before `destructive`, which settles its confirmation from what
+    // the tags say and would otherwise ask about the undo they declare.
+    for tag in &decl.tags {
+        if !spec.contract.tags.contains(tag) {
+            spec.type_mut().contract.tags.push(tag.clone());
+        }
+    }
+    if decl.destructive {
         spec = spec.destructive();
     }
     // An item verb that answers answers on its item too.
-    if let Some(result) = result {
-        spec.contract.result = result.clone();
+    if let Some(result) = &decl.result {
+        spec.type_mut().contract.result = result.clone();
     }
     spec
 }
@@ -956,4 +1031,26 @@ fn offered_bound_as(children: &[tilo_actions::Resource], id: &str, params: usize
             .any(|spec| spec.id == id && spec.params().len() < params)
             || offered_bound_as(&child.children, id, params)
     })
+}
+
+#[cfg(test)]
+mod item_kind_tests {
+    #[test]
+    fn an_items_kind_is_read_from_its_id() {
+        let id = super::item_resource_id_in("notes.notebook", "pages", &super::Id::from_raw("p1"));
+        assert_eq!(
+            super::item_kind(&id).as_deref(),
+            Some("notes.notebook.pages")
+        );
+        assert_eq!(
+            super::item_kind("notes.notebook"),
+            None,
+            "the record itself"
+        );
+        assert_eq!(
+            super::item_kind("deck/slides/s1/elements/e1"),
+            None,
+            "a nested item"
+        );
+    }
 }

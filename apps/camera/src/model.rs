@@ -633,7 +633,6 @@ mod tests {
 
     #[test]
     fn screen_and_facing_round_trip_and_cycle() {
-        // Phase `facing_cycles_through_all`.
         {
             let mut f = Facing::Back;
             f = f.next();
@@ -647,12 +646,10 @@ mod tests {
 
     #[test]
     fn code_classification_parses_payloads_and_matches_actions() {
-        // Phase `classify_url`.
         {
             assert_eq!(classify("https://example.test/app"), CodeKind::Url);
             assert_eq!(classify("HTTP://X"), CodeKind::Url);
         }
-        // Phase `classify_and_parse_wifi`.
         {
             let k = classify("WIFI:T:WPA2;S:Tilo Guest;P:hunter2;H:false;;");
             match k {
@@ -670,7 +667,6 @@ mod tests {
                 other => panic!("expected wifi, got {other:?}"),
             }
         }
-        // Phase `classify_and_parse_contact_vcard`.
         {
             let v = "BEGIN:VCARD\nVERSION:3.0\nFN:Ada Lovelace\nTEL:+1-555-0100\nEMAIL:ada@analytical.engine\nORG:Analytical Engines\nEND:VCARD";
             match classify(v) {
@@ -688,7 +684,6 @@ mod tests {
                 other => panic!("expected contact, got {other:?}"),
             }
         }
-        // Phase `actions_match_kind`.
         {
             assert_eq!(classify("https://x").actions()[0], "Open link");
             assert_eq!(classify("WIFI:S:x;;").actions()[0], "Copy password");

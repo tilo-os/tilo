@@ -19,6 +19,8 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
+# The book store (Project Gutenberg) searched beside the library.
+tilo-net = { path = "../../crates/platform/tilo-net", features = ["http"] }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # "Open a book…" goes through `ui::portal`, the platform's own picker (the
@@ -50,6 +52,9 @@ anyhow.workspace = true
 # hermetic; `deflate` covers common EPUBs.
 bounded-zip = { path = "../../crates/doc/bounded-zip", features = ["epub"] }
 roxmltree.workspace = true
+# The library index segments travel deflated, in pure Rust (the browser runs
+# Books too).
+flate2.workspace = true
 # Decode and downscale embedded raster covers for the shelf, through the
 # shared preview decoder.
 tilo-thumbnail = { path = "../../crates/media/thumbnail" }
@@ -66,6 +71,8 @@ image = { workspace = true, features = ["png"] }
 serial_test.workspace = true
 # Temporary directories for on-disk library-discovery tests.
 tempfile.workspace = true
+# The scroll tests look at frames' pixels as the CPU renderer draws them.
+tilo-cpu-raster = { path = "../../crates/sdk/tilo-cpu-raster" }
 
 [lints]
 workspace = true

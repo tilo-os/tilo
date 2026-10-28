@@ -1,0 +1,24 @@
+[package]
+name = "tilo-unicode-emoji"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The Unicode emoji catalogue handed to the toolkit's shared picker and reaction strip, in the builds of a program that carry it: every native target does, and the browser desktop's start bundle, which carries none, leaves it to the module that does"
+
+# Nothing portable: what this crate hands over is the target's to carry.
+[dependencies]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+# The catalogue itself: linked into every native build of a program that
+# shows a picker, and into no module of the browser desktop's start bundle.
+tilo-emoji-catalogue = { path = "../../text/emoji-catalogue" }
+
+[dev-dependencies]
+# The shared picker and reaction strip the catalogue is handed to.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+
+[lints]
+workspace = true

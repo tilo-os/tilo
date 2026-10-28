@@ -102,7 +102,6 @@ impl Desk {
         // The artwork is fitted into the canvas less its 24-point padding.
         let art = app.state();
         let zoom = ((canvas.width() - 48.0) / art.width).min((canvas.height() - 48.0) / art.height);
-        // Centred in the canvas.
         let origin = (
             canvas.center().x - art.width * zoom / 2.0,
             canvas.center().y - art.height * zoom / 2.0,
@@ -234,8 +233,6 @@ fn a_drag_moves_the_selection_once_and_snaps_to_edges() {
     assert!(near(x, 1.5, 1e-6), "{x}");
 }
 
-/// A corner stretches freely, keeps the aspect with Shift, and a stretched
-/// rectangle stays a rectangle.
 #[test]
 fn a_corner_stretches_and_shift_keeps_the_aspect() {
     let mut desk = Desk::open();
@@ -289,8 +286,6 @@ fn the_rotation_handle_turns_in_steps_with_shift() {
     assert!(degrees.abs() > 30.0, "{degrees}");
 }
 
-/// A marquee picks what it touches, Shift-click adds and takes away, and
-/// Delete removes the picked marks in one step.
 #[test]
 fn marquee_and_shift_click_pick_and_delete_removes() {
     let mut desk = Desk::open();
@@ -337,8 +332,6 @@ fn groups_are_picked_whole_and_grouping_is_one_edit() {
     assert!(desk.mark("leaf").group.is_empty());
 }
 
-/// Duplicate, copy and paste make new marks beside the old in one step
-/// each.
 #[test]
 fn duplicate_copy_and_paste_make_new_marks() {
     let mut desk = Desk::open();
@@ -424,7 +417,6 @@ fn a_paths_points_are_dragged_one_edit_at_a_time() {
     assert!(d.starts_with("M 620 700"), "{d}");
 }
 
-/// Shapes square up and lines straighten with Shift.
 #[test]
 fn shift_squares_shapes_and_straightens_lines() {
     let mut desk = Desk::open();
@@ -481,7 +473,6 @@ fn text_is_typed_in_place() {
     assert_eq!(text, "Hello you");
 }
 
-/// The eyedropper picks a mark's colour for the next mark.
 #[test]
 fn the_eyedropper_picks_up_a_colour() {
     let mut desk = Desk::open();
@@ -493,7 +484,67 @@ fn the_eyedropper_picks_up_a_colour() {
     assert_eq!(made.style.fill.as_deref(), Some("#4f7a3a"));
 }
 
-/// A brush stroke is one `paint`, its pressure following the hand.
+/// Renders the pixels this thread asks for as a browser page's frame loop
+/// does: a few frames after they are asked for, never at once.
+fn pixels_between_frames() -> ui::offscreen::pixels::PixelsHost {
+    let gpu = ui::offscreen::shared_gpu().unwrap();
+    let renderer = ui::vello::Renderer::new(
+        &gpu.device,
+        ui::vello::RendererOptions {
+            antialiasing_support: ui::vello::AaSupport::area_only(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut host = ui::offscreen::pixels::PixelsHost::new();
+    host.set_gpu(gpu.device, gpu.queue, renderer);
+    host
+}
+
+/// Draw frames, `host` answering between them, until nothing waits for a
+/// picture (the wand looks twice: the whole artwork, then closer).
+fn answer_between_frames(desk: &mut Desk, host: &mut ui::offscreen::pixels::PixelsHost) {
+    let started = std::time::Instant::now();
+    while host.waiting() {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(60),
+            "the picture never came"
+        );
+        host.drive();
+        desk.app.harness().poll_frame().unwrap();
+    }
+    desk.app.harness().poll_frame().unwrap();
+}
+
+/// In a browser page the eyedropper's and the bucket's pictures come a few
+/// frames after the click: the colour is picked, and the area filled, once
+/// they are there.
+#[test]
+fn the_eyedropper_and_the_bucket_wait_for_their_pictures() {
+    let mut desk = Desk::open();
+    let mut host = pixels_between_frames();
+    desk.key("i");
+    desk.click(760.0, 600.0);
+    answer_between_frames(&mut desk, &mut host);
+    desk.key("r");
+    desk.drag((480.0, 300.0), (580.0, 360.0));
+    let made = desk.art().marks.last().cloned().unwrap();
+    assert_eq!(made.style.fill.as_deref(), Some("#4f7a3a"));
+
+    let before = desk.art().marks.len();
+    desk.key("g");
+    desk.click(760.0, 600.0);
+    assert_eq!(
+        desk.art().marks.len(),
+        before,
+        "nothing is filled before the picture"
+    );
+    answer_between_frames(&mut desk, &mut host);
+    let art = desk.art();
+    assert_eq!(art.marks.len(), before + 1, "the bucket filled the area");
+    assert!(art.marks.last().unwrap().id.starts_with("fill"));
+}
+
 #[test]
 fn a_brush_stroke_is_one_paint() {
     let mut desk = Desk::open();
@@ -1367,12 +1418,6 @@ fn mouse_wheel_zoom_requests_frames_until_the_motion_settles() {
 
 #[test]
 fn enabling_reduced_motion_finishes_an_in_flight_wheel_zoom() {
-    fn has_label(node: &ui::headless::InspectionNode, name: &str) -> bool {
-        node.semantics
-            .as_ref()
-            .is_some_and(|semantic| semantic.name.as_deref() == Some(name))
-            || node.children.iter().any(|child| has_label(child, name))
-    }
     // Drive icon/background completions deterministically; this exercises
     // motion policy, not the shared runner's worker scheduling latency.
     let pumped = ui::background::Pumped::new();
@@ -1406,9 +1451,20 @@ fn enabling_reduced_motion_finishes_an_in_flight_wheel_zoom() {
     theme.reduce_motion = true;
     desk.app.harness().set_theme(theme);
     desk.hold(&[]);
+    // The zoom the canvas holds is the wheel's target at once. The readout
+    // that stood in the app's own header is the window bar's zoom slot now,
+    // so that is where the size is said.
+    desk.app.harness().render_rgba();
+    let declared = ui::window_toolbar::declared().expect("the window declares its slots");
+    let zoom_name = declared
+        .actions
+        .iter()
+        .find(|action| action.id == "canvas.zoom")
+        .map(|action| action.name.clone())
+        .expect("the zoom is a slot in the window bar");
     assert!(
-        has_label(&desk.app.harness().inspection().root, "154%"),
-        "reduced motion immediately reaches the wheel's target zoom"
+        zoom_name.contains("154%"),
+        "reduced motion immediately reaches the wheel's target zoom: {zoom_name}"
     );
     pumped.run_pending();
     assert!(
@@ -1422,9 +1478,17 @@ fn enabling_reduced_motion_finishes_an_in_flight_wheel_zoom() {
     desk.hold(&["ctrl"]);
     desk.app.harness().scroll(0.0, 1.0);
     desk.hold(&[]);
+    desk.app.harness().render_rgba();
+    let declared = ui::window_toolbar::declared().expect("the window declares its slots");
+    let zoom_name = declared
+        .actions
+        .iter()
+        .find(|action| action.id == "canvas.zoom")
+        .map(|action| action.name.clone())
+        .expect("the zoom is a slot in the window bar");
     assert!(
-        has_label(&desk.app.harness().inspection().root, "190%"),
-        "subsequent wheel input immediately reaches its target zoom"
+        zoom_name.contains("190%"),
+        "subsequent wheel input immediately reaches its target zoom: {zoom_name}"
     );
     pumped.run_pending();
     assert!(
@@ -1436,4 +1500,30 @@ fn enabling_reduced_motion_finishes_an_in_flight_wheel_zoom() {
         !desk.app.harness().frame_schedule().needs_animation_frame,
         "reduced-motion wheel zoom completes without scheduling interpolation frames"
     );
+}
+
+/// A brush click leaves a dot where it was, and the dot is there for what
+/// finds, selects and draws marks by where they are, not at the corner.
+#[test]
+fn a_brush_click_leaves_its_dot_where_it_was_never_at_the_corner() {
+    let mut desk = Desk::open();
+    desk.key("b");
+    // On the artwork, then just beside it.
+    for (at, dots) in [
+        ((300.0, 260.0), 1..=1),
+        ((-12.0 / desk.zoom, -12.0 / desk.zoom), 0..=1),
+    ] {
+        let before = desk.art().marks.len();
+        desk.click(at.0, at.1);
+        let art = desk.art();
+        let made: Vec<_> = art.marks.iter().skip(before).collect();
+        assert!(dots.contains(&made.len()), "{made:?}");
+        for mark in made {
+            let centre = mark.bounds().center();
+            assert!(
+                (centre.x - at.0).abs() < 1.0 && (centre.y - at.1).abs() < 1.0,
+                "the dot is where the click was, {at:?}: {mark:?}"
+            );
+        }
+    }
 }

@@ -249,7 +249,7 @@ pub struct ChordMods {
 }
 
 impl ChordMods {
-    /// The mask carried by an xkbcommon-style bitfield — the encoding the peer-sync wire protocol uses for [`crate::network::streaming::InputEvent::Key`].
+    /// The mask carried by an xkbcommon-style bitfield — the encoding the peer-sync wire protocol uses for [`tilo_window_share::streaming::InputEvent::Key`].
     pub fn from_xkb_bits(bits: u32) -> Self {
         Self {
             shift: bits & 0x1 != 0,
@@ -684,9 +684,77 @@ fn v120_component(value: f64) -> i32 {
         .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
 }
 
+/// Where the shell holds the pointer back from clients.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum PointerCapture {
+    /// The pointer is the windows' wherever it is.
+    #[default]
+    Nowhere,
+    /// The shell takes it wherever it is.
+    Everywhere,
+    /// The shell takes it within these rects (global, as drawn).
+    Within(Vec<Rect>),
+}
+
+impl PointerCapture {
+    /// Whether the shell takes the pointer at `point`.
+    #[must_use]
+    pub fn at(&self, point: KurboPoint) -> bool {
+        match self {
+            Self::Nowhere => false,
+            Self::Everywhere => true,
+            Self::Within(rects) => rects.iter().any(|rect| rect.contains(point)),
+        }
+    }
+}
+
+/// What the shell holds back from client windows this frame: the one
+/// decision local input ([`chrome_captures_input`], [`chrome_captures_pointer`])
+/// and input from other devices (the remote-input firewall's view) both
+/// follow.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InputCapture {
+    /// No window hears a key.
+    pub keyboard: bool,
+    /// Where no window gets the pointer.
+    pub pointer: PointerCapture,
+}
+
+impl InputCapture {
+    /// Nothing held back.
+    pub const NONE: Self = Self {
+        keyboard: false,
+        pointer: PointerCapture::Nowhere,
+    };
+    /// Everything held back.
+    pub const ALL: Self = Self {
+        keyboard: true,
+        pointer: PointerCapture::Everywhere,
+    };
+}
+
+/// What the shell holds back from client windows this frame. A modal
+/// overlay, the palette, a prompt and the like hold all input
+/// (`chrome_takes_all_input`); a file chooser's sheet holds the keyboard
+/// while the window that asked for it is focused and the pointer over
+/// itself and that window, so a click on another window reaches it.
+pub fn input_capture(fb: &FrameBuilder) -> InputCapture {
+    if chrome_takes_all_input(fb) {
+        InputCapture::ALL
+    } else {
+        fb.host().file_picker_capture()
+    }
+}
+
+/// Whether the shell chrome is currently claiming the keyboard
+/// ([`input_capture`]).
+pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
+    input_capture(fb).keyboard
+}
+
 /// Whether the shell chrome is currently claiming all input: an overlay,
 /// the command palette, the peer-sync card, the workspace-name editor, or a permission prompt — in any of those a client must not receive keys or pointer focus.
-pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
+fn chrome_takes_all_input(fb: &FrameBuilder) -> bool {
     // First-login chrome is a compositor-owned security boundary. It hides the
     // entire desktop and must mute both the local Wayland seat and the remote
     // input firewall, just like the session lock does.
@@ -704,11 +772,6 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     // The emoji picker types into its own search field; the field it will
     // insert into gets the keyboard back when it closes.
     if fb.host().emoji_picker_open() {
-        return true;
-    }
-    // The portal's file chooser, for the same reason as the peer-sync card
-    // below: modal, drawn over a scrim, but "drawn above" and "receives the click" are separate — without this it was unreachable with mouse or keyboard.
-    if fb.host().file_picker().is_some() {
         return true;
     }
     // Permission and other portal sheets are the same kind of modal. Without
@@ -731,6 +794,15 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     // A window's location is being edited in its bar: typing goes to the
     // field, not to the window under it, until Enter or Esc.
     if fb.host().window_location_editing() {
+        return true;
+    }
+    // A tab is being named in its pill: the same, until Enter or Esc.
+    if fb.host().tab_renaming() {
+        return true;
+    }
+    // Pointing at what is wrong to report it: the picker takes every key
+    // and the pointer everywhere until the person finishes or leaves.
+    if fb.host().feedback_picker_open() {
         return true;
     }
     // Cursor chat is typed beside the pointer: every key is the message's
@@ -764,17 +836,32 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
         || !chrome.pending_grants.is_empty()
 }
 
-/// Whether the shell takes the pointer: whenever it takes all input, and
-/// also while the pointer is on the bar a maximized window shows over its
-/// client, or on a notification banner over a window. That bar takes only the pointer — the client keeps the keyboard,
-/// so typing never stops because the pointer rests near the window's top.
+/// Whether the shell takes the pointer where it is: where [`input_capture`]
+/// holds it back, and also while the pointer is on the bar a maximized
+/// window shows over its client, or on a notification banner over a window.
+/// That bar takes only the pointer — the client keeps the keyboard, so
+/// typing never stops because the pointer rests near the window's top.
 pub fn chrome_captures_pointer(fb: &FrameBuilder) -> bool {
-    chrome_captures_input(fb)
-        || fb.host().maximized_chrome_captures_pointer()
-        || fb.host().strip_switcher_captures_pointer()
-        || fb.host().top_bar_captures_pointer()
-        || fb.host().notification_banner_captures_pointer()
-        || fb.host().presence_notice_captures_pointer()
+    let capture = input_capture(fb).pointer;
+    let held = match fb.host().pointer_position() {
+        Some(at) => capture.at(at),
+        None => capture == PointerCapture::Everywhere,
+    };
+    held || fb.host().chrome_band_captures_pointer()
+}
+
+/// Whether the shell takes a finger landing at `point` (global, as drawn):
+/// exactly when it would take the pointer standing there
+/// ([`chrome_captures_pointer`]). Touch equals pointer: a contact on an
+/// overlay is the overlay's, never also the window's beneath.
+///
+/// A finger landing on a display's top edge while something hides there (the
+/// top bar the person hides, a fullscreen window's bar) is the shell's too: a
+/// swipe down from it reveals what hides there, and no client sees it.
+pub fn chrome_captures_touch_at(fb: &FrameBuilder, point: vello::kurbo::Point) -> bool {
+    input_capture(fb).pointer.at(point)
+        || fb.host().chrome_band_captures_pointer_at(Some(point))
+        || fb.host().takes_top_edge_touch(point)
 }
 
 // Seat delivery — the actual `wl_keyboard`/`wl_pointer` traffic.
@@ -811,6 +898,7 @@ pub(crate) fn insert_foreign_group(
             app_id: resolved,
             surface_id,
         },
+        app_title: None,
     };
     let tab_id = tab.id;
     let group = WindowGroup {
@@ -928,7 +1016,6 @@ pub enum SuperGesture {
 pub struct SuperTap {
     /// When the lone Super went down, while nothing else has happened.
     armed: Option<std::time::Instant>,
-    /// The hold became a peek.
     peeking: bool,
     /// The peek grew into the whole surface.
     full: bool,
@@ -995,6 +1082,15 @@ impl SuperTap {
             }
             _ => None,
         }
+    }
+
+    /// The keyboard let go of every key without reporting the releases (a
+    /// nested session's host took keyboard focus from its window): a held
+    /// Super is up. It is no tap, since nobody saw it come up, and a peek it
+    /// held closes as at its release.
+    pub fn let_go(&mut self) -> Option<SuperGesture> {
+        self.armed = None;
+        self.end_peek().then_some(SuperGesture::PeekReleased)
     }
 
     /// Forget the peek; whether there was one.
@@ -1248,6 +1344,33 @@ mod super_tap_tests {
         assert_eq!(tap.observe(&super_key(ElementState::Released), t0), None);
     }
 
+    /// A nested session's host takes the keyboard while Super is held in
+    /// its window (Super was the first key of a host chord) and the release
+    /// goes to another window. The Super surface neither grows in from a
+    /// hold that ended nor stays up for a release that never comes.
+    #[test]
+    fn letting_go_of_the_keyboard_ends_a_held_super_without_a_tap() {
+        let t0 = Instant::now();
+        let mut tap = SuperTap::default();
+        tap.observe(&super_key(ElementState::Pressed), t0);
+        assert_eq!(tap.let_go(), None, "no tap, and nothing was shown");
+        assert_eq!(tap.deadline(), None);
+        assert_eq!(tap.poll(t0 + SUPER_FULL), None, "no peek after it");
+
+        tap.observe(&super_key(ElementState::Pressed), ms(t0, 1000));
+        assert_eq!(
+            tap.poll(ms(t0, 1000) + SUPER_HOLD),
+            Some(SuperGesture::Peek)
+        );
+        assert_eq!(tap.let_go(), Some(SuperGesture::PeekReleased));
+        assert_eq!(tap.poll(ms(t0, 1000) + SUPER_FULL), None);
+        assert_eq!(
+            tap.observe(&super_key(ElementState::Released), ms(t0, 1800)),
+            None,
+            "a late release is nothing"
+        );
+    }
+
     #[test]
     fn a_modifier_released_alone_is_not_super() {
         let t0 = Instant::now();
@@ -1296,6 +1419,7 @@ mod tests {
                 kind: AppKind::Terminal,
                 label: "Terminal".into(),
             },
+            app_title: None,
         };
         let stub_tab_id = stub_tab.id;
         let stub = WindowGroup {
@@ -1313,6 +1437,7 @@ mod tests {
                 app_id: "org.example.client".into(),
                 surface_id,
             },
+            app_title: None,
         };
         let foreign_tab_id = foreign_tab.id;
         let foreign = WindowGroup {
@@ -1779,6 +1904,7 @@ mod tests {
                         kind: AppKind::Other((*name).into()),
                         label: (*name).into(),
                     },
+                    app_title: None,
                 })
                 .collect();
             let ids: Vec<u64> = tabs.iter().map(|t| t.id).collect();
@@ -2266,28 +2392,19 @@ mod tests {
             fb.with_chrome(|chrome| chrome.set_maximized_group(Some(group)));
             let _ = fb.paint_settled();
 
-            // At rest the bar hides: the top of the window is the client's.
-            fb.host_mut()
-                .note_pointer(vello::kurbo::Point::new(1210.0, 70.0));
-            assert!(!chrome_captures_pointer(&fb));
-
-            // Reached for, its controls take the pointer, never the keyboard.
-            let strip = fb.chrome().tree().desktop.workspaces[0].strips[0].id;
-            fb.host_mut()
-                .group_at_for_tests(strip, 0)
-                .expect("maximized group")
-                .set_maximized_chrome_shown_for_tests(true);
-            let _ = fb.paint_settled();
-            let restore = fb
-                .host()
-                .active_window_bounds()
-                .and_then(|bounds| bounds.restore)
-                .expect("Restore shows");
-            fb.host_mut().note_pointer(restore.center());
+            // A maximized window keeps its bar: its Restore stands there at
+            // rest, in the bar's own room above the client, so the shell and
+            // never the client gets its click; the keyboard stays the
+            // client's.
+            let bounds = fb.host().active_window_bounds().expect("maximized group");
+            let restore = bounds.restore.expect("Restore shows");
             assert!(
-                chrome_captures_pointer(&fb),
-                "the visible Restore/Close pills must receive their own click"
+                bounds
+                    .client
+                    .is_some_and(|client| !client.contains(restore.center())),
+                "the visible Restore/Close controls stand clear of the client"
             );
+            fb.host_mut().note_pointer(restore.center());
             assert!(
                 !chrome_captures_input(&fb),
                 "the bar never takes the client's keyboard"
@@ -2336,6 +2453,7 @@ mod tests {
                 current_name: None,
                 filters: Vec::new(),
                 scope: None,
+                recent: Vec::new(),
                 reply,
             });
             assert!(
@@ -2402,7 +2520,6 @@ pub fn step_active_window(tree: &WorkspaceTree, steps: i32) -> Option<(StripId, 
     let (group, tab) = *windows.get(idx)?;
     Some((strip.id, group, tab))
 }
-use crate::compositor::lock_controller::LockKey;
 /// Is `event` the remote-input kill switch, `Super+Esc`, on key *press*?
 /// The panic key for a shared session — stops whatever a guest is doing.
 /// Checked ahead of the client router and the shell's own Escape handling
@@ -2428,6 +2545,31 @@ pub fn is_mouse_keys_toggle(event: &WindowEvent, modifiers: Modifiers) -> bool {
             chord_key_for_logical(&key.logical_key),
             ChordMods::from(&modifiers),
         ) == Some(crate::shell::fixed_chords::FixedChordAction::ToggleMouseKeys)
+}
+
+/// Feed `event` to the screen reader chord: `true` when it turns the screen
+/// reader on or off. Keys held when the seat loses focus are forgotten.
+pub fn screen_reader_chord_toggles(
+    chord: &mut ui::screen_reader_chord::ScreenReaderChord,
+    event: &WindowEvent,
+    modifiers: Modifiers,
+    now: std::time::Instant,
+) -> bool {
+    use ui::screen_reader_chord::{ChordEvent, ChordKey, ChordModifiers};
+    match event {
+        WindowEvent::KeyboardInput { event: key, .. } => chord.key(ChordEvent {
+            key: ChordKey::from_winit(key),
+            modifiers: ChordModifiers::from_winit(modifiers.state()),
+            pressed: key.state == ElementState::Pressed,
+            repeat: key.repeat,
+            at: now,
+        }),
+        WindowEvent::Focused(false) => {
+            chord.reset();
+            false
+        }
+        _ => false,
+    }
 }
 
 /// Is `event` a press of the configured session-lock binding?
@@ -2464,34 +2606,6 @@ pub fn lock_chord_matches(
     crate::shell::overlay_host::shortcut_chord_matches(&event.logical_key, modifiers, chord)
 }
 
-/// Map a live winit key event to the lock screen's normalised [`LockKey`]
-/// while locked. Non-press/unhandled keys become [`LockKey::Ignored`] —
-/// still swallowed (never routed to apps behind the overlay), but inert on
-/// the password buffer. The test-control path produces the same `LockKey`s so both drive one routing.
-pub fn winit_event_to_lock_key(event: &WindowEvent) -> LockKey {
-    let WindowEvent::KeyboardInput { event, .. } = event else {
-        return LockKey::Ignored;
-    };
-    if event.state != ElementState::Pressed {
-        return LockKey::Ignored;
-    }
-    match &event.logical_key {
-        Key::Named(NamedKey::Enter) => LockKey::Submit,
-        Key::Named(NamedKey::Escape) => LockKey::Cancel,
-        Key::Named(NamedKey::Backspace) => LockKey::Backspace,
-        Key::Named(NamedKey::Space) => LockKey::Text(" ".to_string()),
-        Key::Character(s) => LockKey::Text(s.to_string()),
-        _ => {
-            // Some layouts deliver typed text on otherwise-Named keys.
-            match &event.text {
-                Some(t) if !t.is_empty() && !t.chars().all(char::is_control) => {
-                    LockKey::Text(t.to_string())
-                }
-                _ => LockKey::Ignored,
-            }
-        }
-    }
-}
 #[cfg(test)]
 mod lock_chord_tests {
     use super::*;
@@ -2624,7 +2738,6 @@ mod lock_chord_tests {
 
     #[test]
     fn remote_input_kill_switch_is_only_a_super_escape_press_owned_by_the_shell() {
-        /// `Super+Esc` on press is the remote-input kill switch.
         fn super_escape_press_is_the_remote_input_kill_switch() {
             let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
             assert!(is_remote_input_kill_switch(&ev, mods_with_super(true)));
@@ -2661,34 +2774,5 @@ mod lock_chord_tests {
         escape_without_super_is_not_the_kill_switch();
         super_escape_release_is_not_the_kill_switch();
         super_escape_is_a_shell_chord_and_never_reaches_a_client();
-    }
-
-    #[test]
-    fn lock_keys_map_presses_to_submit_cancel_text_and_backspace() {
-        /// Enter and Escape on press are the explicit unlock action.
-        fn enter_and_escape_press_map_to_submit_and_cancel() {
-            let enter = keyboard_input_event(&Key::Named(NamedKey::Enter), true);
-            let escape = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
-            assert_eq!(winit_event_to_lock_key(&enter), LockKey::Submit);
-            assert_eq!(winit_event_to_lock_key(&escape), LockKey::Cancel);
-        }
-
-        /// A plain character keypress feeds the password buffer as text — it doesn't itself unlock.
-        fn char_key_maps_to_text() {
-            let ev = keyboard_input_event(&Key::Character(SmolStr::new("a")), true);
-            assert_eq!(winit_event_to_lock_key(&ev), LockKey::Text("a".to_string()));
-        }
-
-        /// Backspace maps to a buffer edit; a key *release* is ignored (only presses type).
-        fn backspace_maps_and_release_is_ignored() {
-            let bs = keyboard_input_event(&Key::Named(NamedKey::Backspace), true);
-            assert_eq!(winit_event_to_lock_key(&bs), LockKey::Backspace);
-            let release = keyboard_input_event(&Key::Named(NamedKey::Enter), false);
-            assert_eq!(winit_event_to_lock_key(&release), LockKey::Ignored);
-        }
-
-        enter_and_escape_press_map_to_submit_and_cancel();
-        char_key_maps_to_text();
-        backspace_maps_and_release_is_ignored();
     }
 }

@@ -72,12 +72,12 @@ pub fn render_key(tree: &crate::shell::state::WorkspaceTree, room: Option<&str>)
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room.to_string() == room)
+        .find(|workspace| workspace.room().to_string() == room)
     else {
         // A room this session does not know is nobody's private room.
         return format!("room:{room}");
     };
-    let me = crate::shell::state::local_user_id_for_room_prompt(&workspace.room);
+    let me = crate::shell::state::local_user_id_for_room_prompt(&workspace.room());
     let private = workspace.roster().iter().all(|(user, _)| *user == me)
         && workspace.collaborators.iter().all(|person| person.id == me);
     if private {
@@ -87,11 +87,16 @@ pub fn render_key(tree: &crate::shell::state::WorkspaceTree, room: Option<&str>)
     }
 }
 
+/// Whether a service has come up: `Some(Ok(device))` once ready,
+/// `Some(Err(()))` if it failed, `None` while it starts; signalled when it
+/// changes.
+type Readiness = Arc<(Mutex<Option<Result<String, ()>>>, Condvar)>;
+
 /// A running service.
 struct Service {
     channel: Arc<Channel>,
     /// `Some(device)` once ready; `None` while it starts.
-    ready: Arc<(Mutex<Option<Result<String, ()>>>, Condvar)>,
+    ready: Readiness,
     /// Reaped by the service's watcher.
     _child: Arc<Mutex<std::process::Child>>,
 }
@@ -237,11 +242,7 @@ impl Inner {
         };
         let _ = stream.set_read_timeout(None);
         let mut mine: Vec<u64> = Vec::new();
-        loop {
-            match wire::read_request(stream.as_fd()) {
-                Ok(true) => {}
-                Ok(false) | Err(_) => break,
-            }
+        while matches!(wire::read_request(stream.as_fd()), Ok(true)) {
             mine.retain(|connection| self.live.lock_recover().contains_key(connection));
             let channel = if mine.len() >= MAX_CHANNELS_PER_APP {
                 Err("too many windows".to_owned())
@@ -309,9 +310,8 @@ impl Inner {
             }
         };
         let (state, signal) = &*ready;
-        let state = state.lock_recover();
         let (state, timeout) = signal
-            .wait_timeout_while(state, READY_WAIT, |state| state.is_none())
+            .wait_timeout_while(state.lock_recover(), READY_WAIT, |state| state.is_none())
             .map_err(|_| "render service state poisoned".to_owned())?;
         match &*state {
             Some(Ok(_)) => Ok(channel),
@@ -333,6 +333,7 @@ impl Inner {
             let record = crashes.entry(key.to_owned()).or_default();
             let delay = backoff(*record);
             record.last_start = Some(Instant::now());
+            drop(crashes);
             delay
         };
         if !delay.is_zero() {
@@ -346,8 +347,11 @@ impl Inner {
             .env(BROKER_FD_ENV, "3")
             .env(
                 tilo_render_service::RENDER_NODE_ENV,
+                // Once the compositor gave its GPU up (`ui::gpu::recover`), a service started
+                // after draws on the CPU too, instead of opening the dead GPU again.
                 self.render_node
                     .as_ref()
+                    .filter(|_| ui::gpu::software_fallback().is_none())
                     .map(|path| path.as_os_str().to_owned())
                     .unwrap_or_default(),
             )
@@ -418,6 +422,7 @@ impl Inner {
         } else {
             0
         };
+        drop(crashes);
         self.live.lock_recover().retain(|_, live| live.key != key);
     }
 }
@@ -426,7 +431,7 @@ impl Inner {
 struct Watch {
     key: String,
     channel: Arc<Channel>,
-    ready: Arc<(Mutex<Option<Result<String, ()>>>, Condvar)>,
+    ready: Readiness,
     child: Arc<Mutex<std::process::Child>>,
     started: Instant,
     broker: std::sync::Weak<Inner>,
@@ -488,7 +493,7 @@ mod tests {
     fn rooms_render_in_the_private_service_only_while_nobody_else_is_in_them() {
         let mut tree = WorkspaceTree::bootstrap_default();
         tree.adopt_ownerless_workspaces(&local_user_id());
-        let room = tree.desktop.workspaces[0].room.to_string();
+        let room = tree.desktop.workspaces[0].room().to_string();
         assert_eq!(render_key(&tree, Some(&room)), PRIVATE);
         assert_eq!(
             render_key(&tree, None),

@@ -66,7 +66,6 @@ fn profiling_collects_per_pass_stats_and_reports_them() {
         assert!(report.over_budget <= report.frames);
         assert_eq!(report.budget_us, FRAME_BUDGET_US);
 
-        // Frame indices are monotonic and continue past the discarded warmup.
         for w in report.samples.windows(2) {
             assert!(w[1].frame > w[0].frame, "frame indices increase");
         }

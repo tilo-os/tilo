@@ -77,10 +77,6 @@ impl NativeDocumentReadContext {
         Ok(None)
     }
     /// Re-checks the admitted channel's live custody and admission.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message once the broker, worker, launcher custody or admission ended.
     pub fn revalidate(&self) -> Result<(), String> {
         (self.revalidate)()
     }
@@ -103,6 +99,12 @@ pub enum NativeDocumentRead {
     /// answered as [`Reply::Unavailable`], the reader withholds readiness
     /// and asks again.
     Pending,
+    /// A record the room's hosts send a device only once it asks
+    /// (`neighbour_wire::record_sync`), which they said they have none of,
+    /// or no host of the room is connected to ask: answered as
+    /// [`Reply::Absent`], no failure either, and a held `Await` wakes when
+    /// that changes.
+    Absent,
     Captured {
         revision: [u8; 32],
         /// The sorted heads `revision` names; empty when the owner does not
@@ -124,9 +126,6 @@ pub trait NativeDocumentReads: Send + Sync {
     fn requires_room(&self, room: &str) -> bool;
     /// Prepare only a missing record for a live, original-package-attested
     /// person launch. This is not a read/capture fallback or a wire capability.
-    ///
-    /// # Errors
-    /// Creator custody, the SDK's declared kind or durable publication fails.
     fn prepare_application(
         &self,
         context: &NativeDocumentReadContext,
@@ -164,10 +163,6 @@ pub trait NativeDocumentReads: Send + Sync {
     }
     /// Must check exact current selected custody, caller certificate, and native
     /// document Read permission. Called again before every returned chunk.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the caller may not read the document now.
     fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String>;
     /// Called only after the broker reserves maximum bytes. Implementations must
     /// use the actual bounded native save, refusing before output allocation.
@@ -206,10 +201,6 @@ pub trait NativeDocumentReads: Send + Sync {
     /// broker then captures under its byte budget. A held `Await` asks this
     /// on every announcement, so it must stay cheap, and it must refuse
     /// exactly what [`Self::authorize`] refuses.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the caller may not read the document now.
     fn unchanged(
         &self,
         context: &NativeDocumentReadContext,
@@ -228,7 +219,7 @@ pub trait NativeDocumentReads: Send + Sync {
     /// # Errors
     ///
     /// The default, and any implementation that cannot tell: a held wait
-    /// then re-checks every [`UNANNOUNCED_RECHECK`], the cadence readers
+    /// then re-checks every `UNANNOUNCED_RECHECK`, the cadence readers
     /// polled at, so an unknown expiry is never enforced later than before.
     fn next_change(
         &self,
@@ -313,8 +304,79 @@ pub(super) struct Slot {
     /// The last revision this channel handed out whole or as changes (its
     /// last piece acknowledged), when its owner named the heads.
     delivered: Option<HeldRevision>,
+    /// This channel's place in the byte budget's queue, after an Open found
+    /// the budget held and answered `Busy`.
+    queued: Option<Queued>,
+    /// The record another device prepared for an Open that then answered
+    /// `Busy`: the next Open answers with it, so a creation is never lost.
+    prepared: Option<PreparedElsewhere>,
+    /// Whether the last Open without a revision answered [`Reply::Absent`]
+    /// rather than [`Reply::Unavailable`]: what a held `Await` for `None`
+    /// holds.
+    absent: bool,
+}
+/// A channel's turn in the byte budget's queue: a task on the broker's local
+/// set that waits for the reservation, keeps it for the channel's next Open
+/// and wakes the channel's held `Await`. Dropped with the channel (or once
+/// the Open took the reservation), which takes it out of the queue or
+/// releases what it was granted.
+struct Queued {
+    granted: Rc<std::cell::RefCell<Option<capture::Reservation>>>,
+    wake: Rc<tokio::sync::Notify>,
+    task: tokio::task::AbortHandle,
+}
+impl Queued {
+    fn start(budget: &Arc<Budget>) -> Self {
+        let granted = Rc::new(std::cell::RefCell::new(None));
+        let wake = Rc::new(tokio::sync::Notify::new());
+        let turn = budget.wait();
+        let task = {
+            let granted = Rc::clone(&granted);
+            let wake = Rc::clone(&wake);
+            tokio::task::spawn_local(async move {
+                if let Some(reservation) = turn.await {
+                    *granted.borrow_mut() = Some(reservation);
+                    wake.notify_one();
+                }
+            })
+            .abort_handle()
+        };
+        Self {
+            granted,
+            wake,
+            task,
+        }
+    }
+}
+impl Drop for Queued {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 impl Slot {
+    /// The reservation an Open captures under: the one this channel's turn
+    /// was granted, or one taken now when nobody waits ahead. `None` puts
+    /// the channel in the queue (or keeps its place) and the Open answers
+    /// `Busy`.
+    fn admit(&mut self, budget: &Arc<Budget>) -> Option<capture::Reservation> {
+        if let Some(queued) = &self.queued {
+            let granted = queued.granted.borrow_mut().take();
+            if granted.is_some() {
+                self.queued = None;
+            }
+            return granted;
+        }
+        let reservation = budget.try_reserve();
+        if reservation.is_none() {
+            self.queued = Some(Queued::start(budget));
+        }
+        reservation
+    }
+    /// The reader reads no more on this channel: give up its place in the
+    /// byte budget's queue, or the room its turn was granted.
+    fn leave(&mut self) {
+        self.queued = None;
+    }
     /// Close the channel once an unacknowledged capture outlived its
     /// deadline; refuse every request on a closed channel.
     fn expire(&mut self) -> Result<(), String> {
@@ -328,6 +390,7 @@ impl Slot {
         }
         if self.closed {
             self.active = None;
+            self.queued = None;
             return Err("committed read channel expired".into());
         }
         Ok(())
@@ -449,10 +512,25 @@ impl CapnpChannelHandle {
             .as_ref()
             .and_then(|lease| lease.local_media.clone());
         let peer = self.peer_id;
+        let workspace_record = local
+            .as_ref()
+            .and_then(|local| launch_workspace_record(local, &route));
         let creation = local
             .as_ref()
             .filter(|_| admitted.agent_id.is_none())
-            .and_then(|local| local.creation.clone());
+            .and_then(|local| local.creation.clone())
+            .map(|evidence| match workspace_record {
+                // A workspace record's kind is declared by the platform's
+                // list of them, not by the package of the window that
+                // opens it; the launch's signed original still stands for
+                // who creates it, and the room's grants decide whether they
+                // may.
+                Some(record) => crate::services::ApplicationCreationEvidence {
+                    declared_kinds: vec![record.kind.to_owned()],
+                    ..evidence
+                },
+                None => evidence,
+            });
         let state = Arc::downgrade(&self.state);
         let checked_route = route.clone();
         let revalidate = Arc::new(move || {
@@ -468,8 +546,12 @@ impl CapnpChannelHandle {
                 let local = local
                     .as_ref()
                     .ok_or("committed read requires launcher custody")?;
+                // The launch's own routes, or a record every app of its
+                // room opens: the owner's grants decide the rest, below and
+                // in the owner's own authorization.
                 if !local.current()
-                    || local.app_id != checked_route.app_id
+                    || (local.app_id != checked_route.app_id
+                        && launch_workspace_record(local, &checked_route).is_none())
                     || local.workspace_id != checked_route.cluster_id
                     || admitted.agent_id.is_some()
                 {
@@ -511,6 +593,14 @@ impl CapnpChannelHandle {
         else {
             return Ok(None);
         };
+        // Another app's workspace record is no record of this window's own:
+        // it carries no private binding.
+        if local.current()
+            && local.app_id != route.app_id
+            && launch_workspace_record(local, &route).is_some()
+        {
+            return Ok(None);
+        }
         if !local.current()
             || local.app_id != route.app_id
             || local.workspace_id != route.cluster_id
@@ -636,6 +726,10 @@ impl CapnpChannelHandle {
                     .commit(*token, *revision, kind, document)
             }
             Request::Cancel { capture, token } => slot.acknowledge(*capture, *token),
+            Request::Leave => {
+                slot.leave();
+                Ok(Reply::Cancelled)
+            }
             Request::Open { known_revision } => {
                 self.open_committed_document(&mut slot, *known_revision, None, prepared)
             }
@@ -666,19 +760,36 @@ impl CapnpChannelHandle {
         let Some(service) = self.state.services.committed_documents.clone() else {
             return Ok(Reply::Unavailable);
         };
-        let reading = Reading {
-            context: self.document_read_context()?,
-            service,
-            budget: &self.state.committed_read_budget,
-            ids: &self.state.committed_read_id,
-            prepared,
-        };
-        let (reply, capture) = open_read(slot, reading, known_revision, held)?;
+        let opened = self.document_read_context().and_then(|context| {
+            let reading = Reading {
+                context,
+                service,
+                budget: &self.state.committed_read_budget,
+                ids: &self.state.committed_read_id,
+                prepared,
+            };
+            open_read(slot, reading, known_revision, held)
+        });
+        // A refusal is final: a read refused while it waited in the byte
+        // budget's queue gives up its place, so reads behind it are served.
+        let (reply, capture) = opened.inspect_err(|_| slot.queued = None)?;
         if let Some(id) = capture {
             self.arm_capture_deadline(id);
         }
         Ok(reply)
     }
+}
+
+/// The record every app of `local`'s launch room opens that `route` names
+/// ([`collab_types::workspace_record`]), when it does: the one route of
+/// another app a launch reads and commits to, and only in its own room.
+fn launch_workspace_record(
+    local: &super::native_media::LocalAppConnection,
+    route: &CrdtRoute,
+) -> Option<&'static collab_types::WorkspaceRecord> {
+    (local.workspace_id == route.cluster_id)
+        .then(|| collab_types::workspace_record(&route.app_id, &route.record_id))
+        .flatten()
 }
 
 /// What an Open reads with: the channel's checked custody and admission
@@ -714,15 +825,30 @@ fn open_read(
     if slot.active.is_some() {
         return Err("committed read requires previous response acknowledgement".into());
     }
+    // Custody and admission first: a reader that may no longer read is
+    // refused, never queued. Then capacity: a read that must wait its turn
+    // has done nothing yet, and a record prepared elsewhere for it is kept
+    // for its next Open.
+    if let Err(refused) = context.revalidate() {
+        slot.queued = None;
+        return Err(refused);
+    }
+    let Some(reservation) = slot.admit(budget) else {
+        if let Some(prepared) = prepared {
+            slot.prepared = Some(prepared);
+        }
+        return Ok((Reply::Busy, None));
+    };
+    let prepared = prepared.or_else(|| slot.prepared.take());
     let created = context.prepare_application(service.as_ref(), prepared)?;
     service.authorize(&context)?;
-    let reservation = budget.reserve()?;
     let read = match held {
         Some(held) => service.capture_since(&context, held, MAX_DOCUMENT_BYTES)?,
         None => service.capture(&context, known_revision, MAX_DOCUMENT_BYTES)?,
     };
     context.revalidate()?;
     service.authorize(&context)?;
+    slot.absent = matches!(read, NativeDocumentRead::Absent);
     let (revision, body, heads, base) = match read {
         NativeDocumentRead::Unchanged(revision) => {
             return Ok((Reply::Unchanged { revision }, None));
@@ -730,7 +856,10 @@ fn open_read(
         // A record created by this Open is answered with its capture or
         // not at all; only an existing record may be read again later.
         NativeDocumentRead::Pending if created.is_none() => return Ok((Reply::Unavailable, None)),
-        NativeDocumentRead::Pending => return Err("created record capture unavailable".into()),
+        NativeDocumentRead::Absent if created.is_none() => return Ok((Reply::Absent, None)),
+        NativeDocumentRead::Pending | NativeDocumentRead::Absent => {
+            return Err("created record capture unavailable".into());
+        }
         NativeDocumentRead::Captured {
             revision,
             heads,
@@ -766,7 +895,8 @@ fn open_read(
 }
 
 /// Whether an Open for `known_revision` would answer exactly what the caller
-/// holds (`Unchanged` for that revision, `Unavailable` for `None`), with
+/// holds (`Unchanged` for that revision; for `None` `Absent` when `absent`,
+/// else `Unavailable`), with
 /// every check the Open makes, in its order: custody and admission
 /// (`context`), the owner's authorization, the read under the shared byte
 /// budget, then both checks again. `None` when the Open would answer
@@ -777,6 +907,7 @@ fn read_unchanged(
     budget: &Arc<Budget>,
     room: &str,
     known_revision: Option<[u8; 32]>,
+    absent: bool,
 ) -> Option<NativeDocumentReadContext> {
     if !service.requires_room(room) {
         return None;
@@ -786,7 +917,7 @@ fn read_unchanged(
     let unchanged = service
         .unchanged(&context, known_revision)
         .ok()?
-        .or_else(|| captured_unchanged(service, &context, budget, known_revision))?;
+        .or_else(|| captured_unchanged(service, &context, budget, known_revision, absent))?;
     context.revalidate().ok()?;
     service.authorize(&context).ok()?;
     unchanged.then_some(context)
@@ -800,15 +931,17 @@ fn captured_unchanged(
     context: &NativeDocumentReadContext,
     budget: &Arc<Budget>,
     known_revision: Option<[u8; 32]>,
+    absent: bool,
 ) -> Option<bool> {
-    let _reservation = budget.reserve().ok()?;
+    let _reservation = budget.try_reserve()?;
     Some(
         match service
             .capture(context, known_revision, MAX_DOCUMENT_BYTES)
             .ok()?
         {
             NativeDocumentRead::Unchanged(revision) => Some(revision) == known_revision,
-            NativeDocumentRead::Pending => known_revision.is_none(),
+            NativeDocumentRead::Pending => known_revision.is_none() && !absent,
+            NativeDocumentRead::Absent => known_revision.is_none() && absent,
             NativeDocumentRead::Captured { .. } | NativeDocumentRead::Changes { .. } => false,
         },
     )
@@ -841,7 +974,7 @@ async fn hold_until_stale(
 /// most that far ahead. Every clocked wait re-checks on the same ticks, so
 /// however many readers wait, the broker thread wakes five times a second,
 /// not five times a second per reader.
-fn next_unannounced_recheck() -> tokio::time::Instant {
+pub(super) fn next_unannounced_recheck() -> tokio::time::Instant {
     static GRID: std::sync::OnceLock<tokio::time::Instant> = std::sync::OnceLock::new();
     let now = tokio::time::Instant::now();
     let origin = *GRID.get_or_init(|| now);
@@ -889,11 +1022,6 @@ impl CapnpChannelHandle {
     /// caller's Open then meets the same refusal and fails closed, so a
     /// revocation ends the reader as it always did, only without the poll.
     /// No document byte and no readiness ever comes from this answer.
-    ///
-    /// # Errors
-    ///
-    /// The channel expired, a capture is unacknowledged, or a newer request
-    /// on this channel replaced the wait.
     #[allow(
         clippy::future_not_send,
         reason = "capnp-rpc channel handles are Rc-based; driven only on the broker LocalSet"
@@ -918,8 +1046,13 @@ impl CapnpChannelHandle {
                 generation,
                 wake: Arc::clone(&wake),
             });
-            generation
+            let turn = slot
+                .queued
+                .as_ref()
+                .map(|queued| (Rc::clone(&queued.granted), Rc::clone(&queued.wake)));
+            (generation, turn)
         };
+        let (generation, turn) = generation;
         let _guard = WaitGuard {
             handle: &self,
             generation,
@@ -928,6 +1061,30 @@ impl CapnpChannelHandle {
             let wake = Arc::clone(&wake);
             tilo_identity_host::policy_change::Watch::new(move || wake.notify_one())
         };
+        if let Some((granted, turn)) = turn {
+            // A read waiting in the budget's queue: what changes its Open's
+            // answer is its turn coming, announced by the queue itself, or
+            // its custody or admission ending, announced as any policy
+            // change is. Either way its next Open decides.
+            loop {
+                if !self.holds_wait(generation) {
+                    return Err("committed read wait was replaced".into());
+                }
+                let _ = watch.arm();
+                if granted.borrow().is_some()
+                    || self
+                        .document_read_context()
+                        .and_then(|context| context.revalidate())
+                        .is_err()
+                {
+                    return Ok(Reply::Stale);
+                }
+                tokio::select! {
+                    () = turn.notified() => {}
+                    () = wake.notified() => {}
+                }
+            }
+        }
         hold_until_stale(
             &wake,
             || {
@@ -959,12 +1116,14 @@ impl CapnpChannelHandle {
     /// whether every input that can change that is announced or timed.
     fn committed_read_unchanged(&self, known_revision: Option<[u8; 32]>) -> Option<bool> {
         let service = self.state.services.committed_documents.clone()?;
+        let absent = self.committed_read.try_borrow().ok()?.absent;
         let context = read_unchanged(
             service.as_ref(),
             || self.document_read_context(),
             &self.state.committed_read_budget,
             &self.route().cluster_id,
             known_revision,
+            absent,
         )?;
         Some(self.register_read_expiry(&context, service.as_ref()))
     }
@@ -1014,7 +1173,7 @@ impl CapnpChannelHandle {
             .chain(certificate)
             .min();
         if let Some(at) = next {
-            policy_change::wake_at(crate::policy_schedule::wall_instant(
+            crate::policy_schedule::announce_at(crate::policy_schedule::wall_instant(
                 at,
                 now,
                 tilo_clock::unix_now_ns(),

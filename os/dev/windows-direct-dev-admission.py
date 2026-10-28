@@ -28,6 +28,8 @@ media = module('dev_admission_media', 'forgejo-dev-installer-metadata.py')
 profile = module('dev_admission_profile', 'profile-installer-qcow2.py')
 require = ci.require
 HEX = re.compile(r'[0-9a-f]{64}\Z')
+# The Git repository the reviewed assembly revisions are read from: this checkout's.
+REPOSITORY = Path(__file__).resolve().parents[2]
 COMPOSEFS = re.compile(r'[0-9a-f]{128}\Z')
 
 
@@ -59,9 +61,8 @@ def assembly_compatibility(generic_revision, board_revision):
     require(pair in (PROFILE_FIX_PAIR, SEALED_FIX_PAIR),
             'development installer pair has unreviewed assembly identities')
     pins = SEALED_FIX_BLOBS if pair == SEALED_FIX_PAIR else PROFILE_FIX_BLOBS
-    repository = Path(__file__).resolve().parents[2]
     def git(*arguments):
-        return subprocess.run(['git', '-C', str(repository), *arguments],
+        return subprocess.run(['git', '-C', str(REPOSITORY), *arguments],
                               capture_output=True, check=True, timeout=60).stdout
     for revision in pair:
         require(git('rev-parse', '--verify', revision + '^{commit}').decode().strip() == revision,

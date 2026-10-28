@@ -61,12 +61,12 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
         let mut definition = definition(probe_factory);
         definition.required.push(denied_scope());
         let authority = permissions();
-        *authority.borrow_mut() = tilo_ui::permissions::PermissionContext::granted(
+        authority.set(tilo_ui::permissions::PermissionContext::granted(
             "probe-author",
             &tilo_ui::permissions::TreePath::root(),
             tilo_ui::permissions::policy::KindSet::ALL,
             None,
-        );
+        ));
         let context = HostContext::prepare(
             &definition,
             HostContextInputs {
@@ -82,7 +82,7 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
         )
         .unwrap();
         let checkout = context.record().clone();
-        *authority.borrow_mut() = permissions().borrow().clone();
+        authority.set(permissions().borrow().clone());
         assert!(matches!(
             definition.instantiate(context, LaunchTarget::New, RestoreInput::None),
             Err(LaunchError::CapabilityDenied(_))
@@ -932,12 +932,12 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         let authority = permissions();
         if case == "revoked" {
             definition.required.push(denied_scope());
-            *authority.borrow_mut() = tilo_ui::permissions::PermissionContext::granted(
+            authority.set(tilo_ui::permissions::PermissionContext::granted(
                 "probe-author",
                 &tilo_ui::permissions::TreePath::root(),
                 tilo_ui::permissions::policy::KindSet::ALL,
                 None,
-            );
+            ));
         }
         let target = existing(&checkout);
         let context = HostContext::prepare(
@@ -957,11 +957,11 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         let wake = context.wake_handle();
         let mut bad = saved;
         match case {
-            "definition" => definition.app_id = "foreign.app",
+            "definition" => definition.app_id = "foreign.app".into(),
             "target" => {}
             "foreign" => bad.app_id = "foreign.app".into(),
             "malformed" => bad.view.viewport.height = f64::NAN,
-            "revoked" => *authority.borrow_mut() = permissions().borrow().clone(),
+            "revoked" => authority.set(permissions().borrow().clone()),
             _ => unreachable!(),
         }
         let target = if case == "target" {
@@ -1002,13 +1002,13 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         assert_eq!(records.with_history(&record.id, snapshot).unwrap(), before);
         assert!(records.durability_error(&record.id).is_some());
         assert_eq!(calls(), 1);
-        definition.app_id = APP;
-        *authority.borrow_mut() = tilo_ui::permissions::PermissionContext::granted(
+        definition.app_id = APP.into();
+        authority.set(tilo_ui::permissions::PermissionContext::granted(
             "probe-author",
             &tilo_ui::permissions::TreePath::root(),
             tilo_ui::permissions::policy::KindSet::ALL,
             None,
-        );
+        ));
         let target = existing(&record);
         let context = HostContext::prepare(
             &definition,
@@ -1493,12 +1493,12 @@ mod save_status_fixture {
                     .unwrap(),
                 pending
             );
-            // While the record is being written nothing else wakes the window,
-            // so the component asks to sync again on its own.
+            // While the record is being written its store wakes the component
+            // once the write lands, so it sets no deadline to resample it.
             let _ = self.tile.take_structure_dirty();
             assert!(
-                self.tile.next_wake_deadline().is_some(),
-                "a component showing Saving… must resample its durability"
+                self.tile.next_wake_deadline().is_none(),
+                "a component showing Saving… is woken by its store, not a resample deadline"
             );
             self.host.records.try_flush().unwrap();
             self.pump();
@@ -1506,9 +1506,15 @@ mod save_status_fixture {
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
                 Some(RecordSaveStatus::Saved)
             );
-            // The change is presented, and the resampling stops once saved.
+            // Presenting it measures and draws what shows the status; it
+            // rebuilds no layout tree, which would repaint the whole window
+            // after every keystroke's write.
             assert!(
-                self.tile.take_structure_dirty(),
+                !self.tile.take_structure_dirty(),
+                "a save status change is no structure change"
+            );
+            assert!(
+                self.tile.layout_needs_measure() && self.tile.needs_redraw(),
                 "the window must present the record becoming durable"
             );
             assert!(self.tile.next_wake_deadline().is_none());
@@ -1728,7 +1734,6 @@ mod paired_local {
     }
     #[test]
     fn paired_local_views_bracket_restore_and_keep_complete_pairs_on_failure() {
-        // Case `second_capture_failure_retains_complete_previous_pair_during_owned_close`.
         {
             let (host, definition, state) = fixture();
             let context = host.prepare(&definition, 11, &LaunchTarget::New).unwrap();
@@ -1760,7 +1765,6 @@ mod paired_local {
             assert!(component.capture_local_view().is_err());
         }
 
-        // Case `local_hooks_bracket_generic_restore_and_clear_only_uncorrelated_ephemeral`.
         {
             for own_focus in [false, true] {
                 let (host, definition, state) = fixture();
@@ -1812,7 +1816,6 @@ mod paired_local {
             }
         }
 
-        // Case `failed_finalizer_retains_setup_record_and_original_view_bytes`.
         {
             let (host, definition, state) = fixture();
             let context = host.prepare(&definition, 11, &LaunchTarget::New).unwrap();

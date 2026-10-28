@@ -100,6 +100,11 @@ impl PreparedMedia {
     pub fn projection(&self) -> serde_json::Value {
         (self.api.projection)(self)
     }
+    /// The package is kept for a different computer and is not a same-computer
+    /// setup the live installer can authenticate during this installation.
+    pub fn is_other_device(&self) -> bool {
+        self.native_is_other_device()
+    }
     pub fn expectation(&self) -> &imager_backend::imager_model::PreparedSetupExpectation {
         (self.api.expectation)(self)
     }
@@ -564,13 +569,13 @@ impl Delivery {
     pub fn with_artifact(artifact: Arc<PreparedMedia>) -> Self {
         #[cfg(target_os = "linux")]
         {
-            return Self {
+            Self {
                 native: Actor::new(
                     Box::new(super::prepared_media_native::Delivery::with_artifact(
                         artifact,
                     )) as Box<dyn DeliveryState>,
                 ),
-            };
+            }
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -600,10 +605,12 @@ pub(crate) fn finish_target(stable_id: &str) -> std::io::Result<()> {
     {
         super::prepared_media_native::finish_target(stable_id)
     }
+    // Without native preparation no target is pending (`pending_target`),
+    // so there is nothing to retire.
     #[cfg(not(target_os = "linux"))]
     {
         let _ = stable_id;
-        Err(imager_backend::journey_media::Unsupported.into())
+        Ok(())
     }
 }
 
@@ -620,6 +627,14 @@ pub(crate) mod offline {
         _private: (),
     }
 }
+/// Exactly the reviewed mail children the preparation seals. Each profile
+/// keeps its private pinned source handles; nothing here reaches public status.
+pub(in crate::setup) struct MailSelection {
+    pub profiles: Vec<(
+        imager_backend::account_sources::ReviewedThunderbird,
+        imager_backend::account_transfer::ThunderbirdSelection,
+    )>,
+}
 pub(in crate::setup) struct MediaSelections {
     pub home_applications: bool,
     pub home: Option<Arc<imager_backend::setup::portable_home_media::HomeSource>>,
@@ -628,6 +643,13 @@ pub(in crate::setup) struct MediaSelections {
     pub applications: Option<PortableAppsSelection>,
     pub browser: Option<super::browser::SelectedSources>,
     pub sessions: Option<super::service_sessions::SelectedSources>,
+    pub mail: Option<MailSelection>,
+    /// This exact package is served to another computer after its first-boot
+    /// identity is approved. The public descriptor is written beside it.
+    pub other_device: Option<imager_backend::setup::other_device::HandoffIdentity>,
+    /// Same-computer target whose signed boot policy may receive the
+    /// machine-generated package secret. `None` keeps the deferred journal.
+    pub tpm_target: Option<imager_backend::setup::prepared_tpm::TargetAcquisition>,
 }
 pub(in crate::setup) struct PortableAppsSelection {
     pub source: Arc<imager_backend::setup::flatpak_transfer::portable::PortableFlatpakSource>,

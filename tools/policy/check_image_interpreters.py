@@ -121,10 +121,10 @@ def copy_instructions(text: str) -> list[list[str]]:
     return instructions
 
 
-def copied_python(root: Path) -> list[str]:
+def copied_python(root: Path, containerfiles: tuple[str, ...] = CONTAINERFILES) -> list[str]:
     """`image:<destination>` for each Python file a Containerfile COPY installs into /usr or /etc."""
     found = []
-    for name in CONTAINERFILES:
+    for name in containerfiles:
         path = root / name
         if not path.is_file():
             continue
@@ -187,6 +187,17 @@ def shipped_scripts(root: Path) -> list[str]:
     return sorted(set(overlay + copied_python(root) + component_python(root)))
 
 
+def declared_in(root: Path, path: str) -> str:
+    """The repository file that puts a shipped script in the image: the overlay file itself, or
+    for an `image:<destination>`, the Containerfile or os/components.toml that installs it."""
+    if not path.startswith("image:"):
+        return path
+    for name in CONTAINERFILES:
+        if path in copied_python(root, (name,)):
+            return name
+    return COMPONENTS.as_posix()
+
+
 def load_baseline(root: Path) -> dict[str, Entry]:
     entries: dict[str, Entry] = {}
     text = (root / BASELINE).read_text(encoding="utf-8")
@@ -220,23 +231,28 @@ def main() -> int:
     try:
         new, stale = check(ROOT)
         baseline = load_baseline(ROOT)
-    except (BaselineError, OSError, UnicodeError, subprocess.CalledProcessError) as error:
-        print(f"  {error}")
+    except BaselineError as error:
+        print(error)
+        return 1
+    except (OSError, UnicodeError, subprocess.CalledProcessError) as error:
+        print(f"  {error}", file=sys.stderr)
         return 1
     for path in new:
+        source = declared_in(ROOT, path)
+        what = "is" if source == path else f"{path} is"
         print(
-            f"  {path} is an interpreter script in the OS image; ship compiled code instead "
+            f"{source}: {what} an interpreter script in the OS image; ship compiled code instead "
             f"(an exception is a line in {BASELINE} with its reason, made in review)"
         )
     for path in stale:
         print(
-            f"  {path} no longer ships an interpreter script: "
-            f"remove line {baseline[path].line} of {BASELINE}"
+            f"{BASELINE}:{baseline[path].line}: {path} no longer ships an interpreter script: "
+            "remove this line"
         )
     if new or stale:
-        print(f"No new interpreted code on the OS runtime path ({POLICY}).")
+        print(f"No new interpreted code on the OS runtime path ({POLICY}).", file=sys.stderr)
         return 1
-    print(f"Image overlay interpreter scripts: {len(baseline)} baselined, none new.")
+    print(f"Image overlay interpreter scripts: {len(baseline)} baselined, none new.", file=sys.stderr)
     return 0
 
 

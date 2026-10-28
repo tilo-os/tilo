@@ -8,7 +8,7 @@
 //! budget keeps what it said before. `tilo-relay-offers` runs it, so the
 //! `ush` supervisor can ask without waiting for the answer.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use tilo_relay_protocol::transport::HomePeerManagementRequest;
@@ -17,12 +17,6 @@ use tilo_user_identity::{IdentityPaths, RevocationList, persist};
 
 /// Largest offers file read.
 const MAX_OFFERS_BYTES: u64 = 1024 * 1024;
-
-/// The offers file below `cache` (the user's cache directory).
-#[must_use]
-pub fn offers_path(cache: &Path) -> PathBuf {
-    cache.join(tilo_relay_protocol::RELAY_OFFERS_FILE)
-}
 
 /// The offers recorded at `path`; nothing when absent or unreadable.
 #[must_use]

@@ -1,155 +1,91 @@
 // Serve a built desktop bundle for local development and the smoke test, and
-// optionally the same-origin fetch proxy that lets apps opting into
-// `tilo_net::proxy::ProxyUse::CrossOrigin` (api-tester, feeds, calendar) read
-// sites without CORS headers. Implements wire protocol v1 from
-// crates/platform/tilo-net/src/proxy.rs; a production host (Tilo Cloud)
-// implements the same contract behind its own session.
+// optionally the fetch proxy that lets apps opting into
+// `tilo_net::proxy::ProxyUse::CrossOrigin` (api-tester, feeds, tube,
+// calendar) read sites without CORS headers. The proxy is the one workspace
+// hosts serve (`tilo_net::proxy::host`, wire protocol v1), run here as the
+// `tilo-fetch-proxy` program on loopback; this script only forwards
+// /_tilo/net/fetch to it and tells the page where it is.
 //
 // usage: node serve.mjs BUNDLE_DIR [--port 8787] [--fetch-proxy] [--allow-private]
+//                                  [--proxy-bin PATH]
 //   --fetch-proxy    serve /_tilo/net/fetch and tell the page about it
 //   --allow-private  let the proxy reach loopback and private addresses
 //                    (a local test server); refused by default
+//   --proxy-bin      the tilo-fetch-proxy program (default
+//                    $TILO_FETCH_PROXY_BIN, else target/{debug,release}, else
+//                    `cargo run -p tilo-net --features proxy-dev-server`)
 //
 // Development only: requests are unauthenticated, so it listens on loopback.
-import {createServer} from 'node:http';
+import {spawn} from 'node:child_process';
+import {createReadStream, existsSync} from 'node:fs';
 import {readFile, stat} from 'node:fs/promises';
-import {lookup} from 'node:dns/promises';
-import {isIP} from 'node:net';
+import {createServer, request as httpRequest} from 'node:http';
 import path from 'node:path';
+import {createInterface} from 'node:readline';
+import {fileURLToPath} from 'node:url';
 
 const args = process.argv.slice(2);
-const root = path.resolve(args.find(a => !a.startsWith('--') && !/^\d+$/.test(a)) ?? '.');
+const valued = new Set(['--port', '--proxy-bin']);
+const root = path.resolve(args.find((a, i) => !a.startsWith('--') && !valued.has(args[i - 1])) ?? '.');
 const flag = name => args.includes(name);
-const portIndex = args.indexOf('--port');
-const port = Number(portIndex >= 0 ? args[portIndex + 1] : 8787);
+const option = name => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
+const port = Number(option('--port') ?? 8787);
 const proxyEnabled = flag('--fetch-proxy');
 const allowPrivate = flag('--allow-private');
+const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 
 export const ENDPOINT = '/_tilo/net/fetch';
-const MARKER = 'x-tilo-proxy';
-const FORWARD = 'x-tilo-forward-';
-const FINAL_URL = 'x-tilo-proxy-final-url';
-const ERROR = 'x-tilo-proxy-error';
-const MAX_REQUEST = 16 * 1024 * 1024;
-const MAX_RESPONSE = 64 * 1024 * 1024;
-const TIMEOUT_MS = 30_000;
-const MAX_REDIRECTS = 10;
-// Never forwarded in either direction: connection management, and the page's
-// own identity at the proxy's origin.
-const HOP = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
-  'te', 'trailer', 'transfer-encoding', 'upgrade', 'host', 'content-length',
-  'cookie', 'origin', 'referer']);
-// Response headers the page's origin must not act on: a cookie it would
-// store, and an authentication challenge that makes the browser prompt for a
-// login to the page's own origin (a tab-modal prompt that blocks all input).
-const RENAMED = new Set(['set-cookie', 'www-authenticate']);
 
 const TYPES = {'.html': 'text/html; charset=utf-8', '.mjs': 'text/javascript', '.js': 'text/javascript',
   '.wasm': 'application/wasm', '.json': 'application/json', '.css': 'text/css',
   '.ttf': 'font/ttf', '.otf': 'font/otf', '.woff2': 'font/woff2', '.png': 'image/png', '.svg': 'image/svg+xml'};
 
-class ProxyFailure extends Error {
-  constructor(code, status, message) { super(message); this.code = code; this.status = status; }
+/** The command that runs tilo-fetch-proxy. */
+function proxyCommand() {
+  const named = option('--proxy-bin') ?? process.env.TILO_FETCH_PROXY_BIN;
+  const built = ['target/debug/tilo-fetch-proxy', 'target/release/tilo-fetch-proxy']
+    .map(file => path.join(repo, file)).find(existsSync);
+  const program = named ?? built;
+  const proxyArgs = ['--listen', '127.0.0.1:0', ...(allowPrivate ? ['--allow-private'] : [])];
+  if (program) return [program, proxyArgs];
+  return ['cargo', ['run', '--quiet', '-p', 'tilo-net', '--features', 'proxy-dev-server',
+    '--bin', 'tilo-fetch-proxy', '--', ...proxyArgs]];
 }
 
-// Loopback, private, link-local, unique-local, CGNAT, multicast and
-// unspecified addresses: the proxy's own network.
-export function privateAddress(address) {
-  if (isIP(address) === 4) {
-    const [a, b] = address.split('.').map(Number);
-    return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b < 128) ||
-      (a === 169 && b === 254) || (a === 172 && b >= 16 && b < 32) || (a === 192 && b === 168) || a >= 224;
-  }
-  const v6 = address.toLowerCase();
-  if (v6.startsWith('::ffff:')) return privateAddress(v6.slice(7));
-  return v6 === '::' || v6 === '::1' || v6.startsWith('fc') || v6.startsWith('fd') ||
-    v6.startsWith('fe8') || v6.startsWith('fe9') || v6.startsWith('fea') || v6.startsWith('feb') || v6.startsWith('ff');
-}
-
-async function checkDestination(url) {
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new ProxyFailure('bad-request', 400, `${url.protocol} is not http or https`);
-  }
-  if (allowPrivate) return;
-  const host = url.hostname.replace(/^\[|\]$/g, '');
-  const addresses = isIP(host) ? [{address: host}] : await lookup(host, {all: true}).catch(() => {
-    throw new ProxyFailure('unreachable', 502, `${host} does not resolve`);
+/** Start tilo-fetch-proxy; resolves to its origin once it listens. */
+function startProxy() {
+  const [program, proxyArgs] = proxyCommand();
+  const child = spawn(program, proxyArgs, {cwd: repo, stdio: ['ignore', 'pipe', 'inherit']});
+  process.on('exit', () => child.kill());
+  for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => process.exit(0));
+  return new Promise((resolve, reject) => {
+    child.on('error', reject);
+    child.on('exit', code => reject(new Error(`tilo-fetch-proxy exited (${code}) before it listened`)));
+    createInterface({input: child.stdout}).once('line', line => {
+      try {
+        resolve(JSON.parse(line).listening);
+      } catch {
+        reject(new Error(`tilo-fetch-proxy said ${line}`));
+      }
+    });
   });
-  if (addresses.some(({address}) => privateAddress(address))) {
-    throw new ProxyFailure('blocked', 403, `${host} is on the proxy's own network`);
-  }
 }
 
-async function readBody(request) {
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of request) {
-    size += chunk.length;
-    if (size > MAX_REQUEST) throw new ProxyFailure('too-large', 413, 'the request body is too large');
-    chunks.push(chunk);
-  }
-  return size ? Buffer.concat(chunks) : undefined;
-}
-
-// A header the page asked to forward replaces the browser's own of that name
-// (its user-agent, say), whatever order they arrive in.
-function outgoingHeaders(incoming) {
-  const headers = {};
-  const forwarded = {};
-  for (const [name, value] of Object.entries(incoming)) {
-    if (name === MARKER || HOP.has(name) || name.startsWith('sec-')) continue;
-    if (name.startsWith(FORWARD)) forwarded[name.slice(FORWARD.length)] = value;
-    else if (!name.startsWith('x-tilo-')) headers[name] = value;
-  }
-  return {...headers, ...forwarded};
-}
-
-async function relay(request, response) {
-  if (request.headers[MARKER] !== '1') {
-    throw new ProxyFailure('bad-request', 400, `${MARKER}: 1 is required`);
-  }
-  const target = new URL(request.url, 'http://localhost').searchParams.get('url');
-  let url;
-  try { url = new URL(target ?? ''); } catch { throw new ProxyFailure('bad-request', 400, 'url is missing or not absolute'); }
-  let method = request.method;
-  let body = await readBody(request);
-  const headers = outgoingHeaders(request.headers);
-  const deadline = AbortSignal.timeout(TIMEOUT_MS);
-  let answer;
-  for (let hop = 0; ; hop++) {
-    await checkDestination(url);
-    try {
-      answer = await fetch(url, {method, headers, body, redirect: 'manual', signal: deadline});
-    } catch (error) {
-      if (deadline.aborted) throw new ProxyFailure('timeout', 504, `${url.host} did not answer in time`);
-      throw new ProxyFailure('unreachable', 502, `${url.host}: ${error.cause?.code ?? error.message}`);
-    }
-    const location = answer.headers.get('location');
-    if (![301, 302, 303, 307, 308].includes(answer.status) || !location) break;
-    if (hop === MAX_REDIRECTS) throw new ProxyFailure('unreachable', 502, 'too many redirects');
-    const next = new URL(location, url);
-    if (next.origin !== url.origin) delete headers.authorization;
-    if (answer.status === 303 || ((answer.status === 301 || answer.status === 302) && method === 'POST')) {
-      method = 'GET';
-      body = undefined;
-    }
-    url = next;
-  }
-  const declared = Number(answer.headers.get('content-length') ?? 0);
-  if (declared > MAX_RESPONSE) throw new ProxyFailure('too-large', 413, 'the response is too large');
-  const out = {[FINAL_URL]: url.href, 'cache-control': 'no-store'};
-  answer.headers.forEach((value, name) => {
-    if (HOP.has(name) || name === 'content-encoding') return;
-    out[RENAMED.has(name) ? `${FORWARD}${name}` : name] = value;
+/** Forward one proxy request to tilo-fetch-proxy and stream its answer
+ * back; a body it breaks off (a bound reached) breaks off here too. */
+function forward(proxyOrigin, request, response) {
+  const upstream = httpRequest(new URL(request.url, proxyOrigin), {method: request.method, headers: request.headers}, answer => {
+    response.writeHead(answer.statusCode, answer.headers);
+    answer.pipe(response);
+    answer.on('aborted', () => response.destroy());
+    answer.on('error', () => response.destroy());
   });
-  response.writeHead(answer.status, out);
-  let size = 0;
-  for await (const chunk of answer.body ?? []) {
-    size += chunk.length;
-    if (size > MAX_RESPONSE) { response.destroy(); return; }
-    response.write(chunk);
-  }
-  response.end();
+  upstream.on('error', error => {
+    if (response.headersSent) { response.destroy(); return; }
+    response.writeHead(502, {'x-tilo-proxy-error': 'unreachable', 'content-type': 'text/plain; charset=utf-8'});
+    response.end(`the development fetch proxy is not reachable: ${error.message}`);
+  });
+  request.pipe(upstream);
 }
 
 async function serveFile(request, response) {
@@ -157,31 +93,35 @@ async function serveFile(request, response) {
   let file = path.join(root, pathname === '/' ? 'index.html' : pathname);
   if (!file.startsWith(root)) { response.writeHead(403).end(); return; }
   if ((await stat(file).catch(() => null))?.isDirectory()) file = path.join(file, 'index.html');
-  let bytes = await readFile(file).catch(() => null);
-  if (!bytes) { response.writeHead(404).end('not found'); return; }
+  const info = await stat(file).catch(() => null);
+  if (!info?.isFile()) { response.writeHead(404).end('not found'); return; }
+  const type = TYPES[path.extname(file)] ?? 'application/octet-stream';
   if (proxyEnabled && file.endsWith('.html')) {
-    // How a host hands the endpoint to tilo-net without a Rust call.
+    // How a host on the page's own origin names the endpoint to tilo-net.
     const tag = `<script>globalThis.__tiloFetchProxy = ${JSON.stringify(ENDPOINT)};</script>`;
-    bytes = Buffer.from(bytes.toString('utf8').replace('<head>', `<head>${tag}`));
+    const page = Buffer.from((await readFile(file, 'utf8')).replace('<head>', `<head>${tag}`));
+    response.writeHead(200, {'content-type': type, 'content-length': page.length, 'cache-control': 'no-cache'});
+    response.end(page);
+    return;
   }
-  response.writeHead(200, {'content-type': TYPES[path.extname(file)] ?? 'application/octet-stream',
-    'cache-control': 'no-cache'});
-  response.end(bytes);
+  // Streamed, with its length: under Bun one write of a large file (the
+  // 32 MB CJK font) arrived cut short while the page loaded others, and
+  // the page drew every CJK character and emoji as a box.
+  response.writeHead(200, {'content-type': type, 'content-length': info.size, 'cache-control': 'no-cache'});
+  createReadStream(file).on('error', () => response.destroy()).pipe(response);
 }
 
+const proxyOrigin = proxyEnabled ? await startProxy() : undefined;
 const server = createServer(async (request, response) => {
+  if (proxyOrigin && new URL(request.url, 'http://localhost').pathname === ENDPOINT) {
+    forward(proxyOrigin, request, response);
+    return;
+  }
   try {
-    if (proxyEnabled && new URL(request.url, 'http://localhost').pathname === ENDPOINT) {
-      await relay(request, response);
-    } else {
-      await serveFile(request, response);
-    }
+    await serveFile(request, response);
   } catch (error) {
-    const failure = error instanceof ProxyFailure ? error : new ProxyFailure('unreachable', 502, String(error));
-    if (!response.headersSent) {
-      response.writeHead(failure.status, {[ERROR]: failure.code, 'content-type': 'text/plain; charset=utf-8'});
-    }
-    response.end(failure.message);
+    if (!response.headersSent) response.writeHead(500, {'content-type': 'text/plain; charset=utf-8'});
+    response.end(String(error));
   }
 });
 server.listen(port, '127.0.0.1', () => {

@@ -28,6 +28,7 @@ fn one_group_tree(maximized: bool) -> (WorkspaceTree, StripId, GroupId) {
                     kind: AppKind::Other("Test".into()),
                     label: "solo".into(),
                 },
+                app_title: None,
             }],
             active_tab: tab_id,
             width: StateWidth::Normal,
@@ -35,11 +36,12 @@ fn one_group_tree(maximized: bool) -> (WorkspaceTree, StripId, GroupId) {
             focus_history: Vec::new(),
         }],
     };
-    let ws = Workspace {
-        id: ws_id,
-        name: "Test".into(),
-        strips: vec![strip],
-        ..Workspace::new(ws_id, String::new())
+    let ws = {
+        let mut workspace = Workspace::new(ws_id, String::new());
+        workspace.id = ws_id;
+        workspace.name = "Test".into();
+        workspace.strips = vec![strip];
+        workspace
     };
     let mut active_strip = StdHashMap::new();
     active_strip.insert(ws_id, strip_id);
@@ -223,8 +225,43 @@ fn maximize_and_resize_harvests_flush_layout_changes_to_disk() {
         );
     }
 
+    /// The window menu's width rows go through the same door a width drag
+    /// does: the laid-out widget and the saved group both take the value.
+    fn window_menu_width_rows_set_the_group_and_save_it() {
+        let (mut tree, strip_id, group_id) = one_group_tree(false);
+        let state_dir = tempfile::tempdir().expect("temporary state directory");
+        let state_path = state_dir.path().join("state.json");
+        tree.persist_path = Some(state_path.clone());
+        let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
+
+        assert!(host.set_group_width(group_id, StateWidth::Narrow));
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("a menu width writes valid durable state");
+        let group = restarted.desktop.workspaces[0]
+            .strips
+            .iter()
+            .find(|strip| strip.id == strip_id)
+            .and_then(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .find(|group| group.id == group_id)
+            })
+            .expect("persisted group");
+        assert_eq!(
+            group.width,
+            StateWidth::Narrow,
+            "the width a person picked from the menu survives restart"
+        );
+        assert!(
+            !host.set_group_width(9_999, StateWidth::Wide),
+            "an unknown window changes nothing"
+        );
+    }
+
     harvest_writes_pending_maximize_change_through_to_tree();
     harvest_no_op_tick_leaves_persisted_state_alone();
     set_group_widths_flushes_the_layout_to_disk();
     resize_focused_group_flushes_the_layout_to_disk();
+    window_menu_width_rows_set_the_group_and_save_it();
 }

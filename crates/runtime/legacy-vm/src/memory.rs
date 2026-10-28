@@ -69,7 +69,6 @@ mod tests {
             assert_eq!(policy.next_target(1536, 200), Some(2048));
             assert_eq!(policy.next_target(5888, 100), Some(6144));
             assert_eq!(policy.next_target(6144, 100), None);
-            // A quarter of a large VM is the low-water mark there.
             assert_eq!(policy.next_target(4096, 900), Some(4608));
         }
         // phase: a mostly idle guest gives memory back, never below the base

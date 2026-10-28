@@ -11,7 +11,12 @@ use std::{
 #[derive(Default)]
 pub(super) struct Selection {
     picker: Option<ui::PortalChannel>,
-    request: Option<(PathBuf, [bool; 3], Vec<InstalledRef>)>,
+    request: Option<(
+        PathBuf,
+        [bool; 3],
+        Vec<InstalledRef>,
+        Vec<std::path::PathBuf>,
+    )>,
     worker: Option<Receiver<Result<MigrationIntent, ReviewFailure>>>,
     intent: Option<MigrationIntent>,
     state: &'static str,
@@ -30,10 +35,18 @@ impl Selection {
     pub fn choosing(&self) -> bool {
         self.picker.is_some()
     }
-    pub fn request(&mut self, home: PathBuf, categories: [bool; 3], refs: Vec<InstalledRef>) {
+    /// The same permission request with the person's nested Home exclusions;
+    /// the capture carries them so the receiving producer can enforce them.
+    pub fn request_selected(
+        &mut self,
+        home: PathBuf,
+        categories: [bool; 3],
+        refs: Vec<InstalledRef>,
+        exclusions: Vec<std::path::PathBuf>,
+    ) {
         let picker = home_permission_request(&home);
         self.intent = None;
-        self.request = Some((home, categories, refs));
+        self.request = Some((home, categories, refs, exclusions));
         self.state = "permission";
         #[cfg(test)]
         let reply = self
@@ -44,12 +57,13 @@ impl Selection {
         let reply = picker.send();
         self.picker = Some(reply);
     }
-    pub fn start(
+    pub fn start_selected(
         &mut self,
         selected: PathBuf,
         home: PathBuf,
         categories: [bool; 3],
         refs: Vec<InstalledRef>,
+        exclusions: Vec<std::path::PathBuf>,
     ) {
         // The semantic grant completes the same request as the platform picker.
         // Dropping its receiver retires queued/late portal replies before work.
@@ -63,13 +77,18 @@ impl Selection {
         let (sender, receiver) = mpsc::channel();
         self.worker = Some(receiver);
         std::thread::spawn(move || {
+            let paths: Vec<imager_backend::setup::migration_store::NativePath> = exclusions
+                .iter()
+                .map(|path| imager_backend::setup::migration_store::NativePath::encode(path))
+                .collect();
             #[cfg(test)]
-            let result = imager_backend::setup::live_selection::review_using(
-                &selected, &home, categories, refs, capture,
+            let result = imager_backend::setup::live_selection::review_using_selected(
+                &selected, &home, categories, refs, capture, &paths,
             );
             #[cfg(not(test))]
-            let result =
-                imager_backend::setup::live_selection::review(&selected, &home, categories, refs);
+            let result = imager_backend::setup::live_selection::review_selected(
+                &selected, &home, categories, refs, &paths,
+            );
             let _ = sender.send(result);
         });
     }
@@ -84,8 +103,11 @@ impl Selection {
             self.picker = None;
             let request = self.request.take();
             match (result, request) {
-                (ui::PortalOutcome::Opened(selected), Some((home, categories, refs))) => {
-                    self.start(selected, home, categories, refs);
+                (
+                    ui::PortalOutcome::Opened(selected),
+                    Some((home, categories, refs, exclusions)),
+                ) => {
+                    self.start_selected(selected, home, categories, refs, exclusions);
                     return Some(Ok(false));
                 }
                 (ui::PortalOutcome::Cancelled, _) => {
@@ -170,7 +192,13 @@ mod tests {
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set("XDG_STATE_HOME", state.clone());
         let mut selection = super::Selection::default();
-        selection.start(other, home.clone(), [true, false, false], Vec::new());
+        selection.start_selected(
+            other,
+            home.clone(),
+            [true, false, false],
+            Vec::new(),
+            Vec::new(),
+        );
         let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
         let result = loop {
             if let Some(result) = selection.poll() {
@@ -199,7 +227,13 @@ mod tests {
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set("XDG_STATE_HOME", linked);
         let mut selection = super::Selection::default();
-        selection.start(home.clone(), home.clone(), [true, false, false], Vec::new());
+        selection.start_selected(
+            home.clone(),
+            home.clone(),
+            [true, false, false],
+            Vec::new(),
+            Vec::new(),
+        );
         let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
         let result = loop {
             if let Some(result) = selection.poll() {

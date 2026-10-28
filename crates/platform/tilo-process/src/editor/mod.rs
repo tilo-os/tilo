@@ -15,8 +15,6 @@ pub enum Failure {
 /// A caller checks its current authority immediately around the supplied send.
 pub trait Completion: Send {
     /// Send only while the original caller remains admitted.
-    /// # Errors
-    /// Returns the caller refusal or uncertain native transport failure.
     fn send(&self, send: &mut dyn FnMut() -> io::Result<()>) -> Result<(), Failure>;
     /// Complete from the actual native acknowledgement or classified failure.
     fn finish(self: Box<Self>, result: Result<(), Failure>);
@@ -49,9 +47,20 @@ pub use unsupported::{Client, Socket};
 pub const fn supported() -> bool {
     cfg!(target_os = "linux")
 }
+/// Whether `result`, a read of a PTY master, reports that no slave descriptor
+/// is open: Linux answers `EIO`, macOS the end of the file. A hosted session's
+/// master reads so in the hand-off window before the guest opens its slave,
+/// as well as once the guest has exited.
+pub fn read_finds_no_slave(result: &io::Result<usize>) -> bool {
+    match result {
+        Ok(read) => *read == 0 && cfg!(target_vendor = "apple"),
+        #[cfg(unix)]
+        Err(error) => error.raw_os_error() == Some(libc::EIO),
+        #[cfg(not(unix))]
+        Err(_) => false,
+    }
+}
 /// Verify the declared PTY master role on a Linux host.
-/// # Errors
-/// Refuses a descriptor that is not the master side of a PTY.
 #[cfg(unix)]
 pub fn validate_master(master: &std::fs::File) -> io::Result<()> {
     #[cfg(target_os = "linux")]

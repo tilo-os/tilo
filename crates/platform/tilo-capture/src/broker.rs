@@ -176,7 +176,6 @@ fn invalid(what: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what)
 }
 
-/// Send `bytes` with `fd` attached.
 fn send_with_fd(socket: &UnixDatagram, bytes: &[u8], fd: &OwnedFd) -> io::Result<()> {
     let fds = [fd.as_fd()];
     let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
@@ -637,17 +636,10 @@ pub mod synthetic {
 mod tests {
     use super::*;
     use crate::grants::{Decision, DeviceGrants, GrantPolicy};
-    use std::time::Instant;
 
-    fn until<T>(mut probe: impl FnMut() -> Option<T>) -> T {
-        let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
-        loop {
-            if let Some(value) = probe() {
-                return value;
-            }
-            assert!(Instant::now() < deadline, "timed out");
-            std::thread::sleep(Duration::from_millis(5));
-        }
+    #[track_caller]
+    fn until<T>(probe: impl FnMut() -> Option<T>) -> T {
+        tilo_test_env::wait_for("the broker", probe)
     }
 
     struct Host {
@@ -807,19 +799,16 @@ mod tests {
                 }),
                 "the broker says when its state changes"
             );
-            asked_rx
-                .recv_timeout(Duration::from_secs(10))
-                .expect("the host asks the person");
+            tilo_test_env::recv("the host to ask the person", &asked_rx);
+            // The prompt is held open until the answer below is sent.
             assert_eq!(camera.state(), CaptureState::Starting);
             assert!(
-                woke_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+                woke_rx.try_recv().is_err(),
                 "nothing wakes the app while the prompt is open"
             );
 
             answer_tx.send(allow).unwrap();
-            woke_rx
-                .recv_timeout(Duration::from_secs(10))
-                .expect("the answer wakes the app");
+            tilo_test_env::recv("the answer to wake the app", &woke_rx);
             let expected = if allow {
                 CaptureState::Live
             } else {

@@ -197,6 +197,18 @@ pub trait ClipboardBackend: Send + Sync {
         None
     }
 
+    /// Take the Ctrl+C clipboard and offer formatted text on it: `html` as
+    /// `text/html` and `plain` as its plain-text fallback, both from one
+    /// copy, so an app that reads formatting pastes the formatting and every
+    /// other app the words. Returns `false` if the backend could not.
+    ///
+    /// The default offers only `plain`, for a backend that carries no
+    /// formatting; every system clipboard overrides it.
+    fn set_rich_text(&self, html: &str, plain: &str) -> bool {
+        let _ = html;
+        self.set_text(ClipboardTarget::Clipboard, plain)
+    }
+
     /// Offer an RGBA8 image on the clipboard. Optional: the default refuses,
     /// which is appropriate for backends that only carry text.
     fn set_image(&self, width: usize, height: usize, rgba: &[u8]) -> bool {
@@ -245,6 +257,16 @@ pub trait ClipboardBackend: Send + Sync {
         copy_now(self, content)
     }
 
+    /// Hold a Ctrl+C copy for text that is not known yet: a link the
+    /// person's click asks a host for. A browser copies only inside the
+    /// click, so a backend with that rule claims the clipboard now and
+    /// fills it once [`ReservedCopy::fill`] hands the text over. `None`
+    /// when this backend copies just as well later, or has no way to claim
+    /// the clipboard now; the text is then copied when it arrives.
+    fn reserve_text(&self) -> Option<ReservedCopy> {
+        None
+    }
+
     /// Short name for diagnostics, e.g. `"compositor-mirror"`.
     fn name(&self) -> &'static str;
 }
@@ -255,6 +277,7 @@ fn copy_now<B: ClipboardBackend + ?Sized>(backend: &B, content: CopyContent<'_>)
         CopyContent::Text(text) => backend.set_text(ClipboardTarget::Clipboard, text),
         CopyContent::SharedText(text) => backend.set_shared_text(ClipboardTarget::Clipboard, text),
         CopyContent::SecretText(text) => backend.set_secret_text(text),
+        CopyContent::Rich { html, plain } => backend.set_rich_text(html, plain),
         CopyContent::Image {
             width,
             height,
@@ -274,6 +297,9 @@ pub enum CopyContent<'a> {
     SharedText(&'a str),
     /// [`ClipboardBackend::set_secret_text`].
     SecretText(&'a str),
+    /// [`ClipboardBackend::set_rich_text`]: formatted text as HTML with its
+    /// plain-text fallback.
+    Rich { html: &'a str, plain: &'a str },
     /// [`ClipboardBackend::set_image`]: RGBA8, `width * height * 4` bytes.
     Image {
         width: usize,
@@ -289,6 +315,11 @@ impl std::fmt::Debug for CopyContent<'_> {
             Self::Text(text) => f.debug_tuple("Text").field(&text.len()).finish(),
             Self::SharedText(text) => f.debug_tuple("SharedText").field(&text.len()).finish(),
             Self::SecretText(_) => f.write_str("SecretText"),
+            Self::Rich { html, plain } => f
+                .debug_struct("Rich")
+                .field("html", &html.len())
+                .field("plain", &plain.len())
+                .finish(),
             Self::Image { width, height, .. } => f
                 .debug_struct("Image")
                 .field("width", width)
@@ -435,6 +466,47 @@ impl Drop for CopySettler {
     }
 }
 
+/// A copy claimed before its text is known ([`ClipboardBackend::reserve_text`]).
+/// Dropping it unfilled gives the claim up and copies nothing.
+#[must_use = "dropping a reserved copy gives it up"]
+pub struct ReservedCopy {
+    fill: Option<Fill>,
+}
+
+/// Completes a [`ReservedCopy`] with its text, or gives it up on `None`.
+type Fill = Box<dyn FnOnce(Option<&str>) -> ClipboardCopy + Send>;
+
+impl ReservedCopy {
+    /// A reservation that `fill` completes with the text, or gives up when
+    /// handed `None`.
+    pub fn new(fill: impl FnOnce(Option<&str>) -> ClipboardCopy + Send + 'static) -> Self {
+        Self {
+            fill: Some(Box::new(fill)),
+        }
+    }
+
+    /// Copy `text` into the claimed clipboard.
+    pub fn fill(mut self, text: &str) -> ClipboardCopy {
+        self.fill
+            .take()
+            .map_or_else(|| ClipboardCopy::settled(false), |fill| fill(Some(text)))
+    }
+}
+
+impl Drop for ReservedCopy {
+    fn drop(&mut self) {
+        if let Some(fill) = self.fill.take() {
+            let _ = fill(None);
+        }
+    }
+}
+
+impl std::fmt::Debug for ReservedCopy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ReservedCopy")
+    }
+}
+
 /// This target's clipboard, shared by every caller in the process.
 pub fn system() -> std::sync::Arc<dyn ClipboardBackend> {
     static SYSTEM: OnceLock<std::sync::Arc<dyn ClipboardBackend>> = OnceLock::new();
@@ -497,6 +569,9 @@ fn attach(
 pub struct InProcessClipboard {
     clipboard: Mutex<Option<String>>,
     primary: Mutex<Option<String>>,
+    /// The formatting of the Ctrl+C copy, when it was rich; cleared by any
+    /// other copy.
+    rich: Mutex<Option<String>>,
 }
 
 impl InProcessClipboard {
@@ -514,11 +589,33 @@ impl ClipboardBackend for InProcessClipboard {
             return false;
         };
         *slot = Some(text.to_string());
+        if target == ClipboardTarget::Clipboard
+            && let Ok(mut rich) = self.rich.lock()
+        {
+            *rich = None;
+        }
         true
     }
 
     fn text(&self, target: ClipboardTarget) -> Option<String> {
         self.slot(target).lock().ok()?.clone()
+    }
+
+    fn set_rich_text(&self, html: &str, plain: &str) -> bool {
+        if !self.set_text(ClipboardTarget::Clipboard, plain) {
+            return false;
+        }
+        let Ok(mut rich) = self.rich.lock() else {
+            return false;
+        };
+        *rich = Some(html.to_owned());
+        true
+    }
+
+    fn rich_text(&self) -> Option<RichTextOffer> {
+        let html = self.rich.lock().ok()?.clone()?;
+        let plain = self.text(ClipboardTarget::Clipboard);
+        Some(RichTextOffer { html, plain }).filter(RichTextOffer::is_valid)
     }
 
     fn set_shared_text(&self, _target: ClipboardTarget, _text: &str) -> bool {

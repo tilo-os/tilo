@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use shell::compositor::frame::FrameBuilder;
 use shell::shell::state::TileContent;
 use vello::kurbo::Rect;
-use wayland_client::protocol::{wl_compositor, wl_surface};
-use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+use wayland_client::protocol::{wl_compositor, wl_subcompositor, wl_subsurface, wl_surface};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
 use crate::support::wayland;
@@ -65,6 +65,8 @@ impl Dispatch<xdg_toplevel::XdgToplevel, &'static str> for Client {
 
 delegate_noop!(Client: ignore wl_compositor::WlCompositor);
 delegate_noop!(Client: ignore wl_surface::WlSurface);
+delegate_noop!(Client: ignore wl_subcompositor::WlSubcompositor);
+delegate_noop!(Client: ignore wl_subsurface::WlSubsurface);
 
 struct Harness {
     wl: wayland::Harness<Client>,
@@ -87,7 +89,6 @@ impl DerefMut for Harness {
 impl Harness {
     fn new() -> Self {
         let wl = wayland::Harness::new();
-        // The protocol callbacks and the chrome share one tree, as in the session.
         let frame = FrameBuilder::with_handle(wl.state.workspace_tree.clone(), false, (1600, 900));
         Self { wl, frame }
     }
@@ -295,6 +296,171 @@ fn committed_buffer_scale_puts_the_window_and_input_in_logical_pixels() {
     store.forget(id);
 }
 
+/// A browser's window as Firefox commits it under a client-drawn frame: the
+/// toplevel buffer is the frame with a 20px shadow margin on every side, the
+/// window geometry is the rectangle inside that margin, and the page is a
+/// desynchronised subsurface placed at the geometry's corner, as large as
+/// the geometry.
+struct ShadowedBrowser {
+    root: u64,
+    page: u64,
+    _surface: wl_surface::WlSurface,
+    _xdg: xdg_surface::XdgSurface,
+    _page_surface: wl_surface::WlSurface,
+    _subsurface: wl_subsurface::WlSubsurface,
+}
+
+const SHADOW: i32 = 20;
+const WINDOW: (i32, i32) = (100, 80);
+/// The root surface's buffer: the window and its shadow on every side.
+const FRAME: (u32, u32) = (
+    (WINDOW.0 + 2 * SHADOW).unsigned_abs(),
+    (WINDOW.1 + 2 * SHADOW).unsigned_abs(),
+);
+const SHADOW_PIXEL: [u8; 4] = [255, 0, 0, 255];
+const PAGE_PIXEL: [u8; 4] = [0, 128, 255, 255];
+/// The page's own top-left pixel, so where it lands can be told apart.
+const PAGE_CORNER_PIXEL: [u8; 4] = [255, 255, 0, 255];
+
+impl Harness {
+    fn open_shadowed_browser(&mut self) -> ShadowedBrowser {
+        let compositor: wl_compositor::WlCompositor = self.bind("wl_compositor", 4);
+        let subcompositor: wl_subcompositor::WlSubcompositor = self.bind("wl_subcompositor", 1);
+        let wm_base: xdg_wm_base::XdgWmBase = self.bind("xdg_wm_base", 2);
+        self.pump();
+
+        let (surface, xdg, root) = self.open(&compositor, &wm_base, "org.example.Browser");
+        let qh = self.queue.handle();
+        let page_surface = compositor.create_surface(&qh, ());
+        let subsurface = subcompositor.get_subsurface(&page_surface, &surface, &qh, ());
+        subsurface.set_desync();
+        subsurface.set_position(SHADOW, SHADOW);
+        page_surface.commit();
+        xdg.set_window_geometry(SHADOW, SHADOW, WINDOW.0, WINDOW.1);
+        surface.commit();
+        self.pump();
+
+        // The compositor files a client's surfaces under the client's index
+        // in the high half and the protocol id in the low half.
+        let page = (root & 0xFFFF_FFFF_0000_0000) | u64::from(page_surface.id().protocol_id());
+        let store = shell::compositor::foreign::store();
+        let (frame_w, frame_h) = FRAME;
+        let frame_pixels = frame_w.checked_mul(frame_h).expect("frame size");
+        store.publish_rgba(
+            root,
+            &SHADOW_PIXEL.repeat(usize::try_from(frame_pixels).expect("frame size")),
+            frame_w,
+            frame_h,
+        );
+        let (page_w, page_h) = (WINDOW.0.unsigned_abs(), WINDOW.1.unsigned_abs());
+        let mut page_pixels = PAGE_PIXEL.repeat(
+            usize::try_from(page_w.checked_mul(page_h).expect("page size")).expect("page size"),
+        );
+        page_pixels[..4].copy_from_slice(&PAGE_CORNER_PIXEL);
+        store.publish_rgba(page, &page_pixels, page_w, page_h);
+        ShadowedBrowser {
+            root,
+            page,
+            _surface: surface,
+            _xdg: xdg,
+            _page_surface: page_surface,
+            _subsurface: subsurface,
+        }
+    }
+}
+
+#[test]
+fn a_page_subsurface_at_the_window_geometry_fills_the_tile_exactly() {
+    let mut h = Harness::new();
+    let browser = h.open_shadowed_browser();
+    drop(h);
+    let store = shell::compositor::foreign::store();
+
+    assert_eq!(
+        store.frame_size(browser.root),
+        Some((WINDOW.0.unsigned_abs(), WINDOW.1.unsigned_abs())),
+        "the tile shows the declared window, not the shadow margin around it",
+    );
+    let frame = store.snapshot(browser.root).expect("frame");
+    assert_eq!(
+        (frame.width, frame.height),
+        (WINDOW.0.unsigned_abs(), WINDOW.1.unsigned_abs())
+    );
+    assert_eq!(
+        frame.rgba.get(..4),
+        Some(&PAGE_CORNER_PIXEL[..]),
+        "the page's top-left pixel must land on the window's top-left corner; \
+         a subsurface drawn at its parent's origin shows the page shifted up \
+         and left by the shadow margin",
+    );
+    let off_page: Vec<(usize, usize)> = frame
+        .rgba
+        .chunks_exact(4)
+        .enumerate()
+        .skip(1)
+        .filter(|(_, pixel)| *pixel != PAGE_PIXEL)
+        .map(|(index, _)| {
+            let width = usize::try_from(frame.width).expect("frame width");
+            (index % width, index / width)
+        })
+        .collect();
+    assert!(
+        off_page.is_empty(),
+        "every pixel of the window is the page: no shadow margin and no band \
+         along the right or bottom edge. {} pixels are not, the first at {:?}",
+        off_page.len(),
+        off_page.first(),
+    );
+
+    // Input lands where the page is drawn: the tile's corner is surface-local
+    // (20, 20), which is the page's own (0, 0).
+    let tile = Rect::new(300.0, 100.0, 400.0, 180.0);
+    let (x, y) = store.surface_point(browser.root, tile, (300.0, 100.0));
+    assert_eq!(
+        store.child_at(browser.root, x, y),
+        Some((browser.page, 0.0, 0.0)),
+        "a click on the tile's corner must reach the page's corner",
+    );
+    store.forget(browser.page);
+    store.forget(browser.root);
+}
+
+/// A client that dies with a subsurface still mapped (killed, or crashed)
+/// has its surfaces torn down after it has gone. Re-reading the window's
+/// subsurfaces from that teardown must not take a lock the walk already
+/// holds: it froze the compositor until its watchdog ended the session.
+#[test]
+fn a_client_that_dies_with_a_subsurface_does_not_freeze_the_compositor() {
+    let mut h = Harness::new();
+    let browser = h.open_shadowed_browser();
+    // The client goes away as a killed process does: its socket closes with
+    // its surfaces still alive.
+    let socket = h
+        .conn
+        .backend()
+        .poll_fd()
+        .try_clone_to_owned()
+        .expect("the client's socket");
+    std::os::unix::net::UnixStream::from(socket)
+        .shutdown(std::net::Shutdown::Both)
+        .expect("close the client's socket");
+    // Tears the dead client's surfaces down, subsurface and all; a frozen
+    // compositor never returns from it.
+    let wl = &mut h.wl;
+    for _ in 0..3 {
+        let _ = wl.display.dispatch_clients(&mut wl.state);
+        let _ = wl.display.flush_clients();
+    }
+    drop(h);
+    let store = shell::compositor::foreign::store();
+    assert_eq!(
+        store.frame_seq(browser.root),
+        0,
+        "the dead client's window keeps no frame",
+    );
+    store.forget(browser.page);
+}
+
 /// Super+F on a tiled client: the fullscreen configure sizes it to the
 /// output, and the promoted tile still laid out beneath must not size it
 /// back to the tile. Leaving fullscreen hands the tile size back.
@@ -459,6 +625,7 @@ fn opening_a_window_ends_a_full_screen_and_a_provisional_one_does_not() {
                 kind: shell::shell::state::AppKind::Other("Notes".into()),
                 label: "Notes".into(),
             },
+            app_title: None,
         };
         shell::shell::tab_binding::place_tab(
             &mut tree,
@@ -507,6 +674,7 @@ fn an_expanded_window_ends_its_full_screen_only_for_a_window_the_person_opened()
             kind: shell::shell::state::AppKind::Other(title.into()),
             label: title.into(),
         },
+        app_title: None,
     };
 
     {
@@ -533,6 +701,167 @@ fn an_expanded_window_ends_its_full_screen_only_for_a_window_the_person_opened()
 
     assert!(!for_someone_else, "a window opened beside for someone else");
     assert!(for_the_person, "a window the person opened");
+}
+
+/// The tab the person is in: the active workspace's active strip, that
+/// strip's active group, and the tab it shows.
+fn focused_tab(state: &shell::compositor::state::State) -> Option<u64> {
+    active_tab_of(&state.workspace_tree.read().desktop)
+}
+
+fn active_tab_of(desktop: &shell::shell::state::DesktopTree) -> Option<u64> {
+    let strip = *desktop.active_strip.get(&desktop.active)?;
+    let group = desktop.active_group_for(strip)?;
+    desktop
+        .active_workspace()?
+        .strips
+        .iter()
+        .find(|s| s.id == strip)?
+        .window_groups
+        .iter()
+        .find(|g| g.id == group)
+        .map(|g| g.active_tab)
+}
+
+fn stub_tab(id: u64, title: &str) -> shell::shell::state::Tab {
+    shell::shell::state::Tab {
+        id,
+        title: title.into(),
+        tile: TileContent::Stub {
+            kind: shell::shell::state::AppKind::Other(title.into()),
+            label: title.into(),
+        },
+        app_title: None,
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered scenario keeps the person's steps and what each changed visible"
+)]
+fn launching_from_full_screen_leaves_it_and_focuses_the_new_window() {
+    const FULLSCREEN: u32 = 2;
+    let mut h = Harness::new();
+    h.state.output_size = (1280, 900);
+    let compositor: wl_compositor::WlCompositor = h.bind("wl_compositor", 4);
+    let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
+    h.pump();
+
+    let qh = h.queue.handle();
+    let surface = compositor.create_surface(&qh, ());
+    let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, "org.tilo.Video");
+    toplevel.set_app_id("org.tilo.Video".into());
+    surface.commit();
+    h.pump();
+    let id = h.foreign_id("org.tilo.Video");
+    let store = shell::compositor::foreign::store();
+    store.note_placement(id, Rect::new(0.0, 0.0, 320.0, 820.0));
+    shell::compositor::foreign::flush_configures(&mut h.state);
+    h.pump();
+    let video_group = {
+        let tree = h.state.workspace_tree.read();
+        shell::shell::tab_binding::group_id_for_surface(&tree, id).expect("a group")
+    };
+
+    // Beside them, in the same strip.
+    h.focus(id);
+    toplevel.set_fullscreen(None);
+    h.pump();
+    let entered_beside = h.state.fullscreen_group;
+    {
+        let mut tree = h.state.workspace_tree.write();
+        shell::shell::tab_binding::place_tab(
+            &mut tree,
+            stub_tab(9_100_011, "Notes"),
+            shell::shell::tab_binding::Placement::NewGroup,
+        );
+    }
+    let super_f_left_beside = h.state.leave_fullscreen_when_focus_moved(Some(video_group));
+    h.pump();
+    let here = (
+        h.state.fullscreen_group,
+        h.last_states("org.tilo.Video"),
+        focused_tab(&h.state),
+    );
+
+    // On another strip: the window opens beside one the person was in
+    // there (a search result after focus moved), and the view goes with it.
+    let elsewhere = {
+        let mut tree = h.state.workspace_tree.write();
+        let mut strip =
+            shell::shell::state::Strip::new(shell::shell::state::StripId(9_100_020), "Elsewhere");
+        strip.window_groups.push(shell::shell::state::WindowGroup {
+            id: 9_100_021,
+            tabs: vec![stub_tab(9_100_022, "Files")],
+            active_tab: 9_100_022,
+            width: shell::shell::state::WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
+        let id = strip.id;
+        tree.desktop
+            .active_workspace_mut()
+            .expect("an active workspace")
+            .strips
+            .push(strip);
+        id
+    };
+    h.focus(id);
+    toplevel.set_fullscreen(None);
+    h.pump();
+    let entered_elsewhere = h.state.fullscreen_group;
+    {
+        let mut tree = h.state.workspace_tree.write();
+        shell::shell::tab_binding::place_tab(
+            &mut tree,
+            stub_tab(9_100_023, "Report"),
+            shell::shell::tab_binding::Placement::RightOf(9_100_021),
+        );
+    }
+    let super_f_left_elsewhere = h.state.leave_fullscreen_when_focus_moved(Some(video_group));
+    h.pump();
+    let there = (
+        h.state.fullscreen_group,
+        h.last_states("org.tilo.Video"),
+        focused_tab(&h.state),
+        {
+            let tree = h.state.workspace_tree.read();
+            tree.desktop.active_strip.get(&tree.desktop.active).copied()
+        },
+    );
+    drop(h);
+    store.forget(id);
+
+    assert_eq!(entered_beside, Some(video_group), "fixture: full screen");
+    assert_eq!(here.0, None, "the launch ends the client's full screen");
+    assert!(
+        !here.1.contains(&FULLSCREEN),
+        "the client is told: {:?}",
+        here.1
+    );
+    assert!(super_f_left_beside, "and Super+F's");
+    assert_eq!(here.2, Some(9_100_011), "the new window is the focused one");
+
+    assert_eq!(
+        entered_elsewhere,
+        Some(video_group),
+        "fixture: full screen again"
+    );
+    assert_eq!(there.0, None, "a launch onto another strip ends it too");
+    assert!(
+        !there.1.contains(&FULLSCREEN),
+        "the client is told: {:?}",
+        there.1
+    );
+    assert!(super_f_left_elsewhere, "and Super+F's");
+    assert_eq!(there.3, Some(elsewhere), "the view goes to the other strip");
+    assert_eq!(
+        there.2,
+        Some(9_100_023),
+        "the new window is the focused one"
+    );
 }
 
 /// A client that answers pings only while told to: an app that hangs, then
@@ -630,4 +959,219 @@ fn an_app_that_stops_answering_shows_not_responding_until_it_answers() {
         "and it shows again if the app still does not answer"
     );
     assert!(cleared && !recovered, "the answer clears it by itself");
+}
+
+/// What one compositor tick shows of a window in full screen, placed as the
+/// native loop places it every frame.
+#[derive(Debug)]
+struct FullScreenTick {
+    /// The window drawn as the overlay above everything, and where.
+    overlay: Option<(u64, Rect)>,
+    /// The group laid out full screen in the desktop beneath the shell.
+    beneath_shell: Option<u64>,
+    /// Where the desktop draws the window's tile.
+    tile: Option<Rect>,
+    /// The full top bar stands aside.
+    top_bar_aside: bool,
+    /// The surface handed straight to the display, if any.
+    scanout: Option<u64>,
+    /// Which surface holds the keyboard.
+    keyboard: Option<u64>,
+    /// The client is still in its own full screen.
+    still_full_screen: bool,
+    palette: bool,
+}
+
+impl Harness {
+    /// One tick: full screen placed (`FrameBuilder::set_client_fullscreen_group`,
+    /// then the overlay as `reconcile_fullscreen_overlay` places it), a frame
+    /// painted, and the keyboard reconciled.
+    fn full_screen_tick(&mut self, surface: u64, output: Rect) -> FullScreenTick {
+        let group = self.wl.state.client_fullscreen_group();
+        self.frame.set_client_fullscreen_group(group);
+        self.frame.set_client_fullscreen_surface(
+            group.map(|_| (surface, "Fullscreen".to_owned(), output)),
+        );
+        let mut scanout = None;
+        for _ in 0..2 {
+            self.frame.relayout();
+            scanout = self
+                .frame
+                .paint_with_damage()
+                .scanout_candidate()
+                .map(|candidate| candidate.surface);
+        }
+        shell::compositor::client_input::sync_keyboard_focus(&mut self.wl.state, &self.frame);
+        self.pump();
+        let tile = self.frame.foreign_surface_rect(surface);
+        FullScreenTick {
+            overlay: self.frame.fullscreen_surface_rect(),
+            beneath_shell: self.frame.chrome().client_fullscreen_group(),
+            tile,
+            top_bar_aside: self.frame.chrome().fullscreen_covers_primary(),
+            scanout,
+            keyboard: self.wl.state.client_input.keyboard_focus(),
+            still_full_screen: self.wl.state.client_fullscreen_group().is_some(),
+            palette: self.frame.host().palette_visible(),
+        }
+    }
+}
+
+impl Harness {
+    /// Press and release `key` on the shell, as the seat delivers it.
+    fn press_and_release(
+        &mut self,
+        doc: &mut automerge::AutoCommit,
+        key: winit::keyboard::NamedKey,
+    ) {
+        let mut focus = None;
+        for state in [
+            winit::event::ElementState::Pressed,
+            winit::event::ElementState::Released,
+        ] {
+            let event = winit::event::WindowEvent::KeyboardInput {
+                device_id: winit::event::DeviceId::dummy(),
+                event: ui::synthetic_input::key_event(
+                    winit::keyboard::Key::Named(key),
+                    None,
+                    state,
+                ),
+                is_synthetic: false,
+            };
+            self.frame.dispatch_event(
+                &event,
+                &winit::event::Modifiers::default(),
+                &mut ui::widget::Edits::lend(doc),
+                &automerge::ROOT,
+                &mut focus,
+            );
+        }
+    }
+}
+
+/// A window in full screen, then search (Super+Space): the palette shows
+/// over it on its display, the window stays full screen and the top bar
+/// stays hidden; nothing of the window is drawn above the palette or handed
+/// straight to the display. Esc closes the palette, and the keyboard goes
+/// back to the window, drawn over everything and scanned out again.
+#[test]
+fn search_shows_over_a_full_screen_window_and_esc_gives_it_the_keyboard_back() {
+    search_over_a_full_screen_window(false);
+}
+
+/// The same with the window also put full screen by the person (Super+F)
+/// before the app inside it went full screen, as a video page does: search
+/// still shows over it rather than opening unseen beneath the window.
+#[test]
+fn search_shows_over_a_full_screen_page_in_a_super_f_window() {
+    search_over_a_full_screen_window(true);
+}
+
+fn search_over_a_full_screen_window(super_f: bool) {
+    const FULLSCREEN: u32 = 2;
+    const SIZE: (u32, u32) = (1600, 900);
+    let output = Rect::new(0.0, 0.0, f64::from(SIZE.0), f64::from(SIZE.1));
+    let mut h = Harness::new();
+    h.state.output_size = (1600, 900);
+    let compositor: wl_compositor::WlCompositor = h.bind("wl_compositor", 4);
+    let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
+    h.pump();
+
+    let qh = h.queue.handle();
+    let surface = compositor.create_surface(&qh, ());
+    let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, "org.tilo.Movie");
+    toplevel.set_app_id("org.tilo.Movie".into());
+    surface.commit();
+    h.pump();
+    let id = h.foreign_id("org.tilo.Movie");
+    let store = shell::compositor::foreign::store();
+    store.note_placement(id, Rect::new(0.0, 0.0, 800.0, 820.0));
+    shell::compositor::foreign::flush_configures(&mut h.state);
+    h.pump();
+    // Its full-screen frame: opaque and the size of the display.
+    let pixels = [10, 20, 30, 255].repeat(SIZE.0.saturating_mul(SIZE.1) as usize);
+    store.publish_rgba(id, &pixels, SIZE.0, SIZE.1);
+    h.focus(id);
+    if super_f {
+        // Super+F parks the focused group.
+        let group = {
+            let tree = h.state.workspace_tree.read();
+            let desktop = &tree.desktop;
+            let strip = *desktop.active_strip.get(&desktop.active).expect("a strip");
+            let group = desktop.active_group_for(strip);
+            drop(tree);
+            group
+        };
+        assert!(group.is_some(), "fixture: the window's group is focused");
+        h.frame
+            .with_chrome(|chrome| chrome.set_user_fullscreen_group(group));
+    }
+    toplevel.set_fullscreen(None);
+    h.pump();
+    // The extent `reconcile_fullscreen_overlay` gives the full-screen client.
+    store.note_fullscreen_extent(id, (1600, 900));
+    let group = h.state.client_fullscreen_group();
+    let before = h.full_screen_tick(id, output);
+
+    // Super+Space.
+    let mut doc = automerge::AutoCommit::new();
+    h.frame
+        .host_mut()
+        .open_global_search(&doc, &automerge::ROOT);
+    let searching = h.full_screen_tick(id, output);
+    let states_searching = h.last_states("org.tilo.Movie");
+
+    // Esc.
+    h.press_and_release(&mut doc, winit::keyboard::NamedKey::Escape);
+    let after = h.full_screen_tick(id, output);
+    let states_after = h.last_states("org.tilo.Movie");
+    drop(h);
+    store.forget(id);
+
+    assert!(group.is_some(), "fixture: the window is full screen");
+    assert_eq!(before.overlay, Some((id, output)), "{before:?}");
+    assert_eq!(before.beneath_shell, None, "{before:?}");
+    assert_eq!(before.scanout, Some(id), "alone on top: {before:?}");
+    assert_eq!(before.keyboard, Some(id), "{before:?}");
+
+    assert!(searching.palette, "Super+Space opens search: {searching:?}");
+    assert_eq!(
+        searching.overlay, None,
+        "nothing of the window is drawn above the palette: {searching:?}"
+    );
+    assert_eq!(searching.beneath_shell, group, "{searching:?}");
+    let tile = searching.tile.expect("the desktop draws the window");
+    assert!(
+        tile.x0 <= output.x0
+            && tile.y0 <= output.y0
+            && tile.x1 >= output.x1
+            && tile.y1 >= output.y1,
+        "it still fills its display beneath the palette: {tile:?}"
+    );
+    assert!(
+        searching.top_bar_aside,
+        "the top bar stays hidden: {searching:?}"
+    );
+    assert_eq!(
+        searching.scanout, None,
+        "the palette is composited over it: {searching:?}"
+    );
+    assert_eq!(
+        searching.keyboard, None,
+        "search has the keyboard: {searching:?}"
+    );
+    assert!(searching.still_full_screen, "{searching:?}");
+    assert!(
+        states_searching.contains(&FULLSCREEN),
+        "the window is never told it left full screen: {states_searching:?}"
+    );
+
+    assert!(!after.palette, "Esc closes search: {after:?}");
+    assert_eq!(after.overlay, Some((id, output)), "{after:?}");
+    assert_eq!(after.beneath_shell, None, "{after:?}");
+    assert_eq!(after.scanout, Some(id), "scanned out again: {after:?}");
+    assert_eq!(after.keyboard, Some(id), "the keyboard is back: {after:?}");
+    assert!(after.still_full_screen, "{after:?}");
+    assert!(states_after.contains(&FULLSCREEN), "{states_after:?}");
 }

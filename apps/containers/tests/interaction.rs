@@ -158,7 +158,7 @@ fn sections_and_dialogs_render_non_blank() {
     );
     let detail = phone.render_rgba();
     phone.key("Escape");
-    phone.settle_for_capture(ui::time::Duration::from_secs(2));
+    assert!(phone.settle_for_capture(tilo_test_env::hang_bound()));
     assert_ne!(
         phone.render_rgba(),
         detail,
@@ -310,7 +310,6 @@ fn create_form_submits_and_cancels() {
     assert_eq!(draft(&app, CreateField::Image), "alpine");
 }
 
-/// The draft assembles the full `podman run`.
 #[test]
 fn create_draft_assembles_full_podman_run() {
     let args = CreateDraft::with(&[
@@ -558,4 +557,14 @@ fn the_root_is_a_named_window() {
         .expect("the root is semantic");
     assert_eq!(tree.role, ui::a11y::Role::Window);
     assert_eq!(tree.name.as_deref(), Some("Containers"));
+}
+
+/// The window bar's sidebar button flips the sidebar on every click, in a
+/// window wide enough to dock it and in a narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(
+        ui::framework::testing::TestApp::<ContainersShell>::new,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
 }

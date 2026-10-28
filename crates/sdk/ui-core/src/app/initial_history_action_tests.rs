@@ -7,12 +7,17 @@ struct InitialHistoryProbe(
 impl crate::widget::Widget for InitialHistoryProbe {
     crate::provides!(
         dyn crate::resources::PublishesResources,
-        dyn crate::widget::controls::ActionControls
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::widget::ResourceOperations
     );
     crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "initial-history-probe");
+}
+
+impl crate::widget::ResourceOperations for InitialHistoryProbe {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["initial-history.probe"]
     }
+
     fn start_operation(
         &mut self,
         _: &crate::widget::ResourceOperation<'_>,
@@ -289,6 +294,64 @@ fn initial_history_no_committed_read_peer_preserves_actual_public_dispatch() {
         } if *actual == invocation)));
 }
 
+/// A window a person sees publishes Zoom in, Zoom out and Actual size with
+/// the rest of its surface, and a call the broker delivers runs them. The
+/// surface check must know the zoom operation's handler: without it every
+/// shown window would withdraw its whole published surface, which no test
+/// without a window can notice.
+#[cfg(feature = "native")]
+#[test]
+fn a_shown_windows_published_surface_carries_its_zoom_and_the_broker_runs_it() {
+    use crate::host_chrome::zoom::ZOOM_RESOURCE;
+    let (mut app, calls) = initial_history_app();
+    let requests = std::rc::Rc::new(std::cell::RefCell::new(vec![]));
+    app.collaboration.manager = CollaborationManager::with_peer_transport(NoCommittedReadPeer {
+        requests: requests.clone(),
+        directories: std::rc::Rc::new(std::cell::Cell::new(0)),
+    });
+    // The window opens, taking up the zoom its app had on this device.
+    let dir = tempfile::tempdir().expect("a settings directory");
+    app.accessibility.zoom.restore_from(
+        crate::storage::Settings::for_app("so.tilo.zoom-publication")
+            .in_file(dir.path().join("settings.json")),
+    );
+    app.publish_action_surface();
+    let published = app
+        .actions
+        .last_published_actions
+        .clone()
+        .expect("the shown window's surface is published, not withdrawn");
+    let mut zoom: Vec<_> = published
+        .iter()
+        .filter(|descriptor| descriptor.address.resource == ZOOM_RESOURCE)
+        .map(|descriptor| descriptor.address.action.as_str())
+        .collect();
+    zoom.sort_unstable();
+    assert_eq!(zoom, ["zoom-in", "zoom-out", "zoom-reset"]);
+    assert!(
+        published
+            .iter()
+            .any(|descriptor| descriptor.address.resource == "initial-probe"),
+        "offering zoom keeps the app's own actions published"
+    );
+    let invocation = tilo_actions::InvocationId::new();
+    app.invoke_published_action(
+        81,
+        invocation,
+        ZOOM_RESOURCE.into(),
+        "zoom-in".into(),
+        None,
+        "fixture-user",
+        None,
+    );
+    assert!(app.content_zoom() > 1.0, "the delivered Zoom in zoomed in");
+    assert_eq!(calls.get(), 0, "no other handler ran");
+    assert!(requests.borrow().iter().any(|request| matches!(request,
+        crate::collaboration::CollabRequest::UpdateInvocation {
+            update: tilo_actions::InvocationUpdate::Succeeded { invocation: actual, .. }, ..
+        } if *actual == invocation)));
+}
+
 #[test]
 fn initial_history_public_directory_requires_every_actual_live_record_owner() {
     let mut fixture = RoutedOwners::new();
@@ -420,7 +483,7 @@ fn initial_history_worker_readiness_wakes_parked_owner_for_publication() {
     release.send(()).unwrap();
     // No owner polling, yield loop or synthetic event supplies this notification.
     wakes
-        .recv_timeout(crate::time::Duration::from_secs(3))
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("worker readiness transition must wake the parked owner");
     assert!(
         rechecks() > 0,
@@ -555,9 +618,9 @@ fn initial_history_external_job10_waits_for_subsequent_capture_on_original_live_
         std::thread::yield_now();
     }
     // The exact stable job10 has crossed the original socket. Its capture
-    // remains parked before the worker recheck, with the original owner live.
-    let observe_until = crate::time::now() + crate::time::Duration::from_millis(60);
-    while crate::time::now() < observe_until {
+    // remains parked before the worker recheck, with the original owner live,
+    // for as many pumps as the owner takes while the capture is held.
+    for _ in 0..64 {
         app.pump_collab_presence();
         assert!(
             app.collaboration.manager.is_connected(),
@@ -720,7 +783,10 @@ fn initial_history_job2_does_not_wait_for_unowned_retained_native_route() {
         original.cluster_id,
         "retained-unowned",
     );
-    app.collaboration.manager.join_route(unowned.clone());
+    app.collaboration.manager.join_route(
+        unowned.clone(),
+        crate::record::RecordKind::new("tilo.rich-text"),
+    );
     while !app
         .committed_documents
         .iter()
@@ -856,6 +922,185 @@ fn ordinary_native_pump_exports_admission_before_any_action() {
         assert!(
             temp.path().join("startup.json").is_file(),
             "child must publish its actual startup checkpoint"
+        );
+    }
+}
+
+#[test]
+fn accepted_delivery_is_refused_after_its_document_is_replaced() {
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let mut history = automerge::AutoCommit::new();
+    history
+        .put(ROOT, "original-owner-history", "retained")
+        .unwrap();
+    history.commit();
+    let fixture = CollaborationManager::native_history_invocation_fixture_for_test(history.save());
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(InitialHistoryProbe(
+            calls.clone(),
+            std::rc::Rc::new(std::cell::Cell::new(false)),
+        )),
+    );
+    app.collaboration.local_author = crate::permissions::UserId("fixture-user".into());
+    app.collaboration.manager = fixture.manager;
+    let deadline = tilo_test_env::hang_deadline();
+    while !app.published_action_history_ready() {
+        app.pump_collab_presence();
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    }
+    let invocation = uuid::Uuid::from_u128(21);
+    (fixture.invoke)(21, invocation);
+    // Take the delivered event before any handler sees it.
+    let queued = loop {
+        let events = app.collaboration.manager.poll();
+        if let Some(event) = events.into_iter().find(|event| {
+            matches!(
+                event,
+                crate::collaboration::CollabEvent::Invocation { id: 21, .. }
+            )
+        }) {
+            break event;
+        }
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    };
+    // The window moves to another document generation before dispatch.
+    app.advance_autosave_generation();
+    app.refresh_document_routes();
+    app.apply_collab_event_for_test(queued);
+    app.collaboration.manager.finish_event_batch();
+    assert_eq!(
+        calls.get(),
+        0,
+        "a job accepted for the replaced document must not run in its successor"
+    );
+    while (fixture.updates)().is_empty() {
+        app.pump_collab_presence();
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    }
+    let updates = (fixture.updates)();
+    assert_eq!(updates.len(), 1);
+    let (
+        21,
+        tilo_actions::InvocationUpdate::Failed {
+            invocation: actual,
+            error,
+        },
+    ) = &updates[0]
+    else {
+        panic!("expected a refusal, got {updates:?}");
+    };
+    assert_eq!(actual.0, invocation);
+    assert_eq!(error.code, "action_document_replaced");
+    assert_eq!(
+        error.message,
+        crate::i18n::I18nManager::lookup_plain("action-document-replaced")
+    );
+    assert_ne!(error.message, "action-document-replaced");
+    assert!(app.collaboration.manager.is_connected());
+    assert!(app.action_publication_failure.is_none());
+    drop(app);
+    fixture.thread.join().unwrap();
+}
+
+/// A probe publishing `late-probe` only once it has read it, and saying it
+/// may until then.
+struct LateRowProbe(std::rc::Rc<std::cell::Cell<Option<bool>>>);
+impl crate::widget::Widget for LateRowProbe {
+    crate::provides!(dyn crate::resources::PublishesResources);
+    crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "late-row-probe");
+}
+impl crate::resources::PublishesResources for LateRowProbe {
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        let inspect = |id: &str| {
+            tilo_actions::Resource::new(id, "probe", "Probe").with_action(
+                tilo_actions::ActionSpec::operation(
+                    "inspect",
+                    "Inspect",
+                    tilo_actions::OperationKind::View,
+                    "initial-history.probe",
+                    &true,
+                )
+                .unwrap()
+                .with_contract(tilo_actions::ActionContract::view()),
+            )
+        };
+        let mut resources = vec![inspect("initial-probe")];
+        if self.0.get() == Some(true) {
+            resources.push(inspect("late-probe"));
+        }
+        resources
+    }
+
+    fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        self.resources(doc)
+            .into_iter()
+            .find(|resource| resource.id.as_str() == id)
+    }
+
+    fn resource_pending(&self, id: &str) -> bool {
+        id == "late-probe" && self.0.get().is_none()
+    }
+}
+
+/// A broker resolving a resource the app is still reading is answered once
+/// the read lands: found when the read holds it, not found when it does
+/// not; never told it is unknown while the read runs.
+#[test]
+fn a_resolution_of_a_resource_still_being_read_is_answered_once_it_is_read() {
+    for holds in [true, false] {
+        let read = std::rc::Rc::new(std::cell::Cell::new(None));
+        let mut history = automerge::AutoCommit::new();
+        history
+            .put(ROOT, "original-owner-history", "retained")
+            .unwrap();
+        history.commit();
+        let (manager, _) = CollaborationManager::native_initial_fixture_for_test(
+            "so.tilo.late-row-probe",
+            uuid::Uuid::new_v4(),
+            history.save(),
+        );
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(LateRowProbe(std::rc::Rc::clone(&read))),
+        );
+        app.collaboration.local_author = crate::permissions::UserId("fixture-user".into());
+        app.collaboration.manager = manager;
+        let deadline = tilo_test_env::hang_deadline();
+        while !app.published_action_history_ready() {
+            app.poll_and_apply_collab_events();
+            assert!(crate::time::now() < deadline, "history never applied");
+            std::thread::yield_now();
+        }
+        app.publish_action_surface();
+
+        let (reply, mut answered) = tokio::sync::oneshot::channel();
+        app.resolve_or_await(AwaitedResolution {
+            revision: String::new(),
+            resource: "late-probe".into(),
+            action: "inspect".into(),
+            reply,
+        });
+        app.answer_awaited_resolutions();
+        assert!(
+            answered.try_recv().is_err(),
+            "nothing is said while it is read"
+        );
+
+        read.set(Some(holds));
+        app.publish_action_surface();
+        app.answer_awaited_resolutions();
+        let resolution = answered.try_recv().expect("answered once it is read");
+        assert_eq!(
+            matches!(
+                resolution,
+                runtime_collab::ActionDirectoryResolution::Found { .. }
+            ),
+            holds,
+            "{resolution:?}"
         );
     }
 }

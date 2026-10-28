@@ -116,36 +116,44 @@ fn canonical_host_captures_each_execution_not_each_undo_step() {
     assert!(host.take_committed().is_none());
 }
 
+/// The queue bounds reports, not edits: past its capacity an edit still
+/// lands, reserves no report and records the gap once; reports resume as
+/// soon as replies release capacity.
 #[test]
-fn saturation_refuses_before_mutation_and_reply_restores_capacity() {
+fn saturation_bounds_reports_records_the_gap_and_reply_restores_capacity() {
     let queue = Queue::new();
     let _scope = queue.enter("snapshot".into());
     let _published = published();
     let mut doc = AutoCommit::new();
     let mut host = crate::action_host::ActionHost::new();
-    let mut accepted = 0;
-    for index in 0..CAPACITY {
-        if host
-            .try_dispatch(&mut doc, "put", &Put(index as u64))
-            .is_err()
-        {
+    // Every edit lands; the first one the queue has no room to report for
+    // is recorded as a gap.
+    let mut reported = 0;
+    loop {
+        let heads = doc.get_heads();
+        host.try_dispatch(&mut doc, "put", &Put(reported as u64))
+            .unwrap();
+        assert_ne!(doc.get_heads(), heads, "every edit lands");
+        if !queue.take_refusals().is_empty() {
             break;
         }
-        accepted += 1;
+        reported += 1;
+        assert!(reported <= CAPACITY, "the queue bounds its reports");
     }
-    assert!(accepted > 0);
-    let heads = doc.get_heads();
-    assert!(host.try_dispatch(&mut doc, "put", &Put(999)).is_err());
-    assert_eq!(doc.get_heads(), heads);
-    assert!(!queue.take_refusals().is_empty());
-    assert!(queue.take_refusals().is_empty());
+    assert!(reported > 0);
+    assert!(queue.take_refusals().is_empty(), "the gap is recorded once");
     let in_flight = queue.drain_leased();
-    assert_eq!(in_flight.len(), accepted);
-    assert!(host.try_dispatch(&mut doc, "put", &Put(999)).is_err());
-    assert_eq!(doc.get_heads(), heads);
-    drop(in_flight);
+    assert_eq!(in_flight.len(), reported, "no report beyond the bound");
     host.try_dispatch(&mut doc, "put", &Put(1000)).unwrap();
-    assert_eq!(queue.drain().len(), 1);
+    assert!(
+        queue.drain().is_empty(),
+        "still saturated while replies are out"
+    );
+    assert_eq!(queue.take_refusals().len(), 1);
+    drop(in_flight);
+    host.try_dispatch(&mut doc, "put", &Put(1001)).unwrap();
+    assert_eq!(queue.drain().len(), 1, "a reply restores capacity");
+    assert!(queue.take_refusals().is_empty());
 }
 
 #[test]
@@ -281,7 +289,6 @@ fn reservation_counts_transport_bytes_with_bounded_hash_allowance() {
         });
         let mut doc = AutoCommit::new();
         let mut host = crate::action_host::ActionHost::new();
-        // Include authenticated provenance in both capture identity and budget.
         let custody = runtime_collab::committed_document::ConnectionSnapshot {
             root: [1; 32],
             device: [2; 32],
@@ -373,14 +380,24 @@ fn reservation_accepts_exact_wire_limit_and_refuses_one_extra_byte() {
     }
 }
 
+/// A report is only ever made against a published surface the input
+/// pinned. With none pinned (every surface that may be held is held by
+/// changes on their way), the edit still lands, nothing is reported for
+/// it, and the gap is recorded for the person to see.
 #[test]
-fn input_without_any_pinned_directory_refuses_before_mutation() {
-    let _scope = enter_input(Vec::new());
+fn input_without_any_pinned_directory_reports_nothing_and_records_the_gap() {
+    let queue = Queue::new();
+    let _scope = queue.enter(String::new());
     let _invocation = published();
     let mut doc = AutoCommit::new();
     let mut host = crate::action_host::ActionHost::new();
-    assert!(host.try_dispatch(&mut doc, "put", &Put(1)).is_err());
-    assert!(doc.get_heads().is_empty());
+    host.try_dispatch(&mut doc, "put", &Put(1)).unwrap();
+    assert!(!doc.get_heads().is_empty(), "the edit lands");
+    assert!(
+        queue.drain().is_empty(),
+        "no report without a pinned surface"
+    );
+    assert_eq!(queue.take_refusals().len(), 1, "the gap is recorded");
 }
 
 #[test]

@@ -174,7 +174,7 @@ class MediumLayer(unittest.TestCase):
             for name in ('imager', 'tilo-installer', 'fs'):
                 (binaries / name).write_bytes(name.encode())
             calls = []
-            qualifier = SimpleNamespace(BINDINGS={'fs': '/usr/bin/fs', 'installer': '/usr/bin/tilo-installer'}, bound_file=Mock(),
+            qualifier = SimpleNamespace(BINDINGS={'fs': '/usr/bin/fs', 'installer': '/usr/libexec/tilo/tilo-installer'}, bound_file=Mock(),
                 admit_cohort=Mock(return_value={'roles': {
                     'fs': {'path': str(binaries / 'fs'), 'sha256': 'f' * 64},
                     'installer': {'path': str(binaries / 'tilo-installer'), 'sha256': 'a' * 64}}}),
@@ -189,7 +189,7 @@ class MediumLayer(unittest.TestCase):
                 elif command[:2] == ['podman', 'build']:
                     context = Path(command[-1])
                     self.assertEqual((context / 'rootfs/usr/bin/fs').read_bytes(), b'fs')
-                    self.assertEqual((context / 'rootfs/usr/bin/tilo-installer').read_bytes(), b'tilo-installer')
+                    self.assertEqual((context / 'rootfs/usr/libexec/tilo/tilo-installer').read_bytes(), b'tilo-installer')
                     self.assertIn('COPY rootfs/ /', (context / 'Containerfile').read_text())
 
             settings = {name: '/measured/' + name for name in (

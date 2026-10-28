@@ -12,10 +12,6 @@ use image::{
 };
 
 /// Encode `rgba` (`width * height * 4` bytes, row-major) as a PNG.
-///
-/// # Errors
-///
-/// Fails when the dimensions do not match the buffer length or are zero.
 pub fn encode_rgba8(width: u32, height: u32, rgba: &[u8]) -> ImageResult<Vec<u8>> {
     check_rgba8_len(width, height, rgba)?;
     let mut bytes = Vec::new();
@@ -30,10 +26,6 @@ pub fn encode_rgba8(width: u32, height: u32, rgba: &[u8]) -> ImageResult<Vec<u8>
 /// generic over the writer and dispatches over every format the `image`
 /// crate was built with, so each app calling it compiled every encoder into
 /// its own binary. This one is compiled once, in the shared runtime.
-///
-/// # Errors
-///
-/// Fails when the encoder refuses the image.
 pub fn encode_image(image: &DynamicImage) -> ImageResult<Vec<u8>> {
     let mut bytes = Vec::new();
     image.write_with_encoder(PngEncoder::new(&mut bytes))?;
@@ -96,22 +88,12 @@ pub struct Rgba8 {
 }
 
 /// Decode a PNG of any colour type and bit depth into 8-bit RGBA.
-///
-/// # Errors
-///
-/// Fails when `bytes` is not a complete PNG or exceeds the codec's default
-/// allocation limit.
 pub fn decode_rgba8(bytes: &[u8]) -> ImageResult<Rgba8> {
     decode_rgba8_within(bytes, u64::MAX)
 }
 
 /// Like [`decode_rgba8`], but rejects images with more than `max_pixels`
 /// pixels before decoding any image data.
-///
-/// # Errors
-///
-/// Fails when `bytes` is not a complete PNG or the header declares more than
-/// `max_pixels` pixels.
 pub fn decode_rgba8_within(bytes: &[u8], max_pixels: u64) -> ImageResult<Rgba8> {
     let decoder = PngDecoder::new(std::io::Cursor::new(bytes))?;
     let (width, height) = decoder.dimensions();
@@ -143,7 +125,6 @@ mod tests {
 
     #[test]
     fn png_codec_round_trips_rgba_adds_alpha_and_rejects_bad_buffers() {
-        // Case `rgba_round_trips_losslessly`.
         {
             let rgba = [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40];
             let png = encode_rgba8(2, 1, &rgba).expect("valid RGBA image");
@@ -157,7 +138,6 @@ mod tests {
             );
         }
 
-        // Case `mismatched_buffers_and_oversized_images_are_rejected`.
         {
             assert!(encode_rgba8(2, 1, &[0; 4]).is_err());
             let png = encode_rgba8(2, 2, &[0; 16]).expect("valid RGBA image");
@@ -166,7 +146,6 @@ mod tests {
             assert!(decode_rgba8(b"not a png").is_err());
         }
 
-        // Case `an_image_keeps_its_own_colour_type`.
         {
             let grey = DynamicImage::ImageLuma8(
                 image::GrayImage::from_raw(2, 1, vec![7, 200]).expect("2x1 grey pixels"),
@@ -181,7 +160,6 @@ mod tests {
             );
         }
 
-        // Case `rgb_sources_gain_opaque_alpha`.
         {
             let mut png = Vec::new();
             PngEncoder::new(&mut png)

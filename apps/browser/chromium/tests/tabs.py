@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Retained CEF tabs: routing, hidden painting, shared cookies and close isolation."""
 import os, http.server, json, queue, struct, subprocess, sys, tempfile, threading, time
+# How long a wait on the host may take before it counts as hung: the
+# shared hang bound (tools/tests/hang.py), so a loaded runner is not a failure.
+HANG_BOUND=float(os.environ.get('TILO_TEST_HANG_BOUND_SECS','120'))
 class Page(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         body = ("<title>"+self.path+"</title><body style='height:9000px'>"+
@@ -13,8 +16,10 @@ class Page(http.server.BaseHTTPRequestHandler):
 server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Page)
 threading.Thread(target=server.serve_forever,daemon=True).start()
 with tempfile.TemporaryDirectory(prefix='tilo-tabs-') as profile:
-    p=subprocess.Popen([sys.argv[1],'--profile='+profile],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=None if os.environ.get("TILO_TABS_DEBUG") else subprocess.DEVNULL)
+    log=None if os.environ.get("TILO_TABS_DEBUG") else tempfile.TemporaryFile()
+    p=subprocess.Popen([sys.argv[1],'--profile='+profile],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log)
     events=queue.Queue()
+    seen=[]
     def exact(n):
         data=b''
         while len(data)<n:
@@ -36,13 +41,15 @@ with tempfile.TemporaryDirectory(prefix='tilo-tabs-') as profile:
     threading.Thread(target=read,daemon=True).start()
     def send(**d):
         b=b'\1'+json.dumps(d).encode(); p.stdin.write(struct.pack('<I',len(b))+b); p.stdin.flush()
-    def until(predicate,timeout=60):
+    def until(predicate,timeout=HANG_BOUND):
         end=time.monotonic()+timeout
         while time.monotonic()<end:
-            e=events.get(timeout=max(.01,end-time.monotonic()))
-            if isinstance(e,Exception): raise e
+            try: e=events.get(timeout=max(.01,end-time.monotonic()))
+            except queue.Empty: break
+            if isinstance(e,Exception): raise AssertionError(f'{e!r}; the host exited with {p.poll()}; saw {seen[-20:]}')
+            if e['event']!='frame': seen.append(e)
             if predicate(e): return e
-        raise AssertionError('event timeout')
+        raise AssertionError(f'event timeout; saw {seen[-20:]}')
     base='http://127.0.0.1:'+str(server.server_port)
     try:
         until(lambda e:e['event']=='ready')
@@ -77,8 +84,11 @@ with tempfile.TemporaryDirectory(prefix='tilo-tabs-') as profile:
         until(lambda e:e['event']=='title' and e.get('tab')==2 and '/survives|shared=yes' in e['title'])
         send(op='back',tab=2)
         until(lambda e:e['event']=='title' and e.get('tab')==2 and '/two|shared=yes' in e['title'] and not e['title'].endswith('|0'))
-        send(op='shutdown'); assert p.wait(timeout=15)==0
+        send(op='shutdown'); assert p.wait(timeout=HANG_BOUND)==0
         print('PASS: real retained tabs, routed frames, shared cookies, scroll and close isolation')
     finally:
         if p.poll() is None: p.kill();p.wait()
+        if log:
+            log.seek(0); said=log.read().decode(errors='replace')
+            if said: print(said[-20000:])
 server.shutdown()

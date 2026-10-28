@@ -96,9 +96,18 @@ mkdir -p "$store"
 export TILO_APPS_DATA_DIR="$store"
 export TILO_RUNTIME_BUNDLE_DIR="$stage/usr/lib/tilo-runtime"
 export TILO_CLI_SHIM_PATH="$bin_dir/tilo-cli-shim"
-export TILO_LAUNCHER_PATH=/usr/bin/tilo-launcher
+export TILO_LAUNCHER_PATH=/usr/libexec/tilo/tilo-launcher
+# The collection carries the one runtime these apps were linked against. An app
+# may also pin an *optional* runtime it can do without -- the Browser's Chromium
+# engine, which the OS image builds in its chromium-engine context and this
+# package has no source for. tilo-install refuses a package whose optional
+# runtime is absent, because replacing an installed app without it would leave
+# the app saying "not installed"; here nothing is installed yet, and the engine
+# arrives the way the app expects it to, fetched from the registry on first use
+# (dist/dev/nested-session.sh installs the same collection the same way).
 for package in "$work"/tapp/*.tapp; do
-    "$bin_dir/tilo-install" install "$package" --allow-self-signed >/dev/null
+    "$bin_dir/tilo-install" install "$package" --allow-self-signed \
+        --ignore-missing-runtime >/dev/null
 done
 
 python3 - "$store/registry.toml" "$registry" "$store" "$final_app_root" <<'PY'

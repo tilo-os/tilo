@@ -35,10 +35,6 @@ pub trait LinuxGamepadDevice: Send {
     fn release_all(&mut self) -> io::Result<()>;
 
     /// Destroy the local virtual device. Implementations must be idempotent.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if explicit device destruction fails.
     fn destroy(&mut self) -> io::Result<()>;
 }
 
@@ -48,10 +44,6 @@ pub trait LinuxGamepadDeviceProvider: Send + Sync {
     type Device: LinuxGamepadDevice + 'static;
 
     /// Open a fixed-profile local virtual gamepad.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the backend is unavailable or setup fails.
     fn open_fixed_gamepad(&self) -> io::Result<Self::Device>;
 }
 
@@ -425,7 +417,6 @@ mod tests {
 
     #[test]
     fn virtual_gamepads_accept_only_typed_events_and_always_neutralize() {
-        // Phase `accepts_only_fixed_profile_and_typed_events`.
         {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let factory = mock_factory(&calls);
@@ -451,7 +442,6 @@ mod tests {
                 &[Call::Open, Call::Emit(event)]
             );
         }
-        // Phase `explicit_release_and_drop_always_neutralize_then_destroy`.
         {
             let calls = Arc::new(Mutex::new(Vec::new()));
             {
@@ -469,7 +459,6 @@ mod tests {
                 ]
             );
         }
-        // Phase `setup_failure_does_not_produce_a_partially_managed_device`.
         {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let factory = LinuxVirtualGamepadFactory::new(MockProvider {

@@ -48,7 +48,12 @@ if [ "$mode" = static ]; then
   has "$etc/system/user.slice.d/50-tilo-interactive.conf" CPUWeight=500
   has "$etc/system/user-.slice.d/50-tilo-interactive.conf" MemoryMin=256M
   has "$etc/system/fs.service.d/30-tilo-priority.conf" ManagedOOMPreference=avoid
-  has "$etc/oomd.conf.d/50-tilo.conf" SwapUsedLimitPercent=80%
+  has "$etc/oomd.conf.d/50-tilo.conf" SwapUsedLimit=80%
+  # systemd-oomd ignores a key it does not know with a warning in the journal,
+  # so a misspelt limit silently is no limit: only oomd.conf(5)'s keys.
+  unknown=$(grep -E '^[A-Za-z]+=' "$etc/oomd.conf.d/50-tilo.conf" | cut -d= -f1 \
+    | grep -vxE 'SwapUsedLimit|DefaultMemoryPressureLimit|DefaultMemoryPressureDurationSec' || true)
+  [ -z "$unknown" ] || bad "oomd.conf.d/50-tilo.conf: keys systemd-oomd does not know: $unknown"
   # The kernel's OOM killer never chooses the session (the compositor greetd
   # starts inherits it); apps leave it before they start.
   has "$etc/system/greetd.service.d/50-tilo-oom.conf" OOMScoreAdjust=-1000
@@ -131,7 +136,7 @@ else
       *) bad "$(basename "$dev") scheduler is not bfq: $sched" ;; esac
   done
   systemctl is-active --quiet systemd-oomd && ok 'systemd-oomd active' || bad 'systemd-oomd inactive'
-  grep -q 'SwapUsedLimitPercent=80%' /etc/systemd/oomd.conf.d/50-tilo.conf 2>/dev/null \
+  grep -q 'SwapUsedLimit=80%' /etc/systemd/oomd.conf.d/50-tilo.conf 2>/dev/null \
     && ok 'oomd policy installed' || bad 'oomd policy missing'
 fi
 exit "$fail"

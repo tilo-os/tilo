@@ -548,11 +548,6 @@ mod tests {
         assert!((system.some_avg10 - 1.0).abs() < f64::EPSILON, "{system:?}");
     }
 
-    // USER REQUIREMENT (2026-10-19): "failures are bugs: disk full/OOM
-    // crashing or blocking login is a bug to fix, never normal". Against a
-    // fake PSI source: rising pressure reclaims from the background app,
-    // critical pressure that stays ends the runaway job, and the focused
-    // app and the session are never touched.
     #[test]
     fn the_watch_reclaims_then_ends_the_runaway_against_a_fake_psi_source() {
         let fake = FakeTree::new();

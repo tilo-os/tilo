@@ -15,7 +15,7 @@ pub const MAX_IMPORT_BYTES: u64 = 8 * 1024 * 1024;
 pub const MAX_ROWS: usize = 10_000;
 pub const MAX_FIELDS: usize = 32;
 pub const MAX_FIELD_BYTES: usize = 16 * 1024;
-const MAX_BACKUP_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_BACKUP_BYTES: usize = 64 * 1024 * 1024;
 const BACKUP_MAGIC: &[u8] = b"TILOPWBACKUP";
 /// The magic, this byte, then a `tilo-seal` password envelope
 /// that records its Argon2id parameters and salt.
@@ -69,6 +69,84 @@ pub fn restore_request() -> ui::portal::PickRequest {
                 .glob("*.tilopw"),
         )
         .all_files()
+}
+
+/// A file being chosen to read. Where files have paths the host hands over
+/// an open descriptor, so the app reads only the file the person chose;
+/// where they have none (a browser page) it hands over the contents.
+pub enum Choosing {
+    File(ui::portal::OpenFileChannel),
+    Contents(ui::portal::ContentsChannel),
+}
+
+/// What a [`Choosing`] answered.
+pub enum Chosen {
+    Opened(Box<dyn Read + Send>),
+    Cancelled,
+    Failed(String),
+}
+
+impl Choosing {
+    /// Open `request`'s chooser the way this host can answer it, reading at
+    /// most `limit` bytes of contents.
+    pub fn send(request: ui::portal::PickRequest, limit: usize) -> Self {
+        if tilo_files::available(tilo_files::Feature::NativePaths) {
+            Self::File(request.send_open_file())
+        } else {
+            Self::Contents(request.max_contents_bytes(limit).send_contents())
+        }
+    }
+
+    /// The answer, once there is one.
+    pub fn try_recv(&self) -> Result<Chosen, std::sync::mpsc::TryRecvError> {
+        use ui::portal::{ContentsOutcome, OpenFileOutcome};
+        match self {
+            Self::File(rx) => rx.try_recv().map(|outcome| match outcome {
+                OpenFileOutcome::Opened(opened) => Chosen::Opened(Box::new(opened.into_file())),
+                OpenFileOutcome::Cancelled => Chosen::Cancelled,
+                OpenFileOutcome::Failed(error) => Chosen::Failed(error),
+            }),
+            Self::Contents(rx) => rx.try_recv().map(|outcome| match outcome {
+                ContentsOutcome::Picked(files) => match files.into_iter().next() {
+                    Some(file) => Chosen::Opened(Box::new(std::io::Cursor::new(file.bytes))),
+                    None => Chosen::Cancelled,
+                },
+                ContentsOutcome::Cancelled => Chosen::Cancelled,
+                ContentsOutcome::Failed(error) => Chosen::Failed(error),
+            }),
+        }
+    }
+}
+
+/// A file being saved where the person chooses. Where files have paths the
+/// chosen path is written privately (readable by its owner only) once
+/// answered; elsewhere (a browser page) the host takes the bytes, made
+/// before asking, and keeps them where the person chose or downloads them.
+pub enum Saving {
+    Path(ui::portal::PortalChannel),
+    /// The bytes handed over, and how many items they hold.
+    Contents(ui::portal::SaveChannel, usize),
+}
+
+impl Saving {
+    /// Open `request`'s Save chooser; `bytes` makes what is saved, with how
+    /// many items it holds, for a host that takes the bytes up front.
+    ///
+    /// # Errors
+    /// Making the bytes failed.
+    pub fn send(
+        request: ui::portal::PickRequest,
+        bytes: impl FnOnce() -> Result<(Zeroizing<Vec<u8>>, usize), String>,
+    ) -> Result<Self, String> {
+        if tilo_files::available(tilo_files::Feature::NativePaths) {
+            return Ok(Self::Path(request.send()));
+        }
+        let (bytes, count) = bytes()?;
+        Ok(Self::Contents(
+            request.send_save_contents(bytes.to_vec()),
+            count,
+        ))
+    }
 }
 
 pub fn read_encrypted_backup(mut reader: impl Read) -> Result<Zeroizing<Vec<u8>>, String> {
@@ -289,7 +367,7 @@ pub fn import_encrypted_backup(backup: &[u8], passphrase: &str) -> Result<Vec<Se
         BACKUP_V2 => open_v2_backup(body, passphrase)?,
         _ => return Err("This Passwords backup uses an unsupported version".into()),
     };
-    let items = serde_json::from_slice::<Vec<SecretItem>>(&plaintext)
+    let items = SecretItem::list_from_json(&plaintext)
         .map_err(|_| "The decrypted backup is not a valid vault".to_string())?;
     if items.len() > MAX_ROWS {
         return Err("The backup contains more than 10,000 items".into());

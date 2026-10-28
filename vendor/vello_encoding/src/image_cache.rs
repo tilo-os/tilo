@@ -21,6 +21,9 @@ const SHRINK_SOON_RESOLVES: u32 = 16;
 /// so the halved atlas is at most half full and the next frame's
 /// replacement images still fit without growing straight back.
 const SHRINK_WHEN_AREA_AT_MOST_ONE_IN: u64 = 8;
+/// Deltas followed back from an image to one the atlas holds (Tilo patch):
+/// a renderer that missed a few frames still takes over the slot.
+const MAX_DELTA_CHAIN: usize = 4;
 
 /// What the image cache holds, for memory diagnostics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -59,6 +62,9 @@ pub struct Images<'a> {
     pub omitted_total: u64,
     /// Images that must be uploaded in the current resolve pass, with atlas locations.
     pub images: &'a [(ImageData, u32, u32)],
+    /// Rects of images that must be uploaded in the current resolve pass
+    /// (Tilo patch): the image, its atlas location, and the rect of it.
+    pub regions: &'a [(ImageData, u32, u32, crate::ImageRect)],
 }
 
 #[derive(Clone)]
@@ -102,6 +108,8 @@ pub(crate) struct ImageCache {
     map: HashMap<u64, ResidentImage>,
     /// Images that must be uploaded in the current resolve pass, with atlas locations.
     images: Vec<(ImageData, u32, u32)>,
+    /// Rects of images that took over an earlier image's slot this pass.
+    regions: Vec<(ImageData, u32, u32, crate::ImageRect)>,
 }
 
 impl Default for ImageCache {
@@ -130,6 +138,7 @@ impl ImageCache {
             omitted_total: 0,
             map: HashMap::default(),
             images: Vec::default(),
+            regions: Vec::default(),
         }
     }
 
@@ -162,6 +171,7 @@ impl ImageCache {
         self.evicted_in_resolve = 0;
         self.omitted_in_resolve = 0;
         self.images.clear();
+        self.regions.clear();
         // Halve here, before this pass looks anything up: every position this
         // pass hands out is then one in the halved atlas. Halving in
         // `finish_resolve` would move images the pass just encoded.
@@ -204,6 +214,7 @@ impl ImageCache {
 
     pub(crate) fn restart_resolve_pass(&mut self) {
         self.images.clear();
+        self.regions.clear();
         let previous_generation = self.generation.wrapping_sub(1);
         for resident in self.map.values_mut() {
             if resident.last_used_generation == self.generation {
@@ -220,6 +231,7 @@ impl ImageCache {
             omitted: self.omitted_in_resolve,
             omitted_total: self.omitted_total,
             images: &self.images,
+            regions: &self.regions,
         }
     }
 
@@ -228,6 +240,7 @@ impl ImageCache {
         while new_size <= self.max_size {
             if self.repack_to_size(new_size) {
                 self.images.clear();
+                self.regions.clear();
                 return true;
             }
             new_size *= 2;
@@ -236,6 +249,11 @@ impl ImageCache {
     }
 
     pub(crate) fn get_or_insert(&mut self, image: &ImageData) -> Option<(u32, u32)> {
+        if !self.map.contains_key(&image.data.id())
+            && let Some(xy) = self.take_over(image)
+        {
+            return Some(xy);
+        }
         match self.map.entry(image.data.id()) {
             Entry::Occupied(mut occupied) => {
                 let resident = occupied.get_mut();
@@ -268,6 +286,54 @@ impl ImageCache {
                 Some((x, y))
             }
         }
+    }
+
+    /// Give `image` the slot of the image it changes a few rects of
+    /// ([`crate::register_image_delta`]), if the atlas holds that image
+    /// as it was uploaded and this pass has not drawn it, and upload only
+    /// those rects (Tilo patch).
+    fn take_over(&mut self, image: &ImageData) -> Option<(u32, u32)> {
+        let mut rects = Vec::new();
+        let mut id = image.data.id();
+        for _ in 0..MAX_DELTA_CHAIN {
+            let (from, changed) = crate::image_delta::image_delta(id)?;
+            rects.extend_from_slice(&changed);
+            let Some(resident) = self.map.get(&from) else {
+                id = from;
+                continue;
+            };
+            if resident.dirty
+                || resident.last_used_generation == self.generation
+                || resident.image.width != image.width
+                || resident.image.height != image.height
+                || resident.image.format != image.format
+                || resident.image.alpha_type != image.alpha_type
+            {
+                return None;
+            }
+            let mut resident = self.map.remove(&from)?;
+            let (x, y) = (resident.x, resident.y);
+            for rect in rects {
+                let [rx, ry, width, height] = rect;
+                if width == 0
+                    || height == 0
+                    || rx >= image.width
+                    || ry >= image.height
+                    || width > image.width - rx
+                    || height > image.height - ry
+                {
+                    continue;
+                }
+                self.regions.push((image.clone(), x, y, rect));
+            }
+            resident.image = image.clone();
+            resident.last_used_generation = self.generation;
+            // A pass that restarts repacks the atlas and uploads it whole.
+            resident.dirty = true;
+            self.map.insert(image.data.id(), resident);
+            return Some((x, y));
+        }
+        None
     }
 
     /// End a resolve pass: release what the last few passes stopped drawing,
@@ -440,6 +506,56 @@ mod tests {
         cache.begin_resolve();
         assert_eq!(cache.images().omitted, 0);
         assert_eq!(cache.images().omitted_total, 2);
+    }
+
+    #[test]
+    fn an_image_that_changed_a_rect_takes_over_the_slot_and_uploads_the_rect() {
+        let mut cache = ImageCache::new_with_sizes(64, 64);
+        let first = image(1, 16, 16);
+        cache.begin_resolve();
+        let xy = cache.get_or_insert(&first).unwrap();
+        cache.finish_resolve();
+
+        // A caret's rect changed: the new image takes the slot, and only
+        // the rect is uploaded.
+        let second = image(2, 16, 16);
+        crate::register_image_delta(first.data.id(), second.data.id(), &[[3, 4, 2, 5]]);
+        cache.begin_resolve();
+        assert_eq!(cache.get_or_insert(&second), Some(xy));
+        assert!(cache.images.is_empty(), "nothing is uploaded whole");
+        assert_eq!(cache.regions.len(), 1, "one rect is uploaded");
+        let (uploaded, x, y, rect) = &cache.regions[0];
+        assert_eq!(uploaded.data.id(), second.data.id(), "from the new image");
+        assert_eq!(((*x, *y), *rect), (xy, [3, 4, 2, 5]), "into its slot");
+        assert!(
+            !cache.map.contains_key(&first.data.id()),
+            "the slot changed hands"
+        );
+        cache.finish_resolve();
+
+        // A renderer that missed a frame follows the deltas back to the
+        // image it holds.
+        let third = image(3, 16, 16);
+        let fourth = image(4, 16, 16);
+        crate::register_image_delta(second.data.id(), third.data.id(), &[[0, 0, 1, 1]]);
+        crate::register_image_delta(third.data.id(), fourth.data.id(), &[[8, 8, 2, 2]]);
+        cache.begin_resolve();
+        assert_eq!(cache.get_or_insert(&fourth), Some(xy));
+        let rects: Vec<_> = cache.regions.iter().map(|region| region.3).collect();
+        assert_eq!(rects, [[8, 8, 2, 2], [0, 0, 1, 1]], "both changes");
+        cache.finish_resolve();
+
+        // An image this pass draws keeps its slot: the next is uploaded
+        // whole, as is an image the atlas has no earlier image of.
+        let fifth = image(5, 16, 16);
+        crate::register_image_delta(fourth.data.id(), fifth.data.id(), &[[0, 0, 1, 1]]);
+        cache.begin_resolve();
+        assert_eq!(cache.get_or_insert(&fourth), Some(xy));
+        assert_ne!(cache.get_or_insert(&fifth), Some(xy), "a slot of its own");
+        let unrelated = image(6, 16, 16);
+        cache.get_or_insert(&unrelated);
+        assert!(cache.regions.is_empty(), "no rect uploads");
+        assert_eq!(cache.images.len(), 2, "both uploaded whole");
     }
 
     #[test]

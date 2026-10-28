@@ -76,6 +76,8 @@ pub(super) struct NativeAirDropTransfer {
     enabled: bool,
     jobs: Arc<Mutex<HashMap<[u8; 16], Job>>>,
     active: Arc<AtomicBool>,
+    /// How long one helper process may run, interpreter start included.
+    process_timeout: Duration,
 }
 
 impl NativeAirDropTransfer {
@@ -103,7 +105,16 @@ impl NativeAirDropTransfer {
             enabled,
             jobs: Arc::default(),
             active: Arc::default(),
+            process_timeout: PROCESS_TIMEOUT,
         }
+    }
+
+    /// Give each helper `limit` instead of [`PROCESS_TIMEOUT`]: a loaded test
+    /// runner can take longer than that just to start the interpreter.
+    #[cfg(test)]
+    fn with_process_timeout(mut self, limit: Duration) -> Self {
+        self.process_timeout = limit;
+        self
     }
 
     pub(super) fn available(&self) -> bool {
@@ -221,11 +232,17 @@ impl NativeAirDropTransfer {
     ) -> Result<(), String> {
         let identity = source.metadata()?;
         let still_admitted = || self.admitted(request, cancel, &identity);
-        let staged = StagedFile::new(source, &still_admitted)?;
+        let staged = StagedFile::new(source, &still_admitted, self.process_timeout)?;
         if !still_admitted() {
             return Err(error("airdrop-error-unavailable"));
         }
-        let observed = helper(request, &staged, None, &still_admitted)?;
+        let observed = helper(
+            request,
+            &staged,
+            None,
+            &still_admitted,
+            self.process_timeout,
+        )?;
         let observed = observed
             .get("certificate_sha256")
             .and_then(serde_json::Value::as_str)
@@ -284,6 +301,7 @@ impl NativeAirDropTransfer {
             &staged,
             Some(&hex::encode(observed)),
             &still_admitted,
+            self.process_timeout,
         )?;
         if reply.get("bytes").and_then(serde_json::Value::as_u64) != Some(staged.bytes)
             || reply
@@ -398,7 +416,11 @@ struct StagedFile {
 }
 
 impl StagedFile {
-    fn new(source: SecureNearbySource, admitted: &impl Fn() -> bool) -> Result<Self, String> {
+    fn new(
+        source: SecureNearbySource,
+        admitted: &impl Fn() -> bool,
+        limit: Duration,
+    ) -> Result<Self, String> {
         let before = source.metadata()?;
         let name = source.name().to_owned();
         if !before.is_file() || before.len() > MAX_BYTES {
@@ -434,7 +456,7 @@ impl StagedFile {
             Some(input.as_raw_fd()),
             Some(writable.as_raw_fd()),
         );
-        let reply = supervise(command, admitted)?;
+        let reply = supervise(command, admitted, limit)?;
         let seals =
             libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
         // SAFETY: fcntl operates only on our anonymous staging descriptor.
@@ -476,6 +498,7 @@ fn helper(
     source: &StagedFile,
     certificate: Option<&str>,
     admitted: &impl Fn() -> bool,
+    limit: Duration,
 ) -> Result<serde_json::Value, String> {
     let mut command = command_base(SENDER);
     command.args([&request.address, &request.port.to_string()]);
@@ -494,7 +517,7 @@ fn helper(
         command.arg("inspect");
         inherit_descriptors(&mut command, None, None);
     }
-    supervise(command, admitted)
+    supervise(command, admitted, limit)
 }
 
 fn command_base(script: &str) -> Command {
@@ -560,9 +583,11 @@ fn inherit_descriptors(command: &mut Command, source: Option<i32>, staging: Opti
     }
 }
 
+/// Run `command` while `admitted` holds, for at most `limit`.
 fn supervise(
     mut command: Command,
     admitted: &impl Fn() -> bool,
+    limit: Duration,
 ) -> Result<serde_json::Value, String> {
     if !admitted() {
         return Err(error("airdrop-error-unavailable"));
@@ -570,10 +595,17 @@ fn supervise(
     let mut child = command.spawn().map_err(|_| error("airdrop-error-failed"))?;
     let started = Instant::now();
     let result = loop {
-        if !admitted() || started.elapsed() >= PROCESS_TIMEOUT {
+        let withdrawn = !admitted();
+        if withdrawn || started.elapsed() >= limit {
             let _ = child.kill();
             let _ = child.wait();
-            break Err(error("airdrop-error-unavailable"));
+            // A helper that ran out of time failed; only a withdrawn
+            // admission is the session, permission or Files access.
+            break Err(error(if withdrawn {
+                "airdrop-error-unavailable"
+            } else {
+                "airdrop-error-failed"
+            }));
         }
         match child.try_wait() {
             Ok(Some(status)) => {

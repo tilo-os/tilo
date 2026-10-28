@@ -69,7 +69,6 @@ impl PanelBindings for Bindings {
 pub(super) struct ProviderSurface {
     pub(super) panel: ProviderPanel<Bindings>,
     composed: Composed,
-    revision: u64,
     offset: Rc<std::cell::Cell<(f32, f32)>>,
 }
 impl Default for ProviderSurface {
@@ -81,7 +80,6 @@ impl Default for ProviderSurface {
                 ProviderConfig::default(),
             ),
             composed: Composed::default(),
-            revision: 0,
             offset: Rc::default(),
         }
     }
@@ -90,10 +88,7 @@ impl Widget for ProviderSurface {
     ui::forward_to_composed!(composed);
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.panel.poll_admin();
-        if std::mem::take(&mut self.panel.changed)
-            || self.revision != ui::i18n::I18nManager::revision()
-        {
-            self.composed.clear();
+        if std::mem::take(&mut self.panel.changed) {
             self.composed.invalidate();
         }
         self.composed.sync(state, path);
@@ -104,22 +99,35 @@ impl Widget for ProviderSurface {
         theme: &ui::theme::Theme,
         node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        let composition = self.composed.take().unwrap_or_else(|| {
-            Box::new(
-                self.panel
-                    .sections()
-                    .into_iter()
-                    .fold(ui::widget::Page::new(), |page, section| {
-                        page.section(Box::new(section.into_section()))
-                    })
-                    .with_semantic_key("model-provider-administration")
-                    .with_persisted_offset(Rc::clone(&self.offset)),
-            )
-        });
-        self.revision = ui::i18n::I18nManager::revision();
-        let child = self
-            .composed
-            .build_layout(composition, taffy, theme, node_map);
+        let panel = &self.panel;
+        let offset = &self.offset;
+        let child = self.composed.build_layout_kept(
+            || -> Box<dyn Widget> {
+                if panel.administered_elsewhere() {
+                    return Box::new(
+                        ui::widget::EmptyState::new(crate::i18n::t(
+                            "agent-provider-admin-only-title",
+                        ))
+                        .with_icon(ui::icons::Icon::Lock)
+                        .with_message(crate::i18n::t("agent-provider-admin-only-message"))
+                        .with_id("model-provider-administration"),
+                    );
+                }
+                Box::new(
+                    panel
+                        .sections()
+                        .into_iter()
+                        .fold(ui::widget::Page::new(), |page, section| {
+                            page.section(Box::new(section.into_section()))
+                        })
+                        .with_semantic_key("model-provider-administration")
+                        .with_persisted_offset(Rc::clone(offset)),
+                )
+            },
+            taffy,
+            theme,
+            node_map,
+        );
         let style = taffy::Style {
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),

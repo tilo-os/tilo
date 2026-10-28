@@ -61,7 +61,7 @@ impl ShortcutCategory {
 
 impl ShortcutAction {
     /// Every rebindable desktop action, in the order it is listed.
-    pub const ALL: [Self; 63] = [
+    pub const ALL: [Self; 64] = [
         Self::Search,
         Self::WorkspaceOverview,
         Self::Lock,
@@ -122,6 +122,7 @@ impl ShortcutAction {
         Self::EmojiPicker,
         Self::AskAgent,
         Self::SaySomething,
+        Self::ReportProblem,
         Self::DictationToggle,
         Self::DictationFinish,
         Self::DictationCancel,
@@ -191,6 +192,7 @@ impl ShortcutAction {
             Self::EmojiPicker => "emoji-picker",
             Self::AskAgent => "ask-agent",
             Self::SaySomething => "say-something",
+            Self::ReportProblem => "report-problem",
             Self::DictationToggle => "dictation-toggle",
             Self::DictationFinish => "dictation-finish",
             Self::DictationCancel => "dictation-cancel",
@@ -209,6 +211,56 @@ impl ShortcutAction {
         format!("shortcut-name-{}", self.id())
     }
 
+    /// The action that does what this shortcut does, as the provider that
+    /// publishes it and its id within that provider, when the shell
+    /// publishes one.
+    ///
+    /// This is the one table a chord and an action share: the overlay host
+    /// runs a chord by running this action, so a key, a palette click and an
+    /// agent's invocation cannot drift into three behaviours, and the
+    /// shortcut guide, Settings and the palette name the action beside the
+    /// chord. A shortcut whose action the shell does not publish yet is
+    /// `None`, and its chord runs the shell's own implementation.
+    #[must_use]
+    pub const fn action(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Self::WorkspaceOverview => Some(("actions", "overview.toggle")),
+            Self::Lock => Some(("session", "lock")),
+            Self::QuickSettings => Some(("actions", "quick-settings.open")),
+            Self::ShortcutHelp => Some(("actions", "shortcut-help.toggle")),
+            Self::PreviousTab => Some(("actions", "tab.previous")),
+            Self::NextTab => Some(("actions", "tab.next")),
+            Self::TabMenu => Some(("actions", "tab.menu")),
+            Self::ReopenClosedTab => Some(("actions", "tab.reopen")),
+            Self::PreviousStrip => Some(("actions", "strip.focus-previous")),
+            Self::NextStrip => Some(("actions", "strip.focus-next")),
+            Self::PreviousWorkspace => Some(("actions", "workspace.previous")),
+            Self::NextWorkspace => Some(("actions", "workspace.next")),
+            Self::ToggleMaximize => Some(("actions", "group.toggle-maximize")),
+            Self::MaximizeWindow => Some(("actions", "group.maximize")),
+            Self::RestoreWindow => Some(("actions", "group.restore")),
+            Self::MoveGroupLeft => Some(("actions", "group.move-left")),
+            Self::MoveGroupRight => Some(("actions", "group.move-right")),
+            Self::MoveGroupToPreviousStrip => Some(("actions", "group.move-to-strip-previous")),
+            Self::MoveGroupToNextStrip => Some(("actions", "group.move-to-strip-next")),
+            Self::MoveGroupToPreviousDisplay => Some(("actions", "group.move-to-display-previous")),
+            Self::MoveGroupToNextDisplay => Some(("actions", "group.move-to-display-next")),
+            Self::ResizeNarrower => Some(("actions", "group.narrower")),
+            Self::ResizeWider => Some(("actions", "group.wider")),
+            Self::OpenTerminal => Some(("actions", "window.new.terminal")),
+            Self::ClipboardHistory => Some(("actions", "quick-settings.clipboard")),
+            Self::Notifications => Some(("actions", "notifications.open")),
+            Self::ToggleFullscreen => Some(("actions", "group.fullscreen")),
+            Self::ToggleMagnifier => Some(("actions", "magnifier.toggle")),
+            Self::MagnifierZoomIn => Some(("actions", "magnifier.zoom-in")),
+            Self::MagnifierZoomOut => Some(("actions", "magnifier.zoom-out")),
+            Self::EmojiPicker => Some(("actions", "emoji.picker")),
+            Self::NextInputSource => Some(("actions", "input.source.next")),
+            Self::ReportProblem => Some(("actions", "feedback.point")),
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub const fn category(self) -> ShortcutCategory {
         match self {
@@ -223,7 +275,8 @@ impl ShortcutAction {
             | Self::NextInputSource
             | Self::EmojiPicker
             | Self::AskAgent
-            | Self::SaySomething => ShortcutCategory::System,
+            | Self::SaySomething
+            | Self::ReportProblem => ShortcutCategory::System,
             Self::FocusPreviousWindow
             | Self::FocusNextWindow
             | Self::PreviousTab
@@ -319,7 +372,6 @@ impl FixedShortcut {
         self.keys.iter().map(|key| key.chord()).collect()
     }
 
-    /// Whether `chord` is one of this shortcut's.
     #[must_use]
     pub fn owns(&self, chord: &KeyChord) -> bool {
         self.keys.iter().any(|key| key.chord() == *chord)
@@ -461,6 +513,14 @@ pub static FIXED_SHORTCUTS: &[FixedShortcut] = &[
         ShortcutCategory::Accessibility,
         &[key(&["Alt", "Shift"], "numlock")],
     ),
+    // The chord every screen answers, before sign-in too
+    // (`ui::screen_reader_chord`); the one Windows uses.
+    fixed(
+        "fixed-toggle-screen-reader",
+        "shortcut-toggle-screen-reader",
+        ShortcutCategory::Accessibility,
+        &[key(&["Ctrl", "Super"], "enter")],
+    ),
 ];
 
 /// Chords the desktop keeps for itself only in some states, so they are
@@ -506,6 +566,17 @@ pub fn desktop_owner(chord: &KeyChord) -> Option<&'static FixedShortcut> {
         .iter()
         .chain(RESERVED_SHORTCUTS)
         .find(|fixed| fixed.owns(chord))
+}
+
+impl ShortcutConfig {
+    /// Whether the desktop answers `chord` before a stored binding of
+    /// `action` to it: a chord fixed since the binding was saved
+    /// (Ctrl+Super+Enter turns the screen reader on and off), other than
+    /// the action's own default in `self`, the default table. Such a
+    /// binding would never run.
+    pub(crate) fn shadows(&self, action: ShortcutAction, chord: &KeyChord) -> bool {
+        self.bindings.get(&action) != Some(chord) && desktop_owner(chord).is_some()
+    }
 }
 
 /// One row of the catalogue.
@@ -742,6 +813,32 @@ mod tests {
             Err(ShortcutConfigError::Fixed("fixed-close-tab"))
         );
         assert_eq!(config, before);
+    }
+
+    #[test]
+    fn the_screen_reader_chord_is_fixed_and_wins_over_a_stored_binding() {
+        let chord = chord("Ctrl+Super+Enter");
+        assert_eq!(
+            desktop_owner(&chord).map(|fixed| fixed.id),
+            Some("fixed-toggle-screen-reader")
+        );
+        let mut config = ShortcutConfig::default();
+        assert_eq!(
+            config.set(ShortcutAction::OpenFiles, chord.clone()),
+            Err(ShortcutConfigError::Fixed("fixed-toggle-screen-reader"))
+        );
+        // One saved before the desktop fixed it never runs; the action
+        // keeps its default instead of a dead chord.
+        let mut stored = ShortcutConfig::default();
+        stored.bindings.insert(ShortcutAction::OpenFiles, chord);
+        assert_eq!(
+            ShortcutConfig::normalise(stored)
+                .bindings
+                .get(&ShortcutAction::OpenFiles),
+            ShortcutConfig::default()
+                .bindings
+                .get(&ShortcutAction::OpenFiles)
+        );
     }
 
     #[test]

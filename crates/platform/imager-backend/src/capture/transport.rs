@@ -61,8 +61,6 @@ impl HostChannel {
     pub fn original_peer(&self) -> super::process::OriginalCaller {
         super::process::OriginalCaller::authenticated(self.peer.clone())
     }
-    /// # Errors
-    /// Returns `BrokenPipe` if the authenticated original caller is no longer current.
     pub fn validate_peer(&self) -> io::Result<()> {
         if self.peer.current() {
             Ok(())
@@ -105,8 +103,6 @@ impl HostChannel {
         })
     }
 
-    /// # Errors
-    /// Fails on transport errors, an unexpected acknowledgment, or an expired peer.
     pub fn send(&mut self, tag: u8, file: &File) -> io::Result<()> {
         if !self.peer.current() {
             return Err(failure("capture host exited"));
@@ -162,8 +158,6 @@ impl HostChannel {
         self.stream.write_all(frame)
     }
 
-    /// # Errors
-    /// Propagates authentication errors and rejects an original caller that exits.
     pub fn authenticate_as_root(&mut self) -> io::Result<()> {
         process_binding::complete(&mut self.stream)?;
         if !self.peer.current() {
@@ -198,9 +192,6 @@ impl HostChannel {
         Ok(file)
     }
 
-    /// # Errors
-    /// Propagates mounted-input validation errors and rejects a directory not owned
-    /// by the authenticated original caller.
     pub fn receive_retained_home(&mut self) -> io::Result<RetainedHomeInput> {
         let file = self.receive_mounted_input(4, true)?;
         if file.metadata()?.uid() != self.peer.uid() {
@@ -234,9 +225,6 @@ pub struct WorkerChannel {
     root: Option<process_binding::ExecutingPeer>,
 }
 impl WorkerChannel {
-    /// # Errors
-    /// Rejects a non-root socket peer or invalid credential record and propagates
-    /// credential lookup, authentication and socket-configuration errors.
     pub fn authenticate(mut stream: UnixStream) -> io::Result<Self> {
         let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
         let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>())

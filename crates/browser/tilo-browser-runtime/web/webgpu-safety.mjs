@@ -73,22 +73,40 @@ const NO_ADAPTER = Object.freeze({
   ],
 });
 
+/** How long the page waits for the browser's adapter answer before it
+ * goes on without one. A busy GPU process (several pages starting, a
+ * software rasteriser compiling another page's pipelines) answers late, and
+ * one that never answers left the page on "Loading Tilo…" for good. */
+export const ADAPTER_ANSWER_MS = 10_000;
+const LATE = Symbol('late');
+
 /**
  * Why this browser cannot draw Tilo, or `undefined` when it can:
  * `{reason, steps}`, the steps saying how to turn WebGPU on here. The desktop
  * renders with Vello's WebGPU compute pipeline and has no CPU or WebGL
  * fallback, so this asks for an adapter as the renderer will, before the page
  * takes a seat, or takes the one the page asked for first
- * (`__tiloAdapter`). Never throws.
+ * (`__tiloAdapter`). An answer later than `answerMs` counts as available.
+ * Never throws.
  */
-export async function rendererUnavailable(env = globalThis) {
+export async function rendererUnavailable(env = globalThis, {answerMs = ADAPTER_ANSWER_MS} = {}) {
   const refusal = webgpuRefusal(env);
   if (refusal) return {reason: refusal, steps: []};
   const navigator = env.navigator ?? {};
   const family = browserFamily(navigator);
   if (!navigator.gpu) return {reason: 'Tilo draws with WebGPU, which is turned off in this browser.', steps: ENABLE[family]};
   let adapter = null;
-  try { adapter = await (env.__tiloAdapter ?? navigator.gpu.requestAdapter()); } catch { /* Same as no adapter. */ }
+  let timer;
+  // An answer that does not come is no refusal: the page goes on, and the
+  // renderer asks again and says how its own start goes.
+  const late = new Promise(resolve => { timer = setTimeout(() => resolve(LATE), answerMs); });
+  try {
+    adapter = await Promise.race([env.__tiloAdapter ?? navigator.gpu.requestAdapter(), late]);
+  } catch { /* Same as no adapter. */ } finally { clearTimeout(timer); }
+  if (adapter === LATE) {
+    console.warn(`WebGPU: no adapter answer after ${answerMs / 1000} s; going on`);
+    return undefined;
+  }
   if (!adapter) {
     return {
       reason: 'Tilo draws with WebGPU. This browser has it, but offered this page no graphics adapter.',

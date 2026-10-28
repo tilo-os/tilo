@@ -8,6 +8,11 @@
 # right word for a terminal session, not for the power menu).
 
 [[term]]
+reason = "Everything done on someone's behalf is done in a task, so a person or an app is named through the task it worked in; an agent is not a second actor beside it."
+en = { use = "task", avoid = ["agent", "agents"], keys = "^history-(?:actor|work)" }
+de = { use = "Aufgabe", avoid = ["Agent", "Agenten"], keys = "^history-(?:actor|work)" }
+
+[[term]]
 reason = "The secret that unlocks an account is the same on the greeter, the lock screen, Settings and onboarding."
 en = { use = "Password", avoid = ["Passcode", "Passcodes", "pass code"] }
 de = { use = "Passwort", avoid = ["Passcode", "Kenncode", "Zugangscode"] }
@@ -26,3 +31,17 @@ de = { use = "Abmelden", avoid = ["verlassen"], keys = "^(?:power-|qs-tile-power
 reason = "The F1 sheet that lists the desktop's keys has one name, so searching for it finds it."
 en = { use = "Keyboard shortcuts", avoid = ["Keyboard guide", "Desktop help", "keyboard and mouse guide", "shortcut guide", "Keyboard map"] }
 de = { use = "Tastenkürzel", avoid = ["Tastaturhilfe", "Desktop-Hilfe", "Tastatur- und Mausübersicht", "Tastaturübersicht"] }
+
+[[term]]
+reason = "The display the desktop's panel and new windows start on is the main display in Settings, the arrangement and screen capture alike; \"primary\" is kept for mouse buttons."
+en = { use = "Main display", avoid = ["Primary display", "primary"], keys = "^(?:display-|portal-capture-.*display)" }
+de = { use = "Hauptbildschirm", avoid = ["Primärbildschirm", "primär"], keys = "^(?:display-|portal-capture-.*display)" }
+
+[[term]]
+reason = "The warm evening colour is one setting, in Displays and Quick Settings alike; it is written as ordinary words, so a sentence never reads it as a second, branded feature."
+en = { use = "Night light", avoid = ["Night Light"], case_sensitive = true }
+
+[[term]]
+reason = "The largest packet a VPN sends is its packet size, as its row and its action name it; the abbreviation is network jargon a person did not see on the page."
+en = { use = "Packet size", avoid = ["MTU"], case_sensitive = true }
+de = { use = "Paketgröße", avoid = ["MTU"], case_sensitive = true }

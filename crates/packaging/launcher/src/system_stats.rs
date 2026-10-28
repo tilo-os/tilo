@@ -38,7 +38,6 @@ pub const SYSTEM_INFO: &str = "system-info";
 /// The manifest capability that allows the process list on it.
 pub const PROCESSES: &str = "processes";
 
-/// The most `manifest` may be granted.
 #[must_use]
 pub fn ceiling(manifest: &ManifestView) -> Grants {
     let system_info = manifest.declares_capability(SYSTEM_INFO);

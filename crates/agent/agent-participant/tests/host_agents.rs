@@ -75,7 +75,7 @@ use support::{Device, ROOM, enrol, ready, start_peer, workspace};
 
 const NOTES: &str = "so.tilo.notes";
 const SHEETS: &str = "so.tilo.sheets";
-const CALCULATOR: &str = "so.tilo.calculator";
+const EBOOK: &str = "so.tilo.ebook";
 
 struct Hosted {
     relay: Relay,
@@ -113,6 +113,7 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
             state_dir: state.join("agents"),
             model,
             catalogue: Some(Arc::new(common::catalogue)),
+            feedback_reviewer: None,
         },
     )
     .await
@@ -130,6 +131,7 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
             live_origin: None,
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
+            fetch_proxy: None,
         })
         .await
         .unwrap();
@@ -303,7 +305,7 @@ impl Browser {
         self.peer
             .send_remote_action(workspace(), self.host_key, frame)
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             assert!(
                 Instant::now() < deadline,
@@ -355,7 +357,7 @@ impl Browser {
     /// Wait until everything this page published is durable on the host.
     async fn durable(&self) {
         let receipt = self.peer.barrier().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             match receipt.try_recv() {
                 Ok(result) => return result.unwrap(),
@@ -372,7 +374,7 @@ impl Browser {
 
     /// Wait until `done` holds for the supervisor's status.
     async fn until(&mut self, what: &str, done: impl Fn(&AgentsStatus) -> bool) -> AgentsStatus {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             let status = self.status().await;
             if done(&status) {
@@ -419,7 +421,7 @@ impl Browser {
     }
 
     async fn until_edited(&mut self, app: &str, author: [u8; 32], text: &str) {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = tilo_test_env::hang_deadline();
         while !self
             .bodies(app, author)
             .iter()
@@ -469,25 +471,17 @@ impl Browser {
         let (frames, rx) = tokio::sync::mpsc::unbounded_channel();
         let peer = self.peer.clone();
         let task = tokio::spawn(async move {
-            let mut track = loop {
-                if let Ok(Some(broadcast)) =
-                    tokio::time::timeout(Duration::from_millis(200), live.member(&namespace)).await
-                    && let Ok(track) = broadcast
-                        .track(tilo_moq::live::PRESENCE_TRACK)
-                        .unwrap()
-                        .subscribe(None)
-                        .await
-                {
-                    break track;
-                }
-            };
-            while let Ok(Some(datagram)) = track.recv_datagram().await {
+            let mut member = tilo_moq::live::peer::MemberPresence::follow(&live, &namespace);
+            loop {
+                let Some(datagram) = member.next(Duration::from_secs(1)).await else {
+                    continue;
+                };
                 // Live frames arrive sealed: the page opens them with its keys.
                 let (tx, opened) = tokio::sync::oneshot::channel();
                 if peer
                     .open_live_then(
                         workspace(),
-                        datagram.payload.to_vec(),
+                        datagram.to_vec(),
                         Box::new(move |frame| {
                             let _ = tx.send(frame);
                         }),
@@ -530,7 +524,7 @@ impl Presence {
         what: &str,
         wanted: impl Fn(&PresenceFrame) -> bool,
     ) -> PresenceFrame {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             assert!(!left.is_zero(), "the agent's cursor never showed {what}");
@@ -557,7 +551,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
 
     let hosted = start(&root, &host, state.path()).await;
 
@@ -647,7 +641,9 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         .iter()
         .map(|step| step.action.as_str())
         .collect();
-    assert_eq!(steps, ["open", "new-note"]);
+    // The room has no Notes record yet: the step names what a new one
+    // publishes and opens that record itself.
+    assert_eq!(steps, ["new-note"]);
     let agent_key: [u8; 32] = hex::decode(&info.device).unwrap().try_into().unwrap();
     browser.until_edited(NOTES, agent_key, "Groceries").await;
 
@@ -876,7 +872,7 @@ impl Page {
         let route = DocumentRoute {
             app_id: app.into(),
             cluster_id: ROOM.into(),
-            record: page.record().to_owned(),
+            record: page.wire_record().to_owned(),
         };
         browser
             .peer
@@ -893,7 +889,7 @@ impl Page {
     /// content has arrived, as a second browser does, and publish what the
     /// mount itself wrote.
     async fn join(browser: &mut Browser, creator: &Self) -> Self {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             browser.pump();
             if let Some(changes) = browser
@@ -947,7 +943,7 @@ impl Page {
     }
 
     async fn until_sheets(&mut self, browser: &mut Browser, want: &[&str]) {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             self.merge(browser);
             if sheet_names(&self.app) == want {
@@ -976,7 +972,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
     let _steward = steward::Steward::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
@@ -1061,7 +1057,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
     // from what the host kept.
     let reloaded_device = enrol(&root, "browser, reloaded", DeviceCapabilities::member());
     let mut reloaded = Browser::open(&hosted, &reloaded_device, &host).await;
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         reloaded.pump();
         if let Some(changes) = reloaded
@@ -1107,7 +1103,7 @@ async fn the_creator_and_a_joined_page_both_see_every_task_live() {
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let first_device = enrol(&root, "browser", DeviceCapabilities::member());
     let second_device = enrol(&root, "second browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
     let _steward = steward::Steward::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
@@ -1235,7 +1231,7 @@ async fn an_agent_plans_on_metered_cloud_credits_until_they_run_out() {
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
     let hosted = start_with(&root, &host, state.path(), model).await;
     let _steward = steward::Steward::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
@@ -1360,7 +1356,7 @@ async fn person_device(relay: &Relay, laptop: &Device) -> (iroh::endpoint::Endpo
 
 /// The one question an agent is waiting on, once it is asked.
 async fn asked(device: &mut Approver) -> tilo_relay::certify::PendingConfirmation {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let mut asked = device.list_confirmations().await.unwrap();
         if let Some(question) = asked.pop() {
@@ -1372,7 +1368,6 @@ async fn asked(device: &mut Approver) -> tilo_relay::certify::PendingConfirmatio
     }
 }
 
-/// Whether agent `grant` has `tasks` tasks, the last of them in `state`.
 fn last_task_is(grant: &str, state: TaskState, tasks: usize) -> impl Fn(&AgentsStatus) -> bool {
     move |status| {
         status.agents.iter().any(|agent| {
@@ -1383,20 +1378,29 @@ fn last_task_is(grant: &str, state: TaskState, tasks: usize) -> impl Fn(&AgentsS
     }
 }
 
-/// Work out one sum, then clear the calculator's history: an action whose
-/// contract asks a person first.
-fn clear_history() -> String {
+/// Put a book on the shelf, then take it off again: Undo puts the row back
+/// but not this device's access to the book's file, so its contract asks a
+/// person first (`#[action(irreversible)]`). Clearing the calculator's
+/// history no longer does: Undo takes that back, so it runs at once.
+fn shelve_then_remove() -> String {
     serde_json::json!([
         {
-            "app": CALCULATOR,
-            "resource": "calculator.document",
-            "action": "commit-history",
-            "arguments": {"expr": "1+1", "result": "2"},
+            "app": EBOOK,
+            "resource": "ebook.library",
+            "action": "shelve",
+            "arguments": {
+                "book": "book:dusk",
+                "title": "Dusk",
+                "author": "Ada",
+                "subject": "",
+                "shared": false,
+            },
         },
         {
-            "app": CALCULATOR,
-            "resource": "calculator.document",
-            "action": "clear-history",
+            "app": EBOOK,
+            "resource": "ebook.library",
+            "action": "remove-from-library",
+            "arguments": {"book": "book:dusk"},
         },
     ])
     .to_string()
@@ -1412,7 +1416,7 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
     let _steward = steward::Steward::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
@@ -1427,7 +1431,7 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
                 serde_json::json!({
                     "label": "Careful",
                     "rooms": [ROOM],
-                    "apps": [CALCULATOR],
+                    "apps": [EBOOK],
                     "expiresInSecs": 3600,
                 })
                 .as_object()
@@ -1451,7 +1455,7 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
             SUPERVISOR_RESOURCE,
             SPAWN_ACTION,
             InvokeArgument::Json(
-                serde_json::json!({ "grant": grant, "task": clear_history(), "room": ROOM })
+                serde_json::json!({ "grant": grant, "task": shelve_then_remove(), "room": ROOM })
                     .as_object()
                     .unwrap()
                     .clone(),
@@ -1466,9 +1470,9 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
     assert_eq!(question.agent_id, grant);
     assert_eq!(question.agent_label, "Careful");
     assert_eq!(question.room, ROOM);
-    // The action as the calculator offers it, not the agent's own words.
-    assert_eq!(question.action_label, "Remove every history entry");
-    assert_eq!(question.resource_label, "Calculator");
+    // The action as the reader offers it, not the agent's own words.
+    assert_eq!(question.action_label, "Remove from library");
+    assert_eq!(question.resource_label, "Books");
     assert_eq!(question.risk, "destructive");
     assert!(
         question.question().starts_with("Careful wants to ")
@@ -1521,7 +1525,7 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
         .call(
             &agent_resource(&grant),
             MESSAGE_ACTION,
-            InvokeArgument::Text(clear_history()),
+            InvokeArgument::Text(shelve_then_remove()),
         )
         .await
         .unwrap();
@@ -1554,5 +1558,160 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
         "{denied:?}"
     );
     device.close();
+    hosted.stop().await;
+}
+
+const CHAT: &str = "so.tilo.chat";
+
+/// Ask for a grant labelled `label` covering `apps`, and wait until the
+/// laptop approves it.
+async fn approved_grant(browser: &mut Browser, label: &str, apps: &[&str]) -> String {
+    let requested = browser
+        .call(
+            SUPERVISOR_RESOURCE,
+            REQUEST_GRANT_ACTION,
+            InvokeArgument::Json(
+                serde_json::json!({"label": label, "rooms": [ROOM], "apps": apps,
+                                   "expiresInSecs": 3600})
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        )
+        .await
+        .unwrap();
+    let grant = requested["grant"].as_str().unwrap().to_owned();
+    browser
+        .until("the grant to be approved", |status| {
+            status
+                .grants
+                .iter()
+                .any(|g| g.id == grant && g.state == GrantState::Approved)
+        })
+        .await;
+    grant
+}
+
+/// One written step of the room's Chat.
+fn chat_step(resource: &str, action: &str, arguments: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"app": CHAT, "resource": resource, "action": action, "arguments": arguments})
+}
+
+/// Two agents talk in the room's Chat. Its messages are kept in parts
+/// beside the chat record: what one agent posts goes out on its part's own
+/// route, the other, holding the chat record, has it there, and the chat
+/// names it by the label the poster's person gave it, which the poster
+/// introduced itself with on opening the chat.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn agents_post_in_the_rooms_chat_and_read_each_other_by_name() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let hosted = start(&root, &host, state.path()).await;
+    let _steward = steward::Steward::start(&hosted.relay, &root).await;
+    let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    let reader = approved_grant(&mut browser, "Reader", &[CHAT]).await;
+    let poster = approved_grant(&mut browser, "Poster", &[CHAT]).await;
+    let channel = chat::record::CHAT_CHANNEL;
+
+    // The reader starts the room's chat (its first channels) and holds it.
+    let begin = serde_json::json!([chat_step(
+        "chat.workspace",
+        "begin-chat",
+        &serde_json::json!({"name": "Reader", "initials": "RE", "color": 1}),
+    )]);
+    let spawn = |grant: &str, task: &serde_json::Value| {
+        InvokeArgument::Json(
+            serde_json::json!({"grant": grant, "task": task.to_string(), "room": ROOM})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+    };
+    browser
+        .call(SUPERVISOR_RESOURCE, SPAWN_ACTION, spawn(&reader, &begin))
+        .await
+        .unwrap();
+    browser
+        .until(
+            "the chat to begin",
+            last_task_is(&reader, TaskState::Completed, 1),
+        )
+        .await;
+
+    // The poster, which never started the chat, posts in it.
+    let post = serde_json::json!([chat_step(
+        "chat.messages",
+        "post",
+        &serde_json::json!({"channel": channel, "text": "Hello from the poster"}),
+    )]);
+    browser
+        .call(SUPERVISOR_RESOURCE, SPAWN_ACTION, spawn(&poster, &post))
+        .await
+        .unwrap();
+    browser
+        .until("the post", last_task_is(&poster, TaskState::Completed, 1))
+        .await;
+
+    // The reader exports the channel from the chat it holds: the post is
+    // there, under the poster's name. Asked again until it has arrived.
+    let export = serde_json::json!([chat_step(
+        "chat.workspace",
+        "export-content",
+        &serde_json::json!({"channel": channel, "format": "json"}),
+    )])
+    .to_string();
+    let deadline = tilo_test_env::hang_deadline();
+    let mut tasks = 1;
+    loop {
+        browser
+            .call(
+                &agent_resource(&reader),
+                MESSAGE_ACTION,
+                InvokeArgument::Text(export.clone()),
+            )
+            .await
+            .unwrap();
+        tasks += 1;
+        let status = browser
+            .until(
+                "the export",
+                last_task_is(&reader, TaskState::Completed, tasks),
+            )
+            .await;
+        let task = status
+            .agents
+            .iter()
+            .find(|agent| agent.id == reader)
+            .and_then(|agent| agent.tasks.last().cloned())
+            .unwrap();
+        let address = task
+            .steps
+            .iter()
+            .flat_map(|step| step.content.iter())
+            .next_back()
+            .cloned()
+            .expect("the export is kept as content");
+        let exported: serde_json::Value =
+            serde_json::from_slice(&hosted.agents.content(ROOM, &address).unwrap()).unwrap();
+        let posted = exported["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["text"] == "Hello from the poster")
+            .cloned();
+        if let Some(posted) = posted {
+            assert_eq!(posted["authorName"], "Poster", "{posted}");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the reader never had the post: {exported}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     hosted.stop().await;
 }

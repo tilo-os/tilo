@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 # Published: the SDK's platform layer (tools/sdk/publish_check.py).
 publish = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
 description = "Per-user and per-app locations on Linux, macOS and the web: XDG base directories and xdg-user-dirs, the macOS Library folders, and virtual browser storage roots."

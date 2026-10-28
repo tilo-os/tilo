@@ -5,7 +5,7 @@
 //! with fixed ids, dates and authors, so every capture of a scenario is the
 //! same frame. The view state
 //! a scenario shows (an open editor, a selection, a menu) is staged by the
-//! reader itself once these have applied ([`crate::PdfApp::stage`]).
+//! reader itself once these have applied (`crate::PdfApp::stage`).
 
 use ui::framework::Fixture;
 use ui::tilo_resource::{Collection, Edit, Id, Invoke};
@@ -43,7 +43,7 @@ const HIGHLIGHT: &str = "sample-highlight";
 pub(crate) const SIGNED_ON: &str = "2026-06-30";
 
 /// The signer the demonstration review is signed by.
-pub(crate) const SIGNER: &str = "Alice Daskju";
+pub(crate) const SIGNER: &str = "Alice Example";
 
 /// A capture of a scenario that shows a document reads the bundled
 /// demonstration document rather than a file.

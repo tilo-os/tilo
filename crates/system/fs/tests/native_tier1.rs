@@ -175,7 +175,7 @@ impl Daemon {
         // `TILO_FS_TEST_BINARY` runs another build of the daemon (a release
         // build on a loaded machine) against the same assertions.
         let binary = std::env::var_os("TILO_FS_TEST_BINARY")
-            .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_fs")), PathBuf::from);
+            .map_or_else(|| tilo_test_env::package_binary!("fs"), PathBuf::from);
         let mut command = Command::new(binary);
         command.env("TILO_FS_NATIVE_TRACE", "1");
         for (key, value) in env {
@@ -1650,7 +1650,6 @@ fn the_lease_authority_gives_a_free_lease_to_one_of_two_devices_asking_at_once()
         assert_eq!(loser, Err(libc::EBUSY), "the other is refused at once");
         let winner = if host.is_ok() { b'h' } else { b'p' };
         winners.push(winner);
-        // Both converge on the winner's bytes.
         wait_for(
             &mut [&mut pair.host, &mut pair.peer],
             "both devices on the winner's version",

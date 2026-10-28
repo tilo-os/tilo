@@ -1,4 +1,5 @@
 //! Typed checked-file state. No Automerge identity or document fallback exists here.
+use super::coverage::HistoricalGap;
 use fs_protocol::files::{
     CheckedHistoryOperationV1 as Operation, CheckedHistoryOutcomeV1 as Outcome,
     CheckedHistoryRequestV1 as Request, FileHistoryReadErrorV1 as ReadError,
@@ -11,8 +12,6 @@ use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 /// Trusted owner-side transport. This handle is never included in preview input.
 pub trait FileHistoryTransport: Send + Sync {
-    /// # Errors
-    /// Returns the transport or checked-read failure for the requested scope.
     fn read(&self, query: Query) -> Result<ReadValue, ReadError>;
     /// # Errors
     /// Returns a checked-read failure when the requested version cannot be retrieved.
@@ -73,6 +72,41 @@ pub enum FileHistoricalContent {
     Bytes(Arc<[u8]>),
     NoContent,
     Unavailable(ReadError),
+}
+
+impl From<ReadError> for HistoricalGap {
+    fn from(error: ReadError) -> Self {
+        match error {
+            // The record changed under the read, the person cannot see it, or
+            // they asked for something this transport does not carry: History
+            // has nothing to show, and that is not a verdict on the file.
+            ReadError::Stale | ReadError::NotVisible | ReadError::InvalidRequest => {
+                Self::Unsupported(file_gap_reason(error))
+            }
+            // The version, or the content it names, is not retrievable now.
+            ReadError::MissingVersion | ReadError::Unavailable | ReadError::NoContent => {
+                Self::Unavailable(file_gap_reason(error))
+            }
+            // The bytes exist but are past what History reads in full: a
+            // person still restores them, and sees why they are not shown.
+            ReadError::TooLarge => Self::Unavailable(file_gap_reason(error)),
+        }
+    }
+}
+
+/// What a checked-file read failure means for a person, one sentence per
+/// failure.
+#[must_use]
+fn file_gap_reason(error: ReadError) -> String {
+    match error {
+        ReadError::Stale => "the file changed while its history was read".into(),
+        ReadError::NotVisible => "this file is not shared with you".into(),
+        ReadError::MissingVersion => "that version is not in this file's history".into(),
+        ReadError::InvalidRequest => "that is not a version of this file".into(),
+        ReadError::Unavailable => "that version is not on this device yet".into(),
+        ReadError::TooLarge => "that version is too large to show inline".into(),
+        ReadError::NoContent => "that version holds no content".into(),
+    }
 }
 /// Immutable metadata and exact bytes only. No path, service, callback or live State.
 #[derive(Clone, Debug)]

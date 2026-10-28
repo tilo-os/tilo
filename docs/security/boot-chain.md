@@ -562,10 +562,26 @@ volume, so the key file the hook writes is:
 /run/cryptsetup-keys.d/root.key
 ```
 
-`systemd-cryptsetup` consults that path before it tries any token. The
+`systemd-cryptsetup` consults that path before it tries any token. A root whose
+header carries `tilo-signin` tokens asks first for a person's own PIN or password
+instead ([sign-in.md](sign-in.md) §3.2): `tilo-boot-signin` takes it, and `tilo-auth
+boot-unlock` writes the same key file from that person's keyslot and leaves the
+one-time handoff to their session. The greeter asks `tilo-authd` for that person
+when it starts and starts their session without a screen of its own; `pam_tilo`
+accepts the handoff once, and if PAM asks anything instead the greeter cancels
+and shows its ordinary screen. "Can't sign in" (Enter on an empty field) ends
+it, and everything below runs as on any other root, with one difference: while
+`systemd-cryptsetup` attaches the volume, Plymouth's password agent is stopped
+and `tilo-boot-signin other-ways` asks its questions on the boot screen instead,
+word for word. An empty answer there, which Plymouth's agent would simply ask
+again, stops that attempt and shows the sign-in screen again. Without Plymouth
+that agent steps aside, and the console prompts offer no way back. The key file is removed once
+the volume is attached, because `/run` is carried into the booted system. The
 `tilo-rollback` dracut module installs the binary, its TPM tools and public policy
 key, the root generator and the discovery helper. The hook asks for the PIN only
-when the LUKS header actually contains a `tilo-rollback` token. A command line
+when the LUKS header contains a `tilo-rollback` token that carries one: a token
+sealed without a PIN is the automatic unlock, and prompting for a secret nothing
+checks would defeat it. A command line
 that still names the volume with `rd.luks.uuid=` (an older layout) is served by
 `tilo-rollback-unlock-generator`, which writes
 `/run/cryptsetup-keys.d/luks-<LUKS-UUID>.key` instead. A cancelled or failed
@@ -673,6 +689,14 @@ of it:
 | TPM without verified release chain | recovery key, passphrase | type the passphrase |
 | No TPM | recovery key, passphrase | type the passphrase |
 
+When the installer's startup secret is the account password (the wizard's one
+secret), `tilo-disk-encrypt enrol --pin-is-account-password` adds a
+`tilo-startup-secret` token naming that slot. It holds no secret. Before the
+volume opens, `tilo-boot-signin unlock-prompt` reads the header and the boot screen
+asks for "your password" where that token has a slot, "your disk passphrase" where
+a slot no token claims exists, and offers the recovery key only where a
+`systemd-recovery` token has a slot.
+
 An optional FIDO2 security key adds another slot to any row. Selecting it is a
 requirement: enrollment failure stops installation with an actionable retry
 message rather than silently finishing without the requested factor. The sealed
@@ -698,6 +722,16 @@ cannot truthfully manufacture firmware trust without the owner's physical
 ceremony. Even an OEM-provisioned machine remains on the strong-passphrase path
 unless the media also carries the signed measured-artifact policy for its exact
 target UKI.
+
+Once that ceremony is done, a machine may finish with a system volume that opens
+by itself. `tilo-rollback enroll --automatic` seals a generation slot with no PIN,
+and refuses unless the boot it is running is one the machine can prove it
+approved: Secure Boot on, kernel lockdown active, and a signature database holding
+exactly the authorities recorded when the slot was sealed
+([rollback.md](rollback.md), "A keyslot with no PIN"). The same check runs at every
+unlock, so a machine whose Secure Boot policy changed — a `db` that gained a
+third-party CA, say — asks for the typed secret instead of opening on a boot it no
+longer recognises, rather than opening anyway or leaving an unbootable disk.
 
 The privileged installer enforces the same startup-secret policy shown by the
 graphical installer. It requires at least fifteen characters (the NIST

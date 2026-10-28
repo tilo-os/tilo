@@ -102,7 +102,7 @@ fn item_actions_are_offered_on_the_item() {
         .iter()
         .find(|spec| spec.id == "remove")
         .unwrap();
-    assert!(on_record.is_programmatic(), "no id prompt in the palette");
+    assert!(!on_record.reaches_people(), "no id prompt in the palette");
 
     // The row's context menu offers them too: focus the row, open its menu
     // from the keyboard and choose "Remove a todo".

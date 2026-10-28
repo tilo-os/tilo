@@ -106,6 +106,7 @@ struct FieldState {
     pending_cursor: Option<CursorRectangle>,
     cursor: Option<CursorRectangle>,
     revision: u64,
+    edit_revision: u64,
     pending_edit: bool,
 }
 
@@ -210,10 +211,14 @@ impl TextFields {
                 height,
             } => field.pending_cursor = Some((*x, *y, *width, *height)),
             zwp_text_input_v3::Request::Commit => {
-                if std::mem::take(&mut field.pending_edit)
+                let edited = std::mem::take(&mut field.pending_edit)
                     || field
                         .pending
-                        .is_some_and(|content| content != field.committed)
+                        .is_some_and(|content| content != field.committed);
+                if edited {
+                    field.edit_revision = field.edit_revision.saturating_add(1);
+                }
+                if edited
                     || field
                         .pending_cursor
                         .is_some_and(|cursor| Some(cursor) != field.cursor)
@@ -240,6 +245,13 @@ impl TextFields {
 
     pub(crate) fn revision(&self, resource: &ZwpTextInputV3) -> Option<u64> {
         self.fields.get(&resource.id()).map(|field| field.revision)
+    }
+
+    /// Like [`Self::revision`], but a moved caret alone does not advance it.
+    pub(crate) fn edit_revision(&self, resource: &ZwpTextInputV3) -> Option<u64> {
+        self.fields
+            .get(&resource.id())
+            .map(|field| field.edit_revision)
     }
 
     pub fn forget(&mut self, resource: &ZwpTextInputV3, may_deactivate: bool) -> bool {
@@ -447,7 +459,14 @@ impl State {
         .is_some_and(|app_id| {
             use settings_store::paste_shortcut as paste;
             let input = settings_store::load_section(paste::SECTION);
-            paste::resolve(&app_id, &paste::overrides_from_section(&input))
+            // Settings names a host app by its desktop-file id (the app
+            // chooser's), whatever its window announces itself as.
+            let installed =
+                crate::shell::host_apps::app_for_window_id(&app_id).map(|app| app.desktop_id);
+            let ids: Vec<&str> = std::iter::once(app_id.as_str())
+                .chain(installed.as_deref())
+                .collect();
+            paste::resolve_ids(&ids, &paste::overrides_from_section(&input))
                 == paste::PasteShortcut::CtrlShiftV
         });
         let v = self.keysym_to_keycode(KEYSYM_V).unwrap_or(KEY_V);
@@ -893,7 +912,6 @@ mod tests {
                 "hint {hint:#x}"
             );
         }
-        // Spellcheck, multiline, e-mail and terminal fields are ordinary.
         assert!(
             !ContentType {
                 hint: 0x2 | 0x200,

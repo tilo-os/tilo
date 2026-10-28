@@ -19,8 +19,12 @@
 //! The launcher puts `/dev/null` on its stdin once released
 //! ([`wait_on_stdin`]), so nothing it runs inherits the gate.
 
-use std::io::{self, Read as _, Write as _};
-use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+#[cfg(not(target_os = "linux"))]
+use std::io::Read as _;
+use std::io::{self, Write as _};
+#[cfg(not(target_os = "linux"))]
+use std::os::fd::FromRawFd as _;
+use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::process::{Command, Stdio};
 
@@ -44,13 +48,33 @@ pub struct RegistrationGate(UnixStream);
 
 impl RegistrationGate {
     /// Let the launcher go on. Call only once the launch is recorded.
-    ///
-    /// # Errors
-    ///
-    /// The write error when the launcher is already gone.
     pub fn release(mut self) -> io::Result<()> {
         self.0.write_all(&[1])
     }
+
+    /// [`Self::release`], handing the launcher the shell's window door for
+    /// the app (`runtime_portal::windows`) with the release: the launcher
+    /// passes it on to the app it starts.
+    #[cfg(target_os = "linux")]
+    pub fn release_with_window_door(self, door: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
+        use std::os::fd::AsFd as _;
+        runtime_portal::jobs::send(self.0.as_fd(), &[&[1]], &[door])
+    }
+}
+
+/// The window door the shell handed over with the release, until the launch
+/// takes it ([`take_window_door`]).
+#[cfg(target_os = "linux")]
+static WINDOW_DOOR: std::sync::Mutex<Option<OwnedFd>> = std::sync::Mutex::new(None);
+
+/// The window door the shell released this launcher with, once; `None` when
+/// it sent none.
+#[cfg(target_os = "linux")]
+pub fn take_window_door() -> Option<OwnedFd> {
+    WINDOW_DOOR.lock().map_or_else(
+        |poisoned| poisoned.into_inner().take(),
+        |mut door| door.take(),
+    )
 }
 
 /// Make `command` start gated: its child's stdin is a private socket, named by
@@ -96,11 +120,7 @@ pub fn install_external(command: &mut Command) -> io::Result<(RegistrationGate, 
 /// End-of-file when the host dropped the gate unreleased, or the error of
 /// reading stdin or of replacing it. The launcher must not go on after any.
 pub fn wait_on_stdin() -> io::Result<()> {
-    // SAFETY: fd 0 is the gate the host handed over. The `File` is never
-    // dropped, so the descriptor stays open until `dup2` replaces it below.
-    let mut gate = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
-    let mut release = [0_u8; 1];
-    gate.read_exact(&mut release)?;
+    read_release()?;
     let null = std::fs::File::open("/dev/null")?;
     // SAFETY: both are descriptors this process owns. Replacing fd 0 closes
     // the gate in one step, so no later child can inherit it.
@@ -110,9 +130,44 @@ pub fn wait_on_stdin() -> io::Result<()> {
     Ok(())
 }
 
+/// Read the host's release off stdin, keeping the window door that came with
+/// it.
+#[cfg(target_os = "linux")]
+fn read_release() -> io::Result<()> {
+    // SAFETY: fd 0 is the gate the host handed over, open until `dup2`
+    // replaces it after this returns.
+    let gate = unsafe { std::os::fd::BorrowedFd::borrow_raw(0) };
+    if let Some(door) = read_release_from(gate)? {
+        *WINDOW_DOOR
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(door);
+    }
+    Ok(())
+}
+
+/// The release on `gate`, and the window door that came with it.
+#[cfg(target_os = "linux")]
+fn read_release_from(gate: std::os::fd::BorrowedFd<'_>) -> io::Result<Option<OwnedFd>> {
+    let mut release = [0_u8; 1];
+    let Some((1, fds)) = runtime_portal::jobs::receive(gate, &mut release)? else {
+        return Err(io::ErrorKind::UnexpectedEof.into());
+    };
+    Ok(fds.into_iter().next())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_release() -> io::Result<()> {
+    // SAFETY: fd 0 is the gate the host handed over. The `File` is never
+    // dropped, so the descriptor stays open until `dup2` replaces it below.
+    let mut gate = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
+    let mut release = [0_u8; 1];
+    gate.read_exact(&mut release)
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::{BufRead as _, BufReader, Read as _};
+    use std::os::fd::FromRawFd as _;
 
     use super::*;
 
@@ -238,5 +293,30 @@ mod tests {
         drop(gate);
         assert_eq!(next_line(&mut stdout), "closed");
         assert!(child.wait().expect("child exit").success());
+    }
+
+    /// The shell's window door rides on the release, and a release without
+    /// one is still a release.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_window_door_comes_with_the_release() {
+        use std::os::fd::AsFd as _;
+        let (release, wait) = UnixStream::pair().expect("gate");
+        let (door, _app) = UnixStream::pair().expect("door");
+        RegistrationGate(release)
+            .release_with_window_door(door.as_fd())
+            .expect("release");
+        assert!(read_release_from(wait.as_fd()).expect("released").is_some());
+
+        let (release, wait) = UnixStream::pair().expect("gate");
+        RegistrationGate(release).release().expect("release");
+        assert!(read_release_from(wait.as_fd()).expect("released").is_none());
+
+        let (release, wait) = UnixStream::pair().expect("gate");
+        drop(RegistrationGate(release));
+        assert!(
+            read_release_from(wait.as_fd()).is_err(),
+            "an unreleased gate refuses"
+        );
     }
 }

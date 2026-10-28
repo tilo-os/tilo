@@ -137,10 +137,6 @@ pub async fn read(
 type Layout = (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>);
 
 /// Read the whole menu at `path` and flatten it to its choosable entries.
-///
-/// # Errors
-///
-/// When the menu does not answer `GetLayout`.
 pub async fn read_menu(address: &ItemAddress, path: &str) -> zbus::Result<Vec<MenuEntry>> {
     let menu = proxy(address, path, MENU_INTERFACE).await?;
     // Toolkits that fill their menu on demand (Qt, Electron) do it here.
@@ -257,11 +253,6 @@ fn flatten(node: &Value<'_>, prefix: &str, depth: usize, out: &mut Vec<MenuEntry
     });
 }
 
-/// Deliver `request` to the item.
-///
-/// # Errors
-///
-/// The bus error, or a missing menu for a menu request.
 pub async fn send(address: &ItemAddress, request: TrayRequest) -> zbus::Result<()> {
     match request {
         TrayRequest::Activate { x, y } => {

@@ -12,30 +12,29 @@ use std::rc::Rc;
 
 use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use ui::LocalState;
+use ui::fact::{Measure, Measured};
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::TextRole;
 use ui::widget::{
-    Banner, Button, ButtonRole, ChipStyle, Column, Container, ControlSize, Dropdown, Element,
-    EmptyState, Field, FormSection, ListRow, ModalDialog, NavItem, NavList, NavSection,
-    NumberInput, ProgressBar, ProgressRing, ProgressRingSize, Property, PropertyList, Row,
-    Scrollable, Section, SectionHeader, Spacer, StatGroup, StatTile, Text, Tone, TreeNode,
-    TreeRowDecoration, TreeRowTone, TreeView, Widget,
+    Banner, Button, ChipStyle, Column, Container, ControlSize, Dropdown, Element, EmptyState,
+    Field, FormSection, ListRow, ModalDialog, NavItem, NavList, NavSection, NumberInput,
+    ProgressBar, ProgressRing, ProgressRingSize, Property, PropertyList, Row, Scrollable, Section,
+    SectionHeader, Spacer, StatGroup, StatTile, Text, Tone, TreeNode, TreeRowDecoration,
+    TreeRowTone, TreeView, Widget,
 };
 
 use crate::i18n;
 use crate::model::PolicyField;
 use crate::model::{
-    Catalog, DestKind, Destination, Filter, Health, Retention, Schedule, SnapFile, SnapStatus,
-    SnapType, Snapshot, Source, SourceKind,
+    Catalog, DestKind, Destination, Filter, Health, MAX_KEPT, Retention, RetentionPolicy, Schedule,
+    SnapFile, SnapStatus, SnapType, Snapshot, Source, SourceKind,
 };
 
 /// A place in the sidebar, and the page the content shows for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Page {
-    /// Every snapshot of every source.
     All,
-    /// One source's snapshots and schedule.
     Source(String),
     /// One destination's capacity and the snapshots stored on it.
     Destination(String),
@@ -77,7 +76,6 @@ impl Page {
         }
     }
 
-    /// Whether the page lists snapshots.
     pub fn lists_snapshots(&self) -> bool {
         !matches!(self, Page::Retention)
     }
@@ -119,11 +117,21 @@ pub enum JobKind {
 }
 
 impl JobKind {
-    fn title(self) -> &'static str {
+    /// What the job is, in the jobs band's words.
+    pub fn title(self) -> &'static str {
         match self {
             JobKind::Backup => "Backing up",
             JobKind::Verify => "Verifying",
             JobKind::Restore => "Restoring",
+        }
+    }
+
+    /// What it is doing first, before any file has been read.
+    pub fn phase(self) -> &'static str {
+        match self {
+            JobKind::Backup => "Preparing files",
+            JobKind::Verify => "Reading the snapshot",
+            JobKind::Restore => "Restoring files",
         }
     }
 }
@@ -157,8 +165,6 @@ pub struct Model<'a> {
     /// The last operation failed: what, and what to do.
     pub failure: Option<(&'a str, &'a str)>,
 }
-
-// ---- formatting ---------------------------------------------------------
 
 /// A stored size in the platform's unit for stored data (SI).
 pub fn size(bytes: u64) -> String {
@@ -298,15 +304,14 @@ fn kind_title(snapshot: &Snapshot) -> &'static str {
         (SnapType::Auto, Retention::Weekly) => "Weekly snapshot",
         (SnapType::Auto, Retention::Monthly) => "Monthly snapshot",
         (SnapType::Auto, Retention::Keep) => "Kept snapshot",
+        (SnapType::Unknown, _) | (_, Retention::Unknown) => "Snapshot",
     }
 }
-
-// ---- sidebar ------------------------------------------------------------
 
 /// The dot a place shows when it needs the person; a healthy one shows none.
 fn health_status(health: Health) -> Option<ui::widget::RowStatus<'static>> {
     match health {
-        Health::Ok => None,
+        Health::Ok | Health::Unknown => None,
         Health::Warning => Some(ui::widget::RowStatus::Warning),
     }
 }
@@ -372,9 +377,8 @@ pub fn sidebar(catalog: &Catalog, page: &Page, intents: &Intents) -> NavList {
         NavSection::untitled("policy", vec![policy]),
     ])
     .selected(&page.nav_id())
-    .with_id("backups-places")
     .with_accessible_name("Backups")
-    .on_select(move |id| {
+    .on_view("backups-places", move |id| {
         if let Some(page) = Page::from_nav_id(&id) {
             intents.push(Intent::Navigate(page));
         }
@@ -393,26 +397,6 @@ pub fn page_title(catalog: &Catalog, page: &Page) -> String {
             .map_or_else(|| "Destination".into(), |d| d.name.clone()),
         Page::Retention => "Retention".into(),
     }
-}
-
-/// The content header's control: the one main action of the window. History
-/// is the window's own glyph at the end of the same row.
-pub fn header_actions(job: Option<JobKind>, can_back_up: bool, intents: &Intents) -> Vec<Element> {
-    let back_up = intents.clone();
-    vec![Box::new(
-        Button::new(
-            "backups-back-up-now",
-            if job == Some(JobKind::Backup) {
-                "Backing up…"
-            } else {
-                "Back up now"
-            },
-        )
-        .role(ButtonRole::Primary)
-        .control_size(ControlSize::Small)
-        .with_enabled(can_back_up && job.is_none())
-        .on_effect(move || back_up.push(Intent::BackUpNow)),
-    )]
 }
 
 /// The timeline's heading, with its order beside it.
@@ -450,9 +434,6 @@ fn timeline_heading(current: Order, intents: &Intents) -> Row {
         ))
 }
 
-// ---- pages ----------------------------------------------------------------
-
-/// The content for `model.page`.
 pub fn content(
     model: &Model<'_>,
     intents: &Intents,
@@ -493,7 +474,11 @@ pub fn content(
                 "This destination is no longer set up",
             ))),
         },
-        Page::Retention => page.push(Box::new(retention_page(retention))),
+        Page::Retention => page.push(Box::new(retention_page(
+            retention,
+            model.catalog,
+            model.now,
+        ))),
     };
     Box::new(
         Scrollable::new_vertical()
@@ -513,9 +498,10 @@ fn failure_banner(title: &str, message: &str, intents: &Intents) -> Element {
     ))
 }
 
-/// A running backup, verification or restore. Traversal totals are unknown
-/// until the tree has been walked, so the bar is indeterminate: it shows
-/// work without inventing a percentage.
+/// A running backup, verification or restore. The line moves as files are
+/// counted, and the window's jobs band carries the percentage and the Stop;
+/// this bar says work is happening rather than naming a fraction it is not
+/// allowed to rebuild the page for.
 fn progress(job: &Job) -> Section {
     let line = Rc::clone(&job.line);
     Section::new(vec![
@@ -535,8 +521,37 @@ fn progress(job: &Job) -> Section {
                         .dimmed(),
                 )),
         ),
-        Box::new(ProgressBar::indeterminate()),
+        Box::new(ProgressBar::indeterminate().with_label(job.kind.title())),
     ])
+}
+
+/// One summary tile: `fact`'s value over the caption that says where it
+/// came from and when.
+fn fact_tile(
+    label: &str,
+    fact: &Measured,
+    unit: Option<String>,
+    tone: Option<Tone>,
+    at: std::time::SystemTime,
+) -> Element {
+    let mut tile = StatTile::new(label, fact.value_or_dash().to_owned());
+    if let Some(unit) = unit {
+        tile = tile.unit(unit);
+    }
+    if let Some(tone) = tone {
+        tile = tile.tone(tone);
+    }
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(tile))
+            .push(Box::new(
+                Text::new(&fact.caption(at))
+                    .with_role(TextRole::Caption)
+                    .dimmed(),
+            )),
+    )
 }
 
 /// Protected size, snapshot count, last backup and next run, all derived
@@ -548,30 +563,85 @@ fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGro
     };
     let (value, unit) = split_unit(&size(protected));
     let count = catalog.timeline(filter).len();
+    let at = ui::time::wall();
+    let tile = |label: &str, fact: Measured, unit: Option<String>, tone: Option<Tone>| {
+        fact_tile(label, &fact, unit, tone, at)
+    };
+    let protected_fact = Measured::known(
+        Measure::new("Protected size").unit(unit.clone()),
+        value,
+        "repository manifest",
+        at,
+        None,
+    );
     let mut tiles: Vec<Element> = vec![
-        Box::new(StatTile::new("Protected", value).unit(unit)),
-        Box::new(StatTile::new("Snapshots", i18n::group_digits(count as u64))),
+        tile("Protected", protected_fact, Some(unit), None),
+        tile(
+            "Snapshots",
+            Measured::known(
+                Measure::new("Snapshots"),
+                i18n::group_digits(count as u64),
+                "repository manifest",
+                at,
+                None,
+            ),
+            None,
+            None,
+        ),
     ];
-    tiles.push(Box::new(match catalog.last_backup(filter) {
+    tiles.push(match catalog.last_backup(filter) {
         Some(last) => {
             let (value, unit) = ago(last.taken, now);
-            let tile = StatTile::new("Last backup", value).unit(unit);
-            // Two days without a good backup is the tile's news.
-            if now - last.taken > chrono::Duration::days(2) {
-                tile.tone(Tone::Warning)
-            } else {
-                tile
-            }
+            let tone = (now - last.taken > chrono::Duration::days(2)).then_some(Tone::Warning);
+            tile(
+                "Last backup",
+                Measured::known(
+                    Measure::new("Time since last backup").unit(unit.clone()),
+                    value,
+                    "repository manifest",
+                    at,
+                    None,
+                ),
+                Some(unit),
+                tone,
+            )
         }
-        None => StatTile::new("Last backup", "None yet").tone(Tone::Warning),
-    }));
-    tiles.push(Box::new(match catalog.next_run(filter, now) {
+        None => tile(
+            "Last backup",
+            Measured::unknown(
+                Measure::new("Time since last backup"),
+                "no completed snapshot",
+            ),
+            None,
+            Some(Tone::Warning),
+        ),
+    });
+    tiles.push(match catalog.next_run(filter, now) {
         Some(next) => {
             let (value, unit) = ahead(next, now);
-            StatTile::new("Next run", value).unit(unit)
+            tile(
+                "Next run",
+                Measured::known(
+                    Measure::new("Time to next run").unit(unit.clone()),
+                    value,
+                    "schedule",
+                    at,
+                    None,
+                ),
+                Some(unit),
+                None,
+            )
         }
-        None => StatTile::new("Next run", "On demand"),
-    }));
+        None => tile(
+            "Next run",
+            Measured::unknown(
+                Measure::new("Time to next run"),
+                "no scheduler runs on this device; back up when you choose",
+            ),
+            None,
+            None,
+        ),
+    });
     StatGroup::new(tiles)
 }
 
@@ -613,8 +683,10 @@ fn destination_summary(dest: &Destination, catalog: &Catalog, now: NaiveDateTime
     if let Some(last) = catalog.last_backup(Filter::Destination(&dest.id)) {
         facts.push(Property::new("Last backup", when(last.taken, now)));
     }
-    if dest.health != Health::Ok {
-        facts.push(Property::new("Status", "Last run failed"));
+    match dest.health {
+        Health::Warning => facts.push(Property::new("Status", "Last run failed")),
+        Health::Unknown => facts.push(Property::new("Status", "Not checked yet")),
+        Health::Ok => {}
     }
     let facts = PropertyList::new(facts);
     let Some(frac) = dest.used_fraction() else {
@@ -701,7 +773,10 @@ fn snapshot_row(
     let secondary = match snapshot.status {
         SnapStatus::Complete => changed(snapshot),
         SnapStatus::Verifying => format!("Verifying on {dest}"),
-        SnapStatus::Failed => format!("Couldn’t copy to {dest}"),
+        SnapStatus::Failed => match &snapshot.failure {
+            Some(reason) => format!("Couldn’t copy to {dest}: {reason}"),
+            None => format!("Couldn’t copy to {dest} (no reason was recorded)"),
+        },
     };
     let id = snapshot.id.clone();
     let intents = intents.clone();
@@ -709,13 +784,16 @@ fn snapshot_row(
         .secondary(secondary)
         .meta(clock(snapshot.taken))
         .selected(model.selected == Some(snapshot.id.as_str()))
-        .on_activate(move || intents.push(Intent::SelectSnapshot(id.clone())));
+        .on_view(move || intents.push(Intent::SelectSnapshot(id.clone())));
     if let Some(source) = source {
         row = row.icon(source_icon(source.kind));
     }
     let mut tags: Vec<(&str, ChipStyle)> = Vec::new();
     if snapshot.kind == SnapType::Manual {
         tags.push(("Manual", ChipStyle::Neutral));
+    }
+    if snapshot.kind == SnapType::Unknown {
+        tags.push(("Type not recorded", ChipStyle::Neutral));
     }
     if snapshot.retention == Retention::Keep {
         tags.push(("Kept", ChipStyle::Neutral));
@@ -730,8 +808,14 @@ fn snapshot_row(
     }
 }
 
-/// How many snapshots each class keeps.
-fn retention_page(states: &[LocalState<f64>; 4]) -> Container {
+/// How many snapshots each class keeps, and what the counts on screen would
+/// remove: lowering a count deletes snapshots at the next backup, so the page
+/// names them before that happens.
+fn retention_page(
+    states: &[LocalState<f64>; 4],
+    catalog: &Catalog,
+    now: NaiveDateTime,
+) -> Container {
     let mut keep = FormSection::new("Snapshots to keep").grouped();
     for (field, state) in PolicyField::ALL.iter().zip(states) {
         keep = keep.field(Field::new(
@@ -743,18 +827,55 @@ fn retention_page(states: &[LocalState<f64>; 4]) -> Container {
         ));
     }
     let counts = states.clone();
-    let total = Text::dynamic(move || {
-        let total: f64 = counts.iter().map(|state| state.with(|v| *v)).sum();
-        let total = total.max(0.0).round() as u64;
-        i18n::counted("backups-retention-total", total, "")
+    let total = Text::dynamic({
+        let counts = counts.clone();
+        move || {
+            let total: f64 = counts.iter().map(|state| state.with(|v| *v)).sum();
+            let total = total.max(0.0).round() as u64;
+            i18n::counted("backups-retention-total", total, "")
+        }
     })
     .with_role(TextRole::Body)
     .dimmed();
+    // What these counts would drop, by the same rule the pruner uses.
+    let stored: Vec<(String, u64, NaiveDateTime)> = catalog
+        .snapshots
+        .iter()
+        .map(|snapshot| {
+            let seconds = snapshot.taken.and_utc().timestamp().max(0);
+            (
+                snapshot.id.clone(),
+                u64::try_from(seconds).unwrap_or_default(),
+                snapshot.taken,
+            )
+        })
+        .collect();
+    let consequence = Text::dynamic(move || {
+        let policy = RetentionPolicy {
+            hourly: count_of(&counts[0]),
+            daily: count_of(&counts[1]),
+            weekly: count_of(&counts[2]),
+            monthly: count_of(&counts[3]),
+        };
+        let identified: Vec<(String, u64)> = stored
+            .iter()
+            .map(|(id, seconds, _)| (id.clone(), *seconds))
+            .collect();
+        let kept = crate::engine::retained_of(&identified, &policy);
+        let doomed: Vec<String> = stored
+            .iter()
+            .filter(|(id, _, _)| !kept.contains(id))
+            .map(|(_, _, taken)| when(*taken, now))
+            .collect();
+        i18n::removal(doomed.len() as u64, &doomed.join(", "))
+    })
+    .with_role(TextRole::Body);
     let form = Column::new()
         .with_intrinsic_height()
         .with_no_padding()
         .push(Box::new(keep))
-        .push(Box::new(total));
+        .push(Box::new(total))
+        .push(Box::new(consequence));
     // A form is bounded to the readable measure, on the page's leading
     // edge, so each count sits near its label.
     Container::new()
@@ -763,7 +884,17 @@ fn retention_page(states: &[LocalState<f64>; 4]) -> Container {
         .with_child(Box::new(form))
 }
 
-// ---- the selected snapshot ----------------------------------------------
+/// One count as the policy holds it.
+fn count_of(state: &LocalState<f64>) -> u32 {
+    let count = state.with(|value| *value).max(0.0).round();
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a field bounded to 0..=999 is a small whole count"
+    )]
+    let count = count as u32;
+    count.min(MAX_KEPT)
+}
 
 /// The inspector: everything known about the selected snapshot, and what
 /// can be done with it.
@@ -784,6 +915,9 @@ pub fn snapshot_details(
         Property::new("Size", size(snapshot.size_bytes)).with_kind(TextKind::Numeric),
         Property::new("Changed", changed_size(snapshot)).with_kind(TextKind::Numeric),
     ];
+    if let Some(reason) = &snapshot.failure {
+        facts.push(Property::new("Failure", reason.clone()));
+    }
     if let Some(source) = source {
         facts.push(Property::new("Source", source.name.clone()));
         facts.push(Property::new("Folder", source.path.clone()).with_kind(TextKind::Identifier));
@@ -829,8 +963,6 @@ pub fn snapshot_details(
             )),
     )
 }
-
-// ---- restore --------------------------------------------------------------
 
 /// The restore sheet's body: what recovery does, the snapshot it restores,
 /// and a read-only preview of its contents. Recovery is the whole snapshot,
@@ -963,8 +1095,6 @@ fn open_branches(node: &TreeNode<Option<u64>>, out: &mut Vec<u64>) {
     }
 }
 
-// ---- first run and recovery -----------------------------------------------
-
 /// Where setup stands on a device with no usable repository.
 pub enum Setup<'a> {
     /// Nothing chosen yet.
@@ -1006,8 +1136,6 @@ pub fn setup(state: &Setup<'_>, intents: &Intents) -> Element {
         Intent::Setup,
     ))
 }
-
-// ---- signal forwarding ------------------------------------------------------
 
 /// A widget whose one signal (a dismissed banner, an empty state's action)
 /// leaves as an intent.

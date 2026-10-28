@@ -268,7 +268,6 @@ fn check_depth(xml: &str, max_depth: usize) -> Result<(), XmlError> {
         } else if rest.starts_with(b"<!") {
             pos = skip_to(b">");
         } else {
-            // Find the tag's end, ignoring `>` inside quoted attribute values.
             let mut quote = None;
             let mut end = None;
             for (index, byte) in rest.iter().enumerate().skip(1) {
@@ -426,7 +425,6 @@ END:VCALENDAR
             let fileid = file.prop("fileid").unwrap();
             assert_eq!(fileid.namespace.as_deref(), Some("http://owncloud.org/ns"));
         }
-        // Phase `radicale_sync_report_yields_token_changes_and_removals`.
         {
             let parsed = parse_default(RADICALE_SYNC).unwrap();
             assert_eq!(
@@ -449,7 +447,6 @@ END:VCALENDAR
             assert_eq!(parsed.responses[1].status, Some(404));
             assert!(!parsed.responses[1].has_success());
         }
-        // Phase `fastmail_like_cdata_payload_is_preserved`.
         {
             let parsed = parse_default(FASTMAIL_QUERY).unwrap();
             let response = &parsed.responses[0];
@@ -467,7 +464,6 @@ END:VCALENDAR
             assert!(data.contains("UID:abc\n"));
             assert_eq!(response.prop_text("getetag"), Some("\"1700000000\""));
         }
-        // Phase `status_without_reason_phrase_is_parsed`.
         {
             let xml = r#"<multistatus xmlns="DAV:"><response><href>/a</href><propstat><prop><getetag>x</getetag></prop><status>HTTP/1.1 200</status></propstat></response></multistatus>"#;
             assert_eq!(
@@ -479,7 +475,6 @@ END:VCALENDAR
 
     #[test]
     fn hostile_or_malformed_multistatus_documents_are_rejected_within_limits() {
-        // Phase `dtd_and_entity_expansion_are_rejected`.
         {
             let laughs = r#"<?xml version="1.0"?>
     <!DOCTYPE lolz [<!ENTITY lol "lol"><!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">]>
@@ -488,7 +483,6 @@ END:VCALENDAR
             let external = r#"<?xml version="1.0"?><!DOCTYPE x [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><multistatus xmlns="DAV:"><response><href>&xxe;</href></response></multistatus>"#;
             assert_eq!(parse_default(external), Err(XmlError::Doctype));
         }
-        // Phase `oversized_documents_are_rejected_before_parsing`.
         {
             let limits = Limits {
                 max_bytes: 64,
@@ -504,7 +498,6 @@ END:VCALENDAR
                 Err(XmlError::TooLarge)
             );
         }
-        // Phase `deep_nesting_is_rejected_without_exhausting_the_stack`.
         {
             let depth = 200_000;
             let xml = format!(
@@ -514,7 +507,6 @@ END:VCALENDAR
             );
             assert_eq!(parse_default(&xml), Err(XmlError::TooDeep));
         }
-        // Phase `node_and_response_counts_are_capped`.
         {
             let many = format!(
                 "<multistatus xmlns=\"DAV:\">{}</multistatus>",
@@ -531,7 +523,6 @@ END:VCALENDAR
             };
             assert_eq!(parse(&many, &limits), Err(XmlError::TooManyNodes));
         }
-        // Phase `non_multistatus_and_malformed_documents_are_errors`.
         {
             assert_eq!(
                 parse_default("<html><body>Login</body></html>"),
@@ -543,7 +534,6 @@ END:VCALENDAR
                 Err(XmlError::NotUtf8)
             );
         }
-        // Phase `missing_empty_or_overlong_hrefs_are_errors`.
         {
             for href in ["", "   "] {
                 let xml = format!(

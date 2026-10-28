@@ -1,5 +1,3 @@
-//! Home and applications receipts against a fixture namespace owned by the
-//! test user, with the installed probes replaced by their recorded answers.
 use super::super::{
     data::{self, APPS, HELPER, HOME, NATIVE, ORIGINAL, Store, TOOLS},
     json,

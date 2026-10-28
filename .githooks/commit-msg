@@ -1,4 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# The policy scripts need Python 3.11 or newer (tomllib). On macOS the python3 first on PATH is
+# often the system's 3.9, which fails every commit; put a newer interpreter's directory first.
+if ! python3 -I -c 'import tomllib' 2>/dev/null; then
+  for py in python3.14 python3.13 python3.12 python3.11 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+    found=$(command -v "$py" 2>/dev/null) || continue
+    dir=$(dirname "$found")
+    if [ -x "$dir/python3" ] && "$dir/python3" -I -c 'import tomllib' 2>/dev/null; then
+      PATH="$dir:$PATH"; export PATH; break
+    fi
+  done
+  if ! python3 -I -c 'import tomllib' 2>/dev/null; then
+    echo "git hook: these checks need Python 3.11 or newer as python3; install it and put it first on PATH" >&2
+    exit 1
+  fi
+fi
 root=$(git rev-parse --show-toplevel)
 python3 "$root/tools/policy/check_commit_message.py" "$1"

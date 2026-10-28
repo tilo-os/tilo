@@ -81,7 +81,6 @@ fn list_filtered(dir: &Path, accept: fn(&str) -> bool) -> Vec<PickEntry> {
     out
 }
 
-/// Whether `dir` can be listed.
 pub fn folder_readable(dir: &Path) -> bool {
     tilo_files::Dir::open(tilo_files::Location::Native(dir.to_path_buf()))
         .and_then(|folder| tilo_files::blocking::list(&folder, &tilo_files::VPath::root()))

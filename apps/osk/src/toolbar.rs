@@ -11,6 +11,8 @@
 use ui::icons::Icon;
 use vello::kurbo::Rect;
 
+use crate::inject::{Modifiers, Symbol};
+
 /// What a toolbar button does when tapped. Distinct from
 /// [`crate::layout::KeyAction`] because toolbar actions operate on the
 /// host text field / clipboard / OSK chrome, not on character output.
@@ -18,10 +20,10 @@ use vello::kurbo::Rect;
 pub enum OskToolbarAction {
     /// Paste literal text from the shared host clipboard into the focused field.
     Paste,
-    /// Send the real indentation key to the focused field.
-    Indent,
-    /// Insert literal text through the trusted input-method commit route.
-    Insert(String),
+    /// Press a real key (Esc, Tab, an arrow) with the latched modifiers.
+    Key(Symbol),
+    /// Latch a modifier for the next key; a second tap locks it.
+    Modifier(ModifierKey),
     /// Opaque focused-field slot; the authenticated session resolves its action.
     Contextual { generation: u32, slot: u32 },
     /// Move the caret one unit left; a custom host may extend its selection.
@@ -30,9 +32,104 @@ pub enum OskToolbarAction {
     SelectionRight,
     /// Dismiss / hide the keyboard.
     Dismiss,
+    /// Put the keys away and keep the strip that brings them back: the panel
+    /// the keyboard lives in shrinks to it, so the app behind gets the screen
+    /// the keys were covering.
+    Park,
+    /// Bring the keys back on a parked keyboard.
+    Unpark,
     /// Escape hatch for app-specific toolbar items kept purely as data
     /// (emoji picker, voice toggle, settings, clipboard history, …).
     Custom(String),
+}
+
+/// A modifier the terminal row latches for the next key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ModifierKey {
+    Ctrl,
+    Alt,
+}
+
+impl ModifierKey {
+    /// The chord this modifier alone holds.
+    #[must_use]
+    pub fn modifiers(self) -> Modifiers {
+        Modifiers {
+            ctrl: self == Self::Ctrl,
+            alt: self == Self::Alt,
+        }
+    }
+}
+
+/// One modifier's state, cycled by taps the way Shift is: one tap holds it
+/// for the next key, a second locks it, a third releases it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Latch {
+    #[default]
+    Off,
+    /// Held for the next key only.
+    Once,
+    /// Held for every key until tapped again.
+    Locked,
+}
+
+impl Latch {
+    #[must_use]
+    pub fn tapped(self) -> Self {
+        match self {
+            Self::Off => Self::Once,
+            Self::Once => Self::Locked,
+            Self::Locked => Self::Off,
+        }
+    }
+
+    #[must_use]
+    pub fn is_on(self) -> bool {
+        self != Self::Off
+    }
+}
+
+/// The terminal row's Ctrl and Alt.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModifierLatches {
+    pub ctrl: Latch,
+    pub alt: Latch,
+}
+
+impl ModifierLatches {
+    #[must_use]
+    pub fn get(self, key: ModifierKey) -> Latch {
+        match key {
+            ModifierKey::Ctrl => self.ctrl,
+            ModifierKey::Alt => self.alt,
+        }
+    }
+
+    pub fn tap(&mut self, key: ModifierKey) {
+        let latch = match key {
+            ModifierKey::Ctrl => &mut self.ctrl,
+            ModifierKey::Alt => &mut self.alt,
+        };
+        *latch = latch.tapped();
+    }
+
+    /// The modifiers the next key is pressed with.
+    #[must_use]
+    pub fn held(self) -> Modifiers {
+        Modifiers {
+            ctrl: self.ctrl.is_on(),
+            alt: self.alt.is_on(),
+        }
+    }
+
+    /// A key was pressed: release what was held for it alone.
+    pub fn spend(&mut self) {
+        for latch in [&mut self.ctrl, &mut self.alt] {
+            if *latch == Latch::Once {
+                *latch = Latch::Off;
+            }
+        }
+    }
 }
 
 /// One toolbar button descriptor.
@@ -67,29 +164,92 @@ impl OskToolbarItem {
         }
     }
 
-    /// Literal editing tools for a field declaring terminal/code input.
+    /// The keys a terminal needs that the letters lack: Esc, Tab, Ctrl and
+    /// Alt (which latch for the next key) and the arrows, then dismissal.
     pub fn terminal_set() -> Vec<Self> {
-        let mut items = vec![Self::new(
-            "indent",
-            Some(Icon::ArrowRight),
-            &ui::i18n::I18nManager::lookup_plain("osk-toolbar-indent"),
-            OskToolbarAction::Indent,
-        )];
-        for symbol in ["{", "}", "(", ")", ";"] {
-            items.push(Self::new(
-                symbol,
+        let key = |id: &str, icon: Option<Icon>, label: &str, symbol: Symbol| {
+            Self::new(
+                id,
+                icon,
+                &crate::i18n::t(label),
+                OskToolbarAction::Key(symbol),
+            )
+        };
+        let modifier = |id: &str, label: &str, modifier: ModifierKey| {
+            Self::new(
+                id,
                 None,
-                symbol,
-                OskToolbarAction::Insert(symbol.into()),
-            ));
-        }
-        items.push(Self::new(
-            "dismiss",
-            Some(Icon::ChevronDown),
-            &ui::i18n::I18nManager::lookup_plain("osk-toolbar-dismiss"),
-            OskToolbarAction::Dismiss,
-        ));
-        items
+                &crate::i18n::t(label),
+                OskToolbarAction::Modifier(modifier),
+            )
+        };
+        vec![
+            key("esc", None, "osk-key-esc", Symbol::Escape),
+            key("tab", None, "osk-key-tab", Symbol::Tab),
+            modifier("ctrl", "osk-key-ctrl", ModifierKey::Ctrl),
+            modifier("alt", "osk-key-alt", ModifierKey::Alt),
+            key("left", Some(Icon::ArrowLeft), "osk-key-left", Symbol::Left),
+            key("down", Some(Icon::ArrowDown), "osk-key-down", Symbol::Down),
+            key("up", Some(Icon::ArrowUp), "osk-key-up", Symbol::Up),
+            key(
+                "right",
+                Some(Icon::ArrowRight),
+                "osk-key-right",
+                Symbol::Right,
+            ),
+            Self::new(
+                "dismiss",
+                Some(Icon::ChevronDown),
+                &ui::i18n::I18nManager::lookup_plain("osk-toolbar-dismiss"),
+                OskToolbarAction::Dismiss,
+            ),
+            // No park item: a terminal's row already spends its width on the
+            // keys that edit a command line, and a tenth item would put every
+            // one of them below the size of a letter. The keyboard is
+            // dismissed from here and parked from a prose field's row.
+        ]
+    }
+
+    /// Whether the item is a key of the terminal row, painted as a key cell
+    /// rather than a toolbar button.
+    #[must_use]
+    pub fn is_key(&self) -> bool {
+        matches!(
+            self.action,
+            OskToolbarAction::Key(_) | OskToolbarAction::Modifier(_)
+        )
+    }
+
+    /// The strip a parked keyboard keeps: the way back to the keys, and the
+    /// way to put the keyboard away altogether.
+    pub fn park_set() -> Vec<Self> {
+        // Words, not glyphs: a strip a person meets once has to say what it
+        // is for.
+        vec![
+            Self::new(
+                "unpark",
+                None,
+                &crate::i18n::t("osk-toolbar-unpark"),
+                OskToolbarAction::Unpark,
+            ),
+            Self::new(
+                "dismiss",
+                None,
+                &crate::i18n::t("osk-toolbar-hide-short"),
+                OskToolbarAction::Dismiss,
+            ),
+        ]
+    }
+
+    /// The item that parks the keys, so the screen they cover is the app's
+    /// again while the keyboard stays one tap away.
+    pub fn park_item() -> Self {
+        Self::new(
+            "park",
+            Some(Icon::Minimize),
+            &crate::i18n::t("osk-toolbar-park"),
+            OskToolbarAction::Park,
+        )
     }
 
     /// The default toolbar: paste, selection-left, selection-right, dismiss.
@@ -121,6 +281,7 @@ impl OskToolbarItem {
                 &crate::i18n::t("osk-toolbar-hide"),
                 OskToolbarAction::Dismiss,
             ),
+            OskToolbarItem::park_item(),
         ]
     }
 }
@@ -154,18 +315,19 @@ mod tests {
         eprintln!("phase default_toolbar_has_four_items");
         {
             let t = OskToolbarItem::default_set();
-            assert_eq!(t.len(), 4);
+            assert_eq!(t.len(), 5, "and the way to park the keys");
             assert_eq!(t[0].action, OskToolbarAction::Paste);
             assert_eq!(t[3].action, OskToolbarAction::Dismiss);
+            assert_eq!(t[4].action, OskToolbarAction::Park);
         }
 
         eprintln!("phase toolbar_rects_split_evenly_and_fill_width");
         {
             let items = OskToolbarItem::default_set();
             let rects = toolbar_rects(&items, Rect::new(0.0, 0.0, 400.0, 50.0));
-            assert_eq!(rects.len(), 4);
+            assert_eq!(rects.len(), 5);
             for (_, r) in &rects {
-                assert!((r.width() - 100.0).abs() < 1e-6);
+                assert!((r.width() - 80.0).abs() < 1e-6);
             }
             assert!((rects.last().unwrap().1.x1 - 400.0).abs() < 1e-6);
         }

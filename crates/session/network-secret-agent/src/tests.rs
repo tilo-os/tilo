@@ -1,7 +1,3 @@
-//! The agent over a peer-to-peer D-Bus link to a stand-in `NetworkManager`,
-//! answered by scripted sheets. The shell's tests drive the same agent into
-//! the sheet the compositor draws, in the shell's words.
-
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -12,8 +8,8 @@ use zeroize::Zeroizing;
 use super::service::{AGENT_IDENTIFIER, CAPABILITY_VPN_HINTS, SheetReply, Sheets};
 use super::store::{RoamingWifi, RoamingWifiSlot, SecretStore, StoreKey, VaultStore};
 use super::testing::{
-    HANG_BOUND, MemoryStore, WIFI_PATH, capture_logs, eap_connection, gsm_connection, link,
-    request_for, string_of, vpn_connection, wifi_psk_connection,
+    MemoryStore, WIFI_PATH, capture_logs, eap_connection, gsm_connection, link, request_for,
+    string_of, vpn_connection, wifi_psk_connection,
 };
 use super::*;
 use tilo_lock::MutexRecover as _;
@@ -25,6 +21,8 @@ struct ScriptedSheets {
     answers: Mutex<VecDeque<Option<SheetAnswer>>>,
     asked: Mutex<Vec<(String, SecretRequest)>>,
     cancelled: Mutex<Vec<String>>,
+    /// Requests the agent could not ask for, by connection id.
+    cannot_ask: Mutex<Vec<String>>,
 }
 
 impl ScriptedSheets {
@@ -45,9 +43,7 @@ impl ScriptedSheets {
 
     /// The first `count` sheets asked for, once they have been.
     async fn sheets_up(&self, count: usize) -> Vec<(String, SecretRequest)> {
-        let deadline = std::time::Instant::now()
-            .checked_add(HANG_BOUND)
-            .expect("the hang bound fits in an Instant");
+        let deadline = tilo_test_env::hang_deadline();
         while std::time::Instant::now() < deadline {
             let asked = self.asked();
             if asked.len() >= count {
@@ -78,6 +74,12 @@ impl Sheets for ScriptedSheets {
 
     fn cancel(&self, handle: &str) {
         self.cancelled.lock_recover().push(handle.to_owned());
+    }
+
+    fn cannot_ask(&self, request: &SecretRequest) {
+        self.cannot_ask
+            .lock_recover()
+            .push(request.connection_id.clone());
     }
 }
 
@@ -531,6 +533,16 @@ fn a_sim_pin_is_asked_as_a_pin() {
     assert_eq!(request.title, Message::new("portal-network-sim-pin-title"));
     assert_eq!(request.fields[0].key, "pin");
     assert!(request.fields[0].masked);
+    assert_eq!(request.kind, RequestKind::SimPin);
+    // The SIM counts wrong PINs; a remembered one is never offered.
+    assert!(!request.remember_default);
+}
+
+#[test]
+fn a_mobile_password_is_asked_as_connection_secrets() {
+    let request = request_for(gsm_connection(), "gsm", &["password"]);
+    assert_eq!(request.kind, RequestKind::Secrets);
+    assert_eq!(request.title, Message::new("portal-network-mobile-title"));
 }
 
 /// The shell's catalogue is checked against [`MESSAGE_KEYS`]; a key the
@@ -661,7 +673,7 @@ async fn serving_from_the_session_runtime_never_blocks_a_runtime_thread() {
         "unix:path=/nonexistent/system-bus",
     );
     let served = tokio::time::timeout(
-        HANG_BOUND,
+        tilo_test_env::hang_bound(),
         service::serve(
             Arc::new(ScriptedSheets::default()),
             RoamingWifiSlot::default(),
@@ -681,4 +693,69 @@ fn setting_secrets_debug_shows_keys_only() {
     let shown = format!("{secrets:?}");
     assert!(shown.contains("psk"), "{shown}");
     assert!(!shown.contains("correct horse"), "{shown}");
+}
+
+/// On 2026-10-19 the laptop's Wi-Fi never came up: each time
+/// `NetworkManager` connected on its own, the session's agent answered with
+/// a remembered password the network rejected, and asked nobody. A
+/// remembered secret `NetworkManager` rejected is never answered again on
+/// its own; the person is told (`cannot_ask`) instead, and what they type
+/// next is remembered and answered from then on.
+#[tokio::test]
+async fn a_rejected_remembered_secret_is_never_answered_again_and_the_person_is_told() {
+    const SETTING: &str = "802-11-wireless-security";
+    const UUID: &str = "5f2c7c9e-0000-4000-8000-000000000001";
+    // A subscriber of its own while it runs: a callsite first hit on a
+    // thread with none is cached as uninteresting, and another test's log
+    // capture would miss it.
+    let (_logs, _guard) = capture_logs();
+    let sheets = ScriptedSheets::answering([Some(typed(&["battery staple"], true))]);
+    let store = Arc::new(MemoryStore::default());
+    let mut stale = SettingSecrets::default();
+    stale.insert("psk", "old horse");
+    store.put(UUID, SETTING, stale);
+    let link = link(
+        Arc::clone(&sheets) as Arc<dyn Sheets>,
+        Arc::clone(&store) as Arc<dyn SecretStore>,
+    )
+    .await;
+    let ask = |flags: u32| link.get_secrets(wifi_psk_connection(), SETTING, Vec::new(), flags);
+
+    // Connecting on its own: the remembered password is the answer.
+    let reply = ask(0).await.await.expect("call task").expect("remembered");
+    assert_eq!(string_of(&reply, SETTING, "psk"), "old horse");
+
+    // The network rejected it; nobody can be asked now.
+    let error = ask(FLAG_REQUEST_NEW)
+        .await
+        .await
+        .expect("call task")
+        .expect_err("no new secrets without asking");
+    assert!(
+        error.to_string().contains("asking is not allowed"),
+        "{error}"
+    );
+
+    // The next connection attempt of its own is not answered with it again.
+    ask(0)
+        .await
+        .await
+        .expect("call task")
+        .expect_err("the rejected password is not answered");
+    assert_eq!(
+        sheets.cannot_ask.lock_recover().as_slice(),
+        ["Home".to_owned(), "Home".to_owned()],
+        "the person is told each time it could not join"
+    );
+    assert!(sheets.asked().is_empty());
+
+    // The person joins and types the new password: remembered and answered.
+    let reply = ask(FLAG_ALLOW_INTERACTION | FLAG_REQUEST_NEW)
+        .await
+        .await
+        .expect("call task")
+        .expect("typed");
+    assert_eq!(string_of(&reply, SETTING, "psk"), "battery staple");
+    let reply = ask(0).await.await.expect("call task").expect("remembered");
+    assert_eq!(string_of(&reply, SETTING, "psk"), "battery staple");
 }

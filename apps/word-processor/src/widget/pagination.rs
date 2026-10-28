@@ -87,6 +87,16 @@ pub(super) fn page_stack_to_flow(stack: f64, letter_h: f64, margins: Edges) -> f
     (stack / pitch).floor() * band_h + (stack % pitch - margins.top).clamp(0.0, band_h)
 }
 
+/// How a page `page_w` wide shows the document's margins: in proportion
+/// on a narrow or enlarged editing sheet, as they are on a print page.
+pub(super) fn margin_scale(page_w: f64, mobile: bool, accessible: bool) -> f64 {
+    if mobile || accessible {
+        (page_w / MAX_PAGE_W).min(1.0)
+    } else {
+        1.0
+    }
+}
+
 pub(super) fn responsive_page_geometry(
     canvas_left: f64,
     canvas_right: f64,
@@ -105,7 +115,7 @@ pub(super) fn responsive_page_geometry(
     if !mobile && !accessible {
         return (page_w, margins);
     }
-    let scale = (page_w / MAX_PAGE_W).min(1.0);
+    let scale = margin_scale(page_w, mobile, accessible);
     (
         page_w,
         Edges {
@@ -884,7 +894,6 @@ impl WordProcessorWidget {
             let bottom = page_content_bottom(fg, cur.cur_page);
             // layout_y maps line `li`'s internal top to `slice_top`.
             let layout_y = slice_top - first_line_top;
-            // Take every subsequent line that still fits on this page.
             let mut last = li;
             while let Some(&(nt, nh)) = lines.get(last + 1) {
                 if layout_y + nt + nh > bottom + 0.5 {
@@ -970,10 +979,14 @@ impl WordProcessorWidget {
         // is magnified by `zoom`, so the visible window covers `fg.canvas.height() /
         // zoom` of content — divide by zoom so the overflow (and thus max scroll)
         // grows when zoomed in and shrinks when zoomed out.
+        // What the status band says and what one key pages by.
+        self.pages = num_pages;
+        self.page_pitch = fg.page_pitch;
         self.scroll_viewport = fg.canvas.height() / self.zoom.factor();
         self.max_scroll =
             (extent + 2.0 * PAGE_TOP - fg.canvas.height() / self.zoom.factor()).max(0.0);
-        self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll);
+        self.follow_find_cover();
+        self.scroll_y = self.scroll_y.clamp(self.scroll_floor(), self.max_scroll);
         let sy = self.scroll_y;
         if sy != 0.0 {
             for l in laid.iter_mut() {

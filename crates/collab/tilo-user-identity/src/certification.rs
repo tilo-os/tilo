@@ -94,10 +94,6 @@ impl CertificationRequest {
     /// The digest the device key signs. A signer that cannot export its key
     /// (a non-extractable `WebCrypto` key) signs these bytes and hands the
     /// signature to [`Self::with_signature`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the request violates its shape bounds.
     pub fn signing_digest(&self) -> Result<[u8; 32], CertificationError> {
         self.validate_shape()?;
         Ok(signing_digest(CERTIFICATION_REQUEST_TAG, &self.view())?)
@@ -115,12 +111,6 @@ impl CertificationRequest {
         Ok(self)
     }
 
-    /// Sign with an in-memory device key.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a malformed request or a key that is not the
-    /// requested device.
     pub fn sign(self, device_key: &ed25519_dalek::SigningKey) -> Result<Self, CertificationError> {
         if device_key.verifying_key().to_bytes() != self.device_public_key {
             return Err(CertificationError::WrongDevice);
@@ -130,10 +120,6 @@ impl CertificationRequest {
     }
 
     /// Verify shape, proof of possession and the validity window.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when any of them fails.
     pub fn verify_at(&self, now_ns: u64) -> Result<(), CertificationError> {
         self.verify_signature()?;
         if now_ns < self.issued_at_ns || now_ns >= self.expires_at_ns {
@@ -143,10 +129,6 @@ impl CertificationRequest {
     }
 
     /// Stable identifier of this exact signed request.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the request violates its shape bounds.
     pub fn digest(&self) -> Result<[u8; 32], CertificationError> {
         let mut hash = blake3::Hasher::new();
         hash.update(&self.signing_digest()?);
@@ -157,10 +139,6 @@ impl CertificationRequest {
     /// Six decimal digits both the requesting page and the approving device
     /// display. A match tells the person approving that the request they see
     /// is the one their browser sent.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the request violates its shape bounds.
     pub fn pairing_code(&self) -> Result<String, CertificationError> {
         let digest = blake3::derive_key("tilo-device-certification-pairing-v1", &self.digest()?);
         let value = u32::from_le_bytes([digest[0], digest[1], digest[2], digest[3]]) % 1_000_000;
@@ -279,11 +257,6 @@ impl CertificationPolicy {
 /// The unsigned certificate an approver would issue for `request` at
 /// `now_ns`. Sign it with [`sign_device_cert`], or have an external root
 /// signer sign [`crate::device_cert_signing_digest`] of it.
-///
-/// # Errors
-///
-/// Returns an error when the request does not verify, is revoked, or names
-/// another user than `user_public_key`.
 pub fn prepare_device_cert(
     request: &CertificationRequest,
     user_public_key: [u8; 32],
@@ -336,11 +309,6 @@ pub fn issue_device_cert(
 
 /// Check that `cert` is a valid, unrevoked answer to exactly `request`
 /// within `policy`.
-///
-/// # Errors
-///
-/// Returns an error for a bad signature, another device, user or label,
-/// capabilities or lifetime beyond the policy, or a revoked device.
 pub fn verify_issued_cert(
     request: &CertificationRequest,
     cert: &DeviceCert,
@@ -391,7 +359,6 @@ pub enum CertificationError {
     /// The request or certificate names another user identity.
     #[error("certificate or request names another user identity")]
     DifferentIdentity,
-    /// The device key is revoked.
     #[error("device is revoked")]
     Revoked,
     /// The certificate does not verify, or the root cannot sign it.

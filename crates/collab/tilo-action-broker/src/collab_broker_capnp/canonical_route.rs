@@ -12,6 +12,10 @@ struct Publisher {
     route: CrdtRoute,
     registration: uuid::Uuid,
     worker: uuid::Uuid,
+    /// The route's custodian is the live worker whose directory was admitted
+    /// first, host-mounted or launched alike: once selected it stays until it
+    /// is no longer live, then the next earliest takes over. Republishing
+    /// keeps a worker's place; a new worker or route is admitted last.
     ordinal: u64,
 }
 
@@ -72,7 +76,7 @@ impl CapnpBrokerState {
             .host_workers
             .lock()
             .map_err(|_| "worker registry unavailable")?
-            .get(&peer)
+            .get(peer, route)
             .and_then(|identity| identity.worker_registration.clone());
         // Ordinary browsing remains available to non-private publishers, but
         // they cannot claim custody of a canonical invocation route.
@@ -127,7 +131,7 @@ impl CapnpBrokerState {
             .host_workers
             .lock()
             .ok()
-            .and_then(|workers| workers.get(&peer).cloned());
+            .and_then(|workers| workers.get(peer, &publisher.route).cloned());
         let Some(identity) = identity else {
             return false;
         };

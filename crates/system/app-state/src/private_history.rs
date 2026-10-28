@@ -44,15 +44,26 @@ impl PrivateAction {
 
 pub(crate) struct PrivateHistory {
     store: Rc<dyn DurableStore>,
-    key: StorageKey,
+    /// Names the owner's slots.
+    identity: String,
+    /// The slot this actor tries first; the others follow in order.
+    first: u64,
+    /// The next slot offset to try while no slot is leased.
+    offset: u64,
+    /// The leased slot. `None` while the store's thread is still opening one
+    /// for a thread that declined waiting: what is recorded meanwhile is kept
+    /// here and joins the slot's own evidence once it opens.
+    slot: Option<(StorageKey, Lease)>,
     entries: VecDeque<PrivateAction>,
     actor: [u8; ACTOR_BYTES],
     dirty: bool,
     revision: Option<Revision>,
     error: Option<String>,
-    _lease: Lease,
 }
 impl PrivateHistory {
+    /// Lease one of the owner's slots and recover its evidence. On a thread
+    /// that declined waiting the slot may still be opening: the history is
+    /// usable at once and takes the slot on a later call.
     pub(crate) fn open(
         store: Rc<dyn DurableStore>,
         owner: &StorageKey,
@@ -68,31 +79,56 @@ impl PrivateHistory {
                 .copied()
                 .unwrap_or_default(),
         ) % SLOTS;
-        let mut acquired = None;
-        for offset in 0..SLOTS {
+        let mut history = Self {
+            store,
+            identity,
+            first,
+            offset: 0,
+            slot: None,
+            entries: VecDeque::new(),
+            actor: *blake3::hash(actor).as_bytes(),
+            dirty: false,
+            revision: None,
+            error: None,
+        };
+        history.take_slot()?;
+        Ok(history)
+    }
+
+    /// Lease the first free slot, unless one is leased. `Ok` while the store
+    /// is still opening the slot it was asked for.
+    fn take_slot(&mut self) -> Result<(), String> {
+        while self.slot.is_none() {
+            if self.offset >= SLOTS {
+                return Err("all private history slots are in use".into());
+            }
             let key = StorageKey::view(
                 "private-action-history",
-                &identity,
-                first.wrapping_add(offset) % SLOTS,
+                &self.identity,
+                self.first.wrapping_add(self.offset) % SLOTS,
             );
-            match store.lease(&key) {
-                Ok(lease) => {
-                    acquired = Some((key, lease));
-                    break;
+            match self.store.lease(&key) {
+                Ok(lease) => self.adopt_slot(key, lease)?,
+                Err(durable_store::StoreError::Busy(_)) => {
+                    self.offset = self.offset.saturating_add(1);
                 }
-                Err(durable_store::StoreError::Busy(_)) => {}
+                Err(durable_store::StoreError::Opening(_)) => return Ok(()),
                 Err(error) => return Err(error.to_string()),
             }
         }
-        let (key, lease) = acquired.ok_or("all private history slots are in use")?;
-        let actor = *blake3::hash(actor).as_bytes();
-        let entries = match store.read(&key).map_err(|e| e.to_string())? {
+        Ok(())
+    }
+
+    /// Recover the slot's evidence, followed by what was recorded while it
+    /// opened.
+    fn adopt_slot(&mut self, key: StorageKey, lease: Lease) -> Result<(), String> {
+        let stored = match self.store.read(&key).map_err(|e| e.to_string())? {
             Some(stored)
                 if stored.bytes.starts_with(MAGIC)
                     && stored
                         .bytes
                         .get(MAGIC.len()..MAGIC.len().saturating_add(ACTOR_BYTES))
-                        == Some(actor.as_slice()) =>
+                        == Some(self.actor.as_slice()) =>
             {
                 decode(&stored.bytes)?
             }
@@ -102,25 +138,28 @@ impl PrivateHistory {
         };
         // Reads may include another live session's accepted writes. Ask the
         // existing worker to settle recovered bytes without awaiting its host.
-        let error = if entries.is_empty() {
-            None
-        } else {
-            match store.flush_without_waiting(&key) {
-                Ok(()) | Err(durable_store::StoreError::Pending(_)) => None,
-                Err(error) => Some(error.to_string()),
+        if !stored.is_empty() {
+            match self.store.flush_without_waiting(&key) {
+                Ok(()) | Err(durable_store::StoreError::Pending(_)) => {}
+                Err(error) => self.error = Some(error.to_string()),
             }
-        };
-        Ok(Self {
-            store,
-            key,
-            entries,
-            actor,
-            dirty: false,
-            revision: None,
-            error,
-            _lease: lease,
-        })
+        }
+        self.slot = Some((key, lease));
+        let recorded = std::mem::replace(&mut self.entries, stored);
+        for entry in recorded {
+            if let Err(error) = self.record(entry) {
+                tracing::warn!(%error, "private action recorded while its history opened was dropped");
+            }
+        }
+        Ok(())
     }
+
+    /// The leased slot's key.
+    #[cfg(test)]
+    fn key(&self) -> &StorageKey {
+        &self.slot.as_ref().expect("a leased slot").0
+    }
+
     pub(crate) fn entries(&self) -> impl Iterator<Item = &PrivateAction> {
         self.entries.iter()
     }
@@ -157,21 +196,26 @@ impl PrivateHistory {
         Ok(())
     }
     pub(crate) fn checkpoint(&mut self) -> Result<(), String> {
+        if self.slot.is_none() {
+            self.take_slot()?;
+        }
+        let Some((key, _)) = &self.slot else {
+            // Still opening: kept until the slot is leased.
+            return Ok(());
+        };
         let failed = matches!(self.durability(), Durability::Failed(_));
         if !self.dirty && !failed && self.error.is_none() {
             return Ok(());
         }
         let bytes = encode(&self.entries, &self.actor)?;
-        self.revision = Some(
-            match self.store.write(&self.key, WriteOp::Replace(bytes), None) {
-                Ok(revision) => revision,
-                Err(error) => {
-                    let error = error.to_string();
-                    self.error = Some(error.clone());
-                    return Err(error);
-                }
-            },
-        );
+        self.revision = Some(match self.store.write(key, WriteOp::Replace(bytes), None) {
+            Ok(revision) => revision,
+            Err(error) => {
+                let error = error.to_string();
+                self.error = Some(error.clone());
+                return Err(error);
+            }
+        });
         self.error = None;
         self.dirty = false;
         Ok(())
@@ -183,9 +227,18 @@ impl PrivateHistory {
         if self.revision.is_none() && self.entries.is_empty() {
             return Ok(());
         }
-        self.store
-            .flush(Some(&self.key))
-            .map_err(|error| error.to_string())
+        let (key, _) = self
+            .slot
+            .as_ref()
+            .ok_or("private action history is still opening")?;
+        match self.store.flush_where_allowed(key) {
+            Ok(()) => Ok(()),
+            // Started on a thread that must not wait; `durability` follows it.
+            Err(durable_store::StoreError::Pending(_)) if durable_store::waiting::forbidden() => {
+                Ok(())
+            }
+            Err(error) => Err(error.to_string()),
+        }
     }
     pub(crate) fn durability(&self) -> Durability {
         if let Some(error) = &self.error {
@@ -194,19 +247,26 @@ impl PrivateHistory {
         if self.dirty {
             return Durability::Pending;
         }
+        let Some((key, _)) = &self.slot else {
+            return if self.entries.is_empty() {
+                Durability::Durable
+            } else {
+                Durability::Pending
+            };
+        };
         self.revision.map_or_else(
             || {
-                if self.entries.is_empty() || self.store.is_settled(&self.key) {
+                if self.entries.is_empty() || self.store.is_settled(key) {
                     Durability::Durable
                 } else {
-                    match self.store.flush_without_waiting(&self.key) {
+                    match self.store.flush_without_waiting(key) {
                         Ok(()) => Durability::Durable,
                         Err(durable_store::StoreError::Pending(_)) => Durability::Pending,
                         Err(error) => Durability::Failed(error.to_string()),
                     }
                 }
             },
-            |revision| self.store.durability(&self.key, revision),
+            |revision| self.store.durability(key, revision),
         )
     }
 }
@@ -296,6 +356,59 @@ mod tests {
     use automerge::transaction::Transactable;
     use durable_store::MemoryStore;
 
+    /// On a thread that declined waiting, history opens at once and keeps
+    /// what is recorded until the store's thread has opened its slot, then
+    /// checkpoints it there after the slot's own evidence.
+    #[test]
+    fn history_recorded_while_its_slot_opens_joins_the_slots_evidence() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let fs = Rc::new(crate::FsStore::with_debounce(
+            tmp.path(),
+            std::time::Duration::ZERO,
+        ));
+        let store: Rc<dyn DurableStore> = fs.clone();
+        let owner = StorageKey::package("so.tilo.test");
+        let earlier = PrivateAction {
+            id: [1; 16],
+            hashes: vec![],
+            intent: b"earlier".to_vec(),
+            receipt: None,
+        };
+        {
+            let mut history = PrivateHistory::open(store.clone(), &owner, b"actor").unwrap();
+            history.record(earlier.clone()).unwrap();
+            history.checkpoint().unwrap();
+            history.flush().unwrap();
+        }
+        let (notify, notified) = std::sync::mpsc::channel();
+        durable_store::waiting::decline_on_this_thread(std::sync::Arc::new(move || {
+            let _ = notify.send(());
+        }));
+        let mut history = PrivateHistory::open(store.clone(), &owner, b"actor").unwrap();
+        assert!(
+            history.slot.is_none(),
+            "the slot opened on the caller's thread"
+        );
+        let later = PrivateAction {
+            id: [2; 16],
+            hashes: vec![],
+            intent: b"later".to_vec(),
+            receipt: None,
+        };
+        history.record(later.clone()).unwrap();
+        assert_eq!(history.durability(), Durability::Pending);
+        history.checkpoint().unwrap();
+        tilo_test_env::recv("the slot's wake", &notified);
+        history.checkpoint().unwrap();
+        assert!(history.slot.is_some());
+        assert_eq!(
+            history.entries().cloned().collect::<Vec<_>>(),
+            [earlier, later]
+        );
+        drop(history);
+        assert!(fs.flush(None).is_ok());
+    }
+
     #[test]
     fn colliding_actors_never_recover_each_others_intents_or_receipts() {
         let store: Rc<dyn DurableStore> = Rc::new(MemoryStore::new());
@@ -313,7 +426,7 @@ mod tests {
             receipt: Some(b"private receipt".to_vec()),
         };
         let mut history = PrivateHistory::open(store.clone(), &owner, first).unwrap();
-        let key = history.key.clone();
+        let key = history.key().clone();
         history.record(evidence.clone()).unwrap();
         history.checkpoint().unwrap();
         history.flush().unwrap();
@@ -325,7 +438,7 @@ mod tests {
         );
         drop(recovered);
         let collision = PrivateHistory::open(store.clone(), &owner, &second).unwrap();
-        assert_eq!(collision.key, key);
+        assert_eq!(*collision.key(), key);
         assert_eq!(collision.entries().count(), 0);
     }
 
@@ -345,12 +458,12 @@ mod tests {
         live.record(evidence.clone()).unwrap();
         live.checkpoint().unwrap();
         live.flush().unwrap();
-        let live_bytes = store.read(&live.key).unwrap().unwrap().bytes;
+        let live_bytes = store.read(live.key()).unwrap().unwrap().bytes;
         let mut other_history = PrivateHistory::open(store.clone(), &other, b"other").unwrap();
         other_history.record(evidence).unwrap();
         other_history.checkpoint().unwrap();
         other_history.flush().unwrap();
-        let other_bytes = store.read(&other_history.key).unwrap().unwrap().bytes;
+        let other_bytes = store.read(other_history.key()).unwrap().unwrap().bytes;
         let sentinel = directory.path().join("user-document");
         std::fs::write(&sentinel, b"legitimate user data").unwrap();
 
@@ -359,7 +472,7 @@ mod tests {
             let session: Rc<dyn DurableStore> = Rc::new(crate::FsStore::new(directory.path()));
             let mut history =
                 PrivateHistory::open(session.clone(), &owner, &actor.to_le_bytes()).unwrap();
-            assert_ne!(history.key, live.key);
+            assert_ne!(history.key(), live.key());
             for id in 0..=LIMIT {
                 history
                     .record(PrivateAction {
@@ -389,7 +502,7 @@ mod tests {
             let mut bytes = 0;
             let StorageKey::View {
                 device, workspace, ..
-            } = &live.key
+            } = live.key()
             else {
                 panic!("private history must use a view key")
             };
@@ -406,9 +519,9 @@ mod tests {
             assert!(
                 bytes <= usize::try_from(SLOTS).unwrap() * (BUDGET + MAGIC.len() + ACTOR_BYTES)
             );
-            assert_eq!(store.read(&live.key).unwrap().unwrap().bytes, live_bytes);
+            assert_eq!(store.read(live.key()).unwrap().unwrap().bytes, live_bytes);
             assert_eq!(
-                store.read(&other_history.key).unwrap().unwrap().bytes,
+                store.read(other_history.key()).unwrap().unwrap().bytes,
                 other_bytes
             );
         }
@@ -419,12 +532,12 @@ mod tests {
             held.push(PrivateHistory::open(session, &owner, &actor.to_le_bytes()).unwrap());
         }
         assert!(PrivateHistory::open(store.clone(), &owner, b"overflow").is_err());
-        let freed = held.pop().unwrap().key;
+        let freed = held.pop().unwrap().key().clone();
         let replacement = PrivateHistory::open(store.clone(), &owner, b"replacement").unwrap();
-        assert_eq!(replacement.key, freed);
+        assert_eq!(*replacement.key(), freed);
         assert_eq!(std::fs::read(sentinel).unwrap(), b"legitimate user data");
         // Slot files and their permanent gates are the only owner metadata.
-        let path = store.local_path(&replacement.key).unwrap();
+        let path = store.local_path(replacement.key()).unwrap();
         assert!(
             std::fs::read_dir(path.parent().unwrap()).unwrap().count()
                 <= 2 * usize::try_from(SLOTS).unwrap()

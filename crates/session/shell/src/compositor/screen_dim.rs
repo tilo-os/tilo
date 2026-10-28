@@ -7,6 +7,8 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use super::idle::SessionManager;
+
 /// Set while the idle dim holds the backlight, so the ambient-light loop does not raise it
 /// again behind the user's back; the dim restores the level itself on input.
 static BACKLIGHT_HELD: AtomicBool = AtomicBool::new(false);
@@ -100,17 +102,37 @@ impl<B: Backlight> ScreenDimmer<B> {
     }
 
     /// Put the display back to the brightness it had before [`Self::dim`].
+    /// A failed write keeps the saved level for the next restore, so the
+    /// dimmed level is never taken for the user's own.
     pub fn restore(&mut self) {
         if let Dim::Backlight(saved) = self.dim {
-            self.backlight.set_brightness(saved);
+            if !self.backlight.set_brightness(saved) {
+                return;
+            }
             BACKLIGHT_HELD.store(false, Ordering::Relaxed);
         }
         self.dim = Dim::Off;
     }
 
+    /// Keep the session's dim state what the panel shows. A restore the
+    /// driver refused leaves the panel dimmed, so the session must not take
+    /// it for lifted: the next input then lifts it again.
+    pub fn keep_session_truthful(&self, session: &mut SessionManager) {
+        if matches!(self.dim, Dim::Backlight(_)) {
+            session.keep_dimmed();
+        }
+    }
+
     /// Opacity of the dimming overlay the paint path must draw on top of the scene, if any.
     pub fn overlay_alpha(&self) -> Option<f32> {
         (self.dim == Dim::Overlay).then_some(OVERLAY_ALPHA)
+    }
+}
+
+impl<B: Backlight> Drop for ScreenDimmer<B> {
+    /// A session ending while dimmed leaves the panel at the user's level.
+    fn drop(&mut self) {
+        self.restore();
     }
 }
 
@@ -134,13 +156,14 @@ mod tests {
     struct FakeBacklight {
         level: RefCell<Option<f32>>,
         writes: RefCell<Vec<f32>>,
+        refuses: std::cell::Cell<bool>,
     }
 
     impl FakeBacklight {
         fn at(level: f32) -> Self {
             Self {
                 level: RefCell::new(Some(level)),
-                writes: RefCell::default(),
+                ..Self::default()
             }
         }
     }
@@ -150,7 +173,7 @@ mod tests {
             *self.level.borrow()
         }
         fn set_brightness(&self, fraction: f32) -> bool {
-            if self.level.borrow().is_none() {
+            if self.level.borrow().is_none() || self.refuses.get() {
                 return false;
             }
             *self.level.borrow_mut() = Some(fraction);
@@ -195,5 +218,67 @@ mod tests {
         dimmer.restore();
         assert_eq!(dimmer.overlay_alpha(), None);
         assert!(backlight.writes.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_failed_restore_keeps_the_saved_level_for_the_next_one() {
+        let backlight = FakeBacklight::at(0.8);
+        let mut dimmer = ScreenDimmer::new(&backlight);
+        dimmer.dim();
+        backlight.refuses.set(true);
+        dimmer.restore();
+        dimmer.dim();
+        backlight.refuses.set(false);
+        dimmer.restore();
+        assert_eq!(*backlight.level.borrow(), Some(0.8));
+    }
+
+    #[test]
+    fn a_refused_restore_leaves_the_session_dimmed_for_the_next_input() {
+        use crate::compositor::idle::{IdleConfig, SessionTransition};
+        use std::time::{Duration, Instant};
+        let backlight = FakeBacklight::at(0.8);
+        let mut dimmer = ScreenDimmer::new(&backlight);
+        let start = Instant::now();
+        let mut session = SessionManager::new(
+            IdleConfig {
+                blank_timeout: Some(Duration::from_secs(600)),
+                lock_timeout: None,
+                suspend_timeout: None,
+            },
+            start,
+        );
+        let mut apply = |transitions: Vec<SessionTransition>, session: &mut SessionManager| {
+            for transition in transitions {
+                match transition {
+                    SessionTransition::Dimmed => dimmer.dim(),
+                    SessionTransition::Undimmed => dimmer.restore(),
+                    _ => {}
+                }
+            }
+            dimmer.keep_session_truthful(session);
+        };
+        let at = |seconds| start + Duration::from_secs(seconds);
+        apply(session.tick(at(590)), &mut session);
+        assert!(session.is_dimmed());
+        backlight.refuses.set(true);
+        apply(session.note_activity(at(591)), &mut session);
+        assert!(
+            session.is_dimmed(),
+            "a dim that could not be lifted is still the display's state"
+        );
+        backlight.refuses.set(false);
+        apply(session.note_activity(at(592)), &mut session);
+        assert_eq!(*backlight.level.borrow(), Some(0.8));
+        assert!(!session.is_dimmed());
+    }
+
+    #[test]
+    fn dropping_a_dimmed_session_restores_the_backlight() {
+        let backlight = FakeBacklight::at(0.6);
+        let mut dimmer = ScreenDimmer::new(&backlight);
+        dimmer.dim();
+        drop(dimmer);
+        assert_eq!(*backlight.level.borrow(), Some(0.6));
     }
 }

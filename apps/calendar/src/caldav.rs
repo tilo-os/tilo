@@ -976,7 +976,6 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
 
         #[test]
         fn fake_server_listing_reports_are_incremental_canonical_and_bounded() {
-            // Case `fake_server_receives_incremental_report_and_href_is_canonical`.
             {
                 let server =
                     Responder::start(vec![Reply::status(207).body(multistatus("token-2"))]);
@@ -1001,7 +1000,6 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
                 assert_eq!(result.checkpoints[0].token, "token-2");
                 assert!(!result.checkpoints[0].full);
             }
-            // Case `fake_server_invalid_token_falls_back_to_authoritative_report`.
             {
                 let server = Responder::start(vec![
                     Reply::status(403),
@@ -1022,7 +1020,6 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
                 assert!(result.checkpoints[0].full);
                 assert_eq!(result.checkpoints[0].token, "replacement");
             }
-            // Case `full_listing_without_token_discovers_one_by_propfind`.
             {
                 let listing = multistatus("").replace("<D:sync-token></D:sync-token>", "");
                 let discovery = r#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/cal/</d:href><d:propstat><d:prop><d:sync-token>http://sabre.io/ns/sync/7</d:sync-token></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#;
@@ -1046,7 +1043,6 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
                 assert_eq!(result.checkpoints[0].token, "http://sabre.io/ns/sync/7");
                 assert!(result.checkpoints[0].full);
             }
-            // Case `non_multistatus_success_is_not_an_empty_authoritative_listing`.
             {
                 let server = Responder::start(vec![Reply::status(200).body("<html>portal</html>")]);
                 let error = pull_calendar_live(
@@ -1059,7 +1055,6 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
                 .expect_err("an HTML page must not read as an empty calendar");
                 assert_eq!(error, "calendar server returned malformed XML");
             }
-            // Case `oversized_report_is_refused_without_a_content_length`.
             {
                 let server = Responder::start(vec![
                     Reply::status(207)
@@ -1116,7 +1111,6 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
 
         #[test]
         fn fake_server_writes_are_conditional_and_precondition_failures_conflict() {
-            // Case `fake_server_observes_conditional_put_and_delete`.
             {
                 let server = Responder::start(vec![
                     Reply::status(200).header("ETag", "\"v2\""),
@@ -1175,7 +1169,6 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
                 );
                 assert_eq!(delete.header("if-match"), Some("\"v2\""));
             }
-            // Case `precondition_failures_surface_as_conflicts`.
             {
                 let server = Responder::start(vec![Reply::status(412), Reply::status(412)]);
                 let config = config(server.url());
@@ -1228,7 +1221,6 @@ mod tests {
 
     #[test]
     fn pull_and_sync_tag_events_skip_hidden_and_report_offline() {
-        // Case `pull_tags_events_with_calendar_colour`.
         {
             let store = AccountStore::sample();
             let (account, cal) = store
@@ -1237,10 +1229,8 @@ mod tests {
                 .unwrap();
             let res = pull_calendar(&account.config, cal, today());
             assert!(!res.events.is_empty());
-            // Every synced event carries the source calendar's palette.
             assert!(res.events.iter().all(|e| e.color == cal.palette()));
         }
-        // Case `pull_tags_events_with_source_calendar_id`.
         {
             // The visibility toggle needs synced events to remember which calendar
             // they came from; the pull path stamps every event with `cal.id`.
@@ -1258,7 +1248,6 @@ mod tests {
                 "every synced event is tagged with its source calendar id"
             );
         }
-        // Case `sync_all_skips_hidden_calendars`.
         {
             let store = AccountStore::sample();
             let accounts: Vec<_> = store
@@ -1273,13 +1262,11 @@ mod tests {
             // The hidden "Holidays" calendar's event must not appear.
             assert!(!res.events.iter().any(|e| e.title == "Public holiday"));
         }
-        // Case `empty_account_set_reports_offline`.
         {
             let (res, outcome) = sample_pull_all(&[], today());
             assert!(res.is_empty());
             assert_eq!(outcome, SyncOutcome::Offline);
         }
-        // Case `live_sync_with_no_accounts_is_offline_and_empty`.
         {
             // The real path never fabricates: with nothing configured it returns
             // an empty Offline result (and, without the `live` feature, always).
@@ -1287,7 +1274,6 @@ mod tests {
             assert!(res.is_empty());
             assert_eq!(outcome, SyncOutcome::Offline);
         }
-        // Case `synced_events_parse_through_real_ics_path`.
         {
             // Prove the payload travels ics::export -> ics::parse, not a struct
             // shortcut: a recurring synced event keeps its RRULE round-trip.
@@ -1308,7 +1294,6 @@ mod tests {
 
     #[test]
     fn write_requests_target_one_resource_and_stay_inert_without_live() {
-        // Case `build_put_request_targets_collection_and_carries_event_ics`.
         {
             use crate::model::Event;
             use chrono::NaiveDate;
@@ -1331,18 +1316,15 @@ mod tests {
                 ..Event::default()
             };
             let req = build_put_request(&account.config, cal, &ev);
-            // URL is the event resource under the collection.
             assert!(
                 req.url.starts_with(&account.config.server_url),
                 "url = {}",
                 req.url
             );
             assert!(req.url.ends_with(&format!("{}.ics", ev.id)));
-            // Body is a real one-event VCALENDAR carrying the title.
             assert!(req.body.contains("BEGIN:VEVENT"));
             assert!(req.body.contains("Kickoff"));
         }
-        // Case `build_delete_request_targets_the_same_resource_as_the_put`.
         {
             let store = AccountStore::sample();
             let (account, cal) = store
@@ -1358,7 +1340,6 @@ mod tests {
             );
             assert!(del.url.ends_with(&format!("{uid}.ics")));
         }
-        // Case `remove_jobs_without_live_feature_removes_nothing`.
         {
             // Symmetric with push: the headless build has no transport, so delete is
             // an honest no-op that keeps the queue rather than faking a success.
@@ -1375,7 +1356,6 @@ mod tests {
             assert!(run(remove_jobs(&jobs)).confirmed.is_empty());
             let _ = jobs;
         }
-        // Case `push_jobs_without_live_feature_uploads_nothing`.
         {
             // The default headless build has no transport: push is an honest no-op
             // that keeps the queue rather than fabricating a successful upload.
@@ -1404,7 +1384,6 @@ mod tests {
             assert!(run(push_jobs(&jobs)).confirmed.is_empty());
             let _ = jobs;
         }
-        // Case `new_put_is_create_only_until_a_remote_etag_is_known`.
         {
             let store = AccountStore::sample();
             let (account, cal) = store.all_calendars().next().unwrap();
@@ -1419,7 +1398,6 @@ mod tests {
 
     #[test]
     fn multistatus_parses_identity_and_rejects_malformed_input() {
-        // Case `multistatus_parses_stable_identity_revision_token_and_deletion`.
         {
             let xml = r#"<?xml version="1.0"?>
 <D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
@@ -1441,19 +1419,16 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
             assert_eq!(parsed.deleted, vec!["/cal/gone.ics"]);
             assert!(parsed.changed[0].2.contains("SUMMARY:Review"));
         }
-        // Case `malformed_and_oversized_multistatus_are_rejected_without_partial_data`.
         {
             assert!(parse_multistatus("<D:multistatus>").is_err());
             let oversized = "x".repeat(MAX_XML_BYTES + 1);
             assert!(parse_multistatus(&oversized).is_err());
         }
-        // Case `sync_token_is_xml_escaped`.
         {
             let body = sync_collection_body("a<&\"'>");
             assert!(body.contains("a&lt;&amp;&quot;&apos;&gt;"));
             assert!(!body.contains("a<&"));
         }
-        // Case `absolute_and_path_dav_hrefs_share_one_identity`.
         {
             assert!(hrefs_equal(
                 "https://calendar.example/dav/work/a.ics",

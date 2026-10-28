@@ -86,9 +86,11 @@ fn mounted_typing_observes_canonical_projection_scaling() {
                 assert!(rows.iter().any(|row| row.phase == phase), "{phase}");
             }
             assert!(!frames.is_empty(), "actual frame-pass observations");
+            // No `framework.resource_tree` and no head phases (`schema.*`,
+            // `resource.*_spec`): typing into a page's body changes nothing its
+            // publication shows, so the published head and tree are reused.
             for phase in [
                 "framework.publication",
-                "framework.resource_tree",
                 "framework.live_sync",
                 "framework.view_storage_refresh",
                 "framework.access_refresh",
@@ -100,17 +102,6 @@ fn mounted_typing_observes_canonical_projection_scaling() {
                         .iter()
                         .map(|row| &row.phase)
                         .collect::<Vec<_>>()
-                );
-            }
-            for phase in [
-                "schema.cached_clone",
-                "resource.apply_spec",
-                "resource.group_spec",
-                "resource.declaration_spec",
-            ] {
-                assert!(
-                    resource_rows.iter().any(|row| row.phase == phase),
-                    "{phase}"
                 );
             }
             if sample >= 2 {

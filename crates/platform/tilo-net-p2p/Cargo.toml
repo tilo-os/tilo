@@ -1,0 +1,25 @@
+[package]
+name = "tilo-net-p2p"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+description = "Peer-to-peer frame streams between endpoints that dial each other by ticket: iroh QUIC on the desktop, unsupported in a page. A crate of its own so the peer transport never reaches the shared app runtime through tilo-net."
+
+[lib]
+name = "tilo_net_p2p"
+path = "src/lib.rs"
+
+[dependencies]
+tilo-net = { path = "../tilo-net" }
+wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["tokio"] }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+iroh.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "sync"] }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

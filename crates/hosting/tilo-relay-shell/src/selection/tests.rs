@@ -1,4 +1,3 @@
-//! Shell selection regressions over public real-owner and signed synthetic inputs.
 #![allow(
     clippy::similar_names,
     reason = "paired test fixtures are named after the roles they mirror"
@@ -29,8 +28,6 @@ use tilo_relay_store::frames::incoming_identity;
 use tilo_relay_store::shell::RetainOutcome;
 
 mod tail_cache_tests;
-
-// ---- shared drivers -------------------------------------------------------
 
 fn finish<T>(mut step: impl FnMut() -> Step<T>) -> T {
     loop {
@@ -138,8 +135,6 @@ fn assert_selected_complete(store: &WorkspaceStore) {
     assert!(selected.basis.complete());
 }
 
-// ---- replay and admission -------------------------------------------------
-
 fn encoded(frames: &[Envelope]) -> Vec<Vec<u8>> {
     frames
         .iter()
@@ -167,8 +162,6 @@ fn active_retained_count(store: &WorkspaceStore) -> usize {
         })
         .sum()
 }
-
-// ---- real-owner producer fixture ------------------------------------------
 
 fn producer_frames(meta: &serde_json::Value, group: &str, time: u64) -> Vec<Vec<u8>> {
     meta[group]
@@ -215,8 +208,6 @@ fn reopen_bound(tmp: &Path, id: u64, authority: RetentionAuthority) -> Workspace
     store.bind_shell_authority(authority).unwrap();
     store
 }
-
-// ---- signed synthetic owner -----------------------------------------------
 
 const SYNTHETIC_ROOM: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
@@ -432,7 +423,6 @@ fn changed_snapshot_frame(raw: &[u8], change: &str) -> Vec<u8> {
         "source" => author_device_public_key[0] ^= 1,
         "channel" => channel[0] ^= 1,
         "body" => {
-            // Preserve the route, invalidate the signature.
             let mut message: NeighbourMsg = postcard::from_bytes(&body).unwrap();
             let NeighbourMsg::AppDocument { envelope, .. } = &mut message else {
                 panic!()
@@ -452,8 +442,6 @@ fn changed_snapshot_frame(raw: &[u8], change: &str) -> Vec<u8> {
     .unwrap();
     tilo_relay::transport::encode(&envelope).unwrap()
 }
-
-// ---- captured shell replay ------------------------------------------------
 
 #[test]
 fn captured_shell_store_selection_replays_exact_current_pairs() {
@@ -564,8 +552,6 @@ fn shell_selection_interrupted_gc_preserves_historical_proof_until_retirement_is
         "restart must finish proven retirement after old originals were unlinked"
     );
 }
-
-// ---- producer fixture selection -------------------------------------------
 
 #[test]
 fn producer_fixture_replays_through_real_retained_admission() {
@@ -813,8 +799,6 @@ fn retained_authority_accepts_only_its_exact_room_binding() {
     let mut store = WorkspaceStore::open(tmp.path(), unrelated, true).unwrap();
     assert!(store.bind_shell_authority(authority).is_err());
 }
-
-// ---- selector internals over the producer fixture -------------------------
 
 #[test]
 fn unchanged_basis_does_not_repeat_snapshot_verification() {
@@ -1168,7 +1152,10 @@ fn serial_suppressed_prefix_rejected_cut_requires_coherent_release_or_replay() {
 
 fn rejected_checkpoint_fixture(serial: bool) {
     let (key, authority, mut owner, now) = synthetic_owner();
-    let cp1 = owner.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let cp1 = owner
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 1)
+        .unwrap();
     let next_sequence = document_seq(&cp1[1]).saturating_add(1);
 
     // The prospective checkpoint admits branch A at next_sequence. A signed
@@ -1194,7 +1181,10 @@ fn rejected_checkpoint_fixture(serial: bool) {
     owner
         .admit_local_app_document("selector.app", "one", *envelope, now)
         .unwrap();
-    let cp2 = owner.durable_bootstrap_messages(&key, now, 2).unwrap();
+    let cp2 = owner
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 2)
+        .unwrap();
 
     let mut branch_b = automerge::AutoCommit::load(&baseline).unwrap();
     branch_b.set_actor(automerge::ActorId::from(vec![72]));
@@ -1321,8 +1311,14 @@ fn projected_checkpoint_prefix_exposes_the_route_count_cutoff() {
             .collect();
         let mut owner = seeded_owner(room, &cert, &key, documents, now);
         let authority = RetentionAuthority::new(room, cert).unwrap();
-        let baseline = owner.durable_bootstrap_messages(&key, now, 1).unwrap();
-        let next = owner.durable_bootstrap_messages(&key, now, 2).unwrap();
+        let baseline = owner
+            .publication_mut()
+            .durable_bootstrap_messages(&key, now, 1)
+            .unwrap();
+        let next = owner
+            .publication_mut()
+            .durable_bootstrap_messages(&key, now, 2)
+            .unwrap();
         assert_eq!(baseline.len(), document_count + 1);
         assert_eq!(next.len(), document_count + 1);
 
@@ -1520,8 +1516,6 @@ fn promoted_prefix_repairs_on_reopen_and_suffix_republish_completes_the_cut() {
         "current checkpoint republish is accepted or semantically suppressed after repair"
     );
 }
-
-// ---- selected generation durability ---------------------------------------
 
 #[test]
 fn selected_switch_failure_keeps_previous_durable_basis_and_retires_no_input() {
@@ -1813,12 +1807,13 @@ fn recovery_cursor_rejects_other_workspace_before_publication() {
     );
 }
 
-// ---- signed synthetic selection -------------------------------------------
-
 #[test]
 fn subscription_replay_falls_back_to_current_when_current_tail_is_a_prerequisite() {
     let (key, authority, mut owner, now) = synthetic_owner();
-    let cp1 = owner.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let cp1 = owner
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 1)
+        .unwrap();
     let seq = document_seq(&cp1[1]);
     let mut branch =
         automerge::AutoCommit::load(&owner.document("selector.app", "one").unwrap()).unwrap();
@@ -1861,7 +1856,10 @@ fn subscription_replay_falls_back_to_current_when_current_tail_is_a_prerequisite
     assert!(removed_original, "fixture did not isolate T1 in CURRENT");
     drop(store);
 
-    let cp2 = owner.durable_bootstrap_messages(&key, now, 2).unwrap();
+    let cp2 = owner
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 2)
+        .unwrap();
     let cp2_frames = cp2
         .iter()
         .map(|msg| synthetic_frame(&authority, msg, true))
@@ -1948,7 +1946,10 @@ fn subscription_replay_falls_back_to_current_when_current_tail_is_a_prerequisite
 #[test]
 fn shell_selection_uncovered_tail_blocks_new_floor_until_complete_successor_contains_it() {
     let (key, authority, mut owner, now) = synthetic_owner();
-    let cp1 = owner.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let cp1 = owner
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 1)
+        .unwrap();
     let baseline = owner.clone();
     let mut branch =
         automerge::AutoCommit::load(&owner.document("selector.app", "one").unwrap()).unwrap();
@@ -1956,7 +1957,10 @@ fn shell_selection_uncovered_tail_blocks_new_floor_until_complete_successor_cont
     branch.put(automerge::ROOT, "uncovered", "T2").unwrap();
     branch.commit_edit("fixture", "uncovered");
     let tail_bytes = changes_since(&mut branch, &old_heads);
-    let cp2 = owner.durable_bootstrap_messages(&key, now, 2).unwrap();
+    let cp2 = owner
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 2)
+        .unwrap();
     let tail = incremental(&key, &authority, tail_bytes, document_seq(&cp2[1]), now);
     let (_tmp, store) = bound_store(authority.clone());
     retain_synthetic(&store, &authority, &cp1, true);
@@ -1985,7 +1989,10 @@ fn shell_selection_uncovered_tail_blocks_new_floor_until_complete_successor_cont
     owner
         .admit_local_app_document("selector.app", "one", *envelope, now)
         .unwrap();
-    let cp4 = owner.durable_bootstrap_messages(&key, now, 4).unwrap();
+    let cp4 = owner
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 4)
+        .unwrap();
     retain_synthetic(&store, &authority, &cp4, true);
     let frames = replay_frames(&store);
     assert_eq!(
@@ -2006,7 +2013,10 @@ fn shell_selection_uncovered_tail_blocks_new_floor_until_complete_successor_cont
 #[test]
 fn shell_selection_preserves_invalid_foreign_and_unknown_records() {
     let (key, authority, mut owner, now) = synthetic_owner();
-    let cp1 = owner.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let cp1 = owner
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 1)
+        .unwrap();
     let (_tmp, store) = bound_store(authority.clone());
     retain_synthetic(&store, &authority, &cp1, true);
     let mut invalid = cp1[1].clone();
@@ -2040,7 +2050,10 @@ fn shell_selection_preserves_invalid_foreign_and_unknown_records() {
     })
     .unwrap();
     retain(&store, &unknown);
-    let cp2 = owner.durable_bootstrap_messages(&key, now, 2).unwrap();
+    let cp2 = owner
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 2)
+        .unwrap();
     retain_synthetic(&store, &authority, &cp2, true);
     let frames = encoded(&replay_frames(&store));
     for original in [invalid, foreign, unknown] {
@@ -2054,7 +2067,10 @@ fn shell_selection_preserves_invalid_foreign_and_unknown_records() {
 #[test]
 fn initial_shell_basis_replays_independent_reversed_author_tails_in_exact_sequence_order() {
     let (key, authority, mut owner, now) = synthetic_owner();
-    let cp = owner.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let cp = owner
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 1)
+        .unwrap();
     let first_seq = document_seq(&cp[1]) + 1;
     let mut tails = Vec::new();
     let mut expected =
@@ -2113,6 +2129,7 @@ fn reopened_shell_basis_replays_dependent_tails_cumulatively_in_signed_sequence_
     let (key, authority, owner, now) = synthetic_owner();
     let cp = owner
         .clone()
+        .publication_mut()
         .durable_bootstrap_messages(&key, now, 1)
         .unwrap();
     let first_seq = document_seq(&cp[1]) + 1;
@@ -2175,7 +2192,10 @@ fn reopened_shell_basis_replays_dependent_tails_cumulatively_in_signed_sequence_
 fn initial_shell_conflict_or_t2_without_t1_remains_unselected() {
     for conflicting in [false, true] {
         let (key, authority, mut owner, now) = synthetic_owner();
-        let cp = owner.durable_bootstrap_messages(&key, now, 1).unwrap();
+        let cp = owner
+            .publication_mut()
+            .durable_bootstrap_messages(&key, now, 1)
+            .unwrap();
         let seq = document_seq(&cp[1]) + 1;
         let base = owner.document("selector.app", "one").unwrap();
         let mut branch = automerge::AutoCommit::load(&base).unwrap();

@@ -452,7 +452,6 @@ mod tests {
             "the limb lifts to a point: {}",
             last.pressure
         );
-        // Twigs reach beyond the limb's own tip.
         let top = pieces
             .iter()
             .flat_map(|(p, _)| p.points.iter().map(|point| point.y))

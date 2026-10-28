@@ -290,6 +290,7 @@ impl OriginalCopyReadAdmission {
         let sources = self.sources.as_ref().ok_or(io::ErrorKind::NotConnected)?;
         let home = sources.original.clone_original_home()?;
         let omissions = sources.original.original_omissions()?;
+        let exclusions = sources.original.original_exclusions()?;
         let mounted = match (&sources.mounted, self.declaration.mounted_witness()) {
             (Some(epoch), Some(witness)) => Some(super::worker::OriginalMountedClaim::admitted(
                 witness,
@@ -304,6 +305,7 @@ impl OriginalCopyReadAdmission {
             self.declaration.setup_binding(),
             self.declaration.identity_public_key(),
             &omissions,
+            &exclusions,
             sources.flatpak.as_ref().map(|sources| sources.claim()),
             mounted.as_ref(),
         )?;

@@ -19,7 +19,7 @@ pub(super) struct PrimaryArgs {
     #[arg(long)]
     dry_run: bool,
     /// The production identity and Files permission check.
-    #[arg(long, default_value = "/usr/bin/tilo-relay-admin")]
+    #[arg(long, default_value = "/usr/libexec/tilo/tilo-relay-admin")]
     admin_binary: PathBuf,
 }
 
@@ -28,6 +28,9 @@ struct Paths {
     identity: PathBuf,
     config: PathBuf,
     runtime: PathBuf,
+    /// The storage socket alone, so Settings can be handed this directory
+    /// without the blob and authority sockets in `runtime`.
+    storage: PathBuf,
 }
 
 fn paths(env: &dyn Fn(&str) -> Option<OsString>) -> Result<Paths> {
@@ -38,12 +41,15 @@ fn paths(env: &dyn Fn(&str) -> Option<OsString>) -> Result<Paths> {
     let base =
         |name: &str, fallback: &str| var(name).map_or_else(|| home.join(fallback), PathBuf::from);
     let data_home = base("XDG_DATA_HOME", ".local/share");
+    let runtime_dir = PathBuf::from(runtime_dir);
     let paths = Paths {
         state: base("XDG_STATE_HOME", ".local/state").join("tilo/files"),
         identity: var("TILO_IDENTITY_ROOT").map_or_else(|| data_home.join("tilo"), PathBuf::from),
         config: base("XDG_CONFIG_HOME", ".config").join("tilo"),
-        runtime: PathBuf::from(runtime_dir).join("tilo/files-workspace"),
+        runtime: runtime_dir.join("tilo/files-workspace"),
+        storage: runtime_dir.join("tilo/files-storage"),
     };
+    // `storage` shares `runtime`'s base.
     for path in [&paths.state, &paths.identity, &paths.config, &paths.runtime] {
         ensure!(path.is_absolute(), "Files paths must be absolute");
     }
@@ -87,6 +93,7 @@ fn command(args: &PrimaryArgs, env: &dyn Fn(&str) -> Option<OsString>) -> Result
     let mount = paths.state.join("mount");
     private_dir(&mount)?;
     private_dir(&paths.runtime)?;
+    private_dir(&paths.storage)?;
     let fs_binary = std::env::current_exe().context("locate the fs executable")?;
     let mut serve = Command::new(fs_binary);
     serve
@@ -99,7 +106,7 @@ fn command(args: &PrimaryArgs, env: &dyn Fn(&str) -> Option<OsString>) -> Result
         .arg("--acl")
         .arg(paths.config.join("fs-capabilities.json"))
         .args(["--data-plane", "fuse", "--storage-sock"])
-        .arg(paths.runtime.join("fs-storage.sock"))
+        .arg(paths.storage.join("storage.sock"))
         .arg("--blob-sock")
         .arg(paths.runtime.join("fs-blobs.sock"))
         .env("TILO_IDENTITY_ROOT", &paths.identity)

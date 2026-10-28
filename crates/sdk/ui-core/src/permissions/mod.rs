@@ -14,7 +14,6 @@
 //! The host installs both via [`PermissionContext::new`]; nothing here decides
 //! anything itself.
 
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -69,47 +68,10 @@ pub const LOCAL_USER: &str = "local";
 pub const LOCAL_ROOM: &str = "local";
 
 /// Which system app a presence key or a permission scope refers to.
-///
-/// This is an *identity*, not a policy: it names an app so a presence
-/// cursor can be scoped to it. The stable string [`AppKind::app_id`]
-/// returns is the same app id the compositor's portal and a
-/// `Principal::App` subject use.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub enum AppKind {
-    Terminal,
-    FileExplorer,
-    Browser,
-    Settings,
-    Unknown,
-}
-
-impl AppKind {
-    /// The stable app id.
-    pub fn app_id(self) -> &'static str {
-        match self {
-            AppKind::Terminal => "terminal",
-            AppKind::FileExplorer => "file-explorer",
-            AppKind::Browser => "browser",
-            AppKind::Settings => "settings",
-            AppKind::Unknown => "unknown",
-        }
-    }
-}
+pub use collab_types::presence::AppKind;
 
 /// A person's stable id, as apps and presence spell it.
-///
-/// Interchangeable with [`Principal::Person`] — see
-/// [`UserId::principal`]. Kept as a distinct newtype since presence and
-/// app code pass a bare user string around and gain nothing from a
-/// tagged enum.
-#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub struct UserId(pub String);
-
-impl UserId {
-    pub fn principal(&self) -> Principal {
-        Principal::Person(self.0.clone())
-    }
-}
+pub use collab_types::presence::UserId;
 
 /// What a widget or a launch asks permission for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -133,7 +95,6 @@ impl PermissionScope {
         }
     }
 
-    /// An action of `kind` anywhere in the app `app_id`.
     pub fn app(app_id: impl Into<String>, kind: ActionKind) -> Self {
         Self::Action {
             node: TreePath::root().app(app_id),
@@ -404,7 +365,21 @@ impl PermissionContext {
         Self::member(LOCAL_USER, Role::Owner).acting_as(subject, grants)
     }
 
-    /// The same context with one more grant in the room's policy.
+    /// This person, as their room told them it permits `kinds` at
+    /// `relative` (a path below the room): what a share of one item gave
+    /// them, mirrored so their window lets them do what the room keeps.
+    /// The room still decides every change.
+    #[must_use]
+    pub fn permitted_at(self, relative: &TreePath, kinds: policy::KindSet) -> Self {
+        let grant = local_grant(
+            policy::Subject::Person(self.user.0.clone()),
+            relative,
+            kinds,
+            None,
+        );
+        self.with_grant(grant)
+    }
+
     #[must_use]
     pub fn with_grant(mut self, grant: policy::Grant) -> Self {
         Arc::make_mut(&mut self.standing).policy.grants.push(grant);
@@ -433,7 +408,9 @@ impl PermissionContext {
     /// Retain the actual host's fallible policy-time sampler (Unix seconds).
     /// This supplies time only, not authority. Every decision resamples;
     /// failure denies without consulting the wall clock or a numeric pin.
-    /// Clones retain this same sampler.
+    /// Clones retain this same sampler. Nothing samples a clock that failed
+    /// on a schedule: once it can be read again, its host announces that
+    /// ([`outside_changed`]).
     #[must_use]
     pub fn with_policy_time_sampler(
         mut self,
@@ -513,6 +490,56 @@ impl PermissionContext {
         self.user = UserId(standing.person.clone());
         self.standing = Arc::new(standing);
         self
+    }
+
+    /// How long until this context's answers next change with time alone,
+    /// in whole seconds of its policy clock: until the soonest instant a
+    /// grant or sandbox capability it decides by stops being live. Never
+    /// zero, so a wake for it never comes before the change. Only a context following a
+    /// policy clock changes so; one judged at a fixed instant never does.
+    /// The host's view of an app's action authority announces its own
+    /// changes ([`outside_changed`]), as does a clock that cannot be read
+    /// when it can be again.
+    pub(crate) fn next_change_in(&self) -> Option<std::time::Duration> {
+        let sampler = self.policy_time.as_ref()?;
+        let now = (sampler.0)().ok()?;
+        let after = |grants: &mut dyn Iterator<Item = &policy::Grant>| {
+            grants
+                .filter_map(|grant| match grant.lifetime {
+                    // Live while the clock's milliseconds are before it.
+                    policy::Lifetime::Until(at) => Some(at.div_ceil(1000)),
+                    _ => None,
+                })
+                .filter(|at| *at > now)
+                .min()
+        };
+        let standing_ends = |standing: &Standing| {
+            after(
+                &mut standing
+                    .policy
+                    .grants
+                    .iter()
+                    .chain(standing.bounds.iter().flat_map(|bound| &bound.grants)),
+            )
+        };
+        let authority = self
+            .action_authority
+            .as_ref()
+            .and_then(|authority| authority.sample_for(self).ok())
+            .and_then(|current| standing_ends(&current.standing));
+        let sandbox = self
+            .sandbox
+            .iter()
+            .filter_map(|cap| match cap.expiry {
+                Expiry::AtUnix(at) if at > now => Some(at),
+                _ => None,
+            })
+            .min();
+        [standing_ends(&self.standing), authority, sandbox]
+            .into_iter()
+            .flatten()
+            .min()
+            .map(|at| std::time::Duration::from_secs(at - now))
     }
 
     /// Compare the current policy meaning, not callback allocation or elapsed
@@ -771,22 +798,6 @@ impl PermissionContext {
         .unwrap_or((Answer::Deny, Vec::new()))
     }
 
-    /// May the actor take this one invocation of `action` on `resource`,
-    /// carrying `json` (or the prompted `argument`)? Allowed; or asking
-    /// first when the person acts themselves, their own gesture being the
-    /// answer. Someone acting for them does not get past an ask here.
-    pub fn permits_invocation(
-        &self,
-        app_id: &str,
-        resource: &tilo_actions::Resource,
-        action: &tilo_actions::ActionSpec,
-        json: Option<&serde_json::Map<String, serde_json::Value>>,
-        argument: Option<&str>,
-    ) -> bool {
-        self.invocation_answer(app_id, resource, action, json, argument)
-            .admits(self.standing.bounds.is_empty())
-    }
-
     /// The answer for invoking `action` on `resource` with these arguments.
     /// An Ask runs only once the person confirmed it in the host.
     pub fn invocation_answer(
@@ -969,7 +980,7 @@ impl PublishedAnswers<'_> {
         mut resource: tilo_actions::Resource,
     ) -> Option<tilo_actions::Resource> {
         let mut node = self.resource(app_id, &resource.kind, resource.id.as_str());
-        resource.actions.retain(|action| {
+        resource.retain_actions(|action| {
             let need = action.contract.need();
             self.action(&mut node, need.field.as_deref(), &action.id, &need) != Answer::Deny
         });
@@ -991,15 +1002,163 @@ fn keep_permitted(
 ) -> Option<tilo_actions::Resource> {
     let id = resource.id.as_str().to_owned();
     let kind = resource.kind.clone();
-    resource
-        .actions
-        .retain(|action| permits(&kind, &id, action));
+    resource.retain_actions(|action| permits(&kind, &id, action));
     resource.children = resource
         .children
         .into_iter()
         .filter_map(|child| keep_permitted(child, permits))
         .collect();
     (!resource.actions.is_empty() || !resource.children.is_empty()).then_some(resource)
+}
+
+/// The permissions a host shares with what it hosts (an app, its components,
+/// a worker) and changes while they run: a role changed by the record's
+/// owner, a grant revoked, a room's participation. Every change goes through
+/// [`Self::set`], which moves [`shared_revision`] on, so whatever derives
+/// something from shared permissions (which controls may run) derives it
+/// again only after a change, not on every frame.
+#[derive(Clone)]
+pub struct SharedPermissions(std::rc::Rc<std::cell::RefCell<PermissionContext>>);
+
+thread_local! {
+    static SHARED_REVISION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Moves on with every change of an outside authority shared permissions
+/// follow ([`outside_changed`]).
+static OUTSIDE_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The loops to wake when an outside authority changes.
+static OUTSIDE_WAKES: std::sync::Mutex<Vec<crate::wake::WakeHandle>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Moves on with every change of any [`SharedPermissions`] on this thread,
+/// and with every change of an outside authority they follow.
+#[must_use]
+pub fn shared_revision() -> u64 {
+    SHARED_REVISION
+        .get()
+        .wrapping_add(OUTSIDE_REVISION.load(std::sync::atomic::Ordering::Acquire))
+}
+
+/// An outside authority permissions follow changed, on any thread: the
+/// host's view of an app's action authority, or a policy clock
+/// ([`PermissionContext::with_policy_time_sampler`]) that could not be read
+/// and can be again. Moves [`shared_revision`] on and wakes every loop that
+/// asked ([`wake_on_outside_change`]), so what it derived from permissions
+/// is derived again.
+pub fn outside_changed() {
+    OUTSIDE_REVISION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    let wakes: Vec<_> = {
+        let mut wakes = OUTSIDE_WAKES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        wakes.retain(crate::wake::WakeHandle::is_active);
+        wakes.clone()
+    };
+    for wake in wakes {
+        wake.wake();
+    }
+}
+
+/// Wake `wake` whenever an outside authority permissions follow changes,
+/// for as long as its scope is open.
+#[cfg(feature = "native")]
+pub(crate) fn wake_on_outside_change(wake: crate::wake::WakeHandle) {
+    let mut wakes = OUTSIDE_WAKES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    wakes.retain(crate::wake::WakeHandle::is_active);
+    wakes.push(wake);
+}
+
+impl SharedPermissions {
+    /// Share `context`.
+    #[must_use]
+    pub fn new(context: PermissionContext) -> Self {
+        Self(std::rc::Rc::new(std::cell::RefCell::new(context)))
+    }
+
+    /// The permissions in force now, to read.
+    ///
+    /// # Panics
+    /// While a [`Self::set`] of the same permissions runs.
+    pub fn borrow(&self) -> std::cell::Ref<'_, PermissionContext> {
+        self.0.borrow()
+    }
+
+    /// [`Self::borrow`], or an error while a change of them runs.
+    ///
+    /// # Errors
+    /// While a [`Self::set`] or [`Self::update`] of the same permissions runs.
+    pub fn try_borrow(
+        &self,
+    ) -> Result<std::cell::Ref<'_, PermissionContext>, std::cell::BorrowError> {
+        self.0.try_borrow()
+    }
+
+    /// Change the permissions in force in place (a one-use grant spent).
+    pub fn update<R>(&self, change: impl FnOnce(&mut PermissionContext) -> R) -> R {
+        let result = change(&mut self.0.borrow_mut());
+        SHARED_REVISION.set(SHARED_REVISION.get().wrapping_add(1));
+        result
+    }
+
+    /// The permissions in force now.
+    #[must_use]
+    pub fn get(&self) -> PermissionContext {
+        self.0.borrow().clone()
+    }
+
+    /// Put `context` in force for everyone sharing these permissions.
+    pub fn set(&self, context: PermissionContext) {
+        *self.0.borrow_mut() = context;
+        SHARED_REVISION.set(SHARED_REVISION.get().wrapping_add(1));
+    }
+
+    /// Whether `self` and `other` are the same shared permissions.
+    #[must_use]
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// A handle that does not keep the permissions shared.
+    #[must_use]
+    pub fn downgrade(&self) -> WeakPermissions {
+        WeakPermissions(std::rc::Rc::downgrade(&self.0))
+    }
+}
+
+impl From<PermissionContext> for SharedPermissions {
+    fn from(context: PermissionContext) -> Self {
+        Self::new(context)
+    }
+}
+
+impl std::fmt::Debug for SharedPermissions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SharedPermissions")
+            .field(&*self.0.borrow())
+            .finish()
+    }
+}
+
+/// [`SharedPermissions`] held without keeping them shared.
+#[derive(Clone)]
+pub struct WeakPermissions(std::rc::Weak<std::cell::RefCell<PermissionContext>>);
+
+impl WeakPermissions {
+    /// The permissions, while anyone still shares them.
+    #[must_use]
+    pub fn upgrade(&self) -> Option<SharedPermissions> {
+        self.0.upgrade().map(SharedPermissions)
+    }
+
+    /// Whether anyone still shares the permissions.
+    #[must_use]
+    pub fn is_shared(&self) -> bool {
+        self.0.strong_count() > 0
+    }
 }
 
 /// A participant's permissions as they stand *now*, following every change the
@@ -1010,18 +1169,18 @@ fn keep_permitted(
 /// what a participant may do goes stale the moment their role changes. Hold
 /// one of these instead and ask again when it matters (every frame is cheap).
 #[derive(Clone)]
-pub struct LivePermissions(std::rc::Rc<std::cell::RefCell<PermissionContext>>);
+pub struct LivePermissions(SharedPermissions);
 
 impl LivePermissions {
     /// Follow the context the host shares with its components.
-    pub(crate) fn shared(context: std::rc::Rc<std::cell::RefCell<PermissionContext>>) -> Self {
+    pub(crate) fn shared(context: SharedPermissions) -> Self {
         Self(context)
     }
 
     /// Permissions that never change: a preview of a past version, a capture,
     /// a test fixture.
     pub fn fixed(context: PermissionContext) -> Self {
-        Self(std::rc::Rc::new(std::cell::RefCell::new(context)))
+        Self(SharedPermissions::new(context))
     }
 
     /// May the participant do this, as of now?
@@ -1034,9 +1193,17 @@ impl LivePermissions {
         self.0.borrow().answer(node, kind)
     }
 
+    /// Whether anyone besides the participant belongs to the room, its owner
+    /// or a member, here now or not: what the room holds is shared with them.
+    pub fn room_has_others(&self) -> bool {
+        let context = self.0.borrow();
+        let standing = context.standing();
+        standing.policy.has_others(&standing.person)
+    }
+
     /// The permissions in force now.
     pub fn current(&self) -> PermissionContext {
-        self.0.borrow().clone()
+        self.0.get()
     }
 }
 
@@ -1051,6 +1218,43 @@ impl std::fmt::Debug for LivePermissions {
 mod action_authority;
 pub mod capability;
 use action_authority::ActionAuthoritySampler;
+
+/// The shared admission ([`tilo_action_policy::admit`]) as a window takes
+/// it for its own person, the decision a broker takes for a caller: an ask
+/// is theirs to confirm in the window when they act themselves (`direct`),
+/// and nobody else's here. `confirmed` is their confirmation, or the broker
+/// having admitted it.
+///
+/// # Errors
+/// Refused, or [`tilo_actions::DoorError::ConfirmationRequired`] until
+/// the person confirmed an ask.
+pub fn admit_in_window(
+    answer: tilo_action_policy::Answer,
+    action: &tilo_actions::ActionSpec,
+    direct: bool,
+    confirmed: bool,
+) -> Result<(), tilo_actions::DoorError> {
+    let admitted = tilo_action_policy::admit(
+        tilo_action_policy::Invoked {
+            answer,
+            attended: action.contract.is_attended(),
+            record: None,
+        },
+        tilo_action_policy::Asker {
+            reachable: direct,
+            // A window has no session delegate: an agent acting in it holds a
+            // bounded standing (`direct` false), so its asks already refuse.
+            delegated: false,
+        },
+    );
+    match admitted {
+        Err(_) => Err(crate::bound_dispatch::denied(action)),
+        Ok(tilo_action_policy::Admission::AsksFirst) if !confirmed => {
+            Err(tilo_actions::DoorError::ConfirmationRequired)
+        }
+        Ok(_) => Ok(()),
+    }
+}
 
 #[cfg(test)]
 mod policy_time_tests;

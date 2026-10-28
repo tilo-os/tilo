@@ -14,7 +14,6 @@
 //! `tilo-relay-client`.
 
 #![deny(rust_2018_idioms)]
-#![warn(missing_docs)]
 pub mod antientropy;
 pub mod client;
 pub mod coedit;

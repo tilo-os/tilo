@@ -99,7 +99,6 @@ struct Pending {
 
 #[derive(Default)]
 struct Files {
-    /// The base these extents describe.
     base: Option<PathBuf>,
     /// Length of the log's valid frames. Anything past it is a torn frame
     /// the next append overwrites.
@@ -340,7 +339,6 @@ fn replace(files: &mut Files, base: &Path, changes: &[u8], cap: usize) -> io::Re
     write_base(files, base, &mut doc, cap)
 }
 
-/// Fold the log into the base.
 fn compact(files: &mut Files, base: &Path, cap: usize) -> io::Result<()> {
     let Some(mut loaded) = load(base, cap)? else {
         return Ok(());
@@ -378,7 +376,6 @@ fn append(files: &mut Files, base: &Path, changes: &[u8], cap: usize) -> io::Res
         options.mode(0o600);
     }
     let mut file = options.open(&path)?;
-    // Drop a torn frame, or a log this writer starts over.
     file.set_len(files.log_len)?;
     file.seek(io::SeekFrom::Start(files.log_len))?;
     file.write_all(&frame)?;
@@ -556,7 +553,6 @@ mod tests {
         let mut reloaded = whole.doc;
         assert_eq!(reloaded.get_heads(), doc.get_heads());
 
-        // A crash in the middle of the last append.
         let log_file = log_path(&base);
         let len = std::fs::metadata(&log_file).expect("log").len();
         std::fs::OpenOptions::new()
@@ -580,7 +576,6 @@ mod tests {
             "only the torn frame is lost"
         );
 
-        // The next session continues from what loaded, over the torn frame.
         let mut restarted = torn.doc;
         let next = DocLog::default();
         next.attach(&base, &restarted, torn.extent, None);
@@ -637,7 +632,6 @@ mod tests {
             "a copy that lacks the saved heads adds nothing"
         );
 
-        // Another tree writing the same files from scratch replaces them.
         let other_log = DocLog::default();
         let mut other = AutoCommit::new();
         put(&mut other, "other", 7);
@@ -745,7 +739,6 @@ mod tests {
         assert_eq!(loaded_hashes(&base), swapped);
         std::fs::write(hint_path(&base), &hint).expect("restore the hint");
 
-        // Phase `log_frames_apply_over_a_hinted_base`.
         put(&mut doc, "after", 1);
         save(&log, &doc, &base);
         let loaded = load(&base, CAP).expect("load").expect("saved");
@@ -788,7 +781,6 @@ mod tests {
         assert_eq!(batched.extent.chunks, 200);
         assert_eq!(batched.doc.get_heads(), doc.get_heads());
 
-        // The frame-by-frame load a refused batch falls back to.
         let bytes = std::fs::read(log_path(&base)).expect("log");
         let (frames, read) = read_frames(&bytes);
         assert_eq!(read, batched.extent);
@@ -809,7 +801,6 @@ mod tests {
         let hint = std::fs::read(hint_path(&base)).expect("hint");
         let bytes = std::fs::read(&base).expect("base");
 
-        // Phase `a_torn_hint_is_ignored`.
         let mut torn = hint.clone();
         torn.truncate(hint.len().saturating_sub(7));
         std::fs::write(hint_path(&base), &torn).expect("torn hint");
@@ -825,7 +816,6 @@ mod tests {
             "a hash Automerge cannot place falls back to the rebuild"
         );
 
-        // Phase `a_base_too_small_for_a_hint_drops_the_old_one`.
         std::fs::write(hint_path(&base), &hint).expect("restore the hint");
         let other_log = DocLog::default();
         let mut other = AutoCommit::new();
@@ -845,7 +835,6 @@ mod tests {
         let mut loaded = loaded.doc;
         assert_eq!(loaded.get_heads(), other.get_heads());
 
-        // Phase `an_orphaned_hint_loads_nothing`.
         std::fs::remove_file(&base).expect("remove the base");
         assert!(load(&base, CAP).expect("load").is_none());
     }

@@ -1,4 +1,3 @@
-//! A workspace switched away from is kept, and a switch back puts it back.
 use super::parked_workspaces::KEPT_WORKSPACES;
 use super::*;
 use crate::shell::state::{
@@ -63,6 +62,7 @@ fn stub_group(id: u64) -> WindowGroup {
                 kind: AppKind::Other("Test".into()),
                 label: format!("G{id}"),
             },
+            app_title: None,
         }],
         active_tab: tab,
         width: WindowWidth::Normal,
@@ -207,4 +207,133 @@ fn only_the_most_recently_shown_workspaces_are_kept() {
         order[shown - KEPT_WORKSPACES..shown].to_vec(),
         "the {KEPT_WORKSPACES} workspaces shown last before this one are kept, oldest first"
     );
+}
+
+/// Mounts the apps it is asked for with checked contexts of their own, and
+/// keeps each one's wake so a test can stand in for its background work.
+struct WakingApps {
+    owners: ui::record::RecordOwners,
+    views: std::rc::Rc<ui::application_view::InstanceViewStore>,
+    wakes: Vec<ui::wake::WakeHandle>,
+}
+
+impl tilo_desktop::resolver::ComponentContextSource for WakingApps {
+    fn prepare(
+        &mut self,
+        definition: &'static ui::application::ApplicationDefinition,
+        request: &tilo_desktop::resolver::TileRequest<'_>,
+        target: &ui::application::LaunchTarget,
+    ) -> Result<
+        (ui::application::HostContext, ui::application::RestoreInput),
+        ui::launch::LaunchError,
+    > {
+        let records = self
+            .owners
+            .open(definition.app_id(), "room")
+            .map_err(ui::launch::LaunchError::Record)?;
+        let context = ui::application::HostContext::prepare(
+            definition,
+            ui::application::HostContextInputs {
+                records,
+                views: self.views.clone(),
+                device_id: "device".into(),
+                instance_id: request.tab.id,
+                permissions: ui::permissions::SharedPermissions::new(
+                    ui::permissions::PermissionContext::member(
+                        "author",
+                        ui::permissions::Role::Owner,
+                    ),
+                ),
+                author: ui::permissions::UserId("author".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
+            target,
+        )?;
+        self.wakes.push(context.wake_handle());
+        Ok((context, ui::application::RestoreInput::None))
+    }
+}
+
+#[test]
+fn a_kept_workspace_does_its_apps_woken_work_while_another_is_shown() {
+    let (mut host, chrome, (home, _), _) = desktop();
+    let notes = notes::definition();
+    let tab = 9_100;
+    {
+        let state = chrome.borrow();
+        let mut tree = state.tree_mut();
+        let mut group = stub_group(910);
+        group.tabs[0].tile = TileContent::AppPlaceholder {
+            kind: AppKind::Other(notes.app_id.to_string()),
+            label: "Notes".into(),
+        };
+        tree.desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == home)
+            .expect("the first workspace")
+            .strips[0]
+            .window_groups
+            .push(group);
+    }
+    chrome.borrow_mut().bump();
+    host.tick_workspace_content_for_tests();
+    switch(&mut host, &chrome, 1);
+
+    // Keep a home workspace whose Notes is a mounted app that can be woken.
+    let cache = ui::portable_storage::PortableStorage::new("profile", "device").expect("a cache");
+    let mut owners = ui::record::RecordOwners::portable(cache.clone());
+    let records = owners.open(notes.app_id(), "room").expect("Notes' records");
+    let checkout =
+        tilo_desktop::records::component_record(notes.app_id(), tab, notes.record_kind.clone());
+    records.create_record(&checkout).expect("a notebook");
+    records.with(&checkout.id, notes::read::initialize);
+    let mut catalog = ui::application::ApplicationCatalog::new();
+    catalog.register(notes).expect("Notes registers");
+    let mut resolver = tilo_desktop::resolver::ApplicationCatalogTileResolver {
+        catalog,
+        host: WakingApps {
+            owners,
+            views: std::rc::Rc::new(
+                ui::application_view::InstanceViewStore::portable(cache, "room")
+                    .expect("a view store"),
+            ),
+            wakes: Vec::new(),
+        },
+    };
+    let mut shown_home = chrome.borrow().tree().desktop.clone();
+    shown_home.active = home;
+    let surface = tilo_desktop::composition::DesktopSurface::build(
+        &shown_home,
+        &ui::record::RecordStore::in_memory(),
+        &mut resolver,
+        tilo_desktop::composition::SurfaceChrome::default(),
+    );
+    assert_eq!(resolver.host.wakes.len(), 1, "Notes is mounted");
+    let built = host
+        .parked_workspaces
+        .take(home.raw())
+        .expect("the first workspace is kept");
+    let mut dropped = vec![built];
+    dropped.extend(host.parked_workspaces.park(home.raw(), Box::new(surface)));
+    drop(parked_workspaces::close(dropped));
+    let kept_surface = |host: &mut ShellOverlayHost| {
+        host.parked_workspaces
+            .content_mut(home.raw())
+            .and_then(|content| content.as_any())
+            .and_then(|content| content.downcast_ref::<tilo_desktop::composition::DesktopSurface>())
+            .expect("the first workspace is kept with its app mounted")
+            .take_component_wake()
+    };
+    kept_surface(&mut host);
+
+    // Its app's background work (a collaborator's edit, an action asked of
+    // it) wakes it while another workspace is on screen.
+    resolver.host.wakes[0].wake();
+    host.update(&automerge::AutoCommit::new(), &automerge::ROOT);
+    assert!(
+        !kept_surface(&mut host),
+        "the shell's next tick does the kept workspace's woken work, instead of leaving it to pile up for the frame that switches back"
+    );
+    assert_eq!(host.kept_workspaces_for_tests(), vec![home.raw()]);
 }

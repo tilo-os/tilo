@@ -1,5 +1,3 @@
-//! Production-adapter checks against an explicitly supplied, disposable Rystic twin.
-//! See docs/testing/rystic-dropbox-feedback.md for startup and limitations.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

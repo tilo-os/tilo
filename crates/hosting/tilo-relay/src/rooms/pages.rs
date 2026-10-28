@@ -8,15 +8,20 @@
 //! a device with no session yet. Unlike the workspace-join protocol, a
 //! page's verified redemption is not admitted at once: it waits, in memory,
 //! until someone the room lets invite admits or declines it. A relay restart forgets waiting
-//! requests; the person asks again.
+//! requests; the person asks again. The addresses left at the door of a room
+//! that takes people by invitation are no such requests: they are kept with
+//! the room ([`super::wait_list`]) and listed on their own
+//! ([`RoomsRequest::WaitList`]).
 
 use tilo_action_policy::roles::governance;
+use tilo_governor::Governor;
 use tilo_peer_state::join::{
-    JoinChallenge, JoinChallengeRequest, JoinProof, MemberRole, VerifiedRedemption,
+    JoinChallenge, JoinChallengeRequest, JoinChallengeResponse, JoinProof, JoinTransportRequest,
+    JoinTransportResponse, MemberRole, VerifiedRedemption,
 };
 use tilo_relay_protocol::rooms::{
     Inviter, JoinReply, JoinRequest, JoinStep, MAX_JOIN_REQUESTS, PendingInvite, PreAdmission,
-    Room, RoomMember, RoomNotice, RoomRole, RoomsReply, RoomsRequest,
+    Room, RoomMember, RoomNotice, RoomRole, RoomsReply, RoomsRequest, WaitListEntry,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -102,13 +107,16 @@ const fn room_role(role: MemberRole) -> RoomRole {
     }
 }
 
-fn page_room(room: &GovernedRoom) -> Room {
+/// `room` as a page sees it. Its `spectator` person, whom every page
+/// that only watches is certified as, is nobody on its member list.
+fn page_room(room: &GovernedRoom, spectator: Option<[u8; 32]>) -> Room {
     let summary = room.summary();
     let certificates = room.peer().certificates();
     let owner = room.peer().authority().user_public_key;
     let mut members: Vec<_> = summary
         .members
         .into_iter()
+        .filter(|member| Some(member.user_public_key) != spectator)
         .map(|member| RoomMember {
             name: member.display_name.clone().or_else(|| {
                 certificates
@@ -181,6 +189,7 @@ impl Rooms {
                 role,
                 expires_at_ns,
                 inviter_name,
+                wait_list_entry,
             } => {
                 let request = IssueInvitationRequest {
                     request_id,
@@ -190,7 +199,8 @@ impl Rooms {
                     expires_at_ns,
                     inviter_name,
                 };
-                self.page_invitation(&room, device, request).await?
+                self.page_invitation(&room, device, request, wait_list_entry)
+                    .await?
             }
             RoomsRequest::Cancel {
                 room,
@@ -220,6 +230,22 @@ impl Rooms {
                 self.decline_page(&room, device, request_id, now).await?;
                 RoomsReply::Requests(self.waiting(&room, now))
             }
+            RoomsRequest::WaitList { room } => {
+                RoomsReply::WaitList(self.wait_list(&room, device, now).await?)
+            }
+            RoomsRequest::Unlist { room, request_id } => {
+                self.unlist(&room, device, request_id, now).await?;
+                RoomsReply::WaitList(self.wait_list(&room, device, now).await?)
+            }
+            RoomsRequest::MailInvite {
+                room,
+                wait_list_entry,
+                link,
+            } => {
+                self.mail_invite(&room, device, wait_list_entry, link, now)
+                    .await?;
+                RoomsReply::WaitList(self.wait_list(&room, device, now).await?)
+            }
             request @ (RoomsRequest::SetRole { .. }
             | RoomsRequest::Remove { .. }
             | RoomsRequest::Ban { .. }
@@ -241,7 +267,97 @@ impl Rooms {
             RoomsRequest::Permits { room, node } => {
                 RoomsReply::Permits(self.page_permits(&room, device, &node).await?)
             }
+            request @ (RoomsRequest::Share { .. } | RoomsRequest::Unshare { .. }) => {
+                self.page_share(device, request).await?
+            }
+            RoomsRequest::Name { room, name } => self.name_self(&room, device, &name, now).await?,
         })
+    }
+
+    /// A page's share of one record or item with the room, or its end.
+    async fn page_share(
+        &self,
+        device: &DeviceCert,
+        request: RoomsRequest,
+    ) -> Result<RoomsReply, CollaborationError> {
+        Ok(RoomsReply::Shared(match request {
+            RoomsRequest::Share {
+                room,
+                share,
+                node,
+                access,
+            } => {
+                let node = node
+                    .parse()
+                    .map_err(|_| CollaborationError::new("not a node of the room's tree"))?;
+                let access = access
+                    .parse()
+                    .map_err(|_| CollaborationError::new("a share gives `view` or `edit`"))?;
+                let grants = self
+                    .share_resource(&room, device, &share, &node, access)
+                    .await?;
+                // Who may do what changed in the room: its operators read
+                // that here, as they read who was admitted.
+                tracing::info!(%room, %share, %node, access = access.as_str(), grants, "a share grants the room");
+                grants
+            }
+            RoomsRequest::Unshare { room, share } => {
+                let revoked = self.unshare_resource(&room, device, &share).await?;
+                tracing::info!(%room, %share, revoked, "a share ended");
+                revoked
+            }
+            _ => return Err(CollaborationError::new("not a share")),
+        }))
+    }
+
+    /// Name `device`'s person `name` in `room`: the name the room shows for
+    /// them from now on. Only a person names themself, on a device the
+    /// room admitted as theirs; the room's spectator person is nobody to
+    /// name. A name they already go by writes nothing.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the room stays locked from the check until the name is committed"
+    )]
+    pub(crate) async fn name_self(
+        &self,
+        room: &str,
+        device: &DeviceCert,
+        name: &str,
+        now: u64,
+    ) -> Result<RoomsReply, CollaborationError> {
+        let name = valid_name(name)?;
+        let state = self.room(room).await?;
+        let mut room = state.lock().await;
+        if self.watches_only(room.workspace_id(), device).await {
+            return Err(CollaborationError::new(
+                "a page that only watches names nobody",
+            ));
+        }
+        let at = system_time(now);
+        let member = room
+            .peer()
+            .permissions(device.device_public_key, at)
+            .map_err(CollaborationError::new)?;
+        if member.foreign
+            || member.delegate.is_some()
+            || member.person != hex::encode(device.user_public_key)
+        {
+            return Err(CollaborationError::new("only a person names themself"));
+        }
+        let key = self.inner.host.key.clone();
+        let mut candidate = room.peer().clone();
+        if !candidate
+            .governance_mut()
+            .name_person(device.user_public_key, &name, &key, at)
+            .map_err(CollaborationError::new)?
+        {
+            return Ok(RoomsReply::Named);
+        }
+        let ledger = room.collaboration().clone();
+        room.commit(candidate, &key, at, |_, _| Ok(ledger))
+            .map_err(CollaborationError::new)?;
+        self.settle(&mut room).await?;
+        Ok(RoomsReply::Named)
     }
 
     /// Whether `device`'s person may make an undoable change at `node` of
@@ -260,13 +376,38 @@ impl Rooms {
         if node.room_id() != Some(governed.room()) {
             return Err(CollaborationError::new("the node is not in this room"));
         }
+        let workspace_id = governed.workspace_id();
         let now = system_time(tilo_clock::unix_now_ns());
+        // The room's spectator person only watches: the relay takes no
+        // change from it anywhere. Its devices come and go with page loads
+        // and are on no roster, so they are answered as that person.
+        if self.watches_only(workspace_id, device).await {
+            return Ok(false);
+        }
         let member = governed
             .peer()
             .permissions(device.device_public_key, now)
             .map_err(CollaborationError::new)?;
         drop(governed);
         Ok(member.allows(&node, tilo_action_policy::ActionKind::Undoable, now))
+    }
+
+    /// Whether `device` is of the spectator person of the room hosted as
+    /// `workspace_id`.
+    pub(super) async fn watches_only(&self, workspace_id: u64, device: &DeviceCert) -> bool {
+        self.spectator_person(workspace_id).await == Some(device.user_public_key)
+    }
+
+    /// The spectator person of the room hosted as `workspace_id`, when it
+    /// lets pages watch: the one person every watching page is certified
+    /// as. A member of the room, so it may watch, yet nobody: no person
+    /// list shows it.
+    pub(crate) async fn spectator_person(&self, workspace_id: u64) -> Option<[u8; 32]> {
+        let workspaces = self.inner.host.workspaces.lock().await;
+        let workspace = workspaces.get(&workspace_id).cloned();
+        drop(workspaces);
+        let spectators = workspace?.lock().await.spectators;
+        spectators.map(|spectators| spectators.root)
     }
 
     /// A page's change to who is in a room and with which role.
@@ -472,18 +613,53 @@ impl Rooms {
             .collect::<Vec<_>>();
         let mut listed = Vec::with_capacity(rooms.len());
         for room in rooms {
-            listed.push(page_room(&*room.lock().await));
+            let workspace_id = room.lock().await.workspace_id();
+            let spectator = self.spectator_person(workspace_id).await;
+            listed.push(page_room(&*room.lock().await, spectator));
         }
         Ok(RoomsReply::Rooms(listed))
     }
 
+    /// Issue the invitation `request` asks; for the wait-list entry
+    /// `wait_list_entry`, noted on it, so it shows as invited and leaves the
+    /// list once someone joins with it.
     async fn page_invitation(
         &self,
         room: &str,
         device: &DeviceCert,
         request: IssueInvitationRequest,
+        wait_list_entry: Option<[u8; 32]>,
     ) -> Result<RoomsReply, CollaborationError> {
-        let issued = self.issue(room, device, request).await?;
+        let Some(entry) = wait_list_entry else {
+            let issued = self.issue(room, device, request).await?;
+            return Ok(RoomsReply::Invitation {
+                invite_id: issued.invite_id,
+                signed_invitation: issued.signed_invitation,
+            });
+        };
+        let now = tilo_clock::unix_now_ns();
+        let issued = {
+            let governed = self.room(room).await?;
+            let mut governed = governed.lock().await;
+            self.authorize(
+                device,
+                Some(&governed),
+                RoomOp::Invite(request.role.into()),
+                now,
+            )?;
+            if !governed.wait_list.has(entry, now) {
+                return Err(CollaborationError::new(
+                    "that address is no longer on the wait list",
+                ));
+            }
+            let issued = self.stage_issue(&mut governed, device, request, now)?;
+            governed
+                .wait_list
+                .invited(entry, issued.invite_id, now)
+                .map_err(CollaborationError::new)?;
+            issued
+        };
+        self.written(room, false).await?;
         Ok(RoomsReply::Invitation {
             invite_id: issued.invite_id,
             signed_invitation: issued.signed_invitation,
@@ -492,7 +668,9 @@ impl Rooms {
 
     async fn page_room(&self, room: &str) -> Result<RoomsReply, CollaborationError> {
         let room = self.room(room).await?;
-        Ok(RoomsReply::Room(page_room(&*room.lock().await)))
+        let workspace_id = room.lock().await.workspace_id();
+        let spectator = self.spectator_person(workspace_id).await;
+        Ok(RoomsReply::Room(page_room(&*room.lock().await, spectator)))
     }
 
     async fn page_pending(
@@ -540,6 +718,274 @@ impl Rooms {
             )?;
         }
         Ok(self.waiting(room, now))
+    }
+
+    /// The addresses left at `room`'s door, oldest first, for someone the
+    /// room lets invite.
+    async fn wait_list(
+        &self,
+        room: &str,
+        device: &DeviceCert,
+        now: u64,
+    ) -> Result<Vec<WaitListEntry>, CollaborationError> {
+        let governed = self.room(room).await?;
+        let mut governed = governed.lock().await;
+        self.authorize(
+            device,
+            Some(&governed),
+            RoomOp::Govern(governance::INVITE),
+            now,
+        )?;
+        // Whoever joined by a way that did not take them off already.
+        governed.forget_joined_wait_list();
+        Ok(governed.wait_list.entries(now))
+    }
+
+    /// Take the address `request_id` off `room`'s wait list, for someone the
+    /// room lets invite.
+    async fn unlist(
+        &self,
+        room: &str,
+        device: &DeviceCert,
+        request_id: [u8; 32],
+        now: u64,
+    ) -> Result<(), CollaborationError> {
+        let governed = self.room(room).await?;
+        let mut governed = governed.lock().await;
+        self.authorize(
+            device,
+            Some(&governed),
+            RoomOp::Govern(governance::INVITE),
+            now,
+        )?;
+        if !governed
+            .wait_list
+            .remove(request_id, now)
+            .map_err(CollaborationError::new)?
+        {
+            return Err(CollaborationError::new("no such address on the wait list"));
+        }
+        drop(governed);
+        tracing::info!(%room, "an address was taken off the wait list");
+        Ok(())
+    }
+
+    /// Mail the invitation `link` to the confirmed wait-list entry
+    /// `request_id` of `room`, for someone the room lets invite, once the
+    /// relay sends mail ([`Rooms::mail_wait_list`]).
+    async fn mail_invite(
+        &self,
+        room: &str,
+        device: &DeviceCert,
+        request_id: [u8; 32],
+        link: String,
+        now: u64,
+    ) -> Result<(), CollaborationError> {
+        let Some((door, mail)) = self.inner.wait_list_mail.get() else {
+            return Err(CollaborationError::new("this door sends no mail"));
+        };
+        if !tilo_relay_protocol::rooms::invitation_on_door(door, &link) {
+            return Err(CollaborationError::new(
+                "only an invitation on this door is mailed",
+            ));
+        }
+        let governed = self.room(room).await?;
+        let mut governed = governed.lock().await;
+        self.authorize(
+            device,
+            Some(&governed),
+            RoomOp::Govern(governance::INVITE),
+            now,
+        )?;
+        let (to, removal) = governed
+            .wait_list
+            .mail_invite(request_id, now)
+            .map_err(CollaborationError::new)?
+            .map_err(CollaborationError::new)?;
+        drop(governed);
+        let (queued, accepted) = tokio::sync::oneshot::channel();
+        let sent = mail
+            .send(super::WaitListMail {
+                queued,
+                to,
+                link,
+                removal,
+            })
+            .is_ok();
+        let accepted = if sent {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), accepted).await {
+                Ok(Ok(queued)) => Some(queued),
+                Ok(Err(_)) | Err(_) => None,
+            }
+        } else {
+            Some(false)
+        };
+        if accepted == Some(false) {
+            use sha2::Digest as _;
+            let mut governed = self.room(room).await?.lock_owned().await;
+            governed
+                .wait_list
+                .mail_failed(
+                    sha2::Sha256::digest(removal).into(),
+                    tilo_clock::unix_now_ns(),
+                )
+                .map_err(CollaborationError::new)?;
+            drop(governed);
+            return Err(CollaborationError::new(
+                "the door did not accept the invitation mail",
+            ));
+        }
+        if accepted.is_none() {
+            // Acceptance can precede a lost acknowledgement. Keep the
+            // reservation so an uncertain outcome cannot duplicate mail.
+            return Err(CollaborationError::new(
+                "invitation mail acceptance is uncertain; it may already be queued",
+            ));
+        }
+        tracing::info!(%room, "an invitation was queued for an address on the wait list");
+        Ok(())
+    }
+
+    /// Keep the request of someone who asked at `room`'s door without an
+    /// invitation, to be invited at `contact` (an address
+    /// [`tilo_relay_protocol::rooms::contact_address`] accepts), while the
+    /// room keeps fewer than `max`. Whoever may invite sees it on the room's
+    /// wait list until it leaves it, once confirmed; whoever holds the
+    /// secret whose SHA-256 is `secrets.removal` takes it off
+    /// ([`Self::leave_wait_list`]), and the one whose SHA-256 is
+    /// `secrets.confirm` confirms it ([`Self::confirm_wait_list`]).
+    ///
+    /// # Errors
+    ///
+    /// Not an address, the room is unknown, or its wait list could not be
+    /// written.
+    pub async fn wait(
+        &self,
+        room: &str,
+        contact: &str,
+        secrets: super::WaitListSecrets,
+        language: &str,
+        max: usize,
+    ) -> Result<super::WaitListed, CollaborationError> {
+        let contact = tilo_relay_protocol::rooms::contact_address(contact)
+            .map_err(CollaborationError::new)?;
+        let governed = self.room(room).await?;
+        let mut governed = governed.lock().await;
+        let kept = governed
+            .wait_list
+            .keep(&contact, secrets, language, tilo_clock::unix_now_ns(), max)
+            .map_err(CollaborationError::new)?;
+        drop(governed);
+        tracing::info!(%room, outcome = ?kept, "a request was left at the door");
+        Ok(kept)
+    }
+
+    /// Confirm the request whose confirmation secret has the SHA-256
+    /// `confirm` on `room`'s wait list: whether one had it.
+    ///
+    /// # Errors
+    ///
+    /// The room is unknown, or its wait list could not be written.
+    pub async fn confirm_wait_list(
+        &self,
+        room: &str,
+        confirm: [u8; 32],
+    ) -> Result<bool, CollaborationError> {
+        let governed = self.room(room).await?;
+        let mut governed = governed.lock().await;
+        let confirmed = governed
+            .wait_list
+            .confirm(confirm, tilo_clock::unix_now_ns())
+            .map_err(CollaborationError::new)?;
+        drop(governed);
+        if confirmed {
+            tracing::info!(%room, "an address on the wait list was confirmed");
+        }
+        Ok(confirmed)
+    }
+
+    /// Where the request whose removal secret has the SHA-256 `removal`
+    /// stands on `room`'s wait list, for whoever left it.
+    ///
+    /// # Errors
+    ///
+    /// The room is unknown.
+    pub async fn wait_list_standing(
+        &self,
+        room: &str,
+        removal: [u8; 32],
+    ) -> Result<tilo_relay_protocol::room_operator::WaitListStanding, CollaborationError> {
+        let governed = self.room(room).await?;
+        let mut governed = governed.lock().await;
+        governed.forget_joined_wait_list();
+        Ok(governed
+            .wait_list
+            .standing(removal, tilo_clock::unix_now_ns()))
+    }
+
+    /// Forget the addresses on `room`'s wait list that were not confirmed
+    /// in time.
+    ///
+    /// # Errors
+    ///
+    /// The room is unknown, or its wait list could not be written.
+    pub async fn expire_wait_list(&self, room: &str) -> Result<(), CollaborationError> {
+        let governed = self.room(room).await?;
+        let mut governed = governed.lock().await;
+        let expired = governed
+            .wait_list
+            .expire(tilo_clock::unix_now_ns())
+            .map_err(CollaborationError::new)?;
+        drop(governed);
+        if expired > 0 {
+            tracing::info!(%room, expired, "unconfirmed addresses left the wait list");
+        }
+        Ok(())
+    }
+
+    /// Take the request whose removal secret has the SHA-256 `removal` off
+    /// `room`'s wait list, for whoever left it. Answers alike whether or not
+    /// one had that secret, so the answer tells nobody what is listed; where
+    /// to tell the address it left comes back only to whoever runs the room,
+    /// once the address had been confirmed.
+    ///
+    /// # Errors
+    ///
+    /// The room is unknown, or its wait list could not be written.
+    pub async fn leave_wait_list(
+        &self,
+        room: &str,
+        removal: [u8; 32],
+    ) -> Result<Option<super::Mailbox>, CollaborationError> {
+        self.leave_wait_list_for_operator(room, removal)
+            .await
+            .map(|(told, _)| told)
+    }
+
+    /// Remove an entry for the private door operator, returning its stable
+    /// contact digest for cancelling mail even when it was not confirmed.
+    /// Neither this digest nor the mailbox belongs in a public response.
+    ///
+    /// # Errors
+    /// The room is unknown, or its wait list could not be written.
+    pub async fn leave_wait_list_for_operator(
+        &self,
+        room: &str,
+        removal: [u8; 32],
+    ) -> Result<(Option<super::Mailbox>, Option<[u8; 32]>), CollaborationError> {
+        let governed = self.room(room).await?;
+        let mut governed = governed.lock().await;
+        let now = tilo_clock::unix_now_ns();
+        let contact = governed.wait_list.removal_contact(removal, now);
+        let told = governed
+            .wait_list
+            .leave(removal, now)
+            .map_err(CollaborationError::new)?;
+        drop(governed);
+        if contact.is_some() {
+            tracing::info!(%room, "someone took their address off the wait list");
+        }
+        Ok((told, contact))
     }
 
     fn waiting(&self, room: &str, now: u64) -> Vec<JoinRequest> {
@@ -614,7 +1060,7 @@ impl Rooms {
             room.peer().permissions(device, system_time(now))?;
             return Ok(());
         }
-        let (device, proof_digest, redemption) = {
+        let (device, proof_digest, redemption, name) = {
             let joins = self.page_joins();
             let join = joins
                 .find(room_id, request_id)
@@ -624,6 +1070,7 @@ impl Rooms {
                 join.request.device_public_key,
                 join.proof_digest,
                 join.redemption.clone(),
+                join.request.name.clone(),
             )
         };
         // Admitting someone hands out the role their invitation carries:
@@ -634,15 +1081,17 @@ impl Rooms {
             RoomOp::Invite(redemption.join().grant().role.into()),
             now,
         )?;
-        self.admit_redemption(
-            &mut room,
-            device,
+        let join = super::collaboration::Redeeming {
+            remote_endpoint: device,
             request_id,
             proof_digest,
-            &redemption,
-            now,
-        )
-        .await?;
+            redemption: &redemption,
+            name: Some(&name),
+        };
+        self.admit_redemptions(&mut room, &[join], now)
+            .await?
+            .pop()
+            .unwrap_or_else(|| Err(CollaborationError::new("join bootstrap was not built")))?;
         self.page_joins()
             .0
             .retain(|join| !(join.room == room_id && join.request.request_id == request_id));
@@ -661,10 +1110,15 @@ impl Rooms {
         match step {
             JoinStep::Inspect { invitation } => {
                 let room = self
-                    .room(&super::collaboration::invitation_room(&invitation)?)
+                    .room(&tilo_peer_state::join_ledger::invitation_room(
+                        &invitation,
+                        now,
+                    )?)
                     .await?;
                 let room = room.lock().await;
-                let join = Self::inspect(&room, &invitation, now)?;
+                let join = room
+                    .collaboration()
+                    .inspect(&room.governed(), &invitation, now)?;
                 Ok(JoinReply::Invitation {
                     room: room.room().to_owned(),
                     workspace_id: room.workspace_id(),
@@ -683,18 +1137,18 @@ impl Rooms {
                 request_id,
             } => {
                 let remote = device_cert.device_public_key;
-                let challenge = self
-                    .challenge(
-                        remote,
-                        JoinChallengeRequest {
-                            signed_invitation: invitation,
-                            device_cert,
-                            request_id,
-                        },
-                        now,
-                    )
-                    .await?
-                    .challenge;
+                let request = JoinTransportRequest::Challenge(JoinChallengeRequest {
+                    signed_invitation: invitation,
+                    device_cert,
+                    request_id,
+                });
+                let JoinTransportResponse::Challenge(JoinChallengeResponse { challenge }) =
+                    Governor(self.clone()).decide(remote, request, now).await?
+                else {
+                    return Err(CollaborationError::new(
+                        "the governor answered no challenge",
+                    ));
+                };
                 Ok(JoinReply::Challenge {
                     challenge: postcard::to_stdvec(&challenge)
                         .map_err(|error| CollaborationError::new(error.to_string()))?,
@@ -924,6 +1378,7 @@ impl Rooms {
                     request_id: redemption.request_id(),
                     proof_digest: queued.get(*index).map_or([0; 32], |join| join.proof_digest),
                     redemption,
+                    name: queued.get(*index).map(|join| join.name.as_str()),
                 },
             )
             .collect();

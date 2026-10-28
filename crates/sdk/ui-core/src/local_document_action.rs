@@ -4,97 +4,19 @@
 //! pinned to the directory revision actually published for that route. Background
 //! work and delivered broker invocations must not inherit a local-input scope.
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
+use tilo_sort::CompactSort as _;
 
 use automerge::{AutoCommit, ChangeHash};
 use tilo_actions::{ActionContext, ActionError, EncodedAction};
 
+/// The local execution observation and the invocation it reports, as the
+/// collab client sends them.
+pub use ::collaboration::local_document_action::{
+    CapturedAction, MAX_REPORT_FIELD, PublishedInvocation, validate_report_field,
+};
+
 const CAPACITY: usize = 128;
 const BYTE_BUDGET: usize = 4 * 1024 * 1024;
-
-/// Original published invocation, before building or wrapping its typed action.
-#[derive(Clone)]
-pub struct PublishedInvocation {
-    pub resource: String,
-    pub action: String,
-    pub arguments: serde_json::Map<String, serde_json::Value>,
-}
-
-/// Exact local execution observation; an empty mutation set means read/no-op.
-/// `context` retains the parent record and source invocation independently of
-/// the published child address. Neither field establishes caller authority.
-#[derive(Clone)]
-pub struct CapturedAction {
-    /// Original broker-authenticated provenance, separate from app action context.
-    pub custody: Option<runtime_collab::committed_document::ConnectionSnapshot>,
-    pub invocation: uuid::Uuid,
-    /// Random identity generated once, before content binding; retained on retry.
-    pub capture_id: uuid::Uuid,
-    pub revision: String,
-    pub published: Option<PublishedInvocation>,
-    pub encoded: EncodedAction,
-    pub context: Option<ActionContext>,
-    pub original_heads: Vec<[u8; 32]>,
-    pub mutation_hashes: Vec<[u8; 32]>,
-}
-
-impl CapturedAction {
-    /// Compute the content-bound identity after the exact mutations are known.
-    /// # Errors
-    /// Refuses captures without an original published invocation.
-    pub fn bound_invocation(&self) -> Result<uuid::Uuid, String> {
-        self.clone().into_report()?.bound_invocation()
-    }
-
-    pub(crate) fn into_report(self) -> Result<runtime_collab::LocalDocumentActionReport, String> {
-        let published = self
-            .published
-            .ok_or("local document action has no published invocation")?;
-        let argument = if published.arguments.is_empty() {
-            None
-        } else {
-            Some(format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::Value::Object(published.arguments)
-            ))
-        };
-        Ok(runtime_collab::LocalDocumentActionReport {
-            custody: self.custody,
-            version: 1,
-            invocation: self.invocation,
-            capture_id: self.capture_id,
-            revision: self.revision,
-            resource: published.resource,
-            action: published.action,
-            argument,
-            encoded: self.encoded,
-            group: self
-                .context
-                .as_ref()
-                .and_then(|context| context.group.clone()),
-            context: self.context,
-            original_heads: self.original_heads,
-            mutation_hashes: self.mutation_hashes,
-        })
-    }
-}
-
-impl std::fmt::Debug for PublishedInvocation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PublishedInvocation")
-            .finish_non_exhaustive()
-    }
-}
-
-impl std::fmt::Debug for CapturedAction {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CapturedAction")
-            .field("invocation", &self.invocation)
-            .field("mutations", &self.mutation_hashes.len())
-            .finish_non_exhaustive()
-    }
-}
-
 #[derive(Default)]
 struct Pending {
     actions: VecDeque<(CapturedAction, Lease)>,
@@ -112,6 +34,9 @@ struct Active {
     custody: Option<runtime_collab::committed_document::ConnectionSnapshot>,
     queue: Queue,
     revision: String,
+    /// The input's surface moved under it: its actions get their revision
+    /// once a surface they can be reported against is published.
+    revision_pending: bool,
     aliases: Option<Rc<std::collections::HashMap<String, String>>>,
     pin: Option<Rc<dyn std::any::Any>>,
 }
@@ -123,7 +48,13 @@ pub(crate) struct InputRoute {
     pub custody: Option<runtime_collab::committed_document::ConnectionSnapshot>,
     pub owner: Option<uuid::Uuid>,
     pub queue: Queue,
+    /// Empty when no published surface could be pinned for this input.
     pub revision: String,
+    /// The surface moved under this input: its actions are admitted and
+    /// reported once a later surface can be pinned. Otherwise an input with
+    /// no revision reports nothing: its actions still edit, and the queue
+    /// records the gap.
+    pub revision_pending: bool,
     pub aliases: Rc<std::collections::HashMap<String, String>>,
     pub pin: Option<Rc<dyn std::any::Any>>,
 }
@@ -181,6 +112,7 @@ pub(crate) fn enter_input(routes: Vec<InputRoute>) -> Scope {
                 custody: None,
                 queue: Queue::new(),
                 revision: String::new(),
+                revision_pending: false,
                 aliases: None,
                 pin: None,
             })
@@ -227,6 +159,7 @@ impl Queue {
                 custody: None,
                 queue: self.clone(),
                 revision,
+                revision_pending: false,
                 aliases: None,
                 pin: None,
             }))
@@ -340,7 +273,9 @@ pub fn has_invocation() -> bool {
     PUBLISHED.with(|published| published.borrow().is_some())
 }
 
-/// Reserve before mutation: saturation refuses without speculative writes.
+/// Reserve before mutation. A saturated queue reserves nothing: the edit runs
+/// unreported and the queue records the refusal, so no report is ever lost
+/// silently and no keystroke is ever refused for want of report capacity.
 pub(crate) fn reserve(
     encoded: &EncodedAction,
     context: Option<&ActionContext>,
@@ -365,6 +300,7 @@ pub(crate) fn reserve(
                     custody: route.custody.clone(),
                     queue: route.queue.clone(),
                     revision: route.revision.clone(),
+                    revision_pending: route.revision.is_empty() && route.revision_pending,
                     aliases: Some(route.aliases.clone()),
                     pin: route.pin.clone(),
                 })
@@ -416,14 +352,17 @@ pub(crate) fn reserve(
         }
     };
     let mut pending = active.queue.0.borrow_mut();
-    if active.revision.is_empty()
+    if (active.revision.is_empty() && !active.revision_pending)
         || pending.reserved >= CAPACITY
         || bytes > BYTE_BUDGET.saturating_sub(pending.bytes)
     {
+        // The person's edit never waits on the history. While every report
+        // the queue may hold is still on its way (or no surface can be held
+        // for this one), the edit lands unreported and the gap is shown, as
+        // for an action with no published address. The bound stays a bound
+        // on reports, never on typing.
         pending.refused = true;
-        return Err(ActionError::Refused(
-            "local action observation queue is full".into(),
-        ));
+        return Ok(None);
     }
     pending.reserved += 1;
     pending.bytes += bytes;
@@ -465,14 +404,14 @@ impl Reservation {
             ));
         }
         let mut original_heads = before.iter().map(|hash| hash.0).collect::<Vec<_>>();
-        original_heads.sort_unstable();
+        original_heads.compact_sort();
         original_heads.dedup();
         let mut mutation_hashes = doc
             .get_changes(before)
             .iter()
             .map(|change| change.hash().0)
             .collect::<Vec<_>>();
-        mutation_hashes.sort_unstable();
+        mutation_hashes.compact_sort();
         mutation_hashes.dedup();
         let mut action = CapturedAction {
             custody: self.active.custody.clone(),
@@ -606,13 +545,6 @@ impl std::io::Write for ReportCounter {
     }
 }
 
-fn validate_report_field(field: &str) -> Result<(), String> {
-    if field.is_empty() || field.len() > 4096 || field.chars().any(char::is_control) {
-        return Err("invalid local document report field".into());
-    }
-    Ok(())
-}
-
 fn report_budget(
     custody: Option<&runtime_collab::committed_document::ConnectionSnapshot>,
     revision: &str,
@@ -625,15 +557,16 @@ fn report_budget(
     if before.len() > 256 {
         return Err("local action exceeds head budget".into());
     }
-    for field in [
-        revision,
-        published.resource.as_str(),
-        published.action.as_str(),
-    ] {
+    // A change whose surface moved under its input has no revision yet:
+    // budget the longest one it can be given.
+    let pending_revision = revision.is_empty();
+    if !pending_revision {
+        validate_report_field(revision)?;
+    }
+    for field in [published.resource.as_str(), published.action.as_str()] {
         validate_report_field(field)?;
     }
     validate_report_field(&encoded.type_id)?;
-    // Validate without constructing a second JSON tree for the typed payload.
     serde_json::from_slice::<serde::de::IgnoredAny>(&encoded.payload)
         .map_err(|error| error.to_string())?;
     let group = context.and_then(|cx| cx.group.as_ref());
@@ -666,6 +599,12 @@ fn report_budget(
     .map_err(|error| error.to_string())?;
     // A worst-case decimal hash occupies 129 bytes, plus its separator.
     // Replace the empty arrays with bounded hash lists, without allocating them.
+    if pending_revision {
+        // Every character may need escaping in the JSON string.
+        counter
+            .add(2 * MAX_REPORT_FIELD)
+            .map_err(|error| error.to_string())?;
+    }
     let hashes = [before.len(), 256]
         .into_iter()
         .filter(|count| *count != 0)

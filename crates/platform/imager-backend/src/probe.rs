@@ -507,11 +507,9 @@ mod tests {
     use super::*;
     use std::process::Command;
 
-    /// Flatpak host reconciliation.
     #[test]
     #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
     fn flatpak_host_reconciliation_and_mount_classification_fail_closed() {
-        // Phase `flatpak_host_reconciliation_rejects_every_unknown_or_mismatch`.
         {
             let complete = (Some(32_000), Some(false), Some(false), Some(false));
             assert_eq!(
@@ -576,7 +574,6 @@ mod tests {
             }
         }
 
-        // Phase `host_mount_classification_uses_host_paths_and_tolerates_nul`.
         {
             assert!(host_mount_is_system(b"/\0"));
             assert!(host_mount_is_system(b"/var/home\0"));
@@ -584,14 +581,12 @@ mod tests {
         }
     }
 
-    /// Linux lsblk parsing.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn linux_lsblk_inventory_parses_and_may_authoritatively_be_empty() {
-        // Phase `parses_usb_and_nvme_from_fixture`.
         {
             // A trimmed `lsblk -J -b` document: one USB stick + one NVMe.
             let json: Value = serde_json::from_str(
@@ -620,7 +615,6 @@ mod tests {
             assert!(drives[1].is_system);
         }
 
-        // Phase `parse_lsblk_matches_the_captured_inventory`.
         {
             // Real `lsblk` output for exactly the Linux probe's columns, and the
             // targets this module derived from it before the shared parser existed.
@@ -635,7 +629,6 @@ mod tests {
             assert_eq!(serde_json::to_value(parse_lsblk(&input)).unwrap(), expected);
         }
 
-        // Phase `successful_linux_probe_can_authoritatively_return_no_drives`.
         {
             let json: Value = serde_json::from_str(
                 r#"{"blockdevices":[
@@ -648,7 +641,6 @@ mod tests {
             assert!(parse_lsblk(&serde_json::json!({})).is_none());
         }
 
-        // Phase `accepts_string_flags_from_older_lsblk`.
         {
             let json: Value = serde_json::from_str(
                 r#"{"blockdevices":[
@@ -734,7 +726,6 @@ mod tests {
             );
         }
 
-        // Phase `tilo_looking_local_source_remains_unverified_and_write_only`.
         {
             let iso = iso_with_label("TILO_1_0");
             let src = inspect_source(iso.path()).expect("inspect");
@@ -750,7 +741,6 @@ mod tests {
             );
         }
 
-        // Phase `inspect_source_treats_foreign_iso_as_write_only`.
         {
             // No CD001 magic, but a `.iso` extension → still a valid image source,
             // just not installable, and it falls back to the file stem for a label.
@@ -760,14 +750,12 @@ mod tests {
             assert!(!src.installable);
         }
 
-        // Phase `inspect_source_rejects_non_image_files`.
         {
             let f = tempfile::Builder::new().suffix(".txt").tempfile().unwrap();
             assert!(inspect_source(f.path()).is_none());
             assert!(inspect_source(std::path::Path::new("/no/such/file.iso")).is_none());
         }
 
-        // Phase `tilo_filename_does_not_turn_non_image_into_official_media`.
         {
             let f = tempfile::Builder::new()
                 .prefix("tilo-official-")
@@ -831,7 +819,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn macos_and_windows_inventories_parse_and_may_authoritatively_be_empty() {
-        // Phase `parses_macos_external_diskutil_inventory`.
         {
             let json: Value = serde_json::from_str(
                 r#"{
@@ -847,14 +834,12 @@ mod tests {
             assert_eq!(drives[0].partitions[0].label.as_deref(), Some("TRANSFER"));
         }
 
-        // Phase `successful_macos_probe_can_authoritatively_return_no_external_drives`.
         {
             let empty = serde_json::json!({"AllDisksAndPartitions": []});
             assert_eq!(parse_diskutil(&empty).unwrap().len(), 0);
             assert!(parse_diskutil(&serde_json::json!({})).is_none());
         }
 
-        // Phase `parses_windows_get_disk_and_flags_system_disk`.
         {
             let json: Value = serde_json::from_str(r#"[
               {"Number":0,"FriendlyName":"Internal NVMe","Size":1000000000000,"BusType":"NVMe","IsBoot":true,"IsSystem":true,"IsReadOnly":false},
@@ -882,7 +867,6 @@ mod tests {
             );
         }
 
-        // Phase `parses_windows_single_partition_object_from_older_json_producer`.
         {
             let json: Value = serde_json::from_str(
                 r#"{"Number":7,"FriendlyName":"Card reader","UniqueId":"reader-7","Size":64000000000,"BusType":"SD","IsBoot":false,"IsSystem":false,"IsReadOnly":false,
@@ -899,7 +883,6 @@ mod tests {
             assert_eq!(drives[0].contents_summary(), "1 partition (CAMERA)");
         }
 
-        // Phase `successful_windows_probe_can_authoritatively_return_no_drives`.
         {
             assert_eq!(
                 parse_windows_disks(&serde_json::json!([])).unwrap().len(),

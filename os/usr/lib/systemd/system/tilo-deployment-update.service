@@ -11,6 +11,8 @@ ExecStart=/usr/libexec/tilo-deployment update --yes
 # what can apply live before this returns, so the caller sees the result
 # (tilo-live-update.service).
 ExecStartPost=-/usr/bin/systemctl start tilo-live-update.service
+# Collect the image the update superseded (tilo-os-image-gc.service).
+ExecStartPost=-/usr/bin/systemctl start --no-block tilo-os-image-gc.service
 RemainAfterExit=no
 # Registry download, unpacking, and deployment writes must not monopolize a
 # machine whose user explicitly started an update while a game is still live.

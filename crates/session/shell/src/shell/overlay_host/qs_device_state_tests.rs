@@ -2,7 +2,7 @@
 //! write touched, and shares the tray's volume.
 
 use super::*;
-use crate::shell::quick_settings::refresh::{FastReading, Kick, QsField, QsReading};
+use crate::shell::quick_settings_refresh::{FastReading, Kick, QsField, QsReading};
 use crate::shell::status::StatusBridge;
 
 /// Records every write, so two paths can be compared call for call.
@@ -18,7 +18,7 @@ impl Recorder {
     }
 }
 
-impl crate::shell::quick_settings::actions::QsActions for Recorder {
+impl tilo_quick_settings::actions::QsActions for Recorder {
     fn set_brightness(&self, pct: f32) -> Result<(), String> {
         self.push(format!("brightness={pct:.1}"));
         Ok(())
@@ -101,7 +101,7 @@ fn toggle_reconciles_only_its_field() {
     );
 
     host.apply_quick_settings_root_action(
-        RootAction::Changed(crate::shell::quick_settings::root::PendingRootActions {
+        RootAction::Changed(tilo_quick_settings::root::PendingRootActions {
             bluetooth: Some(false),
             ..Default::default()
         }),
@@ -115,8 +115,8 @@ fn toggle_reconciles_only_its_field() {
     );
 
     host.apply_quick_settings_root_action(
-        RootAction::Changed(crate::shell::quick_settings::root::PendingRootActions {
-            power: Some(crate::shell::quick_settings::PowerProfile::Saver),
+        RootAction::Changed(tilo_quick_settings::root::PendingRootActions {
+            power: Some(tilo_quick_settings::PowerProfile::Saver),
             ..Default::default()
         }),
         &chrome,
@@ -193,7 +193,7 @@ fn qs_shows_the_tray_volume() {
         !host.qs_refresh.is_in_flight(),
         "the slider's value came from the tray, not a wpctl read"
     );
-    assert!((chrome.borrow().quick_settings.volume - 0.2).abs() < f32::EPSILON);
+    assert!((chrome.borrow().quick_settings.volume_level() - 0.2).abs() < f32::EPSILON);
 
     // A level that changes under the tray — another app, `wpctl` in a
     // terminal — moves the open panel's slider with it.
@@ -203,9 +203,10 @@ fn qs_shows_the_tray_volume() {
     });
     host.update(&doc, &automerge::ROOT);
     let state = chrome.borrow();
-    assert!((state.quick_settings.volume - 0.35).abs() < f32::EPSILON);
+    assert!((state.quick_settings.volume_level() - 0.35).abs() < f32::EPSILON);
     assert!(
         state
+            .quick_settings
             .status
             .volume
             .is_some_and(|volume| (volume.level - 0.35).abs() < f32::EPSILON),
@@ -245,6 +246,111 @@ fn a_panel_volume_reading_updates_the_tray() {
         "the panel's read is the tray's read: one volume in the shell"
     );
     let state = chrome.borrow();
-    assert!((state.quick_settings.volume - 0.6).abs() < f32::EPSILON);
-    assert_eq!(state.status.volume, Some(read));
+    assert!((state.quick_settings.volume_level() - 0.6).abs() < f32::EPSILON);
+    assert_eq!(state.quick_settings.status.volume, Some(read));
+}
+
+#[test]
+fn wifi_tile_names_the_observed_link_not_a_stale_scan() {
+    use settings_store::hardware::QuickSettingsControl;
+    use tilo_quick_settings::WifiNetwork;
+    let bridge = StatusBridge::new();
+    let (mut host, chrome) = host_with(&Recorder::default(), Some(bridge.clone()));
+    {
+        let mut st = chrome.borrow_mut();
+        st.quick_settings.wifi = true;
+        st.quick_settings.radios.wifi_available = true;
+        st.quick_settings.wifi_networks = vec![WifiNetwork {
+            ssid: "Cafe".into(),
+            signal: 3,
+            secure: true,
+            security: os_actions::WifiSecurity::default(),
+            connected: true,
+            known: true,
+        }];
+        st.quick_settings.wifi_scan_error = Some("scan failed".into());
+    }
+    let subline = |chrome: &crate::shell::chrome_state::Chrome| {
+        QuickSettingsRoot::subline(QuickSettingsControl::Wifi, &chrome.borrow().quick_settings)
+    };
+    let doc = automerge::AutoCommit::new();
+    let mut observe = |kind, name: Option<&str>| {
+        bridge.set_link(Some(os_actions::LinkStatus {
+            kind,
+            name: name.map(str::to_owned),
+            signal: 0,
+        }));
+        host.update(&doc, &automerge::ROOT);
+    };
+
+    observe(os_actions::LinkKind::Wifi, Some("Home"));
+    assert_eq!(subline(&chrome), "Home", "the link connected now");
+    observe(os_actions::LinkKind::Offline, None);
+    assert_eq!(subline(&chrome), t("qs-not-connected"));
+    observe(os_actions::LinkKind::Wired, Some("Office LAN"));
+    assert_eq!(
+        subline(&chrome),
+        "Cafe",
+        "a wired primary link says nothing about Wi-Fi: the scan's network"
+    );
+}
+
+/// What the top bar draws from chrome, through its production source.
+fn bar_status(chrome: &crate::shell::chrome_state::Chrome) -> tilo_desktop::chrome::SystemStatus {
+    crate::shell::topbar_chrome::native_source(chrome.clone())
+        .snapshot()
+        .status
+}
+
+#[test]
+fn a_backend_change_shows_in_the_bar_and_the_panel_in_one_update() {
+    let bridge = bridge_at(0.4, false);
+    let (mut host, chrome) = host_with(&Recorder::default(), Some(bridge.clone()));
+    let doc = automerge::AutoCommit::new();
+    host.update(&doc, &automerge::ROOT);
+
+    // UPower reports a lower charge and PipeWire a muted sink.
+    bridge.set_battery(
+        tilo_power_mgmt::BatterySnapshot {
+            present: true,
+            percent: 61,
+            state: tilo_power_mgmt::BatteryState::Discharging,
+        },
+        None,
+    );
+    bridge.set_volume(os_actions::VolumeState {
+        level: 0.4,
+        muted: true,
+    });
+    host.update(&doc, &automerge::ROOT);
+
+    let bar = bar_status(&chrome);
+    assert_eq!(bar.battery_percent, Some(61));
+    assert_eq!(bar.volume.map(|v| v.muted), Some(true));
+    let state = chrome.borrow();
+    assert_eq!(state.quick_settings.battery().percent, 61);
+    assert!(state.quick_settings.volume_muted());
+}
+
+#[test]
+fn the_volume_icon_mutes_and_unmutes_in_the_bar_and_the_panel() {
+    let actions = Recorder::default();
+    let bridge = bridge_at(0.4, false);
+    let (mut host, chrome) = host_with(&actions, Some(bridge.clone()));
+    let doc = automerge::AutoCommit::new();
+    host.update(&doc, &automerge::ROOT);
+
+    for muted in [true, false] {
+        host.apply_quick_settings_root_action(RootAction::ToggleMute, &chrome);
+        let expected = os_actions::VolumeState { level: 0.4, muted };
+        assert_eq!(bridge.snapshot().volume, Some(expected));
+        assert_eq!(chrome.borrow().quick_settings.status.volume, Some(expected));
+        assert_eq!(bar_status(&chrome).volume.map(|v| v.muted), Some(muted));
+        assert_eq!(
+            host.qs_refresh.take_kicks(),
+            [Kick::Field(QsField::Volume)],
+            "the toggle reads back the volume alone"
+        );
+    }
+    assert_eq!(actions.calls(), ["mute=true", "mute=false"]);
 }

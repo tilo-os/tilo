@@ -94,13 +94,9 @@ fn text_uses_the_fonts_tilo_ships_and_names_them_when_refused() {
         &mut app,
         &json!([{"id": "title", "shape": {"kind": "text", "x": 40, "y": 120, "text": "MORAINE", "size": 80, "font": ui::UI_SERIF_FAMILY, "weight": 650, "tracking": 120}, "fill": "#222222"}]),
     );
-    let measured = view(&mut app, "inspect", json!({"measure": ["title"]}));
+    let measured = view(&mut app, "measure", json!({"ids": ["title"]}));
     let letters = measured["measured"][0]["letters"].as_array().unwrap();
     assert_eq!(letters.len(), 7, "one box per letter: {measured}");
-    assert_eq!(
-        measured["listed"], 0,
-        "measuring, the marks are listed only when asked: {measured}"
-    );
     assert_eq!(letters[0]["t"], "M");
     let left = |index: usize| letters[index]["box"][0].as_f64().unwrap();
     let width = |index: usize| letters[index]["box"][2].as_f64().unwrap();
@@ -116,7 +112,7 @@ fn words_follow_a_path_and_export_as_outlines() {
         &mut app,
         &json!([{"id": "arc", "shape": {"kind": "text", "x": 0, "y": 0, "text": "ALONG THE LAKE", "size": 40, "align": "center", "path": "M300,400 Q600,0 900,400"}, "fill": "#103050"}]),
     );
-    let measured = view(&mut app, "inspect", json!({"measure": ["arc"]}));
+    let measured = view(&mut app, "measure", json!({"ids": ["arc"]}));
     let letters = measured["measured"][0]["letters"].as_array().unwrap();
     let top = |index: usize| letters[index]["box"][1].as_f64().unwrap();
     // The middle of the line rides the top of the curve; its ends sit lower.
@@ -192,7 +188,7 @@ fn measure_finds_where_the_ink_weighs() {
             {"id": "wedge", "shape": {"kind": "polygon", "points": [[500, 100], [500, 300], [700, 300]]}, "fill": "#000000"},
         ]),
     );
-    let measured = view(&mut app, "inspect", json!({"measure": ["disc", "wedge"]}));
+    let measured = view(&mut app, "measure", json!({"ids": ["disc", "wedge"]}));
     let disc = &measured["measured"][0];
     let wedge = &measured["measured"][1];
     let offset = |entry: &Value, axis: usize| entry["offset"][axis].as_f64().unwrap();
@@ -312,7 +308,7 @@ fn tracked_centred_text_centres_its_letters() {
         &mut app,
         &json!([{"id": "t", "shape": {"kind": "text", "x": 600, "y": 200, "text": "RAIL", "size": 80, "tracking": 400, "align": "center"}}]),
     );
-    let measured = view(&mut app, "inspect", json!({"measure": ["t"]}));
+    let measured = view(&mut app, "measure", json!({"ids": ["t"]}));
     let entry = &measured["measured"][0];
     let letters = entry["letters"].as_array().unwrap();
     let left = letters[0]["box"][0].as_f64().unwrap();

@@ -2,7 +2,7 @@
 
 [[resources]]
 kind = "totp.vault"
-label = "Accounts"
+label = "Authenticator"
 version = 1
 fields = [
   { path = "accounts", type = "Collection<StoredAccount>", stored = "collection" },

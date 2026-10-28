@@ -88,12 +88,14 @@ pub(crate) struct FabricWorker<F> {
 }
 
 impl<F: Send + 'static> FabricWorker<F> {
-    /// Start `pump` on a thread named `name`. `after_run` follows each run,
-    /// on that thread: it is how the compositor learns there is output to
-    /// pick up.
+    /// Start a pump on a thread named `name`, made there by `make`: making
+    /// one may read settings and bind sockets, which the compositor thread
+    /// must not wait for. Facts asked for before it is made wait for it.
+    /// `after_run` follows each run, on that thread: it is how the
+    /// compositor learns there is output to pick up.
     pub(crate) fn spawn<P>(
         name: &str,
-        mut pump: P,
+        make: impl FnOnce() -> P + Send + 'static,
         after_run: impl Fn() + Send + 'static,
     ) -> std::io::Result<Self>
     where
@@ -113,6 +115,7 @@ impl<F: Send + 'static> FabricWorker<F> {
                 // A settings write made here must not wait for the disk
                 // either, exactly as on the compositor thread it came from.
                 settings_store::defer_writes_on_this_thread();
+                let mut pump = make();
                 while let Some(facts) = worker.next() {
                     pump.pump(facts);
                     after_run();
@@ -169,9 +172,9 @@ impl<F> Drop for FabricWorker<F> {
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;
-    use std::time::Duration;
 
     use super::*;
+    use tilo_test_env::recv;
 
     /// A pump whose run takes as long as the test says: it waits for a
     /// release, and reports each run's facts and whether the release came.
@@ -186,7 +189,10 @@ mod tests {
 
         fn pump(&mut self, facts: u32) {
             let _ = self.started.send(facts);
-            let released = self.release.recv_timeout(Duration::from_secs(5)).is_ok();
+            let released = self
+                .release
+                .recv_timeout(tilo_test_env::hang_bound())
+                .is_ok();
             let _ = self.runs.send((facts, released));
         }
     }
@@ -199,7 +205,7 @@ mod tests {
         let (after_tx, after) = mpsc::channel();
         let worker = FabricWorker::spawn(
             "fabric-test",
-            Slow {
+            move || Slow {
                 started: started_tx,
                 release,
                 runs: runs_tx,
@@ -214,25 +220,30 @@ mod tests {
         // for runs meanwhile. Were `tick` to pump in place, the first one
         // would sit out the pump's whole wait and report it unreleased.
         worker.tick(1);
-        assert_eq!(started.recv_timeout(Duration::from_secs(10)), Ok(1));
+        assert_eq!(recv("the first run to start", &started), 1);
         worker.tick(2);
         worker.tick(3);
         worker.tick(4);
         release_tx.send(()).unwrap();
         assert_eq!(
-            runs.recv_timeout(Duration::from_secs(10)),
-            Ok((1, true)),
+            recv("the first run", &runs),
+            (1, true),
             "the turns returned while the first run still waited"
         );
-        after.recv_timeout(Duration::from_secs(10)).unwrap();
+        recv("the first run's follow-up", &after);
 
-        // The turns that came during that run become one run, with the
-        // latest facts.
         release_tx.send(()).unwrap();
-        assert_eq!(runs.recv_timeout(Duration::from_secs(10)), Ok((4, true)));
-        after.recv_timeout(Duration::from_secs(10)).unwrap();
-        assert!(
-            runs.recv_timeout(Duration::from_millis(100)).is_err(),
+        assert_eq!(recv("the coalesced run", &runs), (4, true));
+        recv("the coalesced run's follow-up", &after);
+
+        // Facts already pumped are not pumped again: the next run is the
+        // next turn's, and nothing ran in between.
+        worker.tick(5);
+        release_tx.send(()).unwrap();
+        assert_eq!(recv("the next turn's run", &runs), (5, true));
+        assert_eq!(
+            started.try_iter().collect::<Vec<_>>(),
+            [4, 5],
             "facts already pumped are not pumped again"
         );
     }

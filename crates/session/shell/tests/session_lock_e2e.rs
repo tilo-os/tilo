@@ -53,7 +53,7 @@ fn spawn_headless_locking() -> (Child, PathBuf) {
     // including a caller-selected `CARGO_TARGET_DIR`. A repository-relative
     // `target/debug/shell` can be stale or linked against another container's
     // libraries and previously made startup failures look like lock failures.
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_shell"));
+    let binary = tilo_test_env::package_binary!("shell");
 
     let mut child = Command::new(&binary)
         .args(["--mode", "native", "--backend", "headless"])
@@ -65,6 +65,7 @@ fn spawn_headless_locking() -> (Child, PathBuf) {
         .env("TILO_IDLE_LOCK_SECS", "2")
         .env("TILO_IDLE_BLANK_SECS", "0")
         .env("TILO_HEADLESS_SIZE", "1280x800")
+        .env("HOME", crate::support::desktop::private_home(&runtime_dir))
         .env("XDG_RUNTIME_DIR", &runtime_dir)
         .env("XDG_CONFIG_HOME", runtime_dir.join("config"))
         .env("XDG_DATA_HOME", runtime_dir.join("data"))
@@ -235,8 +236,13 @@ fn idle_lock_then_wrong_password_stays_locked_and_correct_unlocks() {
         is_locked(&mut stream),
         "a wrong password must leave the session locked"
     );
-    // Belt-and-braces: it stays locked over a short window.
-    std::thread::sleep(Duration::from_millis(150));
+    // Verification is asynchronous: wait for the verifier's rejection, then
+    // check the session is still locked after it.
+    tilo_test_env::wait_until("the verifier to reject the wrong password", || {
+        let resp = round_trip(&mut stream, r#"{"op":"state_dump"}"#);
+        let auth = &resp["state"]["chrome"]["lock_auth"];
+        auth["verifying"] == serde_json::Value::Bool(false) && !auth["error"].is_null()
+    });
     assert!(
         is_locked(&mut stream),
         "still locked after a rejected attempt"

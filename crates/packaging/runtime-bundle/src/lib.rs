@@ -41,7 +41,6 @@ pub const ABI_DIGEST_DOMAIN: &[u8] = b"tilo-runtime-abi-v1\0";
 /// an app's `tilo-runtime/<version>`.
 pub const NATIVE_ABI_MARKER: &str = "+native.";
 
-/// Hex digits of the ABI digest.
 pub const ABI_DIGEST_HEX_LEN: usize = 32;
 
 /// The ABI digest of the runtime build whose payload has `root_hash`.
@@ -488,7 +487,6 @@ impl Identity {
         self.signing_key.verifying_key().to_bytes()
     }
 
-    /// Hex encoding of the public key.
     pub fn public_key_hex(&self) -> String {
         hex::encode(self.public_key_bytes())
     }
@@ -576,6 +574,43 @@ pub fn build_bundle_with(
 ) -> Result<BundleManifest, BundleError> {
     let (arch, files) = stage_payload(out, opts)?;
     seal(out, version.to_string(), arch, files, opts.identity)
+}
+
+/// Build a bundle at `out` that holds `binaries` under `bin/` and nothing else: no loader, libc
+/// or `ld.so.cache`.
+///
+/// This is the shape of a runtime that apps name as their entrypoint runtime (the tilolang
+/// runtime). The launcher mounts such a bundle beside the app's own runtime and changes no
+/// loader path, so the app runtime's loader runs its binary and the binary finds its libraries
+/// in that runtime's `lib/`. A loader set of its own would be signed, shipped and installed with
+/// every version of the bundle, and never read.
+///
+/// # Errors
+///
+/// [`BundleError::UnsupportedArch`] for an architecture without a source-path table,
+/// [`BundleError::NoSources`] when `binaries` is empty, everything [`copy_binaries`] refuses, and
+/// [`BundleError::Io`] or an [`Identity::load`] error as for [`build_bundle_with`].
+pub fn build_binaries_bundle(
+    out: &Path,
+    version: &str,
+    arch: Option<&str>,
+    identity: Option<&Path>,
+    binaries: &[PathBuf],
+) -> Result<BundleManifest, BundleError> {
+    let arch = arch.unwrap_or_else(|| host_arch());
+    if host_minimal_paths_for(arch).is_none() {
+        return Err(BundleError::UnsupportedArch(arch.to_string()));
+    }
+    if binaries.is_empty() {
+        return Err(BundleError::NoSources {
+            checked: Vec::new(),
+        });
+    }
+    fs::create_dir_all(out)?;
+    let mut written = Vec::new();
+    copy_binaries(out, binaries, &mut written)?;
+    let files = hash_payload(&written)?;
+    seal(out, version.to_string(), arch.to_string(), files, identity)
 }
 
 /// Build the runtime build of `release` under `out_root`, named by its ABI:
@@ -686,9 +721,14 @@ fn stage_payload(
         });
     }
 
-    // Hash payload: BLAKE3 for identity, fs-verity for launches.
+    Ok((arch.to_string(), hash_payload(&written)?))
+}
+
+/// Hash a staged payload, BLAKE3 for identity and fs-verity for launches; returns the files
+/// sorted by path.
+fn hash_payload(written: &[(String, PathBuf)]) -> Result<Vec<BundleFile>, BundleError> {
     let mut files: Vec<BundleFile> = Vec::with_capacity(written.len());
-    for (rel, abs) in &written {
+    for (rel, abs) in written {
         let digests = digest_file(abs, true)?;
         files.push(BundleFile {
             path: rel.clone(),
@@ -698,7 +738,7 @@ fn stage_payload(
         });
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok((arch.to_string(), files))
+    Ok(files)
 }
 
 /// Sign (when `identity` is set) and write `bundle.toml` for a staged payload.
@@ -1606,6 +1646,50 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn an_entrypoint_runtime_bundle_holds_its_binary_and_no_loader_set() {
+        use std::os::unix::fs::PermissionsExt;
+        let work = tempfile::tempdir().unwrap();
+        let binary = work.path().join("tilolang-app");
+        fs::write(&binary, b"runtime binary linking the app runtime").unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        let identity = Identity::generate();
+        let identity_path = work.path().join("identity.json");
+        fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+        let bundle = work.path().join("bundle");
+
+        // This machine's loader and libc exist, and none of them is taken.
+        let manifest = build_binaries_bundle(
+            &bundle,
+            "0.1.0+tilolang",
+            None,
+            Some(&identity_path),
+            std::slice::from_ref(&binary),
+        )
+        .unwrap();
+        let paths: Vec<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["bin/tilolang-app"]);
+        assert!(!bundle.join("lib").exists());
+        assert!(!bundle.join("etc").exists());
+        let options = VerifyOptions {
+            require_publisher: Some(identity.public_key_hex()),
+            require_signature: true,
+            require_arch: Some(host_arch().into()),
+        };
+        assert_eq!(
+            verify_bundle_with(&bundle, &options).unwrap().root_hash,
+            manifest.root_hash
+        );
+        fs::write(bundle.join("bin/tilolang-app"), b"another binary").unwrap();
+        assert!(verify_bundle_with(&bundle, &options).is_err());
+
+        assert!(matches!(
+            build_binaries_bundle(&work.path().join("empty"), "0.1.0", None, None, &[]),
+            Err(BundleError::NoSources { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn binary_includes_refuse_redirected_non_executable_or_ambiguous_services() {
         use std::os::unix::fs::{PermissionsExt, symlink};
         let source = tempfile::tempdir().unwrap();
@@ -2036,7 +2120,6 @@ mod tests {
             extra_bins: &[],
         };
         let (expected, _) = build_abi_bundle(unique.path(), "2026.07", &opts).unwrap();
-        // Explicit includes and ldd's transitive closure name the same inputs.
         let (actual, root) = build_abi_bundle(
             repeated.path(),
             "2026.07",
@@ -2089,7 +2172,6 @@ mod tests {
         assert_eq!(fs::read_dir(out.path()).unwrap().count(), 0);
     }
 
-    /// The bundle's payload paths, sorted.
     fn payload_paths(manifest: &BundleManifest) -> Vec<&str> {
         manifest.files.iter().map(|f| f.path.as_str()).collect()
     }
@@ -2423,7 +2505,6 @@ mod tests {
             );
             assert!(manifest.signature_hex.is_some());
 
-            // Default verify accepts a valid signed bundle.
             let v = verify_bundle(out.path()).expect("verify");
             assert_eq!(v.publisher_hex, manifest.publisher_hex);
 
@@ -2501,7 +2582,6 @@ mod tests {
             let text = fs::read_to_string(&bundle_toml).unwrap();
             let mut manifest: BundleManifest = toml::from_str(&text).unwrap();
             let sig = manifest.signature_hex.as_mut().unwrap();
-            // Flip one hex nibble deterministically.
             let bytes: &mut [u8] = unsafe { sig.as_bytes_mut() };
             bytes[0] = if bytes[0] == b'0' { b'1' } else { b'0' };
             fs::write(&bundle_toml, toml::to_string_pretty(&manifest).unwrap()).unwrap();

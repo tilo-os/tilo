@@ -40,12 +40,16 @@ fn fixture(root: &Path) -> Arc<PreparedMedia> {
         None,
         MediaSelections {
             sessions: None,
+            mail: None,
             home_applications: false,
             home: None,
             retained: None,
             planned_direct: None,
             applications: None,
             browser: Some(browser),
+
+            other_device: None,
+            tpm_target: None,
         },
         Zeroizing::new("a sufficiently long transport password".into()),
         "desktop-continuity".into(),

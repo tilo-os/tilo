@@ -1,7 +1,9 @@
 //! The time-zone globe: the Earth drawn as a globe with the land, the night
-//! side and every zone's city, turned by dragging. Clicking a place lists the
-//! cities near it (the pane's nearby list); clicking a city's dot chooses its
-//! zone. The arrow keys walk from city to city and Enter chooses one.
+//! side and every zone's city, turned by dragging. It is the time-zone
+//! picker's visual: clicking a city's dot, or anywhere else on the globe,
+//! chooses the zone of the city there or nearest to it, and a zone chosen in
+//! the picker turns the globe to face its city. The arrow keys walk from
+//! city to city and Enter chooses one.
 //!
 //! The land is Natural Earth's 1:110m polygons (`data/world-land.b64`), the
 //! cities are the installed tzdata's, and the night side is where the sun
@@ -121,11 +123,10 @@ const fn decode_base64<const N: usize>(mut text: &[u8]) -> [u8; N] {
     out
 }
 
-/// [`WORLD_LAND`]'s bytes.
 static WORLD_LAND_BYTES: [u8; decoded_len(WORLD_LAND.as_bytes())] =
     decode_base64(WORLD_LAND.as_bytes());
 
-/// Walk [`WORLD_LAND`]: each ring is a little-endian `u16` point count, its
+/// Walk `WORLD_LAND`: each ring is a little-endian `u16` point count, its
 /// first point as two `i16` (longitude, latitude) in tenths of a degree,
 /// then one `i8` pair per further point, the step from the point before.
 /// `visit` gets each point in degrees and whether it starts a ring.
@@ -294,7 +295,6 @@ impl Projection {
         }
     }
 
-    /// Whether `p` faces the viewer.
     fn faces(&self, p: [f64; 3]) -> bool {
         dot(p, self.forward) > 0.0
     }
@@ -319,7 +319,6 @@ impl Projection {
         )
     }
 
-    /// The place under `point`, when it is on the globe.
     fn place_at(&self, point: Point) -> Option<(f64, f64)> {
         let x = (point.x - self.centre.x) / self.radius;
         let y = -(point.y - self.centre.y) / self.radius;
@@ -502,15 +501,14 @@ impl GlobePalette {
 }
 
 /// What the globe keeps across the pane's rebuilds: which way it faces,
-/// where the nearby list is centred, the keyboard's city, and the land
+/// the zone it last faced, the keyboard's city, and the land
 /// already projected for the current size and view.
 #[derive(Default)]
 pub struct GlobeState {
     pub view: Option<View>,
-    /// The place the nearby list is around, when the person picked one.
-    pub focus: Option<(f64, f64)>,
-    /// Counts focus changes, so the pane rebuilds its list once per change.
-    pub focus_revision: u64,
+    /// The zone the globe was last turned to face, so a zone chosen
+    /// elsewhere (the picker) turns it once.
+    faced: Option<String>,
     cursor: Option<usize>,
     land: Option<(Projection, BezPath)>,
 }
@@ -523,8 +521,6 @@ pub struct TimeZoneGlobe {
     points: Rc<[TimeZonePoint]>,
     selected: String,
     state: SharedGlobe,
-    /// The focus revision this widget was built at.
-    built_revision: u64,
     /// The clock's time, for the night side.
     now: i64,
     hover: Option<usize>,
@@ -552,20 +548,28 @@ impl TimeZoneGlobe {
         now: i64,
     ) -> Self {
         let selected = selected.into();
-        let built_revision = {
+        {
             let mut shared = state.borrow_mut();
-            if shared.view.is_none()
+            // The globe faces the chosen zone's city when it first shows
+            // and whenever the zone is chosen anywhere else; a turn the
+            // person made by dragging stays until then.
+            if (shared.view.is_none() || shared.faced.as_deref() != Some(selected.as_str()))
                 && let Some(point) = points.iter().find(|point| point.id == selected)
             {
-                shared.view = Some(View::facing(point.longitude(), point.latitude() * 0.6));
+                let facing = (point.longitude(), point.latitude() * 0.6);
+                let in_view = shared.view.is_some_and(|view| {
+                    degrees_apart((view.longitude, view.latitude), facing) <= 55.0
+                });
+                if !in_view {
+                    shared.view = Some(View::facing(facing.0, facing.1));
+                }
+                shared.faced = Some(selected.clone());
             }
-            shared.focus_revision
-        };
+        }
         Self {
             points,
             selected,
             state,
-            built_revision,
             now,
             hover: None,
             last_cursor: Point::ZERO,
@@ -681,22 +685,31 @@ impl TimeZoneGlobe {
     fn commit(&mut self, index: usize) {
         if let Some(point) = self.points.get(index) {
             self.state.borrow_mut().cursor = Some(index);
-            self.focus_on((point.longitude(), point.latitude()));
             if self.selected == point.id {
                 return;
             }
             self.selected.clone_from(&point.id);
+            // Chosen here, already in view: the globe stays where it is.
+            self.state.borrow_mut().faced = Some(point.id.clone());
             if let Some(action) = &mut self.action {
                 let _ = action.emit(point.id.clone());
             }
         }
     }
 
-    /// Centre the nearby list on a place.
-    fn focus_on(&self, place: (f64, f64)) {
-        let mut state = self.state.borrow_mut();
-        state.focus = Some(place);
-        state.focus_revision = state.focus_revision.wrapping_add(1);
+    /// The city nearest `place` (longitude, latitude).
+    fn nearest_to(&self, place: (f64, f64)) -> Option<usize> {
+        self.points
+            .iter()
+            .enumerate()
+            .map(|(index, point)| {
+                (
+                    index,
+                    degrees_apart(place, (point.longitude(), point.latitude())),
+                )
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(index, _)| index)
     }
 
     fn drag_to(&mut self, position: Point) -> bool {
@@ -988,10 +1001,13 @@ impl Widget for TimeZoneGlobe {
                 if dragged {
                     return;
                 }
-                if let Some(index) = self.point_at(self.last_cursor) {
+                // A dot chooses its city's zone; anywhere else on the globe
+                // chooses the zone of the city nearest the place.
+                if let Some(index) = self
+                    .point_at(self.last_cursor)
+                    .or_else(|| self.nearest_to(self.projection().place_at(self.last_cursor)?))
+                {
                     self.commit(index);
-                } else if let Some(place) = self.projection().place_at(self.last_cursor) {
-                    self.focus_on(place);
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
@@ -1014,11 +1030,6 @@ impl Widget for TimeZoneGlobe {
             }
             _ => {}
         }
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        // A new focus changes the nearby list beside the globe.
-        self.state.borrow().focus_revision != self.built_revision
     }
 
     fn name(&self) -> &'static str {
@@ -1163,10 +1174,8 @@ mod tests {
                 "{place:?} came back {back:?}"
             );
         }
-        // East is to the right and north is up.
         assert!(globe.project(unit(20.0, 45.0)).x > 100.0);
         assert!(globe.project(unit(10.0, 55.0)).y < 100.0);
-        // Sydney is behind the globe, outside the disk.
         let sydney = globe.project(unit(151.2, -33.9));
         assert!(!globe.faces(unit(151.2, -33.9)));
         assert!(sydney.distance(Point::new(100.0, 100.0)) > 100.0);
@@ -1228,5 +1237,51 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "fixture coordinates are within a few hundred degrees"
+    )]
+    fn city(id: &str, longitude: f64, latitude: f64) -> TimeZonePoint {
+        let (region, city) = id.split_once('/').unwrap();
+        TimeZonePoint {
+            id: id.to_owned(),
+            region: region.to_owned(),
+            city: city.to_owned(),
+            latitude_e6: (latitude * 1e6) as i32,
+            longitude_e6: (longitude * 1e6) as i32,
+        }
+    }
+
+    #[test]
+    fn the_globe_selects_the_nearest_zone_and_turns_to_the_one_the_picker_chose() {
+        let points: Rc<[TimeZonePoint]> = vec![
+            city("Europe/Amsterdam", 4.9, 52.37),
+            city("America/New_York", -74.0, 40.71),
+            city("Asia/Tokyo", 139.69, 35.69),
+        ]
+        .into();
+        let state = SharedGlobe::default();
+        let globe =
+            TimeZoneGlobe::new(Rc::clone(&points), "Europe/Amsterdam", Rc::clone(&state), 0);
+        let facing = |state: &SharedGlobe| {
+            let view = state.borrow().view.unwrap();
+            (view.longitude, view.latitude)
+        };
+        assert!(degrees_apart(facing(&state), (4.9, 52.37)) < 40.0);
+        // Anywhere on the globe chooses the city nearest the place: Utrecht
+        // is Amsterdam's, the middle of Honshu Tokyo's.
+        assert_eq!(globe.nearest_to((5.12, 52.09)), Some(0));
+        assert_eq!(globe.nearest_to((137.0, 36.0)), Some(2));
+
+        // The person drags the globe a little; a rebuild keeps their turn.
+        state.borrow_mut().view = Some(View::facing(10.0, 40.0));
+        let _ = TimeZoneGlobe::new(Rc::clone(&points), "Europe/Amsterdam", Rc::clone(&state), 0);
+        assert_eq!(facing(&state), (10.0, 40.0));
+
+        // Tokyo chosen in the picker: the globe turns to face it.
+        let _ = TimeZoneGlobe::new(Rc::clone(&points), "Asia/Tokyo", Rc::clone(&state), 0);
+        assert!(degrees_apart(facing(&state), (139.69, 35.69)) < 40.0);
     }
 }

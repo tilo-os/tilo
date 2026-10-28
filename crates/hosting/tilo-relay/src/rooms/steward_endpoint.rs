@@ -22,7 +22,7 @@
 use channel_crypto::ChannelContentKeys;
 use tilo_browser_peer::DocumentRoute;
 
-use super::{Rooms, SystemTime, readers};
+use super::Rooms;
 use crate::room_access::{self, Decision, RelayTrust, RoomOperation};
 
 impl Rooms {
@@ -32,11 +32,6 @@ impl Rooms {
     /// channel is read and none is ever created. `None` when this relay does
     /// not govern and steward the room: another device stewards it, and
     /// admits the room actions over the channel like any member.
-    ///
-    /// # Errors
-    ///
-    /// Refuses a refused decision, and a channel that does not exist when
-    /// `create` is false.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the room stays locked from the decision until its keys are read"
@@ -109,19 +104,9 @@ impl Rooms {
             channel,
             &collab_types::ChannelRoute::new(route.app_id.as_str(), route.record.as_str()),
         );
-        let now = SystemTime::now();
-        let allowed = readers(
-            room.peer(),
-            &room.peer().governance().governed_access(now)?,
-            Some(&*steward),
-            now,
-        )?;
         let mut stewardship = steward.channels.lock().await;
         if create {
-            let messages = stewardship.open_channel(channel, &allowed)?;
-            // After the channel changes a settle handed over.
-            room.publisher.flushed().await;
-            self.publish_channel_governance(workspace_id, messages)
+            self.open_record_channel(room, &steward, &mut stewardship, channel)
                 .await?;
         }
         let keys = stewardship.existing_keys(channel)?;

@@ -36,6 +36,9 @@ impl DesktopCommandSink for ShellCommands<'_> {
             }
         }
         let mut tree = self.chrome.tree_mut();
+        if let LocalViewIntent::Maximized { group, .. } = intent {
+            crate::shell::stepped_back::settle_stepped_back(&mut tree, group);
+        }
         apply_local_view(&mut tree.desktop, intent);
         // View state survives a restart: persist it in the boundary that
         // accepted the gesture.

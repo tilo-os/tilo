@@ -25,6 +25,21 @@ function fakePeer(answer) {
   };
 }
 
+/** Request timers the test runs out by hand: a request times out exactly
+ * when `expire` says so, never because the runner was slow to answer. */
+function manualTimers() {
+  const pending = new Set();
+  return {
+    setTimer: callback => { const handle = {callback}; pending.add(handle); return handle; },
+    clearTimer: handle => { pending.delete(handle); },
+    /** Time out every request waiting now (once one is). */
+    async expire() {
+      while (!pending.size) await new Promise(resolve => setImmediate(resolve));
+      for (const handle of [...pending]) { pending.delete(handle); handle.callback(); }
+    },
+  };
+}
+
 function agentsWith(peer, extra = {}) {
   let id = 0;
   const agents = createAgents({peer, room: ROOM, hostDevice: HOST, userPublicKey: USER, newId: () => `inv-${++id}`, ...extra});
@@ -93,14 +108,13 @@ test('refusals, undeliverable frames and silence become typed errors', async () 
   const peer = fakePeer(request => (request.target.address.action === 'message'
     ? {Rejected: {error: {Refused: {reason: 'the agent was stopped'}}}}
     : undefined));
-  const timers = [];
-  const {agents, stop} = agentsWith(peer, {
-    timeoutMs: 5,
-    setTimer: (callback, delay) => { const handle = setTimeout(callback, delay); timers.push(handle); return handle; },
-  });
+  const time = manualTimers();
+  const {agents, stop} = agentsWith(peer, time);
   try {
     await assert.rejects(agents.message('writer', 'more'), error => error instanceof AgentsError && error.code === 'refused' && /stopped/.test(error.message));
-    await assert.rejects(agents.status(), error => error.code === 'timeout');
+    const status = agents.status();
+    await time.expire();
+    await assert.rejects(status, error => error.code === 'timeout');
     const waiting = agents.pause('writer');
     peer.events.push({kind: 'undeliverable', to: HOST, reason: 'this host does not serve apps'});
     await assert.rejects(waiting, error => error.code === 'undeliverable');
@@ -112,10 +126,10 @@ test('refusals, undeliverable frames and silence become typed errors', async () 
 test('agent cursors come from presence that says agent; delegations verify in wasm', () => {
   const live = {
     remoteState: () => [
-      {publisher: AGENT, seq: 3, focus: {app: 'so.tilo.scratchpad', record: 'r1'}, pointer: [10, 20], selection: null, stale: false,
+      {publisher: AGENT, seq: 3, focus: {app: 'so.tilo.scratchpad', record: 'r1'}, pointer: {window: {app: 'so.tilo.scratchpad', record: 'r1'}, at: [10, 20]}, selection: null, stale: false,
         participant: {kind: 'agent', label: 'Writer helper', color: '#7c3aed', activity: 'Edit note · Note'}},
-      {publisher: 'ff'.repeat(32), seq: 9, pointer: [1, 2], participant: {kind: 'person', label: 'Ada', color: '#0ea5e9', activity: null}},
-      {publisher: '11'.repeat(32), seq: 1, pointer: [5, 5], participant: null},
+      {publisher: 'ff'.repeat(32), seq: 9, pointer: {strip: '1', at: [1, 2]}, participant: {kind: 'person', label: 'Ada', color: '#0ea5e9', activity: null}},
+      {publisher: '11'.repeat(32), seq: 1, pointer: {strip: '1', at: [5, 5]}, participant: null},
     ],
   };
   const calls = [];
@@ -129,7 +143,7 @@ test('agent cursors come from presence that says agent; delegations verify in wa
   const agents = createAgents({peer: fakePeer(() => undefined), runtime, room: ROOM, hostDevice: HOST, userPublicKey: USER, live, wallNow: () => 42});
   assert.deepEqual(agents.cursors(), [{
     device: AGENT, label: 'Writer helper', color: '#7c3aed', activity: 'Edit note · Note',
-    focus: {app: 'so.tilo.scratchpad', record: 'r1'}, pointer: [10, 20], selection: null, stale: false,
+    focus: {app: 'so.tilo.scratchpad', record: 'r1'}, pointer: {window: {app: 'so.tilo.scratchpad', record: 'r1'}, at: [10, 20]}, selection: null, stale: false,
   }]);
   assert.equal(agents.verify({id: 'writer', device: AGENT, delegation: 'good'}).agentId, 'writer');
   assert.deepEqual(calls[0], {delegation: 'good', user: USER, nowMs: 42});
@@ -216,12 +230,15 @@ test('a caller idempotency id names the invocation, so a resend is answered once
     }
     return answered.get(key);
   });
-  const {agents, stop} = agentsWith(peer, {timeoutMs: 20});
+  const time = manualTimers();
+  const {agents, stop} = agentsWith(peer, time);
   const spawnId = '0b5f1c2e-9d7a-4c55-8a1e-3f1d2c4b5a69';
   const messageId = '1C6F2D3E-0A8B-4D66-9B2F-4E2D3C5B6A70';
   try {
     // The first attempt goes unanswered; the caller resends under the same id.
-    await assert.rejects(agents.spawn({grant: 'writer', task: 'tidy', id: spawnId}), error => error.code === 'timeout');
+    const unanswered = agents.spawn({grant: 'writer', task: 'tidy', id: spawnId});
+    await time.expire();
+    await assert.rejects(unanswered, error => error.code === 'timeout');
     silent = false;
     const spawned = await agents.spawn({grant: 'writer', task: 'tidy', id: spawnId});
     assert.deepEqual(await agents.spawn({grant: 'writer', task: 'tidy', id: spawnId}), spawned);
@@ -268,10 +285,13 @@ test('a pending invocation id cannot alias a different task or agent', async () 
 
 test('an invocation binding survives timeout and rejects different input', async () => {
   const peer = fakePeer(() => undefined);
-  const {agents, stop} = agentsWith(peer, {timeoutMs: 10});
+  const time = manualTimers();
+  const {agents, stop} = agentsWith(peer, time);
   const id = '46c880a1-55f3-4844-851d-3fb83f3c55b2';
   try {
-    await assert.rejects(agents.message('writer', 'original', {id}), error => error.code === 'timeout');
+    const original = agents.message('writer', 'original', {id});
+    await time.expire();
+    await assert.rejects(original, error => error.code === 'timeout');
     await assert.rejects(agents.message('writer', 'changed', {id}), error => error.code === 'invocation_conflict');
     assert.equal(peer.sent.length, 1);
   } finally { agents.dispose(); stop(); }

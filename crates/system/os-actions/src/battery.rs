@@ -98,6 +98,21 @@ fn hours_at(amount: u64, per_hour: u64) -> Option<std::time::Duration> {
     (seconds <= 48 * 3600).then(|| std::time::Duration::from_secs(seconds))
 }
 
+/// What a driver measures a battery's contents in: energy (`energy_*`,
+/// µWh) or charge (`charge_*`, µAh).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CapacityUnit {
+    Energy,
+    Charge,
+}
+
+/// A charge stop threshold as a cap: `0` is how some drivers (Qualcomm's
+/// battmgr) say no threshold is set, since a battery stopped at 0 % would
+/// never charge; such a battery charges to full.
+fn charge_cap_of(threshold: u64) -> Option<u32> {
+    (threshold > 0).then(|| u32::try_from(threshold.min(100)).unwrap_or(100))
+}
+
 /// A snapshot of the primary battery and external-power state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BatteryInfo {
@@ -110,6 +125,8 @@ pub struct BatteryInfo {
     pub full_capacity: Option<u64>,
     /// Factory design capacity in the same units as `full_capacity`.
     pub design_capacity: Option<u64>,
+    /// The unit of `full_capacity`, `design_capacity` and `remaining`.
+    pub unit: CapacityUnit,
     /// Charge stop threshold reported by the platform driver.
     pub charge_limit: Option<u32>,
     /// What the battery holds now, in the units of `full_capacity`.
@@ -150,6 +167,7 @@ impl BatteryInfo {
                 on_ac: true,
                 full_capacity: None,
                 design_capacity: None,
+                unit: CapacityUnit::Energy,
                 charge_limit: None,
                 remaining: None,
                 rate: None,
@@ -171,10 +189,30 @@ impl BatteryInfo {
                 .and_then(|v| v.parse::<i64>().ok())
                 .map(i64::unsigned_abs)
         };
-        let (remaining, rate) = match read_num(&["energy_now"]) {
-            Some(energy) => (Some(energy), read_signed("power_now")),
-            None => (read_num(&["charge_now"]), read_signed("current_now")),
+        let (remaining, rate, remaining_unit) = match read_num(&["energy_now"]) {
+            Some(energy) => (Some(energy), read_signed("power_now"), CapacityUnit::Energy),
+            None => (
+                read_num(&["charge_now"]),
+                read_signed("current_now"),
+                CapacityUnit::Charge,
+            ),
         };
+        // Drivers expose either energy_* (µWh) or charge_* (µAh); full and
+        // design are read in the same unit so health compares like with like.
+        let (unit, full_capacity, design_capacity) =
+            match (read_num(&["energy_full"]), read_num(&["charge_full"])) {
+                (Some(full), _) => (
+                    CapacityUnit::Energy,
+                    Some(full),
+                    read_num(&["energy_full_design"]),
+                ),
+                (None, Some(full)) => (
+                    CapacityUnit::Charge,
+                    Some(full),
+                    read_num(&["charge_full_design"]),
+                ),
+                (None, None) => (remaining_unit, None, None),
+            };
         Self {
             present: true,
             remaining,
@@ -197,11 +235,11 @@ impl BatteryInfo {
             status: read_trim(&dir.join("status")).unwrap_or_else(|| "Unknown".into()),
             cycle_count: read_num(&["cycle_count"]).and_then(|v| u32::try_from(v).ok()),
             on_ac,
-            // Drivers expose either energy_* (µWh) or charge_* (µAh).
-            full_capacity: read_num(&["energy_full", "charge_full"]),
-            design_capacity: read_num(&["energy_full_design", "charge_full_design"]),
+            full_capacity,
+            design_capacity,
+            unit,
             charge_limit: read_num(&["charge_control_end_threshold", "charge_stop_threshold"])
-                .map(|v| v.min(100) as u32),
+                .and_then(charge_cap_of),
         }
     }
 
@@ -232,8 +270,23 @@ impl BatteryInfo {
     pub fn health_percent(&self) -> Option<u32> {
         let (full, design) = (self.full_capacity?, self.design_capacity?);
         full.saturating_mul(100)
+            .saturating_add(design / 2)
             .checked_div(design)
             .map(|pct| u32::try_from(pct.min(100)).unwrap_or(100))
+    }
+
+    /// What the battery holds when full now and what it held new, in watt
+    /// hours; `None` for a driver that counts charge or does not say.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "µWh of a battery are far below f64's exact integer range"
+    )]
+    pub fn full_and_design_wh(&self) -> Option<(f64, f64)> {
+        if self.unit != CapacityUnit::Energy {
+            return None;
+        }
+        let (full, design) = (self.full_capacity?, self.design_capacity?);
+        (design > 0).then(|| (full as f64 / 1e6, design as f64 / 1e6))
     }
 
     pub fn summary(&self) -> String {
@@ -272,9 +325,9 @@ pub fn charge_capability_from(sys_root: &Path) -> Option<ChargeCapCapability> {
     let mut standard = Vec::new();
     for battery in batteries {
         for attr in ["charge_control_end_threshold", "charge_stop_threshold"] {
-            if let Some(current) = read_trim(&battery.join(attr)).and_then(|v| v.parse().ok()) {
+            if let Some(threshold) = read_trim(&battery.join(attr)).and_then(|v| v.parse().ok()) {
                 standard.push((
-                    current,
+                    charge_cap_of(threshold).unwrap_or(100),
                     battery.join("charge_control_start_threshold").exists(),
                 ));
                 break;
@@ -364,11 +417,6 @@ pub fn set_charge_limit(percent: u32) -> Result<(), String> {
 
 /// Apply and then re-read the hardware contract.  A successful systemd start
 /// is not enough: firmware may accept the write while clamping or ignoring it.
-///
-/// # Errors
-///
-/// Returns an error message if [`set_charge_limit`] fails, the charge-cap control disappears
-/// after applying the change, or the firmware clamps the cap to a value other than `percent`.
 pub fn set_charge_limit_checked(percent: u32) -> Result<ChargeCapCapability, String> {
     set_charge_limit(percent)?;
     let actual =
@@ -395,7 +443,6 @@ mod tests {
 
     #[test]
     fn battery_health_and_charge_caps_follow_the_kernel_contract() {
-        // Phase `health_uses_matching_kernel_capacity_units`.
         {
             let dir = tempfile::tempdir().unwrap();
             for (name, value) in [
@@ -410,8 +457,6 @@ mod tests {
             assert_eq!(info.health_percent(), Some(80));
             assert_eq!(info.summary(), "61% · On battery");
         }
-        // Phase `level_without_capacity_comes_from_energy_left`, as
-        // Qualcomm's battmgr publishes it.
         {
             let dir = tempfile::tempdir().unwrap();
             for (name, value) in [
@@ -425,19 +470,16 @@ mod tests {
             assert_eq!(info.capacity, 96);
             assert_eq!(info.summary(), "96% · Plugged in, not charging");
         }
-        // Phase `vendor_charge_cap_is_normalized`.
         {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join("charge_stop_threshold"), "80\n").unwrap();
             let info = BatteryInfo::from_battery_dir(dir.path(), true);
             assert_eq!(info.charge_limit, Some(80));
         }
-        // Phase `charge_cap_rejects_values_outside_the_service_contract`.
         {
             assert!(set_charge_limit(49).is_err());
             assert!(set_charge_limit(101).is_err());
         }
-        // Phase `ideapad_conservation_mode_is_exposed_as_discrete_choices`.
         {
             let root = tempfile::tempdir().unwrap();
             let path = root
@@ -500,9 +542,57 @@ mod tests {
         assert_eq!(unknown_rate.time_to_empty(), None);
     }
 
+    /// Qualcomm's battmgr (Snapdragon laptops) publishes no `capacity`, only
+    /// energy now, full and design, and a stop threshold of 0 while none is
+    /// set: the level is computed, the worn pack's health shows its loss in
+    /// watt hours, and charging is not capped.
+    #[test]
+    fn a_battmgr_battery_shows_its_level_its_wear_and_no_cap() {
+        let root = tempfile::tempdir().unwrap();
+        let battery = root.path().join("class/power_supply/qcom-battmgr-bat");
+        std::fs::create_dir_all(&battery).unwrap();
+        for (name, value) in [
+            ("type", "Battery"),
+            ("status", "Discharging"),
+            ("energy_now", "28980000"),
+            ("energy_full", "44600000"),
+            ("energy_full_design", "70000000"),
+            ("power_now", "-19401000"),
+            ("cycle_count", "334"),
+            ("charge_full", ""),
+            ("charge_full_design", ""),
+            ("charge_control_end_threshold", "0"),
+            ("charge_control_start_threshold", "0"),
+        ] {
+            std::fs::write(battery.join(name), format!("{value}\n")).unwrap();
+        }
+        let info = BatteryInfo::from_battery_dir(&battery, false);
+        assert_eq!(info.capacity, 65);
+        assert_eq!(info.cycle_count, Some(334));
+        assert_eq!(info.health_percent(), Some(64));
+        assert_eq!(info.full_and_design_wh(), Some((44.6, 70.0)));
+        assert_eq!(info.charge_limit, None, "0 is no threshold, not a 0 % cap");
+        assert!(info.time_to_empty().is_some());
+
+        let cap = charge_capability_from(root.path()).unwrap();
+        assert_eq!(cap.current, 100, "charging to full");
+        assert!(cap.choices.contains(&cap.current));
+
+        let charge_counted = tempfile::tempdir().unwrap();
+        for (name, value) in [
+            ("charge_full", "3000000"),
+            ("charge_full_design", "4000000"),
+        ] {
+            std::fs::write(charge_counted.path().join(name), value).unwrap();
+        }
+        let info = BatteryInfo::from_battery_dir(charge_counted.path(), true);
+        assert_eq!(info.unit, CapacityUnit::Charge);
+        assert_eq!(info.health_percent(), Some(75));
+        assert_eq!(info.full_and_design_wh(), None);
+    }
+
     #[test]
     fn battery_capabilities_are_per_device_and_enumerate_every_supply() {
-        // Phase `capability_does_not_depend_on_battery_name`.
         {
             let root = tempfile::tempdir().unwrap();
             let battery = root.path().join("class/power_supply/CMB1");
@@ -516,7 +606,6 @@ mod tests {
             assert!(cap.supports_start_threshold);
             assert!(cap.choices.contains(&85));
         }
-        // Phase `mixed_multi_battery_contract_is_not_presented_as_one_control`.
         {
             let root = tempfile::tempdir().unwrap();
             for (name, limit) in [("BAT-main", "80"), ("CMB-aux", "90")] {
@@ -527,7 +616,6 @@ mod tests {
             }
             assert!(charge_capability_from(root.path()).is_none());
         }
-        // Phase `enumerates_multiple_batteries_and_ups_without_serials`.
         {
             let root = tempfile::tempdir().unwrap();
             for (id, kind, cap) in [("BAT1", "Battery", "70"), ("ups0", "UPS", "95")] {

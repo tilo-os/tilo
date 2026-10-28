@@ -470,6 +470,12 @@ impl<PI: PeerIdentity> State<PI> {
         };
         let message = Gossip { id, content, scope };
         let me = self.me;
+        // TILO PATCH: with no neighbour, eager or lazy, nobody hears the
+        // message, and a neighbour that comes later is never offered it:
+        // caching it would only arm the sweep.
+        if self.eager_push_peers.is_empty() && self.lazy_push_peers.is_empty() {
+            return;
+        }
         if let DeliveryScope::Swarm(_) = scope {
             self.received_messages
                 .insert(id, (), now + self.config.message_id_retention);
@@ -480,6 +486,17 @@ impl<PI: PeerIdentity> State<PI> {
             );
             self.schedule_evict(io);
             self.lazy_push(message.clone(), &me, io);
+        } else {
+            // TILO PATCH: a neighbours-only message is for every direct
+            // neighbour. Lazy peers are neighbours too; they only stopped
+            // getting swarm messages in full because another path delivers
+            // those, which no path does for this one.
+            for peer in self.lazy_push_peers.iter().filter(|peer| **peer != me) {
+                io.push(OutEvent::SendMessage(
+                    *peer,
+                    Message::Gossip(message.clone()),
+                ));
+            }
         }
 
         self.eager_push(message.clone(), &me, io);
@@ -751,6 +768,7 @@ impl<PI: PeerIdentity> State<PI> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::proto::topic;
     #[test]
     fn optimize_tree() {
         let mut io = VecDeque::new();
@@ -789,6 +807,11 @@ mod test {
             // we expect a dispatch timer schedule and receive event, but no Graft or Prune
             // messages
             let mut io = VecDeque::new();
+            // TILO PATCH: the first cached message arms the cache sweep.
+            io.push(OutEvent::ScheduleTimer(
+                config.cache_evict_interval,
+                Timer::EvictCache,
+            ));
             io.push(OutEvent::ScheduleTimer(
                 config.dispatch_timeout,
                 Timer::DispatchLazyPush,
@@ -921,14 +944,88 @@ mod test {
         assert_eq!(state.cache.len(), 0);
     }
 
+    /// TILO PATCH: a neighbours-only broadcast goes to lazy neighbours too.
+    #[test]
+    fn a_neighbours_only_message_reaches_lazy_neighbours_too() {
+        let config: Config = Default::default();
+        let mut state = State::new(1, config, 1024);
+        let now = Instant::now();
+        let mut io = VecDeque::new();
+        state.handle(InEvent::NeighborUp(2), now, &mut io);
+        state.handle(InEvent::NeighborUp(3), now, &mut io);
+        // A duplicate from 3 makes it a lazy peer, as in any triangle.
+        let gossip = Gossip {
+            id: MessageId::from_content(b"swarm"),
+            content: b"swarm".to_vec().into(),
+            scope: DeliveryScope::Swarm(Round(0)),
+        };
+        state.handle(
+            InEvent::RecvMessage(2, Message::Gossip(gossip.clone())),
+            now,
+            &mut io,
+        );
+        state.handle(
+            InEvent::RecvMessage(3, Message::Gossip(gossip)),
+            now,
+            &mut io,
+        );
+        assert!(state.lazy_push_peers.contains(&3));
+
+        let mut io = VecDeque::new();
+        state.handle(
+            InEvent::Broadcast(b"hello".to_vec().into(), Scope::Neighbors),
+            now,
+            &mut io,
+        );
+        let mut sent: Vec<i32> = io
+            .iter()
+            .filter_map(|event| match event {
+                topic::OutEvent::SendMessage(peer, topic::Message::Gossip(Message::Gossip(_))) => {
+                    Some(*peer)
+                }
+                _ => None,
+            })
+            .collect();
+        sent.sort_unstable();
+        assert_eq!(sent, vec![2, 3]);
+    }
+
+    /// TILO PATCH: a topic with no neighbour neither sends, caches nor
+    /// sweeps what it is asked to broadcast.
+    #[test]
+    fn a_broadcast_nobody_hears_arms_nothing() {
+        let config: Config = Default::default();
+        let mut state = State::new(1, config, 1024);
+        let now = Instant::now();
+        let mut io = VecDeque::new();
+        for scope in [Scope::Swarm, Scope::Neighbors] {
+            state.handle(
+                InEvent::Broadcast(b"alone".to_vec().into(), scope),
+                now,
+                &mut io,
+            );
+        }
+        state.handle(InEvent::NeighborUp(2), now, &mut io);
+        state.handle(InEvent::NeighborDown(2), now, &mut io);
+        state.handle(
+            InEvent::Broadcast(b"left alone".to_vec().into(), Scope::Swarm),
+            now,
+            &mut io,
+        );
+        assert!(io.is_empty(), "{io:?}");
+        assert!(state.cache.is_empty() && state.received_messages.is_empty());
+    }
+
     /// TILO PATCH: the sweep is armed by the first cached message, stops once
     /// both caches are empty, and is armed once again by the next message.
     #[test]
     fn cache_sweep_runs_only_while_something_is_cached() {
         let config: Config = Default::default();
         let mut state = State::new(1, config.clone(), 1024);
-        let evict = OutEvent::ScheduleTimer(config.cache_evict_interval, Timer::EvictCache);
-        let sweeps = |io: &VecDeque<OutEvent<i32>>| io.iter().filter(|e| **e == evict).count();
+        let evict: topic::OutEvent<i32> =
+            OutEvent::ScheduleTimer(config.cache_evict_interval, Timer::EvictCache).into();
+        let sweeps =
+            |io: &VecDeque<topic::OutEvent<i32>>| io.iter().filter(|e| **e == evict).count();
         let start = Instant::now();
         let mut now = start;
 

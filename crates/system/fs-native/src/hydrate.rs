@@ -12,6 +12,19 @@
 //! Writes into the file happen through the event's own descriptor, which
 //! the kernel opens with `FMODE_NONOTIFY`: filling a placeholder raises no
 //! further events and is invisible to the change journal.
+//!
+//! A blocked caller waits in the kernel, uninterruptibly, and so does anyone
+//! queued behind it on the same pages. No access ever waits longer than
+//! [`HydratorConfig::access_bound`]: past it the access fails with `EIO`,
+//! whether its range is being fetched from a peer that went quiet, waiting
+//! for another caller's fill, or still queued behind fills of other files.
+//! Answering it also [cancels](Cancel) the fill a worker is making for it,
+//! so the worker is free for the next access at once instead of waiting
+//! with the transfer layer, about 30 s per peer: an unrelated file opened
+//! meanwhile is not queued behind a dead peer. The content plane's fetcher
+//! lets the transfer itself go on without its worker, so a retry can find
+//! the range in the content store. Accesses to resident ranges are answered
+//! on the thread that reads the events and never queue behind a fill.
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -25,7 +38,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::fanotify::{self as fan, Group};
 use crate::ranges::RangeSet;
@@ -64,6 +77,57 @@ pub trait WritePolicy: Send + Sync + 'static {
     fn admit_writer(&self, file: (u64, u64)) -> Result<(), i32>;
 }
 
+/// Tells a fill that nobody waits for its bytes any more: the access it
+/// was made for has been answered. Clones share one state.
+#[derive(Clone, Default)]
+pub struct Cancel(Arc<Mutex<CancelState>>);
+
+#[derive(Default)]
+struct CancelState {
+    cancelled: bool,
+    wake: Vec<Box<dyn FnOnce() + Send>>,
+}
+
+impl Cancel {
+    /// Whether the fill was cancelled.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        match self.0.lock() {
+            Ok(state) => state.cancelled,
+            Err(_) => true,
+        }
+    }
+
+    /// Runs `wake` once the fill is cancelled, at once when it already was.
+    /// A fill that never is drops `wake` with the last clone.
+    pub fn on_cancel(&self, wake: impl FnOnce() + Send + 'static) {
+        let Ok(mut state) = self.0.lock() else {
+            wake();
+            return;
+        };
+        if state.cancelled {
+            drop(state);
+            wake();
+        } else {
+            state.wake.push(Box::new(wake));
+        }
+    }
+
+    /// Cancels the fill and wakes everything waiting on it.
+    pub fn cancel(&self) {
+        let wake = match self.0.lock() {
+            Ok(mut state) if !state.cancelled => {
+                state.cancelled = true;
+                std::mem::take(&mut state.wake)
+            }
+            _ => return,
+        };
+        for wake in wake {
+            wake();
+        }
+    }
+}
+
 /// Supplies content bytes for placeholders.
 pub trait Fetcher: Send + Sync + 'static {
     /// Returns exactly `len` bytes of `content` starting at `offset`.
@@ -71,16 +135,20 @@ pub trait Fetcher: Send + Sync + 'static {
 
     /// Writes bytes `range` of `content` into `dest` at the same offsets.
     /// `ahead` marks read-ahead for a sequential reader rather than a
-    /// blocked access. The default fetches and writes; a fetcher whose
-    /// content lives in files can clone extents instead.
+    /// blocked access. `cancel` fires once nobody waits for the bytes: a
+    /// fetcher that returns then frees its worker for the next access,
+    /// while one that ignores it holds the worker until it returns. The
+    /// default fetches and writes; a fetcher whose content lives in files
+    /// can clone extents instead.
     fn fill(
         &self,
         content: &[u8; 32],
         range: Range<u64>,
         dest: BorrowedFd<'_>,
         ahead: bool,
+        cancel: &Cancel,
     ) -> io::Result<()> {
-        let _ = ahead;
+        let _ = (ahead, cancel);
         let len = range.end.saturating_sub(range.start);
         let bytes = self.fetch(content, range.start, len)?;
         if bytes.len() as u64 != len {
@@ -120,7 +188,15 @@ pub struct HydratorConfig {
     pub readahead_max: u64,
     /// Background read-ahead fills in flight at once.
     pub readahead_workers: usize,
+    /// Longest a caller is held blocked waiting for bytes. Past it the
+    /// access fails with `EIO`. Well inside the kernel's hung-task report
+    /// (two minutes by default), so nothing waiting on a quiet peer is ever
+    /// reported as hung.
+    pub access_bound: Duration,
 }
+
+/// Default [`HydratorConfig::access_bound`].
+pub const DEFAULT_ACCESS_BOUND: Duration = Duration::from_secs(30);
 
 impl Default for HydratorConfig {
     fn default() -> Self {
@@ -129,6 +205,7 @@ impl Default for HydratorConfig {
             workers: 8,
             readahead_max: 64 * 1024 * 1024,
             readahead_workers: 4,
+            access_bound: DEFAULT_ACCESS_BOUND,
         }
     }
 }
@@ -146,6 +223,9 @@ pub struct HydrationStats {
     pub readahead_bytes: AtomicU64,
     /// Accesses denied because the file is gated against writers.
     pub gated_denials: AtomicU64,
+    /// Accesses failed with `EIO` because their bytes did not arrive within
+    /// [`HydratorConfig::access_bound`].
+    pub timeouts: AtomicU64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -194,6 +274,40 @@ struct ReadAhead {
     range: Range<u64>,
 }
 
+/// An access the kernel holds blocked until it is answered. The worker
+/// serving it and the watchdog at its deadline race to answer; the first
+/// answer is the only one sent. The event's descriptor stays open as long
+/// as either may still use it.
+struct Blocked {
+    mask: u64,
+    pid: i32,
+    range: Option<(u64, u64)>,
+    fd: OwnedFd,
+    deadline: Instant,
+    answered: AtomicBool,
+    /// Cancelled once the access is answered: nobody waits for its fill.
+    cancel: Cancel,
+}
+
+impl Blocked {
+    fn answered(&self) -> bool {
+        self.answered.load(Ordering::Acquire)
+    }
+}
+
+/// An access handed to a worker, with the fill it needs when that was
+/// decided on the reading thread.
+struct Job {
+    access: Arc<Blocked>,
+    fill: Option<((u64, u64), Range<u64>)>,
+}
+
+/// What an access needs, decided without waiting on anything remote.
+enum Plan {
+    Answer(u32),
+    Fill((u64, u64), Range<u64>),
+}
+
 struct Shared {
     group: Group,
     fetcher: Arc<dyn Fetcher>,
@@ -210,6 +324,8 @@ struct Shared {
     cfg: HydratorConfig,
     stats: HydrationStats,
     readahead: Mutex<Option<mpsc::Sender<ReadAhead>>>,
+    /// Accesses not yet answered, by event descriptor.
+    blocked: Mutex<HashMap<i32, Arc<Blocked>>>,
 }
 
 /// Serves pre-content events for the placeholders it created or adopted.
@@ -402,25 +518,53 @@ impl Shared {
         false
     }
 
-    /// Handles one pre-content event and returns the response to send.
-    fn serve(&self, fd: BorrowedFd<'_>, range: Option<(u64, u64)>, pid: i32) -> u32 {
+    /// Handles one pre-content event a worker took and returns the response
+    /// to send.
+    fn serve(&self, access: &Blocked) -> u32 {
+        let fd = access.fd.as_fd();
         let Ok(key) = key_of(fd) else {
             return fan::FAN_ALLOW;
         };
         if let Some(gate) = self.gated(key)
-            && self.writes(pid, key)
+            && self.writes(access.pid, key)
             && let Err(errno) = self.admit(gate, key)
         {
             self.stats.gated_denials.fetch_add(1, Ordering::Relaxed);
             return fan::deny_errno(errno);
         }
-        let (want, ahead) = {
+        match self.plan(fd, key, access.range) {
+            Plan::Answer(response) => response,
+            Plan::Fill(key, want) => self.fill_for(access, key, &want),
+        }
+    }
+
+    /// The plan for an event, made on the thread that reads the events, for
+    /// a pre-content event of a file nobody gates. `None` hands the event to
+    /// a worker whole: a gated file's writer may need a lease from a peer.
+    fn triage(&self, fd: BorrowedFd<'_>, mask: u64, range: Option<(u64, u64)>) -> Option<Plan> {
+        if mask & fan::FAN_PRE_ACCESS == 0 {
+            return None;
+        }
+        let Ok(key) = key_of(fd) else {
+            return Some(Plan::Answer(fan::FAN_ALLOW));
+        };
+        if self.gated(key).is_some() {
+            return None;
+        }
+        Some(self.plan(fd, key, range))
+    }
+
+    /// What an access to `key` needs: an answer at once when its bytes are
+    /// resident, else a fill. Schedules read-ahead for a sequential reader
+    /// either way. Never waits on anything remote.
+    fn plan(&self, fd: BorrowedFd<'_>, key: (u64, u64), range: Option<(u64, u64)>) -> Plan {
+        let (want, ahead, resident) = {
             let Ok(mut files) = self.files.lock() else {
-                return fan::FAN_ALLOW;
+                return Plan::Answer(fan::FAN_ALLOW);
             };
             let Some(st) = files.get_mut(&key) else {
                 self.stats.passthrough.fetch_add(1, Ordering::Relaxed);
-                return fan::FAN_ALLOW;
+                return Plan::Answer(fan::FAN_ALLOW);
             };
             let raw = match range {
                 Some((offset, count)) if count > 0 => offset..offset.saturating_add(count),
@@ -433,7 +577,8 @@ impl Shared {
                 st.size,
             );
             let ahead = plan_readahead(&self.cfg, st, &want);
-            (want, ahead)
+            let resident = st.missing.intersect(&want).is_empty();
+            (want, ahead, resident)
         };
         if let Some(range) = ahead
             && let Ok(dup) = fd.try_clone_to_owned()
@@ -453,8 +598,19 @@ impl Shared {
                 self.own_fd(raw, false);
             }
         }
-        match self.fill(key, fd, &want, true) {
+        if resident {
+            Plan::Answer(fan::FAN_ALLOW)
+        } else {
+            Plan::Fill(key, want)
+        }
+    }
+
+    /// Fills `want` for a blocked access and returns its response.
+    fn fill_for(&self, access: &Blocked, key: (u64, u64), want: &Range<u64>) -> u32 {
+        match self.fill(key, access.fd.as_fd(), want, Some(access)) {
             Ok(_) => fan::FAN_ALLOW,
+            // Already answered at its deadline, and counted there.
+            Err(_) if access.answered() => fan::deny_errno(libc::EIO),
             Err(error) => {
                 self.stats.failures.fetch_add(1, Ordering::Relaxed);
                 eprintln!(
@@ -466,19 +622,115 @@ impl Shared {
         }
     }
 
-    /// Fetches the claimed ranges and writes them in place. Returns the
+    /// Sends `response` for `access` unless it was already answered, and
+    /// cancels the fill made for it. Returns whether this call answered it.
+    fn answer(&self, access: &Blocked, response: u32) -> bool {
+        if access.answered.swap(true, Ordering::AcqRel) {
+            return false;
+        }
+        let raw = access.fd.as_raw_fd();
+        if self.group.respond(raw, response).is_err() {
+            // Kernels without FAN_DENY_ERRNO accept only plain deny.
+            let _ = self.group.respond(raw, fan::FAN_DENY);
+        }
+        access.cancel.cancel();
+        true
+    }
+
+    /// Answers `access` unless the watchdog already has, and forgets it.
+    fn finish(&self, access: &Blocked, response: u32) {
+        self.answer(access, response);
+        let raw = access.fd.as_raw_fd();
+        if let Ok(mut blocked) = self.blocked.lock() {
+            blocked.remove(&raw);
+        }
+        self.own_fd(raw, false);
+    }
+
+    /// Fails every access past its deadline with `EIO`. Returns the
+    /// earliest deadline still ahead.
+    fn expire(&self) -> Option<Instant> {
+        let now = Instant::now();
+        let Ok(blocked) = self.blocked.lock() else {
+            return None;
+        };
+        let mut next: Option<Instant> = None;
+        for access in blocked.values() {
+            if access.answered() {
+                continue;
+            }
+            if access.deadline > now {
+                next = Some(next.map_or(access.deadline, |n| n.min(access.deadline)));
+                continue;
+            }
+            // Answered under the lock: the worker forgets an access only
+            // under it too, so its descriptor is still open here.
+            if self.answer(access, fan::deny_errno(libc::EIO)) {
+                self.stats.timeouts.fetch_add(1, Ordering::Relaxed);
+                let key = key_of(access.fd.as_fd()).unwrap_or_default();
+                eprintln!(
+                    "placeholder {}:{}: bytes did not arrive within {:?}; the access failed with EIO",
+                    key.0, key.1, self.cfg.access_bound
+                );
+            }
+        }
+        next
+    }
+
+    /// Takes one event off the group: answers it here when its bytes are
+    /// resident, else queues it for a worker with its deadline running.
+    fn dispatch(&self, ev: fan::Event, workers: &mpsc::Sender<Job>) -> Result<(), ()> {
+        self.stats.events.fetch_add(1, Ordering::Relaxed);
+        let range = ev.range();
+        let Some(fd) = ev.fd else {
+            return Ok(());
+        };
+        let raw = fd.as_raw_fd();
+        self.own_fd(raw, true);
+        let fill = match self.triage(fd.as_fd(), ev.mask, range) {
+            Some(Plan::Answer(response)) => {
+                if self.group.respond(raw, response).is_err() {
+                    let _ = self.group.respond(raw, fan::FAN_DENY);
+                }
+                self.own_fd(raw, false);
+                return Ok(());
+            }
+            Some(Plan::Fill(key, want)) => Some((key, want)),
+            None => None,
+        };
+        let now = Instant::now();
+        let access = Arc::new(Blocked {
+            mask: ev.mask,
+            pid: ev.pid,
+            range,
+            fd,
+            deadline: now.checked_add(self.cfg.access_bound).unwrap_or(now),
+            answered: AtomicBool::new(false),
+            cancel: Cancel::default(),
+        });
+        if let Ok(mut blocked) = self.blocked.lock() {
+            blocked.insert(raw, Arc::clone(&access));
+        }
+        workers.send(Job { access, fill }).map_err(|_| ())
+    }
+
+    /// Fetches the claimed ranges and writes them in place, for the blocked
+    /// `reader` or, without one, ahead of a sequential reader. Returns the
     /// ranges written, and the first error, which stops the rest.
     fn fetch_claims(
         &self,
         content: &[u8; 32],
         fd: BorrowedFd<'_>,
         claim: &[Range<u64>],
-        ahead: bool,
+        reader: Option<&Blocked>,
     ) -> (Vec<Range<u64>>, io::Result<()>) {
+        let ahead = reader.is_none();
+        // Read-ahead has nobody waiting, so nothing cancels it.
+        let cancel = reader.map_or_else(Cancel::default, |reader| reader.cancel.clone());
         let mut done = Vec::new();
         for c in claim {
             let len = c.end.saturating_sub(c.start);
-            let r = self.fetcher.fill(content, c.clone(), fd, ahead);
+            let r = self.fetcher.fill(content, c.clone(), fd, ahead, &cancel);
             match r {
                 Ok(()) => {
                     self.stats.fills.fetch_add(1, Ordering::Relaxed);
@@ -491,16 +743,17 @@ impl Shared {
         (done, Ok(()))
     }
 
-    /// Fetches and writes the missing parts of `want`. With `block`, ranges
-    /// another worker is filling are waited for; without it they are left
-    /// to that worker.
+    /// Fetches and writes the missing parts of `want`. For a blocked
+    /// `reader`, ranges another worker is filling are waited for, until the
+    /// reader is answered; without one they are left to that worker.
     fn fill(
         &self,
         key: (u64, u64),
         fd: BorrowedFd<'_>,
         want: &Range<u64>,
-        block: bool,
+        reader: Option<&Blocked>,
     ) -> io::Result<u64> {
+        let block = reader.is_some();
         let poisoned = || io::Error::other("hydrator state poisoned");
         let mut files = self.files.lock().map_err(|_| poisoned())?;
         let mut filled = 0u64;
@@ -510,7 +763,18 @@ impl Shared {
             };
             let missing = st.missing.intersect(want);
             if missing.is_empty() {
+                // Even for a reader failed at its deadline: a fetch that
+                // landed late may have made the whole file resident, and
+                // only this path drops its mark and its entry.
                 break;
+            }
+            if reader.is_some_and(Blocked::answered) {
+                // The reader was failed at its deadline: nothing more is
+                // fetched for it. A fetch already made is kept.
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the access was failed at its deadline",
+                ));
             }
             let mut claim = Vec::new();
             for m in &missing {
@@ -547,7 +811,7 @@ impl Shared {
             }
             let content = st.content;
             drop(files);
-            let (done, result) = self.fetch_claims(&content, fd, &claim, !block);
+            let (done, result) = self.fetch_claims(&content, fd, &claim, reader);
             for d in &done {
                 filled = filled.saturating_add(d.end.saturating_sub(d.start));
             }
@@ -619,7 +883,7 @@ fn spawn_readahead(shared: &Arc<Shared>, workers: usize, threads: &mut Vec<JoinH
                 };
                 // A failed read-ahead costs nothing: the reader's own event
                 // fetches the range again.
-                if let Ok(n) = shared.fill(job.key, job.fd.as_fd(), &job.range, false) {
+                if let Ok(n) = shared.fill(job.key, job.fd.as_fd(), &job.range, None) {
                     shared.stats.readahead_bytes.fetch_add(n, Ordering::Relaxed);
                 }
                 shared.own_fd(job.fd.as_raw_fd(), false);
@@ -699,39 +963,52 @@ impl Hydrator {
             cfg,
             stats: HydrationStats::default(),
             readahead: Mutex::new(None),
+            blocked: Mutex::new(HashMap::new()),
         });
-        let (tx, rx) = mpsc::channel::<fan::Event>();
+        let (tx, rx) = mpsc::channel::<Job>();
         let rx = Arc::new(Mutex::new(rx));
         let mut threads =
-            Vec::with_capacity(workers.saturating_add(readahead_workers).saturating_add(1));
+            Vec::with_capacity(workers.saturating_add(readahead_workers).saturating_add(2));
         spawn_readahead(&shared, readahead_workers, &mut threads);
         for _ in 0..workers {
             let shared = Arc::clone(&shared);
             let rx = Arc::clone(&rx);
             threads.push(std::thread::spawn(move || {
                 loop {
-                    let ev = match rx.lock() {
+                    let job = match rx.lock() {
                         Ok(g) => g.recv(),
                         Err(_) => return,
                     };
-                    let Ok(ev) = ev else { return };
-                    shared.stats.events.fetch_add(1, Ordering::Relaxed);
-                    let Some(fd) = ev.fd.as_ref() else { continue };
-                    let response = if ev.mask & fan::FAN_PRE_ACCESS != 0 {
-                        shared.serve(fd.as_fd(), ev.range(), ev.pid)
-                    } else if ev.mask & fan::FAN_OPEN_PERM != 0 {
-                        shared.admit_open(fd.as_fd(), ev.pid)
+                    let Ok(Job { access, fill }) = job else {
+                        return;
+                    };
+                    let response = if access.answered() {
+                        // Failed at its deadline while it was queued.
+                        fan::FAN_ALLOW
+                    } else if let Some((key, want)) = fill {
+                        shared.fill_for(&access, key, &want)
+                    } else if access.mask & fan::FAN_PRE_ACCESS != 0 {
+                        shared.serve(&access)
+                    } else if access.mask & fan::FAN_OPEN_PERM != 0 {
+                        shared.admit_open(access.fd.as_fd(), access.pid)
                     } else {
                         fan::FAN_ALLOW
                     };
-                    if shared.group.respond(fd.as_raw_fd(), response).is_err() {
-                        // Kernels without FAN_DENY_ERRNO accept only plain deny.
-                        let _ = shared.group.respond(fd.as_raw_fd(), fan::FAN_DENY);
-                    }
-                    shared.own_fd(fd.as_raw_fd(), false);
+                    shared.finish(&access, response);
                 }
             }));
         }
+        let watchdog = Arc::clone(&shared);
+        threads.push(std::thread::spawn(move || {
+            while !watchdog.stop.load(Ordering::Relaxed) {
+                let poll = Duration::from_millis(50);
+                let wait = watchdog
+                    .expire()
+                    .map_or(poll, |next| next.saturating_duration_since(Instant::now()))
+                    .min(poll);
+                std::thread::sleep(wait);
+            }
+        }));
         let reader = Arc::clone(&shared);
         threads.push(std::thread::spawn(move || {
             let mut buf = vec![0u8; 64 * 1024];
@@ -739,10 +1016,7 @@ impl Hydrator {
                 match reader.group.read(&mut buf, Some(Duration::from_millis(50))) {
                     Ok(events) => {
                         for ev in events {
-                            if let Some(fd) = ev.fd.as_ref() {
-                                reader.own_fd(fd.as_raw_fd(), true);
-                            }
-                            if tx.send(ev).is_err() {
+                            if reader.dispatch(ev, &tx).is_err() {
                                 return;
                             }
                         }
@@ -998,7 +1272,6 @@ mod tests {
 
     #[test]
     fn residency_xattrs_round_trip_and_fills_align_to_granules() {
-        // Phase `residency_xattr_round_trips`.
         {
             let mut missing = RangeSet::full(1000);
             missing.remove(0..100);
@@ -1009,7 +1282,6 @@ mod tests {
             assert_eq!(size, 1000);
             assert_eq!(back, missing);
         }
-        // Phase `fills_are_rounded_to_the_granule_and_clipped_to_the_file`.
         {
             assert_eq!(align_range(10..20, 4096, 1 << 20), 0..4096);
             assert_eq!(align_range(5000..9000, 4096, 1 << 20), 4096..12288);
@@ -1042,9 +1314,7 @@ mod readahead_tests {
             plan_readahead(&cfg, &mut st, &(2048..3072)),
             Some(6144..11264)
         );
-        // A seek resets it.
         assert_eq!(plan_readahead(&cfg, &mut st, &(500_000..501_024)), None);
-        // The window is capped.
         let mut last = None;
         let mut at = 501_024;
         for _ in 0..10 {
@@ -1060,7 +1330,6 @@ mod readahead_tests {
             r.end.saturating_sub(at) <= 64 * 1024,
             "window capped: {r:?}"
         );
-        // Disabled.
         let off = HydratorConfig {
             readahead_max: 0,
             ..cfg

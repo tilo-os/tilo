@@ -237,6 +237,10 @@ pub(super) struct Choices {
     pub accounts: bool,
     pub system_refs: Vec<imager_backend::setup::flatpak_transfer::InstalledRef>,
     pub preparation: Option<Arc<imager_backend::prepared_identity::PreparedIdentity>>,
+    /// Root-relative Home subtrees the person excluded. The review applies them
+    /// to the inventory, so the sealed archive and its verification never carry
+    /// an excluded folder.
+    pub exclusions: Vec<std::path::PathBuf>,
 }
 
 #[cfg(test)]

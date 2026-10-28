@@ -89,10 +89,6 @@ impl PolicyClockTestControl {
 }
 impl OwnerPolicyClock {
     /// A clock seeded from the current wall time.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PolicyClockError`] when the wall clock is before the Unix epoch.
     pub fn new() -> Result<Self, PolicyClockError> {
         Ok(Self(Arc::new(Clock {
             state: Mutex::new(State {
@@ -105,10 +101,6 @@ impl OwnerPolicyClock {
         })))
     }
     /// Current policy time in Unix nanoseconds, never running backwards.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PolicyClockError`] once the clock failed or its state is unavailable.
     pub fn now_ns(&self) -> Result<u64, PolicyClockError> {
         let mut state = self.0.state.lock().map_err(|_| PolicyClockError)?;
         #[cfg(any(test, feature = "test-support"))]
@@ -170,10 +162,6 @@ impl PolicyOrigin {
         self.0.invalid.store(true, Ordering::Release);
     }
     /// Captures a retained time of this origin.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PolicyClockError`] when the origin is retired or the clock failed.
     pub fn capture(&self) -> Result<PolicyTime, PolicyClockError> {
         let value = PolicyTime {
             clock: self.0.clock.clone(),
@@ -200,10 +188,6 @@ impl PolicyTime {
         self.clock.same_clock(&other.clock) && Weak::ptr_eq(&self.origin, &other.origin)
     }
     /// Current time of the retained clock while its origin is live.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PolicyClockError`] when the origin is retired or the clock failed.
     pub fn now_ns(&self) -> Result<u64, PolicyClockError> {
         let origin = self.origin.upgrade().ok_or(PolicyClockError)?;
         if origin.invalid.load(Ordering::Acquire) {

@@ -12,6 +12,7 @@
 //! [`replay_prefix`] rebuilds the document a position names.
 
 use std::collections::{BinaryHeap, HashMap};
+use tilo_sort::CompactSort as _;
 
 use automerge::ChangeHash;
 use automerge::transaction::{CommitOptions, Transactable};
@@ -154,9 +155,6 @@ pub fn prefix_heads(doc: &mut Doc, upto: usize) -> Vec<ChangeHash> {
 
 /// The document as of position `version` of [`versions`], rebuilt by
 /// replaying that prefix of the change log into a fresh replica.
-///
-/// # Errors
-/// Returns [`ModelError`] when Automerge rejects the replayed prefix.
 pub fn replay_prefix(doc: &mut Doc, version: usize) -> Result<Doc, ModelError> {
     let changes = doc.get_changes(&[]);
     let take = version.saturating_add(1).min(changes.len());
@@ -255,7 +253,7 @@ pub fn page(doc: &mut Doc, from: Option<&Cursor>, limit: usize) -> Page {
         versions.push(version);
     }
     let mut frontier: Vec<(Rank, ChangeHash)> = queue.into_vec();
-    frontier.sort_unstable();
+    frontier.compact_sort();
     frontier.dedup();
     frontier.retain(|(_, hash)| !listed.contains(hash));
     Page {
@@ -268,6 +266,12 @@ pub fn page(doc: &mut Doc, from: Option<&Cursor>, limit: usize) -> Page {
 /// then its first. An empty change ends at its dependency's last counter but
 /// starts after it, so the start breaks that tie.
 type Rank = (u64, u64);
+
+#[cfg(test)]
+thread_local! {
+    /// Change metadata [`Walk`] has read from the document on this thread.
+    static META_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 /// The change metadata one [`page`] call has read.
 #[derive(Default)]
@@ -282,6 +286,8 @@ impl Walk {
         }
         let document = doc.committed_document();
         let meta = document.get_change_meta_by_hash(&hash)?;
+        #[cfg(test)]
+        META_READS.with(|reads| reads.set(reads.get().saturating_add(1)));
         let rank = (meta.max_op, meta.start_op);
         let entry = (rank, meta.deps.clone(), version_of(document, &meta));
         self.metas.insert(hash, entry);
@@ -289,10 +295,6 @@ impl Walk {
     }
 }
 
-/// The resource as it was at `heads`.
-///
-/// # Errors
-/// Returns [`ModelError`] when that version does not hold this resource.
 pub fn read_at<R: Resource>(doc: &mut Doc, heads: &[ChangeHash]) -> Result<R::State, ModelError> {
     let past = doc.fork_at(heads)?;
     R::read(&past)
@@ -302,6 +304,22 @@ pub fn read_at<R: Resource>(doc: &mut Doc, heads: &[ChangeHash]) -> Result<R::St
 mod tests {
     use super::*;
     use automerge::{ActorId, ROOT, ReadDoc};
+
+    #[test]
+    fn the_first_page_of_a_long_history_reads_only_that_page() {
+        let mut doc = Doc::new();
+        for n in 0..2_000_i64 {
+            doc.put(ROOT, "tag", format!("t{}", n % 7)).unwrap();
+            commit_stamped_at(&mut doc, n).unwrap();
+        }
+        META_READS.with(|reads| reads.set(0));
+        let page = page(&mut doc, None, 50);
+        let read = META_READS.with(std::cell::Cell::get);
+        assert_eq!(page.versions.len(), 50);
+        assert!(page.older.is_some());
+        // Each listed change and the dependency that queues after it.
+        assert!(read <= 51, "a page of 50 read {read} changes of 2,000");
+    }
 
     fn check_empty_commit_actor_transition(open_empty: bool) {
         let mut doc = Doc::new();
@@ -388,9 +406,9 @@ mod tests {
         for position in 0..listed.len() {
             let mut rebuilt = replay_prefix(&mut doc, position).unwrap();
             let mut heads = rebuilt.get_heads();
-            heads.sort();
+            heads.compact_sort();
             let mut expected = prefix_heads(&mut doc, position);
-            expected.sort();
+            expected.compact_sort();
             assert_eq!(heads, expected, "position {position}");
         }
         let last = listed.len() - 1;

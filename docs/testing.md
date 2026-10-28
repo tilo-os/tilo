@@ -69,7 +69,7 @@ If you want to test the production image manually:
 1.  **Build**: Run `./os/build.sh`.
 2.  **Launch**: Run `./os/test-vm.sh`.
 3.  **Login**: Use the default credentials:
-    -   **User**: `quickuser`
+    -   **User**: `tester`
     -   **Password**: `tilo`
 
 ### Useful VM commands

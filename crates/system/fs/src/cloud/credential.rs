@@ -55,7 +55,6 @@ pub struct MountReply {
     pub result: Result<FileReply, String>,
 }
 
-/// The [`CAPABILITIES_PREFIX`] line for `capabilities`.
 pub fn capabilities_line(capabilities: CloudCapabilities) -> String {
     format!(
         "{CAPABILITIES_PREFIX}{}",
@@ -63,7 +62,6 @@ pub fn capabilities_line(capabilities: CloudCapabilities) -> String {
     )
 }
 
-/// The [`REPLY_PREFIX`] line for `reply`.
 pub fn reply_line(reply: &MountReply) -> String {
     format!(
         "{REPLY_PREFIX}{}",
@@ -439,7 +437,6 @@ mod tests {
         let service = {
             let pipe = std::sync::Arc::clone(&pipe);
             std::thread::spawn(move || {
-                // The service answers the line with a fresh credential.
                 assert_eq!(received.recv().unwrap(), EXPIRED_LINE);
                 pipe.update(Credential::Bearer {
                     token: Zeroizing::new("fresh".into()),

@@ -1,0 +1,20 @@
+# `tilo status` for the device admin without sudo: reading which deployments
+# are on the disk needs root (bootc status, and the ESP is root-only because it
+# holds the boot loader's random seed), and saying what is on a machine should
+# not need a password. Read-only: the service answers with the listing and
+# accepts no other request (tilo-deployment serve-status).
+[Unit]
+Description=What is booted, staged and rolled back to, for the device admin
+
+[Socket]
+ListenStream=/run/tilo-deployment/status.sock
+SocketUser=root
+SocketGroup=wheel
+SocketMode=0660
+DirectoryMode=0755
+Accept=yes
+MaxConnections=4
+MaxConnectionsPerSource=2
+
+[Install]
+WantedBy=sockets.target

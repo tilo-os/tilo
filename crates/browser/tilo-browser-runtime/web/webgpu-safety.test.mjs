@@ -89,3 +89,20 @@ test('the check takes the adapter the entry page asked for while its modules loa
   assert.equal(await rendererUnavailable({...early, __tiloAdapter: Promise.resolve({})}), undefined);
   assert.equal(asked.length, 0);
 });
+
+// Catches a GPU process too busy to answer (several pages starting at once
+// on a software rasteriser) leaving the page on "Loading Tilo…" for good.
+test('an adapter answer that never comes does not hold the page', async () => {
+  const silent = {...withGpu(CHROME_LINUX, {requestAdapter: () => new Promise(() => {})}), __tiloAdapter: new Promise(() => {})};
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (...args) => warned.push(args.join(' '));
+  try {
+    assert.equal(await rendererUnavailable(silent, {answerMs: 20}), undefined);
+  } finally {
+    console.warn = warn;
+  }
+  assert.match(warned.join('\n'), /no adapter answer/);
+  // An answer in time still counts.
+  assert.match((await rendererUnavailable({...silent, __tiloAdapter: Promise.resolve(null)}, {answerMs: 20})).reason, /no graphics adapter/);
+});

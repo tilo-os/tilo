@@ -12,7 +12,9 @@
 - Vendored: 2026-10-10 (`94d5a803a4`)
 
 Local changes: an endpoint with an empty relay map stops its re-STUN tick and
-releases its home relay, and its `[lib]` builds an `rlib` only (two path
+releases its home relay, a net report that keeps finding the same addresses
+waits longer before the next, paths may keep alive less often than every 5 s,
+and its `[lib]` builds an `rlib` only (two path
 builds of a `cdylib` crate collide in one Cargo run). Each change is marked
 `TILO PATCH` in the source; `TILO-PATCH.md` has the details and an
 upstream-ready description, and `vendor/PATCHES.md`, "iroh idle timers", the

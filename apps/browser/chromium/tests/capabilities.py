@@ -24,6 +24,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b'''<title>permission fixture</title><a style="position:absolute;top:50px;left:10px" href="/download">Download</a><button onclick="navigator.geolocation.getCurrentPosition(()=>document.title='granted',e=>document.title='denied-'+e.code)">Location</button>''')
     def log_message(self, *args): pass
 
+MEDIA_TESTS={'test_fake_camera_microphone_policy_grant_revoke_and_new_request','test_refused_camera_is_kept_until_the_site_may_ask_again'}
+
 class Capabilities(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -34,7 +36,7 @@ class Capabilities(unittest.TestCase):
     def tearDownClass(cls):
         cls.server.shutdown();cls.server.server_close()
     def setUp(self):
-        self.h=Host(args=['--use-fake-device-for-media-stream'] if self._testMethodName=='test_fake_camera_microphone_policy_grant_revoke_and_new_request' else []);self.addCleanup(self.h.close);self.addCleanup(self.save_evidence)
+        self.h=Host(args=['--use-fake-device-for-media-stream'] if self._testMethodName in MEDIA_TESTS else []);self.addCleanup(self.h.close);self.addCleanup(self.save_evidence)
     def save_evidence(self):
         if directory:=os.environ.get('TILO_SITE_EVIDENCE_DIR'):
             path=Path(directory);path.mkdir(parents=True,exist_ok=True)
@@ -120,6 +122,81 @@ class Capabilities(unittest.TestCase):
         self.assertEqual(outcome.get('title'),'after-revoke-NotAllowedError',outcome)
         self.h.settle(.2)
         self.assertFalse(any(e['event']=='permission_prompt' for e in self.h.seen[after:]))
+
+    def request_media(self,marker):
+        self.h.send(op='scripts',scripts=["navigator.mediaDevices.getUserMedia({video:true,audio:true}).then(s=>{s.getTracks().forEach(t=>t.stop());document.title='"+marker+"-granted'}).catch(e=>document.title='"+marker+"-'+e.name)"])
+    def media_outcome(self,marker):
+        return self.h.until(lambda e:e['event']=='permission_prompt' or (e['event']=='title' and e['title'].startswith(marker+'-')))
+
+    def test_refused_camera_is_kept_until_the_site_may_ask_again(self):
+        # Refusing the camera is remembered as refusing a location is: the
+        # site cannot ask again on every visit, and site information says so.
+        self.h.navigate(self.url+'/')
+        self.request_media('refused')
+        prompt=self.h.until(lambda e:e['event']=='permission_prompt')
+        self.h.send(op='permission_decision',id=prompt['id'],allow=False)
+        self.h.until(lambda e:e['event']=='title' and e['title']=='refused-NotAllowedError')
+        state=self.status(self.url)
+        self.assertEqual(state['permissions']['camera'],'blocked')
+        self.assertEqual(state['permissions']['microphone'],'blocked')
+        self.h.send(op='scripts',scripts=[])
+        self.h.navigate(self.url+'/?again')
+        self.request_media('again')
+        self.assertEqual(self.media_outcome('again').get('title'),'again-NotAllowedError')
+        state=self.status(self.url,2)
+        self.h.send(op='site_action',request_id=3,origin=self.url,generation=state['generation'],action='reset')
+        self.assertTrue(self.h.until(lambda e:e['event']=='site_result' and e['request_id']==3)['success'])
+        state=self.status(self.url,4)
+        self.assertEqual(state['permissions']['camera'],'ask')
+        self.assertEqual(state['permissions']['microphone'],'ask')
+        self.h.send(op='scripts',scripts=[])
+        self.h.navigate(self.url+'/?reset')
+        self.request_media('reset')
+        self.assertEqual(self.media_outcome('reset')['event'],'permission_prompt')
+
+    def ask_notifications(self,marker):
+        self.h.send(op='scripts',scripts=["Notification.requestPermission().then(p=>document.title='"+marker+"-'+p)"])
+        outcome=self.h.until(lambda e:e['event']=='permission_prompt' or (e['event']=='title' and e['title'].startswith(marker+'-')))
+        self.h.send(op='scripts',scripts=[])
+        return outcome
+
+    def test_unanswered_question_is_no_refusal_when_the_page_moves_on(self):
+        # Leaving a page, or reloading it, while it asks withdraws the
+        # question; Chromium must not keep it as a block for the site.
+        for request,step in enumerate(['leave','reload'],start=1):
+            page=self.url+'/?ask-'+step
+            self.h.navigate(page)
+            prompt=self.ask_notifications(step)
+            self.assertEqual(prompt.get('permissions'),'notifications',prompt)
+            if step=='reload':
+                self.h.send(op='reload')
+                self.h.until(lambda e:e['event']=='loaded' and e['url']==page)
+                self.h.settle()
+            else:self.h.navigate(self.url+'/?left')
+            closed=lambda e:e['event']=='permission_closed' and e['id']==prompt['id']
+            if not any(closed(e) for e in self.h.seen):self.h.until(closed)
+            self.assertEqual(self.status(self.url,request)['permissions']['notifications'],'ask',step)
+        self.assertEqual(self.ask_notifications('again')['event'],'permission_prompt')
+
+    def test_ask_again_lets_a_site_ask_after_questions_set_aside(self):
+        # A few questions set aside make Chromium refuse the site without
+        # asking; "Ask again" must undo that too, not only blocks and grants.
+        refused=None
+        for attempt in range(8):
+            self.h.navigate(self.url+f'/?aside-{attempt}')
+            outcome=self.ask_notifications(f'aside-{attempt}')
+            if outcome['event']!='permission_prompt':
+                self.assertGreater(attempt,0,'the site was asked at first')
+                refused=outcome;break
+            self.h.send(op='permission_decision',id=outcome['id'],allow=False,dismiss=True)
+            self.h.until(lambda e:e['event']=='title' and e['title'].startswith(f'aside-{attempt}-'))
+        self.assertTrue(refused and refused['title'].endswith('-denied'),refused)
+        state=self.status(self.url)
+        self.assertEqual(state['permissions']['notifications'],'ask')
+        self.h.send(op='site_action',request_id=2,origin=self.url,generation=state['generation'],action='reset')
+        self.assertTrue(self.h.until(lambda e:e['event']=='site_result' and e['request_id']==2)['success'])
+        self.h.navigate(self.url+'/?after-reset')
+        self.assertEqual(self.ask_notifications('after-reset')['event'],'permission_prompt')
 
     def test_synthetic_notification_grant_then_revoke(self):
         self.h.navigate(self.url+'/')

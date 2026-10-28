@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use tilo_window_share::config::FlatpakShareConfig;
 
 /// The image's `desktop.toml`, below the person's own.
 const SYSTEM_CONFIG: &str = "/etc/tilo/desktop.toml";
@@ -13,55 +14,8 @@ pub struct DesktopConfig {
     pub flatpak_share: FlatpakShareConfig,
 }
 
-/// Video settings for shared application windows.
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(default)]
-pub struct FlatpakShareConfig {
-    /// Video bitrate cap in kbps.
-    pub max_bitrate_kbps: u32,
-    /// Software encoders clamp this to 30 fps; hardware encoders do not.
-    pub target_fps: u32,
-    pub encoder: EncoderChoice,
-    /// HDR uses AV1 or HEVC Main10 when a hardware 10-bit encoder is
-    /// available and every viewer can decode it.
-    #[serde(default)]
-    pub hdr: Option<crate::collab::hdr_metadata::HdrConfig>,
-}
-
-impl Default for FlatpakShareConfig {
-    fn default() -> Self {
-        Self {
-            max_bitrate_kbps: 8000,
-            target_fps: 60,
-            encoder: EncoderChoice::Auto,
-            hdr: None,
-        }
-    }
-}
-
-/// Preferred video encoder, as a preference for the media stack's element
-/// selection (see `collab::encoder::EncoderChoice::policy`).
-///
-/// `"vaapi"` / `"nvenc"` / `"v4l2"` prefer that hardware family, falling back
-/// to software.
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum EncoderChoice {
-    /// Hardware first, then royalty-free software, then Cisco's openh264.
-    Auto,
-    /// Software encoders only.
-    Software,
-    /// Prefer VA-API; other hardware only after software.
-    Vaapi,
-    /// Prefer NVENC; other hardware only after software.
-    Nvenc,
-    /// Prefer the kernel's V4L2 codec blocks (ARM boards); other hardware only
-    /// after software.
-    V4l2,
-}
-
 /// Read `$XDG_CONFIG_HOME/tilo-desktop/desktop.toml`, else the image's
-/// [`SYSTEM_CONFIG`], else the defaults. A file that does not parse is
+/// `SYSTEM_CONFIG`, else the defaults. A file that does not parse is
 /// reported and skipped rather than quietly read as the defaults.
 pub fn load_config() -> DesktopConfig {
     let user = tilo_paths::config_dir().map(|dir| dir.join("tilo-desktop").join("desktop.toml"));

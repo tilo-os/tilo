@@ -86,7 +86,7 @@ fn shoot_in_context(
             Ok(MintedIdentity {
                 fingerprint: "3f7a1c9e40b28d6512ef0a73c8b4d915e26f88a0c3147bd5e9f20a6c7b81d34e"
                     .to_string(),
-                path: PathBuf::from("/home/quinten/.config/tilo/identity/primary.json"),
+                path: PathBuf::from("/home/user/.config/tilo/identity/primary.json"),
             })
         }
     });
@@ -207,6 +207,34 @@ fn main() -> Result<(), String> {
         .unwrap_or_else(|_| "target/onboarding-shots".to_string());
     std::fs::create_dir_all(&dir).map_err(|e| format!("create_dir_all({dir}): {e}"))?;
     let dir = PathBuf::from(dir);
+
+    for (visual, name) in [
+        (OnboardingVisualState::Recovery, "choose"),
+        (OnboardingVisualState::RecoveryNearby, "nearby"),
+        (OnboardingVisualState::RecoveryRestore, "file"),
+        (OnboardingVisualState::RecoveryKeyTyping, "key-typing"),
+        (OnboardingVisualState::RecoveryKeyTypo, "key-typo"),
+        (OnboardingVisualState::RecoveryKeyReady, "key-ready"),
+        (OnboardingVisualState::RecoveryKeyDifferent, "key-different"),
+        (OnboardingVisualState::Backup, "setup-backup"),
+        (OnboardingVisualState::BackupRecoveryKey, "setup-write-down"),
+        (
+            OnboardingVisualState::BackupRecoveryKeyWritten,
+            "setup-written",
+        ),
+        (OnboardingVisualState::Protect, "setup-protect"),
+    ] {
+        shoot_visual(
+            &Theme::dark(),
+            &dir.join(format!("recovery-{name}-1280x800.png")),
+            visual,
+            1280,
+            800,
+        )?;
+    }
+    if std::env::var_os("ONBOARDING_SHOTS_RECOVERY_ONLY").is_some() {
+        return Ok(());
+    }
 
     // The Fedora/rpm-ostree host-session path is reviewed at the three common
     // laptop sizes that motivated this harness. Include the acknowledgement

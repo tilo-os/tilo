@@ -1,15 +1,15 @@
 //! # Rich text in a Tilo app
 //!
 //! One document model and one editor across the OS: tilo-doc's rich text
-//! ([`tilo_document::RichText`]) is the resource, and the toolkit's block
+//! ([`RichText`]) is the resource, and the toolkit's block
 //! editor is the view of it. An app that shows rich text writes one line:
 //!
 //! ```ignore
-//! use tilo_rich_text::RichTextViews;
+//! use tilo_rich_text::{RichText, RichTextViews};
 //!
 //! struct Doc;
 //! impl ResourceApp for Doc {
-//!     type Resource = tilo_document::RichText;
+//!     type Resource = RichText;
 //!     const ID: &'static str = "example.doc";
 //!     const TITLE: &'static str = "Document";
 //!     fn view(cx: &mut ViewCx<RichText>) -> Element {
@@ -19,7 +19,7 @@
 //! ```
 //!
 //! and gets, from the framework and without writing any of it: every edit as
-//! a replayable [`RichTextAction`](tilo_document::RichTextAction) (the same
+//! a replayable [`RichTextAction`] (the same
 //! vocabulary the palette, agents and scripts use), permission checks (a
 //! viewer's keystrokes never reach the document), per-author undo with
 //! typing grouped a word at a time, attributed history with History mode
@@ -40,7 +40,6 @@ mod source;
 mod surface;
 mod view;
 
-use tilo_document::{RichText, RichTextAction};
 use ui::automerge::ObjId;
 use ui::framework::ViewCx;
 use ui::tilo_resource::{Doc, Resource};
@@ -51,10 +50,16 @@ pub use blocks::{
     rich_text_at,
 };
 pub use composer::{ComposerFrame, RichTextComposer};
-pub use convert::{clip_block, clip_of_content, content_of, content_of_clip, document_mark};
+pub use convert::{
+    RESOURCE_LINK_SCHEME, clip_block, clip_of_content, content_of, content_of_clip, document_mark,
+    editor_mark, is_resource_link,
+};
 pub use draft::Draft;
 pub use source::{Hosted, PersonField, RichTextField, RichTextSource};
 pub use surface::{FieldOutcome, RichTextSurface, SubmitKey};
+/// The rich text resource and its one action vocabulary, as an app names
+/// them: a field or a document of this type, edited by these actions.
+pub use tilo_document::{RichText, RichTextAction};
 pub use view::RichTextView;
 
 /// A block editor for short rich text: a composer, a reply, a message row.

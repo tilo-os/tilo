@@ -31,7 +31,7 @@ use crate::workbook::{
     Sheet, Workbook,
 };
 
-ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US", "de-DE"]);
 
 /// The most cells one write, sort or import changes.
 pub const MAX_WRITES: usize = 16 * 1024;
@@ -46,7 +46,9 @@ pub const MAX_IMPORTED_SHEETS: usize = 64;
 pub struct CellWrite {
     /// The cell, e.g. `B3`.
     pub cell: String,
-    /// What to type into it: a value, or a formula starting with `=`.
+    /// What to type into it: a value, or a formula starting with `=`; an
+    /// ISO date such as `2026-10-22` (or `2026-10-22T09:30`) becomes a real
+    /// date, and a leading apostrophe (`'007`) marks text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<String>,
     /// How it shows.
@@ -74,6 +76,151 @@ impl CellWrite {
 pub struct ImportedSheet {
     pub name: String,
     pub cells: Vec<CellWrite>,
+    /// Whether the sheet comes hidden, as the file kept it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
+}
+
+/// A new sheet: where it goes, what it is called and, optionally, its first
+/// content, as rows from A1 or as headers and records keyed by them.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SheetSpec {
+    /// The new sheet's name; the next free `SheetN` when none
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The sheet it goes after (its id or name); the end when none
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<Id>,
+    /// Its first content: rows of values from A1, "=…" a formula, an ISO date
+    /// such as "2026-10-22" a real date, "'007" text; or use columns and
+    /// records
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows: Option<Vec<Vec<serde_json::Value>>>,
+    /// Header names written as row 1, which records are keyed by, e.g.
+    /// `["Item", "Price", "Qty", "Total"]`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub columns: Option<Vec<String>>,
+    /// Rows from row 2 as objects keyed by columns, e.g. `[{"Item": "Venue",
+    /// "Price": 145, "Qty": 8, "Total": "=[Price]*[Qty]"}]`; a key left out
+    /// leaves its cell empty. In a formula `[Header]` is that column's cell
+    /// in the same row and `{row}` the row's number (`"=B{row}*C{row}"`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub records: Option<Vec<serde_json::Value>>,
+    /// Number formats of its ranges, e.g. `{"D2:D5": "percent", "B2:B9":
+    /// "currency"}`: general, number, currency (or money), percent, date,
+    /// time or text
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formats: Option<std::collections::BTreeMap<String, String>>,
+    /// The spreadsheet's name, when the workbook has none yet
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workbook: Option<String>,
+}
+
+/// The format `name` names, as `formats` and `format-cells` take it: a
+/// category (`currency`, `money`, `percent`, `date`, …) or a style
+/// (`currency:EUR`); bare money is in the workbook's `currency`.
+fn format_named(name: &str, currency: tilo_locale::Currency) -> Result<CellFormat, Refusal> {
+    let code = name.trim().to_lowercase();
+    let code = match code.as_str() {
+        "money" | "currency" => return Ok(CellFormat::Currency(currency)),
+        "percentage" => "percent",
+        other => other,
+    };
+    CellFormat::parse_code(code).ok_or_else(|| {
+        Refusal::new(format!(
+            "`{name}` is no format: general, number, currency, percent, date, time or text"
+        ))
+    })
+}
+
+/// `writes` with the formats `formats` gives their ranges; a format on a
+/// cell no write names writes the format alone.
+fn with_formats(
+    mut writes: Vec<CellWrite>,
+    formats: &std::collections::BTreeMap<String, String>,
+    currency: tilo_locale::Currency,
+) -> Result<Vec<CellWrite>, Refusal> {
+    for (range, name) in formats {
+        let (start, end) = range_of(range)?;
+        let format = format_named(name, currency)?;
+        for row in start.1..=end.1 {
+            for col in start.0..=end.0 {
+                let cell = addr_to_a1(col, row);
+                match writes.iter_mut().find(|write| write.cell == cell) {
+                    Some(write) => write.format = Some(format),
+                    None => writes.push(CellWrite {
+                        cell,
+                        format: Some(format),
+                        ..CellWrite::default()
+                    }),
+                }
+                if writes.len() > MAX_WRITES {
+                    return Err(Refusal::new(format!("at most {MAX_WRITES} cells at once")));
+                }
+            }
+        }
+    }
+    Ok(writes)
+}
+
+/// The writes of JSON `rows` rightward and down from `start`, as
+/// [`crate::cell_actions::cell_input`] reads each value.
+fn row_writes(start: Addr, rows: &[Vec<serde_json::Value>]) -> Result<Vec<CellWrite>, Refusal> {
+    let mut cells = Vec::new();
+    for (dr, row) in (0u32..).zip(rows) {
+        for (dc, value) in (0u32..).zip(row) {
+            let addr = (start.0.saturating_add(dc), start.1.saturating_add(dr));
+            if let Some((input, format)) = crate::cell_actions::cell_input(value)? {
+                cells.push(CellWrite::at(addr, input, format));
+            }
+        }
+    }
+    Ok(cells)
+}
+
+/// A new sheet's first content: `rows` from A1, or `columns` as its header
+/// row with `records` keyed by them under it; `None` when it has none.
+fn first_writes(new: &SheetSpec) -> Result<Option<Vec<CellWrite>>, Refusal> {
+    match (&new.rows, &new.columns, &new.records) {
+        (Some(_), Some(_), _) => Err(Refusal::new(
+            "give `rows`, or `columns` with `records`, not both",
+        )),
+        (Some(_), None, Some(_)) => Err(Refusal::new(
+            "`records` are keyed by `columns`: give those instead of `rows`",
+        )),
+        (Some(rows), None, None) => row_writes((0, 0), rows).map(Some),
+        (None, Some(columns), records) => {
+            crate::records::new_sheet_writes(columns, records.as_deref().unwrap_or_default())
+                .map(Some)
+        }
+        (None, None, Some(records)) => {
+            crate::records::new_sheet_writes(&crate::records::keys_in_order(records), records)
+                .map(Some)
+        }
+        (None, None, None) => Ok(None),
+    }
+}
+
+/// `write` with its input read as `set-cells` reads a value: an ISO date
+/// a real date, an apostrophe text. A format the write names wins, and one
+/// naming text keeps the input as typed.
+fn typed_write(write: CellWrite) -> Result<CellWrite, Refusal> {
+    let Some(input) = write.input.as_deref() else {
+        return Ok(write);
+    };
+    if write.format == Some(CellFormat::Text) {
+        return Ok(write);
+    }
+    let Some((input, format)) =
+        crate::cell_actions::cell_input(&serde_json::Value::String(input.to_owned()))?
+    else {
+        return Ok(write);
+    };
+    Ok(CellWrite {
+        input: Some(input),
+        format: write.format.or(format),
+        ..write
+    })
 }
 
 fn cell_of(reference: &str) -> Result<Addr, Refusal> {
@@ -280,33 +427,174 @@ fn reanchored(layout: &Layout, edit: GridEdit, area: &Area) -> Option<Area> {
 )]
 impl Workbook {
     /// Add a sheet.
-    #[action]
+    ///
+    /// With content (rows, or columns and records, and their formats) it is
+    /// one step that answers the cells it wrote; a new workbook's untouched
+    /// blank Sheet1 gives way to it, while every other sheet, a renamed
+    /// blank one included, is kept.
+    #[action(answers)]
     pub fn new_sheet(
         &mut self,
         cx: &mut ActionCx,
-        #[param("The new sheet's name; the next free SheetN when none")] name: Option<String>,
-        #[param("The sheet it goes after; the end when none")] after: Option<Id>,
+        #[param(flatten)] new: SheetSpec,
     ) -> Result<(), Refusal> {
-        let name = name
-            .map(|name| name.trim().to_owned())
+        let mut writes = first_writes(&new)?;
+        if let Some(formats) = &new.formats {
+            writes = Some(with_formats(
+                writes.unwrap_or_default(),
+                formats,
+                self.currency(),
+            )?);
+        }
+        let blank = writes
+            .as_ref()
+            .filter(|_| self.is_blank())
+            .and_then(|_| self.sheets.ids().next().cloned());
+        let name = new
+            .name
+            .as_deref()
+            .map(str::trim)
             .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| self.next_sheet_name());
-        let at = match &after {
+            .map_or_else(
+                || {
+                    if blank.is_some() {
+                        crate::workbook::FIRST_SHEET_NAME.to_owned()
+                    } else {
+                        self.next_sheet_name()
+                    }
+                },
+                str::to_owned,
+            );
+        let at = match &new.after {
             Some(after) => {
-                self.sheets
-                    .position(after)
-                    .ok_or_else(|| Refusal::new("no such sheet"))?
-                    + 1
+                let after = self.sheet_key(after)?;
+                self.sheets.position(&after).unwrap_or(self.sheets.len()) + 1
             }
             None => self.sheets.len(),
         };
-        self.sheets.insert(at, cx.id(), Sheet::named(name));
+        let mut sheet = Sheet::named(name);
+        if let Some(writes) = &writes {
+            write_into(&mut sheet, writes)?;
+        }
+        if let Some(title) = new.workbook.as_deref().map(str::trim)
+            && !title.is_empty()
+            && self.title.is_none()
+        {
+            self.title = Some(title.to_owned());
+        }
+        self.sheets.insert(at, cx.id(), sheet);
+        if let Some(blank) = blank {
+            self.sheets.remove(&blank);
+        }
         Ok(())
+    }
+
+    /// Name the workbook, so it is found and listed by that name.
+    #[action]
+    pub fn set_title(
+        &mut self,
+        #[param("The spreadsheet's name, as people call it")] title: String,
+    ) -> Result<(), Refusal> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(Refusal::new("give the workbook a name: `title` is empty"));
+        }
+        self.title = Some(title.to_owned());
+        Ok(())
+    }
+
+    /// Set records: rows written by the headers in row 1.
+    #[action(answers, item = sheets, audience = "agents")]
+    pub fn set_records(
+        &mut self,
+        sheet: &Id,
+        #[param(
+            "Rows as objects keyed by the headers in row 1, e.g. [{\"Item\": \"Venue\", \"Total\": \"=[Price]*[Qty]\"}]; a key left out or null keeps its cell, \"\" clears. In a formula [Header] is that column's cell in the same row and {row} the row's number"
+        )]
+        records: Vec<serde_json::Value>,
+        #[param(
+            "Data row the first record goes to, 1 = the row under the headers (sheet row 2), the rest below it; leave it out to append after the last used row. A record whose first-column value differs from the one its filled row holds is refused: the rows moved since they were read"
+        )]
+        row: Option<u32>,
+        #[param(
+            "An empty sheet's headers, in order; left out, they are the records' keys as they first come"
+        )]
+        columns: Option<Vec<String>>,
+        #[param(
+            "The header whose value identifies each record's row: a record updates the row holding its value there and is appended after the last row when none does; not with row"
+        )]
+        key: Option<String>,
+    ) -> Result<(), Refusal> {
+        let sheet = &self.sheet_key(sheet)?;
+        let snap = self
+            .snapshot_of(sheet)
+            .ok_or_else(|| Refusal::new("no such sheet"))?;
+        let shown = crate::cell_actions::shown_cells(&snap);
+        let request = crate::records::RecordsRequest {
+            records: &records,
+            row,
+            columns: columns.as_deref(),
+            key: key.as_deref(),
+        };
+        let writes = crate::records::set_records_writes(&snap, &shown, &request)?;
+        if writes.is_empty() {
+            return Err(Refusal::new("records hold no values to write"));
+        }
+        write_into(self.sheet_mut(sheet)?, &writes)
+    }
+
+    /// Update or add a row by its key.
+    ///
+    /// The sheet's rows are a collection keyed by the headers in row 1: this
+    /// is the `upsert-item` every collection offers, so a caller addresses a
+    /// row by what it holds rather than by a row number that moves when
+    /// someone else adds or sorts rows.
+    #[action(answers, item = sheets, audience = "agents")]
+    pub fn upsert_item(
+        &mut self,
+        cx: &mut ActionCx,
+        sheet: &Id,
+        #[param(
+            "The header values that identify the row, e.g. {\"Name\": \"Ana\"}: matched ignoring case and spacing, numbers by value. The one row that holds them is updated; with none, a row is appended; more than one is refused",
+            name = "match"
+        )]
+        matching: std::collections::BTreeMap<String, serde_json::Value>,
+        #[param(
+            "The row's cells by header, e.g. {\"Total\": \"=[Price]*[Qty]\"}; a header left out keeps its cell. In a formula [Header] is that column's cell in the same row"
+        )]
+        value: std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> Result<(), Refusal> {
+        let sheet = &self.sheet_key(sheet)?;
+        let snap = self
+            .snapshot_of(sheet)
+            .ok_or_else(|| Refusal::new("no such sheet"))?;
+        let shown = crate::cell_actions::shown_cells(&snap);
+        let (writes, appended) = crate::records::upsert_writes(
+            &snap,
+            &shown,
+            &matching.into_iter().collect(),
+            &value.into_iter().collect(),
+        )?;
+        if writes.is_empty() {
+            return Err(Refusal::new("the row holds no values to write"));
+        }
+        let target = self.sheet_mut(sheet)?;
+        // A new row under an id of its own: rows reached by position are
+        // named by it (`r7`), so two agents appending at once would write
+        // into one row; inserted afresh, each keeps its own.
+        if let Some(row) = appended
+            && let Ok(at) = usize::try_from(row)
+            && at <= target.cells.rows().len()
+        {
+            target.cells.insert_row(at, cx.id());
+        }
+        write_into(target, &writes)
     }
 
     /// Duplicate a sheet.
     #[action(item = sheets)]
     pub fn duplicate_sheet(&mut self, cx: &mut ActionCx, sheet: &Id) -> Result<(), Refusal> {
+        let sheet = &self.sheet_key(sheet)?;
         let original = self
             .sheet(sheet)
             .ok_or_else(|| Refusal::new("no such sheet"))?;
@@ -324,6 +612,7 @@ impl Workbook {
     /// Delete a sheet, with its comments.
     #[action(destructive, writes = comments, item = sheets)]
     pub fn delete_sheet(&mut self, sheet: &Id) -> Result<(), Refusal> {
+        let sheet = &self.sheet_key(sheet)?;
         self.sheets
             .remove(sheet)
             .ok_or_else(|| Refusal::new("no such sheet"))?;
@@ -340,36 +629,18 @@ impl Workbook {
     }
 
     /// Set cells from a start cell, row by row.
-    #[action(answers, item = sheets)]
+    #[action(answers, item = sheets, audience = "agents")]
     pub fn set_cells(
         &mut self,
         sheet: &Id,
         #[param("Top-left cell, e.g. A1")] start: String,
         #[param(
-            "Rows of values written rightward and down from start; \"=…\" is a formula, \"\" clears, null skips"
+            "Rows of values written rightward and down from start; \"=…\" is a formula (one that does not parse is kept, shows its error and is listed in the answer's formula_errors; Other!A1 reads another sheet), \"\" clears, null skips, an ISO date such as \"2026-10-22\" (or \"2026-10-22T09:30\") becomes a real date and a leading apostrophe (\"'007\") marks text"
         )]
         rows: Vec<Vec<serde_json::Value>>,
     ) -> Result<(), Refusal> {
-        let start = cell_of(&start)?;
-        let mut cells = Vec::new();
-        for (dr, row) in (0u32..).zip(&rows) {
-            for (dc, value) in (0u32..).zip(row) {
-                let input = match value {
-                    serde_json::Value::Null => continue,
-                    serde_json::Value::String(text) => text.clone(),
-                    serde_json::Value::Number(number) => number.to_string(),
-                    serde_json::Value::Bool(true) => "TRUE".into(),
-                    serde_json::Value::Bool(false) => "FALSE".into(),
-                    _ => {
-                        return Err(Refusal::new(
-                            "cell values are strings, numbers, booleans or null",
-                        ));
-                    }
-                };
-                let addr = (start.0.saturating_add(dc), start.1.saturating_add(dr));
-                cells.push(CellWrite::at(addr, input, None));
-            }
-        }
+        let sheet = &self.sheet_key(sheet)?;
+        let cells = row_writes(cell_of(&start)?, &rows)?;
         if cells.is_empty() {
             return Err(Refusal::new("rows hold no values to write"));
         }
@@ -377,7 +648,7 @@ impl Workbook {
     }
 
     /// Write cells: values, formulas, formats and bold.
-    #[action(answers, item = sheets)]
+    #[action(answers, item = sheets, audience = "agents")]
     pub fn write_cells(
         &mut self,
         sheet: &Id,
@@ -386,6 +657,11 @@ impl Workbook {
         if cells.is_empty() {
             return Err(Refusal::new("name at least one cell"));
         }
+        let sheet = &self.sheet_key(sheet)?;
+        let cells = cells
+            .into_iter()
+            .map(typed_write)
+            .collect::<Result<Vec<_>, _>>()?;
         write_into(self.sheet_mut(sheet)?, &cells)
     }
 
@@ -398,6 +674,7 @@ impl Workbook {
         #[param("Number format")] format: Option<CellFormat>,
         #[param("Bold text on or off")] bold: Option<bool>,
     ) -> Result<(), Refusal> {
+        let sheet = &self.sheet_key(sheet)?;
         let (start, end) = range_of(&range)?;
         if format.is_none() && bold.is_none() {
             return Err(Refusal::new("give a format, bold or both"));
@@ -423,12 +700,16 @@ impl Workbook {
         #[param("Column letter to sort by, e.g. C")] by: String,
         #[param("Largest first; smallest first when none")] descending: Option<bool>,
     ) -> Result<(), Refusal> {
+        let sheet = &self.sheet_key(sheet)?;
         let range = range_of(&range)?;
         let by = letters_to_col(by.trim())
             .filter(|by| (range.0.0..=range.1.0).contains(by))
             .ok_or_else(|| Refusal::new("sort by a column letter inside the range"))?;
+        let snap = self
+            .snapshot_of(sheet)
+            .ok_or_else(|| Refusal::new("no such sheet"))?;
+        let shown = crate::cell_actions::shown_cells(&snap);
         let target = self.sheet_mut(sheet)?;
-        let shown = crate::cell_actions::shown_cells(&target.snapshot());
         let writes =
             crate::cell_actions::sort_writes(&shown, range, by, descending.unwrap_or(false));
         write_into(target, &writes)
@@ -443,6 +724,7 @@ impl Workbook {
         #[param("Row number as shown (1-based) the new rows go above")] at: u32,
         #[param("How many rows; one when none")] count: Option<u32>,
     ) -> Result<(), Refusal> {
+        let sheet = &self.sheet_key(sheet)?;
         let at = at
             .checked_sub(1)
             .filter(|at| *at <= MAX_ROW)
@@ -464,6 +746,7 @@ impl Workbook {
         sheet: &Id,
         #[param("Row numbers as shown (1-based) to delete; rows below move up")] rows: Vec<u32>,
     ) -> Result<(), Refusal> {
+        let sheet = &self.sheet_key(sheet)?;
         let mut rows = rows
             .into_iter()
             .map(|row| {
@@ -503,6 +786,7 @@ impl Workbook {
         #[param("Column letter the new columns go left of, e.g. C")] at: String,
         #[param("How many columns; one when none")] count: Option<u32>,
     ) -> Result<(), Refusal> {
+        let sheet = &self.sheet_key(sheet)?;
         let at = letters_to_col(at.trim())
             .filter(|at| *at <= MAX_COLUMN)
             .ok_or_else(|| Refusal::new("name a column by its letter, e.g. C"))?;
@@ -524,6 +808,7 @@ impl Workbook {
         #[param("Column letters to delete, e.g. [\"C\"]; columns right of them move left")]
         columns: Vec<String>,
     ) -> Result<(), Refusal> {
+        let sheet = &self.sheet_key(sheet)?;
         let mut columns = columns
             .iter()
             .map(|letters| {
@@ -558,12 +843,15 @@ impl Workbook {
     ///
     /// Adds the sheets of a file as new sheets, in one step; into a new,
     /// still blank workbook they replace its empty first sheet.
-    #[action]
+    #[action(audience = "agents")]
     pub fn import_sheets(
         &mut self,
         cx: &mut ActionCx,
         #[param("The sheets, each with its name and cells")] sheets: Vec<ImportedSheet>,
         #[param("The file they come from, which opening again reveals")] source: Option<String>,
+        #[param("The workbook's title, e.g. the file's name, when it has none yet")] title: Option<
+            String,
+        >,
     ) -> Result<(), Refusal> {
         if sheets.is_empty() || sheets.len() > MAX_IMPORTED_SHEETS {
             return Err(Refusal::new("import between 1 and 64 sheets"));
@@ -578,11 +866,18 @@ impl Workbook {
         for imported in sheets {
             let mut sheet = Sheet::named(imported.name.trim());
             sheet.source = source.clone().map(Atom);
+            sheet.hidden = imported.hidden;
             write_into(&mut sheet, &imported.cells)?;
             self.sheets.push(cx.id(), sheet);
         }
         if let Some(blank) = blank {
             self.sheets.remove(&blank);
+        }
+        if let Some(title) = title.as_deref().map(str::trim)
+            && !title.is_empty()
+            && self.title.is_none()
+        {
+            self.title = Some(title.to_owned());
         }
         Ok(())
     }
@@ -597,6 +892,7 @@ impl Workbook {
         #[param("Chart type")] kind: ChartKind,
         #[param("Title")] title: String,
     ) -> Result<(), Refusal> {
+        let sheet = &self.sheet_key(sheet)?;
         let (start, end) = range_of(&range)?;
         let target = self.sheet_mut(sheet)?;
         let area = target
@@ -624,6 +920,7 @@ impl Workbook {
         #[param("Chart type; none keeps it")] kind: Option<ChartKind>,
         #[param("The cells to chart, e.g. B2:D6; none keeps them")] range: Option<CellRange>,
     ) -> Result<(), Refusal> {
+        let sheet = &self.sheet_key(sheet)?;
         let target = self.sheet_mut(sheet)?;
         let area = match range {
             Some(range) => Some(
@@ -658,6 +955,7 @@ impl Workbook {
         sheet: &Id,
         #[param("The chart")] chart: Id,
     ) -> Result<(), Refusal> {
+        let sheet = &self.sheet_key(sheet)?;
         self.sheet_mut(sheet)?
             .charts
             .remove(&chart)
@@ -674,6 +972,7 @@ impl Workbook {
         #[param("The cells it is about, e.g. B2:E2")] range: String,
         #[param("Comment")] text: String,
     ) -> Result<(), Refusal> {
+        let sheet = &self.sheet_key(sheet)?;
         let (start, end) = range_of(&range)?;
         let body = annotation(&text)?;
         let author = Atom(cx.author().unwrap_or_default().to_owned());
@@ -827,7 +1126,8 @@ impl Workbook {
                 SearchEntry::new(sheet.name.0.clone(), sheet.name.0.clone())
                     .anchored(tilo_resource::items::item_resource_id::<Self>("sheets", id)),
             );
-            for cell in crate::cell_actions::shown_cells(&sheet.snapshot()) {
+            let snap = self.snapshot_of(id).unwrap_or_else(|| sheet.snapshot());
+            for cell in crate::cell_actions::shown_cells(&snap) {
                 let reference = addr_to_a1(cell.col, cell.row);
                 let title = format!("{}!{reference}", sheet.name.0);
                 let text = format!("{reference} {title} {} {}", cell.raw, cell.display);
@@ -844,6 +1144,33 @@ impl Workbook {
 pub const MAX_READ_CELLS: usize = 10_000;
 
 impl Workbook {
+    /// The workbook's sheets by id and name (and whether hidden), with its
+    /// title: what a read without an item answers.
+    fn sheet_listing(&self) -> serde_json::Value {
+        let mut listing = serde_json::json!({
+            "sheets": self.sheets.iter().map(|(id, sheet)| {
+                let layout = sheet.layout();
+                let mut entry = serde_json::json!({
+                    "item": id.as_str(),
+                    "name": sheet.name.0,
+                    "rows": layout.rows().len(),
+                    "columns": layout.columns().len(),
+                });
+                if sheet.hidden
+                    && let Some(entry) = entry.as_object_mut()
+                {
+                    entry.insert("hidden".into(), true.into());
+                }
+                entry
+            }).collect::<Vec<_>>(),
+            "how": "read an item: a sheet's id or name, with a range after `!` to read part of it; verbs taking a sheet take its name too",
+        });
+        if let (Some(title), Some(fields)) = (&self.title, listing.as_object_mut()) {
+            fields.insert("title".into(), title.clone().into());
+        }
+        listing
+    }
+
     /// What the workbook holds, for a caller with no screen. With no item,
     /// its sheets; with a sheet (its id, item id or name), optionally
     /// narrowed to a range (`Budget!A1:C10`), what each cell shows, row by
@@ -851,18 +1178,7 @@ impl Workbook {
     /// cell.
     fn read_cells(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         let Some(item) = item else {
-            return Ok(serde_json::json!({
-                "sheets": self.sheets.iter().map(|(id, sheet)| {
-                    let layout = sheet.layout();
-                    serde_json::json!({
-                        "item": id.as_str(),
-                        "name": sheet.name.0,
-                        "rows": layout.rows().len(),
-                        "columns": layout.columns().len(),
-                    })
-                }).collect::<Vec<_>>(),
-                "how": "read an item: a sheet's id or name, with a range after `!` to read part of it",
-            }));
+            return Ok(self.sheet_listing());
         };
         let (sheet_part, range) = item
             .as_str()
@@ -877,7 +1193,8 @@ impl Workbook {
                 **id == sheet_key || sheet.name.0.eq_ignore_ascii_case(sheet_part.trim())
             })
             .ok_or_else(|| format!("no sheet `{sheet_part}`; read with no item for the sheets"))?;
-        let cells = crate::cell_actions::shown_cells(&sheet.snapshot());
+        let snap = self.snapshot_of(id).unwrap_or_else(|| sheet.snapshot());
+        let cells = crate::cell_actions::shown_cells(&snap);
         let (top_left, bottom_right) = match range {
             Some(range) => read_range(range)?,
             None => cells
@@ -983,9 +1300,6 @@ pub struct SheetsShell;
 /// Every screenshot scenario: the sample workbook with one surface of the app
 /// in view.
 const SCENARIOS: &[&str] = &[
-    "file",
-    "format",
-    "more",
     "docsettings",
     "editing",
     "pointmode",
@@ -1005,6 +1319,9 @@ const SCENARIOS: &[&str] = &[
     "charts",
     "comments",
     "bold",
+    "find",
+    "replace",
+    "cellmenu",
 ];
 
 /// When the sample workbook of the annotated scenarios was written.
@@ -1018,6 +1335,8 @@ fn annotated(scenario: Option<&str>) -> bool {
 impl ResourceApp for SheetsShell {
     type Resource = Workbook;
     const ID: &'static str = "so.tilo.sheets";
+    // Each window shows the document it opened, never another window's.
+    const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Sheets";
     const ICON: Option<&'static str> = Some("sheets");
 
@@ -1027,6 +1346,14 @@ impl ResourceApp for SheetsShell {
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
         Some(&CATALOG)
+    }
+
+    /// The workbook's title, as the palette and history name it.
+    fn label(state: &Workbook) -> String {
+        state
+            .title
+            .clone()
+            .unwrap_or_else(|| <Workbook as ui::tilo_resource::Resource>::LABEL.to_owned())
     }
 
     /// The annotated scenarios show a workbook other people wrote: Alex
@@ -1057,6 +1384,27 @@ impl ResourceApp for SheetsShell {
         invokes
     }
 
+    /// The find shots are the window bar's search: its field with a query in
+    /// it, driving the sheet's matches. The grid draws no find of its own.
+    /// Replace opens the search on its replacement, and steps to a match the
+    /// sheet shows beside the options it covers the top of the grid with.
+    fn scenario_input(
+        name: Option<&str>,
+        input: &mut ui::headless::FrameHarness,
+    ) -> Result<(), String> {
+        match name {
+            Some("find") => {
+                input.search_in_window(ui::window_toolbar::SearchOpening::Find, "a");
+            }
+            Some("replace") => {
+                input.search_in_window(ui::window_toolbar::SearchOpening::Replace, "Total");
+                input.step_window_search(true);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn view(cx: &mut ViewCx<Workbook>) -> Element {
         let app = SheetsApp::new();
         // A search hit, or an agent's `open`, shows the sheet or cell it names.
@@ -1075,7 +1423,12 @@ impl ResourceSurface<Workbook, SheetsEffect> for SheetsApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<Workbook>) {
+        self.attach_content(cx.content());
+        if let Some(path) = cx.launch_arguments().first() {
+            self.show_file_of(std::path::PathBuf::from(path));
+        }
         self.attach_framework(cx.dispatcher(), cx.live());
+        self.attach_people(cx.people());
         self.follow_locale(cx.settings::<tilo_locale::Locale>());
     }
 
@@ -1090,3 +1443,29 @@ impl ResourceSurface<Workbook, SheetsEffect> for SheetsApp {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod agent_tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::SheetsShell::scenarios() {
+            let mut app = TestApp::<super::SheetsShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+}

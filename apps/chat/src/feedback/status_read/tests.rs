@@ -21,6 +21,7 @@ fn concurrent_full_triage_histories_still_have_a_bounded_public_status_read() {
             text: "The page loses my position".into(),
             context: Vec::new(),
             screenshot: None,
+            ..Default::default()
         },
     };
     crate::testing::apply_as(

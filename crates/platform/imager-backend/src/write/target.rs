@@ -1,8 +1,5 @@
 //! Native target identity, exclusive custody and platform preparation.
 /// Bind an already-open block descriptor to the freshly reviewed device node.
-///
-/// # Errors
-/// Rejects stale inventory, non-block descriptors/nodes, changed inode/device identity, or native metadata errors.
 #[cfg(target_os = "linux")]
 pub fn attest_target_descriptor(target: &TargetDrive, file: &std::fs::File) -> io::Result<()> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
@@ -28,6 +25,7 @@ use sha2::{Digest, Sha256};
 #[cfg(any(
     test,
     feature = "test-support",
+    target_os = "linux",
     target_os = "macos",
     target_os = "windows"
 ))]
@@ -64,8 +62,6 @@ pub fn target_identity_matches(selected: &TargetDrive, current: &TargetDrive) ->
         && (selected.is_system || !current.is_system)
 }
 
-/// # Errors
-/// Returns an error if mount-state enumeration or unmounting fails, times out, or exceeds bounded output.
 #[cfg(target_os = "linux")]
 pub fn prepare_target(target: &TargetDrive) -> io::Result<()> {
     const PREPARE_OUTPUT_LIMIT: usize = 1024 * 1024;
@@ -172,11 +168,10 @@ pub fn finish_target(target: &TargetDrive, _result: &JobResult) {
 #[cfg(any(
     test,
     feature = "test-support",
+    target_os = "linux",
     target_os = "macos",
     target_os = "windows"
 ))]
-/// # Errors
-/// Returns spawn/wait failures or a timeout error after terminating and reaping the command.
 pub fn run_finite_status(
     mut command: Command,
     timeout: Duration,
@@ -192,6 +187,71 @@ pub fn run_finite_status(
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn finish_target(_target: &TargetDrive, _result: &JobResult) {}
+
+/// Whether this platform can let go of a written drive on request, so the
+/// window can offer it instead of only saying the drive may be pulled out.
+#[must_use]
+pub fn can_eject() -> bool {
+    cfg!(any(target_os = "linux", target_os = "macos"))
+}
+
+/// Eject the written drive: flush it and take it out of the system, so it can
+/// be removed without pulling a medium the kernel still holds.
+///
+/// # Errors
+/// Returns the platform's own refusal (no udisks service, the drive already
+/// gone, an operator who declined the privilege).
+#[cfg(any(test, feature = "test-support", target_os = "macos"))]
+pub fn eject_target(target: &TargetDrive) -> io::Result<()> {
+    let mut command = Command::new("diskutil");
+    command.args(["eject", &format!("/dev/{}", target.name)]);
+    let status = run_finite_status(command, Duration::from_secs(10))?;
+    status
+        .success()
+        .then_some(())
+        .ok_or_else(|| io::Error::other("diskutil could not eject the drive"))
+}
+
+/// Eject the written drive, on the service that manages removable media.
+///
+/// # Errors
+/// Returns the platform's own refusal (no udisks service, the drive already
+/// gone, an operator who declined the privilege).
+#[cfg(all(not(test), not(feature = "test-support"), target_os = "linux"))]
+pub fn eject_target(target: &TargetDrive) -> io::Result<()> {
+    // `power-off` flushes, unmounts and powers the device down: the state in
+    // which a USB stick or a card can be taken out. It is the same service
+    // the write itself went through (`udisks`), so a person who allowed the
+    // write is not asked twice.
+    let mut command = Command::new("udisksctl");
+    command.args([
+        "power-off",
+        "--block-device",
+        &format!("/dev/{}", target.name),
+    ]);
+    let status = run_finite_status(command, Duration::from_secs(20))?;
+    status
+        .success()
+        .then_some(())
+        .ok_or_else(|| io::Error::other("udisks could not power the drive off"))
+}
+
+/// Eject the written drive, where this platform cannot do it: there is
+/// nothing to run, and [`can_eject`] said so.
+///
+/// # Errors
+/// Always: the platform has no eject.
+#[cfg(not(any(
+    test,
+    feature = "test-support",
+    target_os = "linux",
+    target_os = "macos"
+)))]
+pub fn eject_target(_target: &TargetDrive) -> io::Result<()> {
+    Err(io::Error::other(
+        "this platform has no way to eject a drive",
+    ))
+}
 
 /// A stable hardware identity is the rendezvous key shared by separately
 /// elevated helpers, falling back to the canonical device path when probing
@@ -213,8 +273,6 @@ pub fn target_lock_name(target: &TargetDrive) -> String {
 pub type TargetWriteLock = advisory_lock::FileLock;
 
 #[cfg(unix)]
-/// # Errors
-/// Returns native lock-file open errors, lock failures, or `WouldBlock` when another writer holds the lock.
 pub fn try_lock_file(path: &Path) -> io::Result<TargetWriteLock> {
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -236,9 +294,6 @@ pub fn try_lock_file(path: &Path) -> io::Result<TargetWriteLock> {
 
 /// Keep the existing privileged writer lock through reviewed mounted output.
 /// This grants no raw descriptor or filesystem authority to its callback.
-///
-/// # Errors
-/// Rejects non-root callers, unsafe/contended writer locks and stale targets, and propagates callback errors.
 #[cfg(target_os = "linux")]
 pub fn with_locked_media_root<T>(
     target: &TargetDrive,

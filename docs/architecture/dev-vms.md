@@ -64,7 +64,7 @@ beside it, and a contract check catches divergence.
   not see them.
 - VM-wide components (`fs`, the local model, the greeter) live in the
   pseudo-slot `vm`, merged into the VM's `/usr` with `systemd-sysext refresh`.
-- `tilo-vm swap <component> --from worktree|sha:<commit>|layer:<hash>` resolves
+- `tilo device swap <component> --from worktree|sha:<commit>|layer:<hash>` resolves
   the source to a layer, writes a new generation and applies it. Session
   components restart the session; apps alone install as self-signed `.tapp`
   packages into the slot user's store, which production already shadows, so
@@ -117,13 +117,13 @@ digest. Building on the board itself works but is slow.
 
 ## Host artifact cleanup (proposed)
 
-`tilo-vm gc` collects guest layers and build targets; installer scenarios also
+`tilo device gc` collects guest layers and build targets; installer scenarios also
 leave downloads, converted disks, overlays, firmware variables and proofs on
 the host. The proposed design: every scenario writes an `artifacts.json`
 ownership record (canonical path, file identity, run and step, kind,
 allocated bytes, backing references, retention state) before allocating a
 large file. External targets, physical sources and registered VM disks are
-never owned. `tilo-vm scenario gc --dry-run` lists exactly what a run could
+never owned. `tilo device scenario gc --dry-run` lists exactly what a run could
 remove and why other files stay; `--apply <plan-id>` revalidates the plan's
 hash under the registry lock, reconciles running QEMU processes, mounted
 images and qcow2 backing edges, removes children before backing files and

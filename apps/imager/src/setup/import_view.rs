@@ -1123,10 +1123,24 @@ impl ImportApp {
                 }
                 ImportCommand::PickContinuedDestination(index)
             }
-            ImportEffect::SetFolderCopy { folder_id } => {
+            ImportEffect::SetFolderMode { folder_id, mode } => {
                 let Some(index) = self.folder_index(&folder_id) else {
                     return self
                         .refuse_semantic(super::strings::t("imager-import-error-stale-folder"));
+                };
+                let mode = match mode.as_str() {
+                    import_actions::FOLDER_COPY => ChoiceMode::Copy,
+                    import_actions::FOLDER_LATER => ChoiceMode::Later,
+                    "connected" => {
+                        return self.refuse_semantic(super::strings::t(
+                            "imager-import-error-connected-unavailable",
+                        ));
+                    }
+                    _ => {
+                        return self.refuse_semantic(super::strings::t(
+                            "imager-import-error-folder-mode-unknown",
+                        ));
+                    }
                 };
                 if self.worker.is_some()
                     || self.review_request.is_some()
@@ -1136,31 +1150,7 @@ impl ImportApp {
                         "imager-import-error-folder-mode-unavailable",
                     ));
                 }
-                ImportCommand::ContinuedMode(index, ChoiceMode::Copy)
-            }
-            ImportEffect::SetFolderLater { folder_id } => {
-                let Some(index) = self.folder_index(&folder_id) else {
-                    return self
-                        .refuse_semantic(super::strings::t("imager-import-error-stale-folder"));
-                };
-                if self.worker.is_some()
-                    || self.review_request.is_some()
-                    || self.gate_request.is_some()
-                {
-                    return self.refuse_semantic(super::strings::t(
-                        "imager-import-error-folder-mode-unavailable",
-                    ));
-                }
-                ImportCommand::ContinuedMode(index, ChoiceMode::Later)
-            }
-            ImportEffect::SetFolderConnected { folder_id } => {
-                if self.folder_index(&folder_id).is_none() {
-                    return self
-                        .refuse_semantic(super::strings::t("imager-import-error-stale-folder"));
-                }
-                return self.refuse_semantic(super::strings::t(
-                    "imager-import-error-connected-unavailable",
-                ));
+                ImportCommand::ContinuedMode(index, mode)
             }
         };
         self.apply_semantic_command(command)?;
@@ -2479,27 +2469,31 @@ impl ImportApp {
                             | OperationState::Cancelled
                     )
                 });
-            let sink = Rc::clone(&self.commands);
-            let modes = [ChoiceMode::Copy, ChoiceMode::Later];
             // How the folder comes over and where it goes sit under it, on
             // the page's edge, so a long path is never cut short.
-            let mut controls =
-                Row::new()
-                    .with_align_items(taffy::AlignItems::Center)
-                    .push(Box::new(
-                        ToggleGroup::new(
-                            vec![Segment::new("Copy"), Segment::new("Later")],
-                            usize::from(f.mode != ChoiceMode::Copy),
-                        )
-                        .with_id(format!("import.continued.{index}.mode"))
-                        .control_size(ControlSize::Small)
-                        .on_change(move |chosen| {
-                            if idle && let Some(mode) = modes.get(chosen) {
-                                sink.borrow_mut()
-                                    .push(ImportCommand::ContinuedMode(index, *mode));
-                            }
-                        }),
-                    ));
+            let mode = ToggleGroup::new(
+                vec![Segment::new("Copy"), Segment::new("Later")],
+                usize::from(f.mode != ChoiceMode::Copy),
+            )
+            .with_id(format!("import.continued.{index}.mode"))
+            .control_size(ControlSize::Small);
+            let folder_id = c.operation_id(index);
+            let mode = match &self.actions {
+                Some(actions) if idle => actions.bind_effect(
+                    mode,
+                    ImportEffect::SET_FOLDER_MODE.map(move |chosen: usize| {
+                        let mode = [import_actions::FOLDER_COPY, import_actions::FOLDER_LATER]
+                            .get(chosen)
+                            .copied()
+                            .unwrap_or_default();
+                        (folder_id.clone(), mode.to_owned())
+                    }),
+                ),
+                _ => mode.with_enabled(false),
+            };
+            let mut controls = Row::new()
+                .with_align_items(taffy::AlignItems::Center)
+                .push(Box::new(mode));
             if can_review && f.mode == ChoiceMode::Copy {
                 let enabled = self.identity_ready && idle;
                 controls = controls
@@ -3280,8 +3274,15 @@ mod tests {
 
     /// The effect a published action invokes with no further arguments.
     fn effect_of(action: &tilo_actions::ActionSpec) -> Result<ImportEffect, String> {
+        effect_with(action, &serde_json::Map::new())
+    }
+
+    fn effect_with(
+        action: &tilo_actions::ActionSpec,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ImportEffect, String> {
         let encoded = action
-            .build_json(&serde_json::Map::new())
+            .build_json(arguments)
             .map_err(|error| error.to_string())?;
         ImportEffect::from_payload(&encoded.payload)
     }
@@ -3303,6 +3304,21 @@ mod tests {
             return Err(format!("`{}` is unavailable", action.id));
         }
         start_import(app, effect_of(action)?)
+    }
+
+    /// [`invoke_action`] with the arguments the action asks for.
+    fn invoke_action_with(
+        app: &mut ImportApp,
+        action: &tilo_actions::ActionSpec,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        if !action.contract.availability.is_available() {
+            return Err(format!("`{}` is unavailable", action.id));
+        }
+        let serde_json::Value::Object(arguments) = arguments else {
+            return Err("arguments are an object".into());
+        };
+        start_import(app, effect_with(action, &arguments)?)
     }
 
     fn invoke_import_raw(
@@ -3448,7 +3464,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn import_resources_and_status_publish_reviewed_endpoints_from_real_events() {
-        // Phase `standalone_import_publishes_stable_operation_resources_before_layout`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             fs::write(source.join("document.txt"), b"kept locally").unwrap();
@@ -3501,7 +3516,6 @@ mod tests {
             assert!(!exposed.contains(&destination_text));
         }
 
-        // Phase `local_read_status_names_reviewed_endpoints_without_publishing_paths`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -3526,7 +3540,6 @@ mod tests {
             assert!(!public.contains(&expected_destination));
         }
 
-        // Phase `local_read_status_names_continued_folder_endpoints`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -3672,7 +3685,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn review_action_fails_or_cancels_with_its_picker_and_index() {
-        // Phase `prepare_review_effect_fails_when_the_index_save_is_rejected`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -3730,7 +3742,6 @@ mod tests {
             );
         }
 
-        // Phase `identity_failure_yields_failed_folder_review_action`.
         {
             let (_temp, mut app, source, _destination_parent) = fixture();
             settle_index(&mut app);
@@ -3760,7 +3771,6 @@ mod tests {
             }
         }
 
-        // Phase `cancelled_folder_destination_picker_cancels_review_action`.
         {
             let (_temp, mut app, source, _destination_parent) = fixture();
             settle_index(&mut app);
@@ -3790,7 +3800,6 @@ mod tests {
             }
         }
 
-        // Phase `disconnected_folder_picker_fails_the_review_action`.
         {
             let (_temp, mut app, source, _destination_parent) = fixture();
             settle_index(&mut app);
@@ -3830,7 +3839,6 @@ mod tests {
             assert!(matches!(update, JobOutcome::Failed { .. }));
         }
 
-        // Phase `semantic_picker_refuses_a_second_request_without_spawning_another_picker`.
         {
             let (_temp, mut app, _source, _destination_parent) = fixture();
             settle_index(&mut app);
@@ -3857,14 +3865,12 @@ mod tests {
         }
     }
 
-    /// Retained operation actions, continuation revisions and review matching.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn retained_and_continuation_actions_keep_revision_identities() {
-        // Phase `retained_operation_action_tracks_its_id_after_reordering_and_stales_after_removal`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -3922,7 +3928,6 @@ mod tests {
             assert!(app.worker.is_none());
         }
 
-        // Phase `continuation_actions_keep_revision_identities_and_reject_replaced_reviews`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -3943,13 +3948,9 @@ mod tests {
                 .into_iter()
                 .filter(|resource| resource.kind == "imager.import.folder")
                 .collect::<Vec<_>>();
-            let retained_second_later = action(&folders[1], "set-folder-later");
-            let connected = action(&folders[0], "set-folder-connected");
-            assert!(matches!(
-                connected.contract.availability,
-                tilo_actions::Availability::Unavailable { .. }
-            ));
-            invoke_action(&mut app, &action(&folders[0], "set-folder-later")).unwrap();
+            let retained_second_later = action(&folders[1], "set-folder-mode");
+            let later = || serde_json::json!({"mode": "later"});
+            invoke_action_with(&mut app, &action(&folders[0], "set-folder-mode"), later()).unwrap();
             assert_eq!(
                 [
                     app.continuation.as_ref().unwrap().operation_id(0),
@@ -3964,8 +3965,9 @@ mod tests {
             assert!(
                 invoke_import_raw(
                     &mut app,
-                    &ImportEffect::SetFolderConnected {
+                    &ImportEffect::SetFolderMode {
                         folder_id: original_ids[0].clone(),
+                        mode: "connected".into(),
                     },
                 )
                 .unwrap_err()
@@ -3979,7 +3981,7 @@ mod tests {
                 Some(Continuation::capture(&[continuation_choice(&replacement_source)]).unwrap());
             let replacement_id = app.continuation.as_ref().unwrap().operation_id(0);
             assert!(!original_ids.contains(&replacement_id));
-            let error = invoke_action(&mut app, &retained_second_later).unwrap_err();
+            let error = invoke_action_with(&mut app, &retained_second_later, later()).unwrap_err();
             assert!(error.contains("no longer available"), "{error}");
             assert_eq!(
                 app.continuation.as_ref().unwrap().folders[0].mode,
@@ -3987,7 +3989,6 @@ mod tests {
             );
         }
 
-        // Phase `continuation_batch_affordance_requires_identity_and_reviewed_copy`.
         {
             use ui::headless::{FrameHarness, SemanticExpectation};
             for (scenario, enabled) in [
@@ -4022,7 +4023,6 @@ mod tests {
             }
         }
 
-        // Phase `mismatched_review_records_refuse_start_without_losing_rereview`.
         {
             let (_temp, mut app, source, parent) = fixture();
             settle_index(&mut app);
@@ -4080,7 +4080,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn copy_action_completes_only_after_the_reviewed_worker_finishes() {
-        // Phase `reviewed_batch_rechecks_identity_and_starts_only_reviewed_copy_rows`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -4139,7 +4138,6 @@ mod tests {
             );
         }
 
-        // Phase `copy_action_succeeds_only_after_the_worker_finishes`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -4165,7 +4163,6 @@ mod tests {
             assert_eq!(app.operations[0].state(), OperationState::Complete);
         }
 
-        // Phase `identity_failure_yields_failed_copy_action_instead_of_success`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -4196,7 +4193,6 @@ mod tests {
             assert_eq!(app.operations[0].state(), OperationState::AwaitingReview);
         }
 
-        // Phase `broker_cancellation_stops_a_queued_copy_before_the_worker_starts`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -4219,7 +4215,6 @@ mod tests {
             assert_eq!(app.operations[0].state(), OperationState::AwaitingReview);
         }
 
-        // Phase `stop_copy_command_refuses_when_no_worker_accepts_the_request`.
         {
             let (_temp, mut app, _source, _destination_parent) = fixture();
             settle_index(&mut app);
@@ -4236,7 +4231,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn retry_and_restart_resume_the_journaled_worker_honestly() {
-        // Phase `semantic_cancel_and_retry_use_the_existing_journaled_worker`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -4343,7 +4337,6 @@ mod tests {
             assert_eq!(reopened.operations[0].state(), OperationState::Complete);
         }
 
-        // Phase `partial_worker_report_remains_visible_as_incomplete`.
         #[cfg(unix)]
         {
             use std::os::unix::fs::symlink;
@@ -4369,14 +4362,12 @@ mod tests {
         }
     }
 
-    /// Issue detail pages.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn issue_detail_pages_publish_restore_and_refuse_when_closed() {
-        // Phase `semantic_issue_details_publish_completed_pages_through_repeatable_public_reads`.
         {
             let mut app = ImportApp::try_for_shot("import-issue-pages").unwrap();
             let operation = root_resource(&app).children.pop().unwrap();
@@ -4408,7 +4399,6 @@ mod tests {
             ));
         }
 
-        // Phase `first_issues_action_is_unavailable_on_a_single_final_page`.
         #[cfg(unix)]
         {
             let (_temp, mut app, source, destination_parent) = fixture();
@@ -4436,7 +4426,6 @@ mod tests {
             assert_eq!(observed["operations"][0]["first_issues_available"], false);
         }
 
-        // Phase `semantic_first_issue_page_restores_the_original_page_and_closes_both_payloads`.
         {
             let mut app = ImportApp::try_for_shot("import-issue-pages").unwrap();
             let operation = root_resource(&app).children.pop().unwrap();
@@ -4489,7 +4478,6 @@ mod tests {
             ));
         }
 
-        // Phase `terminal_issue_button_uses_the_production_path_to_restore_the_first_page`.
         {
             use ui::headless::{FrameHarness, SemanticExpectation};
 
@@ -4521,7 +4509,6 @@ mod tests {
             assert_eq!(restored["operations"][0]["next_issues_available"], true);
         }
 
-        // Phase `retained_next_issue_actions_refuse_while_details_are_closed`.
         {
             let mut app = ImportApp::try_for_shot("import-issue-pages").unwrap();
             let operation = root_resource(&app).children.pop().unwrap();
@@ -4572,7 +4559,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn continuation_batches_retarget_and_retry_without_duplicate_operations() {
-        // Phase `unpublished_continuation_can_review_another_destination_after_collision`.
         {
             for substitute_parent in [false, true] {
                 let (_temp, mut app, source, parent) = fixture();
@@ -4637,7 +4623,6 @@ mod tests {
             }
         }
 
-        // Phase `same_basename_folders_can_retarget_the_second_without_changing_first_output`.
         {
             let (_temp, mut app, source, parent) = fixture();
             settle_index(&mut app);
@@ -4697,7 +4682,6 @@ mod tests {
             assert_eq!(app.operations.len(), 2);
         }
 
-        // Phase `continuation_batch_uses_existing_worker_and_reopen_does_not_duplicate`.
         {
             let (temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -4769,7 +4753,6 @@ mod tests {
             assert_eq!(reopened.operations[0].state(), OperationState::Complete);
         }
 
-        // Phase `interrupted_before_journal_creation_can_explicitly_retry_without_new_operation`.
         {
             let (_temp, mut app, source, parent) = fixture();
             settle_index(&mut app);
@@ -4886,7 +4869,6 @@ mod tests {
     /// Failed terminal and start persistence.
     #[test]
     fn failed_checkpoints_never_report_completion_or_create_output() {
-        // Phase `failed_terminal_checkpoint_retains_an_honest_incomplete_result`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);
@@ -4916,7 +4898,6 @@ mod tests {
             );
         }
 
-        // Phase `failed_start_persistence_never_creates_output`.
         {
             let (_temp, mut app, source, destination_parent) = fixture();
             settle_index(&mut app);

@@ -42,9 +42,25 @@ fn work_below_the_fold(app: &mut TestApp<NotesShell>) -> f64 {
             phase: TouchPhase::Moved,
         });
     }
+    // A press between two paragraphs places no caret: step down the
+    // visible page until one lands in a block.
     let rect = app.harness().targets()["block_editor"];
-    app.harness()
-        .click_at(rect.x0 + 200.0, f64::midpoint(rect.y0, rect.y1.min(650.0)));
+    let focused = |app: &mut TestApp<NotesShell>| {
+        surface(app, |notes| notes.main_panel_mut().editor().focused_index())
+    };
+    let mut y = f64::midpoint(rect.y0, rect.y1.min(650.0));
+    for _ in 0..8 {
+        app.harness().click_at(rect.x0 + 200.0, y);
+        if focused(app).is_some_and(|index| index > 0) {
+            break;
+        }
+        y += 8.0;
+    }
+    assert!(
+        focused(app).is_some_and(|index| index > 0),
+        "the caret is in a block below the fold: {:?}",
+        focused(app)
+    );
     let before = scroll_y(app);
     assert!(before > 200.0, "the page is scrolled down: {before}");
     before

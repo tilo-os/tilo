@@ -3,7 +3,7 @@ name = "tilo-content-device"
 version = "0.1.0"
 edition = "2024"
 publish = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
 description = "The device content store: tilo-content over the filesystem daemon's blob capability"
@@ -20,7 +20,7 @@ tracing.workspace = true
 # The launcher hands the capability over a Unix socket; elsewhere (the web,
 # Windows) there is no device store and `for_app` keeps content locally.
 [target.'cfg(unix)'.dependencies]
-runtime-fs = { version = "0.1.0", path = "../../runtime/runtime-fs" }
+runtime-fs = { package = "tilo-fs-client", version = "0.1.0", path = "../../runtime/tilo-fs-client" }
 
 [lints]
 workspace = true

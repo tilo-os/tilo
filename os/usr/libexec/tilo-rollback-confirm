@@ -33,7 +33,7 @@ if [ ! -e /dev/tpmrm0 ] && [ ! -e /dev/tpm0 ]; then
   exit 0
 fi
 
-if ! tilo-rollback status --device "$DEV" --json 2>/dev/null | grep -q '"counter":[0-9]'; then
+if ! /usr/libexec/tilo/tilo-rollback status --device "$DEV" --json 2>/dev/null | grep -q '"counter":[0-9]'; then
   log "no rollback enrollment on $DEV yet — run 'tilo-rollback enroll' first"
   exit 0
 fi
@@ -46,4 +46,4 @@ log "confirming generation $GEN on $DEV"
 # at enrollment are still present". The authorisation for the keyslot changes is
 # the secret this boot actually unlocked with, which `tilo-rollback unlock` left in
 # /run — a better proof than a fresh unseal, since the machine booted on it.
-exec tilo-rollback confirm --device "$DEV" --generation "$GEN" --unattended
+exec /usr/libexec/tilo/tilo-rollback confirm --device "$DEV" --generation "$GEN" --unattended

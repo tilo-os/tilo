@@ -12,6 +12,7 @@ use ui::framework::{ResourceSurface, SurfaceCx};
 use ui::tilo_actions::ActionError;
 use ui::tilo_resource::Doc;
 use ui::widget::Edits;
+use ui::widget::block_editor::{FindReplace, FindReplaceBatch, FindReplaceTarget};
 use ui::widget::{Block, BlockContent, BlockEditor, Decorator, EditScope, EventCtx, Widget};
 use ui::winit::event::WindowEvent;
 
@@ -118,7 +119,6 @@ impl RichTextSurface<RichTextField> {
 }
 
 impl<S: RichTextSource + 'static> RichTextSurface<S> {
-    /// An editor over rich text from `source`.
     pub fn over(source: S) -> Self {
         Self {
             editor: default_editor(),
@@ -360,13 +360,12 @@ impl RichTextSurface<dyn ErasedSource> {
             })
     }
 
-    fn replace_find_match(&mut self, edits: &mut Edits<'_>) -> bool {
-        if self.source.read_only() || self.is_composing() {
-            return false;
-        }
-        let Some((target, replacement)) = self.editor.find_replace_request() else {
-            return false;
-        };
+    fn replace_find_match(
+        &mut self,
+        edits: &mut Edits<'_>,
+        target: &FindReplaceTarget,
+        replacement: String,
+    ) {
         self.source.sync(edits.doc());
         let action = self
             .source
@@ -384,30 +383,22 @@ impl RichTextSurface<dyn ErasedSource> {
                     block: current.id.clone(),
                     at,
                     del: end.saturating_sub(at),
-                    ins: replacement.clone(),
+                    ins: replacement,
                 })
             })
             .flatten();
         let Some(action) = action else {
-            return false;
+            return;
         };
         if let Err(error) = self.source.apply(edits, &action) {
             tracing::debug!(%error, "find replacement refused");
-            return false;
+            return;
         }
         self.source.sync(edits.doc());
         self.present_state(None);
-        self.editor.finish_find_replace(&target, replacement.len());
-        true
     }
 
-    fn replace_all_find_matches(&mut self, edits: &mut Edits<'_>) -> bool {
-        if self.source.read_only() || self.is_composing() {
-            return false;
-        }
-        let Some(batch) = self.editor.find_replace_all_request() else {
-            return false;
-        };
+    fn replace_all_find_matches(&mut self, edits: &mut Edits<'_>, batch: FindReplaceBatch) {
         self.source.sync(edits.doc());
         let action = self
             .source
@@ -457,24 +448,32 @@ impl RichTextSurface<dyn ErasedSource> {
             })
             .flatten();
         let Some(action) = action else {
-            return false;
+            return;
         };
         if let Err(error) = self.source.apply(edits, &action) {
             tracing::debug!(%error, "find replace all refused");
-            return false;
+            return;
         }
         self.source.sync(edits.doc());
         self.present_state(None);
-        self.editor.finish_find_replace_all();
-        true
     }
 
+    /// Apply what the window's search asked to replace, as one undoable
+    /// edit of the source; a snapshot the document moved past is refused.
     fn drain_find_replace(&mut self, edits: &mut Edits<'_>) {
-        if self.editor.take_find_replace_all_request() {
-            self.replace_all_find_matches(edits);
+        let Some(request) = self.editor.take_find_replace() else {
+            return;
+        };
+        if self.source.read_only() || self.is_composing() {
+            return;
         }
-        if self.editor.take_find_replace_request() {
-            self.replace_find_match(edits);
+        match request {
+            FindReplace::One(target, replacement) => {
+                self.replace_find_match(edits, &target, replacement);
+            }
+            FindReplace::All(batch) => {
+                self.replace_all_find_matches(edits, batch);
+            }
         }
     }
 
@@ -936,20 +935,6 @@ impl RichTextSurface<dyn ErasedSource> {
         state: &mut Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        if target == "notes.find:replace-all" {
-            if !matches!(action, ui::a11y::Action::Activate) {
-                return false;
-            }
-            let (state, _) = ui::doc::document(state, path);
-            return self.replace_all_find_matches(state);
-        }
-        if target == "notes.find:replace" {
-            if !matches!(action, ui::a11y::Action::Activate) {
-                return false;
-            }
-            let (state, _) = ui::doc::document(state, path);
-            return self.replace_find_match(state);
-        }
         if matches!(target, "notes.editor:move-up" | "notes.editor:move-down") {
             if !matches!(action, ui::a11y::Action::Activate) {
                 return false;

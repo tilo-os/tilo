@@ -36,10 +36,13 @@
 pub mod actions;
 pub mod app;
 pub mod chrome;
+pub mod convert;
+pub mod convert_page;
 pub mod draw;
 pub mod engine;
 pub mod graph2d;
 pub mod graph3d;
+pub mod history_face;
 pub mod keypad;
 pub mod mathfield;
 pub mod model;

@@ -14,7 +14,7 @@ description = "Tilo's identity ceremony protocol: identity records, device pairi
 test-support = ["dep:tilo-test-env"]
 
 [dependencies]
-runtime-identity = { path = "../../runtime/runtime-identity" }
+runtime-identity = { package = "tilo-identity-client", path = "../../runtime/tilo-identity-client" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 collab-types = { version = "0.1.0", path = "../collab-types" }
 threshold-identity = { version = "0.1.0", path = "../threshold-identity" }
@@ -47,6 +47,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
 tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
 
 [lints]

@@ -114,7 +114,7 @@ else
   export TILO_PASS="${TILO_INSTALLER_CYCLE_PASSPHRASE:-cycle-passphrase-2026}"
   unlock=no-tpm-passphrase
 fi
-export TILO_BOOT_WAIT_ATTEMPTS="${TILO_BOOT_WAIT_ATTEMPTS:-600}"
+export TILO_BOOT_WAIT_SECS="${TILO_BOOT_WAIT_SECS:-1800}"
 
 phase=installer
 browser_fixture_server=""

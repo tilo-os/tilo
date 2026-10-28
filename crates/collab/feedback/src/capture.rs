@@ -123,6 +123,18 @@ impl CapturePermit {
 }
 
 impl MaskedScreenshot {
+    /// PNG bytes the caller already masked and encoded.
+    pub(crate) fn from_encoded(png: Vec<u8>, width: u32, height: u32) -> Self {
+        Self {
+            reference: ScreenshotRef {
+                hash: blake3::hash(&png).to_hex().to_string(),
+                width,
+                height,
+            },
+            png,
+        }
+    }
+
     pub fn reference(&self) -> &ScreenshotRef {
         &self.reference
     }

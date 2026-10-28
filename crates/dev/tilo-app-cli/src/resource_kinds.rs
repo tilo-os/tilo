@@ -33,6 +33,43 @@ pub(crate) fn declared_with_metadata(app_dir: &Path, metadata: &Value) -> Result
     Ok(kinds.0.into_iter().collect())
 }
 
+/// The kinds that are the app's own: declared in its sources or in a local
+/// crate it depends on directly, such as a shared model, and not by the SDK,
+/// whose kinds are the framework's. They are what the app's manifest must
+/// list in `[resources] kinds`, so a governed room lets the app create its
+/// records.
+///
+/// # Errors
+///
+/// Returns an error when the manifest or a source file cannot be read or
+/// parsed.
+pub fn owned_by_app(app_dir: &Path) -> Result<Vec<String>> {
+    let mut kinds: BTreeSet<String> = declared_in(app_dir)?.into_iter().collect();
+    for dependency in direct_path_dependencies(app_dir)? {
+        kinds.extend(declared_in(&dependency)?);
+    }
+    Ok(kinds.into_iter().collect())
+}
+
+/// The directories of the path crates `app_dir/Cargo.toml` lists as normal
+/// dependencies, the SDK's own crates excepted.
+fn direct_path_dependencies(app_dir: &Path) -> Result<Vec<PathBuf>> {
+    let path = app_dir.join("Cargo.toml");
+    let manifest: toml::Table = toml::from_str(
+        &std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?,
+    )
+    .with_context(|| format!("parsing {}", path.display()))?;
+    let Some(dependencies) = manifest.get("dependencies").and_then(toml::Value::as_table) else {
+        return Ok(Vec::new());
+    };
+    Ok(dependencies
+        .values()
+        .filter_map(|dependency| dependency.get("path")?.as_str())
+        .filter_map(|path| app_dir.join(path).canonicalize().ok())
+        .filter(|dir| !dir.components().any(|part| part.as_os_str() == "sdk"))
+        .collect())
+}
+
 /// Every kind declared under `crate_dir/src`, sorted and without repeats.
 ///
 /// # Errors
@@ -101,25 +138,174 @@ fn local_dependencies(metadata: &Value) -> Result<Vec<PathBuf>> {
 }
 
 fn visit_sources(dir: &Path, kinds: &mut Kinds) -> Result<()> {
-    if !dir.is_dir() {
+    visit_dir(dir, &HashSet::new(), kinds)
+}
+
+/// The sources under `dir`, less `excluded`: the files and directories of
+/// modules a parent declared test-only (`#[cfg(test)] mod tests;`), whose
+/// own files carry no `cfg` of their own.
+fn visit_dir(dir: &Path, excluded: &HashSet<PathBuf>, kinds: &mut Kinds) -> Result<()> {
+    if !dir.is_dir() || excluded.contains(dir) {
         return Ok(());
     }
+    let mut candidates = Vec::new();
+    let mut dirs = Vec::new();
     for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let path = entry?.path();
         if path.is_dir() {
-            visit_sources(&path, kinds)?;
+            dirs.push(path);
         } else if path.extension().is_some_and(|extension| extension == "rs") {
             let source = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
-            if !source.contains("resource") && !source.contains("Resource") {
+            // A kind is named only by a `resource(kind = "...")` attribute or
+            // the `KIND` of an `impl Resource for`: a file without either
+            // declares none, however often it says "resource".
+            let declares = (source.contains("resource(") && source.contains("kind"))
+                || (source.contains("Resource for") && source.contains("KIND"));
+            // A file that declares no kind is parsed only for the test-only
+            // modules it declares in files of their own (`#[cfg(test)] mod
+            // tests;`); most files carry only inline test modules, and parsing
+            // every one of them made a scan of the SDK take most of a minute.
+            if !declares && (!source.contains("cfg(") || !declares_module_file(&source)) {
                 continue;
             }
-            let mut file =
-                syn::parse_file(&source).with_context(|| format!("parsing {}", path.display()))?;
-            kinds.visit_file_mut(&mut file);
+            candidates.push((path, source, declares));
         }
     }
+    let read = read_files(candidates)?;
+    let mut excluded = excluded.clone();
+    for file in &read {
+        excluded.extend(file.test_only.iter().cloned());
+    }
+    for file in read {
+        if !excluded.contains(&file.path) {
+            kinds.0.extend(file.kinds.0);
+        }
+    }
+    for dir in dirs {
+        visit_dir(&dir, &excluded, kinds)?;
+    }
     Ok(())
+}
+
+/// What one source file says: the files of the test-only modules it
+/// declares, and the kinds it declares itself.
+struct ReadFile {
+    path: PathBuf,
+    test_only: Vec<PathBuf>,
+    kinds: Kinds,
+}
+
+/// Parse `candidates` (path, source, whether it may declare a kind) side by
+/// side: a directory of the SDK holds hundreds of files, and parsing them one
+/// after another was most of a scan. A parsed file stays on the thread that
+/// parsed it; only what it says comes back.
+fn read_files(candidates: Vec<(PathBuf, String, bool)>) -> Result<Vec<ReadFile>> {
+    let read_one = |(path, source, declares): (PathBuf, String, bool)| -> Result<ReadFile> {
+        let mut file =
+            syn::parse_file(&source).with_context(|| format!("parsing {}", path.display()))?;
+        let test_only = test_only_module_paths(&path, &file);
+        let mut kinds = Kinds::default();
+        if declares {
+            kinds.visit_file_mut(&mut file);
+        }
+        Ok(ReadFile {
+            path,
+            test_only,
+            kinds,
+        })
+    };
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    if candidates.len() < 2 || threads < 2 {
+        return candidates.into_iter().map(read_one).collect();
+    }
+    let per_thread = candidates.len().div_ceil(threads);
+    let mut chunks = Vec::new();
+    let mut rest = candidates;
+    while !rest.is_empty() {
+        let tail = rest.split_off(per_thread.min(rest.len()));
+        chunks.push(rest);
+        rest = tail;
+    }
+    std::thread::scope(|scope| {
+        let reads: Vec<_> = chunks
+            .into_iter()
+            .map(|chunk| {
+                scope.spawn(move || chunk.into_iter().map(read_one).collect::<Result<Vec<_>>>())
+            })
+            .collect();
+        let mut files = Vec::new();
+        for read in reads {
+            files.extend(
+                read.join()
+                    .unwrap_or_else(|_| Err(anyhow::anyhow!("parsing a source file panicked")))?,
+            );
+        }
+        Ok(files)
+    })
+}
+
+/// Where the modules `file` declares out of line and only for tests live:
+/// `name.rs` and `name/` beside a `lib.rs`, `main.rs` or `mod.rs`, and under
+/// a directory named for any other file.
+/// Whether `source` may declare a module whose body is a file of its own
+/// (`mod name;`): a cheap look at the text, which may say yes for a file that
+/// does not, never no for one that does.
+fn declares_module_file(source: &str) -> bool {
+    source.lines().any(|line| {
+        let line = line.trim();
+        line.ends_with(';')
+            && !line.contains('{')
+            && (line.starts_with("mod ") || line.contains(" mod "))
+    })
+}
+
+fn test_only_module_paths(path: &Path, file: &syn::File) -> Vec<PathBuf> {
+    let Some(dir) = path.parent() else {
+        return Vec::new();
+    };
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("");
+    let base = if matches!(stem, "lib" | "main" | "mod") {
+        dir.to_path_buf()
+    } else {
+        dir.join(stem)
+    };
+    file.items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Mod(module) if module.content.is_none() && test_only(&module.attrs) => {
+                // `#[path = "..."]` names the file beside the declaring one.
+                if let Some(path) = module_path(&module.attrs) {
+                    return Some(vec![dir.join(path)]);
+                }
+                let name = module.ident.to_string();
+                Some(vec![base.join(format!("{name}.rs")), base.join(name)])
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+/// The file a `#[path = "..."]` attribute puts a module in.
+fn module_path(attributes: &[syn::Attribute]) -> Option<String> {
+    attributes
+        .iter()
+        .find_map(|attribute| match &attribute.meta {
+            syn::Meta::NameValue(name_value) if name_value.path.is_ident("path") => {
+                match &name_value.value {
+                    syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(path),
+                        ..
+                    }) => Some(path.value()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
 }
 
 /// Whether the attributes compile their item only into the crate's tests,
@@ -413,7 +599,42 @@ mod tests {
         .unwrap();
         std::fs::write(
             src.join("model/mod.rs"),
-            r#"#[resource(kind = "example.note")] impl Again {}"#,
+            r#"#[resource(kind = "example.note")] impl Again {}
+            #[cfg(test)]
+            mod tests;"#,
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("model/tests.rs"),
+            r#"#[resource(kind = "test.model")] impl Fixture {}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("main.rs"),
+            std::fs::read_to_string(src.join("main.rs")).unwrap() + "\n#[cfg(test)]\nmod board;\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(src.join("board")).unwrap();
+        std::fs::write(
+            src.join("board.rs"),
+            r#"#[resource(kind = "test.board")] impl Board {}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("board/cells.rs"),
+            r#"#[resource(kind = "test.cell")] impl Cell {}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("model/view.rs"),
+            r#"#[cfg(test)]
+            #[path = "view_tests.rs"]
+            mod tests;"#,
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("model/view_tests.rs"),
+            r#"#[resource(kind = "test.view")] impl Fixture {}"#,
         )
         .unwrap();
         assert_eq!(

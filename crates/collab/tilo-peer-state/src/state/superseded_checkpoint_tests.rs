@@ -16,6 +16,7 @@ fn snapshot(
     doc.put(ROOT, "value", value).unwrap();
     doc.commit();
     author
+        .publication_mut()
         .publish_document("test.app", "tab:1", doc.save(), key, now)
         .unwrap()
 }

@@ -44,6 +44,7 @@
 //! floors cover measured application and compositor scenes. A one-shot
 //! renderer should not rely on adaptation to repair its only output.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use vello_encoding::{BumpAllocators, BumpBudget};
@@ -80,6 +81,10 @@ struct Pending {
     /// The render ran coarse over the whole scene, so its counters are the
     /// scene's needs; a damage render's cover only the bins it redrew.
     dense: bool,
+    /// Tiles in the viewport of the render measured: what its growth may
+    /// reach ([`BumpBudget::ceiling_for_viewport`]), whatever viewport the
+    /// render that collects it draws into.
+    n_tiles: u32,
 }
 
 /// Dense frames in a row whose needs stay far below the reservation before
@@ -125,7 +130,13 @@ impl Shrink {
 /// The budget for one renderer, and the readback that keeps it honest.
 pub(crate) struct BudgetTracker {
     budget: BumpBudget,
-    pending: Option<Pending>,
+    /// Every measured render's readback not collected yet, oldest first.
+    /// Each render is measured, not only the first after a collection: a
+    /// renderer that draws a small scene and then a large one before the
+    /// first readback lands (a backdrop blur's ground, then the frame over
+    /// it) would otherwise never measure the large one, and the large one
+    /// would overflow, unseen, on every frame.
+    pending: VecDeque<Pending>,
     /// A failed observation cannot be repaired by later successful frames.
     /// Legacy collection leaves this intact for checked settlement.
     error: Option<BumpBudgetError>,
@@ -190,7 +201,7 @@ impl BudgetTracker {
         }
         Self {
             budget,
-            pending: None,
+            pending: VecDeque::new(),
             error: None,
             log: std::env::var_os(LOG_ENV).is_some_and(|v| !v.is_empty()),
             pinned,
@@ -316,13 +327,21 @@ impl BudgetTracker {
 
     /// Grow to cover `used`, within what this viewport may reserve, the
     /// device can bind and the total limit.
+    /// Growth is bounded by the viewport last rendered into.
     fn grow(&mut self, used: &BumpAllocators) -> bool {
+        self.grow_in(used, self.n_tiles)
+    }
+
+    /// [`Self::grow`] for counters a render of `n_tiles` reported: its
+    /// own viewport bounds the growth, not the viewport of the render that
+    /// collects them.
+    fn grow_in(&mut self, used: &BumpAllocators, n_tiles: u32) -> bool {
         if self.saturated {
             return false;
         }
         let before = self.budget;
         self.budget
-            .observe_within(used, &BumpBudget::ceiling_for_viewport(self.n_tiles));
+            .observe_within(used, &BumpBudget::ceiling_for_viewport(n_tiles));
         if self.grow_once && self.budget != before && self.max_total_bytes != u64::MAX {
             // The observed needs, and the ceiling's proportions for the rest,
             // scaled together to the limit.
@@ -374,13 +393,11 @@ impl BudgetTracker {
         .with_max_binding_bytes(self.budget.max_binding_bytes)
     }
 
-    /// Whether this frame should download the bump counters.
-    ///
-    /// Only when the previous download has been collected, so a frame
-    /// that outruns the map callback does not queue up a second buffer
-    /// to leak.
+    /// Whether this frame should download the bump counters: every render
+    /// of an adaptive budget does. A download still in flight is kept
+    /// beside it until its map callback lands, and collected then.
     pub(crate) fn wants_readback(&self) -> bool {
-        !self.pinned && self.pending.is_none()
+        !self.pinned
     }
 
     /// Whether adaptive sizing needs counters from a render.
@@ -389,7 +406,7 @@ impl BudgetTracker {
     }
 
     pub(crate) fn has_pending_readback(&self) -> bool {
-        self.pending.is_some()
+        !self.pending.is_empty()
     }
 
     /// Errors remain visible until this tracker is replaced, including when
@@ -412,32 +429,59 @@ impl BudgetTracker {
         self.collect_with_poll(engine, || device.poll(wgpu::PollType::Poll))
     }
 
-    #[allow(
-        clippy::print_stderr,
-        reason = "Tilo applications do not install a log-to-tracing bridge"
-    )]
     fn collect_with_poll(
         &mut self,
         engine: &mut WgpuEngine,
         poll: impl FnOnce() -> Result<wgpu::PollStatus, wgpu::PollError>,
     ) -> (bool, bool) {
-        let Some(pending) = self.pending.take() else {
+        if self.pending.is_empty() {
             return (false, false);
-        };
+        }
         // Non-blocking: this only gives already-finished callbacks a
         // chance to run. wgpu also runs them on submit, so by the top of
         // the next frame the usual case is that this has nothing to do.
         if let Err(error) = poll() {
             self.error
                 .get_or_insert_with(|| BumpBudgetError::Poll(error.to_string()));
-            // Poll failure leaves mapping readiness unknown. Do not put this
-            // allocation through the pool's known-unmapped reuse path.
-            engine.free_download(pending.proxy);
+            // Poll failure leaves mapping readiness unknown. Do not put these
+            // allocations through the pool's known-unmapped reuse path.
+            for pending in self.pending.drain(..) {
+                engine.free_download(pending.proxy);
+            }
             return (false, false);
         }
+        let mut changed = false;
+        let mut overflowed = false;
+        let mut in_flight = VecDeque::with_capacity(self.pending.len());
+        while let Some(pending) = self.pending.pop_front() {
+            match self.collect_one(engine, pending) {
+                Ok((grew, overflow)) => {
+                    changed |= grew;
+                    overflowed |= overflow;
+                }
+                // Still in flight: look again next frame, in order.
+                Err(pending) => in_flight.push_back(pending),
+            }
+        }
+        self.pending = in_flight;
+        (changed, overflowed)
+    }
+
+    /// Collect `pending` if its map callback has landed: `(changed,
+    /// overflowed)` as [`Self::collect`] says them. Gives it back while it
+    /// is still in flight.
+    #[allow(
+        clippy::print_stderr,
+        reason = "Tilo applications do not install a log-to-tracing bridge"
+    )]
+    fn collect_one(
+        &mut self,
+        engine: &mut WgpuEngine,
+        pending: Pending,
+    ) -> Result<(bool, bool), Pending> {
         let Some(buf) = engine.get_download(pending.proxy) else {
             self.error.get_or_insert(BumpBudgetError::MissingDownload);
-            return (false, false);
+            return Ok((false, false));
         };
         let ready = pending
             .done
@@ -445,15 +489,13 @@ impl BudgetTracker {
             .map(|guard| *guard)
             .unwrap_or(Some(false));
         let Some(ok) = ready else {
-            // Still in flight. Put it back and look again next frame.
-            self.pending = Some(pending);
-            return (false, false);
+            return Err(pending);
         };
         if !ok {
             self.error.get_or_insert(BumpBudgetError::MapFailed);
             // A failed map is not a known-unmapped reusable allocation.
             engine.free_download(pending.proxy);
-            return (false, false);
+            return Ok((false, false));
         }
         let used = {
             let view = buf.slice(..).get_mapped_range();
@@ -463,12 +505,12 @@ impl BudgetTracker {
         let Ok(used) = used else {
             self.error.get_or_insert(BumpBudgetError::InvalidDownload);
             engine.free_download(pending.proxy);
-            return (false, false);
+            return Ok((false, false));
         };
         let before = self.effective();
         let overflowed = used.failed != 0;
         let in_effect = self.effective();
-        let budget_changed = !self.pinned && self.grow(&used);
+        let budget_changed = !self.pinned && self.grow_in(&used, pending.n_tiles);
         let shrunk = self.shrink_after(&used, pending.dense, budget_changed);
         let changed = before != self.effective();
         if self.log {
@@ -518,7 +560,7 @@ impl BudgetTracker {
             );
         }
         engine.recycle_bump_download(pending.proxy);
-        (changed, overflowed)
+        Ok((changed, overflowed))
     }
 
     /// Grow from counters the caller has already read back itself.
@@ -559,7 +601,12 @@ impl BudgetTracker {
             }
         });
         self.frame += 1;
-        self.pending = Some(Pending { proxy, done, dense });
+        self.pending.push_back(Pending {
+            proxy,
+            done,
+            dense,
+            n_tiles: self.n_tiles,
+        });
     }
 
     /// One line per measured frame: measured use against the policy budget.
@@ -881,10 +928,11 @@ mod tests {
 pub(crate) mod test_helpers {
     use super::*;
 
+    /// The latest render's readback.
     pub(crate) fn pending_proxy(tracker: &BudgetTracker) -> BufferProxy {
         tracker
             .pending
-            .as_ref()
+            .back()
             .expect("actual pending readback")
             .proxy
     }
@@ -894,9 +942,22 @@ pub(crate) mod test_helpers {
     pub(crate) fn set_ready(tracker: &mut BudgetTracker, ready: Option<bool>) {
         tracker
             .pending
-            .as_mut()
+            .back_mut()
             .expect("actual pending readback")
             .done = Arc::new(Mutex::new(ready));
+    }
+
+    /// Hold the latest readback's callback slot empty and hand it back, so a
+    /// test lands the callback itself, from another thread or later. The
+    /// real GPU buffer must already have completed mapping.
+    pub(crate) fn hold_ready(tracker: &mut BudgetTracker) -> Arc<Mutex<Option<bool>>> {
+        let slot = Arc::new(Mutex::new(None));
+        tracker
+            .pending
+            .back_mut()
+            .expect("actual pending readback")
+            .done = slot.clone();
+        slot
     }
 
     pub(crate) fn fail_poll(tracker: &mut BudgetTracker, engine: &mut WgpuEngine) {

@@ -1508,7 +1508,6 @@ mod tests {
 
     #[test]
     fn session_handoffs_accept_only_the_manager_and_authorized_workspaces() {
-        // Phase `handoff_accepts_only_windows_manager_and_real_workspace_shape`.
         {
             assert!(
                 validate_handoff(&SessionHandoff {
@@ -1527,7 +1526,6 @@ mod tests {
                 Err(SessionError::InvalidHandoff)
             ));
         }
-        // Phase `launch_wire_rejects_query_caps_identity_and_vm_intent`.
         {
             let injected = serde_json::json!({
                 "method": "launch",
@@ -1541,7 +1539,6 @@ mod tests {
             });
             assert!(serde_json::from_value::<ProtocolRequest>(injected).is_err());
         }
-        // Phase `publishing_authorizes_the_opaque_vm_entry_only_for_its_workspace_session`.
         {
             let publication = crate::VmCandidatePublication {
                 installation: crate::VmInstallation {
@@ -1567,7 +1564,6 @@ mod tests {
             assert!(!other_workspace_entries.contains("windows-vm-published"));
             assert!(!other_workspace_entries.contains("windows-vm-candidate-remaining"));
         }
-        // Phase `direct_same_process_is_not_a_trusted_launcher_child`.
         {
             let (stream, _other) = UnixStream::pair().unwrap();
             let executable = fs::read_link("/proc/self/exe").unwrap();
@@ -1633,7 +1629,6 @@ mod tests {
                 Err(SessionError::FrameTooLarge)
             ));
         }
-        // Phase `oversized_frame_is_rejected_before_allocation`.
         {
             let (mut writer, mut reader) = UnixStream::pair().unwrap();
             writer
@@ -1644,7 +1639,6 @@ mod tests {
                 Err(SessionError::FrameTooLarge)
             ));
         }
-        // Phase `install_frame_transfers_exactly_one_open_descriptor`.
         {
             let (mut writer, mut reader) = UnixStream::pair().unwrap();
             let mut selected = NamedTempFile::new().unwrap();
@@ -1672,7 +1666,6 @@ mod tests {
             received.read_to_end(&mut bytes).unwrap();
             assert_eq!(bytes, b"portal-selected bytes");
         }
-        // Phase `client_transfers_a_portal_descriptor_for_a_remoteapp_launch`.
         {
             let (writer, mut reader) = UnixStream::pair().unwrap();
             let mut client = SessionClient { stream: writer };
@@ -1718,7 +1711,6 @@ mod tests {
 
     #[test]
     fn session_clients_time_out_and_bound_workers() {
-        // Phase `client_reads_time_out_when_a_peer_holds_the_connection_open`.
         {
             let (_writer, mut reader) = UnixStream::pair().unwrap();
             reader
@@ -1730,7 +1722,6 @@ mod tests {
                     if matches!(error.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock)
             ));
         }
-        // Phase `client_worker_capacity_is_bounded_and_released`.
         {
             let active = Arc::new(AtomicUsize::new(0));
             let permits = (0..MAX_CLIENT_WORKERS)

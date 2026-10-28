@@ -657,7 +657,6 @@ mod tests {
             first_elf(dir.path()).and_then(|f| f.target).as_deref(),
             Some("aarch64-unknown-linux-gnu")
         );
-        // The real binary of this test says what this host builds.
         #[cfg(target_os = "linux")]
         {
             let me = std::fs::read(std::env::current_exe().unwrap()).unwrap();
@@ -729,7 +728,6 @@ mod tests {
         stream.finish().unwrap();
     }
 
-    /// Packing keeps /usr and symlinks, and sccache JSON totals parse.
     #[test]
     fn packing_keeps_usr_links_and_sccache_totals_parse() {
         // Phase: pack_keeps_usr_and_symlinks.

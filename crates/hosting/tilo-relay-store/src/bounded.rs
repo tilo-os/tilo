@@ -34,10 +34,6 @@ impl WorkLimit {
     }
     /// This limit, refused when it allows no work or more than the store's
     /// bounds.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a zero or oversized limit.
     pub fn checked(self) -> Result<Self, StoreError> {
         if self.entries == 0 || self.metadata_bytes < MAX_METADATA {
             return Err(invalid("invalid work quantum"));
@@ -60,10 +56,6 @@ pub fn invalid(message: &str) -> StoreError {
 /// panic: the owner fails the operation and keeps serving other workspaces.
 pub trait Invariant<T> {
     /// The value, or an `InvalidData` storage error naming what was missing.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the value is absent.
     fn invariant(self, what: &str) -> Result<T, StoreError>;
 }
 fn broken(what: &str) -> StoreError {
@@ -80,10 +72,6 @@ impl<T, E> Invariant<T> for Result<T, E> {
     }
 }
 /// Add one to a work counter.
-///
-/// # Errors
-///
-/// Returns an error when the counter is exhausted.
 pub fn increment(value: &mut u64) -> Result<(), StoreError> {
     *value = value
         .checked_add(1)
@@ -185,10 +173,6 @@ impl Meta {
     }
 }
 /// Append one length-prefixed metadata record to `file`.
-///
-/// # Errors
-///
-/// Returns an error when `meta` is invalid or the write fails.
 pub fn write_meta(file: &mut (impl Write + ?Sized), meta: &Meta) -> Result<(), StoreError> {
     meta.validate()?;
     let bytes = serde_json::to_vec(meta).map_err(|e| invalid(&e.to_string()))?;
@@ -201,10 +185,6 @@ pub fn write_meta(file: &mut (impl Write + ?Sized), meta: &Meta) -> Result<(), S
     Ok(())
 }
 /// The next metadata record of `file`, `None` at its end.
-///
-/// # Errors
-///
-/// Returns an error for a corrupt or oversized record or a failed read.
 pub fn read_meta(file: &mut File) -> Result<Option<Meta>, StoreError> {
     let mut prefix = [0; 4];
     if file.read(&mut prefix[..1])? == 0 {
@@ -245,10 +225,6 @@ impl DirectoryCursor {
         })
     }
     /// The current entry, `None` past the last.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the listing fails.
     pub fn peek(&mut self) -> Result<Option<&fs::DirEntry>, StoreError> {
         if self.pending.is_none() {
             if self.entries.is_none() {

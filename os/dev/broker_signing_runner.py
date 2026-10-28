@@ -25,9 +25,9 @@ INSPECT = '{"Id":{{json .Id}},"Image":{{json .Image}},"State":{{json .State}},"R
 TARGETS = {
     'on-prem': {'mode': 'in-cluster', 'kubeconfig': None, 'region': None, 'cluster': None},
     'aws-eu-central-1': {'mode': 'eks', 'kubeconfig': '/etc/sandbox-broker/clusters/eks.yaml',
-                         'region': 'eu-central-1', 'cluster': 'podesta-agent-burst'},
+                         'region': 'eu-central-1', 'cluster': 'burst-eu'},
     'aws-us-west-2': {'mode': 'eks', 'kubeconfig': '/etc/sandbox-broker/clusters/eks-us-west-2.yaml',
-                      'region': 'us-west-2', 'cluster': 'podesta-burst-usw2'},
+                      'region': 'us-west-2', 'cluster': 'burst-us'},
 }
 
 # Watchdog runs in the pinned worker even if the API connection disappears.
@@ -99,8 +99,8 @@ for name in sorted(candidates):
  labels=pod.metadata.labels or {};containers={x.name for x in pod.spec.containers}
  if (pod.metadata.uid==p['uid'] and pod.status.phase=='Running'
      and labels.get('app.kubernetes.io/managed-by')=='sandbox-broker'
-     and labels.get('podesta.ai/workload')=='forgejo-ci'
-     and labels.get('podesta.ai/cluster')==name and {'runner','dind'} <= containers):
+     and labels.get('sandbox.example/workload')=='forgejo-ci'
+     and labels.get('sandbox.example/cluster')==name and {'runner','dind'} <= containers):
   matches.append((name,a,v,pod))
 if len(matches)!=1: raise ValueError('pinned pod must match exactly one enabled CI target')
 target_name,a,v,pod=matches[0]

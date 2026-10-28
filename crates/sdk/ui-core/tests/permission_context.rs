@@ -232,8 +232,6 @@ impl tilo_ui::permissions::capability::PermissionGated for GatedButton {
     }
 }
 
-/// The framework's gate fires a widget's handler exactly when the context
-/// grants the widget's declared scope.
 #[test]
 fn gated_widget_fires_only_when_its_scope_is_granted() {
     let cases = [

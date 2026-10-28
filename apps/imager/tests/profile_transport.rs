@@ -73,11 +73,13 @@ fn prepared_profile_survives_live_transport_and_rejects_mutations() {
         .unwrap();
     }
     let preflight = || {
-        Command::new(env!("CARGO_BIN_EXE_tilo-installer-prepared-setup-extract"))
-            .args(["preflight-profile", "--source-dir"])
-            .arg(&output)
-            .output()
-            .unwrap()
+        Command::new(tilo_test_env::package_binary!(
+            "tilo-installer-prepared-setup-extract"
+        ))
+        .args(["preflight-profile", "--source-dir"])
+        .arg(&output)
+        .output()
+        .unwrap()
     };
     assert!(preflight().status.success());
     let receipt: install_profile_model::PreparedSetupExpectation =

@@ -5,10 +5,9 @@
 //! here: it is contextual and belongs to the shell's Workspace Settings.
 
 use std::cell::{OnceCell, RefCell};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use desktop_policy::{AppCandidate, DefaultAppResolver, PersonalDefaults, ResourceKind};
-use serde::{Deserialize, Serialize};
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::i18n::ArgValue;
@@ -23,40 +22,30 @@ use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{note, rows, section, setting_row, setting_row_described, untitled};
 
+crate::effects::effect_family!(DefaultAppsEffect => answer);
+
+crate::area::pane_area!(DefaultAppsArea);
+
+/// The window's [`DefaultAppsArea`].
+pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&DefaultAppsArea> {
+    app.areas().find()
+}
+
 /// The most kinds of file and link the published tree lists.
 const MAX_KIND_ROWS: usize = 256;
 /// The most apps one kind lists.
 const MAX_APP_ROWS: usize = 128;
 
-/// The person's default apps, as their settings hold them.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
-)]
-pub struct DefaultApps {
-    /// The app each kind of file or link opens with, by the kind's id
-    /// (`ext:pdf`, `mime:text/html`, `scheme:https`).
-    #[serde(default)]
-    #[model(readonly)]
-    pub handlers: BTreeMap<String, String>,
-}
+pub use crate::prefs::DefaultApps;
 
-impl ui::storage::SettingsSchema for DefaultApps {
-    const SCOPE: ui::storage::Scope =
-        ui::storage::Scope::Shared(desktop_policy::PERSONAL_DEFAULTS_SECTION);
-}
-
-#[ui::tilo_resource::resource(kind = "settings.default-apps", label = "Default apps")]
-impl DefaultApps {}
-
-impl DefaultApps {
-    fn personal(&self) -> PersonalDefaults {
-        PersonalDefaults {
-            handlers: self
-                .handlers
-                .iter()
-                .filter_map(|(kind, app)| Some((stored_kind(kind)?, app.clone())))
-                .collect(),
-        }
+/// The defaults `apps` holds, by the kinds they are kept for.
+fn personal(apps: &DefaultApps) -> PersonalDefaults {
+    PersonalDefaults {
+        handlers: apps
+            .handlers
+            .iter()
+            .filter_map(|(kind, app)| Some((stored_kind(kind)?, app.clone())))
+            .collect(),
     }
 }
 
@@ -66,6 +55,7 @@ impl DefaultApps {
 pub enum DefaultAppsEffect {
     /// Open a kind of file or link with an installed app.
     #[effect(idempotent)]
+    #[effect(keywords = "default app, open with, file association")]
     SetDefaultApp {
         #[param("The kind of file or link: `ext:pdf`, `mime:text/html`, `scheme:https`")]
         kind: String,
@@ -101,7 +91,7 @@ pub(crate) fn answer(
     };
     let resource =
         parse_kind(&kind).ok_or_else(|| format!("`{kind}` is not a kind of file or link"))?;
-    let area = app.default_apps();
+    let area = crate::panes::personal_apps::area(app).ok_or_else(crate::area::missing)?;
     let resolver = DefaultAppResolver::new(area.candidates());
     PersonalDefaults::default()
         .set(resource, package.clone(), &resolver)
@@ -189,9 +179,14 @@ impl DefaultAppsArea {
         self.read.is_finished()
     }
 
+    /// What waits off the UI thread for the started read to end.
+    pub(crate) fn wait_read(&self) -> Option<crate::device_read::Wait> {
+        self.read.wait()
+    }
+
     /// Whether the area has read what its rows show: its pane was shown,
     /// an effect or a row lookup reached it, or the window read it after
-    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    /// its first frame ([`crate::panes::LIVE_AREAS`]).
     pub(crate) fn is_open(&self) -> bool {
         self.candidates.get().is_some()
     }
@@ -207,7 +202,7 @@ impl DefaultAppsArea {
     }
 
     fn make_rows(&self, prefs: &DefaultApps) -> Vec<LiveRow> {
-        let defaults = prefs.personal();
+        let defaults = personal(prefs);
         let candidates = self.candidates();
         let resolver = DefaultAppResolver::new(candidates);
         kinds(candidates)
@@ -233,7 +228,7 @@ impl DefaultAppsArea {
                         app: app.package_id.clone(),
                     })
                     .bound();
-                    choose.label = format!(
+                    choose.type_mut().label = format!(
                         "Open {} with {}",
                         PersonalAppsPane::resource_label(&kind),
                         app.display_name
@@ -339,7 +334,7 @@ impl PersonalAppsPane {
     /// Show the app that opens each kind now: the person's choice, else the
     /// one the resolver picks — which is shown, not stored.
     fn show(&self) {
-        let defaults = self.prefs.get().personal();
+        let defaults = personal(self.prefs.get());
         let resolver = DefaultAppResolver::new(&self.candidates);
         for (kind, state) in &self.shown {
             let current = resolver
@@ -435,9 +430,12 @@ impl PersonalAppsPane {
 /// trip to the shell, so it runs off the UI thread.
 fn open_workspace_defaults() -> Result<(), String> {
     crate::device_read::off_ui_thread();
-    os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
-        route: os_actions::WorkspaceSettingsRoute::AppsFiles,
-    })
+    os_actions::open_tool(
+        os_actions::ToolIntent::WorkspaceSettings {
+            route: os_actions::WorkspaceSettingsRoute::AppsFiles,
+        },
+        None,
+    )
 }
 
 /// Read real installed manifests. A type only appears if an installed GUI app
@@ -492,13 +490,16 @@ pub fn installed_candidates() -> Vec<AppCandidate> {
 
 impl Widget for PersonalAppsPane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        // A relayout keeps the choosers; a changed choice rebuilds them, as
+        // each names the app it shows.
         if self.prefs.refresh() {
             self.show();
+            self.composed.invalidate();
         }
         self.composed.sync(state, root);
     }
 
-    crate::panes::composed_pane!();
+    crate::panes::composed_pane!(kept);
 
     fn name(&self) -> &'static str {
         "PersonalAppsPane"

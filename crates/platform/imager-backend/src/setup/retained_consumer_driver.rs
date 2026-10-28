@@ -473,7 +473,7 @@ mod tests {
                 "b".repeat(64),
                 room,
                 "retained-home",
-                "/usr/bin/tilo-launcher",
+                "/usr/libexec/tilo/tilo-launcher",
                 vec!["run"],
                 Vec::<(String, String)>::new(),
             ))
@@ -496,7 +496,7 @@ mod tests {
     fn canonical_shell_context_cannot_change_selected_app_scope_or_digest() {
         let (bytes, binding) = context();
         let decoded = challenge(&bytes, &binding, [1; 32]).unwrap();
-        assert_eq!(decoded.command.program, "/usr/bin/tilo-launcher");
+        assert_eq!(decoded.command.program, "/usr/libexec/tilo/tilo-launcher");
         assert_eq!(decoded.command.args, ["run"]);
         for field in ["operation", "app", "package", "room", "resource", "digest"] {
             let mut changed = binding.clone();
@@ -518,12 +518,24 @@ mod tests {
         assert!(challenge(&altered, &binding, [1; 32]).is_err());
         assert!(challenge(&vec![b'a'; 64 * 1024 + 1], &binding, [1; 32]).is_err());
     }
+    /// Start a fence and find its watching thread.
+    fn fence_thread(start: impl FnOnce() -> BootstrapFence) -> (BootstrapFence, String) {
+        tilo_test_env::idle::spawned_thread("retained-root-b", start)
+    }
+
+    /// Wait until the fence's thread has woken to look `turns` more times.
+    fn fence_turns(tid: &str, turns: u64) {
+        let from = tilo_test_env::idle::context_switches(tid);
+        tilo_test_env::wait_until("the fence to look at its transport again", || {
+            tilo_test_env::idle::context_switches(tid) >= from + turns
+        });
+    }
+
     #[test]
     fn bootstrap_absolute_deadline_interrupts_real_blocked_socket() {
         let (mut receiver, mut peer) = UnixStream::pair().unwrap();
         let cancel = Arc::new(AtomicBool::new(false));
         let control = ServiceCancellation::default();
-        let started = Instant::now();
         let fence = BootstrapFence::start_with_budget(
             &receiver,
             cancel.clone(),
@@ -531,9 +543,12 @@ mod tests {
             Duration::from_millis(80),
         )
         .unwrap();
+        // The peer never writes: only the fence's deadline ends the read.
+        receiver
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .unwrap();
         let mut byte = [0];
         assert_eq!(receiver.read(&mut byte).unwrap(), 0);
-        assert!(started.elapsed() < Duration::from_secs(2));
         assert!(cancel.load(Ordering::Acquire));
         assert!(control.is_cancelled());
         assert_eq!(peer.read(&mut byte).unwrap(), 0);
@@ -544,25 +559,28 @@ mod tests {
         let (mut receiver, mut peer) = UnixStream::pair().unwrap();
         let cancel = Arc::new(AtomicBool::new(false));
         let control = ServiceCancellation::default();
-        let fence = BootstrapFence::start_with_budget(
-            &receiver,
-            Arc::clone(&cancel),
-            control.clone(),
-            Duration::from_millis(80),
-        )
-        .unwrap();
+        let (fence, tid) = fence_thread(|| {
+            BootstrapFence::start_with_budget(
+                &receiver,
+                Arc::clone(&cancel),
+                control.clone(),
+                tilo_test_env::hang_bound(),
+            )
+            .unwrap()
+        });
         fence.observed_consumer().unwrap();
         peer.write_all(b"request").unwrap();
-        // Cross both fence poll turns and the old initial deadline with unread
-        // data still queued. POLLIN must not be interpreted as disconnection.
-        std::thread::sleep(Duration::from_millis(140));
+        // Let the fence look at the admitted transport a few times with
+        // unread data still queued. POLLIN must not be interpreted as
+        // disconnection.
+        fence_turns(&tid, 3);
         assert!(!cancel.load(Ordering::Acquire));
         assert!(!control.is_cancelled());
         let mut bytes = [0u8; 7];
         receiver.read_exact(&mut bytes).unwrap();
         assert_eq!(&bytes, b"request");
         drop(peer);
-        std::thread::sleep(Duration::from_millis(80));
+        fence_turns(&tid, 3);
         assert_eq!(receiver.read(&mut [0]).unwrap(), 0);
         assert!(!cancel.load(Ordering::Acquire));
         assert!(!control.is_cancelled());
@@ -577,17 +595,15 @@ mod tests {
             &receiver,
             cancel.clone(),
             control.clone(),
-            Duration::from_secs(2),
+            tilo_test_env::hang_bound(),
         )
         .unwrap();
         fence.observed_consumer().unwrap();
         cancel.store(true, Ordering::Release);
-        let deadline = Instant::now().checked_add(Duration::from_secs(2)).unwrap();
-        while !control.is_cancelled() && Instant::now() < deadline {
-            std::thread::yield_now();
-        }
+        tilo_test_env::wait_until("the fence to revoke the cancelled owner", || {
+            control.is_cancelled()
+        });
         assert!(cancel.load(Ordering::Acquire));
-        assert!(control.is_cancelled());
         assert_eq!(receiver.read(&mut [0]).unwrap(), 0);
         drop(fence);
     }

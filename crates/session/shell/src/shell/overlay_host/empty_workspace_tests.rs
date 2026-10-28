@@ -151,12 +151,12 @@ fn empty_workspace_cards_offer_accessible_collaboration_entry_points() {
         host.settle(&mut ui::widget::Edits::lend(&mut doc), &root);
 
         assert!(
-            crate::shell::tab_binding::active_workspace_activity_tab(&chrome.borrow().tree())
-                .is_some()
+            chrome.borrow_mut().take_activity_open_request().is_some(),
+            "the card opens the Activity app"
         );
         assert!(
             !chrome.borrow().overlays.room_activity,
-            "the recap is a tiled window, not transient overlay state"
+            "Activity is an app's window, not transient overlay state"
         );
         assert!(matches!(
             doc.get(&root, crate::shell::EMPTY_WORKSPACE_ACTIVITY),
@@ -308,7 +308,7 @@ fn host_with_live_app(
             .desktop
             .active_workspace()
             .expect("an active workspace")
-            .room
+            .room()
             .to_string();
         drop(tree);
         room
@@ -328,6 +328,8 @@ fn host_with_live_app(
                 resource_kind: resource.into(),
                 resource_label: resource.into(),
                 action_label: (*action).into(),
+                keywords: Vec::new(),
+                icon: None,
                 description: None,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 params: Vec::new(),
@@ -404,7 +406,7 @@ fn tasks_and_call_cards_invoke_their_apps_action() {
                     .desktop
                     .active_workspace()
                     .expect("an active workspace")
-                    .room
+                    .room()
             ),
             "the card acts as the person this device acts for"
         );
@@ -638,5 +640,142 @@ fn app_opener_pointer_press_waits_and_drag_cancel_keeps_native_search_closed() {
     assert!(
         !host.palette_visible(),
         "Escape closes native Search after a completed click"
+    );
+}
+
+fn launchpad_card(widget: &dyn Widget, slug: &str) -> Option<Rect> {
+    if let Some(pad) = widget
+        .as_any()
+        .and_then(|any| any.downcast_ref::<tilo_desktop::launchpad::CollaborationLaunchpad>())
+    {
+        let id = format!("launchpad:{slug}");
+        return pad
+            .targets()
+            .into_iter()
+            .find(|(target, _)| *target == id)
+            .map(|(_, rect)| rect);
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| launchpad_card(child, slug))
+}
+
+/// A finger tapping an app card opens its app, as a click does: the raw
+/// contact is left to the compositor's touch-to-pointer translation (no
+/// chrome takes it), which turns the tap into a click on the card.
+#[test]
+fn a_touch_tap_on_an_app_card_opens_its_app() {
+    use winit::event::{Touch, TouchPhase};
+    let tree = WorkspaceTree::bootstrap_default();
+    let (mut host, _) = build_tilo_overlay_host_with_chrome(&tree);
+    let apps = FakeApplications::install(&mut host, 0);
+    let mut doc = AutoCommit::new();
+    let theme = Theme::dark().with_reduce_motion(true);
+    let (taffy, node) = launchpad_journey_layout(&mut host, &theme);
+    launchpad_journey_paint(&mut host, &theme, "touch-idle");
+    let card = launchpad_card(host.content.as_ref(), "notes")
+        .expect("the empty workspace offers a Notes card")
+        .center();
+    let finger = |phase| Touch {
+        device_id: winit::event::DeviceId::dummy(),
+        phase,
+        location: winit::dpi::PhysicalPosition::new(card.x, card.y),
+        force: None,
+        id: 3,
+    };
+    let mut pointer = crate::compositor::touch_pointer::TouchPointer::default();
+    for phase in [TouchPhase::Started, TouchPhase::Ended] {
+        let touch = finger(phase);
+        let raw = ui::testing::Dispatch::new()
+            .doc(&mut doc)
+            .layout(&taffy, node)
+            .send(&mut host, &WindowEvent::Touch(touch));
+        host.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        // Where a contact begins decides its route (`touch_pointer::touch_route`).
+        assert!(
+            phase != TouchPhase::Started || !raw.handled,
+            "the chrome took a tap on the Notes card raw, so it never becomes a click"
+        );
+        let route = if raw.handled {
+            crate::compositor::touch_pointer::TouchRoute::Raw
+        } else {
+            crate::compositor::touch_pointer::TouchRoute::for_cursor(None)
+        };
+        for event in pointer.events(&touch, || route) {
+            launchpad_journey_deliver(&mut host, &mut doc, &event, &taffy, node);
+        }
+    }
+    assert_eq!(
+        *apps.opened.borrow(),
+        ["so.tilo.notes"],
+        "a tap on the Notes card opens Notes"
+    );
+}
+
+/// The compositor's DRM loop handles a tap's raw contact and the click it
+/// becomes in one batch, settling the desktop only after the whole batch:
+/// a mouse that rested elsewhere, the finger's start and lift, then move,
+/// press, release and leave with no settle between them. The tap opens
+/// Notes all the same.
+#[test]
+fn a_touch_tap_handled_in_one_batch_opens_its_app() {
+    use winit::event::{Touch, TouchPhase};
+    let tree = WorkspaceTree::bootstrap_default();
+    let (mut host, _) = build_tilo_overlay_host_with_chrome(&tree);
+    let apps = FakeApplications::install(&mut host, 0);
+    let mut doc = AutoCommit::new();
+    let theme = Theme::dark().with_reduce_motion(true);
+    let (taffy, node) = launchpad_journey_layout(&mut host, &theme);
+    launchpad_journey_paint(&mut host, &theme, "batch-idle");
+    let card = launchpad_card(host.content.as_ref(), "notes")
+        .expect("the empty workspace offers a Notes card")
+        .center();
+    // The mouse last rested away from the cards, as in the VM's W18.
+    launchpad_journey_deliver(
+        &mut host,
+        &mut doc,
+        &ui::synthetic_input::cursor_moved(8.0, 300.0),
+        &taffy,
+        node,
+    );
+    let finger = |phase| Touch {
+        device_id: winit::event::DeviceId::dummy(),
+        phase,
+        location: winit::dpi::PhysicalPosition::new(card.x, card.y),
+        force: None,
+        id: 3,
+    };
+    let mut pointer = crate::compositor::touch_pointer::TouchPointer::default();
+    let mut batch = Vec::new();
+    for phase in [TouchPhase::Started, TouchPhase::Ended] {
+        let touch = finger(phase);
+        let raw = ui::testing::Dispatch::new()
+            .doc(&mut doc)
+            .layout(&taffy, node)
+            .send(&mut host, &WindowEvent::Touch(touch));
+        let route = if raw.handled {
+            crate::compositor::touch_pointer::TouchRoute::Raw
+        } else {
+            crate::compositor::touch_pointer::TouchRoute::for_cursor(None)
+        };
+        batch.extend(pointer.events(&touch, || route));
+    }
+    assert_eq!(
+        batch.len(),
+        4,
+        "the tap becomes move, press, release, leave: {batch:?}"
+    );
+    for event in &batch {
+        ui::testing::Dispatch::new()
+            .doc(&mut doc)
+            .layout(&taffy, node)
+            .send(&mut host, event);
+    }
+    host.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+    assert_eq!(
+        *apps.opened.borrow(),
+        ["so.tilo.notes"],
+        "a tap handled in one batch opens Notes"
     );
 }

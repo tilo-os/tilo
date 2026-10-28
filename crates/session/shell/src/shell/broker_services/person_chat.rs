@@ -7,7 +7,7 @@ mod remote;
 mod tests;
 use tilo_action_broker::services::person_chat::{PersonChatCommand, PersonChatServices};
 use tilo_joined_room::{DirectConversation, DirectConversationPage, DirectMessageSend};
-use tilo_peer_state::workspace_task::WorkspaceTaskAuthority;
+use tilo_peer_state::caller_authority::CallerAuthority;
 
 impl PersonChatServices for NativeOwnerCommitService {
     fn subscribe(
@@ -33,7 +33,7 @@ impl PersonChatServices for NativeOwnerCommitService {
         owner.subscribe_direct_conversation(
             room,
             peer,
-            &WorkspaceTaskAuthority::Person {
+            &CallerAuthority::Person {
                 caller: caller.clone(),
             },
             std::time::SystemTime::now(),
@@ -65,14 +65,15 @@ impl PersonChatServices for NativeOwnerCommitService {
         }
         drop(route);
         check_local_governor(&owner, room, caller)?;
-        let authority = WorkspaceTaskAuthority::Person {
+        let authority = CallerAuthority::Person {
             caller: caller.clone(),
         };
         let now = std::time::SystemTime::now();
         let value = match command {
             PersonChatCommand::Contacts => serde_json::json!(owner.direct_contacts(room, &authority, now)?
                 .into_iter().map(|contact| serde_json::json!({
-                    "public_key": contact.public_key, "display_name": contact.display_name.unwrap_or_default()
+                    "public_key": contact.public_key, "display_name": contact.display_name.unwrap_or_default(),
+                    "conversation": contact.conversation
                 })).collect::<Vec<_>>()),
             PersonChatCommand::Open { public_key } => {
                 owner.open_direct_conversation(room, &public_key, &authority, now)?;
@@ -124,7 +125,8 @@ impl std::io::Write for BoundedReply {
 }
 
 fn check_snapshot_bound(messages: usize, bytes: usize) -> Result<(), String> {
-    if bytes > 512 * 1024 || messages > 2000 {
+    use tilo_relay_protocol::rooms::private::{MAX_WHOLE_MESSAGES, MAX_WHOLE_TEXT_BYTES};
+    if bytes > MAX_WHOLE_TEXT_BYTES || messages > MAX_WHOLE_MESSAGES {
         return Err("private conversation snapshot exceeds bound".into());
     }
     Ok(())
@@ -134,7 +136,7 @@ fn read_all(
     owner: &tilo_joined_room::NativeWorkspaceOwner,
     room: tilo_desktop_model::RoomId,
     peer: &str,
-    authority: &WorkspaceTaskAuthority,
+    authority: &CallerAuthority,
     now: std::time::SystemTime,
 ) -> Result<DirectConversation, String> {
     let mut result = owner.read_direct_conversation(

@@ -139,10 +139,11 @@ fn agents_edit_the_bytes_through_the_published_actions() {
         .is_err(),
         "an offset past the end is refused"
     );
-    assert!(
-        app.call("delete-byte", serde_json::json!({})).is_err(),
-        "a delete waits for confirmation"
-    );
+    // An undoable delete runs at once and offers Undo.
+    app.call("delete-byte", serde_json::json!({})).unwrap();
+    assert_eq!(app.state().bytes.len(), 4, "one byte deleted at once");
+    assert!(app.undo());
+    assert_eq!(app.state().bytes, [0x7F, 0x00, 0xFF, 0xEE, 0x33]);
     // An agent deletes in one call, confirmed.
     app.invoke_confirmed(HexEditor::DELETE_BYTES.with(DeleteBytes { offset: 0, len: 2 }))
         .unwrap();
@@ -206,6 +207,74 @@ fn opening_a_file_replaces_the_buffer_and_the_chooser_answers_the_effect() {
     assert_eq!(std::fs::read(&chosen).unwrap(), [0xFF, 2, 3]);
 }
 
+/// A file larger than a host may hand the app is refused before it is read
+/// whole, through the same door a person's chooser and an agent's path use,
+/// and the open buffer stays as it was.
+#[test]
+fn a_file_too_large_to_hold_is_refused_and_the_buffer_kept() {
+    let mut app = TestApp::<HexEditorShell>::new().unwrap();
+    app.harness().relayout();
+    let (_directory, small) = file("small.bin", b"KEEP");
+    app.effect(&HexEffect::OpenFile { path: Some(small) })
+        .unwrap();
+    app.settle();
+
+    // Sparse: its length is past the limit, its blocks are never written.
+    let huge_directory = tempfile::tempdir().unwrap();
+    let huge = huge_directory.path().join("disk.img");
+    std::fs::File::create(&huge)
+        .unwrap()
+        .set_len(u64::try_from(ui::application::MAX_OPEN_FILE_BYTES).unwrap() + 1)
+        .unwrap();
+    let refused = app
+        .effect(&HexEffect::OpenFile {
+            path: Some(huge.to_str().unwrap().to_owned()),
+        })
+        .expect_err("a file past the limit does not open");
+    assert!(
+        format!("{refused:?}").contains("larger than"),
+        "the refusal says why: {refused:?}"
+    );
+    app.settle();
+    assert_eq!(app.state().name(), Some("small.bin"));
+    assert_eq!(app.state().bytes, b"KEEP");
+}
+
+/// A file whose size already says it is too large is refused from its size,
+/// without reading the limit's worth of it first: on a projected folder that
+/// read would download it from a peer only to be thrown away. The file here
+/// cannot be read at all, so a refusal that names its size was decided
+/// before any read.
+#[cfg(unix)]
+#[test]
+fn a_file_too_large_to_hold_is_refused_by_its_size_unread() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut app = TestApp::<HexEditorShell>::new().unwrap();
+    app.harness().relayout();
+    let directory = tempfile::tempdir().unwrap();
+    let huge = directory.path().join("disk.img");
+    std::fs::File::create(&huge)
+        .unwrap()
+        .set_len(u64::try_from(ui::application::MAX_OPEN_FILE_BYTES).unwrap() + 1)
+        .unwrap();
+    std::fs::set_permissions(&huge, std::fs::Permissions::from_mode(0o000)).unwrap();
+    assert!(
+        std::fs::File::open(&huge).is_err(),
+        "the test must run where an unreadable file cannot be read, or it proves nothing"
+    );
+
+    let refused = app
+        .effect(&HexEffect::OpenFile {
+            path: Some(huge.to_str().unwrap().to_owned()),
+        })
+        .expect_err("a file past the limit does not open");
+    std::fs::set_permissions(&huge, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(
+        format!("{refused:?}").contains("larger than"),
+        "refused by its size, before a read could fail: {refused:?}"
+    );
+}
+
 #[test]
 fn captures_stage_the_sample_through_the_resource() {
     let mut sample = TestApp::<HexEditorShell>::capture(None).unwrap();
@@ -250,7 +319,7 @@ fn the_executable_opens_a_path_edits_and_saves_it() {
             {"modifiers": []}
         ],
     });
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_hex-editor"));
+    let mut command = std::process::Command::new(tilo_test_env::package_binary!("hex-editor"));
     command
         .args(["--headless-drive", &spec.to_string()])
         .arg(&path)
@@ -361,4 +430,62 @@ fn two_replicas_converge() {
     expected[0] = 1;
     expected[page + 7] = 7;
     assert_eq!(app.state().bytes, expected);
+}
+
+/// With no file to open (a page whose chooser cannot answer, or bytes to
+/// write from scratch), "New empty file" and Ctrl+N start an empty buffer
+/// that typing fills.
+#[test]
+fn a_new_empty_file_starts_a_buffer_typing_fills() {
+    let mut app = TestApp::<HexEditorShell>::new().unwrap();
+    app.harness().relayout();
+    assert!(!app.state().has_file());
+    app.harness()
+        .perform_named("hex.new", &A11yAction::Activate)
+        .unwrap();
+    app.settle();
+    let state = app.state();
+    assert_eq!(state.name(), Some("Untitled.bin"));
+    assert!(state.bytes.is_empty());
+    app.harness()
+        .perform_named("hex_view", &A11yAction::Focus)
+        .unwrap();
+    app.harness().type_text("de");
+    app.settle();
+    assert_eq!(app.state().bytes, [0xDE]);
+
+    let mut fresh = TestApp::<HexEditorShell>::new().unwrap();
+    fresh.harness().relayout();
+    fresh
+        .harness()
+        .perform_named("hex_view", &A11yAction::Focus)
+        .unwrap();
+    ctrl(&mut fresh, "n");
+    assert_eq!(fresh.state().name(), Some("Untitled.bin"));
+}
+
+/// A guest's own "Open file" goes straight to their chooser: picking a file
+/// on their own device is their decision, so the workspace asks no consent
+/// first, and the pick opens.
+#[test]
+fn a_guests_open_file_asks_no_workspace_consent() {
+    let mut app = TestApp::<HexEditorShell>::new().unwrap();
+    app.harness().relayout();
+    app.set_role(ui::permissions::Role::Editor);
+    let (_chosen_directory, chosen) = file("guest.bin", &[7, 8]);
+    let (services, recorder) = ui::host::HostServices::recording();
+    recorder.respond_to_pick(PortalOutcome::Opened(chosen.into()));
+    ui::host::scoped(&services, || {
+        app.harness()
+            .perform_named("hex.open", &A11yAction::Activate)
+            .unwrap();
+        app.settle();
+    });
+    assert!(
+        app.asking().is_none(),
+        "the chooser is the consent: {:?}",
+        app.harness().asking_why()
+    );
+    assert_eq!(recorder.pick_requests().len(), 1);
+    assert_eq!(app.state().name(), Some("guest.bin"));
 }

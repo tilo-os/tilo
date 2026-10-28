@@ -103,7 +103,6 @@ pub fn placeholder_fill(theme: &Theme) -> Color {
     theme.tokens.colors.surfaces.base.with_alpha(1.0)
 }
 
-/// The placeholder's mark.
 pub fn placeholder_mark(theme: &Theme) -> Color {
     theme.tokens.colors.text_dim
 }

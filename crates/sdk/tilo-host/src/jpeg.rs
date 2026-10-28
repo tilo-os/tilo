@@ -12,10 +12,6 @@ use crate::png::check_len;
 
 /// Encode `rgb` (`width * height * 3` bytes, row-major) as a JPEG of
 /// `quality` (1-100).
-///
-/// # Errors
-///
-/// Fails when the dimensions do not match the buffer length.
 pub fn encode_rgb8(width: u32, height: u32, rgb: &[u8], quality: u8) -> ImageResult<Vec<u8>> {
     check_len(width, height, 3, rgb)?;
     let mut bytes = Vec::new();
@@ -31,10 +27,6 @@ pub fn encode_rgb8(width: u32, height: u32, rgb: &[u8], quality: u8) -> ImageRes
 /// Encode `rgba` (`width * height * 4` bytes) as a JPEG of `quality`,
 /// dropping its alpha channel: JPEG keeps none. Each pixel keeps its colour
 /// values as they are, uncomposited.
-///
-/// # Errors
-///
-/// Fails when the dimensions do not match the buffer length.
 pub fn encode_rgba8_opaque(
     width: u32,
     height: u32,
@@ -52,10 +44,6 @@ pub fn encode_rgba8_opaque(
 /// Encode `image` as a JPEG of `quality`: grey images stay grey, every other
 /// colour type becomes 8-bit RGB (alpha dropped, deeper channels narrowed),
 /// as the encoder requires.
-///
-/// # Errors
-///
-/// Fails when the encoder refuses the image.
 pub fn encode_image(image: &DynamicImage, quality: u8) -> ImageResult<Vec<u8>> {
     let mut bytes = Vec::new();
     image.write_with_encoder(JpegEncoder::new_with_quality(&mut bytes, quality))?;
@@ -68,7 +56,6 @@ mod tests {
 
     #[test]
     fn jpeg_codec_encodes_frames_and_images_and_rejects_bad_buffers() {
-        // Case `an_rgb_frame_encodes_and_decodes_at_its_size`.
         {
             let rgb = [200u8, 30, 30].repeat(16 * 8);
             let jpeg = encode_rgb8(16, 8, &rgb, 90).expect("valid RGB frame");
@@ -79,7 +66,6 @@ mod tests {
             assert!(centre[0] > 150 && centre[1] < 80, "still red: {centre:?}");
         }
 
-        // Case `alpha_is_dropped_not_composited`.
         {
             let rgba = [10u8, 220, 10, 0].repeat(8 * 8);
             let jpeg = encode_rgba8_opaque(8, 8, &rgba, 90).expect("valid RGBA frame");
@@ -91,7 +77,6 @@ mod tests {
             assert!(centre[1] > 150 && centre[0] < 80, "still green: {centre:?}");
         }
 
-        // Case `images_of_any_colour_type_encode`.
         {
             let rgba = DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
                 4,
@@ -110,7 +95,6 @@ mod tests {
             );
         }
 
-        // Case `mismatched_buffers_are_rejected`.
         {
             assert!(encode_rgb8(2, 2, &[0; 11], 90).is_err());
             assert!(encode_rgba8_opaque(2, 2, &[0; 12], 90).is_err());

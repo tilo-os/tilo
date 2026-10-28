@@ -299,13 +299,23 @@ impl Sessions {
         })
     }
 
-    /// The open session for `token`.
     pub(crate) fn get(&self, token: &[u8; 32]) -> Result<Arc<Session>, SessionError> {
         lock(&self.live)
             .get(token)
             .filter(|session| session.is_open())
             .cloned()
             .ok_or(SessionError::Gone)
+    }
+
+    /// End the session `token` now, as [`Self::sweep`] ends an idle one: a
+    /// page that leaves says so, and its peer unsubscribes at once instead
+    /// of counting as here until its polls are missed. An unknown token
+    /// ends nothing.
+    pub(crate) fn end(&self, token: &[u8; 32]) {
+        let ended = lock(&self.live).remove(token);
+        if let Some(session) = ended {
+            session.close();
+        }
     }
 
     /// Hand the browser's envelopes to its peer session, in order.

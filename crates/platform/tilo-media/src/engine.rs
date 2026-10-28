@@ -1,7 +1,7 @@
 //! The playback engine: one control surface, two interchangeable backends.
 //!
 //! * **`GStreamer` decode** (`--features decode`) drives the pipeline in
-//!   [`crate::gst_backend`]: `playbin3` with hardware decoders ranked above
+//!   `crate::gst_backend`: `playbin3` with hardware decoders ranked above
 //!   software ones, a sink that negotiates the best memory the consumer
 //!   declared it can take (dmabuf → planar → RGBA), frame-exact `ACCURATE`
 //!   seeking that reads the preroll without ever starting the audio sink, and
@@ -197,6 +197,8 @@ pub struct MediaEngine {
     /// consumer agree on the one value the user selected.
     rate: f32,
     config: EngineConfig,
+    /// What the engine last described to the system's now-playing controls.
+    now_playing: Option<crate::NowPlaying>,
 }
 
 enum Backend {
@@ -275,6 +277,7 @@ impl MediaEngine {
                     muted: false,
                     rate: 1.0,
                     config,
+                    now_playing: None,
                 };
             }
         }
@@ -304,6 +307,21 @@ impl MediaEngine {
             muted: false,
             rate: 1.0,
             config,
+            now_playing: None,
+        }
+    }
+
+    /// Have the synthesized backend answer its next seek with a picture
+    /// stamped `pts_ms`, as a pipeline still running when the seek arrived
+    /// can hand over the frame it decoded for where it was.
+    #[cfg(test)]
+    pub(crate) fn offer_stale_on_next_seek(&mut self, pts_ms: u64) {
+        match &mut self.backend {
+            Backend::Synth(s) => s.stale_on_seek = Some(pts_ms),
+            #[cfg(gst_decode)]
+            Backend::Gst(_) | Backend::Unavailable(_) => {}
+            #[cfg(web_page)]
+            Backend::Web(_) => {}
         }
     }
 
@@ -320,6 +338,7 @@ impl MediaEngine {
             muted: false,
             rate: 1.0,
             config: EngineConfig::default(),
+            now_playing: None,
         }
     }
 
@@ -765,6 +784,27 @@ impl MediaEngine {
         }
     }
 
+    /// Have the pictures stay where the page's media element shows them
+    /// (web): [`Self::take_element_picture`] hands them out and the engine
+    /// reads no pixels back for [`Self::latest_frame`]. A no-op elsewhere.
+    pub fn prefer_element_pictures(&mut self) {
+        #[cfg(web_page)]
+        if let Backend::Web(w) = &mut self.backend {
+            w.prefer_element_pictures();
+        }
+    }
+
+    /// The newest picture as it stays in the page's media element, once per
+    /// picture, after [`Self::prefer_element_pictures`]; `None` while nothing
+    /// new shows, and always off the web.
+    pub fn take_element_picture(&mut self) -> Option<crate::ElementPicture> {
+        match &mut self.backend {
+            #[cfg(web_page)]
+            Backend::Web(w) => w.take_element_picture(),
+            _ => None,
+        }
+    }
+
     /// Whether the held picture belongs to the most recent seek, rather than
     /// to the position before it.
     ///
@@ -838,16 +878,24 @@ impl MediaEngine {
 
     /// Describe what is playing to the system's now-playing controls. On the
     /// web this is the page's Media Session; on Linux the toolkit's MPRIS
-    /// service publishes the `VideoPlayer` widget's engine, so this is a no-op
-    /// there, as it is on the synthesized backend.
+    /// service publishes the `VideoPlayer` widget's engine, so the system
+    /// hears nothing more from here, nor from the synthesized backend. A
+    /// description equal to the last one is not sent again.
     pub fn set_now_playing(&mut self, now: &crate::NowPlaying) {
-        match &self.backend {
-            #[cfg(web_page)]
-            Backend::Web(w) => w.set_now_playing(now),
-            _ => {
-                let _ = now;
-            }
+        if self.now_playing.as_ref() == Some(now) {
+            return;
         }
+        self.now_playing = Some(now.clone());
+        #[cfg(web_page)]
+        if let Backend::Web(w) = &self.backend {
+            w.set_now_playing(now);
+        }
+    }
+
+    /// What the engine last described to the system's now-playing controls.
+    #[must_use]
+    pub fn now_playing(&self) -> Option<&crate::NowPlaying> {
+        self.now_playing.as_ref()
     }
 
     /// Transport requests from the system's now-playing controls that the
@@ -857,11 +905,26 @@ impl MediaEngine {
         match &mut self.backend {
             #[cfg(web_page)]
             Backend::Web(w) => w.take_now_playing_actions(),
-            _ => Vec::new(),
+            Backend::Synth(s) => std::mem::take(&mut s.now_playing_actions),
+            #[cfg(gst_decode)]
+            Backend::Gst(_) | Backend::Unavailable(_) => Vec::new(),
         }
     }
 
-    // --- Collaborative transport ------------------------------------------
+    /// On the synthesized backend, which has no system controls, stand in
+    /// for them: `action` is reported by
+    /// [`take_now_playing_actions`](Self::take_now_playing_actions) as a
+    /// page's Media Session reports a press. Other backends hear their own
+    /// controls and ignore it.
+    #[allow(
+        irrefutable_let_patterns,
+        reason = "a build without a decode or page backend has only the synthesized one"
+    )]
+    pub fn press_now_playing(&mut self, action: crate::NowPlayingAction) {
+        if let Backend::Synth(s) = &mut self.backend {
+            s.now_playing_actions.push(action);
+        }
+    }
 
     /// Snapshot the engine's transport for a host to publish. `now_ms` is the
     /// wall-clock (unix millis) epoch the snapshot is authoritative at.
@@ -971,6 +1034,14 @@ struct SynthState {
     /// Prefetch progress for a file source.
     prefetch: Option<PrefetchProgress>,
     last_buffering: Option<u8>,
+    /// The presses of the system's now-playing controls it stands in for
+    /// ([`MediaEngine::press_now_playing`]), not taken yet.
+    now_playing_actions: Vec<crate::NowPlayingAction>,
+    /// A test's stand-in for a running pipeline that, after the next seek,
+    /// hands over the picture it decoded for its old position: the timestamp
+    /// that picture carries.
+    #[cfg(test)]
+    stale_on_seek: Option<u64>,
 }
 
 impl SynthState {
@@ -989,6 +1060,9 @@ impl SynthState {
             last_frame_pos: None,
             prefetch: None,
             last_buffering: None,
+            now_playing_actions: Vec::new(),
+            #[cfg(test)]
+            stale_on_seek: None,
         }
     }
 
@@ -1046,6 +1120,12 @@ impl SynthState {
         self.last_tick = None;
         if self.opened {
             self.render_frame();
+            #[cfg(test)]
+            if let Some(stale) = self.stale_on_seek.take()
+                && let Some(frame) = &mut self.latest_native
+            {
+                frame.pts_ms = stale;
+            }
         }
     }
 
@@ -1180,7 +1260,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn synthesized_engine_transport_orders_events_and_follows_the_host() {
-        // Phase `waiting_without_a_deadline_is_a_wait_not_an_abort`.
         {
             // "Block until the frame lands, however long that takes" is spelled
             // `Duration::MAX`. Turning that into a deadline overflows `Instant`,
@@ -1195,7 +1274,6 @@ mod tests {
                 "an unbounded wait still returns the frame it waited for"
             );
         }
-        // Phase `opens_and_orders_duration_before_position`.
         {
             let mut e = MediaEngine::new_synthesized();
             e.open(Source::Remote {
@@ -1218,7 +1296,6 @@ mod tests {
             {
                 assert!(dur_idx.unwrap() < pos_idx, "DurationKnown before Position");
             }
-            // Duration announced exactly once.
             let evts2 = e.poll_at(50);
             assert!(
                 !evts2
@@ -1226,7 +1303,6 @@ mod tests {
                     .any(|x| matches!(x, MediaEvent::DurationKnown { .. }))
             );
         }
-        // Phase `playhead_advances_with_virtual_time`.
         {
             let mut e = MediaEngine::new_synthesized();
             e.open(Source::Remote {
@@ -1245,7 +1321,6 @@ mod tests {
             e.poll_at(3_000);
             assert_eq!(e.position_ms(), 1_000, "paused playhead does not advance");
         }
-        // Phase `playback_rate_is_clamped_and_drives_synthesized_transport`.
         {
             let mut engine = MediaEngine::new_synthesized();
             engine.open(Source::Remote {
@@ -1260,7 +1335,6 @@ mod tests {
             engine.set_rate(99.0);
             assert!((engine.rate() - 4.0).abs() < f32::EPSILON);
         }
-        // Phase `reaching_duration_emits_position_then_ended_last`.
         {
             let mut e = MediaEngine::new_synthesized();
             e.open(Source::Remote {
@@ -1282,7 +1356,6 @@ mod tests {
             assert!(!e.is_playing(), "stopped at the end");
             assert_eq!(e.position_ms(), e.duration_ms().unwrap());
         }
-        // Phase `follower_applies_host_transport_and_seeks_on_large_drift`.
         {
             let mut e = MediaEngine::new_synthesized();
             e.open(Source::Remote {
@@ -1313,7 +1386,6 @@ mod tests {
                 "no seek when already aligned"
             );
         }
-        // Phase `transport_state_snapshots_engine`.
         {
             let mut e = MediaEngine::new_synthesized();
             e.open(Source::Remote {
@@ -1330,7 +1402,6 @@ mod tests {
 
     #[test]
     fn synthesized_engine_produces_frames_only_once_opened() {
-        // Phase `synthesized_engine_produces_a_frame`.
         {
             let mut e = MediaEngine::new_synthesized();
             e.open(Source::Remote {
@@ -1340,7 +1411,6 @@ mod tests {
             assert_eq!((f.width, f.height), (SYNTH_W, SYNTH_H));
             assert_eq!(f.rgba.len(), (SYNTH_W * SYNTH_H * 4) as usize);
         }
-        // Phase `no_frame_is_produced_until_a_source_is_opened`.
         {
             let mut e = MediaEngine::new_synthesized();
             // Pumping a never-opened engine must not fabricate a picture — the
@@ -1360,5 +1430,24 @@ mod tests {
                 "a frame appears once media is opened"
             );
         }
+    }
+
+    #[test]
+    fn the_engine_keeps_what_it_described_and_reports_the_controls_presses() {
+        let mut engine = MediaEngine::new_synthesized();
+        assert_eq!(engine.now_playing(), None);
+        let song = crate::NowPlaying {
+            title: "Harbour".into(),
+            artist: "Ada".into(),
+            ..crate::NowPlaying::default()
+        };
+        engine.set_now_playing(&song);
+        assert_eq!(engine.now_playing(), Some(&song));
+        engine.press_now_playing(crate::NowPlayingAction::Next);
+        assert_eq!(
+            engine.take_now_playing_actions(),
+            vec![crate::NowPlayingAction::Next]
+        );
+        assert!(engine.take_now_playing_actions().is_empty(), "taken once");
     }
 }

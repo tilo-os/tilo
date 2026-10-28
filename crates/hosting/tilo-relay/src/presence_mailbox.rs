@@ -293,7 +293,7 @@ impl PresenceMailbox {
 
     /// Take everything due at `now`, in posting order; with `ride`, also
     /// everything that may go early because something is being written to
-    /// the connection anyway (see [`may_ride`]). When unslotted presence is
+    /// the connection anyway (see `may_ride`). When unslotted presence is
     /// taken, everything pending is taken with it, so it never overtakes
     /// presence posted before it.
     pub fn take(&self, now: Instant, ride: bool) -> Vec<DuePresence> {
@@ -471,7 +471,6 @@ mod tests {
     fn unslotted_presence_keeps_its_order_and_brings_what_came_before() {
         let mailbox = PresenceMailbox::default();
         let t0 = Instant::now();
-        // A pointer that has just moved is held for its gap...
         mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 1"), t0, false);
         assert_eq!(texts(&mailbox.take(t0 + BATCH_WINDOW, false)), ["move 1"]);
         let t1 = t0 + Duration::from_millis(10);
@@ -489,7 +488,6 @@ mod tests {
         let mailbox = PresenceMailbox::default();
         let t0 = Instant::now();
         let per_author = u64::try_from(MAX_SLOTS_PER_AUTHOR).unwrap();
-        // One author is held to its share...
         for slot in 0..per_author {
             assert!(mailbox.post(ROOM, ALICE, Some(caret(slot)), bytes("x"), t0, false));
         }
@@ -604,7 +602,6 @@ mod tests {
         mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 1"), t0, false);
         assert_eq!(texts(&mailbox.take(t0 + BATCH_WINDOW, false)), ["move 1"]);
         let t1 = t0 + Duration::from_millis(10);
-        // Paced, and too recent to ride on its own...
         mailbox.post(ROOM, ALICE, Some(pointer(1)), bytes("move 2"), t1, false);
         assert!(mailbox.take(t1, true).is_empty());
         // ...but an event after it must not overtake it.

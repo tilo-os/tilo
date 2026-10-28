@@ -214,7 +214,7 @@ fn hdr_metadata_cannot_reuse_the_completed_sdr_image() {
     backend.submit_frame_with_damage(&unchanged(solid(color), 3, 2), OutputId(0));
     let allocation = backend.last_frame().as_ptr();
     let signal = SurfaceSignal::for_colorimetry(
-        crate::collab::colorimetry::Colorimetry::hdr10(),
+        neighbour_wire::colorimetry::Colorimetry::hdr10(),
         crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
     )
     .expect("HDR signal");

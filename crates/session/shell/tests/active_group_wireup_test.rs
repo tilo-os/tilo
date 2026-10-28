@@ -43,6 +43,7 @@ fn two_strip_two_group_tree() -> (WorkspaceTree, StripGroups, StripGroups) {
                 kind: AppKind::Other("Test".into()),
                 label: label.into(),
             },
+            app_title: None,
         }],
         active_tab: id ^ 0xff,
         width: WindowWidth::Normal,
@@ -60,11 +61,10 @@ fn two_strip_two_group_tree() -> (WorkspaceTree, StripGroups, StripGroups) {
         name: "Strip1".into(),
         window_groups: vec![mk_group(b0, "B0"), mk_group(b1, "B1")],
     };
-    let ws = Workspace {
-        strips: vec![strip0, strip1],
-        // Everything else — including the workspace's durable collaboration room
-        // — comes from the builder, so a new `Workspace` field won't break this.
-        ..Workspace::new(ws_id, "Test")
+    let ws = {
+        let mut workspace = Workspace::new(ws_id, "Test");
+        workspace.strips = vec![strip0, strip1];
+        workspace
     };
 
     let mut active_strip = HashMap::new();

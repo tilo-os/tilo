@@ -12,7 +12,7 @@
 //!   client frames (presence, ops, ops subscriptions). Answered `204`.
 //! * `POST /peer/v3/live/fallback/resume`, header `x-tilo-live-session`: a new
 //!   response stream for the same session (stream rotation, reconnect). The
-//!   session survives a detached stream for [`RESUME_GRACE`].
+//!   session survives a detached stream for [`RESUME_GRACE`](crate::live::fallback::RESUME_GRACE).
 //!
 //! Bridging. A fallback publisher is attached to its namespace slot exactly
 //! like a WebTransport publisher: a private in-process ingress origin with the
@@ -499,11 +499,6 @@ impl LiveRelay {
     }
 
     /// Apply one client frame batch.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the session is gone or a frame is malformed or not
-    /// permitted by the session's grant.
     pub fn fallback_send(&self, id: &[u8; 16], body: &[u8]) -> Result<(), FallbackError> {
         if body.len() > MAX_SEND_BYTES {
             return Err(FallbackError::Invalid);
@@ -977,7 +972,10 @@ async fn pump_ops(
         .with_priority(1)
         .with_max_age(OPS_LATENCY);
     let subscriber = match broadcast.track(&name) {
-        Ok(track) => track.subscribe(subscription).await.ok(),
+        Ok(track) => track
+            .subscribe(super::egress_subscription(&track, subscription))
+            .await
+            .ok(),
         Err(_) => None,
     };
     if let Some(mut subscriber) = subscriber {

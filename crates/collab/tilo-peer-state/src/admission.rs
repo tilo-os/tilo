@@ -106,7 +106,77 @@ pub enum MissingPrerequisite {
     /// The app surface the op names is not here yet: the op is decided
     /// once it is.
     AppSurface,
+    /// An earlier write of the same author to the same record was let go
+    /// unapplied: applied first, this one would leave that one behind for
+    /// good, its sequence overtaken.
+    EarlierWrite,
 }
+impl std::fmt::Display for MissingPrerequisite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Governance => "the room's governance",
+            Self::Certificate => "its author's certificate",
+            Self::RecordCheckpoint => "its record's checkpoint",
+            Self::CheckpointCoverage => "the governance covering its checkpoint",
+            Self::CausalDependencies => "the changes it builds on",
+            Self::PersistedMls => "its record's encryption state",
+            Self::ExactHistoricalEvidence => "exact evidence of its earlier admission",
+            Self::AppSurface => "its app surface",
+            Self::EarlierWrite => "an earlier write of its author to its record",
+        })
+    }
+}
+
+/// An app message the prerequisite queue let go unapplied: what it was and
+/// what it waited for. Never applied, so nothing of it entered the room; the
+/// room's host still retains it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DroppedInput {
+    pub author: [u8; 32],
+    pub app: String,
+    pub record: String,
+    pub sequence: u64,
+    /// What it still waited for when it was let go; `None` when it can no
+    /// longer be decided at all.
+    pub waiting_for: Option<MissingPrerequisite>,
+    pub reason: DropReason,
+}
+
+/// Why a held app message was let go.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DropReason {
+    /// Newer messages needed its place in the bounded queue, and what it
+    /// waited for had not arrived while they came.
+    Superseded,
+    /// It is larger than the queue holds at all.
+    TooLarge,
+    /// Decided again when its place was needed, the room refuses it now.
+    Refused(String),
+}
+
+impl std::fmt::Display for DroppedInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} write {} of {}/{:?} ",
+            hex::encode(&self.author[..4]),
+            self.sequence,
+            self.app,
+            self.record
+        )?;
+        match (&self.reason, &self.waiting_for) {
+            (DropReason::TooLarge, _) => f.write_str("is too large to hold for its prerequisite"),
+            (DropReason::Refused(why), _) => write!(f, "is refused now: {why}"),
+            (DropReason::Superseded, Some(waiting)) => {
+                write!(f, "waited for {waiting}, which did not arrive")
+            }
+            (DropReason::Superseded, None) => {
+                f.write_str("waited for a prerequisite that no longer applies")
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputDisposition {
     Accepted(DocumentAdmission),
@@ -581,7 +651,6 @@ mod tests {
             index.check(&admission(1, 501, 9)),
             Err(AdmissionError::ConflictingSequence)
         );
-        // A lower mark changes nothing.
         let before = index.encode().unwrap();
         index
             .cover(("room", "app", "record"), [([1; 32], 10)])

@@ -208,21 +208,17 @@ impl PeerRefusal {
     /// that would work.
     pub(crate) fn message(&self) -> String {
         match self {
-            Self::Unidentified => {
-                "the admin control socket could not identify the connecting process".to_string()
+            Self::Unidentified => "this program couldn't be identified".to_string(),
+            Self::OtherAccount => "this works only for the account whose desktop this is; \
+                 sign in as that account"
+                .to_string(),
+            // An app's process — the Terminal app and everything run in it —
+            // reaches the desktop's actions with that app's workspace scope,
+            // through `tilo action`, never with the owner's whole authority.
+            Self::Sandboxed | Self::LaunchedApp(_) => {
+                "programs inside an app can't use tilo-control; use `tilo action` instead"
+                    .to_string()
             }
-            Self::OtherAccount => "the admin control socket serves only the account whose \
-                 session it is; connect as that account (its own login or ssh)"
-                .to_string(),
-            Self::Sandboxed => "a sandboxed process cannot use the admin control socket; \
-                 apps act through their own collaboration connection"
-                .to_string(),
-            Self::LaunchedApp(package) => format!(
-                "`{package}` was launched by this session, and an app acts through its own \
-                 collaboration connection and grants, never with the device admin's authority; \
-                 an agent running inside it connects to the session's agent door instead \
-                 (`tilo-runtime-mcp --connect`), as an agent the person admits"
-            ),
         }
     }
 }
@@ -257,6 +253,9 @@ pub(crate) fn authorize(stream: &UnixStream) -> Result<(), PeerRefusal> {
 /// Tell a refused client why, in the protocol's own error shape, then let
 /// the connection drop.
 pub(crate) fn refuse(mut stream: UnixStream, refusal: &PeerRefusal) {
+    if let PeerRefusal::LaunchedApp(package) = refusal {
+        tracing::info!(%package, "admin control: a process inside an app was refused");
+    }
     let reply = crate::shell::test_control::serialise_response(
         &crate::shell::test_control::Response::Err {
             code: "not_permitted".to_string(),
@@ -268,8 +267,31 @@ pub(crate) fn refuse(mut stream: UnixStream, refusal: &PeerRefusal) {
 
 /// Whether this process runs with the administrator group among its groups.
 /// The kernel's group list is what PAM set up at login; it is not something
-/// the session can claim for itself.
+/// the session can claim for itself, and it does not change while the
+/// process lives, so it is resolved once.
+///
+/// Resolving it reads the group database through NSS, which loads its
+/// modules and reads `/etc`: a wait on the disk the compositor's main loop
+/// must not make (the palette's actions ask while it is open).
+/// [`resolve_admin_group_in_background`] answers it on a startup thread; a call before that
+/// finishes waits for its answer instead of asking again.
 fn in_admin_group() -> bool {
+    *IN_ADMIN_GROUP.get_or_init(admin_group_now)
+}
+
+static IN_ADMIN_GROUP: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Resolve [`in_admin_group`] on a thread of its own, started at startup so
+/// the main loop finds the answer.
+pub(crate) fn resolve_admin_group_in_background() {
+    let _ = std::thread::Builder::new()
+        .name("tilo-admin-group".into())
+        .spawn(|| {
+            in_admin_group();
+        });
+}
+
+fn admin_group_now() -> bool {
     let Some(admin) = group_id(ADMIN_GROUP) else {
         return false;
     };
@@ -381,10 +403,14 @@ mod tests {
         std::io::Read::read_to_string(&mut client, &mut line).expect("read refusal");
         let reply: serde_json::Value = serde_json::from_str(line.trim()).expect("one JSON line");
         assert_eq!(reply["err"]["code"], "not_permitted");
+        // Why, in plain words, and what works instead.
         assert!(
             reply["err"]["message"]
                 .as_str()
-                .is_some_and(|message| message.contains("sandboxed"))
+                .is_some_and(
+                    |message| message.contains("inside an app") && message.contains("tilo action")
+                ),
+            "{reply}"
         );
     }
 }

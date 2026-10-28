@@ -14,12 +14,13 @@ import subprocess
 import sys
 import tempfile
 import textwrap
-import tomllib
 import unittest
 import importlib.util
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / "tools" / "ci"))
+import t_matrix  # noqa: E402
 PUBLISH = REPO / "tools/extensions/publish.sh"
 BASE_URL = "https://code.example/api/packages/tilo/generic"
 FINGERPRINT = "cd" * 32
@@ -30,7 +31,7 @@ sys.modules[SPEC.name] = resolver
 SPEC.loader.exec_module(resolver)
 
 FAKE_CURL = textwrap.dedent("""\
-    #!/usr/bin/env python3
+    #!/usr/bin/env -S python3 -S
     import os, sys
     from pathlib import Path
     store = Path(os.environ["FAKE_STORE"])
@@ -83,7 +84,7 @@ FAKE_CURL = textwrap.dedent("""\
     """)
 
 FAKE_COSIGN = textwrap.dedent("""\
-    #!/usr/bin/env python3
+    #!/usr/bin/env -S python3 -S
     import hashlib, sys
     from pathlib import Path
     args = sys.argv[1:]
@@ -142,7 +143,7 @@ class Publish(unittest.TestCase):
         bin_dir.mkdir()
         for name, text in (("curl", FAKE_CURL), ("cosign", FAKE_COSIGN)):
             path = bin_dir / name
-            path.write_text(text.replace("#!/usr/bin/env python3", f"#!{sys.executable}", 1))
+            path.write_text(text.replace("#!/usr/bin/env -S python3 -S", f"#!{sys.executable}", 1))
             path.chmod(path.stat().st_mode | stat.S_IXUSR)
         (self.root / "runner").mkdir()
         self.env = {
@@ -368,7 +369,7 @@ class SigningAuthority(unittest.TestCase):
                     self.assertFalse(out.exists())
 
     def test_only_the_manifest_publisher_requests_the_extension_audience(self):
-        checks = tomllib.loads((REPO / "t.toml").read_text())["check"]
+        checks = t_matrix.load(REPO)["check"]
         users = sorted(c["name"] for c in checks if "tilo-extension-manifests" in c.get("id_token", []))
         self.assertEqual(users, ["publish-extension-manifests"])
         (publisher,) = (c for c in checks if c["name"] == "publish-extension-manifests")

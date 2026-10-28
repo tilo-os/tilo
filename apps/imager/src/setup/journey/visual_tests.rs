@@ -1,4 +1,3 @@
-//! Paint the real guided widgets offscreen, without opening an installer window.
 use super::*;
 use crate::resource::GuidedInstallerShell;
 use std::path::PathBuf;
@@ -50,6 +49,9 @@ fn paint_screen(scenario: &str, ids: &[&str], viewport: (u32, u32), theme: Theme
     app.harness().set_theme(theme.with_reduce_motion(true));
     paint_app(&mut app, scenario, ids, viewport, tag);
 }
+
+mod scroll;
+pub(super) use scroll::scroll_into_view;
 
 pub(super) fn paint_app<A: ui::framework::ResourceApp>(
     app: &mut TestApp<A>,
@@ -201,9 +203,11 @@ fn viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping() {
                 app.with_widget::<InstallerPreview, _>(|preview| {
                     assert_eq!(
                         preview.journey.page,
-                        Page::Password,
+                        Page::Devices,
                         "pointer coordinates must match the resized painted control"
                     );
+                    preview.journey.page = Page::Password;
+                    preview.dirty = true;
                 })
                 .unwrap();
                 paint_app(
@@ -406,14 +410,6 @@ fn guided_pages_paint_at_small_normal_and_large_host_scales_in_both_themes() {
             ],
         ),
         (
-            "installer-purpose",
-            &[
-                "installer.choice.purpose-computer",
-                "installer.choice.purpose-server",
-                "installer.next",
-            ],
-        ),
-        (
             "installer-storage",
             &["installer.storage.size", "installer.next"],
         ),
@@ -465,7 +461,7 @@ fn wait_for_preview(
     }
     let settled = app
         .harness()
-        .wait_until(ui::time::Duration::from_secs(30), |harness| {
+        .wait_until(tilo_test_env::hang_bound(), |harness| {
             ready(harness.root_widget(), &predicate)
         });
     if !settled {
@@ -491,6 +487,42 @@ fn wait_for_fresh_preparation(app: &mut TestApp<GuidedInstallerShell>) {
     assert_eq!(state["page"], "destination", "{state}");
 }
 
+#[cfg(unix)]
+fn identify_other_computer(app: &mut TestApp<GuidedInstallerShell>) {
+    for (field, value) in [
+        ("manufacturer", "Test Vendor"),
+        ("model", "Other Test Laptop"),
+        ("variant", "OTHER-TEST-BOARD"),
+    ] {
+        app.effect(&InstallerPreviewEffect::SetTargetIdentityField {
+            field: field.into(),
+            value: value.into(),
+        })
+        .unwrap();
+    }
+}
+
+#[cfg(unix)]
+fn choose(app: &mut TestApp<GuidedInstallerShell>, choice: &str) {
+    app.effect(&InstallerPreviewEffect::ChoosePreview {
+        choice: choice.into(),
+    })
+    .unwrap();
+    app.effect(&InstallerPreviewEffect::ContinuePreview)
+        .unwrap();
+    let page = app
+        .effect(&InstallerPreviewEffect::ReadPreview)
+        .unwrap()
+        .value
+        .unwrap()["page"]
+        .clone();
+    if page == "target" {
+        identify_other_computer(app);
+        app.effect(&InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn pairing_name_app(viewport: (u32, u32), theme: Theme) -> TestApp<GuidedInstallerShell> {
     // Live semantic actions hosted offscreen on a fresh test profile; capture mode
@@ -502,12 +534,7 @@ fn pairing_name_app(viewport: (u32, u32), theme: Theme) -> TestApp<GuidedInstall
     // This route prepares another computer without opening the current host's
     // disk compatibility check, which owns navigation until explicitly reviewed.
     for choice in ["another", "fresh", "existing"] {
-        app.effect(&InstallerPreviewEffect::ChoosePreview {
-            choice: choice.into(),
-        })
-        .unwrap();
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
+        choose(&mut app, choice);
     }
     app
 }
@@ -589,12 +616,7 @@ fn account_overview_and_explicit_provider_choice_paint_with_matching_navigation(
             wait_for_fresh_preparation(&mut app);
             // Identity/account rendering does not require a writable host disk.
             for choice in ["another", "fresh", "new"] {
-                app.effect(&InstallerPreviewEffect::ChoosePreview {
-                    choice: choice.into(),
-                })
-                .unwrap();
-                app.effect(&InstallerPreviewEffect::ContinuePreview)
-                    .unwrap();
+                choose(&mut app, choice);
             }
             app.effect(&InstallerPreviewEffect::SetPreviewName {
                 value: "Ada Lovelace".into(),
@@ -602,17 +624,6 @@ fn account_overview_and_explicit_provider_choice_paint_with_matching_navigation(
             .unwrap();
             app.effect(&InstallerPreviewEffect::ContinuePreview)
                 .unwrap();
-            for effect in [
-                InstallerPreviewEffect::SetPreviewPassword {
-                    value: "several unrelated installation words".into(),
-                },
-                InstallerPreviewEffect::SetPreviewConfirmation {
-                    value: "several unrelated installation words".into(),
-                },
-                InstallerPreviewEffect::ContinuePreview,
-            ] {
-                app.effect(&effect).unwrap();
-            }
             wait_for_preview(&mut app, |preview| {
                 preview.journey.page == Page::Devices
                     && !preview.personal_busy()
@@ -774,10 +785,14 @@ fn motion_frames(app: &mut TestApp<GuidedInstallerShell>, name: &str, direction:
     let mut previous = None;
     for percent in [0, 25, 50, 75, 100] {
         app.with_widget::<InstallerPreview, _>(|preview| {
-            preview.slide = Some((
-                direction,
-                ui::motion::Presence::held_at(u16::try_from(percent * 10).unwrap()),
-            ));
+            let presence = if percent == 100 {
+                // The last frame is the settled page, which the production draw
+                // must release instead of keeping a capture pose forever.
+                ui::motion::Presence::opened()
+            } else {
+                ui::motion::Presence::held_at(u16::try_from(percent * 10).unwrap())
+            };
+            preview.slide = Some((direction, presence));
         })
         .unwrap();
         // with_widget relays the production layout/draw pass; this rasterizes
@@ -840,10 +855,12 @@ fn personal_motion_frames(
     let mut previous = None;
     for percent in [0, 50, 100] {
         app.with_widget::<InstallerPreview, _>(|preview| {
-            preview.slide = Some((
-                direction,
-                ui::motion::Presence::held_at(u16::try_from(percent * 10).unwrap()),
-            ));
+            let presence = if percent == 100 {
+                ui::motion::Presence::opened()
+            } else {
+                ui::motion::Presence::held_at(u16::try_from(percent * 10).unwrap())
+            };
+            preview.slide = Some((direction, presence));
         })
         .unwrap();
         let pixels = app.harness().render_rgba();
@@ -979,6 +996,11 @@ fn personal_pages_keep_navigation_fixed_and_scroll_errors_above_it() {
             .unwrap();
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            preview.journey.page = Page::Password;
+            preview.dirty = true;
+        })
+        .unwrap();
         for effect in [
             InstallerPreviewEffect::SetPreviewPassword {
                 value: "several unrelated installation words".into(),
@@ -1121,6 +1143,11 @@ fn personal_pages_keep_control_scale_and_rasterize_forward_and_back_motion() {
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
         personal_motion_frames(&mut app, "profile-to-password", 1.0, viewport, next_height);
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            preview.journey.page = Page::Password;
+            preview.dirty = true;
+        })
+        .unwrap();
         for effect in [
             InstallerPreviewEffect::SetPreviewPassword {
                 value: "several unrelated installation words".into(),
@@ -1241,7 +1268,6 @@ fn account_decision_pages_slide_forward_back_and_block_pointer_until_settled() {
     app.with_widget::<InstallerPreview, _>(|preview| {
         assert_eq!(preview.accounts.navigation_step(), "confirm");
         let direction = preview.slide.as_ref().unwrap().0;
-        // Hold the midpoint for deterministic pointer delivery.
         preview.slide = Some((direction, ui::motion::Presence::held_at(500)));
     })
     .unwrap();
@@ -1551,7 +1577,7 @@ fn belongings_entry_discovers_real_metadata_after_profile_and_review_edit() {
         let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
         wait_for_fresh_preparation(&mut app);
         app.with_widget::<InstallerPreview, _>(|preview| {
-            preview.stage(Some("installer-purpose"));
+            preview.stage(Some("installer-belongings"));
             preview.live = true;
             preview.capabilities.prepared_installation = true;
             preview.journey.destination = Some(Destination::Another);
@@ -1560,6 +1586,14 @@ fn belongings_entry_discovers_real_metadata_after_profile_and_review_edit() {
                 preview.journey.page = Page::Review;
                 preview.journey.migrate = Some(false);
                 preview.journey.edit("belongings").unwrap();
+            } else {
+                // The ordinary interactive route continues from Devices into
+                // Your data; discovery runs there, never before identity.
+                preview.journey.page = Page::Devices;
+                preview.journey.migrate = Some(true);
+                preview.journey.identity = Some(Identity::New);
+                preview.journey.name = "Ada".into();
+                preview.journey.device_name = "Ada's computer".into();
             }
             preview.dirty = true;
         })
@@ -1633,7 +1667,7 @@ fn profile_keeps_picture_action_and_name_without_redundant_explanation() {
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_eq!(preview.journey.page, Page::Password);
+        assert_eq!(preview.journey.page, Page::Devices);
     })
     .unwrap();
     app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
@@ -2425,9 +2459,16 @@ fn personal_fields_enter_advances_and_password_enter_focuses_confirmation() {
     app.harness().key("Enter");
     app.settle();
     app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_eq!(preview.journey.page, Page::Password)
+        assert_eq!(
+            preview.journey.page,
+            Page::Devices,
+            "the interactive profile advances to Devices"
+        );
+        preview.journey.page = Page::Password;
+        preview.dirty = true;
     })
     .unwrap();
+    app.settle();
     app.harness()
         .perform_named("installer.password", &ui::a11y::Action::Focus)
         .unwrap();
@@ -2745,6 +2786,11 @@ fn password_route_keeps_disabled_continue_and_real_back_in_every_frame() {
         }
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            preview.journey.page = Page::Password;
+            preview.dirty = true;
+        })
+        .unwrap();
         app.settle();
         let footer = app
             .with_widget::<InstallerPreview, _>(|preview| {

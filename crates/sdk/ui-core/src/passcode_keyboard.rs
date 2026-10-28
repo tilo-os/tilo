@@ -14,7 +14,6 @@ use vello::peniko::Fill;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
-/// One key of the keyboard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PasscodeKey {
     Char(char),
@@ -48,7 +47,6 @@ impl PasscodeKeyboard {
     /// Rows of keys, top to bottom.
     pub const ROWS: u16 = 5;
 
-    /// The height of the keyboard with `key_height` keys `gap` apart.
     pub fn height(key_height: f64, gap: f64) -> f64 {
         let rows = f64::from(Self::ROWS);
         key_height * rows + gap * (rows - 1.0)
@@ -93,7 +91,6 @@ impl PasscodeKeyboard {
         out
     }
 
-    /// The key under `point`, if any.
     pub fn key_at(
         self,
         rect: Rect,

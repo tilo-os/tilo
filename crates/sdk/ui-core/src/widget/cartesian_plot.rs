@@ -13,6 +13,7 @@
 use crate::time::Instant;
 use crate::widget::ModelPath;
 use std::cell::RefCell;
+use tilo_sort::CompactSort as _;
 
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -2183,7 +2184,7 @@ impl CartesianPlot {
                     })
                     .map(|(index, _)| index),
             );
-            indices.sort_unstable();
+            indices.compact_sort();
             indices.dedup();
         }
         indices

@@ -223,6 +223,57 @@ impl Replays {
         self.reclaim.clone()
     }
 }
+/// Retired replay work waiting for its discard: at most this many work
+/// directories, past the one being discarded.
+const RETIRED_BACKLOG: usize = DEFAULT_REPLAY_TICKETS;
+
+/// Discard `retired`, a finished replay's work directory moved aside
+/// ([`WorkspaceStore::retire_replay_work`]), on the host's one discarding
+/// thread. Unlinked in the owner's turn, a first replay's pins and indexes
+/// were most of the turn that cuts its catch-up, in front of every queued
+/// job; unlinked by the replay workers alongside the newcomers they pin, the
+/// links of the retained frames they share contended. The thread takes one
+/// directory at a time; a caller waits while [`RETIRED_BACKLOG`] are queued,
+/// so retired work stays bounded. Where no thread can be started, it is
+/// discarded here. What a crash leaves, the store's work reclamation removes.
+fn discard_retired(retired: WorkDiscard) -> Result<(), StoreError> {
+    static QUEUE: OnceLock<Option<std::sync::mpsc::SyncSender<WorkDiscard>>> = OnceLock::new();
+    let queue = QUEUE.get_or_init(|| {
+        let (queue, retired) = std::sync::mpsc::sync_channel::<WorkDiscard>(RETIRED_BACKLOG);
+        std::thread::Builder::new()
+            .name("relay-retired-work".into())
+            .spawn(move || {
+                for mut discard in retired {
+                    let discarding = crate::timing::start();
+                    if let Err(error) = discard_whole(&mut discard) {
+                        tracing::warn!(%error, "retired replay work was left for reclamation");
+                    }
+                    crate::timing::window("replay.retired_discard", discarding);
+                }
+            })
+            .ok()
+            .map(|_| queue)
+    });
+    let waiting = crate::timing::start();
+    let retired = match queue {
+        Some(queue) => match queue.send(retired) {
+            Ok(()) => None,
+            Err(std::sync::mpsc::SendError(retired)) => Some(retired),
+        },
+        None => Some(retired),
+    };
+    crate::timing::window("owner.replay.retired_wait", waiting);
+    match retired {
+        Some(mut retired) => discard_whole(&mut retired),
+        None => Ok(()),
+    }
+}
+
+fn discard_whole(discard: &mut WorkDiscard) -> Result<(), StoreError> {
+    while matches!(discard.step(WorkLimit::default())?, Step::More) {}
+    Ok(())
+}
+
 /// The process-wide budget every replay and publication shares.
 pub fn output_budget() -> &'static ReplayBudget {
     static OUTPUT: OnceLock<ReplayBudget> = OnceLock::new();
@@ -396,29 +447,14 @@ impl State {
             .get(&authority.id.0)
             .is_some_and(|entry| entry.finished)
         {
-            let entry = self
-                .replays
-                .entries
-                .get_mut(&authority.id.0)
-                .invariant("id missing")?;
-            if !matches!(entry.cursor, Some(Cursor::Discard(_))) {
-                entry.cursor = Some(Cursor::Discard(Box::new(WorkDiscard::new(
-                    self.store
-                        .root()
-                        .join("store-work-v1")
-                        .join(format!("replay-{}", hex::encode(authority.id.0))),
-                )?)));
-            }
-            let Some(Cursor::Discard(discard)) = &mut entry.cursor else {
-                return Err(error("finished replay disposal cursor missing"));
-            };
-            let step = discard.step(WorkLimit::default())?;
-            match step {
-                Step::More => return Ok(Step::More),
-                Step::Done(()) => {
-                    self.replays.entries.remove(&authority.id.0);
-                }
-            }
+            // The replay this one follows is written and cleaned up. Its work
+            // directory moves aside in one rename and is discarded off the
+            // owner ([`discard_retired`]).
+            let retired = crate::timing::windowed("owner.replay.capture_retire", || {
+                self.store.retire_replay_work(authority.id)
+            })?;
+            discard_retired(retired)?;
+            self.replays.entries.remove(&authority.id.0);
         }
         if !self.replays.entries.contains_key(&authority.id.0) {
             let build = if let Some(held) = held {
@@ -462,9 +498,12 @@ impl State {
         };
         #[cfg(test)]
         crate::store::test_barrier::pause(self.store.root(), "replay-prepare");
+        let listing = held.and_then(|_| crate::timing::start());
         let step = self
             .store
             .capture_replay_step(build, WorkLimit::default())?;
+        // Of a final cut's turn, the listing of what it replays.
+        crate::timing::window("owner.replay.pending_capture_list", listing);
         match step {
             Step::More => Ok(Step::More),
             Step::Done(snapshot) => {
@@ -686,6 +725,7 @@ mod tests {
             workers: crate::persistence::isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
             retaining_only: false,
+            group: crate::persistence::Group::default(),
         };
         let ticket = ReplayTicket::reserve_from([2; 32], None, slots.clone()).unwrap();
         let handle = capture(&mut state, &ticket);
@@ -742,6 +782,7 @@ mod tests {
             workers: crate::persistence::isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
             retaining_only: false,
+            group: crate::persistence::Group::default(),
         };
         let ticket = ReplayTicket::reserve_from(device, None, slots).unwrap();
         let handle = capture(&mut state, &ticket);
@@ -790,6 +831,7 @@ mod tests {
                 workers: crate::persistence::isolated_test_workers(),
                 replay_worker: Arc::new(Semaphore::new(1)),
                 retaining_only: false,
+                group: crate::persistence::Group::default(),
             };
             let ticket = ReplayTicket::reserve_from([2; 32], None, slots.clone()).unwrap();
             let handle = capture(&mut state, &ticket);
@@ -849,6 +891,7 @@ mod tests {
             workers: crate::persistence::isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
             retaining_only: false,
+            group: crate::persistence::Group::default(),
         };
         let ticket = held.pop().unwrap();
         while matches!(state.capture_replay(&ticket.authority).unwrap(), Step::More) {}
@@ -869,6 +912,161 @@ mod tests {
         assert_eq!(slots.available_permits(), 1);
         assert_eq!(state.store.count_pending(&[2; 32]).unwrap(), 257);
     }
+    /// The replay work directories under the store's work.
+    fn replay_dirs(state: &State) -> Vec<String> {
+        let work = state.store.root().join(crate::store::replay::WORK_DIR);
+        let mut names: Vec<String> = std::fs::read_dir(work)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .filter(|name| name.starts_with("replay-"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    /// Write `handle`'s replay whole, as the subscriber's connection does.
+    async fn write_whole(handle: &ReplayHandle, ticket: &ReplayTicket) -> ReplaySummary {
+        let mut written = None;
+        loop {
+            match handle
+                .advance(&ticket.authority, written.take())
+                .await
+                .unwrap()
+            {
+                ReplayAdvance::Preparing => {}
+                ReplayAdvance::Batch(batch) => written = Some(WrittenBatch(batch.number)),
+                ReplayAdvance::Exhausted(summary) => return summary,
+            }
+        }
+    }
+
+    /// A first replay of three queued frames, written and cleaned up, then
+    /// the cut of its catch-up, which holds one commit. Returns the first
+    /// replay's work directory name, the catch-up and its held commit.
+    async fn cut_catch_up(
+        state: &mut State,
+        ticket: &ReplayTicket,
+    ) -> (String, ReplayHandle, std::path::PathBuf) {
+        let frame = crate::transport::encode(&crate::transport::Envelope::Ping).unwrap();
+        for sequence in 0..3 {
+            state
+                .store
+                .enqueue_pending(&ticket.authority.device, sequence, &frame)
+                .unwrap();
+        }
+        let first = capture(state, ticket);
+        ticket
+            .authority
+            .bind(Arc::new(AtomicBool::new(true)))
+            .unwrap();
+        write_whole(&first, ticket).await;
+        while matches!(
+            state
+                .finish_replay(&ticket.authority, &first, |_| Ok(()))
+                .unwrap(),
+            Step::More
+        ) {}
+        let first_dir = format!("replay-{}", hex::encode(ticket.authority.id.0));
+        assert_eq!(replay_dirs(state), std::slice::from_ref(&first_dir));
+        let held = state
+            .store
+            .root()
+            .join(crate::store::replay::WORK_DIR)
+            .join(crate::store::replay::held_work_name([3; 16]));
+        std::fs::create_dir_all(&held).unwrap();
+        let commit = held.join(format!(
+            "{:016x}-{}.delta",
+            9,
+            blake3::hash(&frame).to_hex()
+        ));
+        std::fs::write(&commit, &frame).unwrap();
+        let catch_up = loop {
+            match state
+                .capture_pending_replay(&ticket.authority, &held)
+                .unwrap()
+            {
+                Step::More => {}
+                Step::Done(handle) => break handle,
+            }
+        };
+        (first_dir, catch_up, commit)
+    }
+
+    #[tokio::test]
+    async fn a_catch_up_cut_takes_the_first_replays_name_and_leaves_its_work_to_the_discard() {
+        let slots = Arc::new(Semaphore::new(1));
+        let tmp = tempfile::tempdir().unwrap();
+        let store = crate::store::WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let mut state = State {
+            store,
+            doc: None,
+            sequence: None,
+            reserved: 0,
+            replays: Replays::default(),
+            retention_scratch: None,
+            retention_candidates: Vec::new(),
+            workers: crate::persistence::isolated_test_workers(),
+            replay_worker: Arc::new(Semaphore::new(1)),
+            retaining_only: false,
+            group: crate::persistence::Group::default(),
+        };
+        let ticket = ReplayTicket::reserve_from([2; 32], None, slots).unwrap();
+        let (first, catch_up, commit) = cut_catch_up(&mut state, &ticket).await;
+        assert!(replay_dirs(&state).contains(&first));
+        // The first replay's work, moved aside, goes on the discarding thread.
+        tilo_test_env::within("the retired replay work was not discarded", async {
+            while replay_dirs(&state).len() > 1 {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        assert_eq!(replay_dirs(&state), std::slice::from_ref(&first));
+
+        let summary = write_whole(&catch_up, &ticket).await;
+        assert_eq!(replay_dirs(&state), [first]);
+        assert_eq!(summary.pending_frames, 1);
+        assert_eq!(
+            summary.cleanup_entries, 0,
+            "a held commit went to the cleanup the owner runs"
+        );
+        assert!(
+            commit.exists(),
+            "the replay unlinked its held commit itself"
+        );
+    }
+
+    #[test]
+    fn retiring_replay_work_moves_it_aside_whole_for_its_discard() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = crate::store::WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let id = ReplayId([5; 16]);
+        let work = store.root().join(crate::store::replay::WORK_DIR);
+        let named = work.join(format!("replay-{}", hex::encode(id.0)));
+        let pin = std::path::Path::new("pins").join(format!("{:016x}.frame", 0));
+        std::fs::create_dir_all(named.join("pins")).unwrap();
+        std::fs::write(named.join(&pin), b"pin").unwrap();
+        let mut discard = store.retire_replay_work(id).unwrap();
+        assert!(
+            !named.exists(),
+            "the name was not freed for the next capture"
+        );
+        let moved: Vec<_> = std::fs::read_dir(&work)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        assert_eq!(moved.len(), 1);
+        assert!(moved[0].join(&pin).exists(), "the work was not moved whole");
+        discard_whole(&mut discard).unwrap();
+        assert_eq!(std::fs::read_dir(&work).unwrap().count(), 0);
+        // Nothing to move: nothing to discard.
+        discard_whole(&mut store.retire_replay_work(id).unwrap()).unwrap();
+    }
+
     #[test]
     fn owner_output_budget_holds_one_oversized_batch_through_write_and_saturation() {
         let slots = Arc::new(Semaphore::new(2));
@@ -896,6 +1094,7 @@ mod tests {
             workers: crate::persistence::isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
             retaining_only: false,
+            group: crate::persistence::Group::default(),
         };
         let tickets = (0..2)
             .map(|_| {

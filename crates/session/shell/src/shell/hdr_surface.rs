@@ -38,13 +38,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::ImageData;
 
-use crate::collab::colorimetry::{ColorPrimaries, Colorimetry, TransferCharacteristics};
 use crate::shell::color_pipeline::{
     BT709_PRIMARIES, BT2020_PRIMARIES, DISPLAY_P3_PRIMARIES, Mat3, SDR_REFERENCE_WHITE_NITS,
     bt709_to_bt2020_matrix, gamut_matrix, hlg_inverse_oetf, pack_xbgr2101010, pq_eotf,
     pq10_from_nits, srgb_eotf, srgb_oetf,
 };
 use crate::shell::hdr_tonemap::{HdrTonemapConfig, tonemap_rgb_signal_to_sdr_linear};
+use neighbour_wire::colorimetry::{ColorPrimaries, Colorimetry, TransferCharacteristics};
 
 /// The GPU composite for PQ outputs; mirrors [`composite_hdr_pixel`].
 pub const COMPOSITE_SHADER_SOURCE: &str = concat!(
@@ -239,7 +239,7 @@ impl HdrPlane {
     ) -> Option<Self> {
         let limited = matches!(
             signal.colorimetry.range,
-            crate::collab::colorimetry::ColorRange::Limited
+            neighbour_wire::colorimetry::ColorRange::Limited
         );
         let planes = crate::shell::hdr_tonemap::P010Planes {
             luma,
@@ -710,8 +710,8 @@ impl CpuComposite<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collab::colorimetry::{ColorRange, MatrixCoefficients};
     use crate::shell::color_pipeline::pq_inverse_eotf;
+    use neighbour_wire::colorimetry::{ColorRange, MatrixCoefficients};
 
     fn pq_signal() -> SurfaceSignal {
         SurfaceSignal::for_colorimetry(Colorimetry::hdr10(), HdrTonemapConfig::default())
@@ -755,7 +755,6 @@ mod tests {
         }
         assert_eq!(f32_to_half(1.0), 0x3C00);
 
-        // Phase `only_hdr_descriptions_make_planes`.
         let tonemap = HdrTonemapConfig::default();
         assert!(SurfaceSignal::for_colorimetry(Colorimetry::sdr_bt709(), tonemap).is_none());
         assert_eq!(pq_signal().transfer, SignalTransfer::Pq);
@@ -770,7 +769,6 @@ mod tests {
         let scrgb = SurfaceSignal::for_colorimetry(scrgb, tonemap).expect("scRGB");
         assert_eq!(scrgb.transfer, SignalTransfer::Linear);
 
-        // Phase `decode_places_reference_whites_at_sdr_white`.
         {
             let white = 240.0;
             // scRGB 1.0 is SDR white, its BT.709 primaries converted.
@@ -783,13 +781,11 @@ mod tests {
             for c in [r, g, b] {
                 assert!((c - white).abs() / white < 0.01, "HLG 75% gave {c}");
             }
-            // PQ is absolute whatever the SDR white.
             let code = pq_inverse_eotf(600.0);
             let [r, _, _] = signal_to_output_nits([code, code, code], &pq_signal(), white);
             assert!((r - 600.0).abs() < 1.0, "PQ 600 nits gave {r}");
         }
 
-        // Phase `plane_texels_read_back_and_crop`.
         {
             let signal = pq_signal();
             let words: Vec<u8> = [(1023_u32, 0_u32, 512_u32), (0, 1023, 0)]
@@ -807,7 +803,6 @@ mod tests {
             assert!(HdrPlane::new(3, 1, HdrTexelFormat::Rgb10a2, vec![0; 8], signal).is_none());
         }
 
-        // Phase `recording_assigns_channels_and_caps_layers`.
         {
             let signal = pq_signal();
             let plane =
@@ -841,7 +836,6 @@ mod tests {
             assert!(!record(&first, &image(2, 2), Affine::IDENTITY, bounds));
         }
 
-        // Phase `cpu_composite_is_linear_light`.
         {
             let white = 203.0;
             let code = pq_inverse_eotf(1000.0);
@@ -898,7 +892,6 @@ mod tests {
                 Colorimetry::hdr10(),
                 HdrTonemapConfig::default(),
             );
-            // The plane holds the signal at half precision.
             assert!(close(sdr, reference, 5e-3), "{sdr:?} vs {reference:?}");
         }
     }

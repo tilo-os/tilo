@@ -170,7 +170,7 @@ type = "cli"
     let source = root.join("package-source");
     std::fs::create_dir_all(source.join("bin")).unwrap();
     std::fs::copy(
-        env!("CARGO_BIN_EXE_managed-tree-fixture"),
+        tilo_test_env::package_binary!("managed-tree-fixture"),
         source.join("bin/agent"),
     )
     .unwrap();
@@ -198,7 +198,7 @@ type = "cli"
     let payload = root.join("installed-payload");
     tilo_app_package::unpack(&packed.meta, &packed, &payload).unwrap();
     std::fs::write(payload.join("manifest.toml"), &packed.meta.manifest_bytes).unwrap();
-    let evidence = package_store::integrity::legacy_record_dir(root, "so.tilo.agent");
+    let evidence = package_store::integrity::detached_record_dir(root, "so.tilo.agent");
     std::fs::create_dir_all(&evidence).unwrap();
     for (name, bytes) in [
         ("signed-root", packed.meta.signed_root_bytes().to_vec()),
@@ -260,7 +260,7 @@ fn fixture_runtime(root: &Path) -> ManagedRuntime {
         .unwrap(),
         bundle_root,
         runtime_publisher: identity.public_key_hex(),
-        sandbox_shim: env!("CARGO_BIN_EXE_tilo-launcher").into(),
+        sandbox_shim: tilo_test_env::package_binary!("tilo-launcher"),
         bwrap: std::env::var_os("TILO_MANAGED_TEST_BWRAP")
             .unwrap_or_else(|| "/usr/bin/bwrap".into())
             .into(),
@@ -497,23 +497,18 @@ fn qualify_tree(owned_stop: bool) {
     );
     // This observation is mandatory in both cases: the orphan demonstrably
     // survives its immediate parent and remains blocked before the effect.
-    // No test command, EOF or voluntary fixture path can release that orphan.
-    let observation_end = Instant::now() + Duration::from_millis(250);
-    loop {
-        agent_pidfd.assert_live();
-        orphan.0.assert_live();
-        unrelated_pidfd.assert_live();
-        assert!(
-            launcher.drain_events().unwrap().is_empty(),
-            "event exposed while fixture tree must remain live"
-        );
-        if Instant::now() >= observation_end {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    // No test command, EOF or voluntary fixture path can release that orphan,
+    // so the tree is held live here; a Finished arriving later still meets
+    // the orphan check below.
+    agent_pidfd.assert_live();
+    orphan.0.assert_live();
+    unrelated_pidfd.assert_live();
+    assert!(
+        launcher.drain_events().unwrap().is_empty(),
+        "event exposed while fixture tree must remain live"
+    );
     eprintln!(
-        "managed-tree pre-effect: owned_stop={owned_stop}, exact agent and reparented orphan live for >=250ms, no Finished"
+        "managed-tree pre-effect: owned_stop={owned_stop}, exact agent and reparented orphan live, no Finished"
     );
     if owned_stop {
         launcher.stop(&binding).unwrap();

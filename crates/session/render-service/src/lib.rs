@@ -105,10 +105,6 @@ pub fn open_gpu(config: &Config) -> Option<Gpu> {
 
 /// Serve the broker on `broker` with `config`, on this thread, until the
 /// broker goes away.
-///
-/// # Errors
-///
-/// When confinement fails, the broker socket fails, or the GPU is lost.
 #[cfg(target_os = "linux")]
 pub fn serve(config: &Config, broker: &Channel) -> Result<(), String> {
     let gpu = open_gpu(config);

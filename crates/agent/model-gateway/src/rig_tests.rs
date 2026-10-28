@@ -1,4 +1,3 @@
-//! Exercise Rig's real provider wires through the gateway-owned transport.
 use super::*;
 use agent_provider_config::protocol as neutral;
 use serde_json::json;
@@ -90,7 +89,7 @@ fn spawn_anthropic_peer(
     std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
         socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let mut reader = std::io::BufReader::new(&mut socket);
         let mut length = 0;
@@ -124,7 +123,7 @@ fn spawn_anthropic_peer(
             if index == 4 {
                 // The tool block is closed, but the turn has not finished.
                 // Observe the real emitter before permitting a valid finish.
-                delta_received.recv_timeout(Duration::from_secs(5)).unwrap();
+                delta_received.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                 let events = pending_events.lock().unwrap();
                 assert_eq!(events.len(), 1);
                 assert_eq!(events[0]["event"], EVENT_TOOL_CALL_DELTA);
@@ -157,9 +156,10 @@ async fn anthropic_streams_deltas_completed_calls_and_usage_through_rig() {
         profile: profile.clone(),
         model: "checked-model".into(),
         streaming: true,
+        api: None,
         target: crate::openai::Target::Standard,
         authenticated: true,
-        budget: Duration::from_secs(5),
+        budget: tilo_test_env::hang_bound(),
         body: None,
         retry_refusals: false,
         stream_end: Arc::default(),
@@ -230,7 +230,7 @@ async fn legacy_unary_tool_envelopes_keep_their_exact_bytes() {
         let peer = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
             socket
-                .set_read_timeout(Some(Duration::from_secs(5)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let mut reader = std::io::BufReader::new(&mut socket);
             let mut length = 0;
@@ -259,7 +259,7 @@ async fn legacy_unary_tool_envelopes_keep_their_exact_bytes() {
             &profile,
             Some("fabricated-key"),
             body,
-            Duration::from_secs(5),
+            tilo_test_env::hang_bound(),
             None,
             true,
         )
@@ -283,7 +283,7 @@ async fn rig_wires_reach_custom_endpoints_without_changing_gateway_policy() {
         let peer = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
             socket
-                .set_read_timeout(Some(Duration::from_secs(5)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let mut reader = std::io::BufReader::new(&mut socket);
             let mut headers = String::new();
@@ -317,9 +317,10 @@ async fn rig_wires_reach_custom_endpoints_without_changing_gateway_policy() {
             profile: profile.clone(),
             model: "checked-model".into(),
             streaming: false,
+            api: None,
             target: crate::openai::Target::Standard,
             authenticated: true,
-            budget: Duration::from_secs(5),
+            budget: tilo_test_env::hang_bound(),
             body: None,
             retry_refusals: false,
             stream_end: Arc::default(),

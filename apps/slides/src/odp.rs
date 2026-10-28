@@ -29,9 +29,11 @@ use std::path::Path;
 use bounded_zip::{BoundedArchive, ZipError, ZipLimits};
 use tilo_content::ContentStore;
 use ui::widget::BlockContent;
+use vello::peniko::Color;
 
 use crate::model::{
-    Background, Deck, Element, ElementKind, Layout, PaletteKind, SLIDE_H, SLIDE_W, Slide, TextAlign,
+    Background, Deck, DeckLook, Element, ElementKind, Layout, Palette, PaletteKind, SLIDE_H,
+    SLIDE_W, Slide, TextAlign,
 };
 
 /// Physical page size we map the 1280×720 slide space onto (16:9, 25.4 cm
@@ -71,7 +73,8 @@ pub fn write_odp(deck: &Deck, content: &ContentStore) -> std::io::Result<Vec<u8>
         .iter()
         .map(|picture| (picture.source.as_str(), picture.href.as_str()))
         .collect();
-    let content = content_xml(deck, &picture_hrefs);
+    let shown = crate::render::shown_text_heights(deck);
+    let content = content_xml(deck, &picture_hrefs, &shown);
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
     // The `mimetype` entry must be first and stored uncompressed per the ODF
     // packaging spec, so a reader can sniff the type from the archive header.
@@ -101,41 +104,159 @@ fn cm(units: f64, per_unit: f64) -> String {
     format!("{:.4}cm", units * per_unit)
 }
 
-fn content_xml(deck: &Deck, picture_hrefs: &HashMap<&str, &str>) -> String {
+/// The document's content. `shown` holds each text box's height as Slides
+/// shows it ([`crate::render::shown_text_heights`]): its frame here, its own
+/// height the text box's least, so a box its words outgrew is not cut short.
+fn content_xml(
+    deck: &Deck,
+    picture_hrefs: &HashMap<&str, &str>,
+    shown: &HashMap<String, f64>,
+) -> String {
     let sx = PAGE_W_CM / SLIDE_W;
     let sy = PAGE_H_CM / SLIDE_H;
+    // The deck's colours as Slides draws them, in its own look: the file
+    // shows the deck as every collaborator sees it.
+    let palette = Palette::resolve(deck.palette, deck.look);
+    let mut styles = AutoStyles::default();
+    let mut body = String::new();
+    body.push_str("<office:body><office:presentation");
+    push_attr(&mut body, "qslides:title", &deck.title);
+    push_attr(&mut body, "qslides:palette", deck.palette.as_str());
+    push_attr(&mut body, "qslides:look", deck.look.as_str());
+    body.push('>');
+    for slide in &deck.slides {
+        let on = palette.on(slide.background);
+        let page = styles.name(
+            "drawing-page",
+            &format!(
+                r#"<style:drawing-page-properties draw:fill="solid" draw:fill-color="{}"/>"#,
+                ui::color::to_hex(on.slide_bg(slide.background))
+            ),
+        );
+        body.push_str("<draw:page draw:name=\"");
+        body.push_str(&quick_xml::escape::escape(&slide.id));
+        body.push_str("\" draw:master-page-name=\"Default\"");
+        push_attr(&mut body, "draw:style-name", &page);
+        push_attr(&mut body, "qslides:layout", slide.layout.as_str());
+        push_attr(&mut body, "qslides:background", slide.background.as_str());
+        push_attr(&mut body, "qslides:notes", &slide.notes);
+        body.push('>');
+        for el in slide.z_sorted() {
+            let look = Look {
+                palette: &on,
+                slide,
+            };
+            push_element(
+                &mut body,
+                el,
+                (sx, sy),
+                (picture_hrefs, shown),
+                (&mut styles, look),
+            );
+        }
+        body.push_str("</draw:page>");
+    }
+    body.push_str("</office:presentation></office:body></office:document-content>");
     let mut s = String::new();
     s.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
     s.push_str(
         r#"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:qslides="urn:tilo:slides:1.0" office:version="1.3">"#,
     );
-    // Bold and italic runs of text boxes.
+    // The pages', shapes' and runs' colours, then the lists' markers.
+    s.push_str("<office:automatic-styles>");
+    s.push_str(&styles.xml);
     s.push_str(concat!(
-        "<office:automatic-styles>",
-        r#"<style:style style:name="qsB" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>"#,
-        r#"<style:style style:name="qsI" style:family="text"><style:text-properties fo:font-style="italic"/></style:style>"#,
-        r#"<style:style style:name="qsBI" style:family="text"><style:text-properties fo:font-weight="bold" fo:font-style="italic"/></style:style>"#,
+        r#"<text:list-style style:name="qsL"><text:list-level-style-bullet text:level="1" text:bullet-char="•"/></text:list-style>"#,
+        r#"<text:list-style style:name="qsN"><text:list-level-style-number text:level="1" style:num-format="1" style:num-suffix="."/></text:list-style>"#,
         "</office:automatic-styles>",
     ));
-    s.push_str("<office:body><office:presentation");
-    push_attr(&mut s, "qslides:title", &deck.title);
-    push_attr(&mut s, "qslides:palette", deck.palette.as_str());
-    s.push('>');
-    for slide in &deck.slides {
-        s.push_str("<draw:page draw:name=\"");
-        s.push_str(&quick_xml::escape::escape(&slide.id));
-        s.push_str("\" draw:master-page-name=\"Default\"");
-        push_attr(&mut s, "qslides:layout", slide.layout.as_str());
-        push_attr(&mut s, "qslides:background", slide.background.as_str());
-        push_attr(&mut s, "qslides:notes", &slide.notes);
-        s.push('>');
-        for el in slide.z_sorted() {
-            push_element(&mut s, el, sx, sy, picture_hrefs);
-        }
-        s.push_str("</draw:page>");
-    }
-    s.push_str("</office:presentation></office:body></office:document-content>");
+    s.push_str(&body);
     s
+}
+
+/// The automatic styles a document's pages, shapes and runs name, one per
+/// distinct look.
+#[derive(Default)]
+struct AutoStyles {
+    xml: String,
+    names: HashMap<String, String>,
+}
+
+impl AutoStyles {
+    /// The name of the `family` style holding `properties`, written once.
+    fn name(&mut self, family: &str, properties: &str) -> String {
+        let key = format!("{family}\u{0}{properties}");
+        if let Some(name) = self.names.get(&key) {
+            return name.clone();
+        }
+        let name = format!("qs{}", self.names.len() + 1);
+        self.xml.push_str("<style:style");
+        push_attr(&mut self.xml, "style:name", &name);
+        push_attr(&mut self.xml, "style:family", family);
+        self.xml.push('>');
+        self.xml.push_str(properties);
+        self.xml.push_str("</style:style>");
+        self.names.insert(key, name.clone());
+        name
+    }
+
+    /// A text run's style: its ink, weight and slant.
+    fn run(&mut self, ink: Color, bold: bool, italic: bool) -> String {
+        let mut properties = String::from("<style:text-properties");
+        push_attr(&mut properties, "fo:color", &ui::color::to_hex(ink));
+        if bold {
+            push_attr(&mut properties, "fo:font-weight", "bold");
+        }
+        if italic {
+            push_attr(&mut properties, "fo:font-style", "italic");
+        }
+        properties.push_str("/>");
+        self.name("text", &properties)
+    }
+
+    /// A drawing object's style: its fill and outline, as Slides draws them.
+    fn graphic(&mut self, fill: Option<Color>, stroke: Option<(Color, f64)>) -> String {
+        let mut properties = String::from("<style:graphic-properties");
+        match fill {
+            Some(fill) => {
+                push_attr(&mut properties, "draw:fill", "solid");
+                push_attr(&mut properties, "draw:fill-color", &ui::color::to_hex(fill));
+                let alpha = fill.to_rgba8().a;
+                if alpha < u8::MAX {
+                    let percent = f64::from(alpha) * 100.0 / 255.0;
+                    push_attr(&mut properties, "draw:opacity", &format!("{percent:.0}%"));
+                }
+            }
+            None => push_attr(&mut properties, "draw:fill", "none"),
+        }
+        match stroke {
+            Some((color, width)) => {
+                push_attr(&mut properties, "draw:stroke", "solid");
+                push_attr(
+                    &mut properties,
+                    "svg:stroke-color",
+                    &ui::color::to_hex(color),
+                );
+                push_attr(
+                    &mut properties,
+                    "svg:stroke-width",
+                    &cm(width, PAGE_W_CM / SLIDE_W),
+                );
+            }
+            None => push_attr(&mut properties, "draw:stroke", "none"),
+        }
+        properties.push_str("/>");
+        self.name("graphic", &properties)
+    }
+}
+
+/// What an element's colours resolve against: the deck's palette on its
+/// slide's background, and the slide (a text box's ink follows what it
+/// stands on).
+#[derive(Clone, Copy)]
+struct Look<'a> {
+    palette: &'a Palette,
+    slide: &'a Slide,
 }
 
 /// The `qslides:*` attributes that carry the exact model fields on every draw
@@ -166,18 +287,27 @@ fn push_model_attrs(s: &mut String, el: &Element, exported_src: Option<&str>) {
 fn push_element(
     s: &mut String,
     el: &Element,
-    sx: f64,
-    sy: f64,
-    picture_hrefs: &HashMap<&str, &str>,
+    (sx, sy): (f64, f64),
+    (picture_hrefs, shown): (&HashMap<&str, &str>, &HashMap<String, f64>),
+    (styles, look): (&mut AutoStyles, Look<'_>),
 ) {
+    let palette = look.palette;
+    let outline = || {
+        palette
+            .resolve_role(&el.stroke)
+            .map(|color| (color, el.stroke_width))
+    };
     let gx = cm(el.x, sx);
     let gy = cm(el.y, sy);
     let gw = cm(el.w, sx);
-    let gh = cm(el.h, sy);
+    let gh = cm(shown.get(&el.id).copied().unwrap_or(el.h), sy);
     match el.kind {
         ElementKind::Text | ElementKind::Image => {
             s.push_str("<draw:frame");
             push_geo(s, &gx, &gy, &gw, &gh);
+            if el.kind == ElementKind::Text {
+                push_attr(s, "draw:style-name", &styles.graphic(None, None));
+            }
             let exported_src = if el.kind == ElementKind::Image {
                 picture_hrefs.get(el.src.as_str()).copied()
             } else {
@@ -190,32 +320,50 @@ fn push_element(
                 s.push_str(&quick_xml::escape::escape(exported_src.unwrap_or(&el.src)));
                 s.push_str("\" xlink:type=\"simple\"/>");
             } else {
-                s.push_str("<draw:text-box>");
+                s.push_str("<draw:text-box fo:min-height=\"");
+                s.push_str(&cm(el.h, sy));
+                s.push_str("\">");
                 // One `text:p` per explicit line so multi-line bodies survive
                 // (attribute-value normalisation would fold newlines to spaces,
                 // so text can't ride in a `qslides:` attribute).
+                // A run of list items is one `text:list`, an item each.
+                let mut list: Option<&str> = None;
                 for block in el.rich_blocks() {
+                    let style = match block.kind {
+                        ui::widget::BlockKind::Bullet { .. } => Some("qsL"),
+                        ui::widget::BlockKind::Numbered { .. } => Some("qsN"),
+                        _ => None,
+                    };
+                    if list.is_some() && list != style {
+                        s.push_str("</text:list>");
+                    }
+                    if let Some(style) = style.filter(|_| list != style) {
+                        s.push_str("<text:list text:style-name=\"");
+                        s.push_str(style);
+                        s.push_str("\">");
+                    }
+                    list = style;
+                    if list.is_some() {
+                        s.push_str("<text:list-item>");
+                    }
                     s.push_str("<text:p>");
+                    // Every run in the ink Slides draws the box's words in.
+                    let ink = crate::render::text_ink(palette, look.slide, el);
                     for (text, bold, italic) in crate::model::runs_of(&block) {
                         let text = quick_xml::escape::partial_escape(text);
-                        let style = match (bold, italic) {
-                            (true, true) => Some("qsBI"),
-                            (true, false) => Some("qsB"),
-                            (false, true) => Some("qsI"),
-                            (false, false) => None,
-                        };
-                        match style {
-                            Some(style) => {
-                                s.push_str("<text:span text:style-name=\"");
-                                s.push_str(style);
-                                s.push_str("\">");
-                                s.push_str(&text);
-                                s.push_str("</text:span>");
-                            }
-                            None => s.push_str(&text),
-                        }
+                        s.push_str("<text:span");
+                        push_attr(s, "text:style-name", &styles.run(ink, bold, italic));
+                        s.push('>');
+                        s.push_str(&text);
+                        s.push_str("</text:span>");
                     }
                     s.push_str("</text:p>");
+                    if list.is_some() {
+                        s.push_str("</text:list-item>");
+                    }
+                }
+                if list.is_some() {
+                    s.push_str("</text:list>");
                 }
                 s.push_str("</draw:text-box>");
             }
@@ -224,12 +372,16 @@ fn push_element(
         ElementKind::Rect => {
             s.push_str("<draw:rect");
             push_geo(s, &gx, &gy, &gw, &gh);
+            let style = styles.graphic(palette.resolve_role(&el.fill), outline());
+            push_attr(s, "draw:style-name", &style);
             push_model_attrs(s, el, None);
             s.push_str("/>");
         }
         ElementKind::Ellipse => {
             s.push_str("<draw:ellipse");
             push_geo(s, &gx, &gy, &gw, &gh);
+            let style = styles.graphic(palette.resolve_role(&el.fill), outline());
+            push_attr(s, "draw:style-name", &style);
             push_model_attrs(s, el, None);
             s.push_str("/>");
         }
@@ -243,6 +395,13 @@ fn push_element(
             s.push_str("\" svg:y2=\"");
             s.push_str(&cm(el.y + el.h, sy));
             s.push('"');
+            // As the canvas strokes a line: its outline, else its fill.
+            let color = palette
+                .resolve_role(&el.stroke)
+                .or_else(|| palette.resolve_role(&el.fill))
+                .unwrap_or(palette.accent);
+            let style = styles.graphic(None, Some((color, el.stroke_width.max(2.0))));
+            push_attr(s, "draw:style-name", &style);
             push_model_attrs(s, el, None);
             s.push_str("/>");
         }
@@ -348,11 +507,6 @@ fn collect_pictures(deck: &Deck, content: &ContentStore) -> Vec<BundledPicture> 
 
 /// Parse the bytes of a `.odp` package back into a [`Deck`], storing its
 /// pictures in `content`.
-///
-/// # Errors
-///
-/// Returns an error if `bytes` isn't a readable ZIP archive, if it has no
-/// `content.xml` entry, or if `content.xml` parses to zero slides.
 pub fn read_odp(bytes: &[u8], content: &ContentStore) -> std::io::Result<Deck> {
     let mut zip = open_package(bytes)?;
     let content_xml = read_package_xml(&mut zip, "content.xml")?;
@@ -473,6 +627,7 @@ fn parse_content(xml: &str) -> Option<Deck> {
 
     let mut title = "Untitled deck".to_string();
     let mut palette = PaletteKind::Indigo;
+    let mut look = DeckLook::default();
     let mut slides: Vec<Slide> = Vec::new();
 
     // In-progress text-frame accumulation (a `<draw:frame>` container whose
@@ -488,6 +643,11 @@ fn parse_content(xml: &str) -> Option<Deck> {
     let mut text_styles: HashMap<String, (bool, bool)> = HashMap::new();
     let mut style_name: Option<String> = None;
     let mut spans: Vec<(bool, bool)> = Vec::new();
+    // The lists open around the paragraph being read, numbered or not, and
+    // the list styles that number.
+    let mut lists: Vec<bool> = Vec::new();
+    let mut list_style: Option<String> = None;
+    let mut numbered_styles: std::collections::HashSet<String> = ["qsN".to_owned()].into();
 
     loop {
         // A `Start` opens a container (text frames); an `Empty` is a self-closed
@@ -533,6 +693,14 @@ fn parse_content(xml: &str) -> Option<Deck> {
                     b"text:p" if in_text_p => {
                         in_text_p = false;
                         spans.clear();
+                        if let Some(&numbered) = lists.last() {
+                            let indent = u8::try_from(lists.len() - 1).unwrap_or(u8::MAX);
+                            p_block.kind = if numbered {
+                                ui::widget::BlockKind::Numbered { indent }
+                            } else {
+                                ui::widget::BlockKind::Bullet { indent }
+                            };
+                        }
                         cur_lines.push(std::mem::take(&mut p_buf));
                         cur_blocks.push(std::mem::replace(
                             &mut p_block,
@@ -542,13 +710,20 @@ fn parse_content(xml: &str) -> Option<Deck> {
                     b"text:span" => {
                         spans.pop();
                     }
+                    b"text:list" => {
+                        lists.pop();
+                    }
+                    b"text:list-style" => list_style = None,
                     b"style:style" => style_name = None,
                     b"draw:frame" => {
                         if let Some(mut el) = cur_text_el.take() {
                             el.text = cur_lines.join("\n");
                             // Runs of their own weight or slant keep them;
                             // a box written before runs keeps its own flags.
-                            if cur_blocks.iter().any(|block| !block.marks.is_empty()) {
+                            if cur_blocks.iter().any(|block| {
+                                !block.marks.is_empty()
+                                    || block.kind != ui::widget::BlockKind::Paragraph
+                            }) {
                                 el.set_blocks(std::mem::take(&mut cur_blocks));
                             }
                             if let Some(slide) = slides.last_mut() {
@@ -569,6 +744,9 @@ fn parse_content(xml: &str) -> Option<Deck> {
                 }
                 if let Some(v) = attr(&e, b"qslides:palette") {
                     palette = PaletteKind::from_str(&v);
+                }
+                if let Some(v) = attr(&e, b"qslides:look") {
+                    look = DeckLook::from_str(&v);
                 }
             }
             b"draw:page" => {
@@ -592,6 +770,17 @@ fn parse_content(xml: &str) -> Option<Deck> {
                 in_text_p = true;
                 p_buf.clear();
                 p_block = BlockContent::paragraph("", "");
+            }
+            b"text:list" if is_container => {
+                let numbered = attr(&e, b"text:style-name")
+                    .is_some_and(|name| numbered_styles.contains(&name));
+                lists.push(numbered);
+            }
+            b"text:list-style" => list_style = attr(&e, b"style:name"),
+            b"text:list-level-style-number" => {
+                if let Some(name) = &list_style {
+                    numbered_styles.insert(name.clone());
+                }
             }
             b"text:span" if in_text_p && is_container => {
                 let inherited = spans.last().copied().unwrap_or_default();
@@ -657,6 +846,7 @@ fn parse_content(xml: &str) -> Option<Deck> {
     Some(Deck {
         title,
         palette,
+        look,
         slides,
     })
 }
@@ -791,7 +981,6 @@ mod tests {
     use crate::model::{ElementKind, seed_deck};
     use std::io::Read;
 
-    /// ODP round-trips the model, mimetype, multiline text and picked fills.
     #[test]
     fn odp_round_trips_model_text_and_fills() {
         // Case `odp_round_trips_the_model_exactly`.
@@ -806,7 +995,6 @@ mod tests {
             assert_eq!(deck, back, "model → .odp → model must be identity");
         }
 
-        // Case `odp_starts_with_the_presentation_mimetype`.
         {
             let content = ContentStore::memory();
             let deck = seed_deck();
@@ -817,7 +1005,6 @@ mod tests {
             assert!(head.contains(MIME), "package must declare the ODP mimetype");
         }
 
-        // Case `odp_round_trips_multiline_text_and_alignment`.
         {
             let content = ContentStore::memory();
             let mut deck = seed_deck();
@@ -833,7 +1020,6 @@ mod tests {
             assert_eq!(el.align, TextAlign::Justify);
         }
 
-        // Case `odp_round_trips_a_picked_hex_fill`.
         {
             let content = ContentStore::memory();
             let mut deck = seed_deck();
@@ -844,10 +1030,8 @@ mod tests {
         }
     }
 
-    /// Foreign ODP content opens, every element kind and bundled pictures survive.
     #[test]
     fn odp_preserves_foreign_content_kinds_and_pictures() {
-        // Case `foreign_odp_native_text_and_shapes_do_not_open_as_an_empty_slide`.
         {
             let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><office:body><office:presentation><draw:page draw:name="slide-1"><draw:frame draw:name="title" svg:x="2.54cm" svg:y="1.4288cm" svg:width="20.32cm" svg:height="2.8575cm"><draw:text-box><text:p>Hello from LibreOffice</text:p><text:p>Second line</text:p></draw:text-box></draw:frame><draw:rect draw:name="box" svg:x="5.08cm" svg:y="7.1438cm" svg:width="10.16cm" svg:height="4.2863cm"/></draw:page></office:presentation></office:body></office:document-content>"#;
@@ -862,7 +1046,6 @@ mod tests {
             assert_eq!(deck.slides[0].elements[1].kind, ElementKind::Rect);
         }
 
-        // Case `odp_preserves_every_element_kind`.
         {
             let content = ContentStore::memory();
             let deck = seed_deck();
@@ -875,7 +1058,6 @@ mod tests {
             }
         }
 
-        // Case `odp_bundles_local_pictures_and_reopens_them_from_the_package`.
         {
             let content = ContentStore::memory();
             let source = std::env::temp_dir()

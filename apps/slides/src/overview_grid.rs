@@ -1,5 +1,5 @@
 //! Slide-sorter overview: every slide as a media card in a scrolling grid
-//! under the window's header row.
+//! filling the window.
 
 use std::cell::Cell;
 
@@ -21,8 +21,6 @@ use crate::render::{self, DeckAssets};
 /// at the last draw.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct GridMetrics {
-    /// The header row across the top of the window.
-    pub(crate) header_h: f64,
     /// The content gutter round the grid.
     gutter: f64,
     column_gap: f64,
@@ -42,8 +40,6 @@ impl GridMetrics {
         let rhythm = &sp.rhythm;
         let line = |role: TextRole| f64::from(theme.text(role).line_height_px());
         Self {
-            header_h: f64::from(theme.tokens.metrics.header_height)
-                .max(f64::from(theme.tokens.metrics.min_pointer_target) + 2.0 * f64::from(sp.s3)),
             gutter: f64::from(sp.s6),
             column_gap: f64::from(rhythm.section),
             row_gap: f64::from(rhythm.group),
@@ -76,21 +72,11 @@ impl OverviewGrid {
         self.scroll = value;
     }
 
-    /// The header row across the top of the window.
-    pub(crate) fn header(&self, window: Rect) -> Rect {
-        Rect::new(
-            window.x0,
-            window.y0,
-            window.x1,
-            window.y0 + self.metrics.get().header_h,
-        )
-    }
-
-    /// The scrolling area under the header, every card's rect (its art and
-    /// text), and the furthest the area scrolls.
+    /// The scrolling area, every card's rect (its art and text), and the
+    /// furthest the area scrolls.
     pub(crate) fn geometry(&self, window: Rect, count: usize) -> (Rect, Vec<(usize, Rect)>, f64) {
         let m = self.metrics.get();
-        let area = Rect::new(window.x0, window.y0 + m.header_h, window.x1, window.y1);
+        let area = window;
         let avail_w = (area.width() - 2.0 * m.gutter).max(1.0);
         let cols = ui::widget::card_columns(avail_w, m.min_card_w, m.column_gap).max(1);
         let width = (avail_w - (cols as f64 - 1.0) * m.column_gap) / cols as f64;
@@ -180,7 +166,7 @@ impl OverviewGrid {
         }
     }
 
-    /// Paint the grid (the header row's controls are the app's).
+    /// Paint the grid.
     pub(crate) fn draw(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -192,16 +178,6 @@ impl OverviewGrid {
     ) {
         let theme = ctx.theme;
         self.capture_metrics(ctx.text, theme, window, deck);
-        let header = self.header(window);
-        ui::surface::separator(
-            ctx.scene,
-            ctx.transform,
-            header.x0,
-            header.x1,
-            header.y1,
-            0.0,
-            theme.tokens.colors.surfaces.content,
-        );
         let (area, cards, max) = self.geometry(window, deck.slides.len());
         let radius = f64::from(theme.tokens.radii.control);
         ctx.scene.push_layer(

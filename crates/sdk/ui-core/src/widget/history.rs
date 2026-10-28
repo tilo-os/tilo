@@ -1,5 +1,5 @@
 //! History data types shared by [`activity_timeline`] and
-//! [`history_scrubber`].
+//! `history_scrubber`.
 //!
 //! Source-agnostic by design: the producer (today an in-memory iterator
 //! over automerge history, later a signed-op stream) is external, so the
@@ -7,28 +7,13 @@
 //! broker.
 //!
 //! [`activity_timeline`]: crate::widget::activity_timeline
-//! [`history_scrubber`]: crate::widget::history_scrubber
 
 use crate::time::SystemTime;
 
 use collab_types::ArtifactKind;
 use tilo_actions::{ActionContext, ActionFacet};
 
-/// Opaque: only ever compared for equality (revert/restore callbacks
-/// pass it back to the caller). The caller picks the byte layout —
-/// UUID-v4 today, a content hash later.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct HistoryEntryId(pub [u8; 16]);
-
-impl HistoryEntryId {
-    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
-        Self(bytes)
-    }
-
-    pub fn as_bytes(&self) -> &[u8; 16] {
-        &self.0
-    }
-}
+pub use collab_types::history::HistoryEntryId;
 
 /// Not crypto material — just enough metadata to render a per-author
 /// colour dot, display name, and a short identity hash for
@@ -204,7 +189,6 @@ impl HistoryEntry {
     }
 }
 
-/// The facet an effect receipt carries.
 fn is_effect_receipt_facet(facet: &ActionFacet) -> bool {
     facet.key == "tilo.receipt" && facet.value == "effect"
 }
@@ -434,7 +418,6 @@ pub enum EntryKind {
     Details,
     /// A comment or reaction.
     Comment,
-    /// Something deleted.
     Delete,
     /// Something deleted brought back.
     Restore,

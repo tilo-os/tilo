@@ -26,6 +26,10 @@ pub struct Report {
     label: String,
     /// Wall time of each step, its settle included, in microseconds.
     samples: Vec<u64>,
+    /// The CPU time the measuring (UI) thread ran in each step, in
+    /// microseconds: what the step cost it, without the moments other work
+    /// on the machine held its core ([`Clocks`]).
+    cpu: Vec<u64>,
     /// Each named scope's total time (ns) and calls over every step.
     phases: BTreeMap<&'static str, (u128, usize)>,
     /// The frame passes the steps ran.
@@ -69,18 +73,29 @@ impl Report {
         })
     }
 
+    /// The median step's CPU time on the measuring thread, in microseconds:
+    /// the figure a cost budget holds, steady on a machine busy with other
+    /// work, where the wall-time [`Self::p50_us`] also counts the moments
+    /// other processes held the core.
+    #[must_use]
+    pub fn cpu_p50_us(&self) -> u64 {
+        quantile(&self.cpu, 0.5)
+    }
+
+    /// Add one step measured from `start`, with the scopes it ran.
+    fn record(&mut self, start: &Clocks, scopes: Vec<tilo_resource::profiling::Sample>) {
+        let (wall, cpu) = start.elapsed_us();
+        self.samples.push(wall);
+        self.cpu.push(cpu);
+        for scope in scopes {
+            let entry = self.phases.entry(scope.phase).or_default();
+            entry.0 = entry.0.saturating_add(scope.elapsed_ns);
+            entry.1 = entry.1.saturating_add(scope.calls);
+        }
+    }
+
     fn quantile(&self, q: f64) -> u64 {
-        let mut sorted = self.samples.clone();
-        sorted.sort_unstable();
-        let last = sorted.len().saturating_sub(1);
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            clippy::cast_precision_loss,
-            reason = "a percentile index over a few hundred samples"
-        )]
-        let at = ((last as f64) * q).round() as usize;
-        sorted.get(at.min(last)).copied().unwrap_or_default()
+        quantile(&self.samples, q)
     }
 
     /// Write the report to stderr, one `perf` line per figure.
@@ -91,12 +106,14 @@ impl Report {
     pub fn print(&self) -> &Self {
         let max = self.samples.iter().copied().max().unwrap_or_default();
         eprintln!(
-            "perf {}: n={} p50={}us p99={}us max={}us",
+            "perf {}: n={} p50={}us p99={}us max={}us cpu_p50={}us cpu_p99={}us",
             self.label,
             self.samples.len(),
             self.p50_us(),
             self.p99_us(),
             max,
+            self.cpu_p50_us(),
+            quantile(&self.cpu, 0.99),
         );
         let frames = self.frames.len();
         let steps = u64::try_from(self.samples.len().max(1)).unwrap_or(1);
@@ -132,12 +149,53 @@ impl Report {
     }
 }
 
+/// The `q` quantile of `samples`.
+fn quantile(samples: &[u64], q: f64) -> u64 {
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    let last = sorted.len().saturating_sub(1);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "a percentile index over a few hundred samples"
+    )]
+    let at = ((last as f64) * q).round() as usize;
+    sorted.get(at.min(last)).copied().unwrap_or_default()
+}
+
+/// The two clocks a step is read on, started together: wall time, what the
+/// step took, and the measuring thread's CPU time, what it cost that thread
+/// ([`ui_core::rt::thread_cpu_time`]; wall time where the platform keeps no
+/// per-thread clock).
+struct Clocks {
+    wall: ui_core::time::Instant,
+    cpu: Option<std::time::Duration>,
+}
+
+impl Clocks {
+    fn start() -> Self {
+        Self {
+            cpu: ui_core::rt::thread_cpu_time(),
+            wall: ui_core::time::now(),
+        }
+    }
+
+    /// Microseconds since [`Self::start`]: wall time, then CPU time.
+    fn elapsed_us(&self) -> (u64, u64) {
+        let wall = self.wall.elapsed();
+        let cpu = self
+            .cpu
+            .zip(ui_core::rt::thread_cpu_time())
+            .map_or(wall, |(start, now)| now.saturating_sub(start));
+        let us =
+            |elapsed: std::time::Duration| u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+        (us(wall), us(cpu))
+    }
+}
+
 /// `A` as its `--shots` capture shows it (the fixture of `scenario`, or the
 /// plain capture), at [`YOGA`], with every frame the launch queued run.
-///
-/// # Errors
-/// Returns the capture's launch failure, or an invalid viewport when the app
-/// refuses the Yoga's.
 pub fn open<A: ResourceApp>(scenario: Option<&str>) -> Result<HeadlessApp<A>, LaunchError> {
     let mut app = HeadlessApp::<A>::capture_at(scenario, YOGA)?;
     app.settle();
@@ -166,24 +224,18 @@ pub fn measure<A: ResourceApp>(
     let mut report = Report {
         label: label.to_owned(),
         samples: Vec::with_capacity(steps),
+        cpu: Vec::with_capacity(steps),
         phases: BTreeMap::new(),
         frames: Vec::new(),
     };
     app.harness().begin_profiling();
     for index in 0..steps {
-        let start = ui_core::time::now();
+        let start = Clocks::start();
         let ((), scopes) = tilo_resource::profiling::observe(|| {
             step(app, warm.saturating_add(index));
             app.idle();
         });
-        report
-            .samples
-            .push(u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX));
-        for scope in scopes {
-            let entry = report.phases.entry(scope.phase).or_default();
-            entry.0 = entry.0.saturating_add(scope.elapsed_ns);
-            entry.1 = entry.1.saturating_add(scope.calls);
-        }
+        report.record(&start, scopes);
     }
     report.frames = app.harness().take_profile_samples();
     report
@@ -198,30 +250,22 @@ pub fn measure<A: ResourceApp>(
 ///
 /// What the GPU, the window and the compositor add on a device is not here:
 /// this is the part of a launch the app's own code decides.
-///
-/// # Errors
-/// Returns the launch failure.
 pub fn start<A: ResourceApp>(launches: usize) -> Result<Report, LaunchError> {
-    let profile = tempfile::tempdir().map_err(|error| LaunchError::Operation(error.to_string()))?;
+    let profile = crate::framework::headless::profile_directory()
+        .map_err(|error| LaunchError::Operation(error.to_string()))?;
     drop(HeadlessApp::<A>::open_data_dir(profile.path())?);
     let mut report = Report {
         label: format!("{} start", A::ID),
         samples: Vec::with_capacity(launches),
+        cpu: Vec::with_capacity(launches),
         phases: BTreeMap::new(),
         frames: Vec::new(),
     };
     for _ in 0..launches {
-        let start = ui_core::time::now();
+        let start = Clocks::start();
         let (app, scopes) =
             tilo_resource::profiling::observe(|| HeadlessApp::<A>::open_data_dir(profile.path()));
-        report
-            .samples
-            .push(u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX));
-        for scope in scopes {
-            let entry = report.phases.entry(scope.phase).or_default();
-            entry.0 = entry.0.saturating_add(scope.elapsed_ns);
-            entry.1 = entry.1.saturating_add(scope.calls);
-        }
+        report.record(&start, scopes);
         drop(app?);
     }
     Ok(report)
@@ -234,14 +278,16 @@ pub fn start<A: ResourceApp>(launches: usize) -> Result<Report, LaunchError> {
 /// frame as its window would, without a window or GPU. The profile is a
 /// private directory the first, unmeasured launch makes, so each measured
 /// launch opens an existing record, as a second launch does; the process's
-/// environment points nowhere real (no display, bus or runtime).
+/// environment points nowhere real (no display, bus or runtime). The
+/// scratch directory is in memory where the system has one, as a test's
+/// profile is:
+/// each launch syncs the records it opens and drains its store on exit, and
+/// on a shared disk those syncs wait for every other writer, seconds a
+/// launch on a loaded machine, none of it inside the measured span.
 ///
 /// Each sample is the time from the process starting to its first frame
 /// drawn; the phases are the startup marks' (`APP-STARTUP`) and the named
 /// scopes' (`FIRST-FRAME-SCOPE`) medians over the launches.
-///
-/// # Panics
-/// When a launch fails or prints no startup line.
 #[must_use]
 #[allow(
     clippy::expect_used,
@@ -249,7 +295,7 @@ pub fn start<A: ResourceApp>(launches: usize) -> Result<Report, LaunchError> {
     reason = "a measurement fails loudly when the app binary cannot run or says nothing"
 )]
 pub fn cold_start(label: &str, exe: &std::path::Path, launches: usize) -> ColdStart {
-    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let scratch = crate::framework::headless::profile_directory().expect("a scratch directory");
     let root = scratch.path();
     let launch = || {
         let output = std::process::Command::new(exe)
@@ -516,6 +562,7 @@ pub fn glide<A: ResourceApp>(app: &mut HeadlessApp<A>, at: (f64, f64), frames: u
     let mut report = Report {
         label: "glide frame".to_owned(),
         samples: Vec::with_capacity(frames),
+        cpu: Vec::with_capacity(frames),
         phases: BTreeMap::new(),
         frames: Vec::new(),
     };
@@ -530,19 +577,12 @@ pub fn glide<A: ResourceApp>(app: &mut HeadlessApp<A>, at: (f64, f64), frames: u
         }
         app.harness().send(&wheel(TouchPhase::Ended, 0.0));
         while report.samples.len() < frames {
-            let start = ui_core::time::now();
+            let start = Clocks::start();
             let (ran, scopes) = tilo_resource::profiling::observe(|| app.frame());
             if !ran {
                 break;
             }
-            report
-                .samples
-                .push(u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX));
-            for scope in scopes {
-                let entry = report.phases.entry(scope.phase).or_default();
-                entry.0 = entry.0.saturating_add(scope.elapsed_ns);
-                entry.1 = entry.1.saturating_add(scope.calls);
-            }
+            report.record(&start, scopes);
             // The glide advances on the toolkit's clock: a frame's worth.
             let _ = ui_core::rt::sleep_thread(std::time::Duration::from_millis(4));
         }
@@ -556,9 +596,6 @@ pub fn glide<A: ResourceApp>(app: &mut HeadlessApp<A>, at: (f64, f64), frames: u
 
 /// Keystrokes into the field at `field`: one click focuses it, then each
 /// step types one character of `text`, cycling.
-///
-/// # Panics
-/// When `text` is empty.
 pub fn keystrokes<A: ResourceApp>(
     app: &mut HeadlessApp<A>,
     field: (f64, f64),
@@ -606,18 +643,6 @@ pub fn switch_views<A: ResourceApp>(
     )
 }
 
-/// Clicks at `at` that change nothing an app shows: an empty spot. What
-/// every click costs before it does anything.
-pub fn idle_clicks<A: ResourceApp>(
-    app: &mut HeadlessApp<A>,
-    at: (f64, f64),
-    steps: usize,
-) -> Report {
-    measure(app, "idle click", (2, steps), |app, _| {
-        app.harness().click_at(at.0, at.1);
-    })
-}
-
 /// The interactions [`profile`] measured; `None` where the app's capture
 /// offers nothing of that kind to drive.
 pub struct Profile {
@@ -636,9 +661,6 @@ pub struct Profile {
 /// Every interaction [`profile`] finds in `A`'s capture of `scenario`,
 /// measured and printed with the app's id: what scrolling, typing,
 /// switching views and selecting items cost on the UI thread.
-///
-/// # Errors
-/// Returns the capture's launch failure.
 pub fn profile<A: ResourceApp>(scenario: Option<&str>) -> Result<Profile, LaunchError> {
     let id = A::ID;
     let fresh = || open::<A>(scenario);
@@ -699,7 +721,6 @@ pub fn profile<A: ResourceApp>(scenario: Option<&str>) -> Result<Profile, Launch
     })
 }
 
-/// [`targets`] of `roles` with the area of each one's bounds.
 fn targets_with_area<A: ResourceApp>(
     app: &mut HeadlessApp<A>,
     roles: &[Role],
@@ -725,4 +746,312 @@ fn targets_with_area<A: ResourceApp>(
             })
         })
         .collect()
+}
+
+/// What one pointer sweep over a window's sidebar cost and repainted, as a
+/// window of its own runs it: the real [`ui_core::App`] fed each motion
+/// through [`ui_core::App::surface_input`] and painted by
+/// [`ui_core::App::surface_frame_with_damage`], which decides what the
+/// window submits.
+#[cfg(feature = "native")]
+pub struct Sweep {
+    /// Wall time of each motion, its frames included.
+    pub report: Report,
+    /// What each measured motion did, in order.
+    pub steps: Vec<SweepStep>,
+}
+
+/// One motion of a [`Sweep`]: from one row to the next.
+#[cfg(feature = "native")]
+#[derive(Clone, Debug)]
+pub struct SweepStep {
+    /// The row the pointer left and the row it came to.
+    pub from: String,
+    pub to: String,
+    /// Where the two rows are, in logical pixels: what a hover change has
+    /// to repaint.
+    pub rows: [ui_core::vello::kurbo::Rect; 2],
+    /// What the frames after the motion damaged, or why they repainted the
+    /// window whole.
+    pub damage: Result<Vec<ui_core::vello::kurbo::Rect>, &'static str>,
+    /// The motion left a sync or a layout for the frame to run.
+    pub unsettled: bool,
+}
+
+#[cfg(feature = "native")]
+impl SweepStep {
+    /// The logical pixels the motion repainted: the window whole when it
+    /// could not say where. Overlapping rects count twice, so this never
+    /// says less than was repainted.
+    #[must_use]
+    pub fn damaged_area(&self) -> f64 {
+        let window =
+            ui_core::vello::kurbo::Rect::new(0.0, 0.0, f64::from(YOGA.0), f64::from(YOGA.1));
+        match &self.damage {
+            Ok(rects) => rects.iter().map(|rect| rect.intersect(window).area()).sum(),
+            Err(_) => window.area(),
+        }
+    }
+
+    /// The logical pixels of the two rows the hover moved between.
+    #[must_use]
+    pub fn rows_area(&self) -> f64 {
+        self.rows
+            .iter()
+            .map(ui_core::vello::kurbo::Rect::area)
+            .sum()
+    }
+}
+
+#[cfg(feature = "native")]
+impl Sweep {
+    /// Write each motion that repainted more than its two rows, then the
+    /// timing report.
+    #[allow(
+        clippy::print_stderr,
+        reason = "a measurement reports on stderr, as the perf tests do"
+    )]
+    pub fn print(&self) -> &Self {
+        for step in &self.steps {
+            eprintln!(
+                "perf {} {:?} -> {:?}: damaged {:.0}px of rows {:.0}px unsettled={} {:?}",
+                self.report.label,
+                step.from,
+                step.to,
+                step.damaged_area(),
+                step.rows_area(),
+                step.unsettled,
+                step.damage,
+            );
+        }
+        self.report.print();
+        self
+    }
+
+    /// Hold every motion to what a hover change is: it repaints the two
+    /// rows it moved between (and the anti-aliasing at their edges), asks
+    /// for no sync or layout, and in an optimised build costs no more than
+    /// the 2 ms p50 any pointer motion is held to, in CPU time on the UI
+    /// thread.
+    ///
+    /// # Panics
+    ///
+    /// On the first motion that repainted more, or asked for a sync or a
+    /// layout, and when the p50 is over the budget.
+    #[allow(clippy::panic, reason = "a failed assertion names the motion")]
+    pub fn assert_each_hover_repaints_only_its_rows(&self) {
+        for step in &self.steps {
+            let rows = step.rows.map(|row| row.inflate(2.0, 2.0));
+            let allowed: f64 = rows.iter().map(ui_core::vello::kurbo::Rect::area).sum();
+            assert!(
+                step.damaged_area() <= allowed,
+                "{}: hovering from {:?} to {:?} repainted {:.0}px, more than its two rows' {allowed:.0}px: {:?}",
+                self.report.label,
+                step.from,
+                step.to,
+                step.damaged_area(),
+                step.damage,
+            );
+            assert!(
+                !step.unsettled,
+                "{}: hovering from {:?} to {:?} asked for a sync or a layout",
+                self.report.label, step.from, step.to,
+            );
+        }
+        if !cfg!(debug_assertions) {
+            // CPU time, not wall time: a motion that does no more work
+            // reads the same on a machine busy with other processes.
+            let p50 = self.report.cpu_p50_us();
+            assert!(
+                p50 <= 2_000,
+                "{}: CPU p50 {p50}us exceeds the 2000us pointer-motion budget",
+                self.report.label,
+            );
+        }
+    }
+}
+
+/// The window [`sidebar_sweep`] paints into: [`YOGA`] at scale 1.
+#[cfg(feature = "native")]
+struct SweepSurface;
+
+#[cfg(feature = "native")]
+impl ui_core::app::AppSurface for SweepSurface {
+    fn scale_factor(&self) -> f64 {
+        1.0
+    }
+    fn inner_size(&self) -> ui_core::winit::dpi::PhysicalSize<u32> {
+        ui_core::winit::dpi::PhysicalSize::new(YOGA.0, YOGA.1)
+    }
+    fn request_redraw(&self) {}
+    fn set_cursor(&self, _: ui_core::winit::window::CursorIcon) {}
+}
+
+/// Sweep the pointer over the sidebar rows (`TreeItem`s) of the
+/// window `A`'s live launch opens, row to row and back, `rounds` times
+/// after one unmeasured round, as a person moves the pointer down the list
+/// and up again. Each step is one motion and the frames the window runs
+/// after it until it rests. Frames the window's model wakes it for (a read
+/// it goes on with after opening) run between the motions, as a window's
+/// event loop runs them, and count for none.
+#[cfg(feature = "native")]
+pub fn sidebar_sweep<A: ResourceApp>(rounds: usize) -> Result<Sweep, LaunchError> {
+    super::drive_live_window::<A, _>(|app| {
+        sweep_rows(&format!("{} sidebar hover", A::ID), app, rounds)
+    })
+}
+
+/// The sidebar rows (`TreeItem`s) the window shows inside [`YOGA`],
+/// by name, with their bounds.
+#[cfg(feature = "native")]
+fn sidebar_rows(app: &ui_core::App) -> Vec<(String, ui_core::vello::kurbo::Rect)> {
+    let (width, height) = (f64::from(YOGA.0), f64::from(YOGA.1));
+    app.semantic_tree()
+        .iter()
+        .filter(|node| node.role == ui_core::a11y::Role::TreeItem)
+        .filter_map(|node| {
+            let bounds = node.bounds?;
+            let inside = bounds.x0 >= 0.0
+                && bounds.y0 >= 0.0
+                && bounds.x1 <= width
+                && bounds.y1 <= height
+                && bounds.width() > 0.0
+                && bounds.height() > 0.0;
+            inside.then(|| (node.name.clone().unwrap_or_default(), bounds))
+        })
+        .collect()
+}
+
+/// One frame of the window on [`SweepSurface`], then up to two more while it
+/// left work to settle, as a window runs frames until it rests.
+#[cfg(feature = "native")]
+fn sweep_frame(
+    app: &mut ui_core::App,
+    scene: &mut ui_core::vello::Scene,
+    damage: &mut ui_core::app::SurfaceDamage,
+) {
+    for _ in 0..3 {
+        scene.reset();
+        let again = app.surface_frame_with_damage(&SweepSurface, scene, damage);
+        if !again || !app.unsettled() {
+            break;
+        }
+    }
+}
+
+/// The frames the window's model woke it for, run until none is waiting,
+/// as its event loop runs them between one motion and the next: a read the
+/// window goes on with frame by frame belongs to no motion. What they
+/// repainted is dropped.
+#[cfg(feature = "native")]
+#[allow(
+    clippy::panic,
+    reason = "a measurement fails loudly when the window never rests"
+)]
+fn sweep_rest(
+    label: &str,
+    app: &mut ui_core::App,
+    scene: &mut ui_core::vello::Scene,
+    damage: &mut ui_core::app::SurfaceDamage,
+) {
+    // A window whose model wakes it for every frame never rests: that is
+    // the finding, not something to measure hovers over.
+    for _ in 0..10_000 {
+        if !app.wake_pending() {
+            let _ = damage.take();
+            return;
+        }
+        sweep_frame(app, scene, damage);
+    }
+    panic!("{label}: the window's model wakes it for every frame and it never rests");
+}
+
+/// Move the pointer to the middle of `to` and run the frames that follow.
+/// Whether the motion left a sync or a layout for them.
+#[cfg(feature = "native")]
+fn sweep_motion(
+    app: &mut ui_core::App,
+    scene: &mut ui_core::vello::Scene,
+    damage: &mut ui_core::app::SurfaceDamage,
+    to: &(String, ui_core::vello::kurbo::Rect),
+) -> bool {
+    let centre = to.1.center();
+    app.surface_input(
+        &SweepSurface,
+        ui_core::synthetic_input::cursor_moved(centre.x, centre.y),
+        false,
+    );
+    let unsettled = app.unsettled();
+    sweep_frame(app, scene, damage);
+    unsettled
+}
+
+#[cfg(feature = "native")]
+#[allow(
+    clippy::panic,
+    reason = "a measurement fails loudly when the window shows no sidebar"
+)]
+fn sweep_rows(label: &str, app: &mut ui_core::App, rounds: usize) -> Sweep {
+    use ui_core::app::SurfaceDamage;
+    use ui_core::vello::Scene;
+    let mut damage = SurfaceDamage::default();
+    let mut scene = Scene::new();
+    app.init_layout();
+    for _ in 0..5 {
+        sweep_frame(app, &mut scene, &mut damage);
+    }
+    sweep_rest(label, app, &mut scene, &mut damage);
+    let _ = app.refresh_semantic_tree();
+    let rows = sidebar_rows(app);
+    assert!(
+        rows.len() >= 2,
+        "{label}: a sweep needs two sidebar rows, found {rows:?}"
+    );
+    // Down the rows and back up, each round from the row after the last
+    // round's end.
+    let path: Vec<&(String, ui_core::vello::kurbo::Rect)> = rows
+        .iter()
+        .chain(rows.iter().rev().skip(1).take(rows.len().saturating_sub(2)))
+        .collect();
+    let Some((&first, rest)) = path.split_first() else {
+        panic!("{label}: a sweep needs two sidebar rows");
+    };
+    let mut at = first;
+    let _ = sweep_motion(app, &mut scene, &mut damage, at);
+    sweep_rest(label, app, &mut scene, &mut damage);
+    for &to in rest {
+        let _ = sweep_motion(app, &mut scene, &mut damage, to);
+        sweep_rest(label, app, &mut scene, &mut damage);
+        at = to;
+    }
+    let mut report = Report {
+        label: label.to_owned(),
+        samples: Vec::new(),
+        cpu: Vec::new(),
+        phases: BTreeMap::new(),
+        frames: Vec::new(),
+    };
+    let mut steps = Vec::new();
+    for _ in 0..rounds {
+        for &to in &path {
+            let start = Clocks::start();
+            let (unsettled, scopes) = tilo_resource::profiling::observe(|| {
+                sweep_motion(app, &mut scene, &mut damage, to)
+            });
+            report.record(&start, scopes);
+            let repainted = damage
+                .take()
+                .ok_or_else(|| damage.repainted().unwrap_or("no reason given"));
+            steps.push(SweepStep {
+                from: at.0.clone(),
+                to: to.0.clone(),
+                rows: [at.1, to.1],
+                damage: repainted,
+                unsettled,
+            });
+            sweep_rest(label, app, &mut scene, &mut damage);
+            at = to;
+        }
+    }
+    Sweep { report, steps }
 }

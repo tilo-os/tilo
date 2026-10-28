@@ -272,11 +272,10 @@ pub(crate) fn reload_dev_locale_catalogs_from(dir: &std::path::Path) -> bool {
 }
 
 #[cfg(feature = "native")]
-pub(crate) fn checkpoint_and_exit(app: &App, event_loop: &winit::event_loop::ActiveEventLoop) {
+pub(crate) fn write_dev_checkpoint_now(app: &App) {
     if let Some(dir) = crate::host::environment().dev_session.as_deref() {
         write_dev_checkpoint(app, dir);
     }
-    event_loop.exit();
 }
 
 #[cfg(test)]

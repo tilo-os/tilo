@@ -37,6 +37,7 @@ pub const MAX_TAG_PLACES: usize = 32;
     kind = "feeds.library",
     label = "Feeds",
     children = Library::places,
+    search = crate::search::entries,
     version = 2,
     migrate = crate::model::upgrade
 )]
@@ -129,7 +130,9 @@ impl Library {
     ///
     /// Every address the library does not have yet, in the folders the file
     /// names (made where missing): one step, which one undo takes back.
-    #[action]
+    /// People import a file with Import OPML…, which lands here; the verb
+    /// itself, with its parsed outlines, is for agents and scripts.
+    #[action(audience = "agents")]
     pub fn import_subscriptions(
         &mut self,
         cx: &mut ActionCx,
@@ -143,7 +146,8 @@ impl Library {
     /// The articles it does not hold yet, its title as the feed names
     /// itself, and the certificate a Gemini server presented the first time.
     /// Content from the feed, not anyone's edit: no undo takes it back.
-    #[action(external)]
+    /// How a refresh lands, never something a person picks from a list.
+    #[action(external, audience = "agents")]
     pub fn refreshed(
         &mut self,
         cx: &mut ActionCx,
@@ -237,10 +241,10 @@ pub enum FeedsEffect {
     #[effect(job)]
     RefreshAll,
     /// Import OPML…
-    #[effect(device_only)]
+    #[effect(attended)]
     ImportOpml,
     /// Export OPML…
-    #[effect(kind = "read", device_only)]
+    #[effect(attended, kind = "read")]
     ExportOpml,
     /// Reveal tagged articles
     #[effect(view, row, idempotent)]
@@ -461,3 +465,26 @@ pub(crate) fn tag_filter(tag: &str) -> Filter {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::FeedsShell::scenarios() {
+            let mut app = TestApp::<super::FeedsShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+}

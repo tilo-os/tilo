@@ -1,0 +1,9 @@
+[Unit]
+Description=Start the cleanups while the disk is low on space
+ConditionKernelCommandLine=!tilo.install
+ConditionKernelCommandLine=!tilo.mode=repair
+
+[Service]
+Type=oneshot
+ExecCondition=/usr/bin/tilo os clean --check-low-space
+ExecStart=/usr/bin/systemctl start --no-block tilo-cache-gc.service tilo-os-image-gc.service

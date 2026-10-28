@@ -10,6 +10,7 @@
 //! never a fabricated success.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use rusqlite::Connection;
@@ -38,7 +39,7 @@ use crate::sample;
 /// monotonically increasing request generation before invoking it.
 #[derive(Clone)]
 pub enum QueryCancellation {
-    Sqlite(Arc<rusqlite::InterruptHandle>),
+    Sqlite(Arc<AtomicBool>),
     Postgres(postgres::CancelToken),
     MySql {
         opts: mysql::Opts,
@@ -53,7 +54,11 @@ impl QueryCancellation {
     /// query.
     pub fn request(&self) {
         match self.clone() {
-            Self::Sqlite(handle) => handle.interrupt(),
+            // Not `sqlite3_interrupt`: SQLite drops an interrupt that lands
+            // before the statement starts stepping, and one that lands late
+            // stops whatever statement runs then. The flag belongs to this
+            // query alone and its progress handler acts on it.
+            Self::Sqlite(cancelled) => cancelled.store(true, Ordering::Relaxed),
             Self::Postgres(token) => {
                 let _ = thread::Builder::new()
                     .name("db-pg-cancel".into())
@@ -83,11 +88,18 @@ impl QueryCancellation {
     }
 }
 
+/// How many `SQLite` VM instructions run between checks of a query's
+/// cancellation flag: a few microseconds of work.
+const CANCELLATION_CHECK_OPS: std::ffi::c_int = 1000;
+
 /// A live `SQLite` handle. Owns the connection for the lifetime of the
 /// session; all introspection + query execution goes through it.
 pub struct SqliteEngine {
     conn: Connection,
-    interrupt: Arc<rusqlite::InterruptHandle>,
+    /// The cancellation flag of the next [`run`](Self::run). Each run takes
+    /// it and leaves a fresh one, so a request aimed at one query can never
+    /// stop a later one.
+    cancelled: Arc<AtomicBool>,
 }
 
 impl SqliteEngine {
@@ -101,8 +113,10 @@ impl SqliteEngine {
     pub fn open_sample() -> Result<Self, String> {
         let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
         sample::seed(&conn).map_err(|e| e.to_string())?;
-        let interrupt = Arc::new(conn.get_interrupt_handle());
-        Ok(Self { conn, interrupt })
+        Ok(Self {
+            conn,
+            cancelled: Arc::default(),
+        })
     }
 
     /// Open an on-disk `SQLite` file (read-write).
@@ -113,18 +127,15 @@ impl SqliteEngine {
     /// file exists but isn't a valid `SQLite` database).
     pub fn open_file(path: &str) -> Result<Self, String> {
         let conn = Connection::open(path).map_err(|e| e.to_string())?;
-        let interrupt = Arc::new(conn.get_interrupt_handle());
-        Ok(Self { conn, interrupt })
+        Ok(Self {
+            conn,
+            cancelled: Arc::default(),
+        })
     }
 
     /// Introspect the full schema. `SQLite` has a single implicit namespace,
     /// which we surface as a "main" schema so the tree shape matches the
     /// multi-schema engines.
-    ///
-    /// # Errors
-    /// Returns the driver's error string if any of the underlying
-    /// introspection queries (listing tables/views, or a table's columns,
-    /// foreign keys or indexes) fail.
     pub fn introspect(&self) -> Result<DatabaseSchema, String> {
         let mut tables = Vec::new();
 
@@ -235,7 +246,6 @@ impl SqliteEngine {
 
         let mut out = Vec::new();
         for (name, unique) in rows {
-            // Skip auto-indexes SQLite creates for UNIQUE/PK constraints.
             if name.starts_with("sqlite_autoindex") {
                 continue;
             }
@@ -267,11 +277,22 @@ impl SqliteEngine {
     /// # Errors
     /// Returns the driver's error string if `sql` fails to prepare or
     /// execute, or if a returned row's column value can't be read.
-    pub fn run(&self, sql: &str) -> Result<QueryResult, String> {
+    pub fn run(&mut self, sql: &str) -> Result<QueryResult, String> {
+        let cancelled = std::mem::take(&mut self.cancelled);
         let trimmed = sql.trim();
         if trimmed.is_empty() {
             return Ok(QueryResult::default());
         }
+        self.conn.progress_handler(
+            CANCELLATION_CHECK_OPS,
+            Some(move || cancelled.load(Ordering::Relaxed)),
+        );
+        let result = self.run_statement(trimmed);
+        self.conn.progress_handler(0, None::<fn() -> bool>);
+        result
+    }
+
+    fn run_statement(&self, trimmed: &str) -> Result<QueryResult, String> {
         let start = ui::time::now();
 
         // Decide select-vs-DML by trying to prepare and asking the column
@@ -288,7 +309,7 @@ impl SqliteEngine {
                 elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
                 rows_affected: Some(affected as i64),
                 is_select: false,
-                truncated: false,
+                truncation: None,
             });
         }
 
@@ -300,10 +321,10 @@ impl SqliteEngine {
         let mut retained_bytes = 0usize;
         let mut retained_cells = 0usize;
         let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
-        let mut truncated = false;
+        let mut truncation: Option<crate::model::Truncation> = None;
         while let Some(row) = rows.next().map_err(|e| e.to_string())? {
             if rows_out.len() == MAX_QUERY_ROWS {
-                truncated = true;
+                truncation = Some(crate::model::Truncation::RowLimit);
                 break;
             }
             let mut cells = Vec::with_capacity(col_count);
@@ -312,7 +333,7 @@ impl SqliteEngine {
                 cells.push(value_ref_to_cell(v));
             }
             if !can_retain_result_row(retained_bytes, retained_cells, &cells) {
-                truncated = true;
+                truncation = Some(crate::model::Truncation::Payload);
                 break;
             }
             retained_bytes += row_retained_bytes(&cells);
@@ -326,12 +347,12 @@ impl SqliteEngine {
             rows_affected: None,
             is_select: true,
             rows: rows_out,
-            truncated,
+            truncation,
         })
     }
 
     pub(crate) fn cancellation_handle(&self) -> QueryCancellation {
-        QueryCancellation::Sqlite(Arc::clone(&self.interrupt))
+        QueryCancellation::Sqlite(Arc::clone(&self.cancelled))
     }
 }
 
@@ -372,9 +393,6 @@ pub enum LiveEngine {
 
 impl LiveEngine {
     /// Introspect the full schema for whichever engine backs this handle.
-    ///
-    /// # Errors
-    /// Returns whatever the backing engine's own `introspect` returns.
     pub fn introspect(&mut self) -> Result<DatabaseSchema, String> {
         match self {
             LiveEngine::Sqlite(e) => e.introspect(),
@@ -384,9 +402,6 @@ impl LiveEngine {
     }
 
     /// Run a single SQL statement against whichever engine backs this handle.
-    ///
-    /// # Errors
-    /// Returns whatever the backing engine's own `run` returns.
     pub fn run(&mut self, sql: &str) -> Result<QueryResult, String> {
         match self {
             LiveEngine::Sqlite(e) => e.run(sql),
@@ -409,10 +424,6 @@ impl LiveEngine {
     /// backing engine expects — double quotes for SQLite/PostgreSQL, backticks
     /// for `MySQL` — so a table named like a keyword (or a `MySQL` table at all)
     /// browses correctly rather than erroring on the wrong quote style.
-    ///
-    /// # Errors
-    /// Returns whatever the backing engine's own `run` returns for the
-    /// generated `SELECT`.
     pub fn browse_table(
         &mut self,
         schema: &str,
@@ -444,10 +455,6 @@ impl LiveEngine {
 /// the bundled sample or an on-disk file for `SQLite`, a real TCP socket for
 /// `PostgreSQL` and `MySQL`. This is the single seam the [`crate::worker`] thread
 /// calls; it never runs on the UI thread because each variant blocks.
-///
-/// # Errors
-/// Returns an error string if a `SQLite` profile has no file path set, or if
-/// opening/connecting to the target engine fails.
 pub fn open_engine(profile: &ConnectionProfile) -> Result<LiveEngine, String> {
     if profile.is_sample {
         return SqliteEngine::open_sample().map(LiveEngine::Sqlite);
@@ -476,7 +483,6 @@ mod tests {
             let eng = SqliteEngine::open_sample().unwrap();
             let schema = eng.introspect().unwrap();
             assert_eq!(schema.schemas.len(), 1);
-            // The sample ships several tables.
             assert!(schema.table_count() >= 4, "got {}", schema.table_count());
             let artists = schema.find_table("artists").expect("artists table");
             assert!(artists.columns.iter().any(|c| c.primary_key));
@@ -484,7 +490,7 @@ mod tests {
 
         // --- phase: select_returns_rows_with_columns ---
         {
-            let eng = SqliteEngine::open_sample().unwrap();
+            let mut eng = SqliteEngine::open_sample().unwrap();
             let r = eng
                 .run("SELECT name FROM artists ORDER BY name LIMIT 3")
                 .unwrap();
@@ -495,7 +501,7 @@ mod tests {
 
         // --- phase: dml_reports_rows_affected ---
         {
-            let eng = SqliteEngine::open_sample().unwrap();
+            let mut eng = SqliteEngine::open_sample().unwrap();
             let r = eng
                 .run("UPDATE tracks SET unit_price = unit_price WHERE 1=0")
                 .unwrap();
@@ -520,7 +526,7 @@ mod tests {
     fn sqlite_results_are_bounded() {
         // --- phase: sqlite_hostile_text_is_retained_at_a_bounded_size ---
         {
-            let eng = SqliteEngine::open_sample().unwrap();
+            let mut eng = SqliteEngine::open_sample().unwrap();
             let sql = format!(
                 "SELECT '{}' AS hostile",
                 "x".repeat(Cell::MAX_RETAINED_TEXT_BYTES + 99)
@@ -535,7 +541,7 @@ mod tests {
 
         // --- phase: aggregate_budget_truncates_many_large_cells_across_rows_and_columns ---
         {
-            let eng = SqliteEngine::open_sample().unwrap();
+            let mut eng = SqliteEngine::open_sample().unwrap();
             let text = "x".repeat(Cell::MAX_RETAINED_TEXT_BYTES);
             let columns = (0..8)
                 .map(|index| format!("'{text}' AS c{index}"))
@@ -547,7 +553,7 @@ mod tests {
                  SELECT {columns} FROM n"
             ))
             .unwrap();
-            assert!(result.truncated);
+            assert_eq!(result.truncation, Some(crate::model::Truncation::Payload));
             assert!(result.rows.len() < 100);
             let retained: usize = result
                 .rows
@@ -557,5 +563,26 @@ mod tests {
                 .sum();
             assert!(retained <= MAX_QUERY_RESULT_BYTES);
         }
+    }
+
+    /// A cancellation requested before the statement starts still stops it:
+    /// `SQLite` forgets an interrupt that lands before the first step, which
+    /// is exactly when a quick Cancel after Run arrives.
+    #[test]
+    fn sqlite_cancellation_before_the_statement_starts_still_stops_it() {
+        let mut eng = SqliteEngine::open_sample().unwrap();
+        eng.cancellation_handle().request();
+        let result = eng.run(
+            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 1000000000000) \
+             SELECT sum(x) FROM n",
+        );
+        assert!(
+            result.is_err(),
+            "the cancelled query must stop, got {result:?}"
+        );
+
+        // The request belonged to that query only; the next one runs.
+        let next = eng.run("SELECT 1").unwrap();
+        assert_eq!(next.rows.len(), 1);
     }
 }

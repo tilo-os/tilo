@@ -348,7 +348,6 @@ fn free_part_name(c: &ZipPackage, stem: &str) -> String {
 pub(super) struct SectionPlan {
     /// The complete final `w:sectPr`, or empty when the document needs none.
     pub sectpr: String,
-    /// The part qdoc's header is written to, when there is a header.
     pub header_part: Option<String>,
     /// The part qdoc's footer is written to, when there is a footer.
     pub footer_part: Option<String>,
@@ -472,7 +471,6 @@ pub(super) fn relationship_xml(id: &str, rel_type: &str, part: &str) -> String {
     )
 }
 
-/// The content-type `Override` element for `part`.
 pub(super) fn override_xml(part: &str, content_type: &str) -> String {
     format!(
         r#"<Override PartName="/{}" ContentType="{content_type}"/>"#,
@@ -486,7 +484,6 @@ mod tests {
 
     #[test]
     fn section_properties_are_recognised_rebuilt_and_removed() {
-        // Phase `recognises_section_properties`.
         {
             assert!(is_section_properties("<w:sectPr>"));
             assert!(is_section_properties(
@@ -496,7 +493,6 @@ mod tests {
             assert!(!is_section_properties("<w:sectPrChange/>"));
             assert!(!is_section_properties("<w:sdt></w:sdt>"));
         }
-        // Phase `rebuilt_sectpr_keeps_page_setup_and_orders_cols`.
         {
             let original = concat!(
                 r#"<w:sectPr w:rsidR="00A1">"#,
@@ -531,7 +527,6 @@ mod tests {
             assert_eq!(plan.header_part.as_deref(), Some("word/header1.xml"));
             assert_eq!(plan.footer_part, None);
         }
-        // Phase `removes_only_matching_elements`.
         {
             let xml = r#"<R><X Id="a"/><X Id="b"></X><Y Id="a"/></R>"#;
             assert_eq!(

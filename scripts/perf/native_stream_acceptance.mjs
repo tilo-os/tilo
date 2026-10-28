@@ -50,9 +50,13 @@
 // first page's alone.
 //
 // Not driven here, with the reason (docs/measurements/performance.md):
-//   Safari     WebKit's only Linux builds are WebKitGTK/WPE, not Safari, and
-//              lack WebTransport; Safari runs only on macOS under a logged-in
-//              user with remote automation enabled (`safaridriver --enable`)
+//   Safari     Safari's WebDriver can drive one window, with no browser
+//              context and no input method, so `fallback` and `viewer` (a
+//              second device and a second person) are Chrome's: a Safari run
+//              (`--platform safari`) records them as not run, and `ime`
+//              commits its text as key presses, which its driver can type
+//   WebKitGTK/WPE
+//              WebKit's Linux builds are not Safari and lack WebTransport
 import {sleep} from '../../tools/web/chrome.mjs';
 import {Invalid} from './browser_qualification.mjs';
 
@@ -67,8 +71,6 @@ export const KEYS = Object.freeze({
   z: {key: 'z', code: 'KeyZ', windowsVirtualKeyCode: 90, text: 'z', evdev: 44},
 });
 const CONTROL = 29, CONTROL_RIGHT = 97, KEY_V = 47, LEFT_BUTTON = 272;
-/** CDP's modifier bit for Control. */
-const CTRL = 2;
 /** What the input method case commits: a composition's converted text, then an emoji with no composition. */
 export const IME_COMMITTED = Object.freeze(['日本', '🙂']);
 /** What the paste case puts on the clipboard: two lines, beyond ASCII. */
@@ -182,6 +184,16 @@ export function judgePaste(inputs, text) {
 }
 
 /**
+ * Whether a text arrived in the window as `text`, committed, in position
+ * `index` of the committed texts (the input-method case, where the browser's
+ * driver composes no edits and the text is typed).
+ */
+export function inputText(inputs, text, index = 0) {
+  const texts = inputs.filter(input => input.value?.Text !== undefined).map(input => input.value.Text.text);
+  return texts[index] === text ? true : `the window got ${JSON.stringify(texts[index])}, not ${JSON.stringify(text)}`;
+}
+
+/**
  * What an input method's work reached the window as: exactly the `committed`
  * texts, in order, each once as committed text, and no key pressed in
  * between (the composition's keystrokes and uncommitted text stay on the
@@ -241,16 +253,15 @@ const lastDrawn = prefix =>`globalThis.__tiloStream.draws.filter(d => d.index !=
 
 const nowUs = () => Math.round((performance.timeOrigin + performance.now()) * 1000);
 
-async function typeKey(page, {evdev: _evdev, ...key}) {
-  await page.send('Input.dispatchKeyEvent', {type: 'keyDown', ...key});
-  await page.send('Input.dispatchKeyEvent', {type: 'keyUp', key: key.key, code: key.code, windowsVirtualKeyCode: key.windowsVirtualKeyCode});
+async function typeKey(page, {evdev: _evdev, ...key}, modifiers = 0) {
+  await page.keyDown(key.key, {modifiers});
+  await page.keyUp(key.key, {modifiers});
 }
 
 async function click(page, {x, y}) {
-  await page.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
+  await page.move({x, y});
   await sleep(150);
-  await page.send('Input.dispatchMouseEvent', {type: 'mousePressed', x, y, button: 'left', clickCount: 1});
-  await page.send('Input.dispatchMouseEvent', {type: 'mouseReleased', x, y, button: 'left', clickCount: 1});
+  await page.press({x, y});
 }
 
 /** `probe()`'s first truthy value within `ms`, else null. */
@@ -344,19 +355,28 @@ export async function runAcceptance(ctx) {
   if (inputsOf(w1.source.lines, away, mark).some(isKey(KEYS.b.evdev, true))) focus.failures.push('a key typed on the desktop reached the window it had left');
 
   // paste ----------------------------------------------------------------------
+  // Chrome's, which grants a page's clipboard and pastes with the chord. A
+  // page whose clipboard does not work or that takes no paste chord (Safari,
+  // whose driver has no clipboard and no commands) pastes from the page's own
+  // paste event, with the clipboard's text in it: the page sees what a
+  // person's paste gives it, and the window's input is judged as it is.
   step('paste');
   const paste = open('paste');
-  await ctx.browser.send('Browser.grantPermissions', {origin: ctx.pagesOrigin, permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']});
-  paste.clipboard = await main.evaluate(`Promise.race([navigator.clipboard.writeText(${JSON.stringify(PASTED)})
-    .then(() => navigator.clipboard.readText()).then(text => text === ${JSON.stringify(PASTED)} ? 'holds the text' : 'holds other text', error => String(error)),
-    new Promise(done => setTimeout(() => done('did not answer within 5 s'), 5000))])`);
+  let chord = ctx.browser.driver === 'cdp';
+  if (chord) {
+    await ctx.browser.send('Browser.grantPermissions', {origin: ctx.pagesOrigin, permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']});
+    paste.clipboard = await main.evaluate(`Promise.race([navigator.clipboard.writeText(${JSON.stringify(PASTED)})
+      .then(() => navigator.clipboard.readText()).then(text => text === ${JSON.stringify(PASTED)} ? 'holds the text' : 'holds other text', error => String(error)),
+      new Promise(done => setTimeout(() => done('did not answer within 5 s'), 5000))])`);
+  }
   const pastes = await main.evaluate('globalThis.__tiloStream.pastes');
   mark = lines1();
-  await main.send('Input.dispatchKeyEvent', {type: 'rawKeyDown', key: 'Control', code: 'ControlLeft', windowsVirtualKeyCode: 17, modifiers: CTRL});
-  await main.send('Input.dispatchKeyEvent', {type: 'rawKeyDown', key: 'v', code: 'KeyV', windowsVirtualKeyCode: 86, modifiers: CTRL,
-    ...(paste.clipboard === 'holds the text' ? {commands: ['paste']} : {})});
-  paste.path = 'clipboard';
-  if (!await eventually(async () => (await main.evaluate('globalThis.__tiloStream.pastes')) > pastes, 3000)) {
+  if (chord) {
+    await main.keyDown('Control');
+    await main.keyDown('v', {clipboard: paste.clipboard === 'holds the text'});
+  }
+  paste.path = chord ? 'clipboard' : 'paste event';
+  if (!chord || !await eventually(async () => (await main.evaluate('globalThis.__tiloStream.pastes')) > pastes, 3000)) {
     // A browser whose clipboard does not work headless runs no paste for
     // the chord: the page's paste event carries the text instead, as the
     // browser's own would.
@@ -366,24 +386,33 @@ export async function runAcceptance(ctx) {
   } else if ((await main.evaluate('globalThis.__tiloStream.pasted')) !== PASTED) {
     throw new Invalid(`the browser pasted ${JSON.stringify(await main.evaluate('globalThis.__tiloStream.pasted'))} from a clipboard that ${paste.clipboard}`);
   }
-  await main.send('Input.dispatchKeyEvent', {type: 'keyUp', key: 'v', code: 'KeyV', windowsVirtualKeyCode: 86, modifiers: CTRL});
-  await main.send('Input.dispatchKeyEvent', {type: 'keyUp', key: 'Control', code: 'ControlLeft', windowsVirtualKeyCode: 17, modifiers: 0});
-  await waitInput(w1, mark, isKey(CONTROL, false), 30_000);
+  if (chord) { await main.keyUp('v'); await main.keyUp('Control'); }
+  else await waitInput(w1, mark, isKey(CONTROL, false), 30_000);
   paste.failures.push(...judgePaste(inputsOf(w1.source.lines, mark), PASTED));
 
   // ime --------------------------------------------------------------------------
+  // The input method is a browser protocol's (Chrome's): a browser whose
+  // driver cannot compose edits (Safari's) types the committed text as key
+  // presses, which is the other half of what a person's input method sends.
   step('ime');
   const ime = open('ime');
   mark = lines1();
-  // A composition (as a Japanese input method's: kana, then the converted
-  // kanji committed), then text committed with no composition.
-  await main.send('Input.imeSetComposition', {text: 'に', selectionStart: 1, selectionEnd: 1});
-  await main.send('Input.imeSetComposition', {text: 'にほん', selectionStart: 3, selectionEnd: 3});
-  await main.send('Input.insertText', {text: IME_COMMITTED[0]});
-  await main.send('Input.insertText', {text: IME_COMMITTED[1]});
-  await eventually(async () => inputsOf(w1.source.lines, mark).filter(input => input.value?.Text !== undefined).length >= IME_COMMITTED.length, 30_000, 100);
-  await sleep(1000);
-  ime.failures.push(...judgeIme(inputsOf(w1.source.lines, mark), IME_COMMITTED));
+  if (ctx.browser.driver === 'cdp') {
+    // A composition (as a Japanese input method's: kana, then the converted
+    // kanji committed), then text committed with no composition.
+    await main.send('Input.imeSetComposition', {text: 'に', selectionStart: 1, selectionEnd: 1});
+    await main.send('Input.imeSetComposition', {text: 'にほん', selectionStart: 3, selectionEnd: 3});
+    await main.send('Input.insertText', {text: IME_COMMITTED[0]});
+    await main.send('Input.insertText', {text: IME_COMMITTED[1]});
+    await eventually(async () => inputsOf(w1.source.lines, mark).filter(input => input.value?.Text !== undefined).length >= IME_COMMITTED.length, 30_000, 100);
+    await sleep(1000);
+    ime.failures.push(...judgeIme(inputsOf(w1.source.lines, mark), IME_COMMITTED));
+  } else {
+    for (const text of IME_COMMITTED) await main.insertText(text);
+    await sleep(1000);
+    ime.committed = IME_COMMITTED.map((text, index) => inputText(inputsOf(w1.source.lines, mark), text, index));
+    if (ime.committed.some(seen => seen !== true)) ime.failures.push(`committed text did not reach the window: ${JSON.stringify(ime.committed)}`);
+  }
 
   // resize: the page ---------------------------------------------------------------
   step('resize the page');
@@ -392,7 +421,7 @@ export async function runAcceptance(ctx) {
   // Smaller, not larger: the page goes on to show a second window, and on
   // SwiftShader every pixel of its desktop costs.
   const viewport = {width: Math.round(ctx.viewport.width * 0.8 / 2) * 2, height: Math.round(ctx.viewport.height * 0.8 / 2) * 2, deviceScaleFactor: 1};
-  await main.send('Emulation.setDeviceMetricsOverride', {...viewport, mobile: false});
+  await main.viewport({...viewport, deviceScaleFactor: 1});
   resize.viewport = {from: ctx.viewport, to: viewport};
   const after = await settledBox(main, prefix1, before, 30_000);
   if (!after) resize.failures.push(`the window did not follow its tile when the page was resized (still ${JSON.stringify(before)})`);
@@ -419,68 +448,73 @@ export async function runAcceptance(ctx) {
   // WebTransport never becomes ready, then a second person, a viewer ----------------
   // They come while the first page is idle (its window still): a device
   // joining the room is let in by one already in it, and on SwiftShader a
-  // busy desktop holds up every other page's.
-  step('open the page on the HTTPS stream and the viewer\'s');
+  // busy desktop holds up every other page's. A browser that drives one
+  // window (Safari's driver) is one member: these cases are Chrome's.
   const fallback = open('fallback');
   const viewer = open('viewer');
-  const invitation = await main.evaluate(`globalThis.peer.createInvitation({role: 'viewer', expiresIn: 3600})`);
-  // One after the other: a desktop gives its GPU device a minute to present
-  // its first frame, and two mounting at once on SwiftShader miss it.
-  const other = await ctx.openPage('fallback', {room: ctx.room, label: 'Owner on HTTPS'}, {block: true});
-  const viewerPage = ctx.openPage('viewer', {invite: invitation, label: 'Viewer'}, {context: true});
-  const admitted = admitWhile(main, viewerPage);
-  const watcher = await viewerPage;
-  viewer.admitted = await admitted;
-  const transport = await other.evaluate('globalThis.__tiloStream.transport');
-  if (!transport.blocked) throw new Invalid(`the page on a network without WebTransport never tried it: ${JSON.stringify(transport)}`);
-  fallback.carrier = JSON.parse(await other.evaluate(ctx.live)).live?.carrier ?? null;
-  if (fallback.carrier !== 'https-stream') fallback.failures.push(`with WebTransport never ready the page's live plane took ${fallback.carrier}, not the HTTPS stream`);
-  // What they receive is the window's current group (its last keyframe and
-  // every frame since), replayed to a member who arrives once it is still:
-  // judged picture by picture like a live stream, and ending on its last
-  // frame. A live stream to two more desktops at once would stall the
-  // runner's GPU process (see the header).
-  const sent1 = ctx.readSent(w1.log);
-  for (const [name, page, found] of [['fallback', other, fallback], ['viewer', watcher, viewer]]) {
-    await settleOn(page, prefix1, w1.stop.lastIndex, 120_000);
-    const stream = judgeStream({sent: sent1, draws: await page.evaluate(drawsOf(prefix1)), lastIndex: w1.stop.lastIndex});
-    found.window = {...stream, failures: undefined};
-    found.failures.push(...stream.failures.map(failure => `the ${name} page, arriving once the window was still: ${failure}`));
-  }
-
-  // The page on the HTTPS stream drives the window; the viewer may not.
-  step('drive from the page on the HTTPS stream, try from the viewer\'s');
-  const ownerSees = await eventually(() => other.evaluate(windowAt(prefix1)), 60_000);
-  if (!ownerSees) throw new Invalid('the window is not on screen on the page on the HTTPS stream');
-  const surface1 = ownerSees.key.split(':')[1];
-  if (!ownerSees.control) fallback.failures.push('the owner\'s page on the HTTPS stream was offered no control of the window');
-  else {
-    // It scrolls the window: input that does not take the keyboard from the
-    // first page, which goes on typing into it.
-    mark = lines1();
-    await other.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x: ownerSees.x, y: ownerSees.y});
-    await other.send('Input.dispatchMouseEvent', {type: 'mouseWheel', x: ownerSees.x, y: ownerSees.y, deltaX: 0, deltaY: 120});
-    if (!await waitInput(w1, mark, input => input.value?.PointerAxis?.dy > 0, 30_000)) {
-      fallback.failures.push('a scroll from the page on the HTTPS stream did not reach the window');
+  if (ctx.browser.driver !== 'cdp') {
+    step('one window: no second device and no second person');
+    fallback.skipped = viewer.skipped = 'one Safari window: these cases need Chrome';
+  } else {
+    step('open the page on the HTTPS stream and the viewer\'s');
+    const invitation = await main.evaluate(`globalThis.peer.createInvitation({role: 'viewer', expiresIn: 3600})`);
+    // One after the other: a desktop gives its GPU device a minute to present
+    // its first frame, and two mounting at once on SwiftShader miss it.
+    const other = await ctx.openPage('fallback', {room: ctx.room, label: 'Owner on HTTPS'}, {block: true});
+    const viewerPage = ctx.openPage('viewer', {invite: invitation, label: 'Viewer'}, {context: true});
+    const admitted = admitWhile(main, viewerPage);
+    const watcher = await viewerPage;
+    viewer.admitted = await admitted;
+    const transport = await other.evaluate('globalThis.__tiloStream.transport');
+    if (!transport.blocked) throw new Invalid(`the page on a network without WebTransport never tried it: ${JSON.stringify(transport)}`);
+    fallback.carrier = JSON.parse(await other.evaluate(ctx.live)).live?.carrier ?? null;
+    if (fallback.carrier !== 'https-stream') fallback.failures.push(`with WebTransport never ready the page's live plane took ${fallback.carrier}, not the HTTPS stream`);
+    // What they receive is the window's current group (its last keyframe and
+    // every frame since), replayed to a member who arrives once it is still:
+    // judged picture by picture like a live stream, and ending on its last
+    // frame. A live stream to two more desktops at once would stall the
+    // runner's GPU process (see the header).
+    const sent1 = ctx.readSent(w1.log);
+    for (const [name, page, found] of [['fallback', other, fallback], ['viewer', watcher, viewer]]) {
+      await settleOn(page, prefix1, w1.stop.lastIndex, 120_000);
+      const stream = judgeStream({sent: sent1, draws: await page.evaluate(drawsOf(prefix1)), lastIndex: w1.stop.lastIndex});
+      found.window = {...stream, failures: undefined};
+      found.failures.push(...stream.failures.map(failure => `the ${name} page, arriving once the window was still: ${failure}`));
     }
+
+    // The page on the HTTPS stream drives the window; the viewer may not.
+    step('drive from the page on the HTTPS stream, try from the viewer\'s');
+    const ownerSees = await eventually(() => other.evaluate(windowAt(prefix1)), 60_000);
+    if (!ownerSees) throw new Invalid('the window is not on screen on the page on the HTTPS stream');
+    const surface1 = ownerSees.key.split(':')[1];
+    if (!ownerSees.control) fallback.failures.push('the owner\'s page on the HTTPS stream was offered no control of the window');
+    else {
+      // It scrolls the window: input that does not take the keyboard from the
+      // first page, which goes on typing into it.
+      mark = lines1();
+      await other.wheel({x: ownerSees.x, y: ownerSees.y}, {dy: 120});
+      if (!await waitInput(w1, mark, input => input.value?.PointerAxis?.dy > 0, 30_000)) {
+        fallback.failures.push('a scroll from the page on the HTTPS stream did not reach the window');
+      }
+    }
+    await sleep(1000);
+    const quiet = lines1();
+    const viewerSees = await watcher.evaluate(windowAt(prefix1));
+    viewer.windowOnScreen = Boolean(viewerSees);
+    if (viewerSees?.control) viewer.failures.push('the viewer was offered control of the window');
+    if (viewerSees) { await click(watcher, viewerSees); await typeKey(watcher, KEYS.z); }
+    if (await watcher.evaluate(legacyInput(w1.session.device, surface1, []))) viewer.failures.push('the host told the viewer it may drive the window');
+    if (await watcher.evaluate(legacyInput(w1.session.device, surface1,
+      [{PointerButton: {button: LEFT_BUTTON, pressed: true}}, {PointerButton: {button: LEFT_BUTTON, pressed: false}}]))) {
+      viewer.failures.push('the host took input the viewer sent it directly');
+    }
+    await sleep(3000);
+    const leaked = inputsOf(w1.source.lines, quiet);
+    if (leaked.length) viewer.failures.push(`${leaked.length} input events reached the window while only the viewer gave input: ${JSON.stringify(leaked.slice(0, 3).map(input => input.value))}`);
+    for (const [name, page] of [['fallback', other], ['viewer', watcher]]) if (page.errors.length) pageErrors[name] = page.errors.slice(0, 3);
+    // Both pages leave, and the first page carries on alone.
+    await Promise.all([other, watcher].map(page => ctx.browser.send('Target.closeTarget', {targetId: page.targetId})));
   }
-  await sleep(1000);
-  const quiet = lines1();
-  const viewerSees = await watcher.evaluate(windowAt(prefix1));
-  viewer.windowOnScreen = Boolean(viewerSees);
-  if (viewerSees?.control) viewer.failures.push('the viewer was offered control of the window');
-  if (viewerSees) { await click(watcher, viewerSees); await typeKey(watcher, KEYS.z); }
-  if (await watcher.evaluate(legacyInput(w1.session.device, surface1, []))) viewer.failures.push('the host told the viewer it may drive the window');
-  if (await watcher.evaluate(legacyInput(w1.session.device, surface1,
-    [{PointerButton: {button: LEFT_BUTTON, pressed: true}}, {PointerButton: {button: LEFT_BUTTON, pressed: false}}]))) {
-    viewer.failures.push('the host took input the viewer sent it directly');
-  }
-  await sleep(3000);
-  const leaked = inputsOf(w1.source.lines, quiet);
-  if (leaked.length) viewer.failures.push(`${leaked.length} input events reached the window while only the viewer gave input: ${JSON.stringify(leaked.slice(0, 3).map(input => input.value))}`);
-  for (const [name, page] of [['fallback', other], ['viewer', watcher]]) if (page.errors.length) pageErrors[name] = page.errors.slice(0, 3);
-  // Both pages leave, and the first page carries on alone.
-  await Promise.all([other, watcher].map(page => ctx.browser.send('Target.closeTarget', {targetId: page.targetId})));
 
   // The second window, on the first page alone (every desktop that shows a
   // stream rasterizes on the runner's one SwiftShader GPU process) ---------------

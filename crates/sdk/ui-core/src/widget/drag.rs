@@ -172,8 +172,6 @@ impl<Id: Clone> DragController<Id> {
         }
     }
 
-    // --- lifecycle -----------------------------------------------------
-
     /// Begin a (pending) drag of the item at index `from`, carrying `id`.
     /// `grab_offset` is the pointer's offset *within* the grabbed item
     /// (`cursor_axis - item_leading_edge`). Not yet "active" — promotes to a
@@ -244,8 +242,6 @@ impl<Id: Clone> DragController<Id> {
     pub fn cancel(&mut self) -> bool {
         self.session.take().is_some()
     }
-
-    // --- queries -------------------------------------------------------
 
     /// Whether a press has latched (active or not). Wire this to
     /// [`Widget::wants_pointer_capture`](crate::widget::Widget::wants_pointer_capture)
@@ -545,7 +541,6 @@ mod tests {
             assert_eq!(c.item_shift(0, &m), pitch);
             assert_eq!(c.item_shift(1, &m), pitch);
             assert_eq!(c.item_shift(2, &m), pitch);
-            // The dragged item itself is the ghost.
             assert_eq!(c.item_shift(3, &m), 0.0);
             assert_eq!(c.commit(), Some((3, 0)));
         }

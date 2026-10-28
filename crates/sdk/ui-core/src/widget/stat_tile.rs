@@ -236,7 +236,7 @@ impl<'a> StatTileFace<'a> {
         h.ceil()
     }
 
-    /// Paint the tile into `rect` (its height from [`Self::measure`]).
+    /// Paint the tile into `rect` (its height from [`Self::height`]).
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
@@ -449,9 +449,15 @@ pub struct StatTile {
 
 impl StatTile {
     pub fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self::new_owned(label.into(), value.into())
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(label: String, value: String) -> Self {
         Self {
-            label: label.into(),
-            value: value.into(),
+            label,
+            value,
             unit: None,
             note: None,
             change: None,
@@ -605,7 +611,8 @@ impl StatTile {
 impl Widget for StatTile {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
     );
 
     fn build_layout(
@@ -692,19 +699,6 @@ impl Widget for StatTile {
 
     crate::widget::pressable!(rect);
 
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        self.activation.native_handlers()
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        _doc: &mut crate::widget::Edits<'_>,
-        _path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        self.activation.start_native(op)
-    }
-
     crate::redraw_flag!();
 
     fn is_layout_dirty(&self) -> bool {
@@ -735,6 +729,21 @@ impl Widget for StatTile {
         let mut node = self.face().accessibility(self.rect);
         node.bounds = None;
         Some(node)
+    }
+}
+
+impl crate::widget::ResourceOperations for StatTile {
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        self.activation.native_handlers()
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        _doc: &mut crate::widget::Edits<'_>,
+        _path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        self.activation.start_native(op)
     }
 }
 
@@ -792,6 +801,13 @@ impl StatGroup {
     pub fn columns_for_width(&self, width: f64) -> usize {
         columns_for(self.tiles.len(), width, self.min_tile, self.column_gap)
     }
+
+    /// How many columns the group uses at `width`, and how wide each is.
+    fn tracks_at(&self, width: f64) -> (usize, f32) {
+        let columns = self.columns_for_width(width);
+        let column = crate::num::f32_of_f64(card_column_width(width, columns, self.column_gap));
+        (columns, column)
+    }
 }
 
 fn columns_for(count: usize, width: f64, min_tile: f64, gap: f64) -> usize {
@@ -819,9 +835,19 @@ impl Widget for StatGroup {
             .iter_mut()
             .map(|tile| tile.build_layout(taffy, theme, node_map))
             .collect();
+        // A rebuilt group starts with the tracks of the width it was laid out
+        // at, so its first solve is already its height: one column there
+        // stacks the tiles, and a scroll view around it would see an
+        // overflow that is not there.
+        let grid_template_columns = if self.rect.width() > 0.0 {
+            let (columns, column) = self.tracks_at(self.rect.width());
+            vec![length(column); columns]
+        } else {
+            vec![taffy::style_helpers::fr(1.0_f32)]
+        };
         let style = Style {
             display: taffy::Display::Grid,
-            grid_template_columns: vec![taffy::style_helpers::fr(1.0_f32)],
+            grid_template_columns,
             grid_auto_rows: vec![taffy::style_helpers::min_content()],
             gap: taffy::Size {
                 width: length(crate::num::f32_of_f64(self.column_gap)),
@@ -852,9 +878,7 @@ impl Widget for StatGroup {
         let Ok(layout) = taffy.layout(node) else {
             return false;
         };
-        let width = f64::from(layout.size.width);
-        let columns = self.columns_for_width(width);
-        let column = crate::num::f32_of_f64(card_column_width(width, columns, self.column_gap));
+        let (columns, column) = self.tracks_at(f64::from(layout.size.width));
         let tracks = vec![length(column); columns];
         let Ok(current) = taffy.style(node) else {
             return false;
@@ -1020,6 +1044,33 @@ mod tests {
         assert_eq!(ys[0], ys[1]);
         assert!(ys[2] > ys[0]);
         assert_eq!(ys[2], ys[3]);
+    }
+
+    /// A group built again (the window's tree rebuilt) starts with the
+    /// columns of the width it was laid out at, so its first solve is its
+    /// height: a scroll view around it never sees the tiles stacked, an
+    /// overflow that is not there.
+    #[test]
+    fn a_rebuilt_group_starts_with_the_columns_of_its_width() {
+        let theme = Theme::dark();
+        let mut group = StatGroup::new(
+            ["Allowed services", "Allow rules", "Deny rules"]
+                .into_iter()
+                .map(|l| Box::new(StatTile::new(l, "3")) as Element)
+                .collect(),
+        );
+        let columns = |group: &mut StatGroup| {
+            let mut taffy = TaffyTree::new();
+            let node = group.build_layout(&mut taffy, &theme, &mut HashMap::new());
+            taffy
+                .style(node)
+                .map(|style| style.grid_template_columns.len())
+                .unwrap_or_default()
+        };
+        assert_eq!(columns(&mut group), 1, "no width yet: one flexible column");
+        group.rect = Rect::new(0.0, 0.0, 1000.0, 80.0);
+        assert_eq!(group.columns_for_width(1000.0), 3);
+        assert_eq!(columns(&mut group), 3, "laid out 1000 wide: all in one row");
     }
 
     #[test]

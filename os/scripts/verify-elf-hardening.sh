@@ -52,45 +52,42 @@ checked=0
 
 is_elf() {
     # `file` is not installed in the build stage; read the magic directly.
-    local magic
-    magic=$(head -c 4 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')
-    [ "$magic" = "7f454c46" ]
+    local magic=
+    LC_ALL=C IFS= read -r -N 4 magic <"$1" 2>/dev/null
+    [ "$magic" = $'\x7fELF' ]
 }
 
+# Each binary is read by one readelf, matched in the shell: a run over the image's
+# 170 binaries spent minutes starting a grep per property.
 check_one() {
-    local bin="$1" name errs=()
-    name="$(basename "$bin")"
+    local bin="$1" name="${1##*/}" errs=() elf nl=$'\n'
+    # Headers, program headers, dynamic section and notes.
+    elf="$(readelf -hlndW "$bin" 2>/dev/null)"
 
-    local hdr dyn seg note dynsyms
-    hdr="$(readelf -hW "$bin" 2>/dev/null)"
-    dyn="$(readelf -dW "$bin" 2>/dev/null)"
-    seg="$(readelf -lW "$bin" 2>/dev/null)"
-    note="$(readelf -nW "$bin" 2>/dev/null)"
-    dynsyms="$(readelf -sW --dyn-syms "$bin" 2>/dev/null)"
-
-    grep -q 'Type:.*DYN' <<<"$hdr" || errs+=("not a PIE (ET_DYN)")
-    grep -q 'GNU_RELRO' <<<"$seg" || errs+=("no PT_GNU_RELRO segment")
-    grep -qE 'BIND_NOW|Flags:.*\bNOW\b' <<<"$dyn" || errs+=("not bound at load (no BIND_NOW / FLAGS_1 NOW)")
-    if grep -qE 'Shared library: \[lib(ssl|crypto)\.so([.0-9]*)?\]' <<<"$dyn"; then
+    [[ $elf =~ Type:[^$nl]*DYN ]] || errs+=("not a PIE (ET_DYN)")
+    [[ $elf == *GNU_RELRO* ]] || errs+=("no PT_GNU_RELRO segment")
+    [[ $elf == *BIND_NOW* || $elf =~ Flags:[^$nl]*[[:space:]]NOW([[:space:]]|$) ]] \
+        || errs+=("not bound at load (no BIND_NOW / FLAGS_1 NOW)")
+    if [[ $elf =~ Shared\ library:\ \[lib(ssl|crypto)\.so[.0-9]*\] ]]; then
         errs+=("direct OpenSSL ABI dependency (DT_NEEDED libssl/libcrypto)")
     fi
 
     # PT_GNU_STACK line: columns end with the flags field, e.g. "RW  0x10".
-    local stackline
-    stackline="$(grep 'GNU_STACK' <<<"$seg")"
-    if [ -n "$stackline" ] && grep -qE '\bRWE\b|\bE\b' <<<"$stackline"; then
+    if [[ $elf =~ GNU_STACK[^$nl]* ]] && [[ ${BASH_REMATCH[0]} =~ [[:space:]](RWE|E)[[:space:]] ]]; then
         errs+=("executable stack requested (PT_GNU_STACK carries X)")
     fi
 
     local cet="not applicable"
-    if grep -q 'Machine:.*X86-64' <<<"$hdr"; then
+    if [[ $elf =~ Machine:[^$nl]*X86-64 ]]; then
         cet="SHSTK-marked"
-        grep -q 'SHSTK' <<<"$note" \
+        [[ $elf == *SHSTK* ]] \
             || errs+=("no shadow-stack property (GNU_PROPERTY_X86_FEATURE_1_SHSTK)")
     fi
 
     local canary="no C canaries"
-    grep -q '__stack_chk_fail' <<<"$dynsyms" && canary="stack protector in linked C"
+    # Counted, not `grep -q`: an early exit would fail readelf's write under pipefail.
+    [[ $(readelf -W --dyn-syms "$bin" 2>/dev/null | grep -cF '__stack_chk_fail') != 0 ]] \
+        && canary="stack protector in linked C"
 
     checked=$((checked + 1))
     if [ ${#errs[@]} -eq 0 ]; then

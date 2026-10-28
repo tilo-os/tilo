@@ -81,7 +81,6 @@ pub struct Page<T> {
     pub delta_link: Option<String>,
 }
 
-/// A `drive`.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Drive {

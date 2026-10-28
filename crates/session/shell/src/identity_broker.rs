@@ -39,7 +39,7 @@ impl WorkspaceMembership for Membership {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| &workspace.room == room)
+            .find(|workspace| &workspace.room() == room)
         {
             read(workspace);
         }
@@ -218,6 +218,25 @@ mod tests {
             let revoked = trusted_current_device_public(&room.to_string())
                 .expect_err("a revoked device must fail");
             assert_eq!(revoked.kind(), std::io::ErrorKind::PermissionDenied);
+        });
+    }
+
+    #[test]
+    fn the_devices_network_identity_and_its_broker_hold_one_certificate() {
+        const TEST: &str = "identity_broker::tests::the_devices_network_identity_and_its_broker_hold_one_certificate";
+        run_isolated_native_consent_test(TEST, || {
+            let (_identity_dir, paths, _profile, room) = provision_native_consent_identity();
+            let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+                .expect("persisted device key");
+            let key = iroh::SecretKey::from_bytes(&device.to_bytes());
+
+            let network = crate::shell::network::host_identity_for_key(&key, &paths.device_privkey)
+                .expect("the device's network identity");
+            let (_, brokers) =
+                tilo_identity_host::broker::trusted_current_device(&room.to_string())
+                    .expect("the broker's trusted device");
+
+            assert_eq!(network.device_cert, brokers);
         });
     }
 }

@@ -12,7 +12,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class ExampleScenariosTest(unittest.TestCase):
     def run_driver(self, selected, failed=""):
-        with tempfile.TemporaryDirectory(prefix=".example-scenarios-", dir=ROOT) as temporary:
+        # Outside the checkout: the policy tests that run beside this one
+        # list the tree's untracked files, and a fixture inside it would be
+        # one of them until it is gone.
+        with tempfile.TemporaryDirectory(prefix="example-scenarios-") as temporary:
             root = Path(temporary)
             script = root / "tools/ci/example-scenarios.sh"
             script.parent.mkdir(parents=True)

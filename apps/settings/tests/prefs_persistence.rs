@@ -23,7 +23,6 @@ impl settings::account_probe::AccountTester for AcceptAccount {
     }
 }
 
-/// Accounts persist.
 #[test]
 fn local_prefs_and_accounts_persist_to_disk() {
     // Case `accounts_add_and_remove_round_trip_through_the_pane`.
@@ -42,7 +41,6 @@ fn local_prefs_and_accounts_persist_to_disk() {
         let mut pane = settings::panes::accounts::AccountsPane::in_root(account_root.clone())
             .with_account_tester(std::sync::Arc::new(AcceptAccount));
 
-        // Open the Add-email form, fill it, and Save.
         pane.command(settings::panes::accounts::AccountViewCommand::Add(
             AccountKind::Mail,
         ));
@@ -50,11 +48,10 @@ fn local_prefs_and_accounts_persist_to_disk() {
         pane.set_form_password_for_test("s3cret-pw");
         pane.submit_form_for_test();
         assert!(
-            pane.finish_form_submission_for_test(),
+            pane.finish_form_submission_for_test(tilo_test_env::hang_bound()),
             "bounded account probe and disk transaction complete"
         );
 
-        // The account is now in the shared on-disk store Mail loads, auto-configured.
         let dir = AccountDirectory::load_in(&account_root);
         let views = dir.views_of(AccountKind::Mail);
         assert_eq!(
@@ -88,7 +85,6 @@ fn local_prefs_and_accounts_persist_to_disk() {
             .succeeded()
             .expect("seed sync health");
 
-        // Remove it, as the confirmed Remove effect does.
         pane.remove(&id).unwrap();
 
         // The directory now reports empty for the Email kind — the account is gone

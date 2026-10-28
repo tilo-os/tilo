@@ -114,7 +114,7 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
     let mut accounts = Accounts::default();
     accounts.opener = browser.clone();
     accounts.update_sources(roots, inventory).unwrap();
-    accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+    accounts.view(Rc::new(|_| {}), None);
     accounts.apply(AccountRequest::Source(id)).unwrap();
     assert!(matches!(accounts.step, Step::Confirm(Selection::Saved(_))));
     assert!(accounts.stage.is_none());
@@ -252,6 +252,15 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
     installer.journey.destination = Some(super::super::model::Destination::Another);
     installer.journey.migrate = Some(true);
     installer.journey.categories[2] = true;
+    // The other computer is identified first; this fixture focuses on the
+    // missing storage backend after that gate.
+    for (field, value) in [
+        ("manufacturer", "Prepared Vendor"),
+        ("model", "Prepared Laptop 14"),
+        ("variant", "PREPARED-BOARD"),
+    ] {
+        installer.target.set_field(field, value.into()).unwrap();
+    }
     assert_eq!(
         installer.apply(super::super::InstallerPreviewEffect::PrepareUsb),
         Err("installer-preview-storage-unavailable")
@@ -400,11 +409,11 @@ fn oauth_accounts(
 #[test]
 fn provider_page_and_render_never_launch_and_explicit_connect_completes_real_pkce() {
     let (_temp, _server, mut accounts, browser) = oauth_accounts(true);
-    accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+    accounts.view(Rc::new(|_| {}), None);
     accounts
         .apply(AccountRequest::Provider("google-drive".into()))
         .unwrap();
-    accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+    accounts.view(Rc::new(|_| {}), None);
     assert!(accounts.stage.is_none());
     assert!(browser.opened.lock().unwrap().is_empty());
     accounts.apply(AccountRequest::Confirm).unwrap();
@@ -578,7 +587,7 @@ fn dav_and_nextcloud_guided_public_fields_save_exact_private_credentials_without
                 assert!(preview.accounts.stage.is_none());
             }
         }
-        preview.accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+        preview.accounts.view(Rc::new(|_| {}), None);
         assert!(browser.opened.lock().unwrap().is_empty());
         preview.apply(choice("confirm", None)).unwrap();
         assert!(preview.accounts.dav_fields[2].get().is_empty());
@@ -723,7 +732,7 @@ fn nextcloud_browser_uses_canonical_login_flow_and_prepares_secret_only_after_ex
     let mut accounts = Accounts::default();
     accounts.opener = browser.clone();
     choose_nextcloud_browser(&mut accounts, &cloud.server.url());
-    accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+    accounts.view(Rc::new(|_| {}), None);
     assert_eq!(cloud.started.load(Ordering::SeqCst), 0);
     assert!(accounts.stage.is_none());
     assert!(browser.opened.lock().unwrap().is_empty());
@@ -923,7 +932,7 @@ fn submit_icloud_details(accounts: &mut Accounts) {
 fn icloud_guided_sign_in_retries_code_and_seals_only_session_trust() {
     let auth = Arc::new(InstallerICloud::default());
     let mut accounts = icloud_accounts(auth.clone());
-    accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+    accounts.view(Rc::new(|_| {}), None);
     assert!(auth.calls.lock().unwrap().is_empty());
     submit_icloud_details(&mut accounts);
     accounts
@@ -1156,6 +1165,7 @@ fn dropbox_paste() -> DropboxPaste {
         redirect_ports: tilo_oauth::RedirectPorts::Registered(vec![
             busy.local_addr().unwrap().port(),
         ]),
+        redirect: tilo_oauth::Redirect::default(),
         paste_code_fallback: true,
     };
     let custodian = account_custody::Custodian::for_root(None)
@@ -1208,7 +1218,7 @@ fn dropbox_busy_redirect_ports_offer_private_code_and_import_real_authenticated_
     accounts
         .set_dav_field("oauth-code", zeroize::Zeroizing::new(code.clone()))
         .unwrap();
-    let view = accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+    let view = accounts.view(Rc::new(|_| {}), None);
     fn find<'a>(root: &'a dyn ui::widget::Widget, id: &str) -> Option<&'a dyn ui::widget::Widget> {
         if root.test_id() == Some(id) {
             return Some(root);
@@ -1446,7 +1456,7 @@ fn selected_tilo_metadata_change_and_unavailable_custody_never_claim_connection(
         );
         assert!(browser.opened.lock().unwrap().is_empty());
         if !change_metadata {
-            let failed = accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+            let failed = accounts.view(Rc::new(|_| {}), None);
             assert!(account_widget(&failed, "installer.account.reconnect").is_some());
             assert!(account_widget(&failed, "installer.account.retry").is_none());
             assert_eq!(
@@ -1455,7 +1465,7 @@ fn selected_tilo_metadata_change_and_unavailable_custody_never_claim_connection(
             );
             accounts.apply(AccountRequest::Reconnect).unwrap();
             assert!(matches!(accounts.step, Step::Providers));
-            let chooser = accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+            let chooser = accounts.view(Rc::new(|_| {}), None);
             assert!(account_widget(&chooser, "installer.account.provider.google-drive").is_some());
             assert!(accounts.prepared.is_empty());
             assert!(browser.opened.lock().unwrap().is_empty());
@@ -1534,7 +1544,7 @@ fn detected_oauth_profile_obeys_configuration_in_rows_and_semantic_actions() {
             .into_iter()
             .find_map(|child| find(child, id))
     }
-    let view = accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+    let view = accounts.view(Rc::new(|_| {}), None);
     let row = find(&view, &format!("installer.account.source.{}", candidate.id)).unwrap();
     let accessible = row.accessibility().unwrap();
     assert!(accessible.state.disabled);
@@ -1553,7 +1563,7 @@ fn detected_oauth_profile_obeys_configuration_in_rows_and_semantic_actions() {
         Err("installer-accounts-unavailable")
     );
     accounts.apply(AccountRequest::AddAccount).unwrap();
-    let chooser = accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+    let chooser = accounts.view(Rc::new(|_| {}), None);
     for provider in ["google-drive", "onedrive", "dropbox", "spotify"] {
         assert!(
             find(&chooser, &format!("installer.account.provider.{provider}")).is_none(),
@@ -1597,6 +1607,7 @@ fn configured_detected_oauth_profile_offers_the_real_confirmation_path() {
         profile: std::path::PathBuf::from("unused-metadata-profile"),
         needs_sign_in: true,
         can_import_credentials: false,
+        services: Vec::new(),
     };
     accounts.inventory.candidates.push(candidate.clone());
     accounts
@@ -1830,7 +1841,7 @@ fn account_overview_discloses_provider_choices_only_after_explicit_add() {
         .collect::<Vec<_>>();
     let browser = Browser::new(false);
     accounts.opener = browser.clone();
-    let overview = accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+    let overview = accounts.view(Rc::new(|_| {}), None);
     assert!(account_widget(&overview, "installer.account.add").is_some());
     assert!(account_widget(&overview, "installer.account.provider.google-drive").is_none());
     assert!(
@@ -1845,7 +1856,7 @@ fn account_overview_discloses_provider_choices_only_after_explicit_add() {
     accounts.apply(request).unwrap();
     assert_eq!(accounts.projection()["state"], "providers");
     assert!(!accounts.can_continue());
-    let chooser = accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+    let chooser = accounts.view(Rc::new(|_| {}), None);
     assert!(account_widget(&chooser, "installer.account.provider.google-drive").is_some());
     assert!(account_widget(&chooser, "installer.account.add").is_none());
     accounts
@@ -1994,14 +2005,14 @@ music_streaming = ["streaming", "user-read-private"]
     accounts.actions = AccountActions::default()
         .with_custodian(account_custody::Custodian::for_root(None).with_client_table(table));
     accounts.apply(AccountRequest::AddAccount).unwrap();
-    let view = accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+    let view = accounts.view(Rc::new(|_| {}), None);
     assert!(account_widget(&view, "installer.account.provider.spotify").is_some());
     assert!(account_widget(&view, "installer.account.provider.spotify-streaming").is_none());
     accounts
         .apply(AccountRequest::Provider("spotify-options".into()))
         .unwrap();
     assert_eq!(accounts.projection()["state"], "spotify-purpose");
-    let purpose = accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+    let purpose = accounts.view(Rc::new(|_| {}), None);
     assert!(account_widget(&purpose, "installer.account.spotify.spotify").is_some());
     assert!(account_widget(&purpose, "installer.account.spotify.spotify-streaming").is_none());
     assert_eq!(
@@ -2077,6 +2088,8 @@ fn source_home_checkpoint_requires_current_acknowledged_operation_and_keeps_gene
                 excluded_flatpak_apps: std::collections::BTreeSet::default(),
                 device_label: "My computer".into(),
                 purpose: install_profile_model::default_purpose(),
+                deferred: false,
+                target: None,
             },
             IdentityKind::New,
         )
@@ -2384,7 +2397,7 @@ fn saved_connections_bulk_consent_imports_all_available_and_retains_missing_keyc
             .attention
             .contains_key(&fixture.nextcloud_id)
     );
-    let overview = fixture.accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+    let overview = fixture.accounts.view(Rc::new(|_| {}), None);
     assert!(
         account_widget(
             &overview,
@@ -2423,7 +2436,7 @@ fn saved_connections_review_exclusions_and_explicit_skip_never_query_or_import_o
         .apply(AccountRequest::from_parts("review-saved", None).unwrap())
         .unwrap();
     assert_eq!(fixture.accounts.navigation_step(), "review-saved");
-    let review = fixture.accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+    let review = fixture.accounts.view(Rc::new(|_| {}), None);
     assert!(
         account_widget(
             &review,
@@ -2557,7 +2570,7 @@ fn unavailable_saved_rclone_cloud_grants_offer_explicit_reconnect_without_openin
             accounts.apply(AccountRequest::Retry),
             Err("installer-accounts-invalid-action")
         );
-        let failed = accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+        let failed = accounts.view(Rc::new(|_| {}), None);
         assert!(account_widget(&failed, "installer.account.reconnect").is_some());
         assert!(account_widget(&failed, "installer.account.retry").is_none());
         accounts
@@ -2619,7 +2632,7 @@ fn unavailable_selected_goa_credentials_offer_explicit_bound_reconnect_without_k
         accounts.apply(AccountRequest::Retry),
         Err("installer-accounts-invalid-action")
     );
-    let failed = accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+    let failed = accounts.view(Rc::new(|_| {}), None);
     assert!(account_widget(&failed, "installer.account.reconnect").is_some());
     assert!(account_widget(&failed, "installer.account.retry").is_none());
     accounts
@@ -2641,7 +2654,7 @@ fn saved_account_overview_names_real_sources_without_importing_or_changing_conse
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
     let mut fixture = SavedBatchFixture::new();
-    let overview = fixture.accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+    let overview = fixture.accounts.view(Rc::new(|_| {}), None);
     let nextcloud = account_widget(
         &overview,
         &format!("installer.account.detected.{}", fixture.nextcloud_id),
@@ -2669,7 +2682,7 @@ fn saved_account_overview_names_real_sources_without_importing_or_changing_conse
     fixture.accounts.apply(AccountRequest::SkipSaved).unwrap();
     assert!(fixture.accounts.can_continue());
     assert!(fixture.accounts.prepared.is_empty());
-    let declined = fixture.accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+    let declined = fixture.accounts.view(Rc::new(|_| {}), None);
     let nextcloud = account_widget(
         &declined,
         &format!("installer.account.detected.{}", fixture.nextcloud_id),
@@ -2694,6 +2707,7 @@ fn detected_account_label_preserves_provider_display_name_and_known_identity() {
         profile: "unused-metadata-only".into(),
         needs_sign_in: false,
         can_import_credentials: true,
+        services: Vec::new(),
     };
     let label = candidate_label(&candidate);
     assert!(label.contains(&t("installer-accounts-nextcloud")));
@@ -2743,7 +2757,7 @@ music_streaming = ["streaming", "user-read-private"]
             ),
         );
         accounts.update_sources(roots, inventory).unwrap();
-        let view = accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+        let view = accounts.view(Rc::new(|_| {}), None);
         let row =
             account_widget(&view, &format!("installer.account.source.{}", candidate.id)).unwrap();
         let accessible = row.accessibility().unwrap();
@@ -2762,7 +2776,7 @@ music_streaming = ["streaming", "user-read-private"]
             accounts.subheading(),
             t("installer-accounts-spotify-source-reconnect")
         );
-        let purpose = accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+        let purpose = accounts.view(Rc::new(|_| {}), None);
         assert!(account_widget(&purpose, "installer.account.spotify.spotify").is_none());
         assert!(account_widget(&purpose, "installer.account.spotify.spotify-streaming").is_some());
         assert_eq!(

@@ -96,7 +96,7 @@ pub(crate) fn prove_blocking(connection: &zbus::blocking::Connection) -> zbus::R
     Ok(true)
 }
 
-/// [`prove_blocking`] for an async connection, such as the one the desktop
+/// `prove_blocking` for an async connection, such as the one the desktop
 /// portal serves on.
 ///
 /// # Errors

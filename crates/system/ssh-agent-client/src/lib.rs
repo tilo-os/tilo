@@ -10,11 +10,6 @@ use russh::keys::agent::client::{AgentClient, AgentStream};
 pub type Agent = AgentClient<Box<dyn AgentStream + Send + Unpin + 'static>>;
 
 /// Connect to the user's SSH agent.
-///
-/// # Errors
-///
-/// Returns the agent connection error, for example when no agent is
-/// running or `SSH_AUTH_SOCK` is unset on Unix.
 pub async fn connect() -> Result<Agent, russh::keys::Error> {
     #[cfg(unix)]
     {

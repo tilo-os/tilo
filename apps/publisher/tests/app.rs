@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use publisher::{App, KeyEffect, Publisher};
 use ui::headless::SemanticExpectation;
 use ui::prelude::{Invoke, Replica, TestApp};
@@ -96,7 +94,7 @@ fn creating_a_key_needs_confirmation_and_keeps_it_out_of_the_resource() {
     app.effect_confirmed(&KeyEffect::CreateKey)
         .expect("create the key");
     app.harness()
-        .wait_for_named("public-key", Duration::from_secs(2))
+        .wait_for_named("public-key", tilo_test_env::hang_bound())
         .expect("the new key's public half is shown");
 
     let key = home.key().expect("the key tilo-app reads");
@@ -229,7 +227,7 @@ fn applying_reports_what_the_registry_answered() {
         "an unreachable registry fails the application"
     );
     app.harness()
-        .wait_until(Duration::from_secs(10), |driver| {
+        .wait_until(tilo_test_env::hang_bound(), |driver| {
             notice_detail(&driver.inspection().root)
                 .is_some_and(|detail| detail.contains("127.0.0.1:9"))
         })

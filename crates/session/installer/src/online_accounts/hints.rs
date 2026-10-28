@@ -39,9 +39,6 @@ impl AccountsForm {
 
     /// This does not select a source or grant consent. The existing form gate
     /// also rejects authenticated late results from a previous selection.
-    ///
-    /// # Errors
-    /// Reports binding, authentication, or payload errors, or a stale source selection.
     pub fn accept_encrypted_hints(
         &self,
         source: &str,

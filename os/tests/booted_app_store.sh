@@ -159,8 +159,8 @@ fi
 # say how to get the runtime it needs.
 refusal="$(on 'set -e
 scratch=$(mktemp -d); trap "rm -rf \"$scratch\"" EXIT
-pkg=$(ls -d '"$STORE"'/pkgs/*.pkg | head -1)
-payload=${pkg%.pkg}
+pkg=$(sed -n "s|^manifest_path = \"\(.*\)/manifest.toml\"\$|\1|p" '"$STORE"'/registry.toml | head -1)
+payload=$(sed -n "s|^payload_root = \"\(.*\)\"\$|\1|p" '"$STORE"'/registry.toml | head -1)
 tilo-runtime-bundle key generate --out "$scratch/id.json" >/dev/null
 key=$(tilo-runtime-bundle key pubkey --identity "$scratch/id.json")
 sed -e "s|^\(identity *= *\)\"ed25519:[0-9a-fA-F]*\"|\1\"ed25519:$key\"|" \

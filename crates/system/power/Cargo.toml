@@ -46,18 +46,19 @@ tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional =
 # Match `shell`'s zbus pin (4, tokio, no async-io default) so the workspace
 # lock collapses to one copy.
 zbus = { workspace = true, features = ["tokio"], optional = true }
-tokio = { version = "1.52.3", features = ["rt", "macros", "time", "sync"], optional = true }
+tokio = { version = "1.53.3", features = ["rt", "macros", "time", "sync"], optional = true }
 futures-util = { version = "0.3", optional = true }
 
 [dev-dependencies]
 # `test-util`: the service's wakeup tests run on paused time.
-tokio = { version = "1.52.3", features = ["full", "test-util"] }
+tokio = { version = "1.53.3", features = ["full", "test-util"] }
 # A fake logind + UPower served over a socket pair: the production service
 # against a real D-Bus wire, no bus daemon.
 zbus = { workspace = true, features = ["tokio", "p2p"] }
 # Fixture power-supply trees for the sysfs battery reader, so its parsing
 # is tested against representative directory layouts.
 tempfile = { workspace = true }
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

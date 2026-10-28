@@ -24,12 +24,12 @@ use std::time::{Duration, Instant};
 
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::presets;
-use shell::collab::flatpak_share::{self, SharedFlatpakSession};
-use shell::config::{EncoderChoice, FlatpakShareConfig};
-use shell::diagnostics::PeerSurfaceMetrics;
-use shell::network::streaming::InputEvent;
 use shell::network::{Actor, NeighbourMsg, NetCmd, NetEvent};
 use shell::shell::peer_view::{PeerView, PushOutcome};
+use tilo_window_share::config::{EncoderChoice, FlatpakShareConfig};
+use tilo_window_share::diagnostics::PeerSurfaceMetrics;
+use tilo_window_share::flatpak_share::{self, SharedFlatpakSession};
+use tilo_window_share::streaming::InputEvent;
 use tokio::sync::mpsc;
 use ui::widget::Widget as _;
 
@@ -46,6 +46,11 @@ const HEIGHT: u32 = 720;
 const DAMAGE_INTERVAL: Duration = Duration::from_micros(16_667);
 const FRAMES: u32 = 180;
 const INPUT_SAMPLES: u8 = 40;
+/// How long the viewer waits for frames the host has already sent before it
+/// says they never arrived. This is delivery, not the timing the first-picture
+/// line records: a unit lost on the way leaves a gap the rest of the stream
+/// cannot fill.
+const DELIVERY_WAIT: Duration = Duration::from_secs(5);
 
 async fn spawn_device() -> (
     mpsc::Sender<NetCmd>,
@@ -71,30 +76,31 @@ async fn spawn_device() -> (
     (cmd_tx, ev_rx, addr)
 }
 
-async fn wait_joined(events: &mut mpsc::Receiver<NetEvent>) {
+async fn wait_joined(events: &mut mpsc::Receiver<NetEvent>) -> bool {
     tilo_test_env::within("devices met on the workspace topic", async {
         while let Some(event) = events.recv().await {
             if matches!(event, NetEvent::PeerJoined { .. }) {
-                return;
+                return true;
             }
         }
-        panic!("event channel closed before the other device joined");
+        false
     })
-    .await;
+    .await
 }
 
 /// Wait until this device has met `peer` itself: a device that meets
 /// another first would send `peer` a stream start before knowing it.
-async fn wait_joined_by(events: &mut mpsc::Receiver<NetEvent>, peer: iroh::EndpointId) {
+/// Whether it joined before the channel closed.
+async fn wait_joined_by(events: &mut mpsc::Receiver<NetEvent>, peer: iroh::EndpointId) -> bool {
     tilo_test_env::within("the device met that peer on the workspace topic", async {
         while let Some(event) = events.recv().await {
             if matches!(event, NetEvent::PeerJoined { peer: joined, .. } if joined == peer) {
-                return;
+                return true;
             }
         }
-        panic!("event channel closed before that peer joined");
+        false
     })
-    .await;
+    .await
 }
 
 /// A text-editor-like picture with a caret bar that moves every frame, so
@@ -119,7 +125,10 @@ fn window_frame(index: u32) -> Vec<u8> {
 }
 
 fn percentile(sorted: &[Duration], percent: usize) -> Duration {
-    sorted[sorted.len().saturating_sub(1).saturating_mul(percent) / 100]
+    sorted
+        .get(sorted.len().saturating_sub(1).saturating_mul(percent) / 100)
+        .copied()
+        .unwrap_or_default()
 }
 
 #[allow(
@@ -130,12 +139,75 @@ fn millis(duration: Duration) -> f64 {
     duration.as_micros() as f64 / 1000.0
 }
 
+/// What this run's timing was measured on, printed beside it: a first-picture
+/// wall clock is read against the machine it was taken on, and the historical
+/// failures of this line cut neither way without it.
+fn runner_conditions() -> String {
+    let cores = std::thread::available_parallelism().map_or(0, std::num::NonZeroUsize::get);
+    let jobs = std::env::var("CARGO_BUILD_JOBS").unwrap_or_else(|_| "-".to_string());
+    format!("cores={cores} jobs={jobs}")
+}
+
+/// How long the first picture waited on this run: from the host start until
+/// the viewer had it decoded. This records the wait; the promise the test
+/// keeps is the identity below (the first picture is the first frame the host
+/// sent), because on a shared runner this wait also measures the host's load.
+/// Reported also when a frame went missing, since a run without a first
+/// picture is what a timing line must not silently change into.
+fn report_first_picture(who: Viewer, encoder: &str, codec: &str, timing: &FirstPicture) {
+    let label = match who {
+        Viewer::OwnDevice => "legacy-window",
+        Viewer::RoomMember => "room-member-window",
+    };
+    let waited = timing.waited.map_or_else(
+        || "absent".to_string(),
+        |waited| format!("{:.2}", millis(waited)),
+    );
+    eprintln!(
+        "{label}-first-picture encoder={encoder} codec={codec} first_picture_ms={waited} \
+         decoded_ns={:?} sent_ns={:?} {}",
+        timing.decoded_ts,
+        timing.sent_ts,
+        runner_conditions(),
+    );
+}
+
+/// The first picture this viewer got: how long it took from the host start,
+/// its capture timestamp, and the host's first sent capture timestamp.
+#[derive(Default)]
+struct FirstPicture {
+    waited: Option<Duration>,
+    decoded_ts: Option<u64>,
+    sent_ts: Option<u64>,
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_legacy_window_streams_between_two_devices() {
+    stream_a_window(Viewer::OwnDevice).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_room_member_views_a_host_window_live_and_read_only() {
+    stream_a_window(Viewer::RoomMember).await;
+}
+
+/// Who views the window: one of the person's own devices, which may drive
+/// it, or another member of the room, who only watches.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Viewer {
+    OwnDevice,
+    RoomMember,
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario: start, stream, measure, send input back"
 )]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_legacy_window_streams_between_two_devices() {
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "frame counts, deadlines and clock offsets of a few seconds' test stream"
+)]
+async fn stream_a_window(who: Viewer) {
     let (host_cmd, mut host_events, host_addr) = spawn_device().await;
     let (viewer_cmd, mut viewer_events, viewer_addr) = spawn_device().await;
     let (bystander_cmd, mut bystander_events, bystander_addr) = spawn_device().await;
@@ -165,10 +237,23 @@ async fn a_legacy_window_streams_between_two_devices() {
         .await
         .unwrap();
     // The host names the viewer in the stream start, so it must have met the
-    // viewer, not only the bystander that may join first.
-    wait_joined_by(&mut host_events, viewer_id).await;
-    wait_joined(&mut viewer_events).await;
-    wait_joined(&mut bystander_events).await;
+    // viewer, not only the bystander that may join first. A meeting that never
+    // happened still records the first picture (absent) and is judged below,
+    // so a run that never mounts its stream is not only a panic.
+    let met_viewer = wait_joined_by(&mut host_events, viewer_id).await;
+    let viewer_met = wait_joined(&mut viewer_events).await;
+    let bystander_met = wait_joined(&mut bystander_events).await;
+    let peers_met = if met_viewer && viewer_met && bystander_met {
+        None
+    } else {
+        report_first_picture(who, "-", "-", &FirstPicture::default());
+        Some((met_viewer, viewer_met, bystander_met))
+    };
+    assert_eq!(
+        peers_met, None,
+        "every device met the others before the window streamed (host met viewer, \
+         viewer met the host, bystander met the host)"
+    );
 
     // The viewer decodes what this machine decodes; the session picks the
     // codec both ends handle best, hardware first.
@@ -190,7 +275,7 @@ async fn a_legacy_window_streams_between_two_devices() {
     )
     .expect("an encoder for the window")
     .with_tab(TAB);
-    session.add_viewer(viewer_peer, false);
+    session.add_viewer(viewer_peer, who == Viewer::RoomMember);
     let session = Arc::new(session);
     let origin = session.origin();
     let encoder = format!("{:?}", session.chosen_encoder());
@@ -207,13 +292,17 @@ async fn a_legacy_window_streams_between_two_devices() {
         })
         .await
         .unwrap();
-    let producer = {
+    let mut producer = Some({
         let session = Arc::clone(&session);
         let host_cmd = host_cmd.clone();
+        // What the producer has sent so far, readable from the viewer's loop
+        // while it still runs: a frame that never arrived leaves the wait to
+        // run out, and that must not be a hang.
         std::thread::spawn(move || {
             let started = Instant::now();
             let mut encode_times = Vec::new();
             let mut sent = 0_u32;
+            let mut bytes = 0_usize;
             let mut first_ts = None;
             for index in 0..FRAMES {
                 let due = started + DAMAGE_INTERVAL * index;
@@ -225,6 +314,7 @@ async fn a_legacy_window_streams_between_two_devices() {
                 if let Some(frame) = session.encode_next_frame(encoding) {
                     encode_times.push(encoding.elapsed());
                     sent += 1;
+                    bytes = bytes.saturating_add(frame.nalus.len());
                     first_ts.get_or_insert(frame.capture_ts_ns);
                     host_cmd
                         .blocking_send(NetCmd::PublishSurfaceTo {
@@ -235,9 +325,10 @@ async fn a_legacy_window_streams_between_two_devices() {
                         .unwrap();
                 }
             }
-            (sent, encode_times, first_ts)
+            (sent, encode_times, first_ts, bytes, started.elapsed())
         })
-    };
+    });
+    let mut host_report = None;
 
     // The viewer: mount the stream in the tab it names, decode every frame.
     let metrics = PeerSurfaceMetrics::default();
@@ -256,16 +347,49 @@ async fn a_legacy_window_streams_between_two_devices() {
     let mut previous_seq: Option<u64> = None;
     let mut early: Vec<(Vec<u8>, u64, u64, Instant)> = Vec::new();
     let mut pending: Vec<(Vec<u8>, u64, u64, Instant)> = Vec::new();
-    let receive_until = Instant::now() + DAMAGE_INTERVAL * FRAMES + Duration::from_secs(2);
-    while Instant::now() < receive_until {
-        let Ok(Some(event)) =
-            tokio::time::timeout(Duration::from_millis(250), viewer_events.recv()).await
-        else {
-            if producer.is_finished() && view.is_some() {
-                break;
-            }
-            continue;
+    // The rest of the stream never arrived: the run ends here and the
+    // delivery asserts below judge it.
+    let mut never_arrived = false;
+    let mut quiet_since = None;
+    loop {
+        if producer
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished)
+        {
+            host_report = producer.take().map(|p| p.join().unwrap());
+        }
+        // Done once every frame the host sent is accounted for; a frame lost
+        // on the way leaves the viewer answering that it never came.
+        let accounted = u32::try_from(latencies.len())
+            .unwrap()
+            .saturating_add(before_keyframe)
+            .saturating_add(awaiting_keyframe);
+        if let Some((sent, ..)) = &host_report
+            && view.is_some()
+            && accounted >= *sent
+        {
+            break;
+        }
+        let still_sending = host_report.is_none();
+        // While the host still sends, look up now and then to see whether it
+        // has finished; then wait out only a hang for the rest.
+        let wait = if still_sending {
+            Duration::from_millis(250)
+        } else {
+            Duration::from_millis(50)
         };
+        let Ok(Some(event)) = tokio::time::timeout(wait, viewer_events.recv()).await else {
+            if still_sending {
+                continue;
+            }
+            let quiet = *quiet_since.get_or_insert_with(Instant::now);
+            if quiet.elapsed() < DELIVERY_WAIT {
+                continue;
+            }
+            never_arrived = true;
+            break;
+        };
+        quiet_since = None;
         let NetEvent::Msg { msg, .. } = event else {
             continue;
         };
@@ -363,12 +487,44 @@ async fn a_legacy_window_streams_between_two_devices() {
             latencies.push(captured.elapsed());
         }
     }
-    let (sent, mut encode_times, first_sent_ts) = producer.join().unwrap();
+    let (sent, mut encode_times, first_sent_ts, encoded_bytes, streamed_for) = host_report
+        .or_else(|| producer.take().map(|p| p.join().unwrap()))
+        .expect("the host's producer ran");
+    // The first picture as far as it got, before the delivery asserts judge
+    // the run: a first-picture timing line missing from a failing run is what
+    // leaves a reader guessing.
+    report_first_picture(
+        who,
+        &encoder,
+        &codec,
+        &FirstPicture {
+            waited: first_picture,
+            decoded_ts: first_decoded_ts,
+            sent_ts: first_sent_ts,
+        },
+    );
+    assert!(
+        !never_arrived,
+        "the viewer stopped getting frames: received {received_before} of {sent} sent, \
+         awaiting_keyframe={awaiting_keyframe} before_keyframe={before_keyframe}",
+        received_before = latencies.len()
+    );
     assert_eq!(announced_tab, Some(TAB), "the stream names its tab");
 
-    // Input on the viewer goes back to the host as window-local events.
+    // Input on the viewer goes back to the host as window-local events; a
+    // room member's is refused by the window's share, which only lets it
+    // watch.
     let mut input_latencies = Vec::new();
-    for sequence in 0..INPUT_SAMPLES {
+    let input_samples = if who == Viewer::RoomMember {
+        assert!(
+            !session.accept_remote_input(viewer_peer),
+            "a room member's input never reaches the window"
+        );
+        0
+    } else {
+        INPUT_SAMPLES
+    };
+    for sequence in 0..input_samples {
         let event = postcard::to_allocvec(&InputEvent::PointerMotion {
             x: f64::from(sequence),
             y: 10.0,
@@ -377,6 +533,7 @@ async fn a_legacy_window_streams_between_two_devices() {
         let sent_at = Instant::now();
         viewer_cmd
             .send(NetCmd::Publish {
+                at: tokio::time::Instant::now(),
                 ws: WS,
                 msg: NeighbourMsg::RemoteInput {
                     peer: viewer_peer,
@@ -423,8 +580,18 @@ async fn a_legacy_window_streams_between_two_devices() {
     gaps.sort_unstable();
     let received = u32::try_from(latencies.len()).unwrap();
     let fps = f64::from(received.saturating_sub(1)) / span.as_secs_f64().max(f64::EPSILON);
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a few megabytes over a few seconds is exact enough in f64"
+    )]
+    let kbps = encoded_bytes as f64 * 8.0 / 1000.0 / streamed_for.as_secs_f64().max(f64::EPSILON);
+    let label = match who {
+        Viewer::OwnDevice => "legacy-window",
+        Viewer::RoomMember => "room-member-window",
+    };
     eprintln!(
-        "legacy-window encoder={encoder} codec={codec} size={WIDTH}x{HEIGHT} sent={sent} \
+        "{label} encoder={encoder} codec={codec} size={WIDTH}x{HEIGHT} sent={sent} \
+         encoded_kb={} bitrate_kbps={kbps:.0} \
          received={received} before_keyframe={before_keyframe} \
          awaiting_keyframe={awaiting_keyframe} \
          first_picture_ms={:.2} fps={fps:.1} \
@@ -432,6 +599,7 @@ async fn a_legacy_window_streams_between_two_devices() {
          glass_ms(p50={:.2} p95={:.2} max={:.2}) \
          frame_gap_ms(p50={:.2} p95={:.2} max={:.2}) \
          input_ms(p50={:.2} p95={:.2} max={:.2})",
+        encoded_bytes / 1000,
         millis(first_picture.unwrap_or_default()),
         millis(percentile(&encode_times, 50)),
         millis(percentile(&encode_times, 95)),
@@ -451,6 +619,7 @@ async fn a_legacy_window_streams_between_two_devices() {
     // reach it, so it was listening.
     host_cmd
         .send(NetCmd::Publish {
+            at: tokio::time::Instant::now(),
             ws: WS,
             msg: NeighbourMsg::SurfaceFrame {
                 surface: SURFACE + 1,
@@ -499,7 +668,7 @@ async fn a_legacy_window_streams_between_two_devices() {
     // shared runner they measure the host's load, not the stream.
     assert_eq!(
         input_latencies.len(),
-        usize::from(INPUT_SAMPLES),
+        usize::from(input_samples),
         "every input event reached the host"
     );
 }

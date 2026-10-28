@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from hang import HANG_BOUND
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -73,7 +74,7 @@ class CommitHookTests(unittest.TestCase):
         self.stage("source", b"text\n")
         self.git("commit", "-qm", "fix(ui): handle focus")
         # Spelled in pieces so this file does not trip the check it tests.
-        bad = "xaver/ti" + "l-" + "42-focus"
+        bad = "bob/ti" + "l-" + "42-focus"
         result = self.ci(head_ref=bad)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("branch name", result.stderr)
@@ -167,7 +168,7 @@ class CommitHookTests(unittest.TestCase):
                      "from pathlib import Path; import sys; from check_commit_policy import blob_reader\n"
                      "with blob_reader(Path(sys.argv[1])) as read: read(sys.argv[2].encode())",
                      str(self.root), oid],
-                    cwd=ROOT / "tools/policy", capture_output=True, text=True, timeout=10)
+                    cwd=ROOT / "tools/policy", capture_output=True, text=True, timeout=HANG_BOUND)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("Cannot inspect exact changed blob", result.stderr)
 
@@ -204,7 +205,7 @@ class CommitHookTests(unittest.TestCase):
         self.assertIn("internal issue tracker", result.stderr)
 
     def test_generated_merge_subjects_keep_historical_references(self):
-        branch = "xaver/" + "til" + "-136-focus"
+        branch = "bob/" + "til" + "-136-focus"
         self.git("switch", "-qc", branch)
         self.stage("feature", b"feature\n")
         self.git("commit", "-qm", "feat(ui): add feature")

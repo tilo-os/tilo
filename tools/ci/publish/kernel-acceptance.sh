@@ -40,7 +40,22 @@ packages=("$work"/repo/tilo-kernel-core-*.rpm)
 ((${#packages[@]} == 1)) || die "expected one tilo-kernel-core RPM, found ${#packages[@]}"
 bash os/kernel/tests/test-rpm.sh "${packages[0]}" "$work/acceptance"
 probe=$out/secureboot
-TILO_KERNEL_PATH="$probe/vmlinuz" TILO_GEN_INIT_CPIO="$probe/gen_init_cpio" \
-  TILO_CRYPTO_BIN="$probe/tilo-crypto" TILO_SECUREBOOT_VM_APP="$probe/secureboot_vm_app.efi" \
+gen_init_cpio=$probe/gen_init_cpio
+crypto=$probe/tilo-crypto
+# A kernel cross-compiled on x86_64 brings the probe's programs for no machine it boots on: the
+# initramfs maker as source, and no signer. Both are built here, on the kernel's architecture,
+# from that kernel tree's source and from this commit's signer.
+if [[ ! -e $gen_init_cpio ]]; then
+  [[ -s $probe/gen_init_cpio.c ]] || die "the build left neither gen_init_cpio nor its source"
+  gen_init_cpio=$work/gen_init_cpio
+  gcc -O2 -o "$gen_init_cpio" "$probe/gen_init_cpio.c"
+fi
+if [[ ! -e $crypto ]]; then
+  CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+    cargo build --locked --release -p tilo-crypto --no-default-features --bin tilo-crypto
+  crypto=${CARGO_TARGET_DIR:-$repo_root/target}/release/tilo-crypto
+fi
+TILO_KERNEL_PATH="$probe/vmlinuz" TILO_GEN_INIT_CPIO="$gen_init_cpio" \
+  TILO_CRYPTO_BIN="$crypto" TILO_SECUREBOOT_VM_APP="$probe/secureboot_vm_app.efi" \
   TILO_SECUREBOOT_VM_ARCH="$arch" TILO_SECUREBOOT_VM_WORK_ROOT="$scratch" \
   bash os/tests/secureboot_vm_probe.sh

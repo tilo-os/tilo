@@ -20,7 +20,7 @@
 //! [`ResourceKind::Record`] on the provider scale ([`MAX_SCORE`]).
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -72,6 +72,8 @@ struct Snapshot {
     locked_index: SearchIndex,
     /// `(app, room, resource)` of every visible entry.
     covered: HashSet<(String, String, String)>,
+    /// The boost its app gave each visible entry that has one, by row id.
+    boosts: HashMap<String, i32>,
 }
 
 impl Snapshot {
@@ -87,6 +89,16 @@ impl Snapshot {
                 )
             })
             .collect();
+        let boosts = visible
+            .iter()
+            .filter(|indexed| indexed.entry.boost != 0)
+            .map(|indexed| {
+                (
+                    entry_id(&indexed.slot, &indexed.entry.key),
+                    indexed.entry.boost,
+                )
+            })
+            .collect();
         Self {
             generation,
             index: text_index(&visible),
@@ -94,6 +106,7 @@ impl Snapshot {
             visible,
             locked,
             covered,
+            boosts,
         }
     }
 }
@@ -120,9 +133,49 @@ fn text_index(entries: &[IndexedEntry]) -> SearchIndex {
 /// and retained, and the session's action door. Absent where no broker is
 /// attached; a hit then opens the app itself.
 #[derive(Clone)]
-struct OpenDoor {
+pub(crate) struct OpenDoor {
     broker: AppActionBroker,
     sessions: ActionSessionSource,
+}
+
+impl OpenDoor {
+    pub(crate) fn new(broker: AppActionBroker) -> Self {
+        Self {
+            sessions: ActionSessionSource::new(broker.clone()),
+            broker,
+        }
+    }
+}
+
+/// Open `app` in the workspace of `room` at `anchor`, through its `open`
+/// as a search hit at that anchor opens: the running app takes it, a closed
+/// one is launched first; with nothing published that opens it, the app
+/// opens.
+pub(crate) fn open_at(
+    door: Option<&OpenDoor>,
+    chrome: &Chrome,
+    app: &str,
+    room: &str,
+    anchor: &str,
+) -> Result<(), ActionError> {
+    let slot = SlotKey {
+        app: app.to_owned(),
+        room: room.to_owned(),
+        record: String::new(),
+    };
+    let entry = IndexEntry {
+        key: anchor.to_owned(),
+        resource: anchor.to_owned(),
+        action: None,
+        title: String::new(),
+        subtitle: None,
+        group: None,
+        icon: None,
+        boost: 0,
+        fields: Vec::new(),
+        secret: false,
+    };
+    open_entry(door, chrome, &slot, &entry)
 }
 
 pub struct AppContentProvider {
@@ -138,10 +191,7 @@ impl AppContentProvider {
     pub fn new(index: Arc<AppContentIndex>, broker: AppActionBroker) -> Self {
         Self {
             index,
-            door: Some(OpenDoor {
-                sessions: ActionSessionSource::new(broker.clone()),
-                broker,
-            }),
+            door: Some(OpenDoor::new(broker)),
             snapshot: RefCell::new(None),
             wakes: Cell::new(false),
         }
@@ -174,15 +224,14 @@ impl AppContentProvider {
         }
     }
 
-    /// Whether this provider has a row for `resource` of `app` in `room`:
-    /// the live provider's row for it gives way, so one resource is one
-    /// row.
+    /// Whether this provider finds `resource` of `app` in `room`, whether or
+    /// not the app runs: every resource the index holds is this provider's
+    /// row, so a window's own row for it gives way and its kind gives way
+    /// with it. One resource is one row.
     pub fn covers(&self, app: &str, room: &str, resource: &str) -> bool {
-        self.snapshot.borrow().as_ref().is_some_and(|snapshot| {
-            snapshot
-                .covered
-                .contains(&(app.to_owned(), room.to_owned(), resource.to_owned()))
-        })
+        self.current()
+            .covered
+            .contains(&(app.to_owned(), room.to_owned(), resource.to_owned()))
     }
 
     fn row(&self, indexed: &IndexedEntry, score: i32) -> SearchResult {
@@ -357,6 +406,10 @@ fn opening(
 /// Open the app at `entry`, as its person in the entry's room: the running
 /// app takes the invocation; a closed one is launched by the broker first.
 /// With nothing published that opens it, the app opens.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the action session stays open while its admission is polled"
+)]
 fn open_entry(
     door: Option<&OpenDoor>,
     chrome: &Chrome,
@@ -370,8 +423,8 @@ fn open_entry(
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room.to_string() == slot.room)
-            .map(|workspace| workspace.room);
+            .find(|workspace| workspace.room().to_string() == slot.room)
+            .map(crate::shell::state::Workspace::room);
         room.map(|room| state.local_user_for_room(&room))
     };
     let found = door.zip(person).and_then(|(door, person)| {
@@ -471,7 +524,7 @@ impl SearchProvider for AppContentProvider {
             .tree()
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room.to_string());
+            .map(|workspace| workspace.room().to_string());
         if here.as_deref() == Some(slot.room.as_str()) {
             SearchProximity::CurrentWorkspace
         } else {
@@ -479,6 +532,9 @@ impl SearchProvider for AppContentProvider {
         }
     }
 
+    /// Continue: what the person opened from here lately, newest first,
+    /// each opening where it is through its app's `open` at its anchor, as
+    /// a search hit does. Scoped to a workspace, only what lives there.
     fn refresh_search_index(&self, _ctx: &SearchContext<'_>) {
         if !self.wakes.replace(true) {
             self.index
@@ -515,6 +571,20 @@ impl SearchProvider for AppContentProvider {
         self.query_page(ctx, None, SearchBudget::PALETTE).results
     }
 
+    /// An app ranks its own rows as its own search does: how well each
+    /// matched plus the boost it gave it. Tube's row that searches
+    /// `YouTube` leads the videos it suggests, which follow in `YouTube`'s
+    /// order. The boost stays out of the row's score, so no app lifts its
+    /// rows over other providers'.
+    fn source_order(&self, result: &SearchResult) -> Option<(String, i64)> {
+        let (slot, _) = parse_entry_id(&result.id)?;
+        let boost = self.current().boosts.get(&result.id).copied().unwrap_or(0);
+        Some((
+            slot.app,
+            i64::from(result.score).saturating_add(i64::from(boost)),
+        ))
+    }
+
     fn query_page(
         &self,
         ctx: SearchContext<'_>,
@@ -547,9 +617,10 @@ impl SearchProvider for AppContentProvider {
                 if !shown.insert((indexed.slot.app.clone(), indexed.entry.key.clone())) {
                     return None;
                 }
-                let score = crate::shell::search::provider_score(hit.rank.unwrap_or(0))
-                    .saturating_add(indexed.entry.boost.clamp(0, 2))
-                    .clamp(1, MAX_SCORE);
+                // How well it matched; its app's boost orders it among the
+                // app's own rows only ([`SearchProvider::source_order`]).
+                let score =
+                    crate::shell::search::provider_score(hit.rank.unwrap_or(0)).clamp(1, MAX_SCORE);
                 Some(self.row(indexed, score))
             },
         );

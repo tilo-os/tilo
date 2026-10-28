@@ -4,6 +4,7 @@
 
 use automerge::{ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use tilo_actions::{ActionKey, Described, Did, FieldEdit, PathStep, Scalar};
+use tilo_sort::CompactSort as _;
 
 use crate::model::Doc;
 use crate::path::{Edit, EditOp, Segment};
@@ -17,7 +18,6 @@ struct Located {
     owner: Option<(&'static str, String)>,
     /// The last item on the path: its id and label.
     item: Option<(String, Option<String>)>,
-    /// The shape of what the path leads to.
     shape: Shape,
     /// What the last field on the path reads as while absent, for a scalar.
     absent: Option<fn() -> Option<serde_json::Value>>,
@@ -46,7 +46,7 @@ fn label_of(doc: &Doc, shape: Shape, obj: &ObjId) -> Option<String> {
         .iter()
         .filter(|field| field.label_part > 0)
         .collect();
-    parts.sort_by_key(|field| field.label_part);
+    parts.compact_sort_by_key(|field| field.label_part);
     let joined: Vec<String> = parts
         .iter()
         .filter_map(|field| field_text(doc, obj, field))
@@ -150,7 +150,7 @@ fn label_in(item: Shape, value: &serde_json::Value) -> Option<String> {
         .iter()
         .filter(|field| field.label_part > 0)
         .collect();
-    parts.sort_by_key(|field| field.label_part);
+    parts.compact_sort_by_key(|field| field.label_part);
     let joined: Vec<String> = parts.iter().filter_map(|field| text(field.key)).collect();
     if !joined.is_empty() {
         return Some(joined.join(" "));
@@ -188,7 +188,7 @@ fn step(segment: &Segment) -> PathStep {
 const fn operation(op: &EditOp) -> tilo_actions::EditOp {
     use tilo_actions::EditOp as Recorded;
     match op {
-        EditOp::Set { .. } => Recorded::Set,
+        EditOp::Set { .. } | EditOp::UpsertItem { .. } => Recorded::Set,
         EditOp::Settle { .. } => Recorded::Settle,
         EditOp::Forget { .. } => Recorded::Forget,
         EditOp::Splice { .. } => Recorded::Splice,
@@ -204,8 +204,27 @@ const fn operation(op: &EditOp) -> tilo_actions::EditOp {
         EditOp::InsertColumn { .. } => Recorded::InsertColumn,
         EditOp::RemoveRow { .. } => Recorded::RemoveRow,
         EditOp::RemoveColumn { .. } => Recorded::RemoveColumn,
+        EditOp::React { .. } => Recorded::React,
+        EditOp::Unreact { .. } => Recorded::Unreact,
         EditOp::Rich { .. } => Recorded::Mark,
     }
+}
+
+/// The item an insert or upsert of `value` (found by `matching`) under `id`
+/// names: its id, else its label, with its label.
+fn added_item(
+    item: Shape,
+    value: &serde_json::Value,
+    matching: Option<&serde_json::Map<String, serde_json::Value>>,
+    id: Option<&crate::Id>,
+) -> Option<(String, Option<String>)> {
+    let label = label_in(item, value).or_else(|| {
+        matching.and_then(|matching| label_in(item, &serde_json::Value::Object(matching.clone())))
+    });
+    let id = id
+        .map(|id| id.as_str().to_owned())
+        .or_else(|| label.clone());
+    id.map(|id| (id, label))
 }
 
 /// A field edit of a record of shape `shape`, as it reads before it applies.
@@ -237,6 +256,13 @@ fn edit_at(
         EditOp::Set { value } | EditOp::Insert { value } | EditOp::Remove { value } => {
             Scalar::from_json(value)
         }
+        // A text written whole (a formula, a title) is what it reads now:
+        // a reader names it without the document, and elides it to fit.
+        EditOp::Replace { text } => Some(Scalar::whole_text(text)),
+        // The emoji a reaction gave or took back.
+        EditOp::React { emoji } | EditOp::Unreact { emoji } => {
+            Scalar::from_json(&serde_json::Value::String(emoji.clone()))
+        }
         EditOp::Add { by } => old
             .as_ref()
             .and_then(|old| crate::__private::json_via_bytes(old).ok())
@@ -250,13 +276,16 @@ fn edit_at(
     let item = match (op, located.shape) {
         _ if located.item.is_some() => located.item.clone(),
         (EditOp::InsertItem { id, value, .. }, Shape::Collection(item) | Shape::Keyed(item)) => {
-            let label = label_in(*item, value);
-            let id = id
-                .as_ref()
-                .map(|id| id.as_str().to_owned())
-                .or_else(|| label.clone());
-            id.map(|id| (id, label))
+            added_item(*item, value, None, id.as_ref())
         }
+        (
+            EditOp::UpsertItem {
+                matching,
+                value,
+                id,
+            },
+            Shape::Collection(item) | Shape::Keyed(item),
+        ) => added_item(*item, value, Some(matching), id.as_ref()),
         (EditOp::RemoveItem { id }, Shape::Collection(item) | Shape::Keyed(item)) => {
             let stored = match &located.value {
                 Some((Value::Object(ObjType::Map), collection)) => {
@@ -367,19 +396,20 @@ pub(crate) fn verb(
         .cloned()
         .unwrap_or_default();
     // Plain arguments by name; a record argument by its fields, one level
-    // deep (`receipt.completed`).
+    // deep (`receipt.completed`). Text is kept whole, as passed
+    // ([`Scalar::argument`]).
     let mut plain: Vec<(String, Scalar)> = Vec::new();
     for (name, value) in &args {
         match value {
             serde_json::Value::Object(fields) => {
                 for (field, value) in fields {
-                    if let Some(scalar) = Scalar::from_json(value) {
+                    if let Some(scalar) = Scalar::argument(value) {
                         plain.push((format!("{name}.{field}"), scalar));
                     }
                 }
             }
             value => {
-                if let Some(scalar) = Scalar::from_json(value) {
+                if let Some(scalar) = Scalar::argument(value) {
                     plain.push((name.clone(), scalar));
                 }
             }

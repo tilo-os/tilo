@@ -21,7 +21,6 @@ thread_local! {
     static PENDING: RefCell<Option<PaletteRequest>> = const { RefCell::new(None) };
 }
 
-/// Open the host palette searching for `query`.
 pub fn search(query: impl Into<String>) {
     PENDING.with(|pending| *pending.borrow_mut() = Some(PaletteRequest::Search(query.into())));
 }

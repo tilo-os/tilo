@@ -11,7 +11,7 @@ tilo app update browser
 
 `tilo update` updates apps and, when the provider exists, the Tilo system image.
 On another Linux distribution it skips unavailable system management rather than
-making the app commands unusable. Explicit `tilo system ...` commands report that
+making the app commands unusable. Explicit `tilo device ...` commands report that
 the provider is unavailable.
 
 The lower-level `tilo-install` verifies signatures, unpacks payloads, drops PATH
@@ -156,7 +156,7 @@ An OS image ships a second store, in the same shape, at
 ```
 
 It is written during the image build by `os/scripts/pack-apps.sh`, which
-runs the ordinary `tilo-install install` against a `TILO_APPS_DATA_DIR`
+runs the ordinary `tilo app install` against a `TILO_APPS_DATA_DIR`
 pointed there — so every preinstalled package went through the same
 verification and install path a user's own package goes through, and is
 described by the same `InstalledPackage` fields. A release image installs
@@ -194,7 +194,7 @@ Which copy runs (`package_store::runs_over_image`):
   row `held`, and it runs whatever the image ships until the next update.
 - `app rollback` with no older published version between, or `--to` the
   image's version, removes the user copy, which returns to the image's.
-  `tilo-install uninstall` does the same; the image's copy itself cannot be
+  `tilo app remove` does the same; the image's copy itself cannot be
   removed.
 - never a user copy that requires a system interface version this OS does
   not serve (`[sandbox.services]` `required@N`, against
@@ -257,10 +257,20 @@ shared files are still stored once per store. Rows written before the
 content store existed (`payloads/<id>`) are moved into it once,
 idempotently, the next time `tilo-install` or the app host runs.
 
+Size-pressure eviction goes least recently used first, by the later of
+`last_used` (written when the app opens) and the modification time of the
+tree's launch lease under `leases/`, which the launcher sets again when the
+app closes, on the tree the app's row names then too when an update
+replaced the one it ran on; an app kept open for weeks counts as used the
+day it closed. It never evicts a pinned app, an app a running sandbox has
+mounted, an app a launch holds (including one still running a build an
+update replaced), or an app the change it follows just installed or
+updated: a store whose kept apps alone exceed the cap stays over it.
+
 ## `install`
 
 ```
-tilo-install install <tapp>
+tilo app install <tapp>
     [--pinned]                      # retained across size-pressure GC
     [--force]                       # overwrite same-id install
     [--require-package-root <hex>]  # bind to a signed registry version
@@ -296,7 +306,7 @@ Sequence:
 Example run against the hello demo:
 
 ```
-$ tilo-install install /tmp/tilo-hello-demo/tilo-hello.tapp
+$ tilo app install /tmp/tilo-hello-demo/tilo-hello.tapp
 tilo-install: WARN — package self-signed by ed25519:c4c627b57… (no trusted-attestor signature); use --require-attestor <id> to demand an attestation
 installed: so.tilo.hello 0.1.0
   payload  : /tmp/tilo-install-demo-data/tilo-apps/pkgs/b8bde92e…
@@ -316,7 +326,7 @@ so.tilo.hello                     0.1.0     no      -                   0s ago
 ## `inspect`
 
 ```
-$ tilo-install inspect so.tilo.hello
+$ tilo app inspect so.tilo.hello
 id            : so.tilo.hello
 version       : 0.1.0
 package-id    : tapp:b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3
@@ -348,7 +358,7 @@ Because `run` uses `exec()`, this process's exit code is the launcher's.
 ## `remove`
 
 ```
-$ tilo-install remove so.tilo.hello
+$ tilo app remove so.tilo.hello
 removed: so.tilo.hello
 ```
 
@@ -369,7 +379,7 @@ $ tilo-install path
 /tmp/tilo-install-demo-data/tilo-apps/bin
 
 # Prepend the above to your shell's PATH so CLI commands
-# installed via `tilo-install install <pkg.tapp>` are picked up.
+# installed via `tilo app install <pkg.tapp>` are picked up.
 #
 # bash / zsh (~/.bashrc, ~/.zshrc):
 export PATH="/tmp/tilo-install-demo-data/tilo-apps/bin:$PATH"
@@ -448,7 +458,7 @@ installed runtime bundle: tilo-runtime/2026.07
   files    : 11
   root-hash: blake3:1e7dedc8881ab7e8225b0c680e832e2332e3b1c14406f34fd1b2a70edec3e58d
 
-$ tilo-install runtime list
+$ tilo app runtime list
 version               path
 2026.07               /tmp/tilo-install-demo-data/tilo-runtime/2026.07
 
@@ -461,7 +471,7 @@ verified: tilo-runtime/2026.07
 $ tilo-install runtime path --version 2026.07
 /tmp/tilo-install-demo-data/tilo-runtime/2026.07
 
-$ tilo-install runtime remove 2026.07
+$ tilo app runtime remove 2026.07
 removed runtime bundle: tilo-runtime/2026.07
 ```
 
@@ -506,12 +516,12 @@ tilo-install: package so.tilo.hello already installed (use --force to overwrite)
 See [`trust.md`](./trust.md) for the full model. Quick reference:
 
 ```
-$ tilo-install trust add --id "tilo-curated/2026.07" --pubkey <hex> --scope "all"
-$ tilo-install trust list
-$ tilo-install trust remove <id>
+$ tilo app trust add --id "tilo-curated/2026.07" --pubkey <hex> --scope "all"
+$ tilo app trust list
+$ tilo app trust remove <id>
 
-$ tilo-install revoke <pubkey_hex> --reason "compromised 2026-Q3"
-$ tilo-install revoked list
+$ tilo app trust revoke <pubkey_hex> --reason "compromised 2026-Q3"
+$ tilo app trust revoked
 ```
 
 Next: [`trust.md`](./trust.md) — publisher identities, attestation

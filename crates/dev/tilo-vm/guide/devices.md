@@ -13,7 +13,7 @@ loses it.
 
 ```sh
 tilo-vm vm add opi --ssh root@10.0.0.108   # makes keys/opi_ed25519, prints the key install
-ssh -t -o StrictHostKeyChecking=accept-new -p 22 quickuser@10.0.0.108 'sudo install ...'   # the printed command, once
+ssh -t -o StrictHostKeyChecking=accept-new -p 22 tester@10.0.0.108 'sudo install ...'   # the printed command, once
 tilo-vm vm status opi                      # reachable, tilo-vmd version and architecture
 tilo-vm vm use opi                         # this worktree (writes .tilo-vm); --global for every worktree
 ```
@@ -21,7 +21,7 @@ tilo-vm vm use opi                         # this worktree (writes .tilo-vm); --
 `vm add` makes the device's own root key beside `vms.toml` and asks the
 device for tilo-vmd. A new device does not know the key yet, so `vm add`
 prints the one command that installs it for root, with the dev account
-`quickuser`'s password (`tilo`, from `os/account.env`; SSH asks for it, then
+`tester`'s password (`tilo`, from `os/account.env`; SSH asks for it, then
 sudo). After that every connection is root with that key and the device's
 own `known_hosts`, never a password. Without a terminal to type the
 password into, an agent asks a human to run the printed command.
@@ -227,21 +227,21 @@ device's `/var/lib/tilo-vm/layers/<hash>/provenance.json` show.
 ```sh
 tilo-vm vm status opi                    # tilo-vmd, protocol, architecture
 tilo-vm vm ssh opi -- bootc status       # the image it runs and follows
-tilo-vm vm upgrade opi                   # the newest build of the image it follows, then a reboot
+tilo-vm vm upgrade opi                   # back to its channel's newest image, then a reboot
+tilo-vm vm upgrade opi --ref my-branch   # t builds and publishes the branch for this board
 tilo-vm vm upgrade opi --from sha:1a2b3c4   # that commit's build of this board's image
-tilo-vm vm upgrade opi --image registry.tilo.so/tilo/tilo-vm:orangepi-3b-v2-1-ci
 tilo-vm vm rollback-image opi
 tilo-vm vm restart opi                   # reboot over SSH; wait for the new boot and tilo-vmd
 ```
 
-A board's image is sealed, so an upgrade is a bootc switch and a reboot,
-never a local build. `--from sha:<commit>` (and `ci:<tag>`) reads the board
-the device's image was built for (`/usr/lib/tilo/hardware-profile.json`) and
-takes that board's image of the build, `tilo-vm:<ref>-<sha7>-<board>` (a
-commit that is not on main is found through its pull request's tags): the
-generic `-ci` dev image has no board firmware or device tree and would not
-boot it. CI builds a board image in every Build / OS dev run with an aarch64
-lane; `skopeo list-tags docker://registry.tilo.so/tilo/tilo-vm` lists them.
+A board's image is sealed, so an upgrade takes a published image through the
+device's own update path (docs/development/devices.md) and reboots, never a
+local build. `--ref` and `--from sha:<commit>` read the board the device's
+image was built for (`/usr/lib/tilo/hardware-profile.json`) and take that
+board's image of the build, `tilo-vm:main-<sha7>-<board>` or a branch's
+`tilo-vm-ref:ref-<branch>-<sha7>-<board>`: the generic dev image has no board
+firmware or device tree and would not boot it. The board follows
+`tilo-vm:<board>-ci`, its dev channel, otherwise.
 Board dev images are public today; when the registry refuses the device's
 own pull for want of a login (a private image), tilo-vm pulls the image here with this host's login
 (`podman login registry.tilo.so`), sends only the layers the device lacks

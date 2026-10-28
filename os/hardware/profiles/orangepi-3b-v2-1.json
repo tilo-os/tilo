@@ -4,7 +4,23 @@
   "architecture": "aarch64",
   "devicetree": "rockchip/rk3566-orangepi-3b-v2.1.dtb",
   "system_firmware": [],
+  "firmware_exclude": [
+    "nvidia-gpu-firmware",
+    "amd-gpu-firmware",
+    "intel-gpu-firmware",
+    "intel-audio-firmware",
+    "intel-npu-firmware",
+    "amd-ucode-firmware",
+    "mt7xxx-firmware",
+    "nxpwireless-firmware",
+    "tiwilink-firmware"
+  ],
   "always_on": true,
+  "crash_record": {
+    "storage": "none",
+    "watchdog": "none",
+    "lockup": "none"
+  },
   "kernel_args": [
     "earlycon",
     "console=ttyS2,1500000n8"

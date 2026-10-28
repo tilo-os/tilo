@@ -22,9 +22,6 @@ pub struct HelperRuntime {
 impl HelperRuntime {
     /// Resolve only the installed helper's loader dependencies. A missing
     /// dependency fails before a guest starts, with the loader's explanation.
-    ///
-    /// # Errors
-    /// Returns the native loader or dependency-resolution failure.
     pub fn resolve(binary: &Path) -> io::Result<Option<Self>> {
         let Some(loader) = interpreter(binary)? else {
             return Ok(None);
@@ -60,7 +57,7 @@ impl HelperRuntime {
         ]
     }
 
-    /// Command shims run after confinement. Keep their original argv[0] for
+    /// Command shims run after confinement. Keep their original `argv[0]` for
     /// typed broker dispatch; this library path belongs only to this exec.
     ///
     /// # Errors

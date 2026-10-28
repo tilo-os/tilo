@@ -115,7 +115,6 @@ fn a_kept_profile_is_reused_only_while_nothing_says_it_changed() {
         assert_eq!(key_of(&first), Some("first"));
         assert_eq!(key_of(&later), Some("first"));
         assert_eq!(later.0.id, "p");
-        // Another model of the same provider is its own reading.
         cache
             .resolve(("p", "other"), Some(stamp(1)), start, || {
                 Ok(((ProviderProfile::local_vllm(), None), None))
@@ -222,6 +221,7 @@ fn save_profile(enabled: bool) {
     ProviderConfig {
         profiles: vec![profile],
         default_profile: None,
+        ..Default::default()
     }
     .save()
     .unwrap();
@@ -256,7 +256,7 @@ fn complete_error(profile_id: &str, model_id: &str) -> ModelError {
             &PlanCall {
                 profile_id,
                 model_id,
-                timeout: Duration::from_secs(1),
+                timeout: tilo_test_env::hang_bound(),
                 stream: false,
                 deltas: false,
                 trace: None,
@@ -385,7 +385,6 @@ fn plan_profiles_follow_the_settings_document_and_vault_on_disk() {
             .env("XDG_CONFIG_HOME", root.path())
             .env("PROFILE_TEST_CHILD", "1");
         if session_document {
-            // A sandbox's session document, apart from the config root's.
             child.env("TILO_SESSION_SETTINGS", root.path().join("session.json"));
         }
         let output = child.output().unwrap();
@@ -427,6 +426,7 @@ fn child_mints_from_custody() {
     ProviderConfig {
         profiles: vec![profile],
         default_profile: None,
+        ..Default::default()
     }
     .save()
     .unwrap();

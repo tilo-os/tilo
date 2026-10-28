@@ -1,0 +1,63 @@
+[package]
+name = "tilo-video-render"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "tilo-video-render: the confined process an agent's host renders a Video Editor timeline in, and the host's side of it (job directory, spawn, framed channel)."
+
+# Platform code the portable Video Editor does not carry: the helper process,
+# its confinement through tilo-sandbox and its socket and output file. What
+# it draws and encodes is the editor's (`video_editor::agent_render`).
+[lib]
+name = "tilo_video_render"
+path = "src/lib.rs"
+
+# The helper itself; the host's render service (tilo-agent-participant) finds
+# it at `$TILO_VIDEO_RENDER` or beside its own executable.
+[[bin]]
+name = "tilo-video-render"
+path = "src/bin/tilo-video-render.rs"
+required-features = ["helper"]
+
+[features]
+default = ["helper"]
+# The helper's side: the editor's media stack, to decode and encode. The
+# host's side (`client`, `proto`) builds without it.
+helper = ["video-editor/gst", "video-editor/decode", "dep:gstreamer"]
+
+[dependencies]
+video-editor = { path = "../../../apps/video-editor", default-features = false }
+serde.workspace = true
+tracing.workspace = true
+gstreamer = { workspace = true, optional = true }
+# `ui::format` sizes in the host's messages.
+ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(unix)'.dependencies]
+# The helper confines itself before it reads the room's document or footage.
+tilo-sandbox = { path = "../../platform/tilo-sandbox" }
+
+# The end-to-end tests render the editor's generated footage
+# (apps/video-editor/tests/support), which encodes through GStreamer's appsrc
+# under an advisory lock.
+[dev-dependencies]
+ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
+gstreamer-app = "0.24"
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-test-env = { path = "../../dev/test-env" }
+serial_test.workspace = true
+tempfile.workspace = true
+uuid.workspace = true
+
+# The tests reach these only through the editor's footage helper, which
+# `tests/render_helper.rs` include!s from apps/video-editor/tests/support
+# (`gstreamer_app`, `advisory_lock`, `tilo_test_env::hang_deadline`), where
+# machete cannot follow.
+[package.metadata.cargo-machete]
+ignored = ["gstreamer-app", "tilo-advisory-lock", "tilo-test-env"]
+
+[lints]
+workspace = true

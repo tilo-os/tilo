@@ -26,8 +26,8 @@ landlock = "strict"
 mode = "off"
 
 [sandbox.services]
-collab = "optional@2"
-shell-ui = "optional@10"
+collab = "optional@10"
+shell-ui = "optional@17"
 
 [entrypoint]
 bin = "bin/messages"
@@ -36,7 +36,7 @@ splash-segments = ["bin/messages[0x0:0x400000]"]
 splash-budget = 250
 
 [resources]
-kinds = ["tilo.messages", "tilo.contacts.identities"]
+kinds = ["tilo.messages", "tilo.contacts.identities", "messages.drafts"]
 
 [providers]
 mime = []

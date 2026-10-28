@@ -7,16 +7,17 @@
 //! shows, and the binding choices are exactly what the checker accepts.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use serde_json::Value;
 use tilo_automation::{
-    ActionCatalog, AiTransform, Binding, BindingOption, CheckError, CheckErrorKind, Condition,
-    ResourceTarget, Selector, Shortcut, Step, StepKind, StepPath, binding_options, check,
+    ActionCatalog, Binding, BindingOption, CheckError, CheckErrorKind, Condition, ResourceTarget,
+    Selector, Shortcut, Step, StepKind, StepPath, binding_options, check,
 };
 use ui::tilo_actions::remote::CatalogueRow;
 use ui::tilo_actions::{ActionKey, ActionParam, ParamType};
 
-use crate::model::{Draft, step_at};
+use crate::model::{Draft, block_at, step_at};
 use tilo_automation::grant;
 
 /// The shortcut `draft` would save as, with the least grant it needs, as the
@@ -206,7 +207,90 @@ pub fn describe(binding: &Binding, steps: &[Step]) -> String {
         Binding::Var(name) => format!("variable {name}"),
         Binding::StepOutput { step, pointer } => describe_result(step, pointer, steps),
         Binding::Template(text) => describe_template(text, steps),
+        Binding::Object(members) => {
+            let members: Vec<String> = members
+                .iter()
+                .map(|(name, member)| format!("{name}: {}", describe(member, steps)))
+                .collect();
+            format!("{{{}}}", members.join(", "))
+        }
+        Binding::List(items) => {
+            let items: Vec<String> = items.iter().map(|item| describe(item, steps)).collect();
+            format!("[{}]", items.join(", "))
+        }
     }
+}
+
+/// Where a step can move so that it is nested one level deeper, or one
+/// level shallower: the block it lands in and the place there.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Nesting {
+    /// The block the step moves into, as [the surface's `set-nested` takes
+    /// it](crate::model::Workbench::set_nested): empty for the top level.
+    pub block: String,
+    /// Where it lands in that block.
+    pub index: usize,
+}
+
+/// The first branch a step opens, if it holds steps of its own.
+fn opened_branch(step: &Step) -> Option<&'static str> {
+    match &step.kind {
+        StepKind::If { .. } => Some("then"),
+        StepKind::ForEach { .. } => Some("each"),
+        StepKind::Invoke { .. }
+        | StepKind::SetVar { .. }
+        | StepKind::Ask { .. }
+        | StepKind::Ai { .. }
+        | StepKind::Task { .. } => None,
+    }
+}
+
+/// The block `address` names, and where it sits in its own block: `("", 0)`
+/// for the top level, `("2", 1)` for the block of the step at `2.…`.
+fn enclosing(address: &str) -> Option<(&str, usize)> {
+    if address.is_empty() {
+        return None;
+    }
+    let owner = address.rsplit_once('.').map_or(address, |(owner, _)| owner);
+    let (block, last) = owner.rsplit_once('.').unwrap_or(("", owner));
+    Some((block, last.parse().ok()?))
+}
+
+/// Where the step at `path` can move to be nested deeper: into the block of
+/// the step just above it, if that step holds steps. A step has no deeper
+/// place when it is first in its block, or when the step above it holds
+/// nothing.
+#[must_use]
+pub fn nest_into(steps: &[Step], path: &str) -> Option<Nesting> {
+    let (block, index) = path.rsplit_once('.').unwrap_or(("", path));
+    let index: usize = index.parse().ok()?;
+    let above = block_at(steps, block)?.get(index.checked_sub(1)?)?;
+    let branch = opened_branch(above)?;
+    let target = if block.is_empty() {
+        format!("{}.{branch}", index - 1)
+    } else {
+        format!("{block}.{}.{branch}", index - 1)
+    };
+    // Past the last step the block above already holds, so it is added to
+    // that step rather than put before what is there.
+    let inside = block_at(steps, &target)?.len();
+    Some(Nesting {
+        block: target,
+        index: inside,
+    })
+}
+
+/// Where the step at `path` can move to leave its block: its block's own
+/// step, placed just after it. A step already at the top level has nowhere
+/// to go.
+#[must_use]
+pub fn lift_out(path: &str) -> Option<Nesting> {
+    let (address, _) = path.rsplit_once('.').unwrap_or(("", path));
+    let (parent, owner) = enclosing(address)?;
+    Some(Nesting {
+        block: parent.to_owned(),
+        index: owner + 1,
+    })
 }
 
 /// The position (from 1) the editor shows for the step with `id`: steps are
@@ -227,7 +311,8 @@ pub fn step_number(steps: &[Step], id: &str) -> Option<usize> {
                 StepKind::Invoke { .. }
                 | StepKind::SetVar { .. }
                 | StepKind::Ask { .. }
-                | StepKind::Ai { .. } => None,
+                | StepKind::Ai { .. }
+                | StepKind::Task { .. } => None,
             };
             if found.is_some() {
                 return found;
@@ -325,7 +410,6 @@ pub fn literal(text: &str, param: &ActionParam) -> Value {
     }
 }
 
-/// The text a literal is edited as.
 #[must_use]
 pub fn literal_text(value: &Value) -> String {
     match value {
@@ -379,17 +463,94 @@ pub fn title(step: &Step, catalog: &ActionCatalog, steps: &[Step]) -> String {
         }
         StepKind::SetVar { name, value } => format!("Set {name} to {}", say(value)),
         StepKind::Ask { param } => format!("Ask for {}", param.description),
-        StepKind::Ai { transform, input } => match transform {
-            AiTransform::Summarise => format!("Summarise {}", say(input)),
-            AiTransform::Extract { .. } => format!("Extract from {}", say(input)),
-            AiTransform::Classify { choices } => {
-                format!("Classify {} as {}", say(input), choices.join(" or "))
-            }
-            AiTransform::Freeform { prompt } => {
-                format!("Ask the agent “{prompt}” about {}", say(input))
-            }
+        StepKind::Ai { prompt, input, .. } => match input {
+            Some(input) => format!("{prompt} {}", say(input)),
+            None => prompt.clone(),
         },
+        StepKind::Task { instruction, .. } => instruction.clone(),
     }
+}
+
+/// Everything about one step a person would notice in it: its heading, and
+/// the fields it holds — what an invocation is given, which resource it
+/// takes, what a condition asks — each as the short form a review reads.
+#[must_use]
+pub fn substance(step: &Step, catalog: &ActionCatalog, steps: &[Step]) -> String {
+    let mut line = title(step, catalog, steps);
+    match &step.kind {
+        StepKind::Invoke {
+            action,
+            resource,
+            args,
+            appearance,
+        } => {
+            let _ = write!(line, " ({action}, {resource:?}");
+            for (name, binding) in args {
+                let _ = write!(line, ", {name}: {}", describe(binding, steps));
+            }
+            if appearance.is_some() {
+                let _ = write!(line, ", shown as it runs");
+            }
+            line.push(')');
+        }
+        StepKind::SetVar { name, value } => {
+            let _ = write!(line, " ({name}: {})", describe(value, steps));
+        }
+        StepKind::Ask { param } => {
+            let _ = write!(line, " ({}: {})", param.name, param.description);
+        }
+        StepKind::If { cond, .. } => {
+            let _ = write!(line, " ({})", describe_condition(cond, steps));
+        }
+        StepKind::ForEach { items, item, .. } => {
+            let _ = write!(line, " ({item} in {})", describe(items, steps));
+        }
+        StepKind::Ai { prompt, input, .. } => {
+            let _ = write!(
+                line,
+                " ({prompt:?}{})",
+                input
+                    .as_ref()
+                    .map_or_else(String::new, |input| format!(", {}", describe(input, steps)))
+            );
+        }
+        StepKind::Task { instruction, .. } => {
+            let _ = write!(line, " ({instruction:?})");
+        }
+    }
+    line
+}
+
+/// Every step a person would notice in `steps`, in reading order and branches
+/// included: what changed between two programs is read as a list of these,
+/// one per step of the program.
+#[must_use]
+pub fn outline(step: &Step, catalog: &ActionCatalog, steps: &[Step]) -> Vec<String> {
+    fn walk(step: &Step, catalog: &ActionCatalog, steps: &[Step], out: &mut Vec<String>) {
+        out.push(substance(step, catalog, steps));
+        match &step.kind {
+            StepKind::If {
+                then, otherwise, ..
+            } => {
+                for inner in then.iter().chain(otherwise) {
+                    walk(inner, catalog, steps, out);
+                }
+            }
+            StepKind::ForEach { body, .. } => {
+                for inner in body {
+                    walk(inner, catalog, steps, out);
+                }
+            }
+            StepKind::Invoke { .. }
+            | StepKind::SetVar { .. }
+            | StepKind::Ask { .. }
+            | StepKind::Ai { .. }
+            | StepKind::Task { .. } => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(step, catalog, steps, &mut out);
+    out
 }
 
 /// Where an action step acts: "Inbox in Notes". `None` for other steps.
@@ -517,7 +678,6 @@ pub struct KindGroup {
 pub struct Offer {
     pub app_id: String,
     pub resource: String,
-    /// The kind of the resource that offers it.
     pub kind: String,
     pub resource_label: String,
     pub action: String,
@@ -577,3 +737,84 @@ pub const fn param_type_label(ty: ParamType) -> &'static str {
 #[cfg(test)]
 #[path = "editor_tests.rs"]
 mod tests;
+
+/// `program` as the app's text view writes it: one step a line, its number,
+/// what it does and where each value comes from, the steps inside a block
+/// indented under it and each block named. The same steps the blocks show,
+/// in the same order, for reading beside what the text language says.
+#[must_use]
+pub fn program_text(program: &crate::model::Program, catalog: &ActionCatalog) -> String {
+    let mut out = String::new();
+    for input in &program.inputs {
+        let _ = writeln!(out, "input {} {}", input.name, param_type_name(input.ty));
+    }
+    if !program.inputs.is_empty() {
+        out.push('\n');
+    }
+    text_steps(&program.steps, "", catalog, &mut out);
+    if let Some(output) = &program.output {
+        let _ = writeln!(out, "\nresult {}", describe(output, &program.steps));
+    }
+    out.trim_end().to_owned()
+}
+
+/// The steps of one block, indented by `indent`.
+fn text_steps(steps: &[Step], indent: &str, catalog: &ActionCatalog, out: &mut String) {
+    for (position, step) in steps.iter().enumerate() {
+        let line = match &step.kind {
+            StepKind::Invoke { resource, args, .. } => {
+                let values: Vec<String> = args
+                    .iter()
+                    .map(|(name, binding)| format!("{name}: {}", describe(binding, steps)))
+                    .collect();
+                let resource = match resource {
+                    Selector::Fixed(id) => format!(" on {id}"),
+                    other => format!(" on {other:?}"),
+                };
+                format!(
+                    "{}{}{}{}",
+                    title(step, catalog, steps),
+                    resource,
+                    if values.is_empty() { "" } else { " with " },
+                    values.join(", ")
+                )
+            }
+            other => title(step, catalog, steps) + &substance_text(other, steps),
+        };
+        let _ = writeln!(out, "{indent}{}. {line}", position + 1);
+        match &step.kind {
+            StepKind::If {
+                then, otherwise, ..
+            } => {
+                let _ = writeln!(out, "{indent}  then:");
+                text_steps(then, &format!("{indent}    "), catalog, out);
+                let _ = writeln!(out, "{indent}  otherwise:");
+                text_steps(otherwise, &format!("{indent}    "), catalog, out);
+            }
+            StepKind::ForEach { body, .. } => {
+                let _ = writeln!(out, "{indent}  for each:");
+                text_steps(body, &format!("{indent}    "), catalog, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// What a step other than an action does, after its name: the condition of
+/// an `if`, the items of a repeat, the value a variable is set to.
+fn substance_text(kind: &StepKind, steps: &[Step]) -> String {
+    match kind {
+        StepKind::If { cond, .. } => match cond {
+            Condition::Truthy(binding) => format!(" when {}", describe(binding, steps)),
+            other => format!(" {other:?}"),
+        },
+        StepKind::ForEach { items, item, .. } => {
+            format!(" {item} in {}", describe(items, steps))
+        }
+        StepKind::SetVar { name, value } => format!(" {name} to {}", describe(value, steps)),
+        StepKind::Ai { prompt, .. } => format!(" “{prompt}”"),
+        StepKind::Task { instruction, .. } => format!(" “{instruction}”"),
+        StepKind::Ask { param } => format!(" “{}”", param.description),
+        StepKind::Invoke { .. } => String::new(),
+    }
+}

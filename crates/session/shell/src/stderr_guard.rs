@@ -22,12 +22,30 @@ use std::sync::OnceLock;
 /// front of it.
 static ORIGINAL: OnceLock<OwnedFd> = OnceLock::new();
 
+/// A pipe whose ends a spawned program doesn't inherit.
+#[cfg(target_os = "linux")]
+fn cloexec_pipe() -> rustix::io::Result<(OwnedFd, OwnedFd)> {
+    rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC)
+}
+
+/// A pipe whose ends a spawned program doesn't inherit. Without `pipe2`
+/// (macOS) the flag is set right after; the shell spawns nothing before
+/// [`install`] runs.
+#[cfg(not(target_os = "linux"))]
+fn cloexec_pipe() -> rustix::io::Result<(OwnedFd, OwnedFd)> {
+    let (reader, writer) = rustix::pipe::pipe()?;
+    for end in [&reader, &writer] {
+        rustix::io::fcntl_setfd(end, rustix::io::FdFlags::CLOEXEC)?;
+    }
+    Ok((reader, writer))
+}
+
 /// Route fd 2 through the relay. Leaves stderr untouched if any step fails.
 pub fn install() {
     let Ok(original) = rustix::io::dup(std::io::stderr()) else {
         return;
     };
-    let Ok((reader, writer)) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC) else {
+    let Ok((reader, writer)) = cloexec_pipe() else {
         return;
     };
     let Ok(direct) = rustix::io::fcntl_dupfd_cloexec(&original, 3) else {
@@ -68,6 +86,19 @@ pub fn write_final(text: &str) {
             let _ = std::io::stderr().lock().write_all(text.as_bytes());
         }
     }
+}
+
+/// Write one line, `line` and a newline, to stderr in a single write.
+///
+/// `eprintln!` writes each piece of its format on its own, and through the
+/// relay every write is a wakeup of the relay thread: one diagnostic line
+/// of thirty fields woke it thirty times. One write is one wakeup, and a
+/// line no longer than the pipe's atomic size never interleaves with
+/// another thread's.
+pub fn write_line(line: std::fmt::Arguments<'_>) {
+    let mut text = line.to_string();
+    text.push('\n');
+    let _ = std::io::stderr().lock().write_all(text.as_bytes());
 }
 
 fn relay(mut from: std::fs::File, mut to: std::fs::File) {

@@ -1,4 +1,7 @@
-use super::{NativeAppOpenAccess, native_app_open_access, native_launch_capabilities};
+use super::{
+    LaunchError, LaunchFailure, NativeAppOpenAccess, native_app_open_access,
+    native_launch_capabilities,
+};
 use crate::shell::native_workspace_owner::{NativeWorkspaceOwner, test_enrolled_owner};
 use crate::shell::state::RoomId;
 use ed25519_dalek::SigningKey;
@@ -30,7 +33,7 @@ fn signed_governance(
                     )?;
                 }
             }
-            candidate.durable_mutation_messages(
+            candidate.publication_mut().durable_mutation_messages(
                 &before,
                 &key,
                 now,
@@ -66,10 +69,16 @@ fn native_viewer_only_reopens_real_record_without_mutation() {
         native_app_open_access(&owner, room, &certificate, "so.tilo.chat").unwrap(),
         NativeAppOpenAccess::Viewer
     ));
-    assert!(native_app_open_access(&owner, room, &certificate, "so.tilo.missing").is_err());
+    assert_eq!(
+        native_app_open_access(&owner, room, &certificate, "so.tilo.missing"),
+        Err(not_in_workspace("so.tilo.missing"))
+    );
     let mut forged = certificate;
     forged.device_label.push_str(" forged");
-    assert!(native_app_open_access(&owner, room, &forged, "so.tilo.chat").is_err());
+    assert!(matches!(
+        native_app_open_access(&owner, room, &forged, "so.tilo.chat"),
+        Err(LaunchError::DeviceNotAdmitted { .. })
+    ));
     owner
         .with_current(room, |view| {
             assert_eq!(view.generation(), generation);
@@ -124,6 +133,45 @@ fn native_existing_writer_preserves_delegation_but_person_restriction_wins() {
 }
 
 #[test]
+fn a_member_opens_an_app_the_governor_authorized_before_its_document_arrives() {
+    let (_directory, owner, room, now, _key) = test_enrolled_owner();
+    let (certificate, governor) = owner
+        .with_current(room, |view| {
+            assert!(view.peer().document("so.tilo.notes", "").is_none());
+            assert!(
+                view.peer()
+                    .workspace()
+                    .check_workspace_administration(view.device().device_public_key, now)
+                    .is_err()
+            );
+            Ok((view.device().clone(), view.governor().user_public_key))
+        })
+        .unwrap();
+    assert_eq!(
+        native_app_open_access(&owner, room, &certificate, "so.tilo.notes"),
+        Err(not_in_workspace("so.tilo.notes"))
+    );
+    signed_governance(
+        &owner,
+        room,
+        now,
+        &Governed::Grant(tilo_action_policy::roles::app_authorship(
+            &room.to_string(),
+            "so.tilo.notes",
+            tilo_action_policy::Subject::Person(hex::encode(governor)),
+        )),
+    );
+    assert!(matches!(
+        native_app_open_access(&owner, room, &certificate, "so.tilo.notes").unwrap(),
+        NativeAppOpenAccess::Author
+    ));
+    assert_eq!(
+        native_app_open_access(&owner, room, &certificate, "so.tilo.missing"),
+        Err(not_in_workspace("so.tilo.missing"))
+    );
+}
+
+#[test]
 fn a_distinct_admitted_read_only_device_never_borrows_the_governors_app_write() {
     let (_directory, owner, room, now, _key) = test_enrolled_owner();
     signed_governance(
@@ -173,7 +221,10 @@ fn a_distinct_admitted_read_only_device_never_borrows_the_governors_app_write() 
         native_app_open_access(&owner, room, &viewer, "so.tilo.chat").unwrap(),
         NativeAppOpenAccess::Viewer
     ));
-    assert!(native_app_open_access(&owner, room, &viewer, "so.tilo.missing").is_err());
+    assert_eq!(
+        native_app_open_access(&owner, room, &viewer, "so.tilo.missing"),
+        Err(not_in_workspace("so.tilo.missing"))
+    );
     let grants = owner
         .with_current(room, |view| {
             Ok(view
@@ -183,11 +234,11 @@ fn a_distinct_admitted_read_only_device_never_borrows_the_governors_app_write() 
                 .grants)
         })
         .unwrap();
-    let mut workspace = tilo_desktop_model::Workspace::new(
+    let mut workspace = tilo_desktop_model::Workspace::in_room(
         tilo_desktop_model::WorkspaceId(71),
+        room,
         "Admitted viewer launch",
     );
-    workspace.set_room(room);
     workspace.policy.grants = grants;
     let seconds = now
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -261,7 +312,7 @@ fn admit_viewer(
                 &governor_key,
                 now
             )?);
-            candidate.durable_mutation_messages(
+            candidate.publication_mut().durable_mutation_messages(
                 &before,
                 &governor_key,
                 now,
@@ -279,4 +330,160 @@ fn admit_viewer(
             )
             .unwrap();
     }
+}
+
+/// The room's own local governance change that grants `app` authorship to the
+/// person `granted_by`, signed with the room's governor key so the device
+/// admits it exactly as it admits the governor's.
+fn signed_app_authorship(
+    owner: &NativeWorkspaceOwner,
+    room: RoomId,
+    now: SystemTime,
+    app: &str,
+    granted_by: tilo_action_policy::Subject,
+) {
+    signed_governance(
+        owner,
+        room,
+        now,
+        &Governed::Grant(tilo_action_policy::roles::app_authorship(
+            &room.to_string(),
+            app,
+            granted_by,
+        )),
+    );
+}
+
+fn access_as(
+    owner: &NativeWorkspaceOwner,
+    room: RoomId,
+    certificate: &tilo_user_identity::DeviceCert,
+    now: SystemTime,
+    app: &str,
+) -> (NativeAppOpenAccess, bool) {
+    let access = native_app_open_access(owner, room, certificate, app).unwrap();
+    let authors = owner
+        .with_current(room, |view| {
+            let member = view
+                .peer()
+                .permissions(certificate.device_public_key, now)?;
+            Ok(member
+                .policy
+                .app_authors(app, &tilo_action_policy::Context::at_time(now)))
+        })
+        .unwrap();
+    (access, authors)
+}
+
+/// The refusal a room gives an app it never authorized: the person is not an
+/// administrator, and the room's governor does not let them author it.
+fn not_in_workspace(package: &str) -> LaunchError {
+    LaunchError::AppNotInWorkspace {
+        package_id: package.to_string(),
+    }
+}
+
+/// Someone who is neither an administrator nor allowed to author the app is
+/// told the workspace does not include it, not that its identity is broken
+/// and not that trying again might help.
+#[test]
+fn a_member_opening_an_app_the_room_never_authorized_is_told_so() {
+    let (_directory, owner, room, now, _key) = test_enrolled_owner();
+    let certificate = owner
+        .with_current(room, |view| {
+            assert!(
+                view.peer()
+                    .workspace()
+                    .check_workspace_administration(view.device().device_public_key, now)
+                    .is_err(),
+                "the fixture's person does not administer the workspace"
+            );
+            assert!(
+                view.peer().document("so.tilo.notes", "").is_none(),
+                "the room never authorized this app here"
+            );
+            Ok(view.device().clone())
+        })
+        .unwrap();
+    let refusal = native_app_open_access(&owner, room, &certificate, "so.tilo.notes")
+        .expect_err("an app the room never authorized does not open");
+    assert_eq!(refusal, not_in_workspace("so.tilo.notes"));
+    assert_eq!(refusal.failure(), LaunchFailure::AppNotInWorkspace);
+    assert_eq!(
+        refusal.notification_message(),
+        crate::shell::i18n::t_args(
+            "launch-error-app-not-in-workspace",
+            &[("app", "so.tilo.notes".into())]
+        ),
+        "the person reads what happened, not a broken workspace identity"
+    );
+    assert!(
+        !refusal
+            .notification_message()
+            .contains(&crate::shell::i18n::t("launch-error-identity-unavailable")),
+        "a refusal is never reported as an identity failure"
+    );
+}
+
+fn access_name(access: NativeAppOpenAccess) -> &'static str {
+    match access {
+        NativeAppOpenAccess::Author => "author",
+        NativeAppOpenAccess::Delegate => "delegate",
+        NativeAppOpenAccess::Viewer => "viewer",
+    }
+}
+
+/// Both an app this device already holds the document for and an app the
+/// governor authorizes but whose data has not arrived open alike: the
+/// authorship decides, not the copy of the document.
+#[test]
+fn an_app_authorized_by_the_room_opens_like_the_one_already_here() {
+    let (_directory, owner, room, now, _key) = test_enrolled_owner();
+    let (certificate, person) = owner
+        .with_current(room, |view| {
+            let member = view
+                .peer()
+                .permissions(view.device().device_public_key, now)?;
+            Ok((view.device().clone(), member.person))
+        })
+        .unwrap();
+    assert!(
+        owner
+            .with_current(room, |view| Ok(view
+                .peer()
+                .document("so.tilo.chat", "")
+                .is_some()))
+            .unwrap(),
+        "the enrolled device holds Chat's document"
+    );
+    for app in ["so.tilo.chat", "so.tilo.gallery"] {
+        signed_app_authorship(
+            &owner,
+            room,
+            now,
+            app,
+            tilo_action_policy::Subject::person(person.clone()),
+        );
+    }
+    assert!(
+        owner
+            .with_current(room, |view| Ok(view
+                .peer()
+                .document("so.tilo.gallery", "")
+                .is_none()))
+            .unwrap(),
+        "the comparison app's document never arrived"
+    );
+    let (here, here_authors) = access_as(&owner, room, &certificate, now, "so.tilo.chat");
+    let (waiting, waiting_authors) = access_as(&owner, room, &certificate, now, "so.tilo.gallery");
+    assert!(
+        here_authors && waiting_authors,
+        "the room authorizes this person in both apps"
+    );
+    assert_eq!(access_name(waiting), "author");
+    assert_eq!(
+        access_name(here),
+        access_name(waiting),
+        "having the document changes nothing about whether the app opens"
+    );
 }

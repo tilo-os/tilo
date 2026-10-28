@@ -46,12 +46,16 @@ fn shared_home_generations_rebuild_capacity_from_their_own_authenticated_artifac
         None,
         MediaSelections {
             sessions: None,
+            mail: None,
             home_applications: false,
             home: Some(HomeSource::review(&source).unwrap()),
             retained: None,
             planned_direct: None,
             applications: None,
             browser: Some(selected),
+
+            other_device: None,
+            tpm_target: None,
         },
         Zeroizing::new("a sufficiently long transport password".into()),
         "shared-home-capacity".into(),

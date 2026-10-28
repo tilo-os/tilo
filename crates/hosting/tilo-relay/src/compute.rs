@@ -193,10 +193,6 @@ impl ComputeJobLifecycle {
     }
 
     /// Apply one exact-next lifecycle update and validate terminal metadata.
-    ///
-    /// # Errors
-    ///
-    /// Returns an ordering, transition, or output validation error.
     pub fn advance(&mut self, sequence: u64, next: ComputeJobPhase) -> Result<(), ComputeError> {
         if sequence != self.sequence.saturating_add(1) {
             return Err(ComputeError::OutOfOrder);
@@ -580,11 +576,6 @@ where
     /// The two authenticated values are derived from the certified transport
     /// route rather than from the serialized job. A mismatch is rejected
     /// before package lookup, staging, or durable job-id claim.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid or ineligible request, package or
-    /// content-integrity failure, replay, sandbox failure, or invalid output.
     pub fn execute(
         &self,
         authenticated_requester: DeviceKey,
@@ -748,10 +739,6 @@ where
     }
 
     /// Read the current monotonic lifecycle for a claimed job.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the registry is unavailable or the job is unknown.
     pub fn lifecycle(
         &self,
         job_id: [u8; 16],
@@ -1542,11 +1529,9 @@ mod tests {
 
     #[test]
     fn compute_jobs_are_admitted_exactly_and_move_monotonically() {
-        // Phase `exact_eligible_worker_accepts_bounded_catalogued_job`.
         {
             assert_eq!(admit_compute_job(&spec(), &worker(), 200), Ok(()));
         }
-        // Phase `wrong_app_target_expiry_and_low_power_fail_closed`.
         {
             let mut candidate = worker();
             candidate.apps.clear();
@@ -1583,7 +1568,6 @@ mod tests {
                 Err(ComputeError::WorkerUnavailable)
             );
         }
-        // Phase `lifecycle_is_monotonic_and_terminal`.
         {
             let mut lifecycle = ComputeJobLifecycle::new([1; 16]).unwrap();
             lifecycle.advance(1, ComputeJobPhase::Running).unwrap();
@@ -1604,7 +1588,6 @@ mod tests {
                 Err(ComputeError::InvalidTransition)
             );
         }
-        // Phase `executor_hashes_outputs_and_rejects_replay`.
         {
             let root = tempfile::tempdir().unwrap();
             let content = MemoryContent::default();
@@ -1643,7 +1626,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn compute_launches_fail_closed_on_bad_routes_inputs_and_payloads() {
-        // Phase `route_gpu_and_requester_argv_fail_before_launch`.
         {
             let root = tempfile::tempdir().unwrap();
             let mut job = spec();
@@ -1671,7 +1653,6 @@ mod tests {
             );
             assert_eq!(launches.load(Ordering::Acquire), 0);
         }
-        // Phase `digest_mismatch_and_oversize_input_are_terminal_without_launch`.
         {
             let root = tempfile::tempdir().unwrap();
             let content = MemoryContent::default();
@@ -1714,7 +1695,6 @@ mod tests {
                 Err(ComputeExecutionError::InputsTooLarge)
             );
         }
-        // Phase `cancellation_and_timeout_are_monotonic_terminal_results`.
         {
             let root = tempfile::tempdir().unwrap();
             let mut cancelled_job = spec();
@@ -1771,7 +1751,6 @@ mod tests {
             );
             assert_eq!(result.lifecycle.sequence, 2);
         }
-        // Phase `modified_installed_payload_never_reaches_sandbox`.
         {
             let root = tempfile::tempdir().unwrap();
             let mut job = spec();
@@ -1795,7 +1774,6 @@ mod tests {
             );
             assert_eq!(launches.load(Ordering::Acquire), 0);
         }
-        // Phase `replaced_output_directory_cannot_traverse_staged_inputs`.
         {
             let root = tempfile::tempdir().unwrap();
             let content = MemoryContent::default();

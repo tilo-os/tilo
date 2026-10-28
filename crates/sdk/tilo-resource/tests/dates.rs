@@ -1,5 +1,3 @@
-//! Dates and times as model values.
-
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use tilo_resource::{Invoke, Model, Replica, resource};
 

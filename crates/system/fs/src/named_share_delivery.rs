@@ -58,11 +58,6 @@ struct EndpointBinding<'a> {
 
 impl NamedShareEnvelopeV1 {
     /// Bind a named-person invite to the endpoint that will deliver it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the invite, issuer, endpoint, or resulting
-    /// envelope is invalid or exceeds its encoded size bound.
     pub fn bind_at(
         endpoint: EndpointAddr,
         invite: FileInviteV1,
@@ -110,11 +105,6 @@ impl NamedShareEnvelopeV1 {
     }
 
     /// Validate this envelope for `local_person` at `now_ms`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid, expired, misaddressed, incorrectly
-    /// signed, or oversized envelopes.
     pub fn validate_for_at(
         &self,
         local_person: Ed25519PublicKey,
@@ -211,11 +201,6 @@ impl NamedShareOutbox {
     }
 
     /// Durably enqueue an envelope for a bounded set of certified devices.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid input, collisions, capacity exhaustion, or
-    /// persistence failure.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the lock is held across persist so the file and the in-memory map change together"
@@ -285,11 +270,6 @@ impl NamedShareOutbox {
     }
 
     /// Persist one delivery attempt and optional successful recipient device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unknown grant, an unlisted device, or a
-    /// persistence failure.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the lock is held across persist so the file and the in-memory map change together"
@@ -396,6 +376,7 @@ pub struct NamedShareInboxProtocol {
     credentials: PeerCredentials,
     revocations: Arc<RwLock<RevocationList>>,
     inbox: Arc<NamedShareInbox>,
+    now: fn() -> u64,
 }
 
 impl std::fmt::Debug for NamedShareInboxProtocol {
@@ -409,16 +390,24 @@ impl std::fmt::Debug for NamedShareInboxProtocol {
 
 impl NamedShareInboxProtocol {
     /// Construct an inbox protocol after checking its local identities agree.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the endpoint, device certificate, and inbox human
-    /// do not describe the same local identity.
     pub fn new(
         endpoint: Endpoint,
         credentials: PeerCredentials,
         revocations: Arc<RwLock<RevocationList>>,
         inbox: Arc<NamedShareInbox>,
+    ) -> Result<Self, NamedShareDeliveryError> {
+        Self::new_at(endpoint, credentials, revocations, inbox, unix_now_ms)
+    }
+
+    /// [`Self::new`] with the wall clock read by `now`: an accept runs on the
+    /// endpoint's own runtime threads, which a test's thread-scoped clock does
+    /// not reach.
+    fn new_at(
+        endpoint: Endpoint,
+        credentials: PeerCredentials,
+        revocations: Arc<RwLock<RevocationList>>,
+        inbox: Arc<NamedShareInbox>,
+        now: fn() -> u64,
     ) -> Result<Self, NamedShareDeliveryError> {
         if credentials.device_public_key() != *endpoint.id().as_bytes()
             || Ed25519PublicKey::from_bytes(credentials.user_public_key()) != inbox.local_person
@@ -430,6 +419,7 @@ impl NamedShareInboxProtocol {
             credentials,
             revocations,
             inbox,
+            now,
         })
     }
 
@@ -460,10 +450,7 @@ impl NamedShareInboxProtocol {
         {
             DeliveryResponseV1::Refused
         } else {
-            match self
-                .inbox
-                .accept_at(request.envelope.clone(), unix_now_ms())
-            {
+            match self.inbox.accept_at(request.envelope.clone(), (self.now)()) {
                 Ok(inserted) => DeliveryResponseV1::Accepted {
                     grant_id: request.envelope.invite.id,
                     inserted,
@@ -504,10 +491,6 @@ pub struct NamedShareDeliveryClient {
 
 impl NamedShareDeliveryClient {
     /// Construct a delivery client for the certified local endpoint.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the endpoint does not match the certified device.
     pub fn new(
         endpoint: Endpoint,
         credentials: PeerCredentials,
@@ -524,11 +507,6 @@ impl NamedShareDeliveryClient {
     }
 
     /// Deliver an envelope to one certified recipient endpoint.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on authentication, transport, recipient, protocol, or
-    /// timeout failure.
     pub async fn deliver(
         &self,
         recipient: EndpointAddr,
@@ -686,11 +664,6 @@ impl NamedShareInbox {
     }
 
     /// Validate and durably accept an envelope addressed to this inbox.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid input, collisions, capacity exhaustion, or
-    /// persistence failure.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the lock is held across persist so the file and the in-memory map change together"
@@ -918,7 +891,6 @@ mod tests {
 
     #[test]
     fn named_inbox_and_outbox_are_durable_idempotent_and_subject_bound() {
-        // Phase `durable_inbox_is_idempotent_private_and_subject_bound`.
         {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("inbox.json");
@@ -949,7 +921,6 @@ mod tests {
                 );
             }
         }
-        // Phase `bearer_invite_is_never_admitted_to_named_inbox`.
         {
             let person = Ed25519PublicKey::from_bytes(
                 ed25519_dalek::SigningKey::from_bytes(&[9; 32])
@@ -962,7 +933,6 @@ mod tests {
             };
             assert!(entry.validate_for_at(person, NOW).is_err());
         }
-        // Phase `outbox_survives_offline_attempt_and_restart_until_acceptance`.
         {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("outbox.json");
@@ -1038,6 +1008,16 @@ mod tests {
         }
     }
 
+    /// This test's wall clock, read by the inbox the delivering endpoint
+    /// accepts through: the accept runs on the endpoint's own threads, which a
+    /// thread-scoped pin does not reach. The invite's window then stands still,
+    /// so a slow run cannot outlast it.
+    fn test_now() -> u64 {
+        TEST_WALL.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    static TEST_WALL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
     #[tokio::test]
     async fn authenticated_delivery_is_durable_idempotent_and_human_bound() {
         let owner = party(21).await;
@@ -1045,12 +1025,15 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let person = Ed25519PublicKey::from_bytes(recipient.credentials.user_public_key());
         let inbox_path = temp.path().join("network-inbox.json");
-        let inbox = Arc::new(NamedShareInbox::open_at(&inbox_path, person, unix_now_ms()).unwrap());
-        let protocol = NamedShareInboxProtocol::new(
+        let at = unix_now_ms();
+        TEST_WALL.store(at, std::sync::atomic::Ordering::Relaxed);
+        let inbox = Arc::new(NamedShareInbox::open_at(&inbox_path, person, at).unwrap());
+        let protocol = NamedShareInboxProtocol::new_at(
             recipient.endpoint.clone(),
             recipient.credentials.clone(),
             Arc::new(RwLock::new(RevocationList::new())),
             Arc::clone(&inbox),
+            test_now,
         )
         .unwrap();
         let router = Router::builder(recipient.endpoint.clone())
@@ -1062,13 +1045,13 @@ mod tests {
                 record_id: fs_protocol::FileRecordId::new(),
                 subject: FileInviteSubject::Person(person),
                 permission: FilePermission::View,
-                expires_at_ms: Some(unix_now_ms() + 60_000),
+                expires_at_ms: Some(at + 60_000),
                 max_redemptions: None,
             },
             &owner.root,
         )
         .unwrap();
-        let bound_at = unix_now_ms();
+        let bound_at = at;
         let envelope =
             NamedShareEnvelopeV1::bind_at(owner.endpoint.addr(), invite, &owner.root, bound_at)
                 .unwrap();

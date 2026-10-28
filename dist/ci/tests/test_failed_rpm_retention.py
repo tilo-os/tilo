@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -102,15 +103,22 @@ class FailedRpmRetentionTests(unittest.TestCase):
                 retention.retain(self.root, self.output, "lint-rpm", "1")
         self.assertFalse(self.output.exists())
 
-    def test_failed_artifact_never_feeds_host_session_and_has_short_retention(self):
-        workflow = (CI.parents[1] / ".forgejo/workflows/host-session-e2e.yml").read_text()
-        failed = workflow.split("- name: Retain source-bound RPMs", 1)[1].split("  host-session:", 1)[0]
-        self.assertIn("failure() && !inputs.rpm-artifact && !inputs.rpm-source-run", failed)
-        self.assertIn("retention-days: 2", failed)
-        self.assertIn("github.run_attempt", failed)
-        self.assertIn("/failed-rpms/*", failed)
-        accepted = workflow.split("  host-session:", 1)[1]
-        self.assertNotIn("failed-fedora", accepted)
+    def test_failed_artifact_never_feeds_host_session(self):
+        # t keeps a check's outputs only when it passes, and a lane with a failed userspace fails
+        # as a whole, so the login test (which needs the lane) never sees a failed lane's RPMs.
+        lane = (CI / "package-lane.sh").read_text()
+        self.assertIn('|| failed+=("$distro")', lane)
+        self.assertIn("if ((${#failed[@]})); then", lane)
+        self.assertIn("exit 1", lane.split("if ((${#failed[@]})); then", 1)[1])
+        products = tomllib.loads((CI.parents[1] / "tools/ci/products.toml").read_text())
+        checks = {check["name"]: check for matrix in products["matrix"] for check in matrix["check"]}
+        session = checks["host-session-e2e"]
+        self.assertEqual(session["needs"], ["desktop-package-amd64"])
+        self.assertIn('rpms=dist/ci-output/fedora-44-amd64\n', session["run"])
+        self.assertNotIn("failed", session["run"])
+        harness = (CI.parents[1] / "dist/session/vm-e2e/run.py").read_text()
+        self.assertEqual(harness.count('.glob("*.rpm")'), 2)
+        self.assertNotIn("rglob", harness)
 
 
 if __name__ == "__main__":

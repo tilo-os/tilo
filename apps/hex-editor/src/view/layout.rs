@@ -3,8 +3,8 @@
 //!
 //! Paint, hit-testing and keyboard paging all read the same [`Geo`], so a
 //! byte's painted cell is its click target at every text scale. The view
-//! recomputes it whenever the window, the theme or the chrome (the inspector
-//! drawer, the find band) changes, and from the draw path before painting.
+//! recomputes it whenever the window, the theme or the inspector drawer
+//! changes, and from the draw path before painting.
 
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -14,7 +14,7 @@ use ui::widget::{ControlSize, SegmentedFace};
 use vello::kurbo::{Point, Rect};
 
 use super::HexView;
-use crate::model::{EditMode, Endian};
+use crate::model::Endian;
 
 /// Most bytes a row ever shows, and the fewest.
 const MAX_BYTES_PER_ROW: usize = 64;
@@ -30,18 +30,8 @@ const GAP_SCALE: (f64, f64) = (0.5, 2.0);
 /// Bytes between the extra group gaps of the hex columns.
 pub(super) const GROUP: usize = 8;
 
-/// Labels of the edit-mode strip, in segment order (see [`EditMode`]).
-pub(super) const MODE_LABELS: [&str; 2] = ["Overwrite", "Insert"];
 /// Labels of the endianness strip, in segment order (see [`Endian`]).
 pub(super) const ENDIAN_LABELS: [&str; 2] = ["Little endian", "Big endian"];
-
-/// Segment index of an edit mode in the strip.
-pub(super) fn mode_index(mode: EditMode) -> usize {
-    match mode {
-        EditMode::Overwrite => 0,
-        EditMode::Insert => 1,
-    }
-}
 
 /// Segment index of an endianness in the strip.
 pub(super) fn endian_index(endian: Endian) -> usize {
@@ -145,10 +135,6 @@ impl RowPlan {
 pub(super) struct Geo {
     /// Everything but a docked inspector.
     pub content: Rect,
-    /// The content's header row: the file name and the edit-mode strip.
-    pub header: Rect,
-    /// The find band, or [`Rect::ZERO`] while find is closed.
-    pub find: Rect,
     /// The row of column labels above the grid.
     pub column_head: Rect,
     /// The rows of bytes.
@@ -163,22 +149,12 @@ pub(super) struct Geo {
     pub inspector_visible: bool,
     /// Whether the inspector docks beside the content (rather than floating).
     pub docked: bool,
-    /// Height of the header row, the same for the content and the inspector.
+    /// Height of the inspector's heading row.
     pub header_h: f64,
-    /// The show/hide control of the inspector.
-    pub toggle: Rect,
-    /// The window's History control, in the trailing corner of the header
-    /// row that reaches the window's edge, or `Rect::ZERO`.
-    pub history: Rect,
-    /// The edit-mode strip.
-    pub mode: Rect,
     /// The endianness strip, at the top of the inspector.
     pub endian: Rect,
     /// Where the inspector's properties start.
     pub properties: Rect,
-    /// Where the status bubble and toasts float: the content between the
-    /// header and the status bar.
-    pub bubble_area: Rect,
     /// Row pitch and the measured line height inside it.
     pub row_h: f64,
     pub line_h: f64,
@@ -219,14 +195,12 @@ impl Geo {
         self.ascii_x0 + c as f64 * self.ascii_pitch
     }
 
-    /// The column under `x` in the hex region.
     pub fn hex_column_at(&self, x: f64, bytes_per_row: usize) -> Option<usize> {
         let half = self.byte_gap / 2.0;
         (0..bytes_per_row)
             .find(|&c| x >= self.hex_x(c) - half && x < self.hex_x(c) + self.byte_w + half)
     }
 
-    /// The column under `x` in the ASCII region.
     pub fn ascii_column_at(&self, x: f64, bytes_per_row: usize) -> Option<usize> {
         if x < self.ascii_x0 || x >= self.ascii_x1 || self.ascii_pitch <= 0.0 {
             return None;
@@ -253,19 +227,17 @@ impl HexView {
         self.cell = cell;
         let mut geo = Geo::default();
         self.place_inspector(&mut geo, theme, tick);
-        self.place_header_controls(&mut geo, tr, theme);
         self.place_bands(&mut geo, theme);
         self.place_grid(&mut geo, cell, theme);
         Self::place_inspector_controls(&mut geo, theme);
         self.visible_rows = geo.visible_rows;
-        self.mode_group.apply_layout_external(geo.mode);
         self.endian_group.apply_layout_external(geo.endian);
         self.geo = geo;
     }
 
     /// The inspector is the trailing region of the window, docked beside the
     /// content when there is room and a floating drawer when not. Resolves
-    /// the content, the panel, the header row and the panel's toggle.
+    /// the content, the panel and the panel's heading row.
     fn place_inspector(&mut self, geo: &mut Geo, theme: &Theme, tick: bool) {
         let sp = &theme.tokens.spacing;
         let outer = self.rect;
@@ -305,105 +277,28 @@ impl HexView {
             && (docked || panel.x0 < outer.x1 - f64::from(sp.s1))
             && (self.drawer.is_open() || self.drawer.is_animating());
 
-        // The header row: the tallest control with an `s3` inset, never
-        // shorter than the shell's header, so the file name sits where every
-        // other window's title does.
+        // The inspector's heading row: the tallest control with an `s3`
+        // inset, never shorter than the shell's header.
         let inset = f64::from(sp.s3);
         let control = ControlSize::Regular.height(theme);
         let header_h = f64::from(theme.tokens.metrics.header_height).max(control + 2.0 * inset);
-
-        // The toggle rides the trailing edge of whichever header holds it:
-        // the panel's when the panel shows, the window's otherwise.
-        let target = f64::from(theme.tokens.metrics.min_pointer_target);
-        let right = if visible && (docked || self.drawer.is_open()) {
-            panel.x1
-        } else {
-            outer.x1
-        };
-        let top = if visible && !docked {
-            panel.y0
-        } else {
-            outer.y0
-        };
-        geo.toggle = if has_inspector {
-            let y0 = top + f64::midpoint(0.0, header_h - target);
-            Rect::new(right - inset - target, y0, right - inset, y0 + target)
-        } else {
-            Rect::ZERO
-        };
-        // The window's History control stands in the top-trailing corner:
-        // the docked inspector's header, else the content's; a toggle in the
-        // same header steps in beside it.
-        geo.history = if self.history.is_shown() {
-            let edge = if visible && docked {
-                panel.x1
-            } else {
-                outer.x1
-            };
-            let y0 = outer.y0 + f64::midpoint(0.0, header_h - target);
-            Rect::new(edge - inset - target, y0, edge - inset, y0 + target)
-        } else {
-            Rect::ZERO
-        };
-        if geo.history.width() > 0.0
-            && geo.toggle.width() > 0.0
-            && (geo.toggle.x1 - geo.history.x1).abs() < 0.5
-            && (geo.toggle.y0 - geo.history.y0).abs() < 0.5
-        {
-            let step = target + f64::from(sp.s2);
-            geo.toggle = Rect::new(
-                geo.toggle.x0 - step,
-                geo.toggle.y0,
-                geo.toggle.x1 - step,
-                geo.toggle.y1,
-            );
-        }
         geo.content = content;
         geo.inspector = panel;
         geo.inspector_visible = visible;
         geo.docked = docked;
         geo.header_h = header_h;
-        geo.header = Rect::new(content.x0, outer.y0, content.x1, outer.y0 + header_h);
     }
 
-    /// The header's edit-mode strip, right-aligned in the content header and
-    /// beside the toggle when the toggle sits in this header.
-    fn place_header_controls(&self, geo: &mut Geo, tr: &mut TextRenderer, theme: &Theme) {
-        if !self.has_file {
-            geo.mode = Rect::ZERO;
-            return;
-        }
-        let sp = &theme.tokens.spacing;
-        let strip_h = SegmentedFace::height(ControlSize::Small, theme);
-        let mode_w = SegmentedFace::intrinsic_width(&MODE_LABELS, ControlSize::Small, tr, theme);
-        let toggle_in_content = !(geo.inspector_visible && geo.docked);
-        let right = if toggle_in_content {
-            geo.toggle.x0 - f64::from(sp.s2)
-        } else {
-            geo.header.x1 - f64::from(sp.s3)
-        };
-        let top = geo.header.y0 + f64::midpoint(0.0, geo.header_h - strip_h);
-        geo.mode = Rect::new(right - mode_w, top, right, top + strip_h);
-    }
-
-    /// The find band under the header and the status bar at the foot.
+    /// The grid's region and the status bar at the foot.
     fn place_bands(&self, geo: &mut Geo, theme: &Theme) {
         let outer = self.rect;
         let content = geo.content;
-        let mut top = geo.header.y1;
-        geo.find = if self.find_open {
-            let h = self.find_bar.height(theme);
-            let band = Rect::new(content.x0, top, content.x1, top + h);
-            top += h;
-            band
-        } else {
-            Rect::ZERO
-        };
-        let (region, status) =
-            ui::chrome::status_bar::split(Rect::new(content.x0, top, content.x1, outer.y1), theme);
+        let (region, status) = ui::chrome::status_bar::split(
+            Rect::new(content.x0, outer.y0, content.x1, outer.y1),
+            theme,
+        );
         geo.status = status;
         geo.grid = region;
-        geo.bubble_area = Rect::new(content.x0, geo.header.y1, content.x1, status.y0);
     }
 
     /// The grid: how many bytes a row holds so the rows fill the content

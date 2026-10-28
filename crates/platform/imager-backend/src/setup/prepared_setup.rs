@@ -65,6 +65,8 @@ pub use planned_btrfs_resize::PlannedBtrfsResize;
 pub const IDENTITY_FILE: &str = "identity.sealed";
 pub const ACCOUNTS_FILE: &str = "accounts.sealed";
 pub const SERVICE_SESSIONS_FILE: &str = "service-sessions.sealed";
+pub const MAIL_FILE_PREFIX: &str = "mail-";
+pub const MAIL_FILE_SUFFIX: &str = ".sealed";
 /// Authenticated retained-files metadata, never authority to mount an
 /// arbitrary path. Installation must re-attest the original volume and home.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -160,6 +162,52 @@ pub struct Manifest {
     pub browser: Option<BrowserHandoff>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_sessions: Option<super::service_sessions::Declaration>,
+    /// Selected Thunderbird accounts, folders, address books and calendars.
+    /// Each artifact is authenticating ciphertext inside this package; the
+    /// declaration names only opaque source IDs and never a path or address.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mail: Vec<MailHandoff>,
+}
+/// One selected-mail artifact in the prepared package.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MailHandoff {
+    pub filename: String,
+    pub selection: super::account_transfer::ThunderbirdSelection,
+    pub sealed_bytes: u64,
+    pub ciphertext_sha256: [u8; 32],
+}
+impl MailHandoff {
+    fn validate(&self) -> io::Result<()> {
+        self.selection.validate_shape().map_err(|_| invalid())?;
+        let name = self.filename.as_bytes();
+        if !name.starts_with(MAIL_FILE_PREFIX.as_bytes())
+            || !name.ends_with(MAIL_FILE_SUFFIX.as_bytes())
+            || self.filename.len() > 96
+            || self
+                .filename
+                .bytes()
+                .any(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.')))
+            || self.sealed_bytes == 0
+            || self.sealed_bytes > super::account_transfer::MAX_THUNDERBIRD_ARTIFACT as u64
+            || self.sealed_bytes > LIMITS.plaintext_bytes
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+    fn verify_ciphertext(
+        &self,
+        artifact: &super::account_transfer::PasswordSealedThunderbird,
+    ) -> io::Result<()> {
+        self.validate()?;
+        if self.sealed_bytes != u64::try_from(artifact.as_bytes().len()).map_err(|_| invalid())?
+            || self.ciphertext_sha256 != <[u8; 32]>::from(Sha256::digest(artifact.as_bytes()))
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
 }
 /// Selected browser data authenticated with the same identity and setup as installation.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -385,6 +433,7 @@ impl Manifest {
             portable_flatpak: None,
             browser: None,
             service_sessions: None,
+            mail: Vec::new(),
         };
         manifest.validate()?;
         Ok(manifest)
@@ -468,7 +517,9 @@ impl Manifest {
                 || offline.identity_public_key != self.identity_public_key
                 || offline.source.categories.flatpak != home.applications
                 || (!offline.source.categories.accounts
-                    && (!self.account_ids.is_empty() || self.service_sessions.is_some()))
+                    && (!self.account_ids.is_empty()
+                        || self.service_sessions.is_some()
+                        || !self.mail.is_empty()))
                 || self.retained_home.is_some()
             {
                 return Err(invalid());
@@ -486,7 +537,9 @@ impl Manifest {
                 || applications.setup_binding != self.setup_binding
                 || applications.identity_public_key != self.identity_public_key
                 || (!applications.source().categories.accounts
-                    && (!self.account_ids.is_empty() || self.service_sessions.is_some()))
+                    && (!self.account_ids.is_empty()
+                        || self.service_sessions.is_some()
+                        || !self.mail.is_empty()))
             {
                 return Err(invalid());
             }
@@ -498,6 +551,13 @@ impl Manifest {
                 .iter()
                 .any(|session| self.account_ids.contains(&session.id))
             {
+                return Err(invalid());
+            }
+        }
+        let mut mail_files = BTreeSet::new();
+        for mail in &self.mail {
+            mail.validate()?;
+            if !mail_files.insert(mail.filename.as_str()) {
                 return Err(invalid());
             }
         }
@@ -604,10 +664,13 @@ fn members(pin: &Arc<PinnedDirectory>, manifest: &Manifest) -> io::Result<()> {
     if manifest.service_sessions.is_some() {
         expected.insert(std::ffi::OsString::from(SERVICE_SESSIONS_FILE));
     }
+    for mail in &manifest.mail {
+        expected.insert(std::ffi::OsString::from(mail.filename.as_str()));
+    }
     let mut found = BTreeSet::new();
     for entry in directory.entries()? {
         found.insert(entry?.file_name());
-        if found.len() > 4 {
+        if found.len() > 4 + manifest.mail.len() {
             return Err(invalid());
         }
     }
@@ -624,6 +687,10 @@ pub struct PreparedSetupReview {
     identity_hash: [u8; 32],
     account_artifact: Option<PasswordSealedAccounts>,
     session_artifact: Option<PasswordSealedAccounts>,
+    mail_artifacts: Vec<(
+        MailHandoff,
+        super::account_transfer::PasswordSealedThunderbird,
+    )>,
 }
 impl PreparedSetupReview {
     /// Authenticate the whole outer package, extract exclusively into a fresh
@@ -708,6 +775,15 @@ impl PreparedSetupReview {
             }
             Some(artifact)
         };
+        let mut mail_artifacts = Vec::with_capacity(manifest.mail.len());
+        for declaration in &manifest.mail {
+            let artifact = super::account_transfer::PasswordSealedThunderbird::from_bytes(
+                &bounded_file(&pin, &declaration.filename, LIMITS.plaintext_bytes)?,
+            )
+            .map_err(|_| invalid())?;
+            declaration.verify_ciphertext(&artifact)?;
+            mail_artifacts.push((declaration.clone(), artifact));
+        }
         let session_artifact = if let Some(declaration) = &manifest.service_sessions {
             let artifact = PasswordSealedAccounts::from_bytes(&bounded_file(
                 &pin,
@@ -735,6 +811,7 @@ impl PreparedSetupReview {
             identity_hash,
             account_artifact,
             session_artifact,
+            mail_artifacts,
         })
     }
     /// Authenticate retained pending metadata for source read admission only.
@@ -821,6 +898,13 @@ impl PreparedSetupReview {
         }
         if let Some(artifact) = &self.session_artifact {
             if bounded_file(&self.pin, SERVICE_SESSIONS_FILE, LIMITS.plaintext_bytes)?
+                != artifact.as_bytes()
+            {
+                return Err(invalid());
+            }
+        }
+        for (declaration, artifact) in &self.mail_artifacts {
+            if bounded_file(&self.pin, &declaration.filename, LIMITS.plaintext_bytes)?
                 != artifact.as_bytes()
             {
                 return Err(invalid());
@@ -1051,6 +1135,50 @@ impl PreparedSetupReview {
             (None, None) => Ok(()),
             _ => Err(invalid()),
         }
+    }
+    /// Import exactly the reviewed Thunderbird selection into the target
+    /// user's canonical Mail accounts and cache below `target_home`. The
+    /// password authenticates each artifact, the setup binding ties it to this
+    /// package, and the authenticated declaration is the exact expected
+    /// selection, so a caller cannot widen it.
+    ///
+    /// # Errors
+    /// Refuses changed artifacts, bindings, private target grants, conflicts or
+    /// a selection the authenticated bundle does not match.
+    pub fn import_mail(
+        &self,
+        target_home: &Path,
+        password: &[u8],
+    ) -> io::Result<Vec<super::account_transfer::ThunderbirdImportReceipt>> {
+        self.require_completed_export()?;
+        if self.mail_artifacts.len() != self.manifest.mail.len() {
+            return Err(invalid());
+        }
+        if self.manifest.mail.is_empty() {
+            return Ok(Vec::new());
+        }
+        // The package itself lives below this Home, so an ancestor-overlap
+        // refusal would reject the real layout. The canonical import below
+        // re-checks the actual target roots, ownership and non-redirection.
+        PinnedDirectory::open_absolute(target_home)?.validate_destination()?;
+        let mut receipts = Vec::with_capacity(self.mail_artifacts.len());
+        for (declaration, artifact) in &self.mail_artifacts {
+            declaration.verify_ciphertext(artifact)?;
+            let (sealed, key) = artifact
+                .open(password, self.manifest.setup_binding.as_bytes())
+                .map_err(|_| invalid())?;
+            let receipt = super::account_transfer::import_selected(
+                target_home,
+                &sealed,
+                &key,
+                self.manifest.setup_binding.as_bytes(),
+                &declaration.selection,
+            )
+            .map_err(|_| invalid())?;
+            receipts.push(receipt);
+        }
+        self.validate()?;
+        Ok(receipts)
     }
     /// Reseal exact consented credentials under the target user's canonical
     /// vault. `config_root` is their private `.config/tilo`, never a live source.

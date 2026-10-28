@@ -69,7 +69,6 @@ impl InteractionActor {
         }
     }
 
-    /// The same actor, acting for `person`.
     #[must_use]
     pub fn acting_for(mut self, person: impl Into<String>) -> Self {
         self.for_person = Some(person.into());
@@ -237,11 +236,6 @@ impl SemanticInteraction {
     /// Validate size and semantic bounds before accepting an untrusted update.
     /// Unknown additive object fields remain serde-compatible; a semantic
     /// change uses a new `version` and is rejected here by older readers.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first bounded-field, range, version, or encoded-size
-    /// violation found in the update.
     pub fn validate(&self) -> Result<(), InteractionViolation> {
         if self.version != INTERACTION_VERSION {
             return Err(issue("version", "unsupported interaction version"));

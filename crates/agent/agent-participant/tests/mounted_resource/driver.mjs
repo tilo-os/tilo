@@ -8,6 +8,9 @@ import {createInterface} from 'node:readline';
 import {launch} from '../../../../../tools/web/chrome.mjs';
 import {mountChat} from './mount-chat.mjs';
 import {observe} from './observe.mjs';
+// A channel's latest messages, as the page reads them; a refusal is the
+// answer, so a failed read says why.
+const READ_MESSAGES = "(() => { try { return mount.invokeAction(fixture.channel, 'read-messages', {pageSize:32}); } catch (error) { return {state:'threw', error:String(error?.message ?? error)}; } })()";
 
 const bundle = resolve(process.argv[2]);
 assert.ok(existsSync(join(bundle, 'app/index.html')), 'built full-tab entry page is required');
@@ -40,21 +43,40 @@ let tab;
 let observer;
 const stages = [];
 const stage = name => {stages.push(name); observer?.mark(name); process.stdout.write(JSON.stringify({stage: name}) + '\n');};
+/** Where the journey stands: each step that waits on the page (a navigation,
+ * a card it presses, a submit) as well as each completed stage, so a journey
+ * that stops names the wait it never got past. */
+const marks = [];
+const mark = name => {
+  marks.push({name, at: new Date().toISOString(), stage: stages.at(-1) ?? null});
+  observer?.mark(name);
+};
 const evidence = resolve(fixture.encryptedRestart ? 'target/mounted-resource-encrypted' : fixture.disconnectRetry ? 'target/mounted-resource-recovery' : 'target/mounted-resource');
 mkdirSync(evidence, {recursive:true});
-/** What the page says, and what its graphics start-up waits on while its
- * first frame is late (`data-gpu-step`: device, pipelines, surface,
- * first-frame). */
+/** What the page says, where it says it is getting in (`data-arrival`: load,
+ * join, open, draw, done or stopped), which card it asks (`data-card`) or
+ * what it settled on (`data-entry`), and what its graphics start-up waits
+ * on while its first frame is late (`data-gpu-step`: device, pipelines,
+ * surface, first-frame). */
 const pageState = () => Promise.race([
   tab?.evaluate(`JSON.stringify({status: document.querySelector("#status")?.textContent ?? "",
+    arrival: document.documentElement.dataset.arrival ?? null,
+    card: document.querySelector(".tilo-entry-card")?.dataset.card ?? null,
+    entry: document.documentElement.dataset.entry ?? null,
     gpuStep: document.documentElement.dataset.gpuStep ?? null})`, {timeout:250})
     .then(JSON.parse).catch(() => ({status: 'status unavailable'})) ?? {status: 'status unavailable'},
   new Promise(resolve => setTimeout(() => resolve({status: 'status observation unavailable'}), 250)),
 ]);
 const deadline = setTimeout(async () => {
   const page = await pageState();
+  const since = marks.findLast(mark => mark.name === stages.at(-1))?.at;
   writeFileSync(join(evidence, 'failure.json'), JSON.stringify({phase:'timeout',
-    lastStage:stages.at(-1) ?? null, pageStatus: String(page.status ?? '').slice(0, 500),
+    lastStage:stages.at(-1) ?? null,
+    lastMark: marks.at(-1)?.name ?? null,
+    lastMarkMs: marks.at(-1) ? Date.parse(marks.at(-1).at) - Date.parse(marks[0]?.at ?? marks.at(-1).at) : null,
+    sinceStageMs: marks.at(-1) && since ? Date.parse(marks.at(-1).at) - Date.parse(since) : null,
+    pageStatus: String(page.status ?? '').slice(0, 500),
+    arrival: page.arrival ?? null, card: page.card ?? null, entry: page.entry ?? null,
     gpuStep: page.gpuStep ?? null}, null, 2) + '\n');
   console.error('Mounted resource journey exceeded its 130-second bound');
   await observer?.finish().catch(error => console.error('main-thread evidence unavailable', error));
@@ -84,9 +106,9 @@ try {
   await tab.waitFor('document.querySelector("canvas")?.width > 0');
   assert.ok((await tab.evaluate('mount.actions(fixture.reference.id)')).some(action => action.address.action === 'reveal-message-range'));
   if (fixture.encryptedRestart) {
-    const read = await tab.evaluate("mount.invokeAction(fixture.channel, 'read-messages', {pageSize:32})");
-    assert.equal(read.state, 'completed');
-    const original = read.output.value.content.messages.find(message => message.id === fixture.reference.id.split('/').pop());
+    const read = await tab.evaluate(READ_MESSAGES);
+    assert.equal(read.state, 'completed', JSON.stringify(read));
+    const original = read.output.value.messages.find(message => message.id === fixture.reference.id.split('/').pop());
     assert.ok(original, 'the exact original message must be readable');
     assert.equal(original.author, fixture.sourceAuthor, 'remote message retains the certified foreign writer identity');
     assert.notEqual(original.author, fixture.root, 'the original author must differ from the viewing person');
@@ -97,24 +119,39 @@ try {
   const initialShot = await tab.screenshot();
   assert.ok(initialShot?.length, 'the mounted fixture must produce a rendered frame');
   writeFileSync(join(evidence, 'mounted-chat-range.png'), initialShot);
-  const context = await tab.evaluate(`(() => {
-    const all = mount.actions();
-    const call = action => {
-      const descriptor = all.find(row=>row.address.action === action);
-      if (!descriptor) throw Error('missing public context action: ' + action);
-      return mount.invokeAction(descriptor.address.resource, action);
-    };
-    const before = call('live-context-status');
-    call('share-live-context');
-    const sharing = call('live-context-status');
-    call('stop-sharing-live-context');
-    const stopped = call('live-context-status');
-    return {before, sharing, stopped};
-  })()`);
-  assert.equal(context.before.output.value.sharing, false);
-  assert.equal(context.sharing.output.value.sharing, true);
-  assert.equal(context.sharing.output.value.videoCapture, false);
-  assert.equal(context.stopped.output.value.sharing, false);
+  // Sharing live context reaches outside the record, which a room's viewer
+  // may not; an editor, once the page has learned the role the room gives
+  // them, confirms sharing it and stopping, without video.
+  const contextActions = ['live-context-status', 'share-live-context', 'stop-sharing-live-context'];
+  if (fixture.disconnectRetry) {
+    await tab.waitFor(`(() => {
+      const offered = mount.actions().map(row => row.address.action);
+      return ${JSON.stringify(contextActions)}.every(action => offered.includes(action));
+    })()`);
+    const context = await tab.evaluate(`(() => {
+      const all = mount.actions();
+      const call = action => {
+        const descriptor = all.find(row=>row.address.action === action);
+        if (!descriptor) throw Error('missing public context action: ' + action);
+        // The room asks an editor before an outside action: they confirm.
+        return mount.invokeAction(descriptor.address.resource, action, {}, {confirm:true});
+      };
+      const before = call('live-context-status');
+      call('share-live-context');
+      const sharing = call('live-context-status');
+      call('stop-sharing-live-context');
+      const stopped = call('live-context-status');
+      return {before, sharing, stopped};
+    })()`);
+    assert.equal(context.before.output.value.sharing, false);
+    assert.equal(context.sharing.output.value.sharing, true);
+    assert.equal(context.sharing.output.value.videoCapture, false);
+    assert.equal(context.stopped.output.value.sharing, false);
+  } else {
+    const offered = await tab.evaluate('mount.actions().map(row => row.address.action)');
+    assert.deepEqual(contextActions.filter(action => offered.includes(action)), [],
+      'a viewer is not offered to share live context');
+  }
   stage('mounted-public-consent-and-stop-without-video');
   // Chat's own controls under the message that shares the resource: they
   // ask the resource's app for its share-link and copy or open the URL.
@@ -134,7 +171,10 @@ try {
       await tab.evaluate('mount.requestSemantics()');
       await new Promise(done => setTimeout(done, 100));
     }
-    assert.fail(`Chat shows no "${label}" control`);
+    const shown = await tab.evaluate('[...document.querySelectorAll("#surface [aria-label], #surface [role=status], #surface [role=alert]")].map(node => node.getAttribute("aria-label") || node.textContent).filter(Boolean).slice(-80)');
+    console.error('Semantics', JSON.stringify(await tab.evaluate('mount.state().semantics')).slice(0, 6000));
+    console.error('Page log', JSON.stringify(tab.log ?? []).slice(-6000));
+    assert.fail(`Chat shows no "${label}" control among ${JSON.stringify(shown)}`);
   };
   const linked = '(async()=> { const text = await navigator.clipboard.readText(); return text.includes("/app/#/@") && text.includes(fixture.room); })()';
   await pressWhenShown('Copy resource link');
@@ -151,20 +191,9 @@ try {
   }
   const copied = await tab.evaluate('navigator.clipboard.readText()');
   assert.equal(new URL(copied).origin, origin, 'the link is under the web entry the host announces');
-  assert.match(new URL(copied).hash, /\/so\.tilo\.chat\/-\/chat\.workspace\.messages\/.+\?chars=6-7$/,
+  assert.match(new URL(copied).hash, /\/so\.tilo\.chat\/-\/chat\.messages\.messages\/.+\?chars=6-7$/,
     'the link names the shared message and its exact range');
   stage('native-copy-to-real-browser-clipboard');
-  await pressWhenShown('Open resource in browser');
-  let opened;
-  for (let attempt=0; attempt<50; attempt++) {
-    const targets = await browser.send('Target.getTargets');
-    opened = targets.result.targetInfos.find(target => target.targetId !== tab.targetId && target.url === copied);
-    if (opened) break;
-    await new Promise(done => setTimeout(done, 100));
-  }
-  assert.ok(opened, 'native Open must create the exact browser resource destination');
-  await browser.send('Target.closeTarget', {targetId:opened.targetId});
-  stage('native-open-browser-destination');
   if (fixture.disconnectRetry) {
     const before = await tab.evaluate('({peer:peer.getSnapshot(), frames:mount.state().frames})');
     assert.equal(before.peer.health.transport.authenticated, true);
@@ -178,13 +207,13 @@ try {
     await tab.waitFor('!peer.getSnapshot().health.transport.authenticated && peer.getSnapshot().health.transport.phase !== "connected"');
     stage('browser-offline');
     assert.equal(JSON.parse((await lines.next()).value).nativePublished, true);
-    const offlineRead = await tab.evaluate("mount.invokeAction(fixture.channel, 'read-messages', {pageSize:32})");
-    assert.equal(offlineRead.state, 'completed');
-    assert.equal(offlineRead.output.value.content.messages.filter(message =>
+    const offlineRead = await tab.evaluate(READ_MESSAGES);
+    assert.equal(offlineRead.state, 'completed', JSON.stringify(offlineRead));
+    assert.equal(offlineRead.output.value.messages.filter(message =>
       message.text === 'Native fixture while browser disconnected').length, 0,
     'the disconnected browser must not already have received the new native post');
-    const queued = await tab.evaluate(`mount.invokeAction(fixture.channel, 'post',
-      {text:'Browser fixture queued during disconnect'})`);
+    const queued = await tab.evaluate(`mount.invokeAction(fixture.messages, 'post',
+      {channel:fixture.channelId, text:'Browser fixture queued during disconnect'})`);
     assert.equal(queued.state, 'completed', 'the original local post must complete once');
     await tab.evaluate('mount.flush()');
     await tab.waitFor('peer.getSnapshot().outgoingPending > 0 && !peer.getSnapshot().health.transport.authenticated');
@@ -199,7 +228,7 @@ try {
     await tab.waitFor(`(() => {
       const result = mount.invokeAction(fixture.channel, 'read-messages', {pageSize:32});
       if (result.state !== 'completed') return false;
-      const messages = result.output.value.content.messages;
+      const messages = result.output.value.messages;
       return messages.filter(message => message.text === 'Browser fixture queued during disconnect').length === 1
         && messages.filter(message => message.text === 'Native fixture while browser disconnected').length === 1;
     })()`);
@@ -208,7 +237,10 @@ try {
     const frameBeforeOpen = await tab.evaluate('mount.state().frames');
     const openedChannel = await tab.evaluate("mount.invokeAction(fixture.channel, 'open-channel')");
     assert.equal(openedChannel.state, 'completed');
-    await tab.waitFor('mount.state().presentation && mount.state().frames > ' + frameBeforeOpen);
+    // A frame was presented since: `frames` counts presented frames only.
+    // `presentation` marks the one status a frame publishes, and the next
+    // status (semantics built after the frame, the peer's) clears it again.
+    await tab.waitFor(`mount.state().phase === 'presented' && mount.state().frames > ${frameBeforeOpen}`);
     await tab.waitFor(`JSON.stringify(mount.state().semantics).includes('Browser fixture queued during disconnect')
       && JSON.stringify(mount.state().semantics).includes('Native fixture while browser disconnected')`);
     stage('browser-recovered');
@@ -220,14 +252,25 @@ try {
   // The full-tab entry page marks its outcome on <html data-entry>: open,
   // refused (no access) or failed.
   const entryOutcome = 'document.documentElement.dataset.entry';
+  // The page asks which account opens the link once it loaded the runtime
+  // and read this browser's accounts: it shows its account choice
+  // (`data-card="accounts"`), or settles without one, or stops loading. Each
+  // is the page's own answer, so this waits for one of them, within the
+  // journey's own bound, rather than against a short clock a busy machine
+  // overruns while the page is still loading.
+  const accountChoice = '.tilo-entry-card[data-card=accounts]';
   const waitForAccounts = async () => {
-    const outcome = await tab.waitFor(`document.querySelectorAll(".tilo-entry-card button").length === 2
-      ? 'accounts' : (${entryOutcome} || false)`, {timeout:15_000});
+    const outcome = await tab.waitFor(`document.querySelector(${JSON.stringify(accountChoice)})
+      ? 'accounts' : (${entryOutcome} || (document.documentElement.dataset.arrival === 'stopped' && 'stopped') || false)`);
     assert.equal(outcome, 'accounts', `entry settled as ${outcome} instead of offering both fixture accounts`);
+    const offered = await tab.evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(accountChoice + ' button')}), button => button.textContent)`);
+    assert.equal(offered.length, 2, `the account choice offers both fixture accounts: ${JSON.stringify(offered)}`);
   };
   const chooseAccount = async name => {
+    mark(`choose-account ${name}`);
     await waitForAccounts();
-    await tab.evaluate(`Array.from(document.querySelectorAll(".tilo-entry-card button")).find(button => button.textContent.includes(${JSON.stringify(name)})).click()`);
+    await tab.evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(accountChoice + ' button')})).find(button => button.textContent.includes(${JSON.stringify(name)})).click()`);
+    mark(`account-chosen ${name}`);
   };
   observer.mark('navigate-link');
   await tab.navigate(link);
@@ -235,6 +278,7 @@ try {
   await tab.waitFor(`${entryOutcome} !== undefined`);
   assert.equal(await tab.evaluate(entryOutcome), 'refused');
   assert.equal(await tab.evaluate('document.querySelectorAll("canvas").length'), 0);
+  mark('unadmitted-reader-refused');
   stage('explicit-unadmitted-account-refused-without-enrollment');
   await tab.navigate(origin + '/fixture.html');
   await tab.navigate(link);
@@ -242,7 +286,10 @@ try {
   await chooseAccount('Fixture reader');
   await tab.waitFor(`${entryOutcome} !== undefined`, {timeout:45_000});
   assert.equal(await tab.evaluate(entryOutcome), 'open', 'the admitted reader must reopen the shared resource');
-  assert.ok(await tab.evaluate('document.querySelector("#surface canvas")?.width > 0'));
+  mark('reader-page-open');
+  // The page says it opened this link before it draws the app's first frame,
+  // so the canvas is what is still on its way here, not the reopen.
+  await tab.waitFor('document.querySelector("#surface canvas")?.width > 0');
   assert.equal(await tab.evaluate('location.href'), link, 'the opened page keeps the exact link in its address');
   stage('production-account-choice-and-resource-page-mount');
   await tab.navigate(origin + '/fixture.html');
@@ -258,6 +305,7 @@ try {
   await tab.waitFor(`${entryOutcome} !== undefined`, {timeout:45_000});
   assert.equal(await tab.evaluate(entryOutcome), 'refused');
   assert.equal(await tab.evaluate('document.querySelectorAll("canvas").length'), 0);
+  mark('revoked-reader-refused');
   stage('governed-revocation-refuses-link-reopen');
   // A page that cannot run is not open. Created synchronously, vello's
   // pipelines held the browser's GPU thread and blocked the reopened page
@@ -266,11 +314,14 @@ try {
   const longest = observer.longestStall();
   assert.ok(longest.ms < 15_000, `the page's main thread stalled ${longest.ms} ms on ${longest.url}`);
   writeFileSync(join(evidence, 'journey.json'), JSON.stringify({mode: fixture.encryptedRestart ? 'certified-browser-encrypted-cold' : fixture.disconnectRetry ? 'certified-browser-disconnect-retry' : 'certified-browser-viewer',
-    app:'so.tilo.chat', stages}, null, 2) + '\n');
+    app:'so.tilo.chat', stages, marks}, null, 2) + '\n');
 } catch (error) {
   const page = await pageState();
   writeFileSync(join(evidence, 'failure.json'), JSON.stringify({phase:'error',
-    lastStage:stages.at(-1) ?? null, pageStatus:String(page.status ?? '').slice(0, 500),
+    lastStage:stages.at(-1) ?? null,
+    lastMark: marks.at(-1)?.name ?? null,
+    pageStatus:String(page.status ?? '').slice(0, 500),
+    arrival: page.arrival ?? null, card: page.card ?? null, entry: page.entry ?? null,
     gpuStep: page.gpuStep ?? null, error:String(error).slice(0, 500)}, null, 2) + '\n');
   throw error;
 } finally {

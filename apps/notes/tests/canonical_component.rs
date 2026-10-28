@@ -100,27 +100,10 @@ fn canonical_component_starts_empty_projects_existing_records_read_only() {
             instance_id: 11,
             address: notes::Notebook::DELETE.on(notes::actions::page_resource_id(f.root)),
         };
-        let untouched = f
-            .records
-            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
-            .unwrap();
-        assert!(matches!(
-            live.invoke_bound_action(&address, &serde_json::Map::new()),
-            Err(tilo_actions::DoorError::ConfirmationRequired)
-        ));
-        assert_eq!(
-            f.records
-                .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
-                .unwrap(),
-            untouched
-        );
-        assert_eq!(revision(&f, &checkout), 0);
-        invoke_confirmed(
-            &mut live,
-            11,
-            &notes::actions::page_resource_id(f.root),
-            "delete",
-        );
+        // Undo takes a deleted page back, so deleting asks nothing.
+        live.invoke_bound_action(&address, &serde_json::Map::new())
+            .expect("an undoable delete runs at once");
+        assert_eq!(revision(&f, &checkout), 1);
         invoke_confirmed(
             &mut live,
             11,

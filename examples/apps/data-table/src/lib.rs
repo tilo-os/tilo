@@ -116,16 +116,28 @@ impl TableModel for Rows {
         usize::try_from(key).ok().filter(|index| *index < ROW_COUNT)
     }
 
-    fn row_state(&self, index: usize) -> TableRowState<'_, Row> {
+    // A row not loaded yet is on its way from this device's worker: the
+    // table keeps its slot and paints its placeholder until it is here.
+    fn row_state(&self, index: usize) -> Arrival<&Row, &str> {
         if let Some(row) = self.cache.get(&index) {
-            TableRowState::Ready(row)
+            Arrival::Ready(row)
         } else if self.requested.contains(&index)
             && let Some(error) = self.error.as_deref()
         {
-            TableRowState::Error(error)
+            Arrival::Failed(error)
         } else {
-            TableRowState::Loading
+            Arrival::local()
         }
+    }
+
+    fn can_retry(&self, _index: usize) -> bool {
+        self.error.is_some()
+    }
+
+    fn retry(&mut self, _index: usize) {
+        // Forget the failed window: the table asks for it again.
+        self.error = None;
+        self.requested = 0..0;
     }
 
     fn request_range(&mut self, range: Range<usize>) {

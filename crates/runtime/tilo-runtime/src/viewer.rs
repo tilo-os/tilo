@@ -388,10 +388,6 @@ impl Viewer {
 
     /// Remove every viewer past its deadline. Entries stay for a retry while
     /// the host is unavailable.
-    ///
-    /// # Errors
-    ///
-    /// Returns ledger I/O errors.
     pub fn sweep(&self, now_ms: u64) -> Result<usize, ViewerError> {
         let _turn = self.turn()?;
         let mut ledger = self.load()?;

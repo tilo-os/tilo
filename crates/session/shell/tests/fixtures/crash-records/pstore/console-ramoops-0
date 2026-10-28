@@ -1,0 +1,2 @@
+[    0.000000] Booting Linux on physical CPU 0x0000000000 [0x512f0011]
+[ 1840.990001] systemd[1]: Started tilo-session.service.

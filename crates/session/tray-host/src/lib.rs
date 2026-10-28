@@ -268,11 +268,6 @@ impl Tray {
     }
 
     /// Send `request` to the item at `key` without waiting for it.
-    ///
-    /// # Errors
-    ///
-    /// When the item is unknown, a menu id is not in its menu, or no
-    /// runtime is serving the tray.
     pub fn request(&self, key: &str, request: TrayRequest) -> Result<(), String> {
         self.request_or_else(key, request, |_| {})
     }

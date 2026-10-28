@@ -17,6 +17,7 @@ pub mod block_actions;
 pub mod block_edit;
 pub mod block_markdown;
 pub mod field;
+mod replace_text;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -86,7 +87,7 @@ pub enum ClipAttr {
 /// a record: `pub body: RichText` stores a document's worth of rich text
 /// under the field, read as its [`RichTextState`] and edited through
 /// [`RichTextAction`]s at the field's path ([`field`]).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub struct RichText {
     state: Option<RichTextState>,
     /// Markdown a new value starts with, written when it is stored.
@@ -94,6 +95,19 @@ pub struct RichText {
     /// Edits a verb made to this value, applied in order when the record
     /// holding it is written back.
     pending: Vec<RichTextAction>,
+}
+
+// Written out rather than derived: a derived `clone` is inlined into every
+// app whose records hold rich text, and this one is compiled once, in the
+// runtime.
+impl Clone for RichText {
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+            initial: self.initial.clone(),
+            pending: self.pending.clone(),
+        }
+    }
 }
 
 /// One entry of the heading outline.
@@ -307,6 +321,8 @@ pub struct RichTextState {
     /// The content address of the file the document was last read from or
     /// written to ([`action::FILE_DIGEST`]).
     file_digest: Option<Rc<str>>,
+    /// The document holds work its file does not ([`action::UNSAVED`]).
+    unsaved: bool,
     /// Which body paragraphs changed, for views presenting only those.
     log: ChangeLog,
 }
@@ -325,6 +341,7 @@ impl PartialEq for RichTextState {
             && self.styles == other.styles
             && self.content == other.content
             && self.file_digest == other.file_digest
+            && self.unsaved == other.unsaved
     }
 }
 
@@ -336,6 +353,11 @@ const GENESIS_IDS: &str = "genesis";
 /// from or written to.
 fn file_digest(doc: &Doc, c: &Containers) -> Option<Rc<str>> {
     model::meta_str(doc, c, action::FILE_DIGEST).map(Rc::from)
+}
+
+/// Whether the document under `c` holds work its file does not.
+fn unsaved(doc: &Doc, c: &Containers) -> bool {
+    model::meta_flag(doc, c, action::UNSAVED)
 }
 
 impl RichTextState {
@@ -362,6 +384,13 @@ impl RichTextState {
     /// written to, so an open can tell that the file changed elsewhere.
     pub fn file_digest(&self) -> Option<&str> {
         self.file_digest.as_deref()
+    }
+
+    /// Whether the document holds work its file does not: an edit or a verb
+    /// since the file last took it. What a window's bar says "Edited" about,
+    /// and what closing asks before the work is lost.
+    pub fn unsaved(&self) -> bool {
+        self.unsaved
     }
 
     /// The body's paragraph order. Shared: hold it across frames freely.
@@ -404,6 +433,12 @@ impl RichTextState {
             .into_iter()
             .map(|(_, view)| Rc::clone(view))
             .collect()
+    }
+
+    /// Every heading, image and table cell by id: the same `Rc` until one
+    /// of them changes, so what is made of them can be kept until then.
+    pub fn featured_blocks(&self) -> &Rc<HashMap<String, Rc<BlockView>>> {
+        &self.featured
     }
 
     pub fn header(&self) -> &Rc<Vec<BlockView>> {
@@ -1042,6 +1077,7 @@ impl RichText {
             styles: Rc::new(model::all_styles(doc, &c)),
             content: Rc::new(model::referenced_content(doc, &c)),
             file_digest: file_digest(doc, &c),
+            unsaved: unsaved(doc, &c),
             root_path: (c.root == automerge::ROOT).then(Vec::new),
             containers: c,
             log: ChangeLog::fresh(),
@@ -1113,6 +1149,7 @@ impl RichText {
         }
         if root.key(KEY_META) != Touch::Untouched {
             state.file_digest = file_digest(doc, c);
+            state.unsaved = unsaved(doc, c);
         }
     }
 

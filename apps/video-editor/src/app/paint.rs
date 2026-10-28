@@ -32,7 +32,6 @@ pub(super) fn text_centre(rect: Rect, s: &str, style: &TextStyle, tr: &mut TextR
     )
 }
 
-/// The width `s` takes set in `style`.
 pub(super) fn text_width(tr: &mut TextRenderer, s: &str, style: &TextStyle) -> f64 {
     f64::from(tr.measure_style(s, None, style).0)
 }
@@ -49,8 +48,13 @@ pub(super) fn filmstrip_cells(inner: Rect) -> (f64, i64) {
 
 /// The content rect inside a clip body, below its header strip. Shared for the
 /// same reason as [`filmstrip_cells`].
-pub(super) fn clip_inner_rect(cr: Rect) -> Rect {
-    let strip_y1 = (cr.y0 + 18.0).min(cr.y1);
+///
+/// `header_h` is the title band the caller reserved, from
+/// `VideoEditorApp::clip_header_rect`. It has to be the same number the header
+/// was drawn with: at a raised UI scale a filmstrip that still cut at an
+/// unscaled 18px began inside the scaled title and painted frames through it.
+pub(super) fn clip_inner_rect(cr: Rect, header_h: f64) -> Rect {
+    let strip_y1 = (cr.y0 + header_h).min(cr.y1);
     Rect::new(cr.x0 + 2.0, strip_y1, cr.x1 - 2.0, cr.y1 - 2.0)
 }
 
@@ -96,7 +100,8 @@ pub(super) fn import_report_notice(report: &ImportReport) -> Notice {
     } else {
         format!("Imported {} of {}", report.added, report.total())
     };
-    Notice::failed(format!("{head} — {why}"))
+    // A refused file is fixed by choosing another one.
+    Notice::failed(format!("{head} — {why}")).with_action(super::notices::NoticeAction::ChooseMedia)
 }
 
 /// Blit an RGBA frame into `canvas`, scaled to fit (letterboxed), centred.
@@ -267,7 +272,7 @@ pub(super) fn draw_button_enabled(
     Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
 }
 
-/// An icon-only command (a compact topbar slot, a row's reorder arrow).
+/// An icon-only command (a row's reorder arrow, a panel's remove).
 pub(super) fn draw_icon_button(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
@@ -286,34 +291,23 @@ pub(super) fn draw_icon_button(
     Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
 }
 
-/// A command that stays down while its state is on (mute, lock, solo, the
-/// bin and inspector toggles): a plain button standing on the selection
-/// lift while it is on, exactly as a toolbar toggle is drawn.
+/// A command that stays down while its state is on (mute, lock, solo): a
+/// plain labelled button standing on the selection lift while it is on,
+/// exactly as a toolbar toggle is drawn.
 pub(super) fn draw_toggle_button(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
-    content: ToggleContent<'_>,
+    label: &str,
     on: bool,
     hovered: bool,
 ) {
     let theme = ctx.theme;
-    let face = match content {
-        ToggleContent::Icon(icon, name) => ButtonFace::icon_only(rect, icon, name),
-        ToggleContent::Label(label) => ButtonFace::new(rect, label).role(ButtonRole::Plain),
-    }
-    .control_size(control_size_for(rect, theme))
-    .toggled(on)
-    .hovered(hovered);
+    let face = ButtonFace::new(rect, label)
+        .role(ButtonRole::Plain)
+        .control_size(control_size_for(rect, theme))
+        .toggled(on)
+        .hovered(hovered);
     Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
-}
-
-/// What a [`draw_toggle_button`] shows.
-#[derive(Clone, Copy)]
-pub(super) enum ToggleContent<'a> {
-    /// An icon and the name a reader hears for it.
-    Icon(Icon, &'a str),
-    /// A short label.
-    Label(&'a str),
 }
 
 /// The control size whose height a laid-out rect was given: the editor lays
@@ -335,6 +329,7 @@ pub(super) fn draw_switch_row(
     rect: Rect,
     label: &str,
     on: bool,
+    pose: ui::widget::SwitchPose,
     hovered: bool,
 ) {
     let theme = ctx.theme;
@@ -345,7 +340,9 @@ pub(super) fn draw_switch_row(
     let style = theme.text(role);
     let shown = elide_at(label, room as f32, &style, ctx.text);
     ctx.text_role_in_band(&shown, role, ink, rect.x0, rect, None);
-    let face = ui::widget::ToggleFace::new(track, on).hovered(hovered);
+    let face = ui::widget::ToggleFace::new(track, on)
+        .pose(pose)
+        .hovered(hovered);
     ui::widget::Toggle::paint(ctx.scene, ctx.transform, theme, &face);
 }
 
@@ -430,29 +427,6 @@ pub(super) fn draw_track(
         .hovered(hovered)
         .dragging(dragging);
     ui::widget::Slider::paint(scene, tf, theme, &face);
-}
-
-/// Draw a segmented control over caller-owned rects through the toolkit's
-/// shared [`ui::widget::ToggleGroup::paint`], so the transition row and the
-/// export dialog's option groups look like every other segmented control.
-pub(super) fn draw_segmented(
-    scene: &mut Scene,
-    tf: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    segments: &[Rect],
-    labels: &[&str],
-    selected: usize,
-    cursor: Point,
-) {
-    let hovered = segments.iter().position(|r| r.contains(cursor));
-    let size = segments
-        .first()
-        .map_or(ControlSize::Regular, |r| control_size_for(*r, theme));
-    let face = ui::widget::SegmentedFace::new(segments, labels, selected)
-        .hovered(hovered)
-        .control_size(size);
-    ui::widget::ToggleGroup::paint(scene, tf, tr, theme, &face);
 }
 
 /// Where each part of the transport's readout goes, or `None` for a part
@@ -1016,7 +990,6 @@ pub(super) fn dialog_type(theme: &Theme) -> DialogType {
     }
 }
 
-/// The measured height of one line set in `style`.
 pub(super) fn line_height(tr: &mut TextRenderer, style: &TextStyle) -> f64 {
     f64::from(tr.measure_style("Hg", None, style).1)
 }

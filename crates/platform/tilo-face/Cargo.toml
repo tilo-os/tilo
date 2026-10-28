@@ -1,0 +1,21 @@
+[package]
+name = "tilo-face"
+version = "0.1.0"
+edition = "2024"
+# Published: the SDK's platform layer (tools/sdk/publish_check.py).
+publish = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+description = "A person's face before any picture: the initials their name gives and the presence hue their identity derives."
+
+[lib]
+name = "tilo_face"
+path = "src/lib.rs"
+
+# A std-only leaf: the toolkit, the collaboration model and the boot sign-in
+# screen in the initramfs all draw the same face from it.
+[dependencies]
+
+[lints]
+workspace = true

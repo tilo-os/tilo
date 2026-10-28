@@ -89,11 +89,13 @@ impl Session {
         self.network
             .cmd_tx
             .send(NetCmd::Publish {
+                at: tokio::time::Instant::now(),
                 ws: topic,
                 msg: NeighbourMsg::IdentityHello {
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(self.cert.clone()),
                     revocations: vec![],
+                    successions: Vec::new(),
                 },
             })
             .await
@@ -220,6 +222,9 @@ async fn pair_on_topic(left: &Session, right: &Session, topic: u64) {
 
 #[path = "cold_editor_record_tests.rs"]
 mod cold_editor_record_tests;
+
+#[path = "pump_load_tests.rs"]
+mod pump_load_tests;
 
 fn selection() -> SharedSelection {
     Arc::new(Mutex::new(selection::SelectionStore::default()))
@@ -494,8 +499,8 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
     let room = RoomId::new();
     let tab = 0xC011_0094;
     let mut tree = WorkspaceTree::bootstrap_default();
+    tree.desktop.workspaces[0] = crate::shell::state::rehomed(&tree.desktop.workspaces[0], room);
     let workspace = &mut tree.desktop.workspaces[0];
-    workspace.set_room(room);
     workspace.strips[0].window_groups.push(WindowGroup {
         id: crate::shell::state::next_id(),
         tabs: vec![Tab {
@@ -505,6 +510,7 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
                 app_id: "so.tilo.browser".into(),
                 surface_id: 94,
             },
+            app_title: None,
         }],
         active_tab: tab,
         width: WindowWidth::Normal,
@@ -531,6 +537,7 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
                 label: "Terminal".into(),
                 note: String::new(),
             },
+            app_title: None,
         }],
         active_tab: local_tab,
         width: WindowWidth::Normal,
@@ -562,7 +569,7 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
         .unwrap(),
     )
     .unwrap();
-    // Enrolled mid-session: take effect now rather than at the next recheck.
+    // Enrolled mid-session: take effect now rather than once the worker reads it.
     left.network.recheck_personal_device_peers();
     right.network.recheck_personal_device_peers();
     let registry = crate::shell::personal_continuity_registry::global_registry();
@@ -812,6 +819,7 @@ fn mounted_editors(home: &tilo_test_env::TestHome) -> (MountedEditor, MountedEdi
         .settings::<code_editor::settings::CodeSettings>()
         .set(&code_editor::settings::CodeSettings {
             language_servers: false,
+            ..Default::default()
         })
         .unwrap();
     source.settle();
@@ -826,6 +834,7 @@ fn mounted_editors(home: &tilo_test_env::TestHome) -> (MountedEditor, MountedEdi
         .settings::<code_editor::settings::CodeSettings>()
         .set(&code_editor::settings::CodeSettings {
             language_servers: false,
+            ..Default::default()
         })
         .unwrap();
     target.settle();
@@ -864,7 +873,7 @@ fn claim_editor(
                 room,
                 "so.tilo.code-editor".into(),
                 instance,
-                ui::collaboration::handoff::HandoffReport::OwnerTakeover {
+                collab_types::handoff::HandoffReport::OwnerTakeover {
                     token,
                     schema: metadata.schema_version,
                     metadata: metadata.bytes,
@@ -875,10 +884,23 @@ fn claim_editor(
     });
 }
 
+/// A continuation registry that knows `tab` as the same app instance on both sides.
+fn registry_bound_to(
+    tab: u64,
+) -> Arc<Mutex<crate::shell::personal_continuity_registry::ContinuationRegistry>> {
+    let registry = crate::shell::personal_continuity_registry::ContinuationRegistry::default();
+    let registry = Arc::new(Mutex::new(registry));
+    registry.lock().unwrap().bind_tab(
+        crate::shell::personal_continuity::AppInstanceId(tab),
+        crate::shell::personal_continuity::AppInstanceId(tab),
+    );
+    registry
+}
+
 impl NativeEditorPair {
     fn new() -> OwnerFixtureFuture<'static, Self> {
         Box::pin(async move {
-            use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+            use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth, rehomed};
             use ui::widget::Continuable;
             let mut home = tilo_test_env::TestHome::new().unwrap();
             let peers = home.config().join("home-peers.json");
@@ -903,7 +925,7 @@ impl NativeEditorPair {
             let room = RoomId::new();
             let tab = 0xC011_00B1;
             let mut tree = WorkspaceTree::bootstrap_default();
-            tree.desktop.workspaces[0].set_room(room);
+            tree.desktop.workspaces[0] = rehomed(&tree.desktop.workspaces[0], room);
             tree.desktop.workspaces[0].strips[0]
                 .window_groups
                 .push(WindowGroup {
@@ -915,6 +937,7 @@ impl NativeEditorPair {
                             app_id: "so.tilo.code-editor".into(),
                             surface_id: 0xB1,
                         },
+                        app_title: None,
                     }],
                     active_tab: tab,
                     width: WindowWidth::Normal,
@@ -922,25 +945,15 @@ impl NativeEditorPair {
                     focus_history: Vec::new(),
                 });
             let mut local = WorkspaceTree::bootstrap_default();
-            local.desktop.workspaces[0].set_room(room);
+            local.desktop.workspaces[0] = rehomed(&local.desktop.workspaces[0], room);
             let mut left = Box::pin(Session::new(&signer, 0xB1, tree)).await;
             let mut right = Box::pin(Session::new(&signer, 0xB2, local)).await;
             left.network_mut().personal_continuity_path =
                 Some(home.data().join("left-continuity.bin"));
             right.network_mut().personal_continuity_path =
                 Some(home.data().join("right-continuity.bin"));
-            let left_registry = Arc::new(Mutex::new(
-                crate::shell::personal_continuity_registry::ContinuationRegistry::default(),
-            ));
-            let right_registry = Arc::new(Mutex::new(
-                crate::shell::personal_continuity_registry::ContinuationRegistry::default(),
-            ));
-            for registry in [&left_registry, &right_registry] {
-                registry.lock().unwrap().bind_tab(
-                    crate::shell::personal_continuity::AppInstanceId(tab),
-                    crate::shell::personal_continuity::AppInstanceId(tab),
-                );
-            }
+            let left_registry = registry_bound_to(tab);
+            let right_registry = registry_bound_to(tab);
             let target_document = target.peer_document();
             let target_semantic = target
                 .surface_mut::<code_editor::CodeApp>()
@@ -979,30 +992,10 @@ impl NativeEditorPair {
         })
     }
 
-    fn enroll(&self) {
-        std::fs::write(
-            self.peers.with_file_name("personal-device-peers.json"),
-            serde_json::to_vec(&[
-                hex::encode(self.left.cert.device_public_key),
-                hex::encode(self.right.cert.device_public_key),
-            ])
-            .unwrap(),
-        )
-        .unwrap();
-        self.recheck_enrollment();
-    }
-
-    /// Enrolment changed mid-session: each shell sees it at its next recheck
-    /// of the file; make that now.
-    fn recheck_enrollment(&self) {
-        self.left.network.recheck_personal_device_peers();
-        self.right.network.recheck_personal_device_peers();
-    }
-
     fn send_view(
         &mut self,
         line: usize,
-    ) -> OwnerFixtureFuture<'_, Vec<ui::collaboration::owner_view::OwnerView>> {
+    ) -> OwnerFixtureFuture<'_, Vec<collab_types::handoff::OwnerView>> {
         Box::pin(async move {
             use ui::widget::Continuable;
             self.source
@@ -1105,7 +1098,7 @@ impl NativeEditorPair {
         })
     }
 
-    fn apply_target(&mut self, view: &ui::collaboration::owner_view::OwnerView, line: usize) {
+    fn apply_target(&mut self, view: &collab_types::handoff::OwnerView, line: usize) {
         use ui::widget::{Continuable, Widget};
         assert_eq!(view.room, self.room.to_string());
         assert_eq!(view.app, "so.tilo.code-editor");
@@ -1220,14 +1213,17 @@ impl NativeEditorPair {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
-async fn paired_native_editor_views_require_enrollment_and_cancel_on_revocation() {
+async fn paired_native_editor_views_follow_the_persons_root_and_stop_when_routes_or_policy_go() {
     use tilo_action_broker::services::ContinuationServices;
     let mut pair = NativeEditorPair::new().await;
+    // No enrolment lists either device: proving certificates of one root to
+    // each other makes them the person's devices.
     assert!(
-        pair.send_view(20).await.is_empty(),
-        "a shared certificate root is not enrollment"
+        !pair
+            .peers
+            .with_file_name("personal-device-peers.json")
+            .exists()
     );
-    pair.enroll();
     let first = pair.send_view(40).await;
     assert_eq!(first.len(), 1);
     pair.apply_target(&first[0], 40);
@@ -1235,35 +1231,13 @@ async fn paired_native_editor_views_require_enrollment_and_cancel_on_revocation(
     assert_eq!(second.len(), 1);
     assert!(second[0].generation > first[0].generation);
     pair.apply_target(&second[0], 70);
-    std::fs::remove_file(pair.peers.with_file_name("personal-device-peers.json")).unwrap();
-    pair.recheck_enrollment();
-    let stopped = in_owner_registry(&pair.right_registry, || {
-        pair.right.network.pump_owner_views()
-    });
-    assert_eq!(stopped.len(), 1);
-    assert!(stopped[0].0.projection.is_none());
-    assert!(stopped[0].0.generation > second[0].generation);
-    assert!(
-        in_owner_registry(&pair.right_registry, || pair
-            .right
-            .network
-            .pump_owner_views())
-        .is_empty()
-    );
-    pair.enroll();
-    let resumed = in_owner_registry(&pair.right_registry, || {
-        pair.right.network.pump_owner_views()
-    });
-    assert_eq!(resumed.len(), 1);
-    assert!(resumed[0].0.generation > stopped[0].0.generation);
-    pair.apply_target(&resumed[0].0, 70);
     in_owner_registry(&pair.right_registry, || {
         crate::shell::broker_services::NativeContinuations
             .handoff(
                 pair.room,
                 "so.tilo.code-editor".into(),
                 pair.tab,
-                ui::collaboration::handoff::HandoffReport::OwnerSubscribe { version: 1 }.encode(),
+                collab_types::handoff::HandoffReport::OwnerSubscribe { version: 1 }.encode(),
             )
             .unwrap();
     });
@@ -1271,7 +1245,7 @@ async fn paired_native_editor_views_require_enrollment_and_cancel_on_revocation(
         pair.right.network.pump_owner_views()
     });
     assert_eq!(subscribed.len(), 1);
-    assert!(subscribed[0].0.generation > resumed[0].0.generation);
+    assert!(subscribed[0].0.generation > second[0].generation);
     pair.apply_target(&subscribed[0].0, 70);
     // A departed authenticated session cannot keep a cached view alive.
     let routes = pair
@@ -1305,7 +1279,7 @@ async fn paired_native_editor_views_require_enrollment_and_cancel_on_revocation(
     assert!(online[0].0.generation > offline[0].0.generation);
     pair.apply_target(&online[0].0, 70);
     pair.right.network_mut().continuity_policy_override =
-        Some(crate::shell::continuity_policy::ContinuityPolicySnapshot::default());
+        Some(crate::shell::continuity_policy::ContinuityPolicySnapshot::OFF);
     let revoked = in_owner_registry(&pair.right_registry, || {
         pair.right.network.pump_owner_views()
     });
@@ -1317,9 +1291,46 @@ async fn paired_native_editor_views_require_enrollment_and_cancel_on_revocation(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
+async fn paired_native_editor_views_stop_when_the_root_revokes_the_viewer() {
+    let mut pair = NativeEditorPair::new().await;
+    let first = pair.send_view(40).await;
+    assert_eq!(first.len(), 1);
+    pair.apply_target(&first[0], 40);
+    // Another device of the person brings the root's revocation of the
+    // viewing device.
+    let root = ed25519_dalek::SigningKey::from_bytes(&[0xB1; 32]);
+    let mut entry = tilo_user_identity::RevocationEntry {
+        user_public_key: root.verifying_key().to_bytes(),
+        revoked_device_public_key: pair.left.cert.device_public_key,
+        revoked_at_ns: 1,
+        reason: tilo_user_identity::RevocationReason::Stolen,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+    let mut revocations = tilo_user_identity::RevocationList::new();
+    revocations.insert(entry).unwrap();
+    pair.right.network.learn_own_revocations(&revocations);
+    let stopped = in_owner_registry(&pair.right_registry, || {
+        pair.right.network.pump_owner_views()
+    });
+    assert_eq!(stopped.len(), 1);
+    assert!(stopped[0].0.projection.is_none());
+    assert!(stopped[0].0.generation > first[0].generation);
+    assert!(
+        in_owner_registry(&pair.right_registry, || pair
+            .right
+            .network
+            .pump_owner_views())
+        .is_empty()
+    );
+    pair.close().await;
+    drop(pair);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
 async fn paired_native_editor_takeover_is_durable_idempotent_and_survives_restart() {
     let mut pair = NativeEditorPair::new().await;
-    pair.enroll();
     let remote = pair.send_view(40).await;
     assert_eq!(remote.len(), 1);
     pair.apply_target(&remote[0], 40);
@@ -1475,7 +1486,6 @@ async fn paired_native_editor_takeover_is_durable_idempotent_and_survives_restar
 #[serial_test::serial]
 async fn paired_native_editor_concurrent_takeovers_converge_on_one_durable_stamp() {
     let mut pair = NativeEditorPair::new().await;
-    pair.enroll();
     let remote = pair.send_view(40).await;
     assert_eq!(remote.len(), 1);
     pair.apply_target(&remote[0], 40);

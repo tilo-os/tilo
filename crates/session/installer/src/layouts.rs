@@ -310,7 +310,6 @@ mod tests {
 
     #[test]
     fn layout_dataset_is_complete_unique_and_well_formed() {
-        // Phase `dataset_is_non_trivial`.
         {
             assert!(
                 LAYOUTS.len() >= 15,
@@ -318,12 +317,10 @@ mod tests {
                 LAYOUTS.len()
             );
         }
-        // Phase `ids_are_the_media_profile_keyboards`.
         {
             let ids: Vec<_> = LAYOUTS.iter().map(|l| l.id).collect();
             assert_eq!(ids, install_profile_model::KEYBOARDS);
         }
-        // Phase `every_layout_has_expected_row_lengths`.
         {
             for l in LAYOUTS {
                 for (r, expected) in ROW_LENS.iter().enumerate() {
@@ -347,7 +344,6 @@ mod tests {
                 );
             }
         }
-        // Phase `ids_and_display_names_are_unique`.
         {
             let mut ids = HashSet::new();
             let mut names = HashSet::new();
@@ -360,7 +356,6 @@ mod tests {
                 );
             }
         }
-        // Phase `apply_metadata_is_present`.
         {
             for l in LAYOUTS {
                 assert!(!l.xkb_layout.is_empty(), "{} has empty xkb_layout", l.id);
@@ -374,7 +369,6 @@ mod tests {
                 }
             }
         }
-        // Phase `required_layouts_are_included`.
         {
             // The brief requires at least these.
             for id in ["us", "de", "fr", "gb", "es", "dvorak", "colemak"] {
@@ -388,7 +382,6 @@ mod tests {
 
     #[test]
     fn layout_lookup_default_and_variants_resolve_to_real_xkb_layouts() {
-        // Phase `default_is_us_qwerty`.
         {
             let d = default_layout();
             assert_eq!(d.id, "us");
@@ -397,7 +390,6 @@ mod tests {
             assert_eq!(d.display_name, DEFAULT_DISPLAY_NAME);
             assert_eq!(d.rows[1][0], "q", "US top row starts with q");
         }
-        // Phase `lookup_round_trips_through_display_name`.
         {
             for l in LAYOUTS {
                 let got = by_display_name(l.display_name).expect("found");
@@ -405,7 +397,6 @@ mod tests {
             }
             assert!(by_display_name("Klingon").is_none());
         }
-        // Phase `variant_layouts_reuse_a_base_xkb_layout`.
         {
             // Dvorak / Colemak are us-variants, not their own xkb layout.
             let dv = by_display_name("Dvorak").unwrap();
@@ -415,7 +406,6 @@ mod tests {
             let us = by_display_name("English (US)").unwrap();
             assert_eq!(us.variant_or_empty(), "");
         }
-        // Phase `remapped_layouts_actually_differ_from_us`.
         {
             // Sanity: the visual data encodes the famous remaps.
             let de = by_display_name("German (QWERTZ)").unwrap();

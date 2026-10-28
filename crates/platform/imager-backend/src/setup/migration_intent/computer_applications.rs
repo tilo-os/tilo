@@ -9,17 +9,31 @@ impl MigrationIntent {
         categories: [bool; 3],
         selected: Vec<InstalledRef>,
     ) -> io::Result<Self> {
+        Self::capture_computer_applications_selected(source, directory, categories, selected, &[])
+    }
+    /// Capture shared Files and selected applications with nested exclusions.
+    ///
+    /// # Errors
+    /// Refuses missing consent, unsafe grants and malformed exclusions.
+    pub fn capture_computer_applications_selected(
+        source: &Path,
+        directory: &Path,
+        categories: [bool; 3],
+        selected: Vec<InstalledRef>,
+        exclusions: &[NativePath],
+    ) -> io::Result<Self> {
         if !categories[0] || !categories[1] || selected.is_empty() {
             return Err(error(
                 "Computer composite requires shared Files and selected applications",
             ));
         }
-        let mut main = Self::capture_with_policy(
+        let mut main = Self::capture_source_selection(
             source,
             directory,
             [true, false, categories[2]],
             Vec::new(),
             HomePolicy::AccessReadWrite,
+            exclusions,
         )?;
         main.source_pin.validate()?;
         let child = main

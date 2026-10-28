@@ -418,7 +418,7 @@ fn orphaned_trees_go_unless_a_running_app_has_them_mounted() {
         running.display()
     ));
     let collected = store
-        .collect_orphans(&package_store::mounts::InUse::Known(mounts))
+        .collect_orphans(&package_store::mounts::InUse::known(mounts))
         .unwrap();
     assert!(!gone.exists() && !gone.with_extension("pkg").exists());
     assert_eq!(collected.removed.len(), 2, "{collected:?}");
@@ -443,7 +443,7 @@ fn orphaned_trees_go_unless_a_running_app_has_them_mounted() {
     );
     // Once the app closed, the next collection takes it.
     let collected = store
-        .collect_orphans(&package_store::mounts::InUse::Known(
+        .collect_orphans(&package_store::mounts::InUse::known(
             package_store::mounts::Mounts::default(),
         ))
         .unwrap();
@@ -451,13 +451,13 @@ fn orphaned_trees_go_unless_a_running_app_has_them_mounted() {
     // A mount table that cannot be read keeps everything.
     orphan(3);
     let collected = store
-        .collect_orphans(&package_store::mounts::InUse::Unknown("test".into()))
+        .collect_orphans(&package_store::mounts::InUse::unknown("test"))
         .unwrap();
     assert!(collected.removed.is_empty(), "{collected:?}");
 }
 
 fn nothing_mounted() -> package_store::mounts::InUse {
-    package_store::mounts::InUse::Known(package_store::mounts::Mounts::default())
+    package_store::mounts::InUse::known(package_store::mounts::Mounts::default())
 }
 
 #[test]
@@ -751,6 +751,49 @@ fn sweep_removes_lru_until_under_cap_in_one_gc() {
     }
     // Under the cap already: nothing more goes, pinned or not.
     assert!(store.sweep(200_000).unwrap().is_empty());
+}
+
+/// An update arrives in the background, so it is not a use: the app the
+/// person last opened weeks ago is still the one the size sweep evicts
+/// first, even when it was updated after one they opened yesterday.
+#[test]
+fn an_update_keeps_the_apps_last_use_for_eviction() {
+    let identity = SigningIdentity::generate();
+    let (_old, old) = package(&identity, "so.tilo.unused", "1.0.0", &v1_files());
+    let (_new, new) = package(&identity, "so.tilo.unused", "2.0.0", &v2_files());
+    let (_daily, daily) = package(&identity, "so.tilo.daily", "1.0.0", &v1_files());
+    let root = scratch();
+    let store = PackageStore::at(root.path());
+    store
+        .install(full_tapp(&old).as_slice(), admit_all, None)
+        .unwrap();
+    store
+        .update_row("so.tilo.unused", |row| row.last_used = 10)
+        .unwrap();
+    store
+        .install(full_tapp(&daily).as_slice(), admit_all, None)
+        .unwrap();
+    store
+        .update_row("so.tilo.daily", |row| row.last_used = 20)
+        .unwrap();
+
+    let updated = store
+        .install(full_tapp(&new).as_slice(), admit_all, None)
+        .unwrap();
+    assert_eq!(updated.package.version, "2.0.0");
+    assert_eq!(
+        updated.package.last_used, 10,
+        "the update kept the last use"
+    );
+    let registry = store.registry().unwrap();
+    let row = registry.find("so.tilo.unused").unwrap();
+    assert_eq!(row.last_used, 10, "the stored row kept it too");
+
+    assert_eq!(
+        store.sweep(1).unwrap().first().map(String::as_str),
+        Some("so.tilo.unused"),
+        "the app opened least recently goes first, updated or not"
+    );
 }
 
 #[test]

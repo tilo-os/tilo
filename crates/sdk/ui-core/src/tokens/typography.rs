@@ -155,7 +155,6 @@ impl TypeScale {
         Self::new(self.body * factor)
     }
 
-    /// The resolved size of `role`.
     pub(crate) fn size(&self, role: TextRole) -> f32 {
         self.body * role.spec().px / REFERENCE_BODY_PX
     }
@@ -207,7 +206,6 @@ impl UiFace {
         }
     }
 
-    /// The font family the face is set in.
     #[must_use]
     pub const fn family(self) -> &'static str {
         match self {
@@ -521,7 +519,6 @@ mod tests {
             FontChoice::Named(crate::text_render::UI_SANS_FAMILY.into())
         );
 
-        // One value retunes every role.
         let larger = Typography::default().with_base_size(16.0);
         for role in TextRole::ALL {
             let ratio = larger.style(role).size / typography.style(role).size;
@@ -576,7 +573,6 @@ mod tests {
                 one_x.size
             );
         }
-        // A weight override keeps the resolved size.
         let strong = theme.text(TextRole::Body).strong();
         assert_eq!(strong.size, theme.text(TextRole::Body).size);
         assert_eq!(strong.weight, TextWeight::Semibold);
@@ -617,7 +613,6 @@ mod tests {
             typography.style(TextRole::Body).family,
             FontChoice::Named(crate::text_render::UI_HYPERLEGIBLE_FAMILY.into())
         );
-        // Reading and code keep their own faces.
         assert_eq!(
             typography.style(TextRole::Reading).family,
             FontChoice::Named(crate::text_render::UI_SERIF_FAMILY.into())
@@ -647,7 +642,6 @@ mod tests {
                 typography.style(TextRole::Reading).family,
                 FontChoice::Named(face.family().into())
             );
-            // The UI keeps its face.
             assert_eq!(
                 typography.style(TextRole::Body).family,
                 FontChoice::Named(crate::text_render::UI_SANS_FAMILY.into())
@@ -682,7 +676,6 @@ mod tests {
             TextGround::Dark
         );
         assert_eq!(Theme::dark().text(TextRole::Body).ground, TextGround::Dark);
-        // A light page inside a dark theme.
         let paper = vello::peniko::Color::from_rgb8(0xF4, 0xEC, 0xD8);
         assert_eq!(
             Theme::dark()

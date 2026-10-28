@@ -62,11 +62,6 @@ impl ProvisionError {
     /// Replay all real barriers only for a completely admitted requested chain.
     /// A partial attempt is returned unchanged: start a fresh provision call to
     /// reconcile the namespace. Retry never creates or cleans up directories.
-    ///
-    /// # Errors
-    ///
-    /// Returns `self` unchanged for a partial attempt, or with the new native
-    /// error when revalidation or any barrier fails again.
     pub fn retry_commit(mut self) -> Result<StorageDirectory, Self> {
         let Attempt::ReadyToCommit(chain) = &mut *self.attempt else {
             return Err(self);
@@ -127,11 +122,6 @@ pub fn directory_state(error: &io::Error) -> Option<DirectoryState> {
 /// suffix components and the requested leaf, not existing traversal ancestors;
 /// no permissions are repaired. Permission admission is not storage qualification.
 /// Every fresh call repeats all barriers, including already-existing ancestors.
-///
-/// # Errors
-///
-/// Returns a [`ProvisionError`] carrying the known [`DirectoryState`] and any
-/// retained commit authority when admission, creation or a barrier fails.
 pub fn provision_directory(
     path: &Path,
     privacy: Privacy,
@@ -509,11 +499,6 @@ impl Error for DirectoryReconcileError {
 
 /// Admit an entirely existing physical chain bound to the held leaf, then commit
 /// every retained ancestor. Never creates, replaces or removes any name.
-///
-/// # Errors
-///
-/// Returns a [`DirectoryReconcileError`] retaining the admitted chain when the
-/// existing binding changed, admission failed, or a barrier failed.
 pub fn reconcile_directory(
     path: &Path,
     expected: &StorageDirectory,

@@ -144,6 +144,7 @@ mod qualification {
                     capabilities: vec![InProcessCapability::SpeechActivity],
                     recorded_at_unix_ms: 1,
                 }),
+                objects: Vec::new(),
             },
         );
         state.accepted_licenses.insert(
@@ -180,8 +181,7 @@ mod qualification {
                 "5359861c739e955e79d9a303bcbc70fb988958b1",
             )
         };
-        let object = root.join("sha256").join(&sha);
-        fs::write(&object, model)?;
+        fs::write(root.join("sha256").join(&sha), model)?;
         let release: agent_provider_config::local::LocalModelRelease = serde_json::from_value(
             serde_json::json!({
                 "id": "speech-qualification", "label": "Public fixture", "description": "Isolated test only", "version": revision,
@@ -205,6 +205,7 @@ mod qualification {
                     capabilities: vec![InProcessCapability::SpeechRecognition],
                     recorded_at_unix_ms: 1,
                 }),
+                objects: Vec::new(),
             },
         );
         state.accepted_licenses.insert(

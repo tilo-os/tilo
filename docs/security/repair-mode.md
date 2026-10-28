@@ -136,14 +136,15 @@ of which someone diagnosing the machine needs before they can decide what to try
 ### Why a gate at all, when the disk is already open
 
 Because an open mapper proves that some unlock factor was supplied earlier; it
-does not prove that the same person is still at the keyboard. Tilo ships no
-TPM auto-unlock slot: every unlock needs a human factor. A verified TPM2
-install unlocks normal boots with a short PIN; other installs use the strong
+does not prove that the same person is still at the keyboard. A verified TPM2
+system volume unlocks normal boots by itself; other installs use a strong
 passphrase; the recovery key and an explicitly enrolled FIDO2 token work on
 every install. Without a fresh gate, repair mode would become an unattended
-physical-access root shell after any of those factors opened the disk: strictly
-worse than the normal session, where privileged actions still require
-authentication.
+physical-access root shell after any of those opened the disk: strictly worse
+than the normal session, where privileged actions still require authentication.
+This is why repair mode is gated on a *typed* secret even though the system
+volume itself may carry a keyslot nobody types into
+([rollback.md](rollback.md), "A keyslot with no PIN").
 
 With the gate, repair mode grants exactly what knowing a disk secret already
 grants. The gate is not defeated by the disk being open, because it does not ask
@@ -151,14 +152,21 @@ the disk whether it is open — it asks the LUKS header whether this is a key.
 
 ### Why generation-bound unlock is still stronger
 
-The bounded-rollback design additionally ensures the TPM factor cannot open
+The bounded-rollback design additionally ensures no TPM factor can open
 repair mode: `tilo-rollback` seals against **PCR 7 and 11** with a signed
-prediction, and a repair-mode command line produces a different PCR 11, so the
-TPM2+PIN keyslot does not open there and the recovery key or an enrolled FIDO2
-token is the way in. The installer enrolls that slot on verified TPM2 installs
-from the signed prediction of the target UKI
-([boot-chain.md](boot-chain.md), "Target-independent enrollment"), and the
-initramfs consumer falls back to the other factors when it cannot unseal.
+prediction, and a repair-mode command line produces a different PCR 11, so
+neither a PIN-sealed generation keyslot nor a PIN-less one opens there, and the
+recovery key or an enrolled FIDO2 token is the way in. The installer enrolls a
+generation keyslot on verified TPM2 installs from the signed prediction of the
+target UKI ([boot-chain.md](boot-chain.md), "Target-independent enrollment"), and
+the initramfs consumer falls back to the other factors when it cannot unseal.
+
+That is the whole reason the mode's gate can stay as simple as it is. A PIN-less
+keyslot opens because the boot measured what the authority predicted; repair
+mode is a different measurement, so the same TPM refuses it and the person has to
+produce a secret the header holds. Report it with `tilo-rollback boot-status`
+before relying on it: the command says plainly whether a PIN-less keyslot would
+open this boot.
 
 On a verified TPM2 install, repair mode gets the stronger property because the
 mechanism that gives it is the same one that makes the mode selectable at all: the

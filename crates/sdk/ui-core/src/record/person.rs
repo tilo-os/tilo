@@ -6,7 +6,7 @@
 //! the keyboard, where they stopped reading — and is still data rather than
 //! a preference: it grows, it has history, edits to it are undone. That
 //! state is a record like any other, kept in the person's own room
-//! ([`collab_types::person_room`]): a room whose id is derived from the
+//! ([`collab_types::person_room()`]): a room whose id is derived from the
 //! person's root key and whose members are, by that derivation, exactly the
 //! devices that root certified. Nobody can be invited into it.
 //!
@@ -24,7 +24,10 @@ use std::rc::Rc;
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ChangeHash};
 
-use super::{RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordOwners, RecordStore};
+use super::{
+    HistoryUnavailable, RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordOwners,
+    RecordStore,
+};
 use crate::history_mode::HistoryOwner;
 use crate::history_mode::owner::LegacyHistoryLifetime;
 use crate::permissions::UserId;
@@ -62,6 +65,10 @@ pub struct PersonRecords {
     /// replica that syncs with it and stores nothing.
     replica: bool,
     author: UserId,
+    /// Where the person's records of other apps are kept, when not beside
+    /// these: a host that holds them itself lends them to the apps it shows
+    /// ([`Self::sharing`]).
+    others: Option<RecordOwners>,
 }
 
 impl PersonRecords {
@@ -79,6 +86,7 @@ impl PersonRecords {
             owners: owners.clone(),
             replica: false,
             author,
+            others: None,
         })
     }
 
@@ -95,6 +103,7 @@ impl PersonRecords {
             owners,
             replica: true,
             author,
+            others: None,
         })
     }
 
@@ -111,13 +120,24 @@ impl PersonRecords {
         if self.store.backend().is_none() {
             return Self::replica(package_id, self.author.clone());
         }
-        let mut owners = self.owners.clone();
+        let mut owners = self.others.clone().unwrap_or_else(|| self.owners.clone());
         Ok(Self {
             store: owners.open_person(package_id, &scope_of(&self.author))?,
             owners,
             replica: self.replica,
             author: self.author.clone(),
+            others: None,
         })
+    }
+
+    /// These records, with the person's records of other apps
+    /// ([`Self::of_package`]) opened where `others` keeps them: the host
+    /// holds those itself and lends them to every app it shows in its
+    /// process, so the process has one copy of each.
+    #[must_use]
+    pub fn sharing(mut self, others: &Self) -> Self {
+        self.others = Some(others.owners.clone());
+        self
     }
 
     /// Write out what is not stored yet, as closing the window does.
@@ -128,7 +148,6 @@ impl PersonRecords {
         self.store.try_flush()
     }
 
-    /// The person these records belong to.
     #[must_use]
     pub fn author(&self) -> &UserId {
         &self.author
@@ -214,8 +233,6 @@ impl PersonRecords {
     /// Open the original writer for a host-owned canonical edit. Unlike the
     /// readable replica path, this must observe and edit the actual owner:
     /// a busy/missing writer is never replaced by an empty local replica.
-    /// # Errors
-    /// Refuses a replica owner and propagates the original writer's errors.
     pub fn open_original_record(
         &self,
         kind: RecordKind,
@@ -234,7 +251,7 @@ impl PersonRecords {
     }
 }
 
-fn open_in(
+pub(super) fn open_in(
     store: &RecordStore,
     checkout: &RecordCheckout,
     initialize: &dyn Fn(&mut AutoCommit) -> Result<(), String>,
@@ -248,8 +265,10 @@ fn open_in(
     }
 }
 
-/// One of the person's records, open. Edits are attributed to the person,
-/// recorded as undo steps of their own and synced on the record's route.
+/// One of the person's records, open, or one of the workspace's
+/// ([`super::workspace`]), held the same way. Edits are attributed to the
+/// person, recorded as undo steps of their own and synced on the record's
+/// route.
 pub struct PersonRecord {
     store: RecordStore,
     checkout: RecordCheckout,
@@ -259,13 +278,20 @@ pub struct PersonRecord {
 }
 
 impl PersonRecord {
-    fn new(store: RecordStore, checkout: RecordCheckout, author: UserId) -> Self {
+    pub(super) fn new(store: RecordStore, checkout: RecordCheckout, author: UserId) -> Self {
         Self {
             store,
             checkout,
             author,
             lifetime: LegacyHistoryLifetime::new(),
         }
+    }
+
+    /// Wake the window `reader` belongs to whenever another replica's change
+    /// to the records kept with this one arrives
+    /// ([`RecordStore::wake_on_arrival`]).
+    pub fn wake_on_arrival(&self, reader: crate::WakeHandle) {
+        self.store.wake_on_arrival(reader);
     }
 
     /// The record's identity.
@@ -290,18 +316,32 @@ impl PersonRecord {
     /// Edit the record: `edit` changes the document, written and synced
     /// like any edit. An `undoable` change is one undo step of the
     /// person's; another (content from outside, housekeeping) is nobody's.
-    ///
-    /// # Errors
-    /// The record is busy, or `edit` failed (nothing is recorded then).
     pub fn edit<T>(
         &self,
         undoable: bool,
         edit: impl FnOnce(&mut AutoCommit) -> Result<T, String>,
     ) -> Result<T, String> {
+        match self.try_edit(undoable, edit) {
+            Ok(result) => result,
+            Err(unavailable) => Err(unavailable.to_string()),
+        }
+    }
+
+    /// [`Self::edit`], telling a record that cannot be changed right now
+    /// ([`HistoryUnavailable`]) from an edit that refused: `edit` did not
+    /// run then, and may run once whatever holds the record lets go.
+    ///
+    /// # Errors
+    /// Why the record cannot be changed now.
+    pub fn try_edit<T>(
+        &self,
+        undoable: bool,
+        edit: impl FnOnce(&mut AutoCommit) -> Result<T, String>,
+    ) -> Result<Result<T, String>, HistoryUnavailable> {
         let author = self.author.clone();
         let result = self
             .store
-            .with_history(&self.checkout.id, |doc, history| {
+            .with_history_or_why(&self.checkout.id, |doc, history| {
                 let before = doc.get_heads();
                 let value = edit(doc)?;
                 // The closure writes the record directly, naming no finer
@@ -316,10 +356,9 @@ impl PersonRecord {
                     history.rebase(doc);
                 }
                 Ok(value)
-            })
-            .ok_or_else(|| "the record is not open".to_owned())?;
+            })?;
         self.store.schedule_committed_history(&self.checkout.id);
-        result
+        Ok(result)
     }
 
     /// Undo the person's last edit of this record. Whether there was one.

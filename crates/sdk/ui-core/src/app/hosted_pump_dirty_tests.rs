@@ -13,7 +13,10 @@ struct HostedPumpProbe {
     actions: usize,
 }
 impl Widget for HostedPumpProbe {
-    crate::provides!(dyn crate::resources::PublishesResources);
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
 
     crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "hosted-pump-probe");
     fn sync(&mut self, _: &AppModel, _: &ModelPath) {
@@ -22,9 +25,13 @@ impl Widget for HostedPumpProbe {
             self.label = label;
         }
     }
+}
+
+impl crate::widget::ResourceOperations for HostedPumpProbe {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE]
     }
+
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -415,19 +422,20 @@ fn hosted_pump_host_owner_permission_replacement_refreshes() {
         .unwrap(),
     );
     let definition = ApplicationDefinition {
-        app_id: "test.directory",
-        title: "Directory",
+        app_id: "test.directory".into(),
+        title: "Directory".into(),
         icon: crate::widget::IconDescriptor::Glyph("D"),
         record_kind: crate::record::RecordKind::new("directory"),
         required: vec![],
         optional: vec![],
         opens: &[],
         room_record: false,
+        opens_before_record: false,
         create: owned_declared_directory_factory,
     };
-    let permissions = Rc::new(RefCell::new(
+    let permissions = crate::permissions::SharedPermissions::new(
         crate::permissions::PermissionContext::permissive(),
-    ));
+    );
     let context = HostContext::prepare(
         &definition,
         HostContextInputs {
@@ -482,7 +490,9 @@ fn hosted_pump_host_owner_permission_replacement_refreshes() {
     );
     assert_eq!(app.actions.resource_generation.get(), generation);
     // What HostWorker::pump does with the host's recomputed authority.
-    *permissions.borrow_mut() = crate::permissions::PermissionContext::stranger("fixture-user");
+    permissions.set(crate::permissions::PermissionContext::stranger(
+        "fixture-user",
+    ));
     let report = app.pump_hosted_model_as(false);
     assert!(report.synced && report.published);
     assert_ne!(app.actions.resource_generation.get(), generation);
@@ -514,14 +524,15 @@ fn a_component_queue_notification_reaches_its_app_without_forcing_a_sync() {
         .unwrap(),
     );
     let definition = ApplicationDefinition {
-        app_id: "test.directory",
-        title: "Directory",
+        app_id: "test.directory".into(),
+        title: "Directory".into(),
         icon: crate::widget::IconDescriptor::Glyph("D"),
         record_kind: crate::record::RecordKind::new("directory"),
         required: vec![],
         optional: vec![],
         opens: &[],
         room_record: false,
+        opens_before_record: false,
         create: owned_declared_directory_factory,
     };
     let context = HostContext::prepare(
@@ -531,9 +542,9 @@ fn a_component_queue_notification_reaches_its_app_without_forcing_a_sync() {
             views,
             device_id: "D".into(),
             instance_id: 83,
-            permissions: Rc::new(RefCell::new(
+            permissions: crate::permissions::SharedPermissions::new(
                 crate::permissions::PermissionContext::permissive(),
-            )),
+            ),
             author: crate::permissions::UserId("fixture-user".into()),
             action_context: tilo_actions::ActionContext::default(),
         },
@@ -832,16 +843,15 @@ mod input_publication {
     }
 
     impl Widget for InputProbe {
-        crate::provides!(dyn crate::resources::PublishesResources);
+        crate::provides!(
+            dyn crate::resources::PublishesResources,
+            dyn crate::widget::ResourceOperations
+        );
 
         crate::testing::inert_widget_methods!(
             unregistered_leaf_layout,
             name = "input-publication-probe"
         );
-
-        fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-            &[COUNTER_TYPE]
-        }
 
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
             match event {
@@ -875,6 +885,12 @@ mod input_publication {
                 }
                 _ => {}
             }
+        }
+    }
+
+    impl crate::widget::ResourceOperations for InputProbe {
+        fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+            &[COUNTER_TYPE]
         }
     }
 
@@ -1057,6 +1073,31 @@ mod input_publication {
         );
         assert_eq!(app.actions.resource_generation.get(), generation);
         assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+    }
+
+    /// Each keystroke begins by publishing the surface its edits are
+    /// attributed to. A surface built from nothing that changed since the
+    /// last is not built again: the route carries it.
+    #[test]
+    fn an_unchanged_surface_is_not_built_again() {
+        let mut fixture = super::HostedPumpFixture::new(1);
+        let app = &mut fixture.app;
+        app.publish_action_surface();
+        let attempts = app.actions.action_surface_publication_attempts;
+        for _ in 0..10 {
+            app.publish_action_surface();
+        }
+        assert_eq!(
+            app.actions.action_surface_publication_attempts, attempts,
+            "ten publications of an unchanged surface built it again"
+        );
+        app.invalidate_widget_resource_cache();
+        app.publish_action_surface();
+        assert_eq!(
+            app.actions.action_surface_publication_attempts,
+            attempts + 1,
+            "a change to what the surface is built from builds it once"
+        );
     }
 
     /// A handled input asks for a sync and a frame, and that sync can move

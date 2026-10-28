@@ -12,6 +12,7 @@
 //! Set `TILO_LOCK_SHOT_QUICK=1` for the portrait accessibility matrix,
 //! secondary-output composition, and animation phases only.
 
+use shell::compositor::lock_controller::{LockPrompt, refusal_line};
 use shell::compositor::lock_screen::{
     LockOutput, LockView, draw_lock_scene, draw_lock_scene_at_time,
 };
@@ -27,6 +28,23 @@ fn shot_dir() -> std::path::PathBuf {
     )
 }
 
+/// A prompt as the lock controller leaves it, for the whole review run.
+fn prompt(typed: &str, busy: bool, error: Option<&str>) -> &'static LockPrompt {
+    let prompt: &'static LockPrompt = Box::leak(Box::new(LockPrompt::new()));
+    let mut shown = prompt.borrow_mut();
+    if let Some(field) = shown.field_mut(ui::widget::FieldRole::Secret) {
+        field.set_text(typed);
+    }
+    if busy {
+        shown.set_busy(Some("Verifying…".to_owned()));
+    }
+    if let Some(error) = error {
+        shown.reject(refusal_line(error));
+    }
+    drop(shown);
+    prompt
+}
+
 fn states() -> [(&'static str, LockView<'static>); 4] {
     [
         (
@@ -34,6 +52,7 @@ fn states() -> [(&'static str, LockView<'static>); 4] {
             LockView {
                 clock: "21:47",
                 date: "Saturday, September 5",
+                prompt: Some(prompt("", false, None)),
                 ..LockView::default()
             },
         ),
@@ -42,6 +61,7 @@ fn states() -> [(&'static str, LockView<'static>); 4] {
             LockView {
                 clock: "21:47",
                 date: "Saturday, September 5",
+                prompt: Some(prompt("", false, Some("Incorrect username or password"))),
                 error: Some("Incorrect username or password"),
                 ..LockView::default()
             },
@@ -51,7 +71,7 @@ fn states() -> [(&'static str, LockView<'static>); 4] {
             LockView {
                 clock: "21:47",
                 date: "Saturday, September 5",
-                password_len: 12,
+                prompt: Some(prompt("", true, None)),
                 verifying: true,
                 ..LockView::default()
             },
@@ -61,7 +81,7 @@ fn states() -> [(&'static str, LockView<'static>); 4] {
             LockView {
                 clock: "21:47",
                 date: "Saturday, September 5",
-                password_len: 8,
+                prompt: Some(prompt("password", false, None)),
                 notification_count: 12,
                 ..LockView::default()
             },
@@ -75,21 +95,24 @@ fn render_lock_screen_matrix() {
     let root = shot_dir();
     let quick = std::env::var("TILO_LOCK_SHOT_QUICK").is_ok_and(|value| value == "1");
     std::fs::create_dir_all(&root).expect("create lock screenshot directory");
-    for (theme_label, theme) in [
+    for (theme_label, theme) in vec![
         ("normal", Theme::dark()),
         ("light", Theme::light()),
         ("reduced-motion", Theme::dark().with_reduce_motion(true)),
         ("large-text", Theme::dark().with_text_scale(1.3)),
         ("maximum-text", Theme::dark().with_text_scale(4.0)),
         ("high-contrast", Theme::high_contrast()),
-    ] {
+    ]
+    .into_boxed_slice()
+    {
         for (width, height, scale, label) in [
             (1600, 900, 1.0, ""),
             (1366, 768, 1.0, ""),
             (1280, 720, 1.0, ""),
             (1280, 800, 1.0, ""),
-            // Scale is presentation density, not a second layout multiplier.
-            (1600, 900, 2.0, "-hidpi"),
+            // Sizes are the display's physical pixels: a 2x panel showing a
+            // 1600x900 desktop draws the same lock at twice the pixels.
+            (3200, 1800, 2.0, "-hidpi"),
             // Compact but supported laptop/tablet viewport.
             (960, 540, 1.0, "-compact"),
             (800, 600, 1.0, "-small"),

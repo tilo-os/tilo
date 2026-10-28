@@ -225,7 +225,6 @@ mod tests {
         let session = runtime.join(SESSION_DIR);
         std::fs::create_dir(&session).unwrap();
         assert!(!has_session_marker(&runtime), "an empty directory");
-        // A plain file of the same name is nobody's door.
         std::fs::write(session.join(AGENT_SOCKET_FILE), b"").unwrap();
         assert!(!has_session_marker(&runtime), "a regular file");
         std::fs::remove_file(session.join(AGENT_SOCKET_FILE)).unwrap();

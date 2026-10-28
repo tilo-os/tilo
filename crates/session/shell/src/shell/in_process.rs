@@ -18,10 +18,12 @@ use ui::application::{
 };
 use ui::application_view::InstanceViewStore;
 use ui::launch::LaunchError;
-use ui::permissions::{PermissionContext, Role, UserId};
+use ui::permissions::{PermissionContext, Role, SharedPermissions, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOpenError, RecordOwners};
 
 mod feedback_native;
+#[cfg(target_os = "linux")]
+mod feedback_review;
 #[cfg(test)]
 mod feedback_tests;
 pub mod messaging;
@@ -47,6 +49,10 @@ pub struct InProcessApps {
     first_accounts: Option<Rc<dyn messaging::first_account::FirstAccounts>>,
     messaging_registry: Option<std::sync::Arc<dyn tilo_messaging::MessagingRegistry>>,
     credential_owner: Option<accounts::CredentialOwner>,
+    /// The person's records the session keeps (their accounts and contacts
+    /// among them), held on this thread where its settings are: the apps
+    /// open the person's records of other apps there.
+    person_records: crate::shell::settings_records::Holder,
     messaging_records: Option<Rc<dyn messaging::records::RecordQueries>>,
     messaging_record_wake: Option<crate::session_runtime::Wake>,
     messaging_transport:
@@ -68,13 +74,46 @@ pub struct InProcessApps {
         tilo_messaging::ServiceAccount,
         tilo_messaging::MessagingClient,
     )>,
+    /// The window each mounted tab is shown in, as lent to its app: the
+    /// slots it declares for its bar and its asks to close its tab.
+    windows: HashMap<u64, ui::hosted_window::HostedWindow>,
+    /// The records the session's windows hold, by the window instance the
+    /// launcher started each for: what a report about a window records.
+    window_routes: Option<WindowRoutes>,
+    /// The apps mounted here that declare their windows withheld from what
+    /// leaves the device (`ComponentBehaviour::capture_protected`).
+    capture_protected: DeclaredProtected,
 }
+
+/// Apps that declare their windows capture-protected, by id.
+pub(crate) type DeclaredProtected = Rc<RefCell<std::collections::HashSet<String>>>;
+
+/// The records the session's broker knows its windows to hold, by window
+/// instance.
+pub type WindowRoutes =
+    std::sync::Arc<dyn Fn() -> Vec<(u64, tilo_action_broker::route::CrdtRoute)> + Send + Sync>;
 
 /// Connects an app the session shows in its own process to the session's
 /// broker for `(app, room)`.
 pub type SessionBroker = Rc<dyn Fn(&str, &str) -> ui::collaboration::HostSessionConnector>;
 
 impl InProcessApps {
+    /// The records every app of `room` opens (the workspace's emoji), in
+    /// the store the apps mounted here share, changed as `author`: what a
+    /// host that is no app window, such as workspace settings, opens them
+    /// from, so it and the room's windows hold the one record.
+    pub(crate) fn workspace_records(
+        &self,
+        room: &str,
+        author: &str,
+    ) -> ui::record::workspace::WorkspaceRecords {
+        ui::record::workspace::WorkspaceRecords::in_room(
+            self.owners.clone(),
+            room.to_owned(),
+            UserId(author.to_owned()),
+        )
+    }
+
     #[cfg(target_os = "linux")]
     pub(crate) fn bind_messaging_network_prompts(
         &mut self,
@@ -84,8 +123,14 @@ impl InProcessApps {
     }
 
     /// Apps keeping their records in `store`, mounted for `author` on
-    /// `device_id`.
-    pub fn new(store: Rc<dyn durable_store::DurableStore>, device_id: &str, author: &str) -> Self {
+    /// `device_id`, opening the person's records of other apps in
+    /// `person_records`.
+    pub(crate) fn new(
+        store: Rc<dyn durable_store::DurableStore>,
+        device_id: &str,
+        author: &str,
+        person_records: crate::shell::settings_records::Holder,
+    ) -> Self {
         Self {
             feedback: None,
             native_feedback: None,
@@ -102,6 +147,7 @@ impl InProcessApps {
             first_accounts: None,
             messaging_registry: None,
             credential_owner: None,
+            person_records,
             messaging_records: None,
             messaging_record_wake: None,
             messaging_transport: None,
@@ -119,7 +165,36 @@ impl InProcessApps {
             native_broker_socket: None,
             receivers: Vec::new(),
             messaging_services: Vec::new(),
+            windows: HashMap::new(),
+            window_routes: None,
+            capture_protected: DeclaredProtected::default(),
         }
+    }
+
+    /// The window tab `tab` is shown in, to lend its app: the same one for
+    /// every mount of the tab, until the tab is gone.
+    pub(crate) fn hosted_window(&mut self, tab: u64) -> ui::hosted_window::HostedWindow {
+        let window = self.windows.entry(tab).or_default().clone();
+        // An app asking from its own thread (a shell that exited) wakes the
+        // loop, which looks at its window.
+        if let Some(wake) = self.messaging_record_wake.clone() {
+            window.set_wake(move || wake());
+        }
+        window
+    }
+
+    /// Every mounted tab's window, by tab.
+    pub(crate) fn hosted_windows(&self) -> Vec<(u64, ui::hosted_window::HostedWindow)> {
+        self.windows
+            .iter()
+            .map(|(tab, window)| (*tab, window.clone()))
+            .collect()
+    }
+
+    /// Tab `tab` is gone: its window goes with it, and a tab that comes
+    /// back gets a fresh one.
+    pub(crate) fn forget_hosted_window(&mut self, tab: u64) {
+        self.windows.remove(&tab);
     }
 
     /// Bind the existing compositor wake once; this opens no metadata/custody.
@@ -191,42 +266,6 @@ impl InProcessApps {
         let mut services = self.messaging_services.clone();
         services.push((
             tilo_messaging::ServiceAccount::new("signal", &owner.account),
-            broker.client(),
-        ));
-        let router = tilo_messaging::MessagingRouter::new(&self.author.0, services.clone())
-            .map_err(|_| LaunchError::BindingMismatch)?;
-        if let Some(registry) = &self.messaging_registry {
-            let (identity, client) = services.last().ok_or(LaunchError::BindingMismatch)?;
-            registry
-                .register(identity.clone(), client.clone())
-                .map_err(|_| LaunchError::BindingMismatch)?;
-            self.messaging = Some(registry.clone().client());
-        } else {
-            self.messaging = Some(router.client());
-        }
-        self.messaging_services = services;
-        Ok(())
-    }
-
-    /// Install an account-owned `WhatsApp` or SMS service under its frozen device.
-    /// # Errors
-    /// Refuses another person/device or duplicate service/account registration.
-    pub fn install_external(
-        &mut self,
-        broker: &tilo_messaging_protocol::external_broker::ExternalBroker,
-    ) -> Result<(), LaunchError> {
-        let owner = broker.owner();
-        if owner.principal != self.author.0 || owner.device != self.device_id {
-            return Err(LaunchError::BindingMismatch);
-        }
-        let mut services = self.messaging_services.clone();
-        let service = match owner.service {
-            tilo_messaging_protocol::Service::Whatsapp => "whatsapp",
-            tilo_messaging_protocol::Service::Sms => "sms",
-            _ => return Err(LaunchError::BindingMismatch),
-        };
-        services.push((
-            tilo_messaging::ServiceAccount::new(service, &owner.account),
             broker.client(),
         ));
         let router = tilo_messaging::MessagingRouter::new(&self.author.0, services.clone())
@@ -355,18 +394,30 @@ impl InProcessApps {
     }
 
     /// The apps of a session whose state lives in `profile_root`: their
-    /// records and views there, as this device.
+    /// records and views there, as this device, with the person's records
+    /// in `person` held on this thread.
     ///
     /// # Errors
-    /// A relative root or corrupt device identity.
-    pub fn at(profile_root: &std::path::Path, author: &str) -> Result<Self, LaunchError> {
+    /// A relative root, corrupt device identity or unreadable person's
+    /// records.
+    pub(crate) fn at(
+        profile_root: &std::path::Path,
+        person: &std::path::Path,
+        author: &str,
+    ) -> Result<Self, LaunchError> {
         std::fs::create_dir_all(profile_root)
             .map_err(|error| LaunchError::Operation(error.to_string()))?;
         let profile = ui::application::NativeProfile::open(profile_root, None)?;
+        let held = crate::shell::settings_records::Holder::held(
+            (person.to_path_buf(), author.to_owned()),
+            profile_root,
+        )
+        .map_err(LaunchError::Operation)?;
         Ok(Self::new(
             Rc::new(app_state::FsStore::new(profile_root.to_path_buf())),
             profile.device_id(),
             author,
+            held,
         ))
     }
 
@@ -374,12 +425,13 @@ impl InProcessApps {
     /// records of its scratch tabs.
     ///
     /// # Errors
-    /// As [`Self::at`].
+    /// As `Self::at`.
     pub fn native(author: &str) -> Result<Self, LaunchError> {
+        let person = crate::shell::settings_records::person_dir()
+            .ok_or_else(|| LaunchError::Operation("no data home".into()))?;
         let mut apps = Self::native_for_profile(
-            &cli::data_home()
-                .join(crate::shell::SHELL_RECORDS_PACKAGE)
-                .join("apps"),
+            &crate::shell::settings_records::session_apps(),
+            &person,
             author,
             launcher::services::collab_socket(),
         )?;
@@ -414,22 +466,25 @@ impl InProcessApps {
         Ok(())
     }
 
-    /// The same native startup, with an explicit private profile and broker
-    /// scope for owned native hosts and isolated integration fixtures.
+    /// The same native startup, with an explicit private profile, directory
+    /// of the person's records and broker scope for owned native hosts and
+    /// isolated integration fixtures.
     pub(crate) fn native_for_profile(
         profile: &std::path::Path,
+        person: &std::path::Path,
         author: &str,
         socket: std::path::PathBuf,
     ) -> Result<Self, LaunchError> {
         let connector = socket.clone();
-        let mut apps = Self::at(profile, author)?.reaching_broker(Rc::new(move |app, room| {
-            session_connector(
-                connector.clone(),
-                launcher::services::identity_socket(),
-                app,
-                room,
-            )
-        }));
+        let mut apps =
+            Self::at(profile, person, author)?.reaching_broker(Rc::new(move |app, room| {
+                session_connector(
+                    connector.clone(),
+                    launcher::services::identity_socket(),
+                    app,
+                    room,
+                )
+            }));
         apps.native_broker_socket = Some(socket);
         apps.feedback_destination = feedback_native::configured_destination(profile)?;
         apps.native_messaging_root = Some(profile.join("private-messages"));
@@ -468,7 +523,25 @@ impl InProcessApps {
         record: RecordId,
         lend: impl FnOnce(&mut HostContext),
     ) -> Result<AppComponent, LaunchError> {
-        if definition.app_id == tilo_desktop::feedback::PACKAGE {
+        let component = self.mount_component(definition, room, tab, record, lend)?;
+        if component.capture_protected() {
+            self.capture_protected
+                .borrow_mut()
+                .insert(definition.app_id().to_owned());
+        }
+        Ok(component)
+    }
+
+    fn mount_component(
+        &mut self,
+        definition: &'static ApplicationDefinition,
+        room: &str,
+        tab: u64,
+        record: RecordId,
+        lend: impl FnOnce(&mut HostContext),
+    ) -> Result<AppComponent, LaunchError> {
+        super::work_accounting::app_mounted();
+        if definition.app_id() == tilo_desktop::feedback::PACKAGE {
             return match &self.feedback {
                 Some(feedback) => {
                     feedback
@@ -480,7 +553,7 @@ impl InProcessApps {
             };
         }
         #[cfg(target_os = "linux")]
-        if definition.app_id == "so.tilo.messages" {
+        if definition.app_id() == "so.tilo.messages" {
             if self.first_accounts.is_none()
                 && self.native_broker_socket.is_some()
                 && let Some(wake) = &self.messaging_record_wake
@@ -494,7 +567,7 @@ impl InProcessApps {
         }
         let records = self
             .owners
-            .open(definition.app_id, room)
+            .open(definition.app_id(), room)
             .map_err(LaunchError::Record)?;
         let views = if let Some(views) = self.views.get(room) {
             Rc::clone(views)
@@ -511,10 +584,10 @@ impl InProcessApps {
             views: Rc::clone(&views),
             device_id: self.device_id.clone(),
             instance_id: tab,
-            permissions: Rc::new(RefCell::new(PermissionContext::member(
+            permissions: SharedPermissions::new(PermissionContext::member(
                 &self.author.0,
                 Role::Owner,
-            ))),
+            )),
             author: self.author.clone(),
             action_context: tilo_actions::ActionContext::default(),
         };
@@ -533,14 +606,27 @@ impl InProcessApps {
             ),
             Err(error) => return Err(LaunchError::Record(error)),
         };
+        // The person's records of other apps (their accounts and contacts)
+        // are the ones the session holds.
+        let held = self
+            .person_records
+            .person_records()
+            .map_err(LaunchError::Operation)?;
         if let Ok(person) = ui::record::person::PersonRecords::open(
             &mut self.owners,
-            definition.app_id,
+            definition.app_id(),
             self.author.clone(),
         ) {
-            context.provide_person_records(person);
+            context.provide_person_records(person.sharing(&held));
         }
-        if definition.app_id == "so.tilo.messages" {
+        // The records every app of the room opens (the workspace's emoji),
+        // in the owners every in-process app shares: one writer per room.
+        context.provide_workspace_records(ui::record::workspace::WorkspaceRecords::in_room(
+            self.owners.clone(),
+            room.to_owned(),
+            self.author.clone(),
+        ));
+        if definition.app_id() == "so.tilo.messages" {
             #[cfg(target_os = "linux")]
             if let Some(first) = &self.first_accounts {
                 context.lend(first.client());
@@ -553,13 +639,18 @@ impl InProcessApps {
                 context.lend(registry.clone().client());
             }
         }
-        if definition.app_id == "so.tilo.passwords"
+        if definition.app_id() == "so.tilo.passwords"
             && let Some(owner) = &self.credential_owner
         {
             context.lend(owner.clone());
         }
         lend(&mut context);
         definition.instantiate(context, target, RestoreInput::None)
+    }
+
+    /// The apps mounted here that declare their windows capture-protected.
+    pub(crate) fn declared_capture_protected(&self) -> DeclaredProtected {
+        Rc::clone(&self.capture_protected)
     }
 }
 
@@ -581,7 +672,20 @@ impl InProcessApps {
         }
         startup
             .install(Rc::clone(&self.store), &mut self.feedback)
-            .map_err(|error| LaunchError::Operation(error.to_string()))
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        self.lend_review_model();
+        Ok(())
+    }
+
+    /// Lend the report composer the model the person's settings choose for
+    /// it, to look over reports before they are sent.
+    fn lend_review_model(&self) {
+        #[cfg(target_os = "linux")]
+        if let (Some(feedback), Some((models, name))) =
+            (&self.feedback, feedback_review::review_model())
+        {
+            feedback.services().set_models(models, name);
+        }
     }
 
     /// Bind a trusted host's already-admitted feedback adapter to this profile.
@@ -601,7 +705,34 @@ impl InProcessApps {
             tilo_desktop::feedback::PrivateFeedback::new(Rc::clone(&self.store), destination, host)
                 .map_err(|error| LaunchError::Operation(error.to_string()))?,
         );
+        self.lend_review_model();
         Ok(())
+    }
+
+    /// Learn the records the session's windows hold from its broker.
+    pub(crate) fn bind_window_routes(&mut self, routes: WindowRoutes) {
+        self.window_routes = Some(routes);
+    }
+
+    /// The record window `instance` of `app` in `room` shows: the one record
+    /// it holds there besides the app's own record of the workspace, or that
+    /// one alone. `None` when it holds none, or several.
+    pub(crate) fn window_record(&self, room: &str, app: &str, instance: u64) -> Option<String> {
+        let routes = self.window_routes.as_ref()?();
+        let mut held: Vec<String> = routes
+            .into_iter()
+            .filter(|(at, route)| {
+                *at == instance && route.app_id == app && route.cluster_id == room
+            })
+            .map(|(_, route)| route.record_id)
+            .collect();
+        held.sort();
+        held.dedup();
+        match held.as_slice() {
+            [only] => Some(only.clone()),
+            [primary, item] if primary.is_empty() => Some(item.clone()),
+            _ => None,
+        }
     }
 
     /// Feedback opened from now on, and an open composer, is about `subject`.
@@ -612,6 +743,28 @@ impl InProcessApps {
             tracing::debug!(%error, "feedback subject not applied to the open composer");
         }
         self.feedback_subject = subject;
+    }
+
+    /// Whether reports have somewhere to go: "Report a problem…" is offered
+    /// only then.
+    pub(crate) fn feedback_configured(&self) -> bool {
+        self.feedback.is_some()
+    }
+
+    /// Start a report about what the person picked; the composer shows it
+    /// when it opens.
+    pub(crate) fn begin_feedback_report(
+        &self,
+        picked: tilo_app::feedback::PickedReport,
+    ) -> Result<(), String> {
+        let feedback = self
+            .feedback
+            .as_ref()
+            .ok_or("feedback has no destination here")?;
+        feedback
+            .services()
+            .begin_report(picked)
+            .map_err(|error| error.to_string())
     }
 
     /// Storage/transport wakes service the approved outbox, including while
@@ -776,6 +929,7 @@ mod tests {
     include!("in_process_files_clipboard_tests.rs");
     include!("in_process_publication_tests.rs");
     include!("in_process_terminal_open_tests.rs");
+    include!("in_process_window_search_tests.rs");
 
     const ROOM: &str = "6a3f0c2e-0f1b-4c5d-9e8f-123456789abc";
     const TAB: u64 = 41;
@@ -803,7 +957,7 @@ mod tests {
                 listener
             };
             tokio::join!(
-                connect_session_socket(&path, &services, std::time::Duration::from_secs(4)),
+                connect_session_socket(&path, &services, tilo_test_env::hang_bound()),
                 bind
             )
         });
@@ -819,19 +973,15 @@ mod tests {
         let runtime = session_socket_runtime();
         for state in [SessionServices::NotHere, SessionServices::Listening] {
             let (services, _) = tokio::sync::watch::channel(state);
-            let started = std::time::Instant::now();
-            let error = runtime
-                .block_on(connect_session_socket(
-                    &path,
-                    &services,
-                    std::time::Duration::from_secs(4),
-                ))
-                .unwrap_err();
+            // Failing without waiting is failing on the first poll.
+            let error = futures_util::FutureExt::now_or_never(connect_session_socket(
+                &path,
+                &services,
+                tilo_test_env::hang_bound(),
+            ))
+            .unwrap_or_else(|| panic!("{state:?}: the connect waited"))
+            .unwrap_err();
             assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{state:?}");
-            assert!(
-                started.elapsed() < std::time::Duration::from_secs(1),
-                "{state:?}"
-            );
         }
         let (services, _) = tokio::sync::watch::channel(SessionServices::Starting);
         let error = runtime
@@ -866,10 +1016,53 @@ mod tests {
         harness
     }
 
+    /// A terminal opened on the frame loop, whose store opens records on its own thread, is
+    /// still opening while its records are, and mounts once they are ready.
+    #[test]
+    fn a_terminal_mounted_without_waiting_on_the_disk_mounts_once_its_record_is_ready() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut apps = InProcessApps::at(
+            profile.path(),
+            &profile.path().join("person"),
+            "test-person",
+        )
+        .unwrap();
+        let (woken, wakes) = std::sync::mpsc::channel();
+        let woken = std::sync::Mutex::new(woken);
+        durable_store::waiting::decline_on_this_thread(std::sync::Arc::new(move || {
+            let _ = woken.lock().unwrap().send(());
+        }));
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            match apps.mount(
+                terminal::definition(),
+                ROOM,
+                TAB,
+                RecordId::for_tab(TAB),
+                |context| context.lend(terminal::HostedProcessServices::unavailable()),
+            ) {
+                Ok(_) => break,
+                Err(error) if error.is_opening() => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the terminal never stopped opening"
+                    );
+                    tilo_test_env::recv("the store to wake the frame loop", &wakes);
+                }
+                Err(error) => panic!("the terminal failed instead of opening: {error}"),
+            }
+        }
+    }
+
     #[test]
     fn hosted_terminal_missing_ush_reports_startup_failure_and_refuses_input() {
         let profile = tempfile::tempdir().unwrap();
-        let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+        let mut apps = InProcessApps::at(
+            profile.path(),
+            &profile.path().join("person"),
+            "test-person",
+        )
+        .unwrap();
         let mut harness = mount_terminal(&mut apps);
         let address = |operation| ui::bound_dispatch::BoundActionAddress {
             instance_id: TAB,
@@ -912,7 +1105,12 @@ mod tests {
     #[test]
     fn a_hosted_terminal_tab_publishes_its_actions_and_keeps_its_record() {
         let profile = tempfile::tempdir().unwrap();
-        let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+        let mut apps = InProcessApps::at(
+            profile.path(),
+            &profile.path().join("person"),
+            "test-person",
+        )
+        .unwrap();
         let mut harness = mount_terminal(&mut apps);
         let session = harness
             .resources()
@@ -949,7 +1147,7 @@ mod tests {
         let _again = mount_terminal(&mut apps);
         let records = apps
             .owners
-            .open(terminal::definition().app_id, ROOM)
+            .open(terminal::definition().app_id(), ROOM)
             .unwrap();
         let kept = records
             .with(&RecordId::for_tab(TAB), |doc| {
@@ -969,7 +1167,12 @@ mod tests {
         let folder = tempfile::tempdir().unwrap();
         std::fs::write(folder.path().join("harbour-plan.txt"), "plan").unwrap();
         let folder = folder.path().canonicalize().unwrap();
-        let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+        let mut apps = InProcessApps::at(
+            profile.path(),
+            &profile.path().join("person"),
+            "test-person",
+        )
+        .unwrap();
         let mount = |apps: &mut InProcessApps, tab: u64| {
             let startup = file_explorer::StartupInputs {
                 initial_dir: folder.clone(),
@@ -1009,7 +1212,7 @@ mod tests {
         let places = |apps: &mut InProcessApps| {
             let records = apps
                 .owners
-                .open(file_explorer::definition().app_id, ROOM)
+                .open(file_explorer::definition().app_id(), ROOM)
                 .unwrap();
             records
                 .with(&RecordId::room_default(), |doc| {
@@ -1057,6 +1260,7 @@ mod tests {
                 kind,
                 label: "Tab".into(),
             },
+            app_title: None,
         };
         let room = crate::shell::state::RoomId::new();
         let request = tilo_desktop::resolver::TileRequest { room, tab: &tab };
@@ -1085,7 +1289,12 @@ mod tests {
     #[test]
     fn each_notes_tab_is_a_notebook_of_its_own_kept_in_its_record() {
         let profile = tempfile::tempdir().unwrap();
-        let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+        let mut apps = InProcessApps::at(
+            profile.path(),
+            &profile.path().join("person"),
+            "test-person",
+        )
+        .unwrap();
         let write = |apps: &mut InProcessApps, tab: u64, title: &str| {
             let component = apps
                 .mount(
@@ -1133,7 +1342,10 @@ mod tests {
         write(&mut apps, 62, "Beta");
 
         let titles = |apps: &mut InProcessApps, tab: u64| -> Vec<String> {
-            let records = apps.owners.open(notes::definition().app_id, ROOM).unwrap();
+            let records = apps
+                .owners
+                .open(notes::definition().app_id(), ROOM)
+                .unwrap();
             records
                 .try_open_record(&RecordCheckout::new(
                     RecordId::for_tab(tab),
@@ -1172,7 +1384,14 @@ mod tests {
         std::fs::write(&file, "moor at the east quay\n").unwrap();
         let file = file.canonicalize().unwrap();
         let mut inputs = crate::shell::hosted_inputs::HostedTileInputs::default();
-        inputs.mount_apps_in_process(InProcessApps::at(profile.path(), "test-person").unwrap());
+        inputs.mount_apps_in_process(
+            InProcessApps::at(
+                profile.path(),
+                &profile.path().join("person"),
+                "test-person",
+            )
+            .unwrap(),
+        );
 
         let notes = mount_tab(&inputs, 71, notes_kind());
         assert!(
@@ -1204,7 +1423,7 @@ mod tests {
         );
         let mut editor = editor;
         assert!(
-            editor.wait_until(ui::time::Duration::from_secs(10), |editor| {
+            editor.wait_until(tilo_test_env::hang_bound(), |editor| {
                 editor
                     .inspection_json()
                     .is_ok_and(|inspection| inspection.contains("harbour-plan.txt"))
@@ -1213,12 +1432,148 @@ mod tests {
         );
     }
 
+    /// The hosted Editor's text selection and clipboard commands are driven
+    /// through the keyboard, headlessly: select all, copy, and paste into a
+    /// second document that already holds text of its own.
+    ///
+    /// A teacher that has to edit a document can select and copy text instead
+    /// of deleting it one character at a time, which is what a person does.
+    /// The checks read the published accessible selection, so the route is the
+    /// one a screen reader and an agent also take.
+    #[test]
+    fn the_hosted_editor_selects_copies_and_pastes_through_the_keyboard() {
+        use ui::a11y::Action as SemanticAction;
+        use ui::headless::Action;
+
+        let profile = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let mut inputs = crate::shell::hosted_inputs::HostedTileInputs::default();
+        inputs.mount_apps_in_process(
+            InProcessApps::at(
+                profile.path(),
+                &profile.path().join("person"),
+                "test-person",
+            )
+            .unwrap(),
+        );
+
+        let line = "moor at the east quay\n";
+        let source = folder.path().join("harbour-plan.txt");
+        std::fs::write(&source, line).unwrap();
+        inputs.bind_document(
+            81,
+            crate::shell::hosted_inputs::HostedDocument {
+                provider_id: "org.nirios.Editor",
+                path: source.canonicalize().unwrap(),
+            },
+        );
+        let mut editor = mount_tab(
+            &inputs,
+            81,
+            crate::shell::state::AppKind::Other("Editor".into()),
+        );
+        assert!(
+            editor
+                .wait_for_named("editor_view", tilo_test_env::hang_bound())
+                .is_ok(),
+            "the Editor tab shows its document"
+        );
+        assert!(
+            editor
+                .perform_named("editor_view", &SemanticAction::Focus)
+                .is_ok(),
+            "the keyboard reaches the document"
+        );
+
+        let outcome = ui::headless::driver::drive(
+            &mut editor,
+            &[
+                Action::Modifiers(vec!["ctrl".into()]).into(),
+                Action::Key("a".into()).into(),
+                Action::Key("c".into()).into(),
+                Action::Modifiers(Vec::new()).into(),
+                Action::Expect(
+                    ui::headless::SemanticExpectation::named("editor_view")
+                        .value(line)
+                        .text_selection(0, line.len()),
+                )
+                .into(),
+            ],
+        );
+        assert!(
+            outcome.is_pass(),
+            "select all and copy must select the whole document: {:?}",
+            outcome.failure()
+        );
+
+        let drafted = "";
+        let destination = folder.path().join("tide-notes.txt");
+        std::fs::write(&destination, drafted).unwrap();
+        inputs.bind_document(
+            82,
+            crate::shell::hosted_inputs::HostedDocument {
+                provider_id: "org.nirios.Editor",
+                path: destination.canonicalize().unwrap(),
+            },
+        );
+        let mut second = mount_tab(
+            &inputs,
+            82,
+            crate::shell::state::AppKind::Other("Editor".into()),
+        );
+        assert!(
+            second
+                .wait_for_named("editor_view", tilo_test_env::hang_bound())
+                .is_ok(),
+            "the second Editor tab shows its document"
+        );
+        assert!(
+            second
+                .perform_named("editor_view", &SemanticAction::Focus)
+                .is_ok(),
+            "the keyboard reaches the second document"
+        );
+
+        // Paste the copied line into the empty destination: one command that
+        // writes text a character-by-character route would have typed.
+        let outcome = ui::headless::driver::drive(
+            &mut second,
+            &[
+                Action::Modifiers(vec!["ctrl".into()]).into(),
+                Action::Key("v".into()).into(),
+                Action::Key("s".into()).into(),
+                Action::Modifiers(Vec::new()).into(),
+                Action::Expect(
+                    ui::headless::SemanticExpectation::named("editor_view")
+                        .value(line)
+                        .text_selection(line.len(), line.len()),
+                )
+                .into(),
+            ],
+        );
+        assert!(
+            outcome.is_pass(),
+            "paste must write the copied line at the caret: {:?}",
+            outcome.failure()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&destination).unwrap(),
+            line,
+            "the pasted text is the document the copy came from"
+        );
+    }
+
     /// A Notes tab shown as an app of its own runs what its launch queued:
     /// a Markdown file it is opened on becomes a note in the tab's notebook.
     #[test]
     fn a_notes_tab_runs_its_launch_and_keeps_the_note_it_opened() {
         let profile = tempfile::tempdir().unwrap();
-        let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+        let mut apps = InProcessApps::at(
+            profile.path(),
+            &profile.path().join("person"),
+            "test-person",
+        )
+        .unwrap();
         let (file, _receipt) = ui::application::OpenFile::new(
             "Harbour plan.md",
             "text/markdown",
@@ -1264,7 +1619,10 @@ mod tests {
         }
         let _reports = ui::component_lifecycle::close_components(app.as_mut());
 
-        let records = apps.owners.open(notes::definition().app_id, ROOM).unwrap();
+        let records = apps
+            .owners
+            .open(notes::definition().app_id(), ROOM)
+            .unwrap();
         records
             .try_open_record(&RecordCheckout::new(
                 RecordId::for_tab(81),
@@ -1378,7 +1736,11 @@ mod tests {
     }
 
     /// Frames of `shown` until `done`, bounded.
-    fn until(shown: &mut [&mut Shown], what: &str, mut done: impl FnMut() -> bool) {
+    fn until(
+        shown: &mut [&mut Shown],
+        what: impl std::fmt::Display,
+        mut done: impl FnMut() -> bool,
+    ) {
         let deadline = tilo_test_env::hang_deadline();
         loop {
             for app in shown.iter_mut() {
@@ -1423,11 +1785,15 @@ mod tests {
         let session = crate::runtime_host::Session::start(&profile).unwrap();
         let collab = session.broker.capnp_socket().to_path_buf();
         let identity = session.identity_socket().to_path_buf();
-        let mut apps = InProcessApps::at(&profile.join("apps"), &session.actor)
-            .unwrap()
-            .reaching_broker(Rc::new(move |app, room| {
-                session_connector(collab.clone(), identity.clone(), app, room)
-            }));
+        let mut apps = InProcessApps::at(
+            &profile.join("apps"),
+            &profile.join("apps").join("person"),
+            &session.actor,
+        )
+        .unwrap()
+        .reaching_broker(Rc::new(move |app, room| {
+            session_connector(collab.clone(), identity.clone(), app, room)
+        }));
         let room = session.room.clone();
         // The Notes tab is opened on a note whose body has a word no title has.
         let (file, _receipt) = ui::application::OpenFile::new(
@@ -1459,12 +1825,12 @@ mod tests {
             &mut [&mut notes, &mut terminal],
             "both apps publish",
             || {
-                provider_of(notes::definition().app_id).is_some()
-                    && provider_of(terminal::definition().app_id).is_some()
+                provider_of(notes::definition().app_id()).is_some()
+                    && provider_of(terminal::definition().app_id()).is_some()
             },
         );
-        let notes_provider = provider_of(notes::definition().app_id).unwrap();
-        let terminal_provider = provider_of(terminal::definition().app_id).unwrap();
+        let notes_provider = provider_of(notes::definition().app_id()).unwrap();
+        let terminal_provider = provider_of(terminal::definition().app_id()).unwrap();
 
         let query = |provider: &str, needle: &str| {
             tilo_actions::remote::ActionHost::query(

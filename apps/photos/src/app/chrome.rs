@@ -1,34 +1,31 @@
 //! The window around the photo surfaces.
 //!
-//! A sidebar lists the library's destinations and its albums; one header row
-//! holds the sidebar toggle, a back button while a photograph is open, the
-//! title of what is shown, the commands for it and the search launcher; a
-//! status bar keeps the count or the size of the photograph. Every piece is
-//! the shared chrome: the drawer is `SidebarDrawer`, its rows are
-//! `chrome::paint_nav_row`, the commands are a `Toolbar` with its own More
-//! menu, the launcher is `search::search_button`, and the bar is
-//! `chrome::status_bar`. Nothing here picks a colour, a size or a radius.
-
-use std::cell::Cell;
-use std::rc::Rc;
+//! The window's shell (`resource.rs`) holds the sidebar: the library's
+//! destinations and its albums, a `NavList` this window keeps through a
+//! `NavFeed`. A status bar keeps the count or the size of the photograph. The toolbar is the window
+//! bar's slots ([`ui::window_toolbar`]): the sidebar's toggle, Back while a
+//! photograph or a person is open, the title of what is shown as the
+//! window's location and the commands for it; search is the bar's own.
+//! Every piece is the shared chrome: the sidebar is the shell's, the bar
+//! is `chrome::status_bar`. Nothing here picks a colour, a size or a
+//! radius.
 
 use automerge::AutoCommit;
-use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Politeness, Role};
+use ui::a11y::{AccessNode, Politeness, Role};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Button, ModelPath, Widget};
+use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
 use super::{Hit, LibraryDestination, PhotosApp, SelectionHit};
 use crate::strings::{tr, tr_count, tr_with};
 
-use ui::chrome::{NavCount, NavRowFace, NavSectionFace, SelectionState};
-use ui::widget::toolbar::Orientation;
-use ui::widget::{SidebarDrawer, Toolbar};
+use ui::widget::{
+    NavFeed, NavItem, NavSection, NavShell, SidebarDrawer, WINDOW_BACK, WindowBarLink,
+};
 
 /// What a sidebar row opens.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,7 +51,7 @@ impl NavTarget {
     }
 }
 
-/// One painted sidebar row and where it landed.
+/// One sidebar row.
 #[derive(Clone, Debug)]
 pub(super) struct NavEntry {
     pub target: NavTarget,
@@ -62,16 +59,15 @@ pub(super) struct NavEntry {
     pub icon: Option<Icon>,
     pub count: Option<usize>,
     pub selected: bool,
-    pub rect: Rect,
 }
 
-/// One command of the header toolbar.
+/// One command of the window bar: the window's own [`Hit`] it runs, as the
+/// bar names and draws it.
 struct Command {
     hit: Hit,
     label: String,
-    icon: Option<Icon>,
+    icon: Icon,
     toggle: Option<bool>,
-    separator_before: bool,
     enabled: bool,
 }
 
@@ -80,20 +76,8 @@ impl Command {
         Self {
             hit,
             label,
-            icon: Some(icon),
+            icon,
             toggle: None,
-            separator_before: false,
-            enabled: true,
-        }
-    }
-
-    fn labelled(hit: Hit, label: String) -> Self {
-        Self {
-            hit,
-            label,
-            icon: None,
-            toggle: None,
-            separator_before: false,
             enabled: true,
         }
     }
@@ -108,76 +92,52 @@ impl Command {
         self
     }
 
-    fn after_separator(mut self) -> Self {
-        self.separator_before = true;
-        self
+    /// The slot id the bar hands back for this command.
+    fn id(&self) -> String {
+        format!("{:?}", self.hit)
+    }
+
+    /// The command as the window bar's action.
+    fn action(&self) -> ToolbarAction {
+        ToolbarAction::new(self.id(), self.icon.name(), self.label.clone())
+            .enabled(self.enabled)
+            .on(self.toggle == Some(true))
     }
 }
 
-/// The chrome's own widgets and the geometry of its last paint.
+/// The chrome's own state and the geometry of its last paint.
 pub(super) struct Chrome {
-    pub drawer: SidebarDrawer,
+    /// The sidebar the window's shell shows.
+    pub places: NavFeed,
+    /// The shell's own buttons in the window's bar; none outside a shell.
+    pub bar: Option<WindowBarLink>,
     /// The trailing panel the album and details editors open in: docked
-    /// beside a wide timeline, a floating drawer over a narrow one.
+    /// beside a wide timeline, a sheet up from a narrow one's foot, with the
+    /// timeline above it still live to choose photographs in.
     pub inspector: SidebarDrawer,
-    pub toolbar: Toolbar,
-    toolbar_signature: String,
-    pub back: Button,
-    /// The search launcher. Search is the platform's: the button asks the
-    /// host to open it for this app through `search_opener`.
-    pub search: Button,
-    pub search_opener: ui::search::SearchOpener,
-    /// The window's History control, in the header row's trailing corner:
-    /// the header row is the window's, so the window draws no History bar
-    /// above it.
-    pub history: ui::widget::HistoryOpener,
-    pub header: Rect,
-    pub toggle: Rect,
-    pub toggle_hovered: bool,
-    pub nav: Vec<NavEntry>,
-    pub nav_hovered: Option<usize>,
-    pub sidebar_scroll: f64,
     pub title: String,
-    pub title_rect: Rect,
     pub status_left: String,
     pub status_right: String,
 }
 
 impl Chrome {
-    pub(super) fn new(pending: &Rc<Cell<Option<Hit>>>) -> Self {
-        let slot = Rc::clone(pending);
-        let search_slot = Rc::clone(pending);
-        let back_name = tr("photos-library");
-        let search_name = ui::i18n::I18nManager::lookup_plain("standalone-search-title");
+    pub(super) fn new() -> Self {
         let base = ui::tokens::Metrics::BASE;
         let inspector_width = f64::from(base.panel_width_list);
-        // The inspector docks only where the sidebar, it and a readable
-        // timeline all fit; narrower, it floats.
-        let inspector_breakpoint =
-            f64::from(base.sidebar_width + base.panel_width_list + base.content_min_width);
         Self {
-            drawer: SidebarDrawer::new(),
+            places: NavFeed::new(),
+            bar: None,
             inspector: SidebarDrawer::new()
                 .right()
                 .docked_width(inspector_width)
-                .breakpoint(inspector_breakpoint)
+                // It docks while the timeline beside it keeps a readable
+                // column, shrunk toward its own minimum first (the shell's
+                // sidebar is outside this window's content); narrower, it
+                // floats.
+                .content_is_column(f64::from(base.content_min_width))
+                .sheet_when_narrow()
                 .closed(),
-            toolbar: Toolbar::new(Orientation::Horizontal),
-            toolbar_signature: String::new(),
-            back: Button::icon_only("photos-library", Icon::ChevronLeft, &back_name)
-                .on_view(move || slot.set(Some(Hit::Library))),
-            search: Button::icon_only("search-open", Icon::Search, &search_name)
-                .on_view(move || search_slot.set(Some(Hit::Search))),
-            search_opener: ui::search::SearchOpener::new(),
-            history: ui::widget::HistoryOpener::new(),
-            header: Rect::ZERO,
-            toggle: Rect::ZERO,
-            toggle_hovered: false,
-            nav: Vec::new(),
-            nav_hovered: None,
-            sidebar_scroll: 0.0,
             title: String::new(),
-            title_rect: Rect::ZERO,
             status_left: String::new(),
             status_right: String::new(),
         }
@@ -197,12 +157,16 @@ pub(super) struct InspectorFrame {
     pub footer: Rect,
 }
 
-/// The side of the square chrome buttons (toggle, back, search, History).
-fn chip_size(theme: &Theme) -> f64 {
-    ui::chrome::HeaderRowMetrics::resolve(theme).chip
-}
-
 impl PhotosApp {
+    /// This window in a shell: its sidebar shows what `places` shows, and
+    /// the shell's own buttons join the window bar through `bar`.
+    #[must_use]
+    pub fn in_shell(mut self, places: &NavFeed, bar: WindowBarLink) -> Self {
+        self.chrome.places = places.clone();
+        self.chrome.bar = Some(bar);
+        self
+    }
+
     /// The library's destinations in sidebar order.
     fn destinations() -> [(LibraryDestination, &'static str, Icon); 5] {
         [
@@ -253,7 +217,6 @@ impl PhotosApp {
                 icon: Some(icon),
                 count: (target == LibraryDestination::Timeline).then_some(self.library_photo_count),
                 selected,
-                rect: Rect::ZERO,
             });
             if index == 0 {
                 entries.push(NavEntry {
@@ -264,7 +227,6 @@ impl PhotosApp {
                     selected: browsing
                         && destination == LibraryDestination::Timeline
                         && self.active_favorites,
-                    rect: Rect::ZERO,
                 });
             }
         }
@@ -277,7 +239,6 @@ impl PhotosApp {
                 selected: browsing
                     && destination == LibraryDestination::Timeline
                     && self.active_album.as_deref() == Some(id.as_str()),
-                rect: Rect::ZERO,
             });
         }
         entries
@@ -341,7 +302,7 @@ impl PhotosApp {
         }
     }
 
-    /// The commands the header offers for what is shown. A command that
+    /// The commands the window bar offers for what is shown. A command that
     /// does not apply is left out rather than shown dead.
     fn commands(&self) -> Vec<Command> {
         // Where the content offers to open a photo itself (an empty
@@ -369,63 +330,23 @@ impl PhotosApp {
             LibraryDestination::Timeline if self.selection_mode => {
                 return self.selection_commands();
             }
-            LibraryDestination::Timeline => {
-                if self.library_total > 0 {
-                    commands.push(
-                        Command::labelled(Hit::Select, tr("photos-select"))
-                            .toggled(self.selection_mode)
-                            .after_separator(),
-                    );
-                    if self.album_editor && self.library_total > self.library_page_step() {
-                        commands.push(
-                            Command::icon(
-                                Hit::PreviousPage,
-                                tr("photos-a11y-previous-photos"),
-                                Icon::ChevronLeft,
-                            )
-                            .enabled(self.can_page_library(false)),
-                        );
-                        commands.push(
-                            Command::icon(
-                                Hit::NextPage,
-                                tr("photos-a11y-next-photos"),
-                                Icon::ChevronRight,
-                            )
-                            .enabled(self.can_page_library(true)),
-                        );
-                    }
-                    commands.push(Command::icon(
-                        Hit::Smaller,
-                        tr("photos-smaller-thumbnails"),
-                        Icon::Minus,
-                    ));
-                    commands.push(Command::icon(
-                        Hit::Larger,
-                        tr("photos-larger-thumbnails"),
-                        Icon::Plus,
-                    ));
-                }
-                if self.active_album.is_some() {
-                    commands.push(
-                        Command::labelled(Hit::EditAlbum, tr("photos-edit-album"))
-                            .after_separator(),
-                    );
-                } else {
-                    commands.push(
-                        Command::labelled(Hit::NewAlbum, tr("photos-new-album")).after_separator(),
-                    );
-                }
-            }
+            LibraryDestination::Timeline => self.timeline_commands(&mut commands),
+            // While an album is being made, New album is the editor open.
+            LibraryDestination::Albums if self.album_editor => {}
             LibraryDestination::Albums => {
-                commands.push(
-                    Command::labelled(Hit::NewAlbum, tr("photos-new-album")).after_separator(),
-                );
+                commands.push(Command::icon(
+                    Hit::NewAlbum,
+                    tr("photos-new-album"),
+                    Icon::GalleryVerticalEnd,
+                ));
             }
+            // With no located photos there is no map to list or zoom; the
+            // empty state is all there is.
+            LibraryDestination::Places if self.places_items.is_empty() => {}
             LibraryDestination::Places => {
                 commands.push(
-                    Command::labelled(Hit::PlacesList, tr("photos-places-list"))
-                        .toggled(self.places_list_mode)
-                        .after_separator(),
+                    Command::icon(Hit::PlacesList, tr("photos-places-list"), Icon::List)
+                        .toggled(self.places_list_mode),
                 );
                 if !self.places_list_mode {
                     commands.push(Command::icon(
@@ -446,6 +367,58 @@ impl PhotosApp {
         commands
     }
 
+    /// The timeline's commands after Open: selecting, paging an album
+    /// being edited, the thumbnails' size, and editing or making an album.
+    fn timeline_commands(&self, commands: &mut Vec<Command>) {
+        if self.library_total > 0 {
+            commands.push(
+                Command::icon(Hit::Select, tr("photos-select"), Icon::ListChecks)
+                    .toggled(self.selection_mode),
+            );
+            if self.album_editor && self.library_total > self.library_page_step() {
+                commands.push(
+                    Command::icon(
+                        Hit::PreviousPage,
+                        tr("photos-a11y-previous-photos"),
+                        Icon::ChevronLeft,
+                    )
+                    .enabled(self.can_page_library(false)),
+                );
+                commands.push(
+                    Command::icon(
+                        Hit::NextPage,
+                        tr("photos-a11y-next-photos"),
+                        Icon::ChevronRight,
+                    )
+                    .enabled(self.can_page_library(true)),
+                );
+            }
+            commands.push(Command::icon(
+                Hit::Smaller,
+                tr("photos-smaller-thumbnails"),
+                Icon::Minus,
+            ));
+            commands.push(Command::icon(
+                Hit::Larger,
+                tr("photos-larger-thumbnails"),
+                Icon::Plus,
+            ));
+        }
+        if self.active_album.is_some() {
+            commands.push(Command::icon(
+                Hit::EditAlbum,
+                tr("photos-edit-album"),
+                Icon::Pencil,
+            ));
+        } else if !self.album_editor {
+            commands.push(Command::icon(
+                Hit::NewAlbum,
+                tr("photos-new-album"),
+                Icon::GalleryVerticalEnd,
+            ));
+        }
+    }
+
     /// The People overview's command: showing the suggestions you hid,
     /// offered once there are some.
     fn people_commands(&self) -> Option<Command> {
@@ -454,9 +427,12 @@ impl PhotosApp {
             .all_clusters()
             .any(|cluster| cluster.hidden || cluster.rejected);
         (self.people_selection.is_none() && (any_hidden || self.people_show_hidden)).then(|| {
-            Command::labelled(Hit::PeopleHidden, tr("photos-people-show-hidden"))
-                .toggled(self.people_show_hidden)
-                .after_separator()
+            Command::icon(
+                Hit::PeopleHidden,
+                tr("photos-people-show-hidden"),
+                Icon::Eye,
+            )
+            .toggled(self.people_show_hidden)
         })
     }
 
@@ -484,14 +460,11 @@ impl PhotosApp {
         if !self.has_image() {
             return commands;
         }
-        commands.push(
-            Command::icon(
-                Hit::RotateLeft,
-                tr("photos-command-rotate-left"),
-                Icon::RotateCcw,
-            )
-            .after_separator(),
-        );
+        commands.push(Command::icon(
+            Hit::RotateLeft,
+            tr("photos-command-rotate-left"),
+            Icon::RotateCcw,
+        ));
         commands.push(Command::icon(
             Hit::RotateRight,
             tr("photos-command-rotate-right"),
@@ -509,18 +482,68 @@ impl PhotosApp {
         {
             commands.push(Command::icon(Hit::Reset, tr("photos-reset"), Icon::Undo2));
         }
-        commands.push(Command::icon(Hit::Copy, tr("photos-copy"), Icon::Copy).after_separator());
+        commands.push(Command::icon(Hit::Copy, tr("photos-copy"), Icon::Copy));
         commands.push(Command::icon(Hit::Share, tr("photos-share"), Icon::Send));
         commands.push(Command::icon(Hit::Save, tr("photos-save"), Icon::Download));
+        // The picture's size, said the way every app says a zoom: the level
+        // itself while it is not the frame's own, so "Actual size" is where a
+        // person expects it (Ctrl+0 reaches the same thing).
+        let zoom = self.viewer_zoom.clone();
+        commands.push(Command::icon(
+            Hit::ZoomOut,
+            tr("photos-zoom-out"),
+            Icon::Minus,
+        ));
+        commands.push(Command::icon(
+            Hit::ZoomReset,
+            zoom.label(&tr("photos-zoom-actual")),
+            Icon::Maximize2,
+        ));
+        commands.push(Command::icon(Hit::ZoomIn, tr("photos-zoom-in"), Icon::Plus));
+        commands.push(
+            Command::icon(
+                Hit::Present,
+                if self.presenting {
+                    tr("photos-present-exit")
+                } else {
+                    tr("photos-present")
+                },
+                if self.presenting {
+                    Icon::Minimize2
+                } else {
+                    Icon::Maximize2
+                },
+            )
+            .toggled(self.presenting),
+        );
+        if !self.library_mode {
+            commands.push(
+                Command::icon(
+                    Hit::SlideShow,
+                    if self.slide_show_running() {
+                        tr("photos-slide-show-stop")
+                    } else {
+                        tr("photos-slide-show")
+                    },
+                    if self.slide_show_running() {
+                        Icon::Pause
+                    } else {
+                        Icon::Play
+                    },
+                )
+                .toggled(self.slide_show_running()),
+            );
+        }
         commands
     }
 
     /// The commands for photographs chosen in the timeline. Those that need a
     /// choice appear once something is chosen.
     fn selection_commands(&self) -> Vec<Command> {
-        let mut commands = vec![Command::labelled(
+        let mut commands = vec![Command::icon(
             Hit::Selection(SelectionHit::SelectAll),
             tr("photos-select-all"),
+            Icon::ListChecks,
         )];
         if !self.selected_photo_ids.is_empty() {
             commands.push(Command::icon(
@@ -545,24 +568,32 @@ impl PhotosApp {
                         .map(|(_, name, _)| name.clone())
                 });
                 commands.push(match destination {
-                    Some(name) => Command::labelled(
+                    Some(name) => Command::icon(
                         Hit::Selection(SelectionHit::AddToAlbum),
                         tr_with("photos-add-to-named-album", "name", &name),
+                        Icon::GalleryVerticalEnd,
                     ),
-                    None => Command::labelled(
+                    None => Command::icon(
                         Hit::Selection(SelectionHit::ChooseAlbum),
                         tr("photos-add-to-album"),
+                        Icon::GalleryVerticalEnd,
                     ),
                 });
             }
-            commands.push(Command::labelled(
+            commands.push(Command::icon(
                 Hit::Selection(SelectionHit::Clear),
                 tr("photos-clear-selection"),
+                Icon::X,
             ));
         }
-        commands.push(
-            Command::labelled(Hit::Selection(SelectionHit::Done), tr("photos-done"))
-                .after_separator(),
+        // Done leads: it is what ends choosing.
+        commands.insert(
+            0,
+            Command::icon(
+                Hit::Selection(SelectionHit::Done),
+                tr("photos-done"),
+                Icon::Check,
+            ),
         );
         commands
     }
@@ -576,60 +607,127 @@ impl PhotosApp {
             .collect()
     }
 
-    pub(super) fn invalidate_toolbar(&mut self) {
-        self.chrome.toolbar_signature.clear();
+    /// The window bar's slots for what is shown: the sidebar's toggle, Back
+    /// while a photograph or a person is open, the title as the window's
+    /// location and the commands. A command whose published action this
+    /// window may not run is offered disabled.
+    pub(crate) fn window_bar(&self) -> WindowToolbar {
+        // The shell's own: the sidebar's toggle, Back in a narrow window.
+        let mut toolbar = self
+            .chrome
+            .bar
+            .as_ref()
+            .map(WindowBarLink::slots)
+            .unwrap_or_default();
+        // What is open, else (no photograph) the app's name.
+        toolbar.location = Some(ToolbarLocation {
+            label: if self.chrome.title.is_empty() {
+                ui::widget::AppWidget::app_title(self).to_owned()
+            } else {
+                self.chrome.title.clone()
+            },
+            ..ToolbarLocation::default()
+        });
+        // An editor's sheet is Back's first step ([`Self::sheet_back`]).
+        if self.editor_sheet_shown()
+            && !self.header_back_visible()
+            && !toolbar
+                .leading
+                .iter()
+                .any(|action| action.id == WINDOW_BACK)
+        {
+            toolbar.leading.push(
+                ToolbarAction::new(
+                    WINDOW_BACK,
+                    "arrow-left",
+                    ui::i18n::I18nManager::lookup_plain("window-toolbar-back"),
+                )
+                .navigating(),
+            );
+        }
+        if self.header_back_visible() {
+            toolbar.leading.push(
+                ToolbarAction::new(
+                    format!("{:?}", Hit::Library),
+                    "arrow-left",
+                    tr("photos-library"),
+                )
+                .navigating(),
+            );
+        }
+        let commands = self.commands();
+        let commands = commands.iter().map(|command| {
+            let mut action = command.action();
+            if let (Some(actions), Some(effect)) = (&self.actions, command.hit.effect())
+                && actions.effect(&effect).is_none()
+            {
+                action.enabled = false;
+            }
+            action
+        });
+        NavShell::push_window_actions(&mut toolbar, commands);
+        toolbar
     }
 
-    /// Rebuild the header toolbar when the commands that apply changed.
-    pub(super) fn refresh_toolbar(&mut self) {
-        let commands = self.commands();
-        let signature = commands
-            .iter()
-            .map(|command| {
-                format!(
-                    "{:?}:{}:{:?}:{}:{}",
-                    command.hit,
-                    command.label,
-                    command.toggle,
-                    command.separator_before,
-                    command.enabled
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("|");
-        if signature == self.chrome.toolbar_signature {
-            return;
+    /// Whether `event` is one of the bar's Backs: the shell's, the one an
+    /// editor's sheet adds, or the way back to the library.
+    fn is_back(event: &ToolbarEvent) -> bool {
+        match event {
+            ToolbarEvent::Back => true,
+            ToolbarEvent::Action { id } => {
+                id == WINDOW_BACK || *id == format!("{:?}", Hit::Library)
+            }
+            _ => false,
         }
-        let mut toolbar = Toolbar::new(Orientation::Horizontal).push_spacer();
-        for (index, command) in commands.into_iter().enumerate() {
-            if command.separator_before && index > 0 {
-                toolbar = toolbar.push_separator();
+    }
+
+    /// Declare the window bar's slots.
+    pub(super) fn declare_window_toolbar(&self) {
+        ui::window_toolbar::declare(Some(self.window_bar()));
+    }
+
+    /// Run what the person did in the window's bar as the window's own hit,
+    /// the path assistive technology's activation takes too.
+    pub(super) fn apply_window_toolbar(&mut self) {
+        for event in ui::window_toolbar::take_events() {
+            if Self::is_back(&event) && self.sheet_back() {
+                continue;
             }
-            let slot = Rc::clone(&self.pending);
-            let hit = command.hit;
-            let click = move || slot.set(Some(hit));
-            toolbar = match (command.icon, command.toggle) {
-                (_, Some(on)) => toolbar.push_toggle(&command.label, on, click),
-                (Some(icon), None) => toolbar.push_icon(icon, &command.label, click),
-                (None, None) => toolbar.push_button(&command.label, click),
+            if self
+                .chrome
+                .bar
+                .as_ref()
+                .is_some_and(|bar| bar.event(&event))
+            {
+                continue;
             }
-            .with_enabled(command.enabled);
-            if let (Some(actions), Some(effect)) = (&self.actions, hit.effect()) {
-                toolbar = match actions.effect(&effect) {
-                    Some(binding) => toolbar.with_action(binding),
-                    None => toolbar.with_enabled(false),
-                };
-            }
+            let hit = match event {
+                ToolbarEvent::Action { id } if id == format!("{:?}", Hit::Library) => Hit::Library,
+                ToolbarEvent::Action { id } => {
+                    let Some(command) = self.commands().into_iter().find(|c| c.id() == id) else {
+                        continue;
+                    };
+                    if !command.enabled {
+                        continue;
+                    }
+                    command.hit
+                }
+                _ => continue,
+            };
+            self.pending.set(Some(hit));
+            self.drain_pending();
         }
-        self.chrome.toolbar = toolbar;
-        self.structure_dirty = true;
-        self.chrome.toolbar_signature = signature;
+        self.declare_window_toolbar();
     }
 
     /// Recompute the title and the status bar's readouts from the model.
     pub(super) fn refresh_chrome_text(&mut self, _doc: &AutoCommit) {
         self.chrome.title = self.chrome_title();
-        let (left, right) = if self.library_mode {
+        // An empty library's empty state already says so; a "0 photos"
+        // readout under it would only repeat it in a band of its own.
+        let (left, right) = if self.library_mode && self.library_photo_count == 0 {
+            (String::new(), String::new())
+        } else if self.library_mode {
             let destination = if self.people_mode {
                 LibraryDestination::People
             } else {
@@ -694,225 +792,76 @@ impl PhotosApp {
         !self.chrome.status_left.is_empty() || !self.chrome.status_right.is_empty()
     }
 
-    /// Lay out the toggle, back button, title band, toolbar and search
-    /// launcher inside the header row, and the sidebar's rows.
-    pub(super) fn place_chrome(&mut self, text: &mut TextRenderer, theme: &Theme) {
-        let header = self.chrome.header;
-        let inset = f64::from(theme.tokens.spacing.s3);
-        let gap = f64::from(theme.tokens.spacing.s2);
-        let chip = chip_size(theme);
-        let hh = header_height(theme);
-        let centre = |row: Rect| row.y0 + (hh - chip) / 2.0;
-
-        let sidebar = self.chrome.drawer.sidebar_rect();
-        let toggle_on_sidebar = self.chrome.drawer.is_open() && sidebar.width() > chip + inset;
-        self.chrome.toggle = if toggle_on_sidebar {
-            let y = centre(sidebar);
-            Rect::new(sidebar.x0 + inset, y, sidebar.x0 + inset + chip, y + chip)
-        } else {
-            let y = centre(header);
-            Rect::new(header.x0 + inset, y, header.x0 + inset + chip, y + chip)
-        };
-
-        // The toggle leads the header while the sidebar does not hold it.
-        let leading_free = toggle_on_sidebar && self.chrome.toggle.x1 <= header.x0;
-        let mut x0 = if leading_free {
-            header.x0 + inset
-        } else {
-            self.chrome.toggle.x1 + gap
-        };
-        let y = centre(header);
-        if self.header_back_visible() {
-            let back = Rect::new(x0, y, x0 + chip, y + chip);
-            self.chrome.back.apply_layout_external(back);
-            x0 = back.x1 + gap;
-        } else {
-            self.chrome.back.apply_layout_external(Rect::ZERO);
-            // With nothing before it, the title starts on the content's
-            // leading edge, the line the page under it starts on.
-            if leading_free {
-                x0 = header.x0 + f64::from(theme.tokens.spacing.rhythm.group);
-            }
-        }
-        // The window's History control holds the trailing corner; search
-        // stands just before it.
-        let row = ui::chrome::HeaderRowFace::new(header, theme)
-            .with_history_if(self.chrome.history.is_shown())
-            .with_trailing();
-        let search = row.trailing;
-        self.chrome.search.apply_layout_external(search);
-        let history = row.history_rect();
-        if let Some(button) = self.chrome.history.button_mut() {
-            button.apply_layout_external(history);
-        }
-
-        let style = theme.text(ui::TextRole::Heading);
-        let title_w = if self.chrome.title.is_empty() {
-            0.0
-        } else {
-            f64::from(text.measure_style(&self.chrome.title, None, &style).0).ceil()
-        };
-        let band_x1 = search.x0 - gap;
-        // The title keeps what it needs up to half the row; the commands take
-        // the rest, trailing, and whatever does not fit moves into the
-        // toolbar's More menu.
-        let title_keep = title_w.min(((band_x1 - x0) / 2.0).max(0.0));
-        let band_x0 = x0 + title_keep + if title_keep > 0.0 { gap } else { 0.0 };
-        let band = Rect::new(band_x0.min(band_x1), y, band_x1, y + chip);
-        self.chrome.toolbar.lay_out_in(band, text, theme);
-        self.chrome.title_rect = Rect::new(x0, header.y0, x0 + title_keep, header.y1);
-
-        self.place_nav(theme);
+    /// Show the sidebar's rows, and declare the window bar's slots for what
+    /// this frame shows.
+    pub(super) fn place_chrome(&self) {
+        self.show_places();
+        self.declare_window_toolbar();
     }
 
-    /// Place the sidebar rows under the sidebar's header.
-    fn place_nav(&mut self, theme: &Theme) {
-        let sidebar = self.chrome.drawer.sidebar_rect();
-        let mut entries = self.nav_entries();
-        let row_h = ui::chrome::nav_row_height(theme);
-        let mut y = sidebar.y0 + header_height(theme) - self.chrome.sidebar_scroll;
-        let mut albums_started = false;
-        for entry in &mut entries {
-            if matches!(entry.target, NavTarget::Album(_)) && !albums_started {
-                albums_started = true;
-                y += ui::chrome::nav_section_height(theme, false);
-            }
-            entry.rect = Rect::new(sidebar.x0, y, sidebar.x1, y + row_h);
-            y += row_h;
-        }
-        self.chrome.nav = entries;
-    }
-
-    /// The rect the albums section header was painted in, if any.
-    fn albums_section_rect(&self, theme: &Theme) -> Option<Rect> {
-        let first = self
-            .chrome
-            .nav
+    /// Hand the shell's sidebar the library's destinations; the albums
+    /// nest under Albums, each by its cover.
+    pub(super) fn show_places(&self) {
+        let entries = self.nav_entries();
+        let selected = entries
             .iter()
-            .find(|entry| matches!(entry.target, NavTarget::Album(_)))?;
-        let h = ui::chrome::nav_section_height(theme, false);
-        Some(Rect::new(
-            first.rect.x0,
-            first.rect.y0 - h,
-            first.rect.x1,
-            first.rect.y0,
-        ))
-    }
-
-    /// Paint the header row: its hairline, the title and the controls.
-    pub(super) fn paint_header(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        let header = self.chrome.header;
-        if header.width() <= 0.0 {
-            return;
-        }
-        ui::widget::toolbar::paint_band(scene, transform, theme, header);
-        if !self.chrome.title.is_empty() && self.chrome.title_rect.width() > 0.0 {
-            let mut ctx = PaintCtx::new(scene, transform, text, theme);
-            let style = theme.text(ui::TextRole::Heading);
-            let title = ctx.text.elide_to_width_style(
-                &self.chrome.title,
-                self.chrome.title_rect.width() as f32,
-                &style,
-            );
-            let band = self.chrome.title_rect;
-            ctx.text_role_in_band(
-                &title,
-                ui::TextRole::Heading,
-                theme.text_primary,
-                band.x0,
-                band,
-                None,
-            );
-        }
-        if self.header_back_visible() {
-            self.chrome
-                .back
-                .draw(scene, transform, text, theme, presence);
-        }
-        self.chrome
-            .toolbar
-            .draw(scene, transform, text, theme, presence);
-        self.chrome
-            .search
-            .draw(scene, transform, text, theme, presence);
-        if let Some(history) = self.chrome.history.button_mut() {
-            history.draw(scene, transform, text, theme, presence);
-        }
-        if !self.chrome.drawer.is_open() {
-            self.chrome.drawer.draw_toggle(
-                scene,
-                transform,
-                text,
-                theme,
-                self.chrome.toggle,
-                self.chrome.toggle_hovered,
-            );
-        }
-    }
-
-    /// Paint the sidebar: its panel (the region docked, a floating drawer
-    /// narrow), the destinations and the albums.
-    pub(super) fn paint_sidebar(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let sidebar = self.chrome.drawer.sidebar_rect();
-        if sidebar.width() <= 0.0 {
-            return;
-        }
-        let local = self.chrome.drawer.paint_panel(scene, transform, theme);
-        let body = Rect::new(
-            sidebar.x0,
-            sidebar.y0 + header_height(theme),
-            sidebar.x1,
-            sidebar.y1,
-        );
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &body,
-        );
-        if let Some(rect) = self.albums_section_rect(&local) {
-            let title = tr("photos-albums");
-            let face = NavSectionFace::new(rect, &title);
-            ui::chrome::paint_nav_section(scene, transform, text, &local, &face);
-        }
-        for (index, entry) in self.chrome.nav.iter().enumerate() {
-            let mut face = NavRowFace::new(entry.rect, &entry.label).state(SelectionState::new(
-                entry.selected,
-                self.chrome.nav_hovered == Some(index),
-                false,
-            ));
+            .find(|entry| entry.selected)
+            .map(|entry| entry.target.action_target());
+        let item = |entry: &NavEntry| {
+            let mut item = NavItem::new(entry.target.action_target(), entry.label.clone());
             if let Some(icon) = entry.icon {
-                face = face.icon(icon);
+                item = item.icon(icon);
+            }
+            if let NavTarget::Album(id) = &entry.target {
+                let cover = self
+                    .library_album_covers
+                    .get(id)
+                    .and_then(|covers| covers.first())
+                    .and_then(|cover| self.thumbnail_for(cover))
+                    .cloned();
+                item = item.art(entry.label.clone(), cover);
             }
             if let Some(count) = entry.count {
-                face = face.count(NavCount::Neutral(u32::try_from(count).unwrap_or(u32::MAX)));
+                item = item.count(u32::try_from(count).unwrap_or(u32::MAX));
             }
-            ui::chrome::paint_nav_row(scene, transform, text, &local, &face);
-        }
-        scene.pop_layer();
-        if self.chrome.drawer.is_open() {
-            self.chrome.drawer.draw_toggle(
-                scene,
-                transform,
-                text,
-                &local,
-                self.chrome.toggle,
-                self.chrome.toggle_hovered,
-            );
+            item
+        };
+        let (albums, places): (Vec<_>, Vec<_>) = entries
+            .iter()
+            .partition(|entry| matches!(entry.target, NavTarget::Album(_)));
+        let albums: Vec<NavItem> = albums.into_iter().map(item).collect();
+        let mut albums = Some(albums).filter(|albums| !albums.is_empty());
+        let places = places
+            .into_iter()
+            .map(|entry| {
+                let place = item(entry);
+                match (&entry.target, albums.take()) {
+                    (NavTarget::Destination(LibraryDestination::Albums), Some(albums)) => {
+                        place.children(albums).expanded()
+                    }
+                    (_, unused) => {
+                        albums = unused;
+                        place
+                    }
+                }
+            })
+            .collect();
+        self.chrome
+            .places
+            .show(vec![NavSection::untitled("library", places)], selected);
+    }
+
+    /// Open the places the person chose in the shell's sidebar.
+    pub(super) fn open_chosen_places(&mut self) {
+        for chosen in self.chrome.places.take_chosen() {
+            let target = self
+                .nav_entries()
+                .into_iter()
+                .map(|entry| entry.target)
+                .find(|target| target.action_target() == chosen);
+            if let Some(target) = target {
+                self.open_nav_target(&target);
+            }
         }
     }
 
@@ -959,7 +908,14 @@ impl PhotosApp {
             panel.x1 - inset,
             (footer.y0 - inset).max(header.y1 + inset),
         );
-        ui::widget::toolbar::paint_band(scene, transform, &local, header);
+        ui::widget::paint_rule(
+            scene,
+            transform,
+            &local,
+            header,
+            ui::widget::RuleEdge::Bottom,
+            Some(theme.region(ui::surface::Region::Inspector)),
+        );
         let mut ctx = PaintCtx::new(scene, transform, text, &local);
         let style = local.text(ui::TextRole::Heading);
         let shown =
@@ -1041,9 +997,6 @@ impl PhotosApp {
                 self.active_album = Some(id.clone());
             }
         }
-        if self.chrome.drawer.is_overlay() {
-            self.chrome.drawer.close();
-        }
     }
 
     /// Show the whole library again.
@@ -1059,186 +1012,50 @@ impl PhotosApp {
         self.timeline_scroll_y = 0.0;
     }
 
-    /// Route an event to the chrome: the sidebar, its toggle, the back
-    /// button, the toolbar and the search launcher. Returns whether the
-    /// chrome took it.
-    pub(super) fn handle_chrome_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) -> bool {
-        use winit::event::{ElementState, MouseButton, WindowEvent};
-
-        if let WindowEvent::CursorMoved { .. } = event {
-            self.chrome.toggle_hovered = self.chrome.toggle.contains(self.pointer);
-            let sidebar = self.chrome.drawer.sidebar_rect();
-            self.chrome.nav_hovered = if self.chrome.drawer.sidebar_contains(self.pointer)
-                && self.pointer.y >= sidebar.y0 + self.chrome.header.height()
-            {
-                self.chrome
-                    .nav
-                    .iter()
-                    .position(|entry| entry.rect.contains(self.pointer))
-            } else {
-                None
-            };
+    /// What the open inspector is titled: the editor it holds.
+    pub(super) fn inspector_title(&self) -> Option<String> {
+        if !self.library_mode {
+            return None;
         }
-        let released = matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
+        if self.album_editor {
+            return Some(if self.album_editor_creating {
+                tr("photos-new-album")
+            } else {
+                tr("photos-edit-album")
+            });
+        }
+        self.metadata_editor.then(|| {
+            let count = self.metadata_editor_ids.len();
+            if count == 1 {
+                tr("photos-photo-details")
+            } else {
+                tr_count("photos-edit-count", count)
             }
-        );
-        let pressed = matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            }
-        );
-        // A floating inspector stands over the header row: what lands on it
-        // is the editor's, not the toolbar's under it.
+        })
+    }
+
+    /// Whether the chrome took the event: what lands on a floating
+    /// inspector is the editor's.
+    pub(super) fn handle_chrome_event(&self, ctx: &ui::widget::EventCtx<'_>) -> bool {
         if self.chrome.inspector.is_open()
             && self.chrome.inspector.is_overlay()
             && self.chrome.inspector.sidebar_contains(self.pointer)
         {
             return false;
         }
-        if pressed && self.chrome.drawer.press_dismisses(self.pointer) {
-            *ctx.handled = true;
-            return true;
-        }
-        if released && self.chrome.toggle.contains(self.pointer) {
-            self.chrome.drawer.toggle();
-            *ctx.handled = true;
-            return true;
-        }
-        if self.chrome.drawer.sidebar_contains(self.pointer) {
-            if let WindowEvent::MouseWheel { delta, .. } = event {
-                let pixels = super::wheel_pixels(delta, &self.layout_theme);
-                let content = self
-                    .chrome
-                    .nav
-                    .last()
-                    .map_or(0.0, |entry| entry.rect.y1 + self.chrome.sidebar_scroll);
-                let visible = self.chrome.drawer.sidebar_rect().y1;
-                let max = (content - visible).max(0.0);
-                self.chrome.sidebar_scroll = (self.chrome.sidebar_scroll + pixels).clamp(0.0, max);
-                *ctx.handled = true;
-                return true;
-            }
-            if released {
-                let sidebar = self.chrome.drawer.sidebar_rect();
-                if self.pointer.y >= sidebar.y0 + self.chrome.header.height()
-                    && let Some(target) = self
-                        .chrome
-                        .nav
-                        .iter()
-                        .find(|entry| entry.rect.contains(self.pointer))
-                        .map(|entry| entry.target.clone())
-                {
-                    self.open_nav_target(&target);
-                }
-                *ctx.handled = true;
-                return true;
-            }
-            if pressed {
-                *ctx.handled = true;
-                return true;
-            }
-        }
-        if self.header_back_visible() {
-            self.chrome.back.handle_event(event, ctx);
-        }
-        self.chrome.search.handle_event(event, ctx);
-        if !*ctx.handled
-            && let Some(history) = self.chrome.history.button_mut()
-        {
-            history.handle_event(event, ctx);
-        }
-        if !*ctx.handled {
-            self.chrome.toolbar.handle_event(event, ctx);
-        }
         *ctx.handled || self.pending.get().is_some()
     }
 
-    /// The chrome's accessibility: the sidebar's destinations and albums,
-    /// the header's controls and the status bar.
+    /// The chrome's accessibility: the status bar. The sidebar is the
+    /// shell's, the toolbar the window bar's.
     pub(super) fn chrome_semantics(&self) -> Vec<AccessNode> {
         let mut nodes = Vec::new();
-        let sidebar = self.chrome.drawer.sidebar_rect();
-        if sidebar.width() > 0.0 {
-            let rows = self
-                .chrome
-                .nav
-                .iter()
-                .map(|entry| {
-                    let mut node = AccessNode::new(Role::TreeItem)
-                        .with_name(entry.label.clone())
-                        .with_bounds(entry.rect)
-                        .with_state(AccessState::new().focusable(true).selected(entry.selected))
-                        .with_action_target(entry.target.action_target());
-                    if let Some(count) = entry.count {
-                        node = node.with_description(count.to_string());
-                    }
-                    node
-                })
-                .collect::<Vec<_>>();
-            nodes.push(
-                AccessNode::new(Role::Tree)
-                    .with_name(tr("photos-library"))
-                    .with_bounds(sidebar)
-                    .with_hashed_key("photos:sidebar")
-                    .with_children(rows),
-            );
-        }
-        nodes.push(
-            AccessNode::new(Role::Button)
-                .with_name(if self.chrome.drawer.is_open() {
-                    tr("photos-hide-sidebar")
-                } else {
-                    tr("photos-show-sidebar")
-                })
-                .with_bounds(self.chrome.toggle)
-                .with_state(AccessState::new().focusable(true))
-                .with_hashed_key("photos:sidebar-toggle")
-                .with_action_target("photos:sidebar:toggle"),
-        );
-        let mut header = Vec::new();
-        if self.header_back_visible()
-            && let Some(node) = self.chrome.back.accessibility()
+        if let Some(sheet) = self
+            .inspector_title()
+            .and_then(|title| self.chrome.inspector.sheet_accessibility(&title))
         {
-            header.push(node.with_hashed_key("photos:back"));
+            nodes.push(sheet);
         }
-        if !self.chrome.title.is_empty() {
-            header.push(
-                AccessNode::new(Role::Heading { level: 1 })
-                    .with_name(self.chrome.title.clone())
-                    .with_bounds(self.chrome.title_rect)
-                    .with_hashed_key("photos:title"),
-            );
-        }
-        if let Some(node) = self.chrome.toolbar.accessibility() {
-            header.push(
-                node.with_name(tr("photos-tools"))
-                    .with_hashed_key("photos:toolbar"),
-            );
-        }
-        if let Some(node) = self.chrome.search.accessibility() {
-            header.push(
-                node.with_hashed_key("photos:search")
-                    .with_action_target("photos:search:open"),
-            );
-        }
-        nodes.push(
-            AccessNode::new(Role::Group)
-                .with_bounds(self.chrome.header)
-                .with_hashed_key("photos:header")
-                .with_children(header),
-        );
         if self.has_status() {
             nodes.push(
                 AccessNode::new(Role::StaticText)
@@ -1256,47 +1073,5 @@ impl PhotosApp {
             );
         }
         nodes
-    }
-
-    /// Accessibility actions on the chrome.
-    pub(super) fn perform_chrome_semantic_action(
-        &mut self,
-        target: &str,
-        action: &AccessAction,
-        state: &mut ui::widget::Edits<'_>,
-        path: &ModelPath,
-    ) -> bool {
-        if target == "photos:sidebar:toggle" {
-            if matches!(action, AccessAction::Activate) {
-                self.chrome.drawer.toggle();
-            }
-            return matches!(action, AccessAction::Activate | AccessAction::Focus);
-        }
-        if target == "photos:toolbar:photos-library" {
-            if matches!(action, AccessAction::Activate) && self.header_back_visible() {
-                self.pending.set(Some(Hit::Library));
-                self.drain_pending();
-            }
-            return matches!(action, AccessAction::Activate | AccessAction::Focus);
-        }
-        if target == "photos:search:open" {
-            if matches!(action, AccessAction::Activate) {
-                self.pending.set(Some(Hit::Search));
-                self.drain_pending();
-            }
-            return matches!(action, AccessAction::Activate | AccessAction::Focus);
-        }
-        if target.starts_with("toolbar.") {
-            if self
-                .chrome
-                .toolbar
-                .perform_semantic_action(target, action, state, path)
-            {
-                self.drain_pending();
-                return true;
-            }
-            return false;
-        }
-        false
     }
 }

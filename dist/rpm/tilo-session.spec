@@ -201,10 +201,13 @@ makes before it execs anything, and DEVELOPMENT.md for the threat model.
 %install
 install -Dpm 0755 bin/tilo-shell             %{buildroot}%{_bindir}/tilo-shell
 install -Dpm 0755 bin/fs %{buildroot}%{_bindir}/fs
-install -Dpm 0755 bin/tilo-relay-admin %{buildroot}%{_bindir}/tilo-relay-admin
-install -Dpm 0755 bin/tilo-enroll %{buildroot}%{_bindir}/tilo-enroll
+install -Dpm 0755 bin/tilo-relay-admin %{buildroot}%{_libexecdir}/tilo/tilo-relay-admin
+ln -s ../libexec/tilo/tilo-relay-admin %{buildroot}%{_bindir}/tilo-relay-admin
+install -Dpm 0755 bin/tilo-enroll %{buildroot}%{_libexecdir}/tilo/tilo-enroll
+ln -s ../libexec/tilo/tilo-enroll %{buildroot}%{_bindir}/tilo-enroll
 install -Dpm 0644 systemd-user/tilo-files-workspace.service %{buildroot}%{_userunitdir}/tilo-files-workspace.service
-install -Dpm 0755 bin/tilo-launcher          %{buildroot}%{_bindir}/tilo-launcher
+install -Dpm 0755 bin/tilo-launcher          %{buildroot}%{_libexecdir}/tilo/tilo-launcher
+ln -s ../libexec/tilo/tilo-launcher %{buildroot}%{_bindir}/tilo-launcher
 install -Dpm 0755 bin/tilo-import-folders %{buildroot}%{_bindir}/tilo-import-folders
 install -Dpm 0644 applications/tilo-import-folders.desktop %{buildroot}%{_datadir}/applications/tilo-import-folders.desktop
 # /usr/libexec, not on $PATH: only the compositor invokes it, and the path is
@@ -241,18 +244,25 @@ cp -a apps/usr/. %{buildroot}%{_prefix}/
 install -Dpm 0644 apps/etc/tilo/runtime-bundle-trusted-publishers.txt \
                   %{buildroot}%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
 install -Dpm 0755 apps/bin/app %{buildroot}%{_bindir}/app
-install -Dpm 0755 apps/bin/tilo-install %{buildroot}%{_bindir}/tilo-install
-install -Dpm 0755 apps/bin/tilo-app-package %{buildroot}%{_bindir}/tilo-app-package
-install -Dpm 0755 apps/bin/tilo-runtime-bundle %{buildroot}%{_bindir}/tilo-runtime-bundle
-install -Dpm 0755 apps/bin/tilo-model-manager %{buildroot}%{_bindir}/tilo-model-manager
-install -Dpm 0755 apps/bin/tilo-model-gateway %{buildroot}%{_bindir}/tilo-model-gateway
-install -Dpm 0755 apps/bin/tilo-model-http %{buildroot}%{_bindir}/tilo-model-http
+install -Dpm 0755 apps/bin/tilo-install %{buildroot}%{_libexecdir}/tilo/tilo-install
+ln -s ../libexec/tilo/tilo-install %{buildroot}%{_bindir}/tilo-install
+install -Dpm 0755 apps/bin/tilo-app-package %{buildroot}%{_libexecdir}/tilo/tilo-app-package
+ln -s ../libexec/tilo/tilo-app-package %{buildroot}%{_bindir}/tilo-app-package
+install -Dpm 0755 apps/bin/tilo-runtime-bundle %{buildroot}%{_libexecdir}/tilo/tilo-runtime-bundle
+ln -s ../libexec/tilo/tilo-runtime-bundle %{buildroot}%{_bindir}/tilo-runtime-bundle
+install -Dpm 0755 apps/bin/tilo-model-manager %{buildroot}%{_libexecdir}/tilo/tilo-model-manager
+ln -s ../libexec/tilo/tilo-model-manager %{buildroot}%{_bindir}/tilo-model-manager
+install -Dpm 0755 apps/bin/tilo-model-gateway %{buildroot}%{_libexecdir}/tilo/tilo-model-gateway
+ln -s ../libexec/tilo/tilo-model-gateway %{buildroot}%{_bindir}/tilo-model-gateway
+install -Dpm 0755 apps/bin/tilo-model-http %{buildroot}%{_libexecdir}/tilo/tilo-model-http
+ln -s ../libexec/tilo/tilo-model-http %{buildroot}%{_bindir}/tilo-model-http
 install -Dpm 0755 apps/libexec/tilo-cli-shim %{buildroot}%{_libexecdir}/tilo-cli-shim
 install -Dpm 0755 apps/libexec/tilo-app-host %{buildroot}%{_libexecdir}/tilo-app-host
 install -Dpm 0755 apps/libexec/tilo-ush %{buildroot}%{_libexecdir}/tilo-ush
 install -Dpm 0755 apps/libexec/tilo-relay-environment %{buildroot}%{_libexecdir}/tilo-relay-environment
 install -Dpm 0755 apps/libexec/tilo-relay-offers %{buildroot}%{_libexecdir}/tilo-relay-offers
-install -Dpm 0755 apps/bin/tilo-legacy %{buildroot}%{_bindir}/tilo-legacy
+install -Dpm 0755 apps/bin/tilo-legacy %{buildroot}%{_libexecdir}/tilo/tilo-legacy
+ln -s ../libexec/tilo/tilo-legacy %{buildroot}%{_bindir}/tilo-legacy
 for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
     install -Dpm 0644 apps/systemd-user/$unit.service \
         %{buildroot}%{_userunitdir}/$unit.service
@@ -340,12 +350,16 @@ for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
 done
 
 %files
+%dir %{_libexecdir}/tilo
 %{_bindir}/tilo-shell
 %{_bindir}/fs
 %{_bindir}/tilo-relay-admin
+%{_libexecdir}/tilo/tilo-relay-admin
 %{_bindir}/tilo-enroll
+%{_libexecdir}/tilo/tilo-enroll
 %{_userunitdir}/tilo-files-workspace.service
 %{_bindir}/tilo-launcher
+%{_libexecdir}/tilo/tilo-launcher
 %{_bindir}/tilo-import-folders
 %{_datadir}/applications/tilo-import-folders.desktop
 %{_libexecdir}/tilo-unlock-helper
@@ -362,20 +376,28 @@ done
 %license %{_datadir}/licenses/%{name}/LICENSE
 
 %files apps
+%dir %{_libexecdir}/tilo
 %{_bindir}/app
 %{_datadir}/tilo/trust/tilo-main-registry-owner.pub
 %{_bindir}/tilo-install
+%{_libexecdir}/tilo/tilo-install
 %{_bindir}/tilo-app-package
+%{_libexecdir}/tilo/tilo-app-package
 %{_bindir}/tilo-runtime-bundle
+%{_libexecdir}/tilo/tilo-runtime-bundle
 %{_bindir}/tilo-model-manager
+%{_libexecdir}/tilo/tilo-model-manager
 %{_bindir}/tilo-model-gateway
+%{_libexecdir}/tilo/tilo-model-gateway
 %{_bindir}/tilo-model-http
+%{_libexecdir}/tilo/tilo-model-http
 %{_libexecdir}/tilo-cli-shim
 %{_libexecdir}/tilo-app-host
 %{_libexecdir}/tilo-ush
 %{_libexecdir}/tilo-relay-environment
 %{_libexecdir}/tilo-relay-offers
 %{_bindir}/tilo-legacy
+%{_libexecdir}/tilo/tilo-legacy
 %{_userunitdir}/tilo-app-host.service
 %{_userunitdir}/tilo-app-host.socket
 %{_userunitdir}/tilo-models.service

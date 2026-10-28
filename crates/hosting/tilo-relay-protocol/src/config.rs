@@ -132,7 +132,6 @@ pub struct RelayConfig {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentsConfig {
-    /// The `tilo-ush` binary members' supervisors run.
     #[serde(default = "default_ush_binary")]
     pub ush_binary: PathBuf,
     /// The `tilo-env-tools` binary members' tool builds run.
@@ -186,7 +185,6 @@ pub struct EnvironmentsConfig {
 /// through `tilo-legacy`, their windows on a headless Tilo shell.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LegacyAppsConfig {
-    /// The `tilo-legacy` binary.
     #[serde(default = "default_tilo_legacy_binary")]
     pub tilo_legacy_binary: PathBuf,
     /// The Tilo shell, run headless as the compositor of a member's windows.
@@ -212,7 +210,7 @@ impl Default for LegacyAppsConfig {
 }
 
 fn default_tilo_legacy_binary() -> PathBuf {
-    PathBuf::from("/usr/bin/tilo-legacy")
+    PathBuf::from("/usr/libexec/tilo/tilo-legacy")
 }
 
 fn default_shell_binary() -> PathBuf {
@@ -569,7 +567,6 @@ mod tests {
 
     #[test]
     fn relay_config_defaults_and_toml_decoding() {
-        // Defaults are usable as-is.
         let cfg = RelayConfig::default();
         assert_eq!(cfg.identity_root, PathBuf::from("/var/lib/tilo"));
         assert_eq!(cfg.state_root, PathBuf::from("/var/lib/tilo-relay"));
@@ -701,12 +698,10 @@ mod tests {
         assert!(cfg.remove_workspace(1));
         assert!(!cfg.remove_workspace(1), "removing twice is a no-op");
 
-        // Peer relays dedup by node id, case-insensitively.
         assert!(cfg.add_peer_relay("ABCD", "a", 1));
         assert!(!cfg.add_peer_relay("abcd", "again", 2));
         assert_eq!(cfg.peer_relays.len(), 1);
 
-        // Save + load is lossless.
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("relay.toml");
         let mut cfg = RelayConfig::default();

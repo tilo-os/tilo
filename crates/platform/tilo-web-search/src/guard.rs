@@ -60,12 +60,6 @@ const LOCAL_SUFFIXES: &[&str] = &[
 ];
 
 /// Whether `url` may be fetched, judged by what it says.
-///
-/// # Errors
-///
-/// The [`Refusal`] for a non-web scheme, embedded credentials, or a host
-/// that is a private, loopback or link-local address, a single-label name or
-/// a name under a private-use suffix.
 pub fn check_url(url: &Url) -> Result<(), Refusal> {
     if !matches!(url.scheme(), "http" | "https") {
         return Err(Refusal::Scheme(url.scheme().to_owned()));

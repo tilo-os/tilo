@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The person's other devices routing through this one (docs/device-vpn.md).
+     Nothing on this device is offered to them: their DNS is answered by the
+     shell before a packet reaches the tunnel interface. -->
+<zone target="default">
+  <short>Device VPN</short>
+  <description>The person's other devices routing their traffic through this one.</description>
+  <interface name="tiloexit0"/>
+</zone>

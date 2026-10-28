@@ -45,7 +45,6 @@ impl Fact {
         }
     }
 
-    /// A fact led by `icon`.
     #[must_use]
     pub fn with_icon(icon: Icon, text: impl Into<String>) -> Self {
         Self {
@@ -221,14 +220,6 @@ impl Facts {
             rect: Rect::ZERO,
             dirty: true,
             layout_theme: Theme::dark(),
-        }
-    }
-
-    /// Replace the facts.
-    pub fn set_facts(&mut self, facts: Vec<Fact>) {
-        if self.items != facts {
-            self.items = facts;
-            self.dirty = true;
         }
     }
 }

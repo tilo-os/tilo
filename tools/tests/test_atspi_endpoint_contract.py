@@ -156,6 +156,25 @@ class AtspiEndpointContractTests(unittest.TestCase):
                     ]),
                 ),
             )
+        with self.subTest(phase="a window of its own's tree carries the app's shared tree"):
+            self.assertEqual(self.audit_update(
+                "adapter.update_if_active(|| slot_bar::window_tree_update(app_ref, bar, scale));\n"
+                + self.WINDOW_TREE
+            ), [])
+        with self.subTest(phase="a window tree without the app's shared tree is rejected"):
+            self.assertIn("crates/sdk/ui-core/src/app.rs: missing shared AT-SPI tree updates", self.audit_update(
+                "adapter.update_if_active(|| slot_bar::window_tree_update(app_ref, bar, scale));\n"
+                + self.WINDOW_TREE.replace("app.build_a11y_tree_update(scale)", "accesskit::TreeUpdate::default()")
+            ))
+        with self.subTest(phase="a window tree that skips the native conversion is rejected"):
+            self.assertIn("crates/sdk/ui-core/src/app.rs: missing shared AT-SPI tree updates", self.audit_update(
+                "adapter.update_if_active(|| slot_bar::window_tree_update(app_ref, bar, scale));\n"
+                + self.WINDOW_TREE.replace("crate::accesskit_bridge::native_tree_update(update)", "update")
+            ))
+        with self.subTest(phase="a window tree that never reaches the adapter is rejected"):
+            self.assertIn("crates/sdk/ui-core/src/app.rs: missing shared AT-SPI tree updates", self.audit_update(
+                "adapter.update_if_active(|| unrelated_tree);\n" + self.WINDOW_TREE
+            ))
         with self.subTest(phase='disconnected tree build does not satisfy update contract'):
             self.assertIn("crates/sdk/ui-core/src/app.rs: missing shared AT-SPI tree updates", self.audit_update(
                 "crate::accesskit_bridge::native_tree_update(app_ref.build_a11y_tree_update(scale));\n"
@@ -167,6 +186,20 @@ class AtspiEndpointContractTests(unittest.TestCase):
                 "crate::accesskit_bridge::native_tree_update(app_ref.build_a11y_tree_update(scale));\n"
                 "unrelated_tree\n});"
             ))
+
+    WINDOW_TREE = (
+        "pub(super) fn window_tree_update(\n"
+        "    app: &mut App,\n"
+        "    bar: &SlotBar,\n"
+        "    scale: f64,\n"
+        ") -> accesskit::TreeUpdate {\n"
+        "    let mut update = app.build_a11y_tree_update(scale);\n"
+        "    if let Some(row) = bar.accessibility(app) {\n"
+        "        crate::accesskit_bridge::publish_host_part(&mut update, &row, scale);\n"
+        "    }\n"
+        "    crate::accesskit_bridge::native_tree_update(update)\n"
+        "}\n"
+    )
 
     NATIVE_UPDATE = (
         "adapter.update_if_active(|| {\n"

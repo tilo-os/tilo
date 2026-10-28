@@ -89,28 +89,25 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/measure.sh": "tools/tests/test_ci_measure.py",
     "tools/ci/compiler_cache_metrics.py": "tools/tests/test_ci_compiler_cache_metrics.py",
     "tools/ci/affected_packages.py": "tools/tests/test_ci_select.py",
-    "tools/ci/app_sdk_affected.py": "tools/tests/test_app_sdk_affected.py",
     "tools/ci/macos_apps.py": "tools/tests/test_dev_macos_workflows.py",
     "tools/ci/prewarm_test_binaries.py": "tools/tests/test_prewarm_test_binaries.py",
-    "tools/ci/recheck_base.py": "tools/tests/test_recheck_base.py",
     "tools/ci/workspace_graph.py": "tools/tests/test_ci_select.py",
     "tools/ci/recorded_test_time.json": "tools/tests/test_ci_select.py",
     "tools/ci/recorded_test_time.py": "tools/tests/test_ci_recorded_test_time.py",
     "tools/rust_feedback.py": "tools/tests/test_rust_feedback.py",
     "tools/dev/remote_source_prepare.py": "tools/tests/test_remote_source_prepare.py",
-    "tools/ci/timing_report.py": "tools/tests/test_ci_timing_report.py",
     "tools/ci/nextest_report.py": "tools/tests/test_nextest_report.py",
     "tools/ci/run_scoped_tests.py": "tools/tests/test_ci_scoped_tests.py",
-    "tools/ci/builder_workflow_plan.py": "tools/tests/test_builder_workflow_plan.py",
-    "tools/ci/resolve_promoted_builder.py": "tools/tests/test_resolve_promoted_builder.py",
     "tools/ci/native-mold-linker.sh": "tools/tests/test_ci_native_mold.py",
     "tools/ci/verify-native-mold.sh": "tools/tests/test_ci_native_mold.py",
     "tools/ci/suites.py": "tools/tests/test_suites.py",
     "tools/ci/suites.toml": "tools/tests/test_suites.py",
     "tools/policy/run.sh": "tools/tests/test_ci_select.py",
+    "tools/policy/steps.toml": "tools/tests/test_policy_steps.py",
+    "tools/policy/steps.py": "tools/tests/test_policy_steps.py",
+    "tools/ci/pre_push.py": "tools/tests/test_pre_push.py",
     "tools/policy/added_line_policy.py": "tools/tests/test_added_line_policy.py",
     "tools/policy/check_commit_policy.py": "tools/tests/test_commit_hooks.py",
-    "tools/policy/check_user_requirement_tests.py": "tools/tests/test_user_requirement_tests.py",
     "scripts/scan-secrets.sh": "tools/tests/test_added_line_policy.py",
     "tools/policy/check_workspace_members.py": "tools/tests/test_check_workspace_members.py",
     "tools/policy/check_repository_layout.py": "tools/tests/test_check_repository_layout.py",
@@ -142,16 +139,6 @@ QUALITY_ONLY_CONTROL_INPUTS = {
     # These wrappers select/request the existing image workflow; they change
     # no compiler, app source or packaging inputs. Mandatory policy tests
     # observe their request gate, paths, architecture selection and delegation.
-    ".forgejo/workflows/os-dev.yml": (
-        "tools/tests/test_os_dev_arches.py",
-        "tools/tests/test_os_release_matrix.py",
-    ),
-    ".forgejo/workflows/os-dev-x86.yml": (
-        "tools/tests/test_os_dev_arches.py",
-    ),
-    ".forgejo/workflows/os-dev-arm.yml": (
-        "tools/tests/test_os_dev_arches.py",
-    ),
     "os/dev/rpm-snapshot-fingerprint.py": (
         "os/tests/test_rpm_snapshot_fingerprint.py",
         "tools/tests/test_rpm_pin_contract.py",
@@ -1256,7 +1243,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.metadata is None and os.environ.get('GITHUB_ACTIONS') != 'true':
-        parser.error('local planning requires verified metadata; use the stable offline_affected_plan.py entrypoint')
+        parser.error('local planning requires verified metadata; pass --metadata from a builder or CI export')
 
     root = Path(run("git", "rev-parse", "--show-toplevel", cwd=Path.cwd()))
     metadata = json.loads(args.metadata.read_text()) if args.metadata else cargo_metadata(root)

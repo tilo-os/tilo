@@ -131,7 +131,9 @@ pub struct Popover<C: Widget = NoContent> {
     presented: Option<Rect>,
     /// The panel, resolved by [`Self::place`] (also run by layout and paint).
     rect: Rect,
-    on_dismiss: Option<Box<dyn FnMut()>>,
+    /// Closing itself, published as the popover's close control
+    /// ([`Self::on_dismiss`]).
+    dismiss: Option<super::dismissal::Dismissal>,
     last_cursor: Point,
     layout_theme: Theme,
     /// The content's own tree, when no host lays it out.
@@ -176,7 +178,7 @@ impl<C: Widget> Popover<C> {
             confine_to_viewport: false,
             presented: None,
             rect: Rect::ZERO,
-            on_dismiss: None,
+            dismiss: None,
             last_cursor: Point::ZERO,
             layout_theme: Theme::dark(),
             detached: None,
@@ -272,10 +274,22 @@ impl<C: Widget> Popover<C> {
     }
 
     /// Called when the popover closes itself: Escape, or a click outside.
+    ///
+    /// Closing is the popover's close control: a view action of control
+    /// `<label>.close` (`popover.close` without a label) published while it
+    /// is open, so agents and scripts close it as a person does.
     #[must_use]
     pub fn on_dismiss<F: FnMut() + 'static>(mut self, f: F) -> Self {
-        self.on_dismiss = Some(Box::new(f));
+        self.dismiss = Some(super::dismissal::Dismissal::published(
+            self.surface_id(),
+            Box::new(f),
+        ));
         self
+    }
+
+    /// What the popover's close control is named after.
+    fn surface_id(&self) -> &str {
+        self.label.as_deref().unwrap_or("popover")
     }
 
     /// Keep the panel inside `viewport` rather than the window.
@@ -287,12 +301,15 @@ impl<C: Widget> Popover<C> {
 
     #[must_use]
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
-        self.label = Some(label.into());
+        self.set_label(label);
         self
     }
 
     pub fn set_label(&mut self, label: impl Into<String>) {
         self.label = Some(label.into());
+        if let Some(dismiss) = self.dismiss.take() {
+            self.dismiss = Some(dismiss.renamed(self.surface_id()));
+        }
     }
 
     /// [`Self::with_viewport`] after construction.
@@ -521,8 +538,8 @@ impl<C: Widget> Popover<C> {
     fn dismiss(&mut self) {
         self.open = false;
         self.appear.show(self.open);
-        if let Some(cb) = self.on_dismiss.as_mut() {
-            cb();
+        if let Some(dismiss) = self.dismiss.as_mut() {
+            dismiss.emit();
         }
     }
 
@@ -998,7 +1015,97 @@ impl Popover {
     }
 }
 
+impl<C: Widget + 'static> crate::widget::ResourceOperations for Popover<C> {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        self.dismiss
+            .as_ref()
+            .map_or(&[], super::dismissal::Dismissal::handlers)
+    }
+
+    /// The close control: a person's Escape has closed the popover already,
+    /// an agent's closes it here.
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        if let Some(dismiss) = self.dismiss.as_mut()
+            && let Some(started) = dismiss.start(op)?
+        {
+            self.open = false;
+            self.appear.show(false);
+            return Ok(Some(started));
+        }
+        crate::widget::start_in_children(self, op, doc, path)
+    }
+}
+
+impl<C: Widget + 'static> crate::resources::PublishesResources for Popover<C> {
+    /// The close control while the popover is open.
+    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        self.dismiss
+            .as_ref()
+            .filter(|_| self.open)
+            .and_then(super::dismissal::Dismissal::resource)
+            .into_iter()
+            .collect()
+    }
+}
+
+impl<C: Widget + 'static> crate::widget::controls::ActionControls for Popover<C> {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(dismiss) = self.dismiss.as_mut() {
+            dismiss.install_custody(domain, attachment);
+        }
+        for child in self.children_mut() {
+            crate::widget::controls::install_control_custody(child, domain, attachment);
+        }
+    }
+
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.dismiss
+            .as_mut()
+            .and_then(super::dismissal::Dismissal::take)
+            .or_else(|| {
+                self.children_mut()
+                    .into_iter()
+                    .find_map(crate::widget::controls::take_control_invocation)
+            })
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(dismiss) = self.dismiss.as_mut() {
+            dismiss.refresh_availability(allowed);
+        }
+        for child in self.children_mut() {
+            crate::widget::controls::refresh_control_action_availability(child, allowed);
+        }
+    }
+}
+
 impl<C: Widget + 'static> Widget for Popover<C> {
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
+
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        // A move the top layer found (a new window, a scroll) is laid out.
+        if self.open && self.stale {
+            crate::widget::note_layout_moved();
+        }
+        super::defaults::update(self.children_mut(), state, path)
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // Even when closed, so reopening shows a current frame.
         self.content.sync(state, path);
@@ -1319,12 +1426,27 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         }
     }
 
+    /// The content is laid out open or closed (so reopening finds its
+    /// nodes), so the layout walk reaches it either way.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        if self.options.is_none() {
+            visitor(&self.content);
+        }
+        true
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if self.open && self.options.is_none() {
             vec![&mut self.content]
         } else {
             Vec::new()
         }
+    }
+
+    // An options menu, and a labelled panel, have a node of their own; a
+    // closed one is hidden.
+    fn accessibility_hidden(&self) -> bool {
+        !self.open && (self.options.is_some() || self.label.is_some())
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -1336,7 +1458,7 @@ impl<C: Widget + 'static> Widget for Popover<C> {
                 AccessNode::new(Role::Group)
                     .with_name(label.clone())
                     .with_state(AccessState {
-                        hidden: !self.open,
+                        hidden: self.accessibility_hidden(),
                         ..Default::default()
                     })
             });
@@ -1363,7 +1485,7 @@ impl<C: Widget + 'static> Widget for Popover<C> {
                 .with_optional_name(self.label.clone())
                 .with_state(AccessState {
                     expanded: Some(self.open),
-                    hidden: !self.open,
+                    hidden: self.accessibility_hidden(),
                     ..Default::default()
                 })
                 .with_children(children),
@@ -1413,6 +1535,11 @@ impl<C: Widget + 'static> PopoverButton<C> {
 
     pub fn popover(&self) -> &Popover<C> {
         &self.popover
+    }
+
+    /// The popover, to change what it shows.
+    pub fn popover_mut(&mut self) -> &mut Popover<C> {
+        &mut self.popover
     }
 
     pub fn button_mut(&mut self) -> &mut crate::widget::Button {

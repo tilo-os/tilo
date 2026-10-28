@@ -205,7 +205,6 @@ impl Widget for Owner {
         );
         self.field.sync(doc, root);
         if self.seen.restore_from_sync.get() {
-            // Legal opaque local-state restoration in the ORIGINAL sync callback.
             self.field.set_focus(true);
             self.seen
                 .restored_syncs
@@ -805,8 +804,6 @@ fn original_history_preflight_preserves_suspended_live_caret_control() {
     assert!(frame.take_component_close_reports().is_empty());
 }
 
-// These are candidate correctness fences. Replacement tests run only with the
-// immediate retirement guard: the old implementation kept freed node pointers.
 fn assert_retired_activation(f: &Fixture) {
     assert!(f.frame.node_map.is_empty());
     assert!(f.frame.owner_service_layout_retired && f.frame.layout_requested);

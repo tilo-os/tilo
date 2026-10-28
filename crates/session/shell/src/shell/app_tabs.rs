@@ -71,7 +71,7 @@ fn tabs(tree: &WorkspaceTree) -> impl Iterator<Item = (TabAnchor, &TileContent)>
                 group.tabs.iter().enumerate().map(move |(index, tab)| {
                     (
                         TabAnchor {
-                            room: workspace.room,
+                            room: workspace.room(),
                             group: group.id,
                             index,
                             tab: tab.id,
@@ -111,7 +111,6 @@ pub fn anchor_in_group(
         })
 }
 
-/// The focused tab of the active workspace.
 fn focused_tab(tree: &WorkspaceTree) -> Option<TabId> {
     let workspace = tree.desktop.active_workspace()?;
     let strip = tree
@@ -160,7 +159,7 @@ pub fn anchor_for_app(
     let active_room = tree
         .desktop
         .active_workspace()
-        .map(|workspace| workspace.room);
+        .map(crate::shell::state::Workspace::room);
     tabs(tree)
         .find(|(anchor, tile)| Some(anchor.room) == active_room && shows_app(tile))
         .map(|(anchor, _)| anchor)
@@ -255,9 +254,11 @@ pub fn open_beside(
     anchor: Option<TabAnchor>,
     background: bool,
 ) -> Result<(), AppTabError> {
-    let app = launcher::gui_apps()
+    // The compositor's loop opens tabs: the apps as last enumerated, never a
+    // registry read, which walks the disk.
+    let app = launcher::installed_apps_without_waiting()
         .into_iter()
-        .find(|app| app.package_id == package_id)
+        .find(|app| app.has_gui && app.package_id == package_id)
         .ok_or_else(|| AppTabError::UnknownApp(package_id.to_owned()))?;
     if let Some(target) = target {
         let resource = crate::shell::uri_open::resource_for_uri(target)
@@ -271,13 +272,13 @@ pub fn open_beside(
         let active_room = tree
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room);
+            .map(crate::shell::state::Workspace::room);
         match anchor {
             Some(anchor) if Some(anchor.room) != active_room => tree
                 .desktop
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room == anchor.room)
+                .find(|workspace| workspace.room() == anchor.room)
                 .cloned(),
             _ => tree.workspace_after_opening_app(&app.package_id),
         }
@@ -294,10 +295,10 @@ pub fn open_beside(
     .map(drop)
 }
 
-/// The new tab is there from this frame, like a browser's: the opening card
-/// holds its place at `placement` and the app's window binds into it when it
+/// The new tab is there from this frame, like a browser's: it holds the
+/// window's place at `placement` and the app's window binds into it when it
 /// maps. Held before `queue` starts the launch, since the window may map
-/// before this returns. A launch refused before any process leaves no card.
+/// before this returns. A launch refused before any process leaves no place.
 fn hold_and_launch(
     st: &ChromeState,
     package_id: &str,
@@ -409,6 +410,7 @@ mod tests {
                         app_id: app.into(),
                         surface_id: 9_001,
                     },
+                    app_title: None,
                 },
                 Tab {
                     id: other,
@@ -417,6 +419,7 @@ mod tests {
                         app_id: "org.example.other".into(),
                         surface_id: 9_002,
                     },
+                    app_title: None,
                 },
             ],
             active_tab: other,
@@ -451,7 +454,6 @@ mod tests {
         reason = "one scenario test keeps each phase and its fresh fixture visible"
     )]
     fn an_app_opens_and_closes_its_own_desktop_tabs() {
-        // Phase `the_launch_record_finds_the_asking_apps_own_tab`.
         {
             const APP: &str = "so.tilo.app-tabs-anchor";
             let mut tree = WorkspaceTree::bootstrap_demo();
@@ -474,7 +476,6 @@ mod tests {
             );
         }
 
-        // Phase `a_new_instance_lands_right_after_its_opener_and_takes_focus`.
         {
             const APP: &str = "so.tilo.app-tabs-front";
             let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
@@ -493,7 +494,6 @@ mod tests {
             assert_eq!(active, opened, "a tab opened in front is the one shown");
         }
 
-        // Phase `a_background_instance_lands_behind_without_moving_focus`.
         {
             const APP: &str = "so.tilo.app-tabs-behind";
             let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
@@ -514,7 +514,6 @@ mod tests {
             assert_eq!(active, fixture.other, "a background tab never takes focus");
         }
 
-        // Phase `closing_its_own_tab_goes_through_the_tab_lifecycle_and_reopens`.
         {
             const APP: &str = "so.tilo.app-tabs-close";
             let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
@@ -545,7 +544,6 @@ mod tests {
             assert_eq!(reopened.index, 0);
         }
 
-        // Phase `an_app_without_a_tab_here_cannot_close_anything`.
         {
             let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
             let mut st = chrome.borrow_mut();
@@ -656,7 +654,6 @@ mod tests {
             drop(frame);
         }
 
-        // Phase `a_new_instance_has_its_tab_from_the_request`.
         {
             const APP: &str = "so.tilo.app-tabs-instant";
             let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
@@ -666,7 +663,6 @@ mod tests {
             let placement = placement_after(&st, anchor, false);
             let mut seen_at_launch = None;
             let held = hold_and_launch(&st, APP, "Instant", placement, || {
-                // The launch starts with the tab already in place.
                 seen_at_launch = Some(group_tabs(&st.tree(), fixture.group));
                 Ok(())
             })
@@ -710,7 +706,6 @@ mod tests {
             );
         }
 
-        // Phase `an_unknown_app_or_undeclared_target_opens_nothing`.
         {
             let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
             let mut st = chrome.borrow_mut();

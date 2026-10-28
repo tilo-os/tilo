@@ -263,11 +263,6 @@ pub fn save_registries(registries: &RegistriesFile) -> Result<(), ConfigError> {
 }
 
 /// Add a registry after validating the fields users most often mistype.
-///
-/// # Errors
-///
-/// Returns an error for an empty/duplicate name, a non-HTTP(S) URL, or a
-/// missing, placeholder, or malformed owner key.
 pub fn add_registry(
     registries: &mut RegistriesFile,
     name: &str,
@@ -353,7 +348,6 @@ mod tests {
 
     #[test]
     fn the_official_registry_key_and_pin_follow_the_build_and_exact_match() {
-        // Phase `a_release_build_reads_the_images_official_owner_key`.
         {
             use package_store::dev_env::dev_override_from;
             let gated = dev_override_from(
@@ -375,7 +369,6 @@ mod tests {
                 PathBuf::from("/dev/owner.pub")
             );
         }
-        // Phase `only_exact_official_registry_receives_the_os_pin`.
         {
             let td = TempDir::new().unwrap();
             let _guard = scoped_dir(&td);
@@ -446,7 +439,6 @@ mod tests {
         ));
         assert_eq!(fs::read_to_string(&path).unwrap(), broken);
 
-        // Repairing the original file makes the same save usable again.
         fs::write(
             &path,
             "[[registry]]\nname = \"My mirror\"\nbase_url = \"https://mirror.example\"\n",
@@ -460,7 +452,6 @@ mod tests {
 
     #[test]
     fn registry_config_is_seeded_once_and_hand_edits_round_trip() {
-        // Phase `seed_written_when_missing`.
         {
             let td = TempDir::new().unwrap();
             let _g = scoped_dir(&td);
@@ -473,7 +464,6 @@ mod tests {
             );
             assert!(td.path().join("registries.toml").exists());
         }
-        // Phase `hand_edited_registries_roundtrip`.
         {
             let td = TempDir::new().unwrap();
             let _g = scoped_dir(&td);
@@ -520,7 +510,6 @@ mod tests {
                 "without the trust anchor no empty list is written down"
             );
         }
-        // Phase `a_file_that_does_not_parse_is_never_overwritten`.
         {
             let td = TempDir::new().unwrap();
             let _g = scoped_dir(&td);
@@ -555,7 +544,6 @@ mod tests {
                 "the no-seed read must leave the config dir untouched"
             );
         }
-        // Phase `no_seed_read_still_reads_an_existing_file`.
         {
             let td = TempDir::new().unwrap();
             let _g = scoped_dir(&td);
@@ -573,7 +561,6 @@ mod tests {
 
     #[test]
     fn registry_mutations_validate_and_channels_default_to_stable() {
-        // Phase `registry_mutations_validate_and_roundtrip`.
         {
             let td = TempDir::new().unwrap();
             let _g = scoped_dir(&td);
@@ -597,7 +584,6 @@ mod tests {
             remove_registry(&mut regs, "team").unwrap();
             assert_eq!(regs.registries.len(), 1);
         }
-        // Phase `registry_mutations_reject_ambiguous_input`.
         {
             let mut regs = RegistriesFile::default();
             assert!(matches!(
@@ -630,7 +616,6 @@ mod tests {
                 Err(ConfigError::InvalidUrl)
             ));
         }
-        // Phase `omitted_channel_stays_stable_and_development_requires_opt_in`.
         {
             let old = "name = 'test'\nbase_url = 'https://example.invalid'\nenabled = true\n";
             let stable: RegistryConfig = toml::from_str(old).unwrap();

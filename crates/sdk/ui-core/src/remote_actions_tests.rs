@@ -99,8 +99,12 @@ impl ActionHost for FakeHost {
         ))
     }
 
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Result<(), ActionHostError> {
-        Ok(())
+    fn cancel(
+        &self,
+        _caller: &Caller,
+        _id: &InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Ok(()))
     }
 }
 
@@ -121,7 +125,7 @@ fn client() -> (Arc<FakeHost>, RemoteActions) {
 fn a_catalogue_read_gathers_every_page_as_the_app() {
     let (host, actions) = client();
     let answer = actions.catalogue(CatalogueQuery::default());
-    let RemoteCall::Done(page) = answer.get() else {
+    let Arrival::Ready(page) = answer.get() else {
         panic!("the catalogue is answered: {:?}", answer.get());
     };
     let ids: Vec<_> = page
@@ -175,7 +179,7 @@ fn incomplete_or_contradictory_catalogue_pages_never_publish_partial_offers() {
         });
         assert!(matches!(
             answer.get(),
-            RemoteCall::Refused(ActionHostError::Unavailable { reason })
+            Arrival::Failed(ActionHostError::Unavailable { reason })
                 if reason.contains("inconsistent completion metadata")
         ));
         assert!(!actions.is_busy());
@@ -187,7 +191,7 @@ fn incomplete_or_contradictory_catalogue_pages_never_publish_partial_offers() {
 fn a_single_page_catalogue_read_leaves_hierarchy_budget_with_its_caller() {
     let (host, actions) = client();
     let answer = actions.catalogue_page(CatalogueQuery::default());
-    let RemoteCall::Done(page) = answer.get() else {
+    let Arrival::Ready(page) = answer.get() else {
         panic!("the first page is answered: {:?}", answer.get());
     };
     assert_eq!(
@@ -268,7 +272,7 @@ fn a_repeated_catalogue_cursor_is_refused_without_another_request() {
     });
     assert!(matches!(
         answer.get(),
-        RemoteCall::Refused(ActionHostError::Unavailable { reason })
+        Arrival::Failed(ActionHostError::Unavailable { reason })
             if reason.contains("repeated a cursor")
     ));
     assert!(actions.take_collab_requests().is_empty());
@@ -302,7 +306,7 @@ fn a_catalogue_walk_has_a_total_page_bound() {
     }
     assert!(matches!(
         answer.get(),
-        RemoteCall::Refused(ActionHostError::Unavailable { reason })
+        Arrival::Failed(ActionHostError::Unavailable { reason })
             if reason.contains("page budget")
     ));
     assert!(actions.take_collab_requests().is_empty());
@@ -335,7 +339,7 @@ fn stale_catalogue_restarts_share_the_global_page_bound() {
     }
     assert!(matches!(
         answer.get(),
-        RemoteCall::Refused(ActionHostError::Unavailable { reason })
+        Arrival::Failed(ActionHostError::Unavailable { reason })
             if reason.contains("page budget")
     ));
     assert!(actions.take_collab_requests().is_empty());
@@ -385,7 +389,7 @@ fn an_unannounced_catalogue_revision_change_is_refused() {
     });
     assert!(matches!(
         answer.get(),
-        RemoteCall::Refused(ActionHostError::Unavailable { reason })
+        Arrival::Failed(ActionHostError::Unavailable { reason })
             if reason.contains("changed revision")
     ));
 }
@@ -417,7 +421,7 @@ fn an_incomplete_catalogue_budget_response_is_never_reported_as_complete() {
     });
     assert!(matches!(
         answer.get(),
-        RemoteCall::Refused(ActionHostError::Unavailable { reason })
+        Arrival::Failed(ActionHostError::Unavailable { reason })
             if reason.contains("work budget")
     ));
 }
@@ -428,14 +432,14 @@ fn an_invocation_reports_its_outcome_or_its_refusal() {
     let done = actions.invoke(target("done"), InvokeArgument::None, None);
     assert!(matches!(
         done.get(),
-        RemoteCall::Done(InvocationUpdate::Succeeded { .. })
+        Arrival::Ready(InvocationUpdate::Succeeded { .. })
     ));
     let refused = actions.invoke(target("forbidden"), InvokeArgument::None, None);
     assert_eq!(
         refused.get(),
-        RemoteCall::Refused(ActionHostError::NotPermitted)
+        Arrival::Failed(ActionHostError::NotPermitted)
     );
-    assert!(refused.get().is_settled());
+    assert!(refused.get().is_finished());
 }
 
 #[test]
@@ -466,21 +470,49 @@ fn a_running_invocation_is_followed_until_it_ends() {
     let slow = actions.invoke(target("slow"), InvokeArgument::None, None);
     assert!(matches!(
         slow.get(),
-        RemoteCall::Done(InvocationUpdate::Accepted { .. })
+        Arrival::Ready(InvocationUpdate::Accepted { .. })
     ));
-    assert!(!slow.get().is_settled());
+    assert!(!slow.get().is_finished());
     actions.poll();
     assert!(
-        !slow.get().is_settled(),
+        !slow.get().is_finished(),
         "not observed again before the interval"
     );
     clock.advance(OBSERVE_INTERVAL);
     actions.poll();
     assert!(matches!(
         slow.get(),
-        RemoteCall::Done(InvocationUpdate::Succeeded { .. })
+        Arrival::Ready(InvocationUpdate::Succeeded { .. })
     ));
     assert!(!actions.is_busy());
+}
+
+/// A catalogue request nothing answers (no host in reach of the connection)
+/// is refused as unavailable once its wait is up, so the app can say so
+/// instead of waiting forever.
+#[test]
+fn an_unanswered_catalogue_read_is_refused_after_its_wait() {
+    let clock = crate::background::Pumped::new();
+    let _entered = clock.background().enter();
+    let mut actions = RemoteActions::session();
+    let answer = actions.catalogue(CatalogueQuery::default());
+    assert_eq!(
+        actions.take_collab_requests().len(),
+        1,
+        "the request is sent"
+    );
+    clock.advance(CATALOGUE_WAIT - Duration::from_millis(1));
+    assert!(actions.take_collab_requests().is_empty());
+    assert!(answer.get().is_pending(), "still within its wait");
+    clock.advance(Duration::from_millis(1));
+    actions.poll();
+    assert_eq!(
+        answer.get(),
+        Arrival::Failed(ActionHostError::Unavailable {
+            reason: CATALOGUE_UNANSWERED.into()
+        })
+    );
+    assert!(!actions.is_busy(), "nothing is left waiting");
 }
 
 #[test]
@@ -511,10 +543,7 @@ fn the_session_transport_carries_requests_out_and_answers_back() {
             result: Err(ActionHostError::NotPermitted),
         },
     });
-    assert_eq!(
-        answer.get(),
-        RemoteCall::Refused(ActionHostError::NotPermitted)
-    );
+    assert_eq!(answer.get(), Arrival::Failed(ActionHostError::NotPermitted));
 }
 
 #[test]
@@ -525,11 +554,8 @@ fn cancellation_acknowledgement_never_pretends_the_invocation_stopped() {
     let _invoke = actions.take_collab_requests();
 
     let cancellation = actions.cancel(invocation).expect("tracked invocation");
-    assert_eq!(cancellation.get(), CancellationCall::Pending);
-    assert_eq!(
-        actions.cancel(invocation).unwrap().get(),
-        CancellationCall::Pending
-    );
+    assert!(cancellation.get().is_pending());
+    assert!(actions.cancel(invocation).unwrap().get().is_pending());
     let requests = actions.take_collab_requests();
     assert!(matches!(
         requests.as_slice(),
@@ -543,14 +569,14 @@ fn cancellation_acknowledgement_never_pretends_the_invocation_stopped() {
             result: Ok(()),
         },
     });
-    assert_eq!(cancellation.get(), CancellationCall::Acknowledged);
+    assert_eq!(cancellation.get(), Arrival::Ready(()));
     assert_eq!(
         actions.cancel(invocation).unwrap().get(),
-        CancellationCall::Acknowledged
+        Arrival::Ready(())
     );
     assert!(actions.take_collab_requests().is_empty());
     assert!(
-        !running.get().is_settled(),
+        !running.get().is_finished(),
         "a cancellation receipt is not a stopped invocation"
     );
 
@@ -568,7 +594,7 @@ fn cancellation_acknowledgement_never_pretends_the_invocation_stopped() {
     });
     assert!(matches!(
         running.get(),
-        RemoteCall::Done(InvocationUpdate::Cancelled { .. })
+        Arrival::Ready(InvocationUpdate::Cancelled { .. })
     ));
     assert!(actions.cancel(invocation).is_none());
     assert!(
@@ -595,12 +621,12 @@ fn refused_cancellation_leaves_the_invocation_running_and_actionable() {
             result: Err(error.clone()),
         },
     });
-    assert_eq!(cancellation.get(), CancellationCall::Refused(error));
-    assert!(!running.get().is_settled());
+    assert_eq!(cancellation.get(), Arrival::Failed(error));
+    assert!(!running.get().is_finished());
     assert!(actions.is_busy());
 
     let retried = actions.cancel(invocation).expect("running retry");
-    assert_eq!(retried.get(), CancellationCall::Pending);
+    assert!(retried.get().is_pending());
     let requests = actions.take_collab_requests();
     assert!(matches!(
         requests.as_slice(),
@@ -608,10 +634,7 @@ fn refused_cancellation_leaves_the_invocation_running_and_actionable() {
             message: RemoteActionMessage::Cancel { invocation: id },
         }] if *id == invocation
     ));
-    assert_eq!(
-        actions.cancel(invocation).unwrap().get(),
-        CancellationCall::Pending
-    );
+    assert!(actions.cancel(invocation).unwrap().get().is_pending());
     assert!(actions.take_collab_requests().is_empty());
 }
 
@@ -624,7 +647,7 @@ fn an_entered_host_serves_the_current_client_until_the_guard_drops() {
             Caller::local_app("so.tilo.example").in_room("room"),
         );
         let answer = RemoteActions::current().catalogue(CatalogueQuery::default());
-        assert!(matches!(answer.get(), RemoteCall::Done(_)));
+        assert!(matches!(answer.get(), Arrival::Ready(_)));
     }
     let mut after = RemoteActions::current();
     let _pending = after.catalogue(CatalogueQuery::default());
@@ -635,7 +658,6 @@ fn an_entered_host_serves_the_current_client_until_the_guard_drops() {
     );
 }
 
-/// The one remote-action request in `requests`.
 fn only_message(requests: Vec<CollabRequest>) -> RemoteActionMessage {
     let [CollabRequest::RemoteAction { message }] = <[CollabRequest; 1]>::try_from(requests)
         .unwrap_or_else(|requests| panic!("one request: {requests:?}"))
@@ -719,7 +741,7 @@ fn a_running_invocation_sends_one_waiting_observe_not_a_poll() {
     actions.handle_collab_event(&update(invocation, progress(invocation, 1)));
     assert!(matches!(
         running.get(),
-        RemoteCall::Done(InvocationUpdate::Progress { sequence: 1, .. })
+        Arrival::Ready(InvocationUpdate::Progress { sequence: 1, .. })
     ));
     assert_eq!(
         only_message(actions.take_collab_requests()),
@@ -737,7 +759,7 @@ fn a_running_invocation_sends_one_waiting_observe_not_a_poll() {
             output: ActionOutput::default(),
         },
     ));
-    assert!(running.get().is_settled());
+    assert!(running.get().is_finished());
     assert!(actions.take_collab_requests().is_empty());
     assert!(!actions.is_busy());
 }
@@ -807,5 +829,70 @@ fn an_old_host_is_observed_on_the_interval() {
             output: ActionOutput::default(),
         },
     ));
-    assert!(running.get().is_settled());
+    assert!(running.get().is_finished());
+}
+
+/// A followed live result shows each new item the host sends, keeps a
+/// waiting observe out for the next, and is cancelled once dropped.
+#[test]
+fn a_followed_result_shows_each_item_and_stops_when_dropped() {
+    let mut actions = RemoteActions::session();
+    let followed = actions.follow(target("live"), InvokeArgument::None);
+    let invocation = followed.invocation();
+    let requests = actions.take_collab_requests();
+    let [
+        CollabRequest::RemoteAction {
+            message: RemoteActionMessage::Invoke(request),
+        },
+    ] = requests.as_slice()
+    else {
+        panic!("one invocation: {requests:?}");
+    };
+    assert_eq!(request.wait_ms, None, "the receipt is the admission");
+    actions.handle_collab_event(&CollabEvent::RemoteAction {
+        message: RemoteActionMessage::Receipt(InvocationReceipt {
+            invocation,
+            status: ReceiptStatus::Accepted,
+        }),
+    });
+    for (sequence, count) in [(1, 0), (2, 3)] {
+        let requests = actions.take_collab_requests();
+        assert!(
+            matches!(
+                requests.as_slice(),
+                [CollabRequest::RemoteAction {
+                    message: RemoteActionMessage::Observe {
+                        wait_ms: Some(_),
+                        seen: Some(_),
+                        ..
+                    },
+                }]
+            ),
+            "a waiting observe follows each update: {requests:?}"
+        );
+        let item = InvocationUpdate::Item {
+            invocation,
+            sequence,
+            value: serde_json::json!({ "count": count }),
+        };
+        actions.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::Update {
+                invocation,
+                state: Some(InvocationState::new(invocation, item.clone())),
+            },
+        });
+        assert_eq!(followed.call().get(), Arrival::Ready(item));
+    }
+    let _observe = actions.take_collab_requests();
+    drop(followed);
+    let requests = actions.take_collab_requests();
+    assert!(
+        matches!(
+            requests.as_slice(),
+            [CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Cancel { invocation: id },
+            }] if *id == invocation
+        ),
+        "dropping it cancels the invocation: {requests:?}"
+    );
 }

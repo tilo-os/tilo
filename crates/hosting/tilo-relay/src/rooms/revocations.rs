@@ -84,7 +84,7 @@ impl Rooms {
         room: &mut GovernedRoom,
         entries: &[RevocationEntry],
     ) -> Result<(), String> {
-        let host = &self.inner.host;
+        let key = &self.inner.host.key;
         let authority = room.peer().authority().clone();
         let certified = room.peer().certificates();
         let carried = room.peer().revocations();
@@ -115,9 +115,9 @@ impl Rooms {
         let mut candidate = room.peer().clone();
         if candidate
             .governance_mut()
-            .publish_governed_revocations(&carry, &host.key, now)?
+            .publish_governed_revocations(&carry, key, now)?
         {
-            room.commit(candidate, &host.key, now, |record, _| {
+            room.commit(candidate, key, now, |record, _| {
                 Ok(record.collaboration.clone())
             })?;
             tracing::info!(room = %room.room(), revocations = carry.len(), "room carries revocations");

@@ -20,7 +20,7 @@ pub(crate) fn theme(host: HostAppearance) -> Theme {
         Some(Scheme::Dark) | None => Theme::dark(),
     };
     let accent = host.accent.and_then(|[r, g, b]| {
-        crate::tokens::PresenceHue::nearest(vello::peniko::Color::from_rgb8(r, g, b))
+        crate::tokens::nearest_presence_hue(vello::peniko::Color::from_rgb8(r, g, b))
     });
     match accent {
         Some(hue) => base.with_your_colour(hue),
@@ -180,7 +180,7 @@ mod tests {
         );
         assert_eq!(
             Some(theme.tokens.colors.you),
-            crate::tokens::PresenceHue::nearest(accent)
+            crate::tokens::nearest_presence_hue(accent)
         );
         assert!(
             (y.l - theme.tokens.colors.presence.lightness).abs() < 0.01,

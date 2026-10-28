@@ -213,7 +213,6 @@ mod tests {
 
     #[tokio::test]
     async fn only_the_injected_frontend_and_resolved_app_ids_are_accepted() {
-        // Phase `only_the_injected_frontend_is_accepted`.
         {
             let trusted: OwnedUniqueName = ":1.7".try_into().unwrap();
             let attacker: OwnedUniqueName = ":1.8".try_into().unwrap();
@@ -231,7 +230,6 @@ mod tests {
                 AuthenticationError::UntrustedSender
             );
         }
-        // Phase `unresolved_and_hostile_app_ids_fail_closed`.
         {
             let owner: OwnedUniqueName = ":1.7".try_into().unwrap();
             let unresolved = PortalAuthenticator::fixed_for_tests(

@@ -25,9 +25,6 @@ pub fn with_written_root(
 /// Visit the root while recording the actual loop attachment outcome.
 /// The observer runs after the bounded losetup attempt, even when it fails
 /// to start; direct block-device roots do not need a loop and emit no event.
-///
-/// # Errors
-/// Returns the same discovery, mount and copy errors as `with_written_root`.
 #[cfg(target_os = "linux")]
 pub fn with_written_root_observed(
     device: &Path,
@@ -139,9 +136,6 @@ fn publish_partition_table(device: &str) {
 ///
 /// Failure stays a failure. Slack is only for a live installer medium, which
 /// has no installed root; a full-disk boot never reads that slack.
-/// # Errors
-/// Returns mount, read-write remount, or copy errors. The mount is detached
-/// on every exit after attachment, including a failed remount.
 #[cfg(target_os = "linux")]
 pub fn with_mounted_root(
     root_part: &str,

@@ -267,14 +267,72 @@ impl Records {
     }
 }
 
-/// Relays `input` to `output` until `input` ends, keeping the records.
+/// What the relay loop waits for: compositor output, or the request to
+/// finish.
+enum Feed {
+    Output(Vec<u8>),
+    Finish,
+}
+
+/// Turns SIGTERM into a [`Feed::Finish`] on `feed`.
+///
+/// The session wrapper cannot always wait for end of input: an app the
+/// compositor started can hold the pipe's write end open after the
+/// compositor exits. It then sends SIGTERM, and the recorder publishes what
+/// it holds before it exits. Dying at once instead lost everything since the
+/// last publication, and a publication still in progress (an fsync on a busy
+/// disk easily takes seconds) lost the compositor's last words entirely.
+///
+/// SIGTERM is blocked here, before any other thread exists, so every thread
+/// inherits the block and only the waiting thread ever receives it.
+fn finish_on_term(feed: mpsc::SyncSender<Feed>) {
+    // SAFETY: `sigset_t` is plain data; sigemptyset initialises it before
+    // any use.
+    let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
+    // SAFETY: `set` is a valid, exclusively borrowed signal set.
+    unsafe {
+        libc::sigemptyset(&raw mut set);
+        libc::sigaddset(&raw mut set, libc::SIGTERM);
+    }
+    // SAFETY: `set` is initialised; no previous mask is asked for.
+    if unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &raw const set, std::ptr::null_mut()) } != 0
+    {
+        return;
+    }
+    let waiter = std::thread::Builder::new()
+        .name("flight-finish".to_owned())
+        .spawn(move || {
+            let mut signal = 0;
+            // SAFETY: `set` is initialised and `signal` is a valid out pointer.
+            if unsafe { libc::sigwait(&raw const set, &raw mut signal) } == 0 {
+                let _ = feed.send(Feed::Finish);
+            }
+        });
+    if waiter.is_err() {
+        // Without a thread to receive it, SIGTERM ends the recorder as before.
+        // SAFETY: `set` is initialised; no previous mask is asked for.
+        unsafe {
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, &raw const set, std::ptr::null_mut());
+        }
+    }
+}
+
+/// Relays `input` to `output` until `input` ends or SIGTERM asks the
+/// recorder to finish, keeping the records.
 ///
 /// Every publication rewrites and fsyncs the whole record. Doing that per read
 /// turned a chatty session into a continuous multi-megabyte write stream, and
 /// a writer blocked on a full pipe stalls the compositor's stderr. Output is
 /// relayed at once; the record follows within [`PERSIST_INTERVAL`], and in
-/// full at end of stream.
+/// full at end of stream or on SIGTERM.
+///
+/// It takes over SIGTERM for the whole process, so it runs on the main
+/// thread before any other thread starts.
 pub fn record(recording: &Recording, input: impl Read + Send + 'static, mut output: impl Write) {
+    // The read blocks, so it runs on its own thread; this one waits on the
+    // channel with the publication deadline as its timeout.
+    let (feed, received) = mpsc::sync_channel::<Feed>(4);
+    finish_on_term(feed.clone());
     let events_path = recording.path.with_file_name(EVENTS_NAME);
     let mut records = Records {
         path: recording.path.clone(),
@@ -293,12 +351,9 @@ pub fn record(recording: &Recording, input: impl Read + Send + 'static, mut outp
     }
     mark_ready(recording.ready.as_deref());
 
-    // The read blocks, so it runs on its own thread; this one waits on the
-    // channel with the publication deadline as its timeout.
-    let (chunks, received) = mpsc::sync_channel::<Vec<u8>>(4);
     let reader = std::thread::Builder::new()
         .name("flight-read".to_owned())
-        .spawn(move || read_input(input, &chunks));
+        .spawn(move || read_input(input, &feed));
     if reader.is_err() {
         return;
     }
@@ -318,7 +373,7 @@ pub fn record(recording: &Recording, input: impl Read + Send + 'static, mut outp
                         due.saturating_duration_since(Instant::now())
                     });
                 match received.recv_timeout(wait) {
-                    Ok(chunk) => Some(chunk),
+                    Ok(Feed::Output(chunk)) => Some(chunk),
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         dirty_since = if records.publish() {
                             None
@@ -327,10 +382,13 @@ pub fn record(recording: &Recording, input: impl Read + Send + 'static, mut outp
                         };
                         continue;
                     }
-                    Err(mpsc::RecvTimeoutError::Disconnected) => None,
+                    Ok(Feed::Finish) | Err(mpsc::RecvTimeoutError::Disconnected) => None,
                 }
             }
-            None => received.recv().ok(),
+            None => match received.recv() {
+                Ok(Feed::Output(chunk)) => Some(chunk),
+                Ok(Feed::Finish) | Err(_) => None,
+            },
         };
         let Some(chunk) = chunk else {
             break;
@@ -365,21 +423,24 @@ pub fn record(recording: &Recording, input: impl Read + Send + 'static, mut outp
     }
 }
 
-fn read_input(mut input: impl Read, chunks: &mpsc::SyncSender<Vec<u8>>) {
+/// Feeds `input` to the relay loop, then [`Feed::Finish`] at its end. The
+/// SIGTERM waiter keeps the channel open, so the end is said, not implied.
+fn read_input(mut input: impl Read, chunks: &mpsc::SyncSender<Feed>) {
     let mut buffer = vec![0_u8; READ_CHUNK];
     loop {
         match input.read(&mut buffer) {
-            Ok(0) => return,
+            Ok(0) => break,
             Ok(read) => {
                 let chunk = buffer.get(..read).unwrap_or_default().to_vec();
-                if chunks.send(chunk).is_err() {
+                if chunks.send(Feed::Output(chunk)).is_err() {
                     return;
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(_) => return,
+            Err(_) => break,
         }
     }
+    let _ = chunks.send(Feed::Finish);
 }
 
 #[cfg(test)]
@@ -465,7 +526,6 @@ mod tests {
         );
         assert_eq!(entries(directory.path()), vec![path.clone()]);
 
-        // Storage that refuses the publication keeps the previous record.
         let gone = directory.path().join("gone").join("latest.log");
         assert!(!persist(&gone, b"record"));
         assert_eq!(entries(directory.path()), vec![path]);

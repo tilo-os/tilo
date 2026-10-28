@@ -472,7 +472,6 @@ mod tests {
 
     #[test]
     fn portal_projections_follow_their_lease_mode_and_never_replaced_links() {
-        // Phase `read_only_portal_file_is_projected_under_only_its_lease_and_revoked`.
         {
             let temp = TempDir::new().unwrap();
             let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
@@ -500,7 +499,6 @@ mod tests {
             broker.revoke(&lease.lease_id);
             assert!(!temp.path().join("leases").join(&lease.lease_id).exists());
         }
-        // Phase `read_only_projection_is_marked_for_the_rail_mount_namespace`.
         {
             let temp = TempDir::new().unwrap();
             let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
@@ -525,7 +523,6 @@ mod tests {
             );
             broker.revoke(&lease.lease_id);
         }
-        // Phase `writable_projection_round_trips_only_through_the_portal_descriptor`.
         {
             let temp = TempDir::new().unwrap();
             let source_path = temp.path().join("input");
@@ -549,7 +546,6 @@ mod tests {
                 .unwrap();
             assert_eq!(contents, "after");
         }
-        // Phase `writable_projection_never_follows_a_replaced_symlink_on_save`.
         {
             let temp = TempDir::new().unwrap();
             let source_path = temp.path().join("input");
@@ -577,7 +573,6 @@ mod tests {
 
     #[test]
     fn portal_handles_are_caller_scoped_one_shot_and_bounded() {
-        // Phase `a_handle_is_scoped_to_the_portal_caller_that_selected_it`.
         {
             let temp = TempDir::new().unwrap();
             let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
@@ -595,7 +590,6 @@ mod tests {
                 Err(LaunchError::CapabilityBroker(_))
             ));
         }
-        // Phase `a_portal_handle_can_materialize_only_one_launch`.
         {
             let temp = TempDir::new().unwrap();
             let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
@@ -615,7 +609,6 @@ mod tests {
             ));
             broker.revoke(&first.lease_id);
         }
-        // Phase `document_count_is_bounded_before_any_projection_is_created`.
         {
             let temp = TempDir::new().unwrap();
             let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));

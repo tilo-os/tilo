@@ -56,6 +56,10 @@ pub struct LocalModelPackage {
     /// Signed salient-object segmentation capability ("Select subject").
     #[serde(default)]
     pub segmentation: bool,
+    /// No signed runtime on this device serves the model's format yet: it
+    /// is installed data that cannot be started until one ships.
+    #[serde(default)]
+    pub no_runtime: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,7 +171,6 @@ pub struct LocalModelSnapshot {
 }
 
 impl LocalModelSnapshot {
-    /// The in-process model `id`.
     #[must_use]
     pub fn in_process_model(&self, id: &str) -> Option<&InProcessLocalModel> {
         self.in_process.iter().find(|model| model.package.id == id)

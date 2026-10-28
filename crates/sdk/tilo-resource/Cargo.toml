@@ -4,7 +4,7 @@ name = "tilo-resource"
 version = "0.1.0"
 edition = "2024"
 publish = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
 description = "The Tilo resource layer: typed, hierarchical app resources."
@@ -20,6 +20,9 @@ test-support = []
 chrono = ["dep:chrono"]
 
 [dependencies]
+# Sorts without a copy of std's sort per call site, which kept the web
+# desktop's start module large.
+tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 automerge.workspace = true

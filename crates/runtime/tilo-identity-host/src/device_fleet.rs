@@ -12,8 +12,8 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, IdentityPaths, RevocationEntry, RevocationReason,
-    decode_enrollment_token, encode_enrollment_token, mint_enrollment_token,
+    DeviceCapabilities, DeviceCert, GovernorSuccession, IdentityPaths, RevocationEntry,
+    RevocationReason, decode_enrollment_token, encode_enrollment_token, mint_enrollment_token,
     revocation_signing_digest, verify_device_cert, verify_device_cert_at, verify_revocation_entry,
 };
 
@@ -26,6 +26,11 @@ pub struct DeviceFleet {
     pub identity_id: String,
     pub certificates: Vec<DeviceCert>,
     pub revocations: Vec<RevocationEntry>,
+    /// The root's statements naming which device governs in place of each
+    /// revoked one, announced with the revocations so a room the revoked
+    /// device governed moves to its successor. Omitted while empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub successions: Vec<GovernorSuccession>,
     /// Enrollment nonces an older build recorded here. Redeemed nonces now
     /// live in [`crate::enrollment::NonceStore`], which the nearby-pairing
     /// broker shares; the next redemption moves these there and saves the
@@ -50,6 +55,7 @@ impl DeviceFleet {
             identity_id,
             certificates: Vec::new(),
             revocations: Vec::new(),
+            successions: Vec::new(),
             consumed_enrollments: Vec::new(),
         }
     }
@@ -59,12 +65,30 @@ impl DeviceFleet {
             .iter()
             .any(|entry| &entry.revoked_device_public_key == device_public_key)
     }
+
+    /// The person's own devices this fleet certifies at `now_ns`: personal
+    /// devices ([`DeviceCapabilities::is_personal_device`]) of `person`,
+    /// unexpired and not revoked.
+    #[must_use]
+    pub fn personal_devices(&self, person: &[u8; 32], now_ns: u64) -> Vec<[u8; 32]> {
+        self.certificates
+            .iter()
+            .filter(|cert| {
+                &cert.user_public_key == person
+                    && cert.capabilities.is_personal_device()
+                    && verify_device_cert_at(cert, now_ns).is_ok()
+                    && !self.is_revoked(&cert.device_public_key)
+            })
+            .map(|cert| cert.device_public_key)
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct DeviceFleetStore {
     identity_dir: PathBuf,
     identity_paths: IdentityPaths,
+    person: Option<u32>,
 }
 
 impl DeviceFleetStore {
@@ -87,7 +111,17 @@ impl DeviceFleetStore {
         Self {
             identity_dir: identity_dir.into(),
             identity_paths,
+            person: None,
         }
+    }
+
+    /// The store of another account's identity directory, written by a root
+    /// process acting for that account (uid): every write runs as them and
+    /// only into a directory they own ([`crate::person_files::as_person`]).
+    #[must_use]
+    pub const fn for_person(mut self, uid: u32) -> Self {
+        self.person = Some(uid);
+        self
     }
 
     /// Load the persisted device fleet for `identity_id`, or a fresh empty
@@ -120,6 +154,11 @@ impl DeviceFleetStore {
         }
         for entry in &fleet.revocations {
             verify_revocation_entry(entry)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        }
+        for succession in &fleet.successions {
+            succession
+                .verify_at(succession.successor.issued_at_ns)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         }
         // Home peers are enrolled by the privileged LAN broker rather than the
@@ -157,7 +196,7 @@ impl DeviceFleetStore {
     /// action and broker call. The verified fleet is served from memory while
     /// none of its backing files (the fleet file and the home-peer registry)
     /// changed: one `stat` each instead of reading, parsing and verifying
-    /// them. Every writer replaces the fleet file by rename and [`Self::save`]
+    /// them. Every writer replaces the fleet file by rename and `Self::save`
     /// drops the entry, and a file another process rewrites in place changes
     /// its length or modification time, so a revocation is seen by the very
     /// next call. A fleet whose files changed within the last two seconds is
@@ -301,10 +340,10 @@ impl DeviceFleetStore {
                 valid_from_ns: now_ns,
                 local_issuer: None,
             },
-            &|digest| {
+            crate::enrollment::Certifier::Root(&|digest| {
                 root.sign(digest)
                     .map_err(|error| io::Error::other(error.to_string()))
-            },
+            }),
         )
     }
 
@@ -317,7 +356,7 @@ impl DeviceFleetStore {
         &self,
         nonces: &crate::enrollment::NonceStore,
         request: &crate::enrollment::Redemption<'_>,
-        sign: crate::enrollment::RootSign<'_>,
+        certifier: crate::enrollment::Certifier<'_>,
     ) -> io::Result<DeviceCert> {
         let token = request.token;
         let identity_id = hex::encode(token.user_public_key);
@@ -338,6 +377,7 @@ impl DeviceFleetStore {
             token,
             issuer,
             fleet.is_revoked(&token.issuer_device_public_key),
+            certifier.issuer_admits(),
             request.now_ns,
         )?;
         if fleet
@@ -351,7 +391,13 @@ impl DeviceFleetStore {
                 "enrollment token has already been consumed",
             ));
         }
-        let cert = crate::enrollment::certify(request, sign)?;
+        if fleet.is_revoked(&request.device_public_key) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "that device was removed from this identity and cannot join again",
+            ));
+        }
+        let cert = crate::enrollment::certify(request, certifier)?;
         // Nonces an older build kept in the fleet move to the one store.
         for consumed in &fleet.consumed_enrollments {
             nonces.import(&consumed.nonce)?;
@@ -412,11 +458,69 @@ impl DeviceFleetStore {
             .sign(&digest)
             .map_err(|error| io::Error::other(error.to_string()))?;
         verify_revocation_entry(&entry).map_err(|error| io::Error::other(error.to_string()))?;
+        let succession = self.succession(&root, &fleet, &entry, revoked_at_ns)?;
+        let mut changed = false;
         if !fleet.is_revoked(&device_public_key) {
             fleet.revocations.push(entry.clone());
+            changed = true;
+        }
+        if let Some(succession) = succession
+            && !fleet
+                .successions
+                .iter()
+                .any(|known| known.previous.device_public_key == device_public_key)
+        {
+            fleet.successions.push(succession);
+            changed = true;
+        }
+        if changed {
             self.save(&fleet)?;
         }
         Ok(entry)
+    }
+
+    /// The root's statement that this device governs every room the device
+    /// `revocation` revokes governed. `None` when this device is that one,
+    /// holds no certificate of the identity, is revoked, or may not own
+    /// workspaces: then nothing succeeds it, and its rooms wait for a root
+    /// that names a successor.
+    fn succession(
+        &self,
+        root: &runtime_identity::SigningIdentity,
+        fleet: &DeviceFleet,
+        revocation: &RevocationEntry,
+        now_ns: u64,
+    ) -> io::Result<Option<GovernorSuccession>> {
+        let Ok(successor) = tilo_user_identity::persist::read_device_cert(
+            &self
+                .identity_paths
+                .device_cert_for_user(&revocation.user_public_key),
+        ) else {
+            return Ok(None);
+        };
+        let Some(previous) = fleet
+            .certificates
+            .iter()
+            .find(|cert| cert.device_public_key == revocation.revoked_device_public_key)
+        else {
+            return Ok(None);
+        };
+        if fleet.is_revoked(&successor.device_public_key) {
+            return Ok(None);
+        }
+        let mut succession = GovernorSuccession {
+            previous: previous.clone(),
+            revocation: revocation.clone(),
+            successor,
+            signature: [0; 64],
+        };
+        let digest = succession
+            .signing_digest()
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        succession.signature = root
+            .sign(&digest)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        Ok(succession.verify_at(now_ns).is_ok().then_some(succession))
     }
 
     /// The fleet of `identity_id` as a verifier sees it: every certificate
@@ -515,6 +619,37 @@ impl DeviceFleetStore {
         self.insert_certificate(identity_id, cert)
     }
 
+    /// Keep a revocation the person's root signed that reached this device
+    /// from another of theirs, so this device refuses the revoked one after a
+    /// restart too. Returns whether the fleet changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the revocation does not verify, belongs to another
+    /// identity, or the fleet cannot be saved.
+    pub fn remember_revocation(
+        &self,
+        identity_id: &str,
+        entry: RevocationEntry,
+    ) -> io::Result<bool> {
+        verify_revocation_entry(&entry)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+        if entry.user_public_key != decode_hex_32(identity_id)? {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "revocation belongs to another identity",
+            ));
+        }
+        let _fleet_lock = self.lock_fleets()?;
+        let mut fleet = self.load(identity_id)?;
+        if fleet.is_revoked(&entry.revoked_device_public_key) {
+            return Ok(false);
+        }
+        fleet.revocations.push(entry);
+        self.save(&fleet)?;
+        Ok(true)
+    }
+
     fn insert_certificate(&self, identity_id: &str, cert: DeviceCert) -> io::Result<DeviceFleet> {
         verify_device_cert(&cert).map_err(|error| io::Error::other(error.to_string()))?;
         let _fleet_lock = self.lock_fleets()?;
@@ -599,6 +734,18 @@ impl DeviceFleetStore {
         Ok(cert)
     }
 
+    /// This device's material of `identity_id`'s key, which signs only
+    /// after the person approved what it signs
+    /// ([`crate::certification_ceremony`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the identity is not registered here or cannot be
+    /// opened.
+    pub fn identity_key(&self, identity_id: &str) -> io::Result<runtime_identity::SigningIdentity> {
+        self.identity(identity_id).map(|(key, _)| key)
+    }
+
     pub(crate) fn identity(
         &self,
         identity_id: &str,
@@ -628,7 +775,7 @@ impl DeviceFleetStore {
         let path = self.path(&fleet.identity_id);
         let bytes = serde_json::to_vec_pretty(fleet)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        let written = crate::person_files::as_owner_of(&self.identity_dir, || {
+        let written = crate::person_files::as_person(self.person, &self.identity_dir, || {
             tilo_files::native::atomic::write_creating_parent(&path, &bytes)
         });
         if let Ok(mut cache) = FLEET_CACHE.write() {
@@ -642,10 +789,10 @@ impl DeviceFleetStore {
 
     /// The nearby-pairing broker approving with a root seed runs as root and
     /// redeems into the person's own fleet: what it writes there it writes as
-    /// the person ([`crate::person_files`]).
+    /// the person ([`Self::for_person`]).
     fn lock_fleets(&self) -> io::Result<advisory_lock::FileLock> {
         let directory = self.identity_dir.join("fleets");
-        crate::person_files::as_owner_of(&self.identity_dir, || {
+        crate::person_files::as_person(self.person, &self.identity_dir, || {
             fs::create_dir_all(&directory)?;
             File::open(&directory)
         })
@@ -659,6 +806,15 @@ impl DeviceFleetStore {
             .parent()
             .and_then(Path::parent)
             .map_or_else(PathBuf::new, Path::to_path_buf)
+    }
+
+    /// The files [`Self::load`] reads for `identity_id`: its fleet and the
+    /// shared home-peer registry, for a caller that watches them.
+    #[must_use]
+    pub fn backing_files(&self, identity_id: &str) -> Vec<PathBuf> {
+        std::iter::once(self.path(identity_id))
+            .chain(self.home_peer_registry())
+            .collect()
     }
 
     fn path(&self, identity_id: &str) -> PathBuf {
@@ -818,7 +974,6 @@ mod tests {
         reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
     )]
     fn fleet_enrollment_loads_revokes_and_resists_clock_rollback() {
-        // Phase `a_fleet_without_consumed_enrollments_loads_empty`.
         {
             let fleet: DeviceFleet = serde_json::from_value(serde_json::json!({
                 "schema_version": 1,
@@ -829,7 +984,6 @@ mod tests {
             .expect("fleet without consumed enrollments");
             assert!(fleet.consumed_enrollments.is_empty());
         }
-        // Phase `enroll_list_and_revoke_a_secondary_device`.
         {
             let root = tempfile::tempdir().expect("temp root");
             let identity_dir = root.path().join("config/identity");
@@ -945,7 +1099,6 @@ mod tests {
                     .is_revoked(&phone.verifying_key().to_bytes())
             );
         }
-        // Phase `clock_rollback_cannot_revive_consumed_enrollment`.
         {
             let root = tempfile::tempdir().expect("temp root");
             let identity_dir = root.path().join("config/identity");
@@ -1172,6 +1325,26 @@ mod tests {
         );
         let saved = fs::read_to_string(store.path(&identity_id)).expect("fleet file");
         assert!(!saved.contains("consumed_enrollments"), "{saved}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_persons_fleet_is_not_written_through_a_planted_symlink() {
+        let root = tempfile::tempdir().expect("temp root");
+        let elsewhere = root.path().join("elsewhere");
+        fs::create_dir(&elsewhere).expect("target");
+        let identity_dir = root.path().join("identity");
+        std::os::unix::fs::symlink(&elsewhere, &identity_dir).expect("planted link");
+        let store = DeviceFleetStore::at(&identity_dir, IdentityPaths::under(root.path()))
+            .for_person(rustix::process::geteuid().as_raw());
+
+        let saved = store.save(&DeviceFleet::new("07".repeat(32)));
+        assert_eq!(
+            saved.expect_err("a symlinked identity directory").kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert!(store.lock_fleets().is_err());
+        assert_eq!(fs::read_dir(&elsewhere).expect("target").count(), 0);
     }
 }
 

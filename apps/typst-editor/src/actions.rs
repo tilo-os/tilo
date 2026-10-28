@@ -22,19 +22,22 @@ pub enum TypstEffect {
     #[effect(idempotent)]
     Compile,
     /// Save Typst file.
-    #[effect(job, cancellable, destructive)]
+    #[effect(job, cancellable, risk = "file_risk")]
     Save {
         #[param("Where to write it; omit to save in place or choose")]
         path: Option<String>,
     },
+    /// Save Typst file somewhere else, chosen now.
+    #[effect(job, cancellable)]
+    SaveAs,
     /// Open Typst file.
-    #[effect(job, cancellable, destructive)]
+    #[effect(job, cancellable)]
     OpenFile {
         #[param("Path of the file; omit to choose one")]
         path: Option<String>,
     },
     /// Export PDF.
-    #[effect(job, cancellable, destructive)]
+    #[effect(job, cancellable, risk = "file_risk")]
     ExportPdf {
         #[param("Where to write the PDF; omit to choose")]
         path: Option<String>,
@@ -63,12 +66,34 @@ pub enum TypstEffect {
         #[param("The Problems row")]
         index: usize,
     },
+    /// Toggle outline.
+    #[effect(view)]
+    Outline,
+    /// Go to heading.
+    #[effect(view, row)]
+    GoToHeading {
+        #[param("The heading's one-based source line")]
+        line: usize,
+    },
     /// Go to page.
     #[effect(view, row)]
     GoToPage {
         #[param("The zero-based page")]
         page: usize,
     },
+}
+
+/// What saving or exporting risks: nothing when the person chooses where in
+/// the file chooser (or saves the file where it already lives, as Save does);
+/// writing over whatever is at a path a caller names is destructive and asks
+/// first.
+fn file_risk(effect: &TypstEffect) -> ui::tilo_actions::RiskLevel {
+    match effect {
+        TypstEffect::Save { path: Some(_) } | TypstEffect::ExportPdf { path: Some(_) } => {
+            ui::tilo_actions::RiskLevel::Destructive
+        }
+        _ => ui::tilo_actions::RiskLevel::None,
+    }
 }
 
 /// Live presentation inputs for the resource tree — not CRDT.
@@ -156,6 +181,7 @@ mod tests {
 
     #[test]
     fn file_effects_take_a_path_and_keep_job_confirmation_contracts() {
+        use ui::tilo_actions::ConfirmationPolicy;
         let specs = TypstEffect::specs();
         for id in ["open-file", "save", "export-pdf"] {
             let spec = specs.iter().find(|spec| spec.id == id).unwrap();
@@ -165,10 +191,24 @@ mod tests {
                 ui::tilo_actions::ExecutionMode::Background { cancellable: true }
             ));
             assert_eq!(spec.contract.result, ui::tilo_actions::ResultSpec::Job);
-            assert!(!matches!(
-                spec.contract.confirmation,
-                ui::tilo_actions::ConfirmationPolicy::None
-            ));
+            // The person's own Open, Save or Export, answered in the file
+            // chooser, asks nothing more.
+            let chosen = serde_json::Map::new();
+            assert_eq!(
+                spec.confirmation_for_json(&chosen),
+                ConfirmationPolicy::None,
+                "{id} through the chooser"
+            );
+        }
+        // Writing over whatever is at a path a caller names asks first.
+        for id in ["save", "export-pdf"] {
+            let spec = specs.iter().find(|spec| spec.id == id).unwrap();
+            let named = serde_json::json!({"path": "/tmp/somewhere"});
+            assert_eq!(
+                spec.confirmation_for_json(named.as_object().unwrap()),
+                ConfirmationPolicy::Confirm,
+                "{id} to a named path"
+            );
         }
         let save = TypstEffect::decode(
             "save",

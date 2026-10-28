@@ -13,7 +13,10 @@ checked in that crate's catalogue, the one it is looked up in.
 
 from __future__ import annotations
 
+import bisect
+import functools
 import re
+import sys
 from pathlib import Path
 
 import check_app_portability as rust
@@ -23,12 +26,73 @@ ROOT = Path(__file__).resolve().parents[2]
 MESSAGE = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*)\s*=", re.MULTILINE)
 IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_-]*\Z")
 KEY = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)+\Z")
-RESOLVER = re.compile(r"\b(?:t|t_args|tr|tr_args)\s*\(")
-QUALIFIED = re.compile(r"\b([A-Za-z_]\w*)::i18n::(?:t|t_args|tr|tr_args)\s*\(")
+# The patterns below start with a literal, so a search jumps from one occurrence of it to the
+# next; one that starts with `\b` or an alternation is tried at every offset of some 100 MB of
+# source. A leading `\b` is checked by `starts_word` instead.
+RESOLVER = re.compile(r"t(?:_args|r|r_args)?\s*\(")
+# `<crate>::i18n::t(`: found by its literal part, then the crate name read backwards
+# (`\b([A-Za-z_]\w*)` before it), which a search from every position took seconds per tree for.
+QUALIFIED = re.compile(r"::i18n::(?:t|t_args|tr|tr_args)\s*\(")
 # These argument positions are stable machine identifiers, never Fluent IDs.
-MACHINE_CALL = re.compile(
-    r"(?:\bButton::new|\bdevice_read::thread|\.(?:with_id|thread_name|name))\s*\("
-)
+MACHINE_CALLS = (re.compile(r"Button::new\s*\("), re.compile(r"device_read::thread\s*\("))
+MACHINE_METHOD = re.compile(r"\.(?:with_id|thread_name|name|start_job)\s*\(")
+SLUG = re.compile(r"fn\s+slug\s*\([^{}]*\)[^{]*\{")
+ARM_AFTER = re.compile(r"\s*(?:=>|\|)")
+COMPARED_AFTER = re.compile(r"\s*[=!]=")
+WORD = re.compile(r"\w")
+IDENT = re.compile(r"[A-Za-z_]\w*")
+C_STRING = re.compile(r'c(?:r#*)?"')
+
+
+def starts_word(code: str, offset: int) -> bool:
+    """A `\\b` before a word character at `offset`."""
+    return offset == 0 or not WORD.match(code[offset - 1])
+
+
+def resolver_calls(code: str) -> list[re.Match[str]]:
+    """`t(`, `t_args(`, `tr(` and `tr_args(` (`\\b(?:t|t_args|tr|tr_args)\\s*\\(`)."""
+    return [call for call in RESOLVER.finditer(code) if starts_word(code, call.start())]
+
+
+def machine_calls(code: str) -> list[re.Match[str]]:
+    """Calls whose first argument is a machine identifier, in source order."""
+    calls = [call for pattern in MACHINE_CALLS for call in pattern.finditer(code)
+             if starts_word(code, call.start())]
+    return sorted(calls + list(MACHINE_METHOD.finditer(code)), key=lambda call: call.start())
+
+
+def lexed(text: str):
+    """A source's lexed code, literals and test-pruned code, worked out once for both readers of
+    a file (`used_keys`, `foreign_keys`)."""
+    return _lexed(text)
+
+
+@functools.lru_cache(maxsize=2)
+def _lexed(text: str):
+    code, literals = rust.lex(text)
+    return code, literals, rust.strip_tests(text, code)
+
+
+def before_whitespace(code: str, offset: int) -> int:
+    """Where the whitespace that ends at `offset` starts."""
+    while offset > 0 and code[offset - 1].isspace():
+        offset -= 1
+    return offset
+
+
+def compared_before(code: str, offset: int) -> bool:
+    """`code[:offset]` ends in `==` or `!=` and whitespace (`[=!]=\\s*$`), without copying it."""
+    end = before_whitespace(code, offset)
+    return end >= 2 and code[end - 1] == "=" and code[end - 2] in "=!"
+
+
+def icon_field_before(code: str, offset: int) -> bool:
+    """`code[:offset]` ends in `icon:` and whitespace (`\\bicon\\s*:\\s*$`), without copying it."""
+    end = before_whitespace(code, offset)
+    if end < 1 or code[end - 1] != ":":
+        return False
+    end = before_whitespace(code, end - 1)
+    return code[end - 4:end] == "icon" and (end == 4 or not WORD.match(code[end - 5]))
 
 
 def first_argument(code: str, start: int, limit: int | None = None) -> tuple[int, int]:
@@ -45,13 +109,61 @@ def first_argument(code: str, start: int, limit: int | None = None) -> tuple[int
     return start, end
 
 
-def contains(ranges: list[tuple[int, int]], offset: int) -> bool:
+class Spans:
+    """Ranges of a source, asked whether they hold an offset in logarithmic time: a file has
+    hundreds of resolver calls and thousands of literals."""
+
+    def __init__(self, ranges: list[tuple[int, int]]):
+        ordered = sorted(ranges)
+        self.ranges = ranges
+        self.starts = [start for start, _ in ordered]
+        self.reach = []
+        furthest = -1
+        for _, end in ordered:
+            furthest = max(furthest, end)
+            self.reach.append(furthest)
+
+    def __contains__(self, offset: int) -> bool:
+        index = bisect.bisect_right(self.starts, offset) - 1
+        return index >= 0 and self.reach[index] > offset
+
+
+def contains(ranges: list[tuple[int, int]] | Spans, offset: int) -> bool:
+    if isinstance(ranges, Spans):
+        return offset in ranges
     return any(start <= offset < end for start, end in ranges)
 
 
-def foreign_calls(code: str, modules: dict[str, Path]) -> list[tuple[re.Match[str], Path]]:
+class Qualified:
+    """A resolver call qualified with a crate's `i18n` module: the crate's library name
+    (`group(1)`) and where the call's arguments start (`end()`)."""
+
+    def __init__(self, crate: str, end: int):
+        self.crate, self._end = crate, end
+
+    def group(self, index: int) -> str:
+        assert index == 1
+        return self.crate
+
+    def end(self) -> int:
+        return self._end
+
+
+def qualified_calls(code: str) -> list[Qualified]:
+    calls = []
+    for call in QUALIFIED.finditer(code):
+        start = call.start()
+        while start > 0 and (code[start - 1].isalnum() or code[start - 1] == "_"):
+            start -= 1
+        name = code[start:call.start()]
+        if IDENT.fullmatch(name):
+            calls.append(Qualified(name, call.end()))
+    return calls
+
+
+def foreign_calls(code: str, modules: dict[str, Path]) -> list[tuple[Qualified, Path]]:
     """Resolver calls qualified with another crate's `i18n` module."""
-    return [(call, modules[call.group(1)]) for call in QUALIFIED.finditer(code)
+    return [(call, modules[call.group(1)]) for call in qualified_calls(code)
             if call.group(1) in modules]
 
 
@@ -62,17 +174,18 @@ def used_keys(text: str, namespaces: set[str],
     Keys passed to another crate's resolver (`foreign`) are that crate's, so
     they are left to `foreign_keys`.
     """
-    code, literals = rust.lex(text)
-    pruned = rust.strip_tests(text, code)
+    code, literals, pruned = lexed(text)
     elsewhere = [first_argument(pruned.code, call.end())
                  for call, _ in foreign_calls(pruned.code, foreign or {})]
     resolved = [first_argument(pruned.code, call.end())
-                for call in RESOLVER.finditer(pruned.code)]
-    resolved = [span for span in resolved if span not in elsewhere]
+                for call in resolver_calls(pruned.code)]
+    excluded = set(elsewhere)
+    resolved = [span for span in resolved if span not in excluded]
+    resolved_spans = Spans(resolved)
     machine = [first_argument(pruned.code, call.end())
-               for call in MACHINE_CALL.finditer(pruned.code)]
+               for call in machine_calls(pruned.code)]
     # Navigation slugs and control-ID pairs are passed separately from copy.
-    for function in re.finditer(r"\bfn\s+slug\s*\([^{}]*\)[^{]*\{", pruned.code):
+    for function in (f for f in SLUG.finditer(pruned.code) if starts_word(pruned.code, f.start())):
         machine.append((function.end(), rust.matching(pruned.code, function.end() - 1)))
     for call in re.finditer(r"\.push_confirm\s*\(", pruned.code):
         limit = rust.matching(pruned.code, call.end() - 1) - 1
@@ -81,28 +194,30 @@ def used_keys(text: str, namespaces: set[str],
         start, end = first_argument(pruned.code, end + 1, limit)
         machine.append((start, end))
     found = []
+    elsewhere_spans, machine_spans = Spans(elsewhere), Spans(machine)
     for literal in literals:
-        if (literal.byte or not pruned.keeps(literal.start)
-                or re.match(r'c(?:r#*)?"', text[literal.start:literal.end])):
+        # Only identifier-shaped literals can be keys (KEY is a narrower IDENTIFIER): the cheap
+        # test first, as most literals of a file are not.
+        if literal.byte or not IDENTIFIER.fullmatch(literal.value):
             continue
-        direct = contains(resolved, literal.start)
+        if not pruned.keeps(literal.start) or C_STRING.match(text, literal.start):
+            continue
+        direct = literal.start in resolved_spans
         key = literal.value
         if not (IDENTIFIER if direct else KEY).fullmatch(key):
             continue
         # Match-arm selectors describe stored values, not displayed copy.
-        if re.match(r"\s*(?:=>|\|)", code[literal.end:]):
+        if ARM_AFTER.match(code, literal.end):
             continue
         # A compared value inside a resolver's argument (`t(if id == "icloud"
         # { … } else { … })`) is a state, not the key being resolved.
-        if (re.search(r"[=!]=\s*$", code[:literal.start])
-                or re.match(r"\s*[=!]=", code[literal.end:])):
+        if compared_before(code, literal.start) or COMPARED_AFTER.match(code, literal.end):
             continue
-        if contains(elsewhere, literal.start):
+        if literal.start in elsewhere_spans:
             continue
         if not direct and key.partition("-")[0] not in namespaces:
             continue
-        if not direct and (contains(machine, literal.start)
-                           or re.search(r"\bicon\s*:\s*$", code[:literal.start])):
+        if not direct and (literal.start in machine_spans or icon_field_before(code, literal.start)):
             continue
         found.append((key, rust.line_number(text, literal.start)))
     return found
@@ -110,8 +225,7 @@ def used_keys(text: str, namespaces: set[str],
 
 def foreign_keys(text: str, modules: dict[str, Path]) -> list[tuple[Path, str, int]]:
     """Keys passed straight to another crate's resolver, with that crate."""
-    code, literals = rust.lex(text)
-    pruned = rust.strip_tests(text, code)
+    code, literals, pruned = lexed(text)
     found = []
     for call, crate in foreign_calls(pruned.code, modules):
         start, end = first_argument(pruned.code, call.end())
@@ -148,11 +262,18 @@ def i18n_modules(root: Path, crates: list[Path]) -> dict[str, Path]:
 
 TOOLKIT = "crates/sdk/ui-core"
 # Crates whose copy keys also travel through conditionals and tables.
-INDIRECT = {"apps/settings"}
+INDIRECT = {"apps/settings-core"}
 # Catalogues a crate's resolver falls back to after its own: Settings' `t`
 # resolves the shared provider administration copy it embeds
-# (apps/settings/src/i18n.rs).
-FALLBACK = {"apps/settings": ["crates/sdk/provider-settings-ui"]}
+# (apps/settings-core/src/i18n.rs).
+FALLBACK = {"apps/settings-core": ["crates/sdk/provider-settings-ui"]}
+# Crates whose copy is another crate's catalogue: Settings' panes, in the
+# app and in settings-rare, resolve settings-core's; Browser resolves
+# browser-parts'.
+SOURCES = {
+    "apps/settings-core": ["apps/settings", "apps/settings-rare"],
+    "apps/browser-parts": ["apps/browser"],
+}
 
 
 def catalogues(crate: Path) -> dict[str, set[str]]:
@@ -176,7 +297,8 @@ def missing_copy(root: Path) -> list[str]:
         shared = [catalogues(root / fallback) for fallback in FALLBACK.get(name, [])]
         indirect = name in INDIRECT
         namespaces = {key.partition("-")[0] for key in own["en-US"]} if indirect else set()
-        for path in sorted((crate / "src").rglob("*.rs")):
+        sources = [crate] + [root / other for other in SOURCES.get(name, [])]
+        for path in sorted(p for source in sources for p in (source / "src").rglob("*.rs")):
             # Settings' scenarios name capture-only states, not live panes.
             if indirect and path.name == "scenarios.rs":
                 continue
@@ -201,7 +323,7 @@ def main() -> int:
     if errors:
         print("\n".join(errors))
         return 1
-    print("app copy OK (every resolved key is in each shipped catalogue)")
+    print("app copy OK (every resolved key is in each shipped catalogue)", file=sys.stderr)
     return 0
 
 

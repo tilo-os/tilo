@@ -34,6 +34,9 @@ pub(crate) fn build(
     theme: &Theme,
 ) -> Element {
     let model = shared.borrow();
+    if nothing_measured(&model) {
+        return idle_page(shared, &model, scroll, run, theme);
+    }
     let min_column = theme.tokens.metrics.content_min_width;
     let columns = Row::new()
         .align_start()
@@ -74,6 +77,106 @@ pub(crate) fn build(
             .with_persisted_offset(Rc::clone(scroll))
             .with_child(Box::new(page)),
     )
+}
+
+/// Whether there is nothing to show beside the test: no reading of this
+/// test, no finished test.
+fn nothing_measured(model: &Model) -> bool {
+    let readings = &model.readings;
+    readings.ping.is_none()
+        && readings.download.is_none()
+        && readings.upload.is_none()
+        && readings.bytes == 0
+        && model.history.is_empty()
+        && model.latest().is_none()
+}
+
+/// Before any test: the dial, the action and where it measures, as one
+/// column in the middle of the window rather than a dial in a corner and
+/// an empty results column beside it.
+fn idle_page(
+    shared: &Shared,
+    model: &Model,
+    scroll: &ScrollOffset,
+    run: Option<ActionBinding<()>>,
+    theme: &Theme,
+) -> Element {
+    let mut column = test_column(shared, model, run, theme).push(centred(Box::new(
+        Text::new(&server_label(model))
+            .with_role(TextRole::Caption)
+            .with_id("server"),
+    )));
+    if let Some(error) = &model.error {
+        column = column.push(Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_max_width(theme.tokens.metrics.content_min_width)
+                .with_child(Box::new(
+                    Banner::error("Test interrupted").with_message(error.clone()),
+                )),
+        ));
+    }
+    Box::new(
+        Scrollable::new_vertical()
+            .fill_parent_height()
+            .with_content_min_viewport_height()
+            .with_persisted_offset(Rc::clone(scroll))
+            .with_child(Box::new(Balanced(
+                Column::new().with_no_padding().push(Box::new(column)),
+            ))),
+    )
+}
+
+/// Where the test measures, said once.
+fn server_label(model: &Model) -> String {
+    match model.readings.location.as_deref() {
+        // A server that answered before: "Cloudflare at AMS".
+        Some(server) if !server.starts_with("Nearest") => format!("Measures against {server}"),
+        _ => "Measures against the nearest Cloudflare server".to_owned(),
+    }
+}
+
+/// A column that centres its children in the height it is given: the
+/// scroll view stretches it to at least what it shows.
+struct Balanced(Column);
+
+impl Decorator for Balanced {
+    type Inner = Column;
+
+    fn inner(&self) -> &Column {
+        &self.0
+    }
+    fn inner_mut(&mut self) -> &mut Column {
+        &mut self.0
+    }
+
+    fn build_layout(
+        &mut self,
+        tree: &mut ui::taffy::TaffyTree<()>,
+        theme: &Theme,
+        nodes: &mut HashMap<ui::taffy::NodeId, *mut dyn Widget>,
+    ) -> ui::taffy::NodeId {
+        let node = self.0.build_layout(tree, theme, nodes);
+        nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn adjust_layout_style(
+        &mut self,
+        tree: &mut ui::taffy::TaffyTree<()>,
+        node: ui::taffy::NodeId,
+        text: &mut ui::TextRenderer,
+    ) -> bool {
+        let mut changed = self.0.adjust_layout_style(tree, node, text);
+        if let Ok(style) = tree.style(node)
+            && style.justify_content != Some(JustifyContent::Center)
+        {
+            let mut style = style.clone();
+            style.justify_content = Some(JustifyContent::Center);
+            changed |= tree.set_style(node, style).is_ok();
+        }
+        changed
+    }
 }
 
 /// The preferred two-column measure is capped by the actual available row.
@@ -209,10 +312,12 @@ fn results_column(model: &Model, theme: &Theme) -> Column {
     let number = |value: Option<f64>, decimals: usize| {
         value.map_or_else(String::new, |v| format!("{v:.decimals$}"))
     };
-    let server = readings.location.as_ref().map_or_else(
-        || "Cloudflare".to_owned(),
-        |city| format!("Cloudflare, {city}"),
-    );
+    // The location names the server ("Cloudflare at AMS"); without one,
+    // the provider alone.
+    let server = readings
+        .location
+        .clone()
+        .unwrap_or_else(|| "Cloudflare".to_owned());
     // Only what was measured is shown: before a test there are no numbers,
     // and a dash in their place reads as a value.
     let mut facts = vec![Property::new("Server", server)];

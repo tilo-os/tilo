@@ -52,7 +52,6 @@ pub enum CertifyError {
 pub enum CertificationOutcome {
     /// A checked, root-signed certificate for the requesting device.
     Issued {
-        /// The device's certificate.
         cert: DeviceCert,
         /// The host's certificate, to pin for later sessions.
         host_cert: DeviceCert,
@@ -96,11 +95,6 @@ async fn write<T: serde::Serialize + Sync>(
 /// browser [`CertificationPolicy`], and the host certificate must be a valid
 /// host certificate of the same user: a host cannot hand back a certificate
 /// for another key, another user or wider capabilities.
-///
-/// # Errors
-///
-/// Returns [`CertifyError`] when dialing or framing fails, or when the
-/// returned certificates do not verify.
 pub async fn request_certification(
     endpoint: &Endpoint,
     host: EndpointAddr,
@@ -155,11 +149,6 @@ pub struct Approver {
 impl Approver {
     /// Open an approver session. The host must chain to `own_cert`'s user
     /// root; the host refuses devices without `can_admit_devices`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CertifyError`] when dialing, framing or mutual
-    /// authentication fails.
     pub async fn connect(
         endpoint: &Endpoint,
         host: EndpointAddr,
@@ -210,10 +199,6 @@ impl Approver {
     }
 
     /// Every request currently waiting for an approver.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CertifyError`] when the session fails.
     pub async fn list_pending(&mut self) -> Result<Vec<PendingCertification>, CertifyError> {
         match self.call(&ApproverRequest::ListPending).await? {
             ApproverReply::Pending(pending) => Ok(pending),
@@ -226,10 +211,6 @@ impl Approver {
 
     /// What every pending agent request proposes: shown beside the request
     /// and approved with [`ApproverDecision::IssueDelegate`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CertifyError`] when the session fails.
     pub async fn list_agent_proposals(&mut self) -> Result<Vec<PendingDelegate>, CertifyError> {
         match self.call(&ApproverRequest::DelegateProposals).await? {
             ApproverReply::DelegateProposals(pending) => Ok(pending),
@@ -242,10 +223,6 @@ impl Approver {
 
     /// Every question an agent of the host is waiting on: shown as the
     /// host's confirmation sheet and answered with [`Self::answer`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CertifyError`] when the session fails.
     pub async fn list_confirmations(&mut self) -> Result<Vec<PendingConfirmation>, CertifyError> {
         match self.call(&ApproverRequest::Confirmations).await? {
             ApproverReply::Confirmations(asked) => Ok(asked),
@@ -258,10 +235,6 @@ impl Approver {
 
     /// Answer question `id` for its one invocation. `Ok(Refused)` means
     /// the question is gone (answered, expired or withdrawn).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CertifyError`] when the session fails.
     pub async fn answer(
         &mut self,
         id: [u8; 32],
@@ -272,10 +245,6 @@ impl Approver {
 
     /// Answer one request. `Ok(Refused)` means the host did not accept the
     /// decision (an out-of-policy certificate, or the requester left).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CertifyError`] when the session fails.
     pub async fn decide(
         &mut self,
         request_digest: [u8; 32],

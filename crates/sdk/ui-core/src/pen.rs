@@ -177,7 +177,6 @@ mod tests {
         let mut input = PenInput::default();
         let _ = input.route(&sample(0.7, false));
         let outer = input.route(&moved()).expect("dispatched");
-        // A host that hands the same event on to a second dispatch path.
         let inner = input.route(&moved()).expect("dispatched");
         assert_eq!(current().map(|pen| pen.pressure), Some(0.7));
         drop(inner);

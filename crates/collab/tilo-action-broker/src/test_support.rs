@@ -152,7 +152,7 @@ impl LegacyWorkspaceProjection for WorkspaceTreeHandle {
         let workspace = tree
             .workspaces
             .iter_mut()
-            .find(|w| w.room.to_string() == room)
+            .find(|w| w.room().to_string() == room)
             .ok_or("room missing")?;
         if !workspace
             .effect_receipts
@@ -171,15 +171,5 @@ impl LegacyWorkspaceProjection for WorkspaceTreeHandle {
         }
         drop(tree);
         Ok(())
-    }
-    fn record_task_update(
-        &self,
-        _: &str,
-        _: &str,
-        _: &str,
-        _: Option<tilo_desktop_model::WorkspaceTaskStatus>,
-        _: String,
-    ) -> Result<(), String> {
-        Err("task mutation unsupported by this fixture".into())
     }
 }

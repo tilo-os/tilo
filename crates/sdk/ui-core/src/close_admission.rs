@@ -2,7 +2,6 @@
 //! goes through its declared action; host chrome owns only the close decision.
 use crate::widget::{Button, Column, ModalDialog, Text, Widget};
 use serde::{Deserialize, Serialize};
-use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use tilo_actions::{ActionAddress, ActionSpec, OperationKind, Resource};
 
 /// An external editable document which cannot be replaced by an in-memory
@@ -62,7 +61,6 @@ pub(crate) struct Admission {
     pub save_result: Option<Result<(), String>>,
     session: uuid::Uuid,
     choices: Vec<Choice>,
-    pending: Rc<RefCell<VecDeque<Command>>>,
 }
 impl Default for Admission {
     fn default() -> Self {
@@ -80,7 +78,6 @@ impl Default for Admission {
             save_result: None,
             session: uuid::Uuid::new_v4(),
             choices: Vec::new(),
-            pending: Rc::default(),
         }
     }
 }
@@ -98,7 +95,6 @@ impl Admission {
     ) {
         self.session = uuid::Uuid::new_v4();
         self.choices = choices.to_vec();
-        self.pending.borrow_mut().clear();
         let resource = resource_for(self.session, choices);
         let mut content = Column::new()
             .with_intrinsic_height()
@@ -121,14 +117,13 @@ impl Admission {
                 ),
             ));
         }
-        let mut dialog =
-            ModalDialog::new(crate::i18n::I18nManager::lookup_plain(title), content).open(true);
-        let pending = self.pending.clone();
-        let command = Command {
-            session: self.session,
-            choice: Choice::KeepEditing,
-        };
-        dialog = dialog.on_dismiss(move || pending.borrow_mut().push_back(command.clone()));
+        // Escape keeps editing, as the safe answer does.
+        let mut dialog = ModalDialog::new(crate::i18n::I18nManager::lookup_plain(title), content)
+            .open(true)
+            .dismiss_action(
+                tilo_actions::ActionBinding::unit_for(&resource, Choice::KeepEditing.id())
+                    .expect("host close unit action"),
+            );
         dialog.set_platform_conventions(platform);
         let allowed = resource
             .actions
@@ -137,9 +132,6 @@ impl Admission {
             .collect();
         crate::widget::controls::refresh_control_action_availability(&mut dialog, &allowed);
         self.dialog = Some(Box::new(dialog));
-    }
-    pub fn take_command(&self) -> Option<Command> {
-        self.pending.borrow_mut().pop_front()
     }
     pub fn validate(&self, command: &Command) -> bool {
         self.dialog.is_some()
@@ -165,7 +157,6 @@ impl Admission {
         self.save_broker_id = None;
         self.save_result = None;
         self.choices.clear();
-        self.pending.borrow_mut().clear();
     }
 
     /// Retire the current decision before an explicit choice re-evaluates the
@@ -174,7 +165,6 @@ impl Admission {
     pub(crate) fn retire_presentation(&mut self) {
         self.dialog = None;
         self.choices.clear();
-        self.pending.borrow_mut().clear();
     }
 }
 
@@ -230,7 +220,6 @@ mod tests {
     use super::*;
     #[test]
     fn close_admission_keeps_deadlines_and_refuses_stale_session_closes() {
-        // Case `pending_save_deadline_survives_an_otherwise_idle_host`.
         {
             let now = crate::time::now();
             let close = now + crate::time::Duration::from_millis(100);
@@ -240,7 +229,6 @@ mod tests {
             assert_eq!(wake_deadline(None, false, now), None);
         }
 
-        // Case `stale_discard_and_late_save_cannot_close_a_new_session`.
         {
             let mut admission = Admission::default();
             admission.show(

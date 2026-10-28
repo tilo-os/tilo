@@ -105,9 +105,11 @@ pub enum TransportCommand {
     /// A request on an explicitly named additional route, joined lazily and
     /// retained. Never a `Hello`.
     ToRoute(RouteSpec, CollabRequest),
-    /// Join and subscribe to an additional route without publishing traffic.
-    /// Repeated joins of one route are idempotent.
-    Join(RouteSpec),
+    /// Join and subscribe to an additional route without publishing traffic,
+    /// naming the kind its record holds so a host that creates the record on
+    /// this device's first change knows what it holds. Repeated joins of one
+    /// route are idempotent.
+    Join(RouteSpec, crate::record::RecordKind),
     /// Report the remote end's decision about the latest primary `Hello`,
     /// ordered behind every command submitted before it.
     ConfirmPrimaryRoute,
@@ -209,8 +211,16 @@ pub trait CollabTransport: Send {
         None
     }
 
-    /// Scope delivery capture waits to the App’s reconciled live document owners.
-    fn set_document_owner_routes(&mut self, _routes: Vec<RouteSpec>) {}
+    /// Scope delivery capture waits to the App’s reconciled live document
+    /// owners, for the App's current document generation.
+    fn set_document_owner_routes(&mut self, _routes: Vec<RouteSpec>, _document_generation: u64) {}
+
+    /// Whether the document owner invocation `id` (from the drained batch)
+    /// arrived for is still current. A job whose document was reopened or
+    /// replaced since must be refused, not run in the new document.
+    fn invocation_owner_current(&mut self, _id: u64) -> bool {
+        true
+    }
 
     /// Release native capture turns after the owner applies its drained batch.
     fn finish_event_batch(&mut self) {}
@@ -238,12 +248,35 @@ pub trait CollabTransport: Send {
         true
     }
 
+    /// The kind of record `channel` was joined with, when the owner's join
+    /// named it. A change that arrives before the route's join resolved
+    /// re-joins naming this kind, so a host creating the record knows what
+    /// it holds.
+    fn joined_record_kind(&self, channel: &str) -> Option<crate::record::RecordKind> {
+        let _ = channel;
+        None
+    }
+
+    /// Why the last join of `channel` failed, until a join of it succeeds.
+    fn route_join_failure(&self, channel: &str) -> Option<String> {
+        let _ = channel;
+        None
+    }
+
     /// Independently sampled read phases, for bounded test diagnostics only.
     /// These observations never authorize publication or acknowledge a read.
     #[cfg(any(test, feature = "test-support"))]
     fn controlled_document_read_phase_for_test(&self, channel: &str) -> Option<serde_json::Value> {
         let _ = channel;
         None
+    }
+
+    /// Ask `channel`'s reader for the whole committed read, as an owner being
+    /// built does. Whether the ask was taken.
+    #[cfg(any(test, feature = "test-support"))]
+    fn controlled_request_whole_read_for_test(&self, channel: &str) -> bool {
+        let _ = channel;
+        false
     }
 
     /// Hand one native media command for `channel` to the transport's media
@@ -263,10 +296,18 @@ pub trait CollabTransport: Send {
         false
     }
 
-    /// Whether that failure was the workspace refusing a change, rather than
-    /// the connection or the transport failing.
-    fn document_change_refused(&self) -> bool {
-        false
+    /// The last publication outcome this transport reported, for telling a
+    /// refusal of one change apart from a lost connection.
+    fn publication_outcome(&self) -> Option<DocumentPublicationError> {
+        None
+    }
+
+    /// The last change the peer answered but would not accept, while nothing
+    /// later has gone through. A refusal fails that change alone: the
+    /// transport stays open and the owner reconciles its local copy. `None`
+    /// when no change is waiting on a refusal.
+    fn refused_change(&self) -> Option<String> {
+        None
     }
 
     /// Withdraw the transport after an unrecoverable publication outcome.
@@ -359,11 +400,6 @@ impl DocumentPublicationReceipt {
     }
 
     /// Inspect completion without waiting. A completed receipt is consumed.
-    ///
-    /// # Errors
-    ///
-    /// Returns the prefix failure, or the transport's disconnection cause
-    /// when it dropped the receipt unresolved.
     pub fn try_complete(&self) -> Result<Option<()>, DocumentPublicationError> {
         match self.receiver.try_recv() {
             Ok(result) => result.map(Some),
@@ -374,11 +410,6 @@ impl DocumentPublicationReceipt {
 
     /// Wait for completion, optionally within an absolute deadline. A
     /// completed result takes precedence over an elapsed deadline.
-    ///
-    /// # Errors
-    ///
-    /// Returns a publication failure, the transport stopping, or the
-    /// deadline elapsing.
     pub fn wait(self, deadline: Option<Instant>) -> Result<(), DocumentPublicationError> {
         if self.try_complete()?.is_some() {
             return Ok(());

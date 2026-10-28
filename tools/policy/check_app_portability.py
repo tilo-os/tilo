@@ -65,8 +65,6 @@ class Finding:
         return f"{self.path}:{self.line}: {self.rule} {self.what}"
 
 
-# --- Rust source ------------------------------------------------------------
-
 
 def split_top_level(text: str) -> list[str]:
     parts, depth, current = [], 0, []
@@ -353,8 +351,6 @@ def compact(text: str) -> str:
     return text if len(text) <= 60 else text[:60] + "…"
 
 
-# --- Packages ---------------------------------------------------------------
-
 
 def matches_any(value: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatchcase(value, pattern) for pattern in patterns)
@@ -633,8 +629,6 @@ def audit(root: Path = ROOT, rules_path: Path | None = None) -> list[Finding]:
             )
     return findings
 
-
-# --- Baseline ---------------------------------------------------------------
 
 Counts = dict[str, dict[str, dict[str, int]]]
 

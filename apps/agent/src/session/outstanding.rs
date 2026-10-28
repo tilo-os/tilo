@@ -103,10 +103,6 @@ impl Session {
 
     /// Read every cancellation answer that has arrived, without waiting.
     /// `Ok(true)` once the host has said the task is cancelled.
-    ///
-    /// # Errors
-    ///
-    /// When the broker refused to answer a poll, as the old in-line poll did.
     pub(super) fn cancellation_known(&mut self) -> Result<bool> {
         let polls = std::mem::take(&mut self.outstanding.cancel.polls);
         for (request_id, at) in polls {
@@ -184,10 +180,7 @@ impl Session {
                 self.observe_native_control(control)?;
             }
         }
-        if matches!(reply, Detached::Cancellation(Ok(false)))
-            && self.native_task.is_some()
-            && !observed
-        {
+        if matches!(reply, Detached::Cancellation(Ok(false))) && !observed {
             return Err(anyhow::anyhow!(
                 "native task control unavailable; refusing further actions"
             ));

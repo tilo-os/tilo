@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from hang import HANG_BOUND
 
 
 SHIM = Path(__file__).resolve().parents[1] / "ci" / "cargo-shim"
@@ -50,7 +51,7 @@ class AgentRemoteRouting(unittest.TestCase):
         env.update(overrides or {})
         return subprocess.run(
             ["/bin/bash", str(SHIM), *args], cwd=cwd or self.root, env=env,
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=HANG_BOUND,
         )
 
     def assert_remote(self, result, args, code=0):

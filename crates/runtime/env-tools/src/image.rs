@@ -50,7 +50,6 @@ pub fn tool_id(requested: &[String]) -> String {
     )
 }
 
-/// The image description of `key`'s tool.
 pub fn tool_spec(key: &CacheKey, requested: &[String], arch: Arch) -> ImageSpec {
     ImageSpec {
         kind: Kind::Tool,

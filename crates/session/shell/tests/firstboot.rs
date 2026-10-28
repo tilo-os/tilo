@@ -1,5 +1,5 @@
 //! Runs the real Linux startup entry point in an isolated test subprocess.
-//! Included by linux_main so this can exercise run() without a display or a
+//! Included by `linux_main` so this can exercise `run()` without a display or a
 //! second, test-only implementation of startup ordering.
 #![allow(
     clippy::expect_used,
@@ -16,11 +16,7 @@ use std::time::Duration;
 fn firstboot_rejects_settings_symlink_before_host_import() {
     const CHILD: &str = "TILO_FIRSTBOOT_STARTUP_TEST_CHILD";
     if std::env::var_os(CHILD).is_some() {
-        std::process::exit(if super::run() == std::process::ExitCode::SUCCESS {
-            0
-        } else {
-            1
-        });
+        std::process::exit(i32::from(super::run() != std::process::ExitCode::SUCCESS));
     }
 
     let root = tempfile::tempdir().expect("private startup fixture");

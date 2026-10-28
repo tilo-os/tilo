@@ -51,19 +51,19 @@ test('a non-finite pan offset is refused before it reaches the runtime',async()=
  assert.equal(sent.length,0);
 });
 
-test('presentation-only changes (pan offset, back/forward, open view) republish the snapshot',async()=>{
- let raw={version:1,generation:'g',entries:[],desktopPan:{workspace:'1',strip:'2',offset:0,viewport:800,content:2000,max:1200},history:{canBack:false,canForward:false},workspaceActivity:null},revision=5;
+test('presentation-only changes (pan offset, back/forward, banners) republish the snapshot',async()=>{
+ let raw={version:1,generation:'g',entries:[],desktopPan:{workspace:'1',strip:'2',offset:0,viewport:800,content:2000,max:1200},history:{canBack:false,canForward:false}},revision=5;
  const seen=[];
  const nav=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>revision,dispatch:()=>{},active:()=>true});
  nav.controller.subscribe(snapshot=>seen.push(snapshot));
  raw={...raw,desktopPan:{...raw.desktopPan,offset:600}};revision=6;nav.refresh();
  raw={...raw,history:{canBack:true,canForward:false}};revision=7;nav.refresh();
- raw={...raw,workspaceActivity:{workspace:'1',view:'tasks',playing:false,coverage:'complete',tasks:[]}};revision=8;nav.refresh();
+ raw={...raw,notifications:{active:1,retained:0,centerOpen:false}};revision=8;nav.refresh();
  nav.refresh();
  assert.equal(seen.length,3);
  assert.equal(seen[0].desktopPan.offset,600);
  assert.equal(seen[1].history.canBack,true);
- assert.equal(seen[2].workspaceActivity.view,'tasks');
+ assert.equal(seen[2].notifications.active,1);
  const refused=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>1,dispatch:()=>{throw Error('Replay needs retained desktop history, which this desktop does not carry');},active:()=>true});
  await assert.rejects(refused.controller.dispatch({kind:'workspace-activity',generation:'g',workspace:'1',view:'replay'}),/Replay needs retained desktop history/);
 });
@@ -96,11 +96,9 @@ test('launch is handed to the runtime as given',async()=>{
 
 test('retained activity and notification commands preserve the runtime contract', async () => {
  const raw={version:1,generation:'g',entries:[],capabilities:{workspaceHistory:true,workspaceReplay:true,notifications:true},
-  workspaceActivity:{workspace:'7',view:'replay',playing:false,coverage:'complete',inSurface:true},
   notifications:{active:0,retained:2,centerOpen:true}};
  const sent=[];
  const nav=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>1,dispatch:command=>sent.push(JSON.parse(command)),active:()=>true});
- assert.equal(nav.controller.getSnapshot().workspaceActivity.inSurface,true);
  assert.equal(nav.controller.getSnapshot().notifications.retained,2);
  for(const view of ['catch-up','explore','replay'])
   await nav.controller.dispatch({kind:'workspace-activity',generation:'g',workspace:'7',view});

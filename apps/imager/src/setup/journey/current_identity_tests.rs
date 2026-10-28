@@ -97,7 +97,7 @@ fn current_owner_desktop_actions_restart_and_authenticated_import_preserve_origi
         .unwrap();
     choose(&mut app, "existing");
     choose(&mut app, "current");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         app.settle();
         if app
@@ -115,8 +115,19 @@ fn current_owner_desktop_actions_restart_and_authenticated_import_preserve_origi
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert_eq!(status(&mut app)["page"], "connect");
+    app.with_widget::<InstallerPreview, _>(|preview| {
+        preview.journey.password = "long current owner preparation password".into();
+        preview.journey.confirmation = "long current owner preparation password".into();
+        preview.dirty = true;
+    })
+    .unwrap();
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
+    app.with_widget::<InstallerPreview, _>(|preview| {
+        preview.journey.page = Page::Password;
+        preview.dirty = true;
+    })
+    .unwrap();
     assert_eq!(status(&mut app)["page"], "password");
     app.with_widget::<InstallerPreview, _>(|preview| {
         assert!(preview.device_label_locked());

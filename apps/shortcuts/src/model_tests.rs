@@ -1,5 +1,5 @@
 use serde_json::json;
-use tilo_automation::{Binding, StepKind};
+use tilo_automation::{Binding, StepKind, StepPolicy};
 use ui::prelude::Replica;
 
 use super::*;
@@ -547,4 +547,128 @@ fn a_workbench_of_version_one_opens_with_every_draft_program() {
     assert_eq!(draft.program(), expected);
     assert_eq!(draft.name, "File receipts");
     assert!(draft.replaces_saved);
+}
+
+/// New drafts that would share a name are numbered, as new layers and
+/// sheets are, so the list tells them apart.
+#[test]
+fn new_drafts_with_one_name_are_numbered() {
+    let mut replica = Replica::<Workbench>::new();
+    for _ in 0..3 {
+        replica
+            .apply(Workbench::NEW_DRAFT.with("New shortcut"))
+            .unwrap();
+    }
+    replica.apply(Workbench::NEW_DRAFT.with("Tidy")).unwrap();
+    let mut names: Vec<String> = replica
+        .state()
+        .unwrap()
+        .drafts
+        .values()
+        .map(|draft| draft.name.clone())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        ["New shortcut", "New shortcut 2", "New shortcut 3", "Tidy"]
+    );
+}
+
+#[test]
+fn a_draft_or_a_saved_shortcut_duplicates_into_a_new_unsaved_variant() {
+    let (mut replica, id) = with_draft();
+    replica
+        .apply(Workbench::ADD_STEP.with((id.clone(), String::new(), invoke("list"))))
+        .unwrap();
+    let original = replica.state().unwrap().drafts.get(&id).cloned().unwrap();
+    replica
+        .apply(Workbench::DUPLICATE_DRAFT.with(id.clone()))
+        .unwrap();
+    let copy = replica
+        .state()
+        .unwrap()
+        .drafts
+        .iter()
+        .find(|(key, draft)| **key != id && draft.name == "Tidy copy")
+        .map(|(_, draft)| draft.clone())
+        .expect("a duplicate of the draft");
+    assert_eq!(copy.program(), original.program());
+    assert_ne!(copy.shortcut_id, original.shortcut_id);
+    assert!(!copy.replaces_saved);
+    replica.apply(Workbench::DUPLICATE_DRAFT.with(id)).unwrap();
+    assert!(
+        replica
+            .state()
+            .unwrap()
+            .drafts
+            .values()
+            .any(|draft| draft.name == "Tidy copy 2"),
+        "duplicates are numbered so they can be told apart"
+    );
+
+    let saved = original.shortcut(Vec::new());
+    replica
+        .apply(Workbench::DUPLICATE_SHORTCUT.with(serde_json::to_value(&saved).unwrap()))
+        .unwrap();
+    let duplicated = replica
+        .state()
+        .unwrap()
+        .drafts
+        .values()
+        .find(|draft| draft.name == "Tidy copy 3" && !draft.replaces_saved)
+        .cloned()
+        .expect("a duplicate of the saved shortcut");
+    assert_eq!(duplicated.program(), original.program());
+    assert_ne!(duplicated.shortcut_id, saved.id);
+}
+
+#[test]
+fn a_steps_policy_is_stored_where_the_run_reads_it_and_cleared_by_stopping() {
+    let (mut replica, id) = with_draft();
+    replica
+        .apply(Workbench::ADD_STEP.with((id.clone(), String::new(), invoke("create"))))
+        .unwrap();
+
+    replica
+        .apply(Workbench::SET_STEP_POLICY.with((
+            id.clone(),
+            "0".to_string(),
+            json!({"on_error": "retry", "attempts": 3, "backoff_ms": 60000}).to_string(),
+        )))
+        .unwrap();
+    assert_eq!(
+        program(&replica).steps[0].on_error,
+        StepPolicy::Retry {
+            attempts: 3,
+            backoff_ms: 60_000
+        }
+    );
+
+    // Rewriting what a step does keeps what the shortcut said about its
+    // failing: the policy is not part of the step's head.
+    replica
+        .apply(Workbench::REPLACE_STEP.with((id.clone(), "0".to_string(), invoke("list"))))
+        .unwrap();
+    let program_after = program(&replica);
+    assert!(matches!(
+        program_after.steps[0].kind,
+        StepKind::Invoke { .. }
+    ));
+    assert_eq!(
+        program_after.steps[0].on_error,
+        StepPolicy::Retry {
+            attempts: 3,
+            backoff_ms: 60_000
+        }
+    );
+
+    // An empty policy is "stop", and a saved shortcut with no policy writes
+    // nothing about it: today's shortcuts keep their JSON.
+    replica
+        .apply(Workbench::SET_STEP_POLICY.with((id, "0".to_string(), String::new())))
+        .unwrap();
+    let final_step = &program(&replica).steps[0];
+    assert_eq!(final_step.on_error, StepPolicy::Fail);
+    let json = serde_json::to_string(&program(&replica)).unwrap();
+    assert!(!json.contains("on_error"), "{json}");
 }

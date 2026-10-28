@@ -60,6 +60,8 @@ const GRANT_TTL: Duration = Duration::from_secs(10 * 60);
 struct Grant {
     session: [u8; 32],
     device: [u8; 32],
+    /// The person the device is certified as (their user root).
+    user: [u8; 32],
     workspace_id: u64,
     room: String,
     publisher: String,
@@ -148,6 +150,7 @@ impl LiveGrants {
         let grant = Arc::new(Grant {
             session: token,
             device,
+            user: peer.user_public_key,
             workspace_id,
             room,
             publisher,
@@ -194,6 +197,30 @@ impl LiveGrants {
             .find(|grant| grant.room == room && grant.publisher == publisher)
             .filter(|grant| grant.publisher == hex::encode(grant.device))
             .map(|grant| grant.device)
+    }
+
+    /// The devices publishing as themselves in `workspace_id`'s live plane
+    /// now (current grants, agents' left out), each with the person it is
+    /// certified as: who every page there sees as a member, known before
+    /// their page says anything.
+    pub(crate) fn persons_in(&self, workspace_id: u64) -> Vec<([u8; 32], [u8; 32])> {
+        let now = Instant::now();
+        let mut persons: Vec<([u8; 32], [u8; 32])> = self
+            .grants
+            .lock_recover()
+            .values()
+            .filter(|grant| {
+                grant.workspace_id == workspace_id
+                    && grant.plane == RoomOperation::Live
+                    && grant.expires > now
+                    && grant.permitted.load(Ordering::Acquire)
+                    && grant.publisher == hex::encode(grant.device)
+            })
+            .map(|grant| (grant.device, grant.user))
+            .collect();
+        persons.sort_unstable();
+        persons.dedup();
+        persons
     }
 
     /// Per workspace, the browser sessions holding a grant to its live plane
@@ -380,6 +407,7 @@ mod tests {
         let grant = Arc::new(Grant {
             session: [1; 32],
             device: [2; 32],
+            user: [5; 32],
             workspace_id: 3,
             room: live_room(3),
             publisher: hex::encode([2; 32]),
@@ -427,15 +455,20 @@ mod tests {
         assert!(!authority.ops_valid(&hex::encode([1; 32]), &sealed(LiveKind::Ops, 2)));
         assert!(!authority.ops_valid(&track, &sealed(LiveKind::Presence, 2)));
 
-        // The same frames in the clear are refused.
         let presence = LiveFrame::Presence(PresenceFrame {
             place: None,
             chat: None,
             reaction: None,
+            wave: None,
+            layout: None,
+            following: None,
             seq: 4,
             sent_at_ms: 1,
             focus: Some(record()),
-            pointer: Some([1.0, 2.0]),
+            pointer: Some(tilo_relay_protocol::live::LivePointer::Strip {
+                strip: 1,
+                at: [1.0, 2.0],
+            }),
             selection: None,
             drag: None,
             participant: None,

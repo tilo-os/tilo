@@ -113,7 +113,11 @@ pub enum FileCommand {
     /// Extract the archive currently being browsed. Unlike `ExtractHere`, this
     /// does not depend on a synthetic in-archive row being selected.
     ExtractCurrentArchive,
-    CompressSelection,
+    /// Extract the selected archives, or the one being browsed, into a
+    /// folder the person picks.
+    ExtractTo,
+    /// Pack the selection into a new archive of this kind beside it.
+    CompressSelection(crate::archive::Packing),
     /// Ask the host for the current certified-device picker. The eventual
     /// target remains an exact, short-lived shell-issued capability.
     OpenNearbySend,
@@ -159,6 +163,10 @@ pub enum FileCommand {
     /// Open the NTFS drive with this id (chosen from the places list): the
     /// shell asks the person before it opens, unless they remembered it.
     OpenDrive(String),
+    /// Uninstall the selected apps in the Applications place (or, for a part
+    /// of the system, remove them from the person's apps). The shell asks the
+    /// person first, one app at a time.
+    Uninstall,
     /// Read the cloud account with this id again (after the person signed in
     /// elsewhere) and open its folder if it is now available.
     RecheckRemoteAccount(String),

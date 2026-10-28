@@ -77,7 +77,6 @@ impl RowMenu {
         self.entry(label.into(), binding.into(), true)
     }
 
-    /// Whether the menu has any entry.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
@@ -115,11 +114,14 @@ impl RowMenu {
             .map(|(index, entry)| {
                 let chosen = Rc::clone(&self.chosen);
                 let run = move || chosen.set(Some(index));
-                let item = if entry.destructive {
+                let mut item = if entry.destructive {
                     MenuItem::destructive_action(entry.label.clone(), run)
                 } else {
                     MenuItem::action(entry.label.clone(), run)
                 };
+                if let Some(emitter) = &entry.emitter {
+                    item = item.for_action(emitter.binding().address().clone());
+                }
                 item.with_enabled(
                     entry
                         .emitter
@@ -263,7 +265,6 @@ mod tests {
             .expect("the spec is exported")
     }
 
-    /// Choosing an entry queues its action for the host, once.
     #[test]
     fn a_chosen_entry_queues_its_bound_action() {
         let mut menu = RowMenu::new("device.more", "More for Headphones")

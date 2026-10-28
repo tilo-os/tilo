@@ -254,9 +254,7 @@ mod tests {
             assert_eq!(parse_ref(r), Some((col, row)), "{r}");
             assert_eq!(make_ref(col, row), r, "({col},{row})");
         }
-        // Absolute markers are ignored.
         assert_eq!(parse_ref("$B$3"), Some((2, 3)));
-        // Malformed and out-of-range input.
         for (r, why) in [
             ("", "empty"),
             ("1", "no column letters"),
@@ -282,12 +280,10 @@ mod tests {
             shift_formula("SUM(Sheet1!A1,'My A1'!$B2)", 1, 1),
             "SUM(Sheet1!B2,'My A1'!$B3)"
         );
-        // Text literals, function names and non-references stay put.
         assert_eq!(
             shift_formula("CONCATENATE(A1,\"A1\",LOG10(B1),TRUE,0.5)", 0, 1),
             "CONCATENATE(A2,\"A1\",LOG10(B2),TRUE,0.5)"
         );
-        // A reference pushed off the grid is left as written.
         assert_eq!(shift_formula("A1+XFD1", 1, 0), "B1+XFD1");
         assert_eq!(shift_formula("B2", -1, -1), "A1");
         assert_eq!(shift_formula("A1", -1, 0), "A1");

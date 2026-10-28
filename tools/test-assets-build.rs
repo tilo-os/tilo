@@ -16,6 +16,7 @@ fn prepare_fixture_assets(
     for key in [
         "PYTHON",
         "TILO_TEST_ASSET_CACHE",
+        "TILO_TEST_ASSET_SEED",
         "TILO_TEST_ASSETS_OFFLINE",
         "CARGO_NET_OFFLINE",
     ] {
@@ -26,6 +27,8 @@ fn prepare_fixture_assets(
     let directory = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("missing build output")?);
     let mut command = Command::new(python);
     command.arg(tool).arg(manifest);
+    // TILO_TEST_ASSET_SEED, inherited from the environment, names read-only caches the
+    // tool takes verified assets from before it fetches (tools/test-assets.py).
     // A build script writes only under OUT_DIR: the source tree may be read-only, as it
     // is in the check containers. TILO_TEST_ASSET_CACHE still names a shared cache.
     if std::env::var_os("TILO_TEST_ASSET_CACHE").is_none() {

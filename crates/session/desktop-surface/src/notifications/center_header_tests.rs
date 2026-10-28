@@ -13,7 +13,7 @@ fn enlarged_notification_header_keeps_the_title_readable_and_actions_separate() 
                 .text(TextRole::Label)
                 .with_weight(TextWeight::Semibold),
         );
-        let inline_width = layout.clear().x0 - layout.back().x1 - 2.0 * qs::RELATED_GAP;
+        let inline_width = layout.clear().x0 - (panel.x0 + qs::PANEL_PAD) - qs::RELATED_GAP;
         if inline_width < f64::from(title.0) {
             assert!(
                 layout.header_height()
@@ -21,7 +21,7 @@ fn enlarged_notification_header_keeps_the_title_readable_and_actions_separate() 
                 "the production header must reserve a separate readable title band"
             );
         }
-        assert!(layout.back().x1 + qs::RELATED_GAP <= layout.clear().x0);
+        assert!(layout.clear().x1 + qs::RELATED_GAP <= layout.back().x0);
         assert!(layout.rows_top() >= layout.back().y1 + qs::RELATED_GAP);
     }
 }
@@ -242,6 +242,13 @@ fn the_leading_control_closes_a_standalone_centre_and_goes_back_in_a_drill_in() 
     // A close button is square; Back carries its word.
     assert!((standalone.back().width() - standalone.back().height()).abs() < 1e-6);
     assert!(drill_in.back().width() > drill_in.back().height());
+    // Close sits on the trailing edge, as every panel's close does, with
+    // Clear all before it; Back leads, with Clear all trailing.
+    assert!((standalone.back().x1 - (panel.x1 - qs::PANEL_PAD)).abs() < 1e-6);
+    assert!(standalone.clear().x1 + qs::RELATED_GAP <= standalone.back().x0);
+    assert!(standalone.title_rect().x1 + qs::RELATED_GAP <= standalone.clear().x0);
+    assert!((drill_in.back().x0 - (panel.x0 + qs::PANEL_PAD)).abs() < 1e-6);
+    assert!(drill_in.back().x1 + qs::RELATED_GAP <= drill_in.clear().x0);
     let host = super::super::stack::tests::TestHost::default();
     let dialog = NotificationCenter::new().accessibility(&host, &standalone, ui::time::now());
     assert!(

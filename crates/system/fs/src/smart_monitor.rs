@@ -194,14 +194,12 @@ mod tests {
 
     #[test]
     fn smart_monitor_policies_require_good_battery_and_storage() {
-        // Phase `battery_policy_is_conservative_while_discharging`.
         {
             assert!(battery_allows(false, false, 0));
             assert!(!battery_allows(true, false, 100));
             assert!(!battery_allows(true, true, MIN_BATTERY_PERCENT - 1));
             assert!(battery_allows(true, true, MIN_BATTERY_PERCENT));
         }
-        // Phase `storage_requires_both_an_absolute_and_percentage_reserve`.
         {
             let gib = 1024_u64 * 1024 * 1024;
             assert!(storage_values_allow(10 * gib, 2 * gib, 1));

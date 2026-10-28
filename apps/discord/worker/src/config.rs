@@ -28,6 +28,9 @@ pub const ENV_GUILD_ID: &str = "DISCORD_GUILD_ID";
 /// itself (layout, roles, permissions, members) are refused, and no slash
 /// command is registered.
 pub const ENV_CHANNEL_ID: &str = "DISCORD_CHANNEL_ID";
+/// `DISCORD_LINK_URL`: the room's web entry, which `/link`'s button opens
+/// with a one-time token. Without it `/link` says linking is not set up.
+pub const ENV_LINK_URL: &str = "DISCORD_LINK_URL";
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -37,14 +40,11 @@ pub struct Config {
     pub read_only: bool,
     pub guild_id: Option<String>,
     pub only_channel: Option<String>,
+    pub link_url: Option<String>,
 }
 
 impl Config {
     /// Read the settings through `var`.
-    ///
-    /// # Errors
-    /// A base URL that does not parse or is outside the egress allowlist,
-    /// or a guild id that is not a snowflake.
     pub fn from_vars(var: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
         let flag = |name: &str| var(name).is_some_and(|v| matches!(v.trim(), "1" | "true" | "yes"));
         let egress = Egress {
@@ -76,6 +76,9 @@ impl Config {
             read_only: flag(ENV_READ_ONLY),
             guild_id,
             only_channel,
+            link_url: var(ENV_LINK_URL)
+                .map(|url| url.trim().to_owned())
+                .filter(|url| url.starts_with("https://") || url.starts_with("http://")),
         })
     }
 }

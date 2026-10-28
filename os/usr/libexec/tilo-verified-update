@@ -7,6 +7,7 @@ TRUST_DIR="${TILO_IMAGE_TRUST_DIR:-/var/lib/tilo/image-trust}"
 GATE="${TILO_IMAGE_TRUST_GATE:-/usr/libexec/tilo-image-trust-staged}"
 UPDATE_LOCK="${TILO_IMAGE_TRUST_UPDATE_LOCK:-/run/tilo-verified-update.lock}"
 SUCCESSOR="${TILO_IMAGE_TRUST_SUCCESSOR:-/usr/libexec/tilo-board-successor}"
+CHANNEL="${TILO_IMAGE_TRUST_CHANNEL:-/usr/libexec/tilo-update-channel}"
 
 # One lock spans download, identity verification, rollback-floor publication,
 # and activation. It is taken even before owner trust is armed: `tilo-image-trust
@@ -27,14 +28,29 @@ expected_lock="$(id -u):600:1"
 }
 flock -x "$update_lock_fd"
 
+# The image the device's channel (or a developer's pinned build) names, when that is not the
+# one bootc follows already: switch to it instead of upgrading the one it follows. Nothing named:
+# the installed origin, as a release image on stable keeps.
+switch_to=""
+next="$("$CHANNEL" next)"
+if [ -n "$next" ]; then
+  status="$("$BOOTC" status --format json)"
+  following="$(printf '%s' "$status" | tilo-image-trust bootc-status-field staged-image 2>/dev/null || true)"
+  [ -n "$following" ] || following="$(printf '%s' "$status" | tilo-image-trust bootc-status-field booted-image)"
+  [ "$following" = "$next" ] || switch_to="$next"
+fi
+
 board=0
-if "$SUCCESSOR" applicable; then
+if [ -z "$switch_to" ] && "$SUCCESSOR" applicable; then
   board=1
 else
   result=$?
-  [ "$result" -eq 3 ] || exit "$result"
+  [ -n "$switch_to" ] || [ "$result" -eq 3 ] || exit "$result"
 fi
 if [ "$board" -eq 0 ] && [ ! -e "$TRUST_DIR/required" ] && [ ! -L "$TRUST_DIR/required" ]; then
+  if [ -n "$switch_to" ]; then
+    exec "$BOOTC" switch "$@" "$switch_to"
+  fi
   exec "$BOOTC" upgrade "$@"
 fi
 
@@ -77,6 +93,9 @@ if [ "$board" -eq 1 ]; then
   command=switch
   gate_arguments=(--successor "${fields[0]##*@}" "${fields[1]}" "${fields[3]}" "$update_lock_fd" "$UPDATE_LOCK")
   "$BOOTC" switch --download-only "${common[@]}" "${fields[0]}"
+elif [ -n "$switch_to" ]; then
+  command=switch
+  "$BOOTC" switch --download-only "${common[@]}" "$switch_to"
 else
   "$BOOTC" upgrade --download-only "${common[@]}"
 fi

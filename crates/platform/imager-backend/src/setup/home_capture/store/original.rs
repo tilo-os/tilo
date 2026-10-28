@@ -528,6 +528,22 @@ impl SourceReadContext {
             _ => Err(failure("Protected inventory custody missing")),
         }
     }
+    /// Reviewed nested Home exclusions from the protected plan. Shape is checked
+    /// against the plan; existence is checked under the held source by the claim.
+    ///
+    /// # Errors
+    /// Refuses changed protected facts and an unrepresentable plan.
+    pub fn original_exclusions(
+        &self,
+    ) -> io::Result<Vec<crate::setup::migration_store::NativePath>> {
+        self.revalidate()?;
+        let paths = self.intent.home.home_exclusion_paths()?;
+        self.revalidate()?;
+        Ok(paths
+            .iter()
+            .map(|path| crate::setup::migration_store::NativePath::encode(path.as_path()))
+            .collect())
+    }
     pub fn original_flatpak_inventory(&self) -> io::Result<Option<(File, u64, [u8; 32])>> {
         self.revalidate()?;
         let value = match (&self.intent.inventory, &self.inventory) {

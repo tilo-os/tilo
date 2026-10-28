@@ -247,7 +247,6 @@ mod tests {
     /// The sheet toggles without leaking keys and owns the next pointer press.
     #[test]
     fn help_overlay_owns_its_keys_and_the_next_press() {
-        // Case `shortcut_toggles_and_modal_keys_do_not_leak`.
         {
             let mut overlay = HelpOverlay::default();
             let question = Key::Character("?".into());
@@ -263,7 +262,6 @@ mod tests {
             assert!(!overlay.is_visible());
         }
 
-        // Case `visible_overlay_owns_the_next_pointer_press`.
         {
             let mut overlay = HelpOverlay::default();
             let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
@@ -277,7 +275,6 @@ mod tests {
             assert!(!overlay.on_pointer_press(inside, viewport));
         }
 
-        // Case `every_row_is_spoken`.
         {
             let spoken = HelpOverlay::spoken_rows();
             assert!(spoken.iter().any(|row| row.starts_with("N: ")));

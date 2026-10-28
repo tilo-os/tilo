@@ -19,6 +19,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{ModalDialog, Text, Widget};
 
+use crate::failure;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MapInfo {
     Attribution,
@@ -120,20 +122,17 @@ impl MapInfoSheet {
 fn dialog_for(info: MapInfo, close_requested: Rc<Cell<bool>>) -> ModalDialog<Text> {
     let (title, body) = match info {
         MapInfo::Attribution => (
-            "Attribution",
-            "Map data and map tiles © OpenStreetMap contributors.",
+            failure::t("maps-attribution"),
+            failure::t("maps-attribution-body"),
         ),
         MapInfo::Licenses => (
-            "Licenses",
-            "The map data is © OpenStreetMap contributors, available under \
-             the Open Database License (ODbL). The map tiles are \
-             OpenStreetMap Standard tiles, used under the OpenStreetMap \
-             Foundation's tile usage policy.",
+            failure::t("maps-licenses"),
+            failure::t("maps-licenses-body"),
         ),
     };
     let dismiss = Rc::clone(&close_requested);
-    ModalDialog::new(title, Text::new(body).with_role(TextRole::Body))
-        .primary_action("Done", move || close_requested.set(true))
+    ModalDialog::new(title, Text::new(&body).with_role(TextRole::Body))
+        .primary_action(failure::t("maps-done"), move || close_requested.set(true))
         .on_dismiss(move || dismiss.set(true))
         .with_max_width(440.0)
         .open(true)
@@ -155,7 +154,6 @@ mod tests {
 
     #[test]
     fn info_sheet_is_modal_only_while_open() {
-        // Phase `escape_dismisses_and_consumes`.
         {
             let mut sheet = MapInfoSheet::default();
             sheet.open(MapInfo::Attribution);
@@ -168,7 +166,6 @@ mod tests {
             assert!(!sheet.is_open());
         }
 
-        // Phase `closed_sheet_does_not_capture_input`.
         {
             let mut sheet = MapInfoSheet::default();
             let press = ui::synthetic_input::mouse_press();
@@ -180,7 +177,6 @@ mod tests {
             ));
         }
 
-        // Phase `open_sheet_exposes_shared_modal_semantics`.
         {
             let mut sheet = MapInfoSheet::default();
             sheet.open(MapInfo::Licenses);

@@ -1,12 +1,13 @@
 //! Typed AI transforms any caller can invoke: summarise, extract, classify,
-//! a free-form prompt, and a person's request to their agent ([`Transform::Respond`]),
-//! published as the actions of one programmatic resource, [`RESOURCE_ID`].
+//! a free-form prompt, a whole task ([`Transform::Task`]), and a person's
+//! request to their agent ([`Transform::Respond`]), published as the actions
+//! of one programmatic resource, [`RESOURCE_ID`].
 //!
 //! A shortcut's `Ai` step and an app that wants a summary reach these the way
 //! they reach any other app's actions — through the session's action host,
 //! as the invoking person, recorded like every other invocation. The caller
 //! never talks to a model: the agent asks the model gateway for one bounded
-//! single-shot answer ([`tilo_model_gateway::transform`]) and holds that
+//! single-shot answer ([`tilo_model_client::transform`]) and holds that
 //! answer to the shape the caller asked for before returning it.
 //!
 //! ## An answer is checked, not trusted
@@ -27,12 +28,15 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use ui::time::Duration;
 
+use agent_provider_config::Interaction;
 use serde_json::{Map, Value, json};
+use tilo_action_policy::Rule;
 use tilo_actions::contract::{
-    ActionContract, ActionKind, ConfirmationPolicy, ExecutionMode, PROGRAMMATIC_TAG, ResultSpec,
+    ActionContract, ActionKind, Audience, ConfirmationPolicy, ExecutionMode, ResultSpec,
     RetryPolicy, RiskLevel,
 };
 use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
@@ -41,11 +45,10 @@ use tilo_actions::params::{ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, Param
 use tilo_actions::{ActionContext, ExecutionLocus, OperationKind};
 use tilo_automation::{
     AGENT_APP_ID, AGENT_CLASSIFY_ACTION, AGENT_EXTRACT_ACTION, AGENT_FREEFORM_ACTION,
-    AGENT_RESPOND_ACTION, AGENT_SUMMARISE_ACTION, AGENT_TRANSFORM_KIND,
+    AGENT_RESPOND_ACTION, AGENT_SUMMARISE_ACTION, AGENT_TASK_ACTION, AGENT_TRANSFORM_KIND,
 };
 use ui::collaboration::{CollabRequest, ExportedAction, ExportedInput};
 
-/// The one transform resource the agent publishes.
 pub const RESOURCE_ID: &str = tilo_automation::AGENT_TRANSFORM_RESOURCE;
 
 /// Largest text input, inline or read from content.
@@ -70,10 +73,19 @@ pub const MAX_ANSWER_CHARS: u64 = 4000;
 pub const MAX_WORK_TITLE_CHARS: u64 = 120;
 /// How long one transform may take, the repair attempt included.
 pub const TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a request's decision may take, the repair attempt included: the
+/// composer shows this answer in a box the person is waiting in front of, so
+/// it is a distinct, much shorter budget than a transform's. Past it the
+/// agent says nothing and the request runs as the work it was written as.
+pub const RESPOND_TIMEOUT: Duration = Duration::from_secs(6);
 /// Transforms run at once; past this a new one is refused as busy.
 pub const MAX_RUNNING: usize = 4;
 /// Output tokens asked of the model per attempt.
 const MAX_OUTPUT_TOKENS: u32 = 2048;
+/// Output tokens a decision may spend: an answer inside [`MAX_ANSWER_CHARS`],
+/// or a work title, which is far shorter. Asking for a transform's budget
+/// would let a model talk its way past [`RESPOND_TIMEOUT`].
+const MAX_RESPOND_TOKENS: u32 = 1024;
 /// How much of a rejected answer is shown back to the model when repairing.
 const REPAIR_ECHO_CHARS: usize = 4000;
 
@@ -94,7 +106,8 @@ pub mod code {
     pub const MODEL_UNAVAILABLE: &str = "model_unavailable";
     /// The model's answer failed the requested shape twice.
     pub const INVALID_OUTPUT: &str = "invalid_model_output";
-    /// [`super::TIMEOUT`] passed before a valid answer arrived.
+    /// [`super::TIMEOUT`], or [`super::RESPOND_TIMEOUT`] for a request's
+    /// decision, passed before a valid answer arrived.
     pub const TIMED_OUT: &str = "timed_out";
     /// [`super::MAX_RUNNING`] transforms are already running.
     pub const BUSY: &str = "busy";
@@ -231,9 +244,34 @@ fn params_of(action: &str) -> Vec<ActionParam> {
                 "A JSON Schema the answer must satisfy. Without one the answer is text.",
             ));
         }
+        AGENT_TASK_ACTION => params = task_params(),
         _ => {}
     }
     params
+}
+
+/// A task's parameters: what to do, what it may use, and the summary's shape.
+/// It reads no caller input — it acts.
+fn task_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "instruction",
+            ParamType::Text,
+            "What the task should achieve, in the person's words; at most 4 KiB.",
+        ),
+        ActionParam::optional(
+            "allow",
+            ParamType::Array,
+            "The actions the task may use, one grant tree node each. The task can never do \
+             more than this: an action outside it is refused, and the list is never widened \
+             by the caller.",
+        )
+        .with_schema(json!({"type": "array", "items": {"type": "object"}})),
+        schema_param(
+            false,
+            "A JSON Schema the task's summary must satisfy. Without one the summary is text.",
+        ),
+    ]
 }
 
 fn result_schema_of(action: &str) -> Value {
@@ -248,13 +286,17 @@ fn result_schema_of(action: &str) -> Value {
             "description": "A value satisfying the caller's `schema`, validated before it is returned."
         }),
         AGENT_RESPOND_ACTION => respond_schema(),
+        AGENT_TASK_ACTION => json!({
+            "description": "The task's summary: text, or with `schema` a value satisfying it, \
+             validated before it is returned."
+        }),
         _ => json!({
             "description": "Text, or with `schema` a value satisfying it, validated before it is returned."
         }),
     }
 }
 
-const ACTIONS: [(&str, &str, &str); 5] = [
+const ACTIONS: [(&str, &str, &str); 6] = [
     (
         AGENT_SUMMARISE_ACTION,
         "Summarise",
@@ -274,6 +316,12 @@ const ACTIONS: [(&str, &str, &str); 5] = [
         AGENT_FREEFORM_ACTION,
         "Ask",
         "Answer a prompt about text, as text or as a value of a given schema.",
+    ),
+    (
+        AGENT_TASK_ACTION,
+        "Start a task",
+        "Work an instruction through the actions the caller allows, and answer with a \
+         typed summary of what it did.",
     ),
     (
         AGENT_RESPOND_ACTION,
@@ -317,7 +365,7 @@ pub struct Turn {
 }
 
 fn contract_of(action: &str) -> ActionContract {
-    ActionContract {
+    let mut contract = ActionContract {
         // Spending the person's model budget is an act, even though nothing
         // is edited: a read-only guest does not get to run it.
         kind: ActionKind::Undoable,
@@ -328,9 +376,12 @@ fn contract_of(action: &str) -> ActionContract {
         result: ResultSpec::Json {
             schema: result_schema_of(action),
         },
-        tags: vec![PROGRAMMATIC_TAG.to_string()],
         ..ActionContract::default()
-    }
+    };
+    // A transform is what a program asks for on someone's behalf, never a
+    // row a person picks from the palette or a menu.
+    contract.set_audience(Audience::Agents);
+    contract
 }
 
 /// The transform actions, as the agent publishes them.
@@ -344,6 +395,8 @@ pub fn descriptors() -> Vec<ActionDescriptor> {
             resource_kind: AGENT_TRANSFORM_KIND.to_string(),
             resource_label: "AI transforms".to_string(),
             action_label: (*label).to_string(),
+            keywords: Vec::new(),
+            icon: None,
             description: Some((*description).to_string()),
             locus: ExecutionLocus::ClientLocal,
             kind: OperationKind::Effect,
@@ -401,6 +454,15 @@ pub enum Transform {
         prompt: String,
         schema: Option<Value>,
     },
+    /// A whole task: an instruction worked through the actions the caller
+    /// allows, answered with a summary in the shape it asked for.
+    Task {
+        instruction: String,
+        /// The task's authority. It is the caller's own grant, narrowed: an
+        /// action outside it is refused, and nothing the run does widens it.
+        allow: Vec<Rule>,
+        schema: Option<Value>,
+    },
     /// A person's request to their agent, with the conversation before it.
     Respond {
         request: String,
@@ -409,6 +471,19 @@ pub enum Transform {
 }
 
 impl Transform {
+    /// What kind of interaction this is, as far as choosing a model goes.
+    #[must_use]
+    pub fn kind(&self) -> Interaction {
+        match self {
+            Self::Summarise { .. }
+            | Self::Extract { .. }
+            | Self::Classify { .. }
+            | Self::Freeform { .. } => Interaction::OneShot,
+            Self::Task { .. } => Interaction::Task,
+            Self::Respond { .. } => Interaction::Request,
+        }
+    }
+
     /// The schema the answer's `result` must satisfy.
     #[must_use]
     pub fn expected(&self) -> Value {
@@ -417,6 +492,10 @@ impl Transform {
                 json!({"type": "string", "minLength": 1, "maxLength": max_chars})
             }
             Self::Extract { schema }
+            | Self::Task {
+                schema: Some(schema),
+                ..
+            }
             | Self::Freeform {
                 schema: Some(schema),
                 ..
@@ -433,7 +512,9 @@ impl Transform {
                 "items": {"type": "string", "enum": choices},
                 "uniqueItems": true
             }),
-            Self::Freeform { schema: None, .. } => json!({"type": "string", "minLength": 1}),
+            Self::Freeform { schema: None, .. } | Self::Task { schema: None, .. } => {
+                json!({"type": "string", "minLength": 1})
+            }
             Self::Respond { .. } => respond_schema(),
         }
     }
@@ -465,10 +546,31 @@ impl Transform {
             Self::Freeform { prompt, .. } => format!(
                 "Do what the person who set up this transform asked, using the input:\n\n{prompt}"
             ),
+            Self::Task {
+                instruction, allow, ..
+            } => task_instruction(instruction, allow),
             Self::Respond {
                 request,
                 conversation,
             } => respond_task(request, conversation),
+        }
+    }
+
+    /// How long this transform may take, the repair attempt included.
+    #[must_use]
+    pub fn budget(&self) -> Duration {
+        match self {
+            Self::Respond { .. } => RESPOND_TIMEOUT,
+            _ => TIMEOUT,
+        }
+    }
+
+    /// Output tokens one attempt of this transform may spend.
+    #[must_use]
+    pub fn max_output_tokens(&self) -> u32 {
+        match self {
+            Self::Respond { .. } => MAX_RESPOND_TOKENS,
+            _ => MAX_OUTPUT_TOKENS,
         }
     }
 
@@ -496,6 +598,35 @@ impl Transform {
             self.expected()
         )
     }
+}
+
+/// What a task is asked to do, naming the authority it works within so the
+/// model plans inside it rather than at it.
+fn task_instruction(instruction: &str, allow: &[Rule]) -> String {
+    let mut task = String::from(
+        "Carry out the instruction below as a task, then answer with a short summary of what \
+         you did, in the person's language. You may use only the actions its authority \
+         allows; when the instruction asks for anything else, do the part you may and say \
+         in the summary what you could not do. Never say you did something you did not.",
+    );
+    let _ = write!(task, "\n\nThe instruction:\n<<<\n{instruction}\n>>>");
+    if allow.is_empty() {
+        task.push_str(
+            "\n\nThe task may use no actions: answer with what the instruction asks \
+                       that you cannot do.",
+        );
+    } else {
+        let rules = allow
+            .iter()
+            .map(|rule| serde_json::to_string(rule).unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let _ = write!(
+            task,
+            "\n\nThe actions it may use, one grant node each:\n{rules}"
+        );
+    }
+    task
 }
 
 /// How a request is decided, with the conversation before it and the request
@@ -629,6 +760,8 @@ struct Arguments {
     prompt: Option<String>,
     request: Option<String>,
     conversation: Option<Vec<Value>>,
+    instruction: Option<String>,
+    allow: Option<Vec<Value>>,
 }
 
 fn respond(args: &Arguments) -> Result<Transform, Failure> {
@@ -718,6 +851,7 @@ pub fn bind(
             schema: schema()?.ok_or_else(|| invalid("`extract` needs a `schema`"))?,
         },
         AGENT_CLASSIFY_ACTION => classify(&args)?,
+        AGENT_TASK_ACTION => task(&args)?,
         AGENT_RESPOND_ACTION => respond(&args)?,
         _ => {
             let prompt = args
@@ -744,7 +878,7 @@ pub fn bind(
     };
     let needs_input = !matches!(
         transform,
-        Transform::Freeform { .. } | Transform::Respond { .. }
+        Transform::Freeform { .. } | Transform::Respond { .. } | Transform::Task { .. }
     );
     if needs_input && input.as_deref().is_none_or(|text| text.trim().is_empty()) {
         return Err(invalid(
@@ -752,6 +886,46 @@ pub fn bind(
         ));
     }
     Ok(Call { transform, input })
+}
+
+/// The `task` transform: its instruction, the authority it works within, and
+/// the shape of the summary it answers with.
+fn task(args: &Arguments) -> Result<Transform, Failure> {
+    let instruction = args
+        .instruction
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if instruction.is_empty() {
+        return Err(invalid("`task` needs the `instruction`"));
+    }
+    if instruction.len() > MAX_REQUEST_BYTES {
+        return Err(failure(
+            code::TOO_LARGE,
+            "the instruction exceeds the 4 KiB limit",
+            false,
+        ));
+    }
+    let allow = args
+        .allow
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|rule| serde_json::from_value(rule.clone()).ok())
+        .collect::<Option<Vec<Rule>>>()
+        .ok_or_else(|| invalid("each `allow` entry is a grant rule"))?;
+    Ok(Transform::Task {
+        instruction,
+        allow,
+        schema: match &args.schema {
+            Some(schema) => {
+                let schema = Value::Object(schema.clone());
+                check_schema(&schema).map(|()| Some(schema))?
+            }
+            None => None,
+        },
+    })
 }
 
 /// The `classify` transform: its choices, each text of 1 to 200 characters
@@ -808,7 +982,9 @@ pub fn bind_wire(
 /// Where an answer comes from. Production asks the model gateway; tests
 /// stand in for it.
 pub trait TransformModel: Send + Sync {
-    /// One single-shot answer to `instructions` about `input`.
+    /// One single-shot answer to `instructions` about `input`, for an
+    /// interaction of `kind`: the kind is what picks the default model, so a
+    /// translation may run on a model on this device while a task does not.
     ///
     /// # Errors
     ///
@@ -816,45 +992,98 @@ pub trait TransformModel: Send + Sync {
     /// deadline.
     fn answer(
         &self,
+        kind: Interaction,
         instructions: &str,
         input: &str,
         max_output_tokens: u32,
         timeout: Duration,
     ) -> Result<String, String>;
+
+    /// [`Self::answer`], given up on once `stop` is set: the caller
+    /// cancelled, so the call stops rather than running, billed, to its
+    /// end. A stand-in that cannot be stopped answers in full.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::answer`], and a call stopped part way.
+    fn answer_until(
+        &self,
+        kind: Interaction,
+        (instructions, input): (&str, &str),
+        max_output_tokens: u32,
+        timeout: Duration,
+        stop: &AtomicBool,
+    ) -> Result<String, String> {
+        let _ = stop;
+        self.answer(kind, instructions, input, max_output_tokens, timeout)
+    }
 }
 
 /// The provider the agent chose when it started (a managed agent's arrives
-/// with its launch), else the Settings-selected one, reached only through
-/// the model gateway. A sandboxed agent cannot read Settings, so the one it
-/// started with is asked first.
+/// with its launch), else the one Settings chose for the kind of
+/// interaction, else the Settings default, reached only through the model
+/// gateway. A sandboxed agent cannot read Settings, so the one it started
+/// with is asked first.
 #[derive(Default)]
 pub struct GatewayModel {
     pub launched: Option<crate::providers::ProviderSelection>,
 }
 
+impl GatewayModel {
+    /// The provider to ask for an interaction of `kind`, once the gateway is
+    /// reachable. A launch names one model for the whole agent, which is a
+    /// person's decision about that agent rather than about a kind; every
+    /// other call follows the kind's own default.
+    fn selection(&self, kind: Interaction) -> Result<crate::providers::ProviderSelection, String> {
+        let selection = self
+            .launched
+            .clone()
+            .or_else(|| crate::providers::interaction_selection(kind))
+            .or_else(crate::providers::default_selection)
+            .ok_or_else(|| "no model provider is configured in Settings".to_string())?;
+        if !tilo_model_client::available() {
+            return Err("the model gateway is not available to the agent".into());
+        }
+        Ok(selection)
+    }
+}
+
 impl TransformModel for GatewayModel {
     fn answer(
         &self,
+        kind: Interaction,
         instructions: &str,
         input: &str,
         max_output_tokens: u32,
         timeout: Duration,
     ) -> Result<String, String> {
-        let selection = self
-            .launched
-            .clone()
-            .or_else(crate::providers::default_selection)
-            .ok_or_else(|| "no model provider is configured in Settings".to_string())?;
-        if !tilo_model_gateway::available() {
-            return Err("the model gateway is not available to the agent".into());
-        }
-        tilo_model_gateway::transform(
+        let selection = self.selection(kind)?;
+        tilo_model_client::transform(
             &selection.profile_id,
             &selection.model.id,
             instructions,
             input,
             max_output_tokens,
             timeout,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    fn answer_until(
+        &self,
+        kind: Interaction,
+        asked: (&str, &str),
+        max_output_tokens: u32,
+        timeout: Duration,
+        stop: &AtomicBool,
+    ) -> Result<String, String> {
+        let selection = self.selection(kind)?;
+        tilo_model_client::transform_until(
+            (&selection.profile_id, &selection.model.id),
+            asked,
+            max_output_tokens,
+            timeout,
+            &|| stop.load(Ordering::Relaxed),
         )
         .map_err(|error| error.to_string())
     }
@@ -887,10 +1116,27 @@ fn first_chars(text: &str, most: usize) -> String {
 /// # Errors
 ///
 /// [`code::MODEL_UNAVAILABLE`] when the model gave no answer,
-/// [`code::TIMED_OUT`] when [`TIMEOUT`] passed, and
+/// [`code::TIMED_OUT`] when the transform's budget ([`Transform::budget`])
+/// passed, and
 /// [`code::INVALID_OUTPUT`] when both answers failed the shape.
 pub fn run(call: &Call, model: &dyn TransformModel) -> Result<ActionOutput, Failure> {
+    run_until(call, model, &AtomicBool::new(false))
+}
+
+/// [`run`], given up on once `stop` is set: the attempt in progress is
+/// stopped and no repair attempt is made.
+///
+/// # Errors
+///
+/// As [`run`], and [`code::MODEL_UNAVAILABLE`] once stopped.
+pub fn run_until(
+    call: &Call,
+    model: &dyn TransformModel,
+    stop: &AtomicBool,
+) -> Result<ActionOutput, Failure> {
     let began = ui::time::now();
+    let budget = call.transform.budget();
+    let max_output_tokens = call.transform.max_output_tokens();
     let instructions = call.transform.instructions();
     let expected = call.transform.expected();
     let input = call
@@ -904,7 +1150,7 @@ pub fn run(call: &Call, model: &dyn TransformModel) -> Result<ActionOutput, Fail
     let mut turn = input.clone();
     let mut rejected = String::new();
     for attempt in 0..2 {
-        let Some(left) = TIMEOUT
+        let Some(left) = budget
             .checked_sub(began.elapsed())
             .filter(|left| !left.is_zero())
         else {
@@ -914,8 +1160,21 @@ pub fn run(call: &Call, model: &dyn TransformModel) -> Result<ActionOutput, Fail
                 true,
             ));
         };
+        if stop.load(Ordering::Relaxed) {
+            return Err(failure(
+                code::MODEL_UNAVAILABLE,
+                "the transform was cancelled",
+                false,
+            ));
+        }
         let answer = model
-            .answer(&instructions, &turn, MAX_OUTPUT_TOKENS, left)
+            .answer_until(
+                call.transform.kind(),
+                (&instructions, &turn),
+                max_output_tokens,
+                left,
+                stop,
+            )
             .map_err(|why| failure(code::MODEL_UNAVAILABLE, why, true))?;
         match answer_value(&answer).and_then(|value| {
             tilo_actions::params::validate_json_schema(&value, &expected)
@@ -967,8 +1226,8 @@ pub struct TransformService {
     finished_tx: Sender<(u64, InvocationUpdate)>,
     finished_rx: Receiver<(u64, InvocationUpdate)>,
     /// Invocations whose worker has not reported yet, with the invocation
-    /// each update names.
-    running: HashMap<u64, InvocationId>,
+    /// each update names and the flag that stops its model call.
+    running: HashMap<u64, (InvocationId, Arc<AtomicBool>)>,
     /// Of those, the ones the caller cancelled: their answer is dropped.
     cancelled: HashSet<u64>,
 }
@@ -1039,10 +1298,12 @@ impl TransformService {
         );
         let model = Arc::clone(&self.model);
         let finished = self.finished_tx.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::clone(&stop);
         let spawned = std::thread::Builder::new()
             .name("tilo-agent-transform".into())
             .spawn(move || {
-                let update = match run(&call, model.as_ref()) {
+                let update = match run_until(&call, model.as_ref(), &stopped) {
                     Ok(output) => InvocationUpdate::Succeeded { invocation, output },
                     Err(error) => {
                         tracing::info!(code = %error.code, reason = %error.message, "a transform produced no value");
@@ -1061,14 +1322,17 @@ impl TransformService {
                 true,
             ));
         }
-        self.running.insert(id, invocation);
+        self.running.insert(id, (invocation, stop));
         None
     }
 
-    /// Cancel a running invocation. Returns the terminal update to send, or
-    /// `None` when the id is not running here or was already cancelled.
+    /// Cancel a running invocation: its model call is stopped. Returns the
+    /// terminal update to send, or `None` when the id is not running here
+    /// or was already cancelled.
     pub fn cancel(&mut self, id: u64) -> Option<InvocationUpdate> {
-        let invocation = *self.running.get(&id)?;
+        let (invocation, stop) = self.running.get(&id)?;
+        let invocation = *invocation;
+        stop.store(true, Ordering::Relaxed);
         if !self.cancelled.insert(id) {
             return None;
         }
@@ -1098,7 +1362,14 @@ mod tests {
     struct Fixed(&'static str);
 
     impl TransformModel for Fixed {
-        fn answer(&self, _: &str, _: &str, _: u32, _: Duration) -> Result<String, String> {
+        fn answer(
+            &self,
+            _: Interaction,
+            _: &str,
+            _: &str,
+            _: u32,
+            _: Duration,
+        ) -> Result<String, String> {
             Ok(self.0.to_string())
         }
     }
@@ -1124,10 +1395,14 @@ mod tests {
     #[test]
     fn the_published_surface_is_valid_programmatic_and_low_risk() {
         let descriptors = descriptors();
-        assert_eq!(descriptors.len(), 5);
+        assert_eq!(descriptors.len(), 6);
         for descriptor in &descriptors {
             assert!(descriptor.contract.validate_declaration().is_empty());
-            assert!(descriptor.contract.is_programmatic());
+            // The audience is the contract's own declaration, not a stray tag:
+            // a transform is offered to agents and never to a person's palette.
+            assert_eq!(descriptor.contract.audience(), Audience::Agents);
+            assert!(descriptor.contract.reaches_agents());
+            assert!(!descriptor.contract.reaches_people());
             assert_eq!(descriptor.contract.risk, RiskLevel::Low);
             assert_eq!(descriptor.contract.confirmation, ConfirmationPolicy::None);
             assert!(matches!(
@@ -1144,6 +1419,14 @@ mod tests {
         };
         assert_eq!(app_id, AGENT_APP_ID);
         assert!(actions.iter().all(|action| action.resource == RESOURCE_ID));
+        // The audience crosses the publication boundary too, so the session
+        // that serves these into search leaves them out of people's listings.
+        let published: Vec<ExportedAction> = descriptors.iter().map(exported).collect();
+        assert!(
+            published
+                .iter()
+                .all(|action| !action.contract.reaches_people())
+        );
     }
 
     #[test]
@@ -1322,7 +1605,6 @@ mod tests {
                 "{wrong}"
             );
         }
-        // Nothing selected is still a request.
         assert!(
             bind(
                 AGENT_RESPOND_ACTION,
@@ -1352,7 +1634,14 @@ mod tests {
     fn a_model_that_cannot_answer_is_a_retryable_failure() {
         struct Down;
         impl TransformModel for Down {
-            fn answer(&self, _: &str, _: &str, _: u32, _: Duration) -> Result<String, String> {
+            fn answer(
+                &self,
+                _: Interaction,
+                _: &str,
+                _: &str,
+                _: u32,
+                _: Duration,
+            ) -> Result<String, String> {
                 Err("gateway unavailable".into())
             }
         }
@@ -1420,5 +1709,125 @@ mod tests {
             std::thread::yield_now();
         }
         assert!(service.running.is_empty());
+    }
+
+    /// A model that works until it is told to stop: it says when its call
+    /// began, and whether the stop reached it.
+    struct Working {
+        began: Sender<()>,
+        told: Sender<bool>,
+    }
+
+    impl TransformModel for Working {
+        fn answer(
+            &self,
+            _: Interaction,
+            _: &str,
+            _: &str,
+            _: u32,
+            _: Duration,
+        ) -> Result<String, String> {
+            Err("only a stoppable call is made".into())
+        }
+
+        fn answer_until(
+            &self,
+            _: Interaction,
+            _: (&str, &str),
+            _: u32,
+            _: Duration,
+            stop: &AtomicBool,
+        ) -> Result<String, String> {
+            let _ = self.began.send(());
+            let deadline = tilo_test_env::hang_deadline();
+            while !stop.load(Ordering::Relaxed) && ui::time::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let _ = self.told.send(stop.load(Ordering::Relaxed));
+            Err("stopped".into())
+        }
+    }
+
+    /// Start invocation 4, a summary.
+    fn start_summary(service: &mut TransformService) {
+        let argument = format!("{ARGUMENTS_JSON_PREFIX}{}", json!({"input": "text"}));
+        assert!(
+            service
+                .start(
+                    directed(4),
+                    RESOURCE_ID,
+                    "summarise",
+                    Some(&argument),
+                    "ada",
+                    None,
+                )
+                .is_none(),
+            "the transform runs"
+        );
+    }
+
+    /// Wait until the cancelled invocation's worker reported, checking its
+    /// answer is dropped.
+    fn drain_cancelled(service: &mut TransformService) {
+        let deadline = tilo_test_env::hang_deadline();
+        while !service.running.is_empty() && ui::time::now() < deadline {
+            assert!(
+                service.finished().is_empty(),
+                "a cancelled answer is dropped"
+            );
+            std::thread::yield_now();
+        }
+        assert!(service.running.is_empty(), "its slot is free again");
+    }
+
+    /// Cancelling a transform used to drop only its answer: the model call
+    /// ran on to its end, billed, holding the agent's one gateway channel
+    /// from its planning turns. A call in progress is now told to stop.
+    #[test]
+    fn a_cancelled_transform_stops_its_model_call() {
+        let (began_by, began) = channel();
+        let (told, stopped) = channel();
+        let mut service = TransformService::new(
+            Arc::new(Working {
+                began: began_by,
+                told,
+            }),
+            store(),
+        );
+        start_summary(&mut service);
+        // Cancel while the call runs, not before its worker reached it.
+        tilo_test_env::recv("the model call beginning", &began);
+        assert!(matches!(
+            service.cancel(4),
+            Some(InvocationUpdate::Cancelled { .. })
+        ));
+        assert!(
+            tilo_test_env::recv("the model call ending", &stopped),
+            "the model call was told to stop"
+        );
+        drain_cancelled(&mut service);
+    }
+
+    /// A transform cancelled before its worker asks the model never asks it.
+    #[test]
+    fn a_transform_cancelled_before_its_call_never_asks_the_model() {
+        let (began_by, began) = channel();
+        let (told, _stopped) = channel();
+        let model = Arc::new(Working {
+            began: began_by,
+            told,
+        });
+        let call = bind_wire(
+            "summarise",
+            Some(&format!(
+                "{ARGUMENTS_JSON_PREFIX}{}",
+                json!({"input": "text"})
+            )),
+            &store(),
+        )
+        .unwrap();
+        let failure = run_until(&call, model.as_ref(), &AtomicBool::new(true)).unwrap_err();
+        assert_eq!(failure.code, code::MODEL_UNAVAILABLE);
+        assert!(began.try_recv().is_err(), "the model was not asked");
     }
 }

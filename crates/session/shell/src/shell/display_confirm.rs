@@ -15,7 +15,7 @@
 //! Settings › Displays can revoke.
 //!
 //! The Keep/Revert band is the one the Super+P sheet shows
-//! ([`paint_keep_revert_band`]), so a staged layout looks and reads the same
+//! (`paint_keep_revert_band`), so a staged layout looks and reads the same
 //! wherever it came from.
 
 use std::time::{Duration, Instant};
@@ -34,7 +34,8 @@ use ui::theme::Theme;
 
 use crate::shell::i18n::{t, t_args};
 use crate::shell::overlay_host::layers::{
-    LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer,
+    Anchor, LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Material, Modality, Role,
+    Routed, ShellLayer, Surface,
 };
 use ui::TextRole;
 use ui::widget::ButtonRole;
@@ -84,6 +85,8 @@ pub(crate) fn band_buttons(band: Rect) -> BandButtons {
 #[derive(Clone, Copy)]
 pub(crate) struct BandState {
     pub focus: Option<BandFocus>,
+    /// The button under the pointer, if any: it lifts, as every button does.
+    pub hover: Option<BandFocus>,
     pub disabled: bool,
 }
 
@@ -139,6 +142,7 @@ pub(crate) fn paint_keep_revert_band(
         &ui::widget::ButtonFace::new(keep, &keep_label)
             .role(ButtonRole::Primary)
             .focused(state.focus == Some(BandFocus::Keep))
+            .hovered(state.hover == Some(BandFocus::Keep))
             .disabled(state.disabled),
     );
     ui::widget::Button::paint(
@@ -148,6 +152,7 @@ pub(crate) fn paint_keep_revert_band(
         theme,
         &ui::widget::ButtonFace::new(revert, &revert_label)
             .focused(state.focus == Some(BandFocus::Revert))
+            .hovered(state.hover == Some(BandFocus::Revert))
             .disabled(state.disabled),
     );
     BandButtons { keep, revert }
@@ -211,6 +216,9 @@ pub(crate) struct DisplayConfirmPrompt {
     /// between paints uses the geometry that was drawn.
     spacing: ui::tokens::Spacing,
     metrics: ui::tokens::Metrics,
+    /// The pointer, so a button under it lifts; a countdown is a place where
+    /// "which one am I about to press" has to be visible.
+    cursor: Option<Point>,
 }
 
 impl DisplayConfirmPrompt {
@@ -413,6 +421,9 @@ impl DisplayConfirmPrompt {
         let Some(focus) = self.pending.as_ref().map(|pending| pending.focus) else {
             return false;
         };
+        let before = self.hovered_button(outputs);
+        self.cursor = cursor;
+        let hover_moved = self.hovered_button(outputs) != before;
         if self.answer.is_some() {
             return matches!(
                 event,
@@ -457,8 +468,24 @@ impl DisplayConfirmPrompt {
             | WindowEvent::MouseInput { .. }
             | WindowEvent::MouseWheel { .. }
             | WindowEvent::Touch(_) => true,
-            _ => false,
+            // Moving onto or off a button changes what is drawn, so the
+            // prompt asks for a frame; motion anywhere else is not its news.
+            _ => hover_moved,
         }
+    }
+
+    /// The button under the pointer, on whichever display it is over.
+    fn hovered_button(&self, outputs: &[Rect]) -> Option<BandFocus> {
+        let point = self.cursor?;
+        self.cards(outputs).into_iter().find_map(|card| {
+            if card.keep.contains(point) {
+                Some(BandFocus::Keep)
+            } else if card.revert.contains(point) {
+                Some(BandFocus::Revert)
+            } else {
+                None
+            }
+        })
     }
 
     fn click(&mut self, point: Point, outputs: &[Rect]) {
@@ -622,7 +649,8 @@ impl DisplayConfirmPrompt {
             Focus::AlwaysKeep => None,
         };
         for card in self.cards(outputs) {
-            ui::chrome::shell::paint_panel(scene, transform, card.card, theme, 1.0);
+            let painted = ui::chrome::shell::paint_panel(scene, transform, card.card, theme, 1.0);
+            let theme = &painted.theme;
             paint_keep_revert_band(
                 scene,
                 transform,
@@ -633,6 +661,7 @@ impl DisplayConfirmPrompt {
                 &status,
                 BandState {
                     focus: band_focus,
+                    hover: self.hovered_button(outputs),
                     disabled: self.answer.is_some(),
                 },
             );
@@ -644,6 +673,10 @@ impl DisplayConfirmPrompt {
                     theme,
                     &ui::widget::ButtonFace::new(card.always_keep, label)
                         .focused(pending.focus == Focus::AlwaysKeep)
+                        .hovered(
+                            self.cursor
+                                .is_some_and(|point| card.always_keep.contains(point)),
+                        )
                         .disabled(self.answer.is_some()),
                 );
             }
@@ -657,6 +690,19 @@ impl DisplayConfirmPrompt {
 impl ShellLayer for DisplayConfirmPrompt {
     fn id(&self) -> LayerId {
         LayerId::DisplayConfirmation
+    }
+
+    /// The question that is the grant: a tool changed the display and the
+    /// change is reverted unless a person answers it. System-modal on every
+    /// display at once, because the whole session waits on the answer.
+    fn surface(&self) -> Option<Surface> {
+        Some(Surface::shell(
+            Role::Consent,
+            Anchor::Fill,
+            Modality::SystemModal,
+            Material::Floating,
+            self.visible(),
+        ))
     }
 
     fn is_open(&self) -> bool {

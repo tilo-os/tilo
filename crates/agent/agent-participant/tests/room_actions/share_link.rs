@@ -21,7 +21,7 @@ async fn the_host_mints_a_message_link_with_its_range() {
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
     let writer_device = enrol(&author, "writer", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = crate::support::scratch_dir();
     let hosted = start_browser(&owner, &host, state.path(), Some("https://entry.example")).await;
     let room = hosted.relay.rooms().unwrap().create("Links").await.unwrap();
     admit_person(
@@ -112,6 +112,10 @@ async fn the_host_mints_a_message_link_with_its_range() {
     assert_eq!(resource.kind, kind);
     assert_eq!(kind, "chat.messages.messages");
     assert!(url.ends_with("?chars=6-7"), "{url}");
+    assert!(
+        url.contains("/so.tilo.chat/-/chat.messages.messages/"),
+        "a part's item opens with the record the part is held beside: {url}"
+    );
     publisher.peer.close();
     hosted.agents.shutdown();
     drop(hosted.web);

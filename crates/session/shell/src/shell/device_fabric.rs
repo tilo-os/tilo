@@ -13,7 +13,7 @@ use thiserror::Error;
 
 use crate::shell::personal_continuity::DeviceId;
 
-pub const FABRIC_SCHEMA_VERSION: u16 = 6;
+pub const FABRIC_SCHEMA_VERSION: u16 = 7;
 pub const MAX_DEVICES: usize = 64;
 /// More network interfaces than any one device wakes through.
 pub const MAX_WAKE_ROUTES: usize = 8;
@@ -190,8 +190,28 @@ pub struct DevicePresence {
     pub last_seen_unix_ms: u64,
     /// How siblings on the same LAN can wake this device.
     pub wake_routes: Vec<WakeRoute>,
+    /// The person's session here, which their other devices' locks follow.
+    pub session: OwnerSession,
     pub stamp: FabricStamp,
 }
+
+/// Whether the person's session on a device is locked, when they last locked
+/// or unlocked it themselves, and when they last used it
+/// (`crate::shell::owner_session`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnerSession {
+    pub locked: bool,
+    /// The person's own lock or unlock. `0` while the device is locked by
+    /// its idle timer or by following another device: a lock the others do
+    /// not follow.
+    pub changed_unix_ms: u64,
+    /// Their last input, rounded down to [`OWNER_SESSION_ACTIVE_STEP_MS`] so
+    /// typing does not republish the presence.
+    pub active_unix_ms: u64,
+}
+
+/// How finely [`OwnerSession::active_unix_ms`] follows input.
+pub const OWNER_SESSION_ACTIVE_STEP_MS: u64 = 10_000;
 
 impl DevicePresence {
     fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
@@ -728,6 +748,21 @@ pub enum PersonalFabricAction {
         sequence: u64,
         event: FabricInputEvent,
     },
+    /// Show this tab of the person's workspaces on the receiving device:
+    /// the person moved its window there from the sending one.
+    ShowTab {
+        tab: u64,
+    },
+    /// Certify a device the sender paired: the devices that can approve it
+    /// ask their person (`crate::shell::device_certification`). The ask,
+    /// postcard-encoded.
+    CertifyAsk {
+        ask: Vec<u8>,
+    },
+    /// A device's postcard-encoded answer to a [`Self::CertifyAsk`].
+    CertifyAnswer {
+        answer: Vec<u8>,
+    },
 }
 
 /// What became of one request to wake a device.
@@ -1061,6 +1096,17 @@ impl PersonalFabricActionEnvelope {
                     && !chunk.valid_for(RemoteCaptureKind::Microphone)
                     && !chunk.valid_for(RemoteCaptureKind::DocumentScanner)
                 {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::ShowTab { tab } => {
+                if *tab == 0 {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::CertifyAsk { ask: message }
+            | PersonalFabricAction::CertifyAnswer { answer: message } => {
+                if message.is_empty() {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -1483,14 +1529,6 @@ impl ClipboardHistory {
         Ok(true)
     }
 
-    pub fn set_pinned(&mut self, id: [u8; 32], pinned: bool) -> bool {
-        let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) else {
-            return false;
-        };
-        entry.pinned = pinned;
-        true
-    }
-
     pub fn remove(&mut self, id: [u8; 32]) -> bool {
         let Some(index) = self.entries.iter().position(|entry| entry.id == id) else {
             return false;
@@ -1750,9 +1788,13 @@ pub enum FabricInputEvent {
         button: u32,
         pressed: bool,
     },
+    /// Amounts in [`ScrollUnit::STEPS`] of `unit`, so a high-resolution
+    /// wheel's part notches and a touchpad's sub-pixel motion add up as
+    /// they do on the device they came from.
     Scroll {
-        horizontal: i16,
-        vertical: i16,
+        horizontal: i32,
+        vertical: i32,
+        unit: ScrollUnit,
     },
     Key {
         keycode: u32,
@@ -1761,17 +1803,39 @@ pub enum FabricInputEvent {
     },
 }
 
+/// What a scroll moves by: wheel lines, or the pixels of finger and
+/// continuous scrolling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollUnit {
+    Lines,
+    Pixels,
+}
+
+impl ScrollUnit {
+    /// Steps a scroll amount counts per line or pixel.
+    // ratchet-allow(pixel_const): wheel steps, the input protocol's unit, not a length on screen
+    pub const STEPS: f64 = 120.0;
+}
+
 impl FabricInputEvent {
-    pub(super) fn validate(self) -> bool {
+    pub(crate) fn validate(self) -> bool {
         match self {
             Self::PointerMotion { x, y } => {
                 x.unsigned_abs() <= 1_000_000 && y.unsigned_abs() <= 1_000_000
             }
             Self::PointerButton { button, .. } => (1..=0x3ff).contains(&button),
+            // A finger scroll ends with an empty frame (kinetic scrolling
+            // starts from it); an empty wheel step means nothing.
             Self::Scroll {
                 horizontal,
                 vertical,
-            } => horizontal != 0 || vertical != 0,
+                unit,
+            } => {
+                horizontal.unsigned_abs() <= 1_000_000
+                    && vertical.unsigned_abs() <= 1_000_000
+                    && (unit == ScrollUnit::Pixels || horizontal != 0 || vertical != 0)
+            }
             Self::Key {
                 keycode, modifiers, ..
             } => keycode <= 0x2ff && modifiers <= 0xffff,
@@ -2056,6 +2120,14 @@ impl DeviceFabric {
                 if snapshot == *current {
                     Ok(false)
                 } else if snapshot.presence.stamp == current.presence.stamp {
+                    // The device itself sending its last revision again, after
+                    // this side marked it gone ([`Self::mark_departed`]): back.
+                    let mut present = current.clone();
+                    present.presence.online = true;
+                    if !current.presence.online && snapshot == present {
+                        self.snapshots.insert(snapshot.owner.clone(), snapshot);
+                        return Ok(true);
+                    }
                     Err(FabricError::ConflictingRevision)
                 } else {
                     Ok(false)
@@ -2206,6 +2278,26 @@ impl DeviceFabric {
                     .collect(),
             })
             .collect()
+    }
+
+    /// Mark `device` offline because it went away: what a device says of
+    /// itself holds only while it can still say it, so once its route is
+    /// gone it shows offline, keeps its place and published displays, and
+    /// is back with its next snapshot. Returns whether it was online.
+    pub fn mark_departed(&mut self, device: &DeviceId) -> bool {
+        self.snapshots
+            .get_mut(device)
+            .is_some_and(|snapshot| std::mem::replace(&mut snapshot.presence.online, false))
+    }
+
+    /// Every device but `local` offline, as after a restart: a checkpoint
+    /// keeps what the devices said, not that they are still here.
+    #[must_use]
+    pub fn restored(mut self, local: Option<&DeviceId>) -> Self {
+        for (device, snapshot) in &mut self.snapshots {
+            snapshot.presence.online &= Some(device) == local;
+        }
+        self
     }
 
     /// Forget everything a device published, e.g. once it left the fleet.
@@ -2749,6 +2841,34 @@ pub enum FabricError {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_scroll_says_its_unit_and_only_a_finger_scroll_may_be_empty() {
+        let scroll = |horizontal, vertical, unit| FabricInputEvent::Scroll {
+            horizontal,
+            vertical,
+            unit,
+        };
+        assert!(scroll(0, -30, ScrollUnit::Lines).validate());
+        assert!(
+            scroll(0, 0, ScrollUnit::Pixels).validate(),
+            "a finger scroll's end"
+        );
+        assert!(!scroll(0, 0, ScrollUnit::Lines).validate());
+        assert!(!scroll(2_000_000, 0, ScrollUnit::Pixels).validate());
+        let wire = serde_json::to_string(&scroll(0, -60, ScrollUnit::Lines)).unwrap();
+        assert_eq!(
+            wire,
+            r#"{"scroll":{"horizontal":0,"vertical":-60,"unit":"lines"}}"#
+        );
+        assert!(
+            serde_json::from_str::<FabricInputEvent>(
+                r#"{"scroll":{"horizontal":0,"vertical":-2}}"#
+            )
+            .is_err(),
+            "a scroll without a unit is not guessed at"
+        );
+    }
+
     fn id(value: &str) -> DeviceId {
         DeviceId::new(value).unwrap()
     }
@@ -2776,6 +2896,7 @@ mod tests {
                 online: true,
                 last_seen_unix_ms: 10,
                 wake_routes: Vec::new(),
+                session: OwnerSession::default(),
                 stamp: stamp(device, counter),
             },
             media: Vec::new(),
@@ -3050,7 +3171,7 @@ mod tests {
         };
         // Fixed schema-6 Postcard bytes: owner, aggregate rect, scale, stamp.
         let previous = hex::decode("0470656572800f00800ad005e807010470656572").unwrap();
-        assert_eq!(FABRIC_SCHEMA_VERSION, 6);
+        assert_eq!(FABRIC_SCHEMA_VERSION, 7);
         assert_eq!(postcard::to_allocvec(&display).unwrap(), previous);
         let decoded: DisplayPlacement = postcard::from_bytes(&previous).unwrap();
         assert!(
@@ -3307,6 +3428,25 @@ mod tests {
         video_cannot_be_sent_to_an_audio_only_device();
         media_action_locators_reject_host_paths_and_url_credentials();
         media_terminal_actions_require_exact_nonzero_request_and_session();
+    }
+
+    #[test]
+    fn a_window_shown_on_another_device_names_a_tab() {
+        let source = id("laptop");
+        let target = id("board");
+        let ok = |tab| {
+            PersonalFabricActionEnvelope {
+                request_id: [5; 16],
+                source: source.clone(),
+                target: target.clone(),
+                issued_unix_ms: 10_000,
+                action: PersonalFabricAction::ShowTab { tab },
+            }
+            .validate_at(&source, &target, 10_000)
+            .is_ok()
+        };
+        assert!(ok(7));
+        assert!(!ok(0), "a tab id is never zero");
     }
 
     #[test]
@@ -3696,6 +3836,37 @@ mod tests {
         wifi_secrets_must_be_sealed();
         typed_wifi_security_decodes_the_legacy_string_postcard_shape();
         legacy_enterprise_record_is_retained_but_cannot_supply_a_password();
+    }
+
+    #[test]
+    fn a_device_that_went_away_keeps_its_place_but_takes_no_edge_until_back() {
+        let caps = FabricCapabilities {
+            display: true,
+            pointer: true,
+            ..FabricCapabilities::default()
+        };
+        let tablet = snapshot("tablet", 1, 1000, caps);
+        let mut fabric = DeviceFabric::default();
+        fabric.upsert(snapshot("laptop", 1, 0, caps)).unwrap();
+        fabric.upsert(tablet.clone()).unwrap();
+        assert!(fabric.mark_departed(&id("tablet")));
+        assert!(fabric.cross_right_edge(&id("laptop"), 417).is_none());
+        let gone = &fabric.snapshots()[&id("tablet")];
+        assert!(!gone.presence.online && gone.display.is_some());
+        // Its last revision again, from itself: it is back.
+        assert_eq!(fabric.upsert(tablet), Ok(true));
+        assert_eq!(
+            fabric.cross_right_edge(&id("laptop"), 417).unwrap().to,
+            id("tablet")
+        );
+        // A restart keeps only this device online.
+        let restored = fabric.restored(Some(&id("laptop")));
+        let online: Vec<_> = restored
+            .online_devices()
+            .map(|p| p.device.clone())
+            .collect();
+        assert_eq!(online, vec![id("laptop")]);
+        assert!(restored.snapshots().contains_key(&id("tablet")));
     }
 
     #[test]

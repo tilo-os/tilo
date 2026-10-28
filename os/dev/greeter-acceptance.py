@@ -24,6 +24,8 @@ the output directory.
                         [--width W --height H]
   greeter-acceptance.py --check-image FILE.ppm [--png FILE.png]
                                                  judge one capture
+  greeter-acceptance.py --convert FILE.ppm --png FILE.png
+                                                 keep one capture as PNG
 
 Exit status: 0 accepted, 1 a check failed (reason on stderr), 2 unreachable.
 """
@@ -439,8 +441,15 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=800)
     parser.add_argument("--check-image")
+    parser.add_argument("--convert")
     parser.add_argument("--png")
     args = parser.parse_args(argv)
+    if args.convert:
+        if not args.png:
+            parser.error("--convert needs --png")
+        Image.read_ppm(Path(args.convert)).write_png(Path(args.png))
+        Path(args.convert).unlink()
+        return 0
     if args.check_image:
         try:
             image = Image.read_ppm(Path(args.check_image))

@@ -65,7 +65,6 @@ pub struct RollbackToken {
     pub version: u32,
     /// Generation this token belongs to.
     pub generation: u64,
-    /// NV index holding the rollback floor.
     pub nv_index: u32,
     /// Absolute `operandB` in the token's `TPM2_PolicyNV`: `base + generation`.
     pub nv_operand: u64,
@@ -158,11 +157,6 @@ impl RollbackToken {
     }
 
     /// The keyslot this token is bound to.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the token has no keyslot binding, or if the binding is not a
-    /// parseable number.
     pub fn keyslot(&self) -> Result<u32> {
         let first = self
             .keyslots
@@ -263,9 +257,6 @@ impl RollbackToken {
         Ok(())
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if serialisation fails (effectively unreachable for this type).
     pub fn to_json(&self) -> Result<String> {
         serde_json::to_string(self).context("serialising the rollback token")
     }
@@ -316,20 +307,17 @@ mod tests {
 
     #[test]
     fn tokens_round_trip_with_named_fields_and_reject_inconsistency() {
-        // Phase `round_trips_through_json`.
         {
             let t = sample();
             let j = t.to_json().unwrap();
             assert_eq!(RollbackToken::from_json(&j).unwrap(), t);
         }
-        // Phase `cryptsetup_required_fields_are_present_and_named_right`.
         {
             let j = sample().to_json().unwrap();
             let v: serde_json::Value = serde_json::from_str(&j).unwrap();
             assert_eq!(v["type"], "tilo-rollback");
             assert_eq!(v["keyslots"], serde_json::json!(["2"]));
         }
-        // Phase `blobs_decode_back_to_bytes`.
         {
             let t = sample();
             assert_eq!(t.decoded_public().unwrap(), b"pub");
@@ -339,24 +327,20 @@ mod tests {
             assert_eq!(p[0].approved_policy, b"ap");
             assert_eq!(p[0].signature, b"sig");
         }
-        // Phase `keyslot_is_parsed_from_the_string_form`.
         {
             assert_eq!(sample().keyslot().unwrap(), 2);
         }
-        // Phase `a_token_with_no_prediction_is_rejected`.
         {
             let mut t = sample();
             t.predictions.clear();
             assert!(t.validate().is_err());
         }
-        // Phase `an_inconsistent_operand_is_rejected`.
         {
             let mut t = sample();
             t.nv_operand = 999;
             let e = t.validate().unwrap_err().to_string();
             assert!(e.contains("internally inconsistent"), "{e}");
         }
-        // Phase `a_future_schema_version_is_rejected_not_guessed_at`.
         {
             let mut t = sample();
             t.version = TOKEN_VERSION + 1;

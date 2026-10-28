@@ -4,7 +4,6 @@ use super::{
     Authorization, NativeMessagingCredential, NativeMessagingIdentity, Owner, Route, SendError,
     SignalAuthority,
 };
-use accounts::person::PersonAccounts;
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -17,8 +16,6 @@ use tilo_messaging_protocol::{
     Service,
     routing::{LinkState, LiveBinding},
 };
-use tilo_resource::{Resource, SharedRecord};
-use ui::record::{RecordCheckout, RecordId, RecordKind, RecordOwners, RecordStore};
 use ui::time::{Duration, Instant};
 
 const CAPACITY: usize = 32;
@@ -26,35 +23,22 @@ const DEADLINE: Duration = Duration::from_secs(2);
 thread_local! {
     static OWNERS: RefCell<HashMap<uuid::Uuid, Weak<Records>>> = RefCell::new(HashMap::new());
 }
-struct Metadata {
-    store: RecordStore,
-    id: RecordId,
+#[cfg(test)]
+thread_local! {
+    static TEST_DEADLINE: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(None) };
 }
-impl Metadata {
-    fn existing<P: Resource + SharedRecord>(
-        owners: &mut RecordOwners,
-        principal: &str,
-    ) -> Result<Self, SendError> {
-        let store = owners
-            .open_person(
-                P::OWNER,
-                &ui::record::person::scope_of(&ui::permissions::UserId(principal.into())),
-            )
-            .map_err(|_| SendError::Unavailable)?;
-        let kind = RecordKind::new(P::KIND);
-        let id = ui::record::person::record_id(&kind);
-        // Existing-only admission deliberately has no WriterBusy replica fallback.
-        store
-            .try_open_record(&RecordCheckout::new(id.clone(), kind))
-            .map_err(|_| SendError::Unavailable)?;
-        Ok(Self { store, id })
+/// Owners opened later on this thread give workers `deadline` instead of the
+/// product bound, so a test that services every request never races it.
+#[cfg(test)]
+pub(crate) fn set_deadline_for_owners_opened_here(deadline: Duration) {
+    TEST_DEADLINE.with(|current| current.set(Some(deadline)));
+}
+fn deadline() -> Duration {
+    #[cfg(test)]
+    if let Some(deadline) = TEST_DEADLINE.with(std::cell::Cell::get) {
+        return deadline;
     }
-    fn read<P: Resource>(&self) -> Result<P::State, SendError> {
-        self.store
-            .read(&self.id, P::read)
-            .ok_or(SendError::Unavailable)?
-            .map_err(|_| SendError::Unavailable)
-    }
+    DEADLINE
 }
 enum Query {
     Account,
@@ -74,6 +58,7 @@ struct Port {
     thread: ThreadId,
     sender: mpsc::SyncSender<Request>,
     wake: crate::session_runtime::Wake,
+    deadline: Duration,
 }
 /// UI-affine lifetime retained by the native app host, not a protocol worker.
 pub(crate) trait RecordQueries {
@@ -89,32 +74,31 @@ pub(crate) trait RecordQueries {
 pub(crate) struct Records {
     principal: String,
     device: String,
-    directory: Metadata,
-    accounts: Metadata,
+    /// The person's records the session keeps, their accounts and contacts
+    /// among them.
+    person: crate::shell::settings_records::Holder,
     receiver: mpsc::Receiver<Request>,
     port: Arc<Port>,
 }
 impl Records {
     pub(crate) fn open(
-        owners: &mut RecordOwners,
         principal: &str,
         device: &str,
+        person: crate::shell::settings_records::Holder,
         wake: crate::session_runtime::Wake,
-    ) -> Result<Rc<dyn RecordQueries>, SendError> {
-        let directory = Metadata::existing::<ContactDirectory>(owners, principal)?;
-        let accounts = Metadata::existing::<PersonAccounts>(owners, principal)?;
+    ) -> Rc<dyn RecordQueries> {
         let (sender, receiver) = mpsc::sync_channel(CAPACITY);
         let owner = Rc::new(Self {
             principal: principal.into(),
             device: device.into(),
-            directory,
-            accounts,
+            person,
             receiver,
             port: Arc::new(Port {
                 id: uuid::Uuid::new_v4(),
                 thread: std::thread::current().id(),
                 sender,
                 wake,
+                deadline: deadline(),
             }),
         });
         OWNERS.with(|owners| {
@@ -123,7 +107,7 @@ impl Records {
             owners.insert(owner.port.id, Rc::downgrade(&owner));
             drop(owners);
         });
-        Ok(owner)
+        owner
     }
 }
 impl RecordQueries for Records {
@@ -180,7 +164,10 @@ impl Records {
         if owner.principal != self.principal || owner.device != self.device {
             return Err(SendError::Revoked);
         }
-        let accounts = self.accounts.read::<PersonAccounts>()?.store();
+        let accounts = self
+            .person
+            .read::<accounts::person::PersonAccounts, _>(accounts::person::PersonAccounts::store)
+            .map_err(|_| SendError::Unavailable)?;
         let service = match owner.service {
             Service::Signal => "signal",
             Service::Whatsapp => "whatsapp",
@@ -208,7 +195,10 @@ impl Records {
         if matches!(query, Query::Account) {
             return Ok(None);
         }
-        let directory = self.directory.read::<ContactDirectory>()?;
+        let directory = self
+            .person
+            .read::<ContactDirectory, _>(Clone::clone)
+            .map_err(|_| SendError::Unavailable)?;
         let sender = SenderAccount {
             id: tilo_resource::Id::from_raw(&owner.account),
             service: service.into(),
@@ -289,7 +279,7 @@ impl CurrentAuthority {
         }
         let (reply, answer) = mpsc::sync_channel(1);
         let expires = Instant::now()
-            .checked_add(DEADLINE)
+            .checked_add(self.port.deadline)
             .ok_or(SendError::Unavailable)?;
         self.port
             .sender
@@ -304,7 +294,7 @@ impl CurrentAuthority {
             .map_err(|_| SendError::Unavailable)?;
         (self.port.wake)();
         let result = answer
-            .recv_timeout(DEADLINE)
+            .recv_timeout(self.port.deadline)
             .map_err(|_| SendError::Unavailable)?;
         self.identity.check()?;
         self.credential.check()?;

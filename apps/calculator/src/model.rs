@@ -10,6 +10,9 @@ use ui::tilo_resource::{self, Model};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
     Calc,
+    /// Unit conversion: a quantity, two units and an amount. Offline, from a
+    /// fixed table ([`crate::convert`]).
+    Convert,
     Graph2d,
     Graph3d,
 }
@@ -18,6 +21,7 @@ impl Mode {
     pub fn label(self) -> &'static str {
         match self {
             Mode::Calc => "Calculator",
+            Mode::Convert => "Convert",
             Mode::Graph2d => "Graph 2D",
             Mode::Graph3d => "Graph 3D",
         }
@@ -26,36 +30,46 @@ impl Mode {
     pub fn short_label(self) -> &'static str {
         match self {
             Mode::Calc => "Calc",
+            Mode::Convert => "Conv",
             Mode::Graph2d => "2D",
             Mode::Graph3d => "3D",
         }
     }
-    pub fn all() -> [Mode; 3] {
-        [Mode::Calc, Mode::Graph2d, Mode::Graph3d]
+    pub fn all() -> [Mode; 4] {
+        [Mode::Calc, Mode::Graph2d, Mode::Graph3d, Mode::Convert]
     }
+    /// The mode's place in the bar's switcher. The three the app shipped with
+    /// keep their places, so a chord or a saved view that names them still
+    /// lands where it did.
     pub fn index(self) -> usize {
         match self {
             Mode::Calc => 0,
             Mode::Graph2d => 1,
             Mode::Graph3d => 2,
+            Mode::Convert => 3,
         }
     }
     pub fn from_index(i: usize) -> Mode {
         match i {
             1 => Mode::Graph2d,
             2 => Mode::Graph3d,
+            3 => Mode::Convert,
             _ => Mode::Calc,
         }
     }
     /// The graph list this mode plots, if it is a graph mode.
     pub fn graph(self) -> Option<GraphKind> {
         match self {
-            Mode::Calc => None,
+            Mode::Calc | Mode::Convert => None,
             Mode::Graph2d => Some(GraphKind::Curve2d),
             Mode::Graph3d => Some(GraphKind::Surface3d),
         }
     }
 }
+
+/// The amount a capture's conversion page shows: the conversion the audit
+/// asked a calculator to be able to answer.
+pub const CONVERT_DEMO_AMOUNT: &str = "40";
 
 /// One evaluated entry in the calculator history.
 #[derive(Model, Clone, Debug, PartialEq)]
@@ -271,6 +285,16 @@ impl CalcModel {
         if trimmed.is_empty() {
             return None;
         }
+        // "=" again on a result just shown changes nothing: recording it
+        // would add a row like "-0.26 = -0.26".
+        if self.after_equals
+            && self
+                .history
+                .first()
+                .is_some_and(|last| last.result == trimmed)
+        {
+            return None;
+        }
         if let Ok(v) = engine::evaluate(&trimmed, &self.ctx()) {
             let result = engine::format_number(v);
             let entry = HistoryEntry {
@@ -288,11 +312,6 @@ impl CalcModel {
             self.after_equals = false;
             None
         }
-    }
-
-    /// The currently-active 2D function expression, if any.
-    pub fn active_expr(&self) -> Option<&str> {
-        self.funcs.get(self.active_fn).map(|f| f.expr.as_str())
     }
 }
 
@@ -316,6 +335,22 @@ pub enum Key {
     MemSub,
     MemRecall,
     MemClear,
+    /// Switch the narrow keypad between its two named pages. Only present
+    /// where one page cannot hold every key; the app turns the press into
+    /// [`KeypadPage`] state.
+    Page(KeypadPage),
+}
+
+/// The two pages of the narrow keypad. A phone-width window cannot show every
+/// scientific key at once, so it shows one honest page at a time instead of
+/// silently dropping functions: the everyday number pad, or the function pad.
+/// A wide window shows the whole scientific pad and needs neither page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeypadPage {
+    /// Digits, operators, `=`, and the everyday editing keys.
+    Primary,
+    /// The scientific functions and constants the number pad leaves out.
+    Functions,
 }
 
 impl Key {
@@ -345,6 +380,8 @@ impl Key {
             Key::MemSub => "M−",
             Key::MemRecall => "MR",
             Key::MemClear => "MC",
+            Key::Page(KeypadPage::Primary) => "123",
+            Key::Page(KeypadPage::Functions) => "fx",
             Key::Wrap(_, _) => "x²",
             Key::Ins(s) => match *s {
                 "+" => "+",
@@ -395,7 +432,10 @@ impl Key {
             Key::Digit(_) | Key::Dot | Key::DoubleZero => KeyRole::Digit,
             Key::Equals => KeyRole::Equals,
             Key::Clear => KeyRole::Clear,
-            Key::Backspace | Key::Ins("+" | "-" | "*" | "/") => KeyRole::Operator,
+            // The page key is navigation, not a function: it gets the
+            // operator's lifted face so it reads as a place to go, not
+            // another symbol to insert.
+            Key::Backspace | Key::Ins("+" | "-" | "*" | "/") | Key::Page(_) => KeyRole::Operator,
             _ => KeyRole::Function,
         }
     }
@@ -443,9 +483,11 @@ impl KeypadLayout {
     /// * `< 680 px`  → [`Standard`](Self::Standard)
     /// * `>= 680 px` → [`Scientific`](Self::Scientific)
     pub fn for_width(width: f64) -> Self {
-        if width < 460.0 {
+        let compact = width < 460.0; // allow-breakpoint: re-chosen from the laid-out rect on every pass
+        let standard = width < 680.0; // allow-breakpoint: re-chosen from the laid-out rect on every pass
+        if compact {
             KeypadLayout::Compact
-        } else if width < 680.0 {
+        } else if standard {
             KeypadLayout::Standard
         } else {
             KeypadLayout::Scientific
@@ -461,28 +503,43 @@ impl KeypadLayout {
         }
     }
 
-    /// The row-major key list for this layout. Each layout is a dense grid of
-    /// `cols()` columns.
+    /// The row-major key list for this layout's first page. Each layout is a
+    /// dense grid of `cols()` columns.
     pub fn keys(self) -> Vec<Key> {
-        match self {
-            KeypadLayout::Compact => Self::compact_keys(),
-            KeypadLayout::Standard => Self::standard_keys(),
-            KeypadLayout::Scientific => Self::scientific_keys(),
+        self.keys_on(KeypadPage::Primary)
+    }
+
+    /// The row-major key list for `page`. Only the compact layout pages its
+    /// keys: the wider layouts already show every key and ignore the page.
+    pub fn keys_on(self, page: KeypadPage) -> Vec<Key> {
+        match (self, page) {
+            (KeypadLayout::Compact, KeypadPage::Functions) => Self::compact_function_keys(),
+            (KeypadLayout::Compact, KeypadPage::Primary) => Self::compact_keys(),
+            (KeypadLayout::Standard, _) => Self::standard_keys(),
+            (KeypadLayout::Scientific, _) => Self::scientific_keys(),
         }
     }
 
-    /// 4 cols × 6 rows — the everyday essentials.
+    /// Whether this layout has more keys than one page can show, so the
+    /// keypad offers its second page.
+    pub fn pages(self) -> bool {
+        self == KeypadLayout::Compact
+    }
+
+    /// 4 cols × 6 rows — the everyday essentials, and the door to the
+    /// function page. Every key the pad leaves out is on that page, so
+    /// narrowing the window changes the arrangement, never the capability.
     fn compact_keys() -> Vec<Key> {
-        use Key::{Backspace, Clear, Digit, Dot, Equals, Ins};
+        use Key::{Ans, Backspace, Clear, Digit, Dot, Equals, Ins, Page, Percent, ToggleSign};
         vec![
             Clear,
             Backspace,
             Ins("("),
             Ins(")"),
-            Ins("sin("),
-            Ins("cos("),
-            Ins("^"),
-            Ins("sqrt("),
+            Percent,
+            ToggleSign,
+            Ans,
+            Page(KeypadPage::Functions),
             Digit('7'),
             Digit('8'),
             Digit('9'),
@@ -499,6 +556,44 @@ impl KeypadLayout {
             Dot,
             Equals,
             Ins("+"),
+        ]
+    }
+
+    /// 4 cols × 7 rows — the function page. It holds every scientific key
+    /// the number page leaves out, plus the `123` key back to it. Named by
+    /// its key and announced as the second keypad page, so it is a place a
+    /// person can find, not a drawer of leftovers.
+    fn compact_function_keys() -> Vec<Key> {
+        use Key::{Ans, DoubleZero, Ins, Page, Wrap};
+        vec![
+            Page(KeypadPage::Primary),
+            Ins("sin("),
+            Ins("cos("),
+            Ins("tan("),
+            Ins("pi"),
+            Ins("e"),
+            Ins("asin("),
+            Ins("acos("),
+            Ins("atan("),
+            Ins("sinh("),
+            Ins("cosh("),
+            Ins("tanh("),
+            Ins("ln("),
+            Ins("log10("),
+            Ins("exp("),
+            Ins("sqrt("),
+            Wrap("(", ")^2"),
+            Ins("^"),
+            Ins("1/("),
+            Ins("abs("),
+            Ins("mod("),
+            Ins("!"),
+            Ins("root("),
+            Ins("int("),
+            Ins("gamma("),
+            DoubleZero,
+            Ans,
+            Ins(","),
         ]
     }
 
@@ -661,6 +756,8 @@ pub fn apply_key(m: &mut CalcModel, key: &Key) {
             }
             m.after_equals = false;
         }
+        // The page key is presentation: the screen owns which page shows.
+        Key::Page(_) => {}
         Key::MemAdd => {
             if let Ok(v) = engine::evaluate(&m.expr, &m.ctx()) {
                 m.memory += v;
@@ -747,6 +844,14 @@ mod tests {
             assert_eq!(m.history[0].result, "5");
             assert_eq!(m.expr, "5");
             assert!(m.after_equals);
+            // "=" again on the result shown records nothing more.
+            assert!(m.commit_equals().is_none());
+            assert_eq!(m.history.len(), 1);
+            // sin(π) is exactly 0 on the display and in the history.
+            m.expr = "sin(pi)".into();
+            m.after_equals = false;
+            m.commit_equals();
+            assert_eq!(m.history[0].result, "0");
         }
 
         // phase digit_after_equals_starts_fresh
@@ -870,6 +975,23 @@ mod tests {
                     "{layout:?} missing backspace"
                 );
             }
+        }
+    }
+    /// The narrow pad's two pages together hold every key the wide pad shows:
+    /// narrowing changes the arrangement, never the capability.
+    #[test]
+    fn compact_pages_together_hold_every_scientific_key() {
+        let mut reachable = std::collections::HashSet::new();
+        for page in [KeypadPage::Primary, KeypadPage::Functions] {
+            let keys = KeypadLayout::Compact.keys_on(page);
+            assert_eq!(keys.len() % KeypadLayout::Compact.cols(), 0);
+            reachable.extend(keys.iter().map(|key| format!("{key:?}")));
+        }
+        for key in KeypadLayout::Scientific.keys() {
+            assert!(
+                reachable.contains(&format!("{key:?}")),
+                "the narrow pages cannot reach {key:?}"
+            );
         }
     }
 }

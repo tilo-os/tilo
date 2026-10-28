@@ -53,8 +53,8 @@ type = "gui"
 
 | Field       | Required | Notes                                                                                            |
 | ----------- | -------- | ------------------------------------------------------------------------------------------------ |
-| `identity`  | yes      | `ed25519:<64-hex>` — the publisher's Ed25519 public key. When `tilo-app-package pack` generates a fresh keypair (no `--identity`), it overwrites whatever was here with the generated public key. |
-| `signature` | no       | Hex-encoded 64-byte signature. Empty at author time; filled by `tilo-app-package pack` / `tilo-app-package sign`.  |
+| `identity`  | yes      | `ed25519:<64-hex>` — the publisher's Ed25519 public key. When `tilo package pack` generates a fresh keypair (no `--identity`), it overwrites whatever was here with the generated public key. |
+| `signature` | no       | Hex-encoded 64-byte signature. Empty at author time; filled by `tilo package pack` / `tilo package sign`.  |
 
 #### `[trust]`
 
@@ -195,7 +195,7 @@ Only meaningful when the entrypoint's `type` is `cli` or `both`. See
 commands = ["notes", "notes-import"]
 ```
 
-At install time `tilo-install install` drops a `tilo-cli-shim` copy under
+At install time `tilo app install` drops a `tilo-cli-shim` copy under
 `~/.local/share/tilo-apps/bin/<command>` for each entry.
 
 #### `[providers]`
@@ -219,7 +219,7 @@ nothing else claims.
 
 #### `[target]` — written by the packer
 
-Authors never write this block. `tilo-app-package pack-desktop --platform
+Authors never write this block. `tilo package pack-desktop --platform
 linux|windows|macos --arch x86_64|aarch64` (and `tilo-app package` for
 Android) writes it for a build for another system. Those systems ship no
 toolkit, so the package is one self-contained executable at `bin/<name>`;
@@ -240,12 +240,12 @@ module = "bin/books"
 
 ### Validation
 
-`tilo-app-package pack` calls
+`tilo package pack` calls
 `validate_manifest_with_payload` before writing anything, which enforces:
 
 - `sandbox.fs.read` and `sandbox.fs.write` are empty. Checked first, so a
   package that still declares paths reads that error rather than a semver
-  nit four lines down. `tilo-install install` runs the same check, and the
+  nit four lines down. `tilo app install` runs the same check, and the
   launcher refuses again at launch.
 - `package.version` is semver.
 - `package.runtime` is `<name>/<version>` with a semver or calver version, and
@@ -298,7 +298,7 @@ deployed Tilo) lives in an `iroh-blobs` store with chunk-level dedup. Adding
 gzip over that adds CPU cost without improving deduplication.
 
 The `PackageId` is `blake3(signed-root-bytes)`. It is the `tapp:<hex>` URL
-you see in `tilo-app-package inspect`.
+you see in `tilo package inspect`.
 
 ## `tilo-app-package` — the CLI
 
@@ -320,7 +320,7 @@ Commands:
 ### `pack`
 
 ```
-tilo-app-package pack --manifest <toml> --payload <dir> --output <tapp> [--identity <json>]
+tilo package pack --manifest <toml> --payload <dir> --output <tapp> [--identity <json>]
 ```
 
 - Reads `--manifest` and `--payload/**`.
@@ -332,7 +332,7 @@ tilo-app-package pack --manifest <toml> --payload <dir> --output <tapp> [--ident
 Example run against the demo project:
 
 ```
-$ tilo-app-package pack \
+$ tilo package pack \
     --manifest /tmp/tilo-hello-demo/manifest.toml \
     --payload  /tmp/tilo-hello-demo/payload \
     --output   /tmp/tilo-hello-demo/tilo-hello.tapp
@@ -350,7 +350,7 @@ The `--identity` file is JSON:
 Re-sign an existing `.tapp` with a different identity. Fails unless the
 identity's public key matches the `.tapp`'s embedded publisher identity —
 this command is for detached signing flows (e.g. an offline HSM signed
-what `tilo-app-package pack --identity dummy.json` produced), not for identity
+what `tilo package pack --identity dummy.json` produced), not for identity
 substitution.
 
 ### `verify`
@@ -358,7 +358,7 @@ substitution.
 Every cryptographic invariant. On the demo bundle:
 
 ```
-$ tilo-app-package verify /tmp/tilo-hello-demo/tilo-hello.tapp
+$ tilo package verify /tmp/tilo-hello-demo/tilo-hello.tapp
 ok: tapp:b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3 verifies and publisher is trusted
 ```
 
@@ -375,7 +375,7 @@ the embedded publisher key. Exit code:
 Human-readable dump of everything but the payload contents:
 
 ```
-$ tilo-app-package inspect /tmp/tilo-hello-demo/tilo-hello.tapp
+$ tilo package inspect /tmp/tilo-hello-demo/tilo-hello.tapp
 package-id: tapp:b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3
 manifest-hash: blake3:774d5714edfb4734e3f158e5e74aa5a8aeb34aab98ae21ef675894a578dbb312
 payload-root-hash: blake3:55ab8b6bdeb4e85d7fd37e975914278f67347056414d3e489aaaad4a1b4de2ee
@@ -394,7 +394,7 @@ runtime = "tilo-runtime/2026.07"
 ### `unpack`
 
 ```
-tilo-app-package unpack --dest <dir> <tapp>
+tilo package unpack --dest <dir> <tapp>
 ```
 
 Writes the payload tree into `--dest` and drops a copy of `manifest.toml`

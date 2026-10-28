@@ -318,7 +318,6 @@ mod tests {
 
     #[test]
     fn speculation_is_gated_and_budgeted() {
-        // Phase `every_runtime_gate_blocks_speculation`.
         {
             let base = PredictivePolicy::default();
             for policy in [
@@ -348,7 +347,6 @@ mod tests {
                 assert!(pending.is_empty());
             }
         }
-        // Phase `aggregate_byte_budget_and_duplicate_hashes_are_bounded`.
         {
             let policy = PredictivePolicy {
                 max_queued_bytes: 10,
@@ -420,9 +418,9 @@ mod tests {
         let heuristics = Heuristics::new(hydrator);
         assert!(!heuristics.take_opened(), "nothing was opened yet");
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), heuristics.opened())
-                .await
-                .is_err(),
+            std::pin::pin!(heuristics.opened())
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+                .is_pending(),
             "an idle mount does not wake the monitor"
         );
         heuristics.on_open(7, Vec::new());

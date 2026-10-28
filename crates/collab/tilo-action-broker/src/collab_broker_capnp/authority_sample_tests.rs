@@ -161,7 +161,7 @@ fn owned_room() -> (DesktopTree, String) {
             completed_at: 0,
         })
         .collect();
-    let room = workspace.room.to_string();
+    let room = workspace.room().to_string();
     let tree = DesktopTree {
         active: WorkspaceId(91),
         workspaces: vec![workspace],
@@ -182,6 +182,8 @@ fn write_surface(room: &str) -> PublishedSurface {
             resource_kind: "test.block".into(),
             resource_label: "Block".into(),
             action_label: "Update".into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             operation_kind: tilo_actions::OperationKind::Effect,
             params: Vec::new(),
@@ -327,6 +329,8 @@ impl WideDirectory {
             resource_kind: "workspace".into(),
             resource_label: "Atlas".into(),
             action_label: "Open Atlas".into(),
+            keywords: Vec::new(),
+            icon: None,
             description: None,
             operation_kind: tilo_actions::OperationKind::View,
             params: Vec::new(),

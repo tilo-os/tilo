@@ -326,10 +326,14 @@ fn sdk_lazy_directory_queue_rejects_retained_capacity_before_rpc() {
 }
 
 fn pending_directory_rpc_releases_lane(method: &'static str) {
-    if method == "invoke" {
-        super::directory_client::set_test_admission_timeout(Duration::from_secs(2));
-    }
     let (mut manager, captures, thread) = directory_manager(false);
+    if method == "invoke" {
+        // This session alone gives up on admission early; others in the
+        // process (a slow admission's) keep the production bound.
+        broker_state(&manager)
+            .admission_timeout_ms
+            .store(2_000, std::sync::atomic::Ordering::Release);
+    }
     captures.lock().unwrap().directory.pending_method = Some(method);
     let request = match method {
         "query" => CollabRequest::QueryActionDirectory {

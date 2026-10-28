@@ -38,6 +38,16 @@ use crate::device_read::Reading;
 use crate::host::PaneCx;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
+use settings_store::desktop_control::TabGrantEntry;
+
+crate::effects::effect_family!(PermissionsEffect => answer);
+
+crate::area::pane_area!(PermissionsArea);
+
+/// The window's [`PermissionsArea`].
+pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&PermissionsArea> {
+    app.areas().find()
+}
 
 /// Where Privacy & Security sends the person to change what it reports.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
@@ -47,12 +57,7 @@ pub enum PermissionsEffect {
     #[effect(job, label = "Open workspace privacy")]
     OpenWorkspacePrivacy,
     /// Let an application use the saved passwords and keys again, or stop it.
-    #[effect(
-        job,
-        idempotent,
-        device_only,
-        label = "Set an app's access to saved secrets"
-    )]
+    #[effect(job, idempotent, label = "Set an app's access to saved secrets")]
     SetSecretsAccess {
         #[param("The application identity the secret store recorded")]
         app: String,
@@ -60,10 +65,16 @@ pub enum PermissionsEffect {
         allowed: bool,
     },
     /// Remove an application's saved secrets and its record.
-    #[effect(job, device_only, label = "Forget an app's saved secrets")]
+    #[effect(job, label = "Forget an app's saved secrets")]
     ForgetSecrets {
         #[param("The application identity the secret store recorded")]
         app: String,
+    },
+    /// Stop a terminal tab controlling the desktop beyond its workspace.
+    #[effect(job, label = "Stop a tab controlling the desktop")]
+    StopDesktopControl {
+        #[param("The grant, as the desktop listed it")]
+        grant: String,
     },
 }
 
@@ -77,17 +88,25 @@ pub(crate) fn answer(
     match effect {
         PermissionsEffect::SetSecretsAccess { app: id, allowed } => {
             let verb = if allowed { "allow" } else { "revoke" };
-            Ok(secret_command(
-                app,
+            secret_command(app, cx, vec!["apps".into(), verb.into(), id])
+        }
+        PermissionsEffect::ForgetSecrets { app: id } => {
+            secret_command(app, cx, vec!["apps".into(), "forget".into(), id])
+        }
+        PermissionsEffect::StopDesktopControl { grant } => {
+            let reader = Arc::clone(&area(app).ok_or_else(crate::area::missing)?.reader);
+            Ok(crate::device_read::job(
                 cx,
-                vec!["apps".into(), verb.into(), id],
+                move || reader.stop_desktop_control(&grant),
+                |app: &mut SettingsApp, done: Result<(), String>, _| {
+                    area(app)
+                        .ok_or_else(crate::area::missing)?
+                        .reading
+                        .refresh();
+                    done.map(|()| Effected::done())
+                },
             ))
         }
-        PermissionsEffect::ForgetSecrets { app: id } => Ok(secret_command(
-            app,
-            cx,
-            vec!["apps".into(), "forget".into(), id],
-        )),
         PermissionsEffect::OpenWorkspacePrivacy => {
             if !app.host().reaches_devices() {
                 return Err("only a window someone uses opens workspace settings".into());
@@ -95,9 +114,12 @@ pub(crate) fn answer(
             Ok(crate::device_read::job(
                 cx,
                 move || {
-                    os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
-                        route: os_actions::WorkspaceSettingsRoute::PrivacySecurity,
-                    })
+                    os_actions::open_tool(
+                        os_actions::ToolIntent::WorkspaceSettings {
+                            route: os_actions::WorkspaceSettingsRoute::PrivacySecurity,
+                        },
+                        None,
+                    )
                 },
                 |_: &mut SettingsApp, opened: Result<(), String>, _| {
                     opened.map(|()| Effected::done())
@@ -109,7 +131,7 @@ pub(crate) fn answer(
 
 /// Tilo's Secret Service, which keeps the saved passwords and keys of every
 /// application and records which applications used it.
-const SECRET_SERVICE: &str = "/usr/bin/tilo-secret-service";
+const SECRET_SERVICE: &str = "/usr/libexec/tilo/tilo-secret-service";
 
 /// Run `tilo-secret-service args…` off the UI thread, then read the store
 /// again (off the UI thread too) so the pane shows what it took.
@@ -117,16 +139,23 @@ fn secret_command(
     app: &SettingsApp,
     cx: &mut EffectCx<Settings, SettingsApp>,
     args: Vec<String>,
-) -> Effected {
-    let reader = Arc::clone(&app.permissions().reader);
-    crate::device_read::job(
+) -> EffectAnswer {
+    let reader = Arc::clone(
+        &crate::panes::permissions::area(app)
+            .ok_or_else(crate::area::missing)?
+            .reader,
+    );
+    Ok(crate::device_read::job(
         cx,
         move || reader.secret_command(&args),
         |app: &mut SettingsApp, done: Result<(), String>, _| {
-            app.permissions().reading.refresh();
+            crate::panes::permissions::area(app)
+                .ok_or_else(crate::area::missing)?
+                .reading
+                .refresh();
             done.map(|()| Effected::done())
         },
-    )
+    ))
 }
 
 /// What Privacy & Security reads of the device and the secret store. Every
@@ -143,6 +172,14 @@ trait PermissionsReader: Send + Sync {
     /// Change what the secret store lets an application use
     /// (`apps allow|revoke|forget <id>`).
     fn secret_command(&self, args: &[String]) -> Result<(), String>;
+    /// The terminal tabs the desktop lets control it beyond their
+    /// workspace right now.
+    fn desktop_control(&self) -> Vec<TabGrantEntry>;
+    /// Ask the desktop to stop one of [`Self::desktop_control`].
+    fn stop_desktop_control(&self, grant: &str) -> Result<(), String>;
+    /// The workspace tree the desktop persisted (`state.json`), whose
+    /// workspaces hold the lasting grants; `None` when there is none.
+    fn workspace_state(&self) -> Option<String>;
 }
 
 /// This device and its secret store.
@@ -169,6 +206,24 @@ impl PermissionsReader for SystemPermissions {
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         command_output(SECRET_SERVICE, &args).map(|_| ())
     }
+
+    fn desktop_control(&self) -> Vec<TabGrantEntry> {
+        crate::device_read::off_ui_thread();
+        settings_store::desktop_control::DesktopControlSnapshot::load()
+            .map(|snapshot| snapshot.tabs)
+            .unwrap_or_default()
+    }
+
+    fn stop_desktop_control(&self, grant: &str) -> Result<(), String> {
+        settings_store::desktop_control::StopRequest::request(grant)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    fn workspace_state(&self) -> Option<String> {
+        crate::device_read::off_ui_thread();
+        load_text()
+    }
 }
 
 /// What a capture or a test shows in place of this device: a protected
@@ -176,6 +231,7 @@ impl PermissionsReader for SystemPermissions {
 /// controls change.
 struct SamplePermissions {
     secrets: Mutex<Vec<SecretApp>>,
+    desktop_control: Mutex<Vec<TabGrantEntry>>,
 }
 
 impl Default for SamplePermissions {
@@ -197,6 +253,13 @@ impl Default for SamplePermissions {
                     items: 1,
                 },
             ]),
+            desktop_control: Mutex::new(vec![TabGrantEntry {
+                id: "4242:17".into(),
+                app: "so.tilo.terminal".into(),
+                app_label: "Terminal".into(),
+                tab: "claude".into(),
+                workspace: "Home".into(),
+            }]),
         }
     }
 }
@@ -258,15 +321,66 @@ impl PermissionsReader for SamplePermissions {
         drop(secrets);
         Ok(())
     }
+
+    fn desktop_control(&self) -> Vec<TabGrantEntry> {
+        crate::device_read::off_ui_thread();
+        self.desktop_control
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn stop_desktop_control(&self, grant: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
+        let mut tabs = self
+            .desktop_control
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let before = tabs.len();
+        tabs.retain(|tab| tab.id != grant);
+        let stopped = tabs.len() < before;
+        drop(tabs);
+        if stopped {
+            Ok(())
+        } else {
+            Err(format!("no tab grant `{grant}`"))
+        }
+    }
+
+    /// A workspace whose Terminal may always control the desktop, beside
+    /// the camera an app was let use.
+    fn workspace_state(&self) -> Option<String> {
+        crate::device_read::off_ui_thread();
+        let caps = [
+            (
+                "so.tilo.terminal",
+                Scope::Device("desktop-control".into()),
+                Access::Write,
+            ),
+            (
+                "so.tilo.camera",
+                Scope::Device("camera".into()),
+                Access::Read,
+            ),
+        ]
+        .map(|(app, scope, access)| CapOverride::grant(Subject::app(app), scope, access));
+        let caps = serde_json::to_string(&caps).ok()?;
+        Some(format!(
+            r#"{{"workspaces":[{{"name":"Home","sandbox":{caps}}}]}}"#
+        ))
+    }
 }
 
-/// What Privacy & Security last read: everything it shows but the
-/// workspace grants, which are one small file read when the pane opens.
+/// What Privacy & Security last read.
 #[derive(Clone)]
 struct PermissionsReading {
     privacy: os_actions::PrivacyStatus,
     security: DeviceSecurity,
     secrets: Result<Vec<SecretApp>, String>,
+    desktop_control: Vec<TabGrantEntry>,
+    /// The workspace grants the desktop's `state.json` holds; `None` when
+    /// it could not be read or parsed.
+    workspace_access: Option<Vec<WsGrants>>,
 }
 
 impl PermissionsReading {
@@ -275,6 +389,8 @@ impl PermissionsReading {
             privacy: reader.privacy(),
             security: reader.device_security(),
             secrets: reader.secret_apps(),
+            desktop_control: reader.desktop_control(),
+            workspace_access: workspace_access(reader.workspace_state().as_deref()),
         }
     }
 }
@@ -395,6 +511,48 @@ fn secrets_card(cx: &PaneCx, apps: &Result<Vec<SecretApp>, String>) -> SettingsS
         }
     }
     section(&title, rows(body))
+}
+
+/// The terminal tabs the desktop lets control it beyond their workspace,
+/// "for this tab": each until its tab closes, each with Stop. "Always"
+/// grants are workspace grants and are listed with them below.
+fn desktop_control_card(cx: &PaneCx, tabs: &[TabGrantEntry]) -> SettingsSection {
+    let mut body: Vec<Item> = vec![note(&t("perm-desktop-control-intro"))];
+    if tabs.is_empty() {
+        body.push(note(&t("perm-desktop-control-none")));
+    }
+    for tab in tabs {
+        let title = t_args(
+            "perm-desktop-control-tab",
+            &[
+                ("app", tab.app_label.clone().into()),
+                ("tab", tab.tab.clone().into()),
+            ],
+        );
+        let mut details = vec![t("perm-desktop-control-until-closes")];
+        if !tab.workspace.is_empty() {
+            details.push(t_args(
+                "perm-desktop-control-workspace",
+                &[("workspace", tab.workspace.clone().into())],
+            ));
+        }
+        let stop = cx.bind_invocation(
+            Button::new(
+                &format!("desktop-control-stop:{}", tab.id),
+                &t("perm-desktop-control-stop"),
+            ),
+            PermissionsEffect::StopDesktopControl {
+                grant: tab.id.clone(),
+            },
+        );
+        body.push(row(Box::new(thing_row(
+            &format!("desktop-control:{}", tab.id),
+            &title,
+            &details,
+            Some(Box::new(stop)),
+        ))));
+    }
+    section(&t("perm-desktop-control-title"), rows(body))
 }
 
 /// The compositor's persisted workspace tree, beside `settings.json`.
@@ -583,6 +741,7 @@ impl Tint {
 }
 
 /// One capability an app holds, projected into display terms.
+#[derive(Clone)]
 struct CapView {
     kind: &'static str,
     detail: String,
@@ -591,12 +750,14 @@ struct CapView {
 }
 
 /// One app's grants within a workspace.
+#[derive(Clone)]
 struct AppGrants {
     app: String,
     caps: Vec<CapView>,
 }
 
 /// One workspace and the app grants it holds.
+#[derive(Clone)]
 struct WsGrants {
     name: String,
     apps: Vec<AppGrants>,
@@ -616,7 +777,7 @@ fn expiry_label(e: Expiry) -> &'static str {
 fn lifetime_label(lifetime: &Lifetime) -> &'static str {
     match lifetime {
         Lifetime::UntilRevoked => "Always",
-        Lifetime::Until(_) | Lifetime::Task(_) => "Temporary",
+        Lifetime::Until(_) => "Temporary",
         Lifetime::Session(_) => "Until log out",
         Lifetime::Once => "Once",
     }
@@ -638,6 +799,7 @@ fn kind_shown(english: &str) -> String {
         "Microphone" => "perm-kind-mic",
         "Screen sharing" => "perm-kind-screen",
         "Remote control" => "perm-kind-remote",
+        "Desktop control" => "perm-kind-desktop-control",
         "Network" => "perm-kind-network",
         _ => "perm-kind-action",
     })
@@ -669,6 +831,9 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
         }
         Scope::Device(d) if d == "remote-desktop" => {
             ("Remote control", t("perm-inject-input"), Tint::Remote)
+        }
+        Scope::Device(d) if d == "desktop-control" => {
+            ("Desktop control", t("perm-desktop-control"), Tint::Remote)
         }
         Scope::NetHost(h) => {
             let detail = if h == "*" {
@@ -822,9 +987,9 @@ pub struct PermissionsPane {
     reading_seen: u64,
     /// What the device reported; `None` while it is first read.
     shown: Option<PermissionsReading>,
-    /// The workspace grants `state.json` holds; `None` when it could not
-    /// be read or parsed.
-    workspace_access: Option<Vec<WsGrants>>,
+    /// The watch on the desktop's live "this tab" grants, so one that
+    /// starts or ends shows at once; `None` for a capture's sample device.
+    desktop_control_watch: Option<crate::watch::Watched>,
     composed: ui::widget::Composed,
 }
 
@@ -833,27 +998,42 @@ impl PermissionsPane {
     /// reads it again off the UI thread.
     pub fn new(cx: PaneCx, area: &PermissionsArea) -> Self {
         area.reading.refresh();
+        let desktop_control_watch = cx.reaches_devices().then(|| {
+            let snapshot: Vec<PathBuf> = settings_store::desktop_control::snapshot_path()
+                .into_iter()
+                .collect();
+            let watch = crate::watch::Watched::files(&snapshot);
+            // It starts flagged; the reading just asked for covers that.
+            let _ = watch.take();
+            watch
+        });
         Self {
             cx,
             reading_seen: area.reading.revision(),
             shown: area.reading.get(),
             reading: area.reading.clone(),
-            workspace_access: workspace_access(load_text().as_deref()),
+            desktop_control_watch,
             composed: ui::widget::Composed::default(),
         }
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        panel(
-            &self.cx,
-            self.workspace_access.as_deref(),
-            self.shown.as_ref(),
-        )
+        let workspace_access = self.shown.as_ref().map_or(Grants::Reading, |reading| {
+            Grants::Read(reading.workspace_access.as_deref())
+        });
+        panel(&self.cx, workspace_access, self.shown.as_ref())
     }
 }
 
 impl Widget for PermissionsPane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        if self
+            .desktop_control_watch
+            .as_ref()
+            .is_some_and(crate::watch::Watched::take)
+        {
+            self.reading.refresh();
+        }
         let revision = self.reading.revision();
         if revision != self.reading_seen {
             self.reading_seen = revision;
@@ -1024,7 +1204,11 @@ fn workspace_access(state_json: Option<&str>) -> Option<Vec<WsGrants>> {
 /// document, so tests exercise it without touching the real config dir.
 #[cfg(test)]
 fn build_view(cx: &PaneCx, state_json: Option<&str>) -> Box<dyn Widget> {
-    panel(cx, workspace_access(state_json).as_deref(), None)
+    panel(
+        cx,
+        Grants::Read(workspace_access(state_json).as_deref()),
+        None,
+    )
 }
 
 /// A device card whose reading has not landed yet.
@@ -1032,11 +1216,20 @@ fn reading_card(title: &str) -> SettingsSection {
     section(&t(title), rows(vec![note(&t("perm-reading"))]))
 }
 
+/// The workspace grants as the pane shows them.
+#[derive(Clone, Copy)]
+enum Grants<'a> {
+    /// Still being read.
+    Reading,
+    /// Read: `None` when `state.json` could not be read or parsed.
+    Read(Option<&'a [WsGrants]>),
+}
+
 /// Every card of the pane, from the workspace grants and what the device
 /// last reported (`None`: it is still being read).
 fn panel(
     cx: &PaneCx,
-    workspace_access: Option<&[WsGrants]>,
+    workspace_access: Grants<'_>,
     reading: Option<&PermissionsReading>,
 ) -> Box<dyn Widget> {
     let mut panel: Vec<SettingsSection> = vec![scope_card()];
@@ -1045,21 +1238,25 @@ fn panel(
         panel.push(active_privacy_use_card(&reading.privacy));
         panel.push(device_security_card(&reading.security));
         panel.push(secrets_card(cx, &reading.secrets));
+        panel.push(desktop_control_card(cx, &reading.desktop_control));
     } else {
         panel.push(reading_card("perm-privacy-hardware"));
         panel.push(reading_card("perm-active-use"));
         panel.push(reading_card("perm-device-security"));
         panel.push(reading_card("perm-secrets-title"));
+        panel.push(reading_card("perm-desktop-control-title"));
     }
     panel.push(workspace_grants_intro_card(cx));
 
     match workspace_access {
-        Some([]) => panel.push(no_workspace_grants_card()),
-        Some(all) => {
+        Grants::Read(Some([])) => panel.push(no_workspace_grants_card()),
+        Grants::Read(Some(all)) => {
             let total = grant_count(all);
             push_workspace_grant_cards(&mut panel, all, total);
         }
-        None => panel.push(workspace_grants_unavailable_card()),
+        Grants::Read(None) => panel.push(workspace_grants_unavailable_card()),
+        // The intro card above stands alone until they are read.
+        Grants::Reading => {}
     }
 
     panel.push(enforcement_card());
@@ -1132,21 +1329,59 @@ mod tests {
         assert!(said.contains(&t("perm-secrets-unavailable")));
     }
 
-    /// A device whose commands and services do not answer until let go (or
-    /// ten seconds pass), as firewalld behind a stalled system bus or a
-    /// secret store that waits for its unlock prompt.
-    struct StalledReader(Arc<(Mutex<bool>, std::sync::Condvar)>);
+    /// A terminal tab let control the desktop is listed with its app, its
+    /// tab, how long it lasts and where it was asked from, with Stop; once
+    /// stopped it is gone, and none says so.
+    #[test]
+    fn each_tab_that_controls_the_desktop_is_listed_with_stop() {
+        let sample = SamplePermissions::default();
+        let tabs = sample.desktop_control();
+        let mut card = page(vec![desktop_control_card(&cx(), &tabs)]);
+        build_layout_of(&mut card);
+        let mut labels = Vec::new();
+        button_labels(card.as_ref(), &mut labels);
+        assert_eq!(labels, vec![t("perm-desktop-control-stop")]);
+        let mut said = Vec::new();
+        text_labels(card.as_ref(), &mut said);
+        row_speech(card.as_ref(), &mut said);
+        let joined = said.join(" | ");
+        let named = t_args(
+            "perm-desktop-control-tab",
+            &[("app", "Terminal".into()), ("tab", "claude".into())],
+        );
+        let from = t_args(
+            "perm-desktop-control-workspace",
+            &[("workspace", "Home".into())],
+        );
+        assert!(joined.contains(&named), "{joined}");
+        assert!(
+            joined.contains(&t("perm-desktop-control-until-closes")),
+            "{joined}"
+        );
+        assert!(joined.contains(&from), "{joined}");
+
+        let grant = tabs.first().map(|tab| tab.id.clone()).unwrap_or_default();
+        std::thread::spawn(move || {
+            sample.stop_desktop_control(&grant).expect("stopped");
+            assert!(sample.desktop_control().is_empty());
+        })
+        .join()
+        .expect("off the UI thread");
+        let mut none = page(vec![desktop_control_card(&cx(), &[])]);
+        build_layout_of(&mut none);
+        let mut said = Vec::new();
+        text_labels(none.as_ref(), &mut said);
+        assert!(said.contains(&t("perm-desktop-control-none")));
+    }
+
+    /// A device whose commands and services do not answer until let go, as
+    /// firewalld behind a stalled system bus or a secret store that waits
+    /// for its unlock prompt.
+    struct StalledReader(Arc<crate::stall::Stall>);
 
     impl StalledReader {
         fn wait(&self) {
-            let (open, released) = &*self.0;
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            let mut open = open.lock().unwrap();
-            while !*open && std::time::Instant::now() < deadline {
-                let left = deadline.saturating_duration_since(std::time::Instant::now());
-                open = released.wait_timeout(open, left).unwrap().0;
-            }
-            drop(open);
+            self.0.wait();
         }
     }
 
@@ -1167,6 +1402,18 @@ mod tests {
             self.wait();
             SamplePermissions::default().secret_command(args)
         }
+        fn desktop_control(&self) -> Vec<TabGrantEntry> {
+            self.wait();
+            SamplePermissions::default().desktop_control()
+        }
+        fn stop_desktop_control(&self, grant: &str) -> Result<(), String> {
+            self.wait();
+            SamplePermissions::default().stop_desktop_control(grant)
+        }
+        fn workspace_state(&self) -> Option<String> {
+            self.wait();
+            SamplePermissions::default().workspace_state()
+        }
     }
 
     /// Opening Privacy & Security while the device takes its time is
@@ -1176,38 +1423,35 @@ mod tests {
     fn a_stalled_device_read_never_holds_privacy_and_security() {
         ui::i18n::I18nManager::init("en-US");
         let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
-        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
         app.with_widget::<SettingsApp, _>(move |settings| {
-            settings.set_permissions(PermissionsArea::over(Arc::new(StalledReader(stalled))));
+            settings.replace_area(PermissionsArea::over(Arc::new(StalledReader(stalled))));
         })
         .expect("the Settings window is mounted");
-        // Tall enough that every card of the pane is laid out and inspected.
         app.harness().resize((1280, 4096)).unwrap();
 
-        let clicked = std::time::Instant::now();
         crate::effects::show_pane(&mut app, crate::categories::Category::Permissions);
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        let answered = clicked.elapsed();
-        assert!(
-            answered < std::time::Duration::from_secs(1),
-            "opening the pane waited {answered:?} on the device"
-        );
+        gate.assert_held("opening the pane");
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains(&t("perm-reading")), "{frame}");
         assert!(!frame.contains(&t("perm-firewall-firewalld")), "{frame}");
         assert!(!frame.contains("binary:/usr/bin/chromium"), "{frame}");
+        // The workspace grants are read with the rest, not as the pane opens.
+        assert!(!frame.contains(&t("perm-unavailable-title")), "{frame}");
+        assert!(!frame.contains(&t("perm-desktop-control")), "{frame}");
 
-        *gate.0.lock().unwrap() = true;
-        gate.1.notify_all();
+        gate.release();
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                .wait_until(tilo_test_env::hang_bound(), |harness| harness
                     .inspection_json()
                     .is_ok_and(|frame| frame.contains(&t("perm-firewall-firewalld"))
                         && frame.contains("binary:/usr/bin/chromium")
+                        && frame.contains(&t("perm-desktop-control"))
                         && !frame.contains(&t("perm-reading")))),
             "what the device reports is shown"
         );
@@ -1307,6 +1551,22 @@ mod tests {
         }
     }
 
+    /// What a reader says for each list row: its name, then its details.
+    fn row_speech(w: &dyn Widget, said: &mut Vec<String>) {
+        if w.name() == "ListRow"
+            && let Some(node) = w.accessibility()
+        {
+            said.push(format!(
+                "{} {}",
+                node.name.unwrap_or_default(),
+                node.value.unwrap_or_default()
+            ));
+        }
+        for c in w.children() {
+            row_speech(c, said);
+        }
+    }
+
     fn text_labels(w: &dyn Widget, labels: &mut Vec<String>) {
         if w.name() == "Text"
             && let Some(label) = w.accessibility().and_then(|node| node.name)
@@ -1328,7 +1588,6 @@ mod tests {
     /// Read-only pane, owner routing, scope kinds and one pill per grant.
     #[test]
     fn permissions_pane_is_read_only_and_routes_workspace_access() {
-        // Case `is_read_only_except_for_one_live_context_route`.
         {
             // The pane still cannot mutate state.json. Its only button asks the
             // shell to reveal the active workspace's authoritative controls.
@@ -1339,7 +1598,6 @@ mod tests {
             }
         }
 
-        // Case `workspace_access_is_explicitly_routed_to_its_owner`.
         {
             // System Settings never pretends it can edit a workspace. The one
             // live control is an explicit route to the current workspace's
@@ -1351,7 +1609,6 @@ mod tests {
             assert_eq!(labels, vec!["Open workspace access"]);
         }
 
-        // Case `cap_view_maps_each_scope_to_its_kind`.
         {
             let g = |scope, verb| {
                 cap_view(&CapOverride::grant(Subject::app("a"), scope, verb)).map(|v| v.kind)
@@ -1371,6 +1628,10 @@ mod tests {
             assert_eq!(
                 g(Scope::Device("remote-desktop".into()), Access::Write),
                 Some("Remote control")
+            );
+            assert_eq!(
+                g(Scope::Device("desktop-control".into()), Access::Write),
+                Some("Desktop control")
             );
             assert_eq!(
                 g(Scope::NetHost("*".into()), Access::Write),
@@ -1397,7 +1658,6 @@ mod tests {
                 "{}",
                 action.detail
             );
-            // Read vs write is reflected in the file detail.
             let rw = cap_view(&CapOverride::grant(
                 Subject::app("a"),
                 Scope::FsPath("/w".into()),
@@ -1417,7 +1677,6 @@ mod tests {
             );
         }
 
-        // Case `populated_pane_renders_a_row_per_grant`.
         {
             // Two grants → the workspace's group carries a row for each, its
             // kind marked and how long it lasts as its value, built from the
@@ -1427,7 +1686,6 @@ mod tests {
             let mut rows = 0;
             count_grant_rows(pane.as_ref(), &mut rows);
             assert_eq!(rows, 2, "one row per grant");
-            // Intro + one workspace + enforcement groups are all present.
             assert!(count_named(pane.as_ref(), "Section") >= 3);
         }
     }
@@ -1435,7 +1693,6 @@ mod tests {
     /// Real grants, missing/empty/malformed state and omitted workspaces.
     #[test]
     fn permission_state_is_reported_truthfully() {
-        // Case `projection_reads_the_real_grants_from_state_json`.
         {
             // The projection is exactly what `build_view` renders from, so
             // asserting on it asserts on the production path.
@@ -1458,7 +1715,6 @@ mod tests {
             assert!(file.detail.contains("read-only"));
         }
 
-        // Case `missing_state_never_claims_that_no_grants_exist`.
         {
             // No state document means the panel cannot make a claim about grants.
             let mut pane = build_view(&cx(), None);
@@ -1478,7 +1734,6 @@ mod tests {
             );
         }
 
-        // Case `valid_empty_state_is_the_only_path_that_claims_no_grants`.
         {
             let mut pane = build_view(&cx(), Some(r#"{"workspaces":[]}"#));
             build_layout_of(&mut pane);
@@ -1488,7 +1743,6 @@ mod tests {
             assert!(!labels.contains(&"Workspace access can't be checked".to_string()));
         }
 
-        // Case `workspace_without_app_grants_is_omitted`.
         {
             // A workspace whose only grant names a person holds no *app*
             // grant and must not render a card.
@@ -1509,7 +1763,6 @@ mod tests {
             );
         }
 
-        // Case `malformed_document_is_reported_as_unavailable_not_empty`.
         {
             assert!(project("not json {").is_err());
             let mut pane = build_view(&cx(), Some("not json {"));

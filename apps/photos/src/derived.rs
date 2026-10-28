@@ -21,7 +21,6 @@ pub(crate) type LabelCounts = Vec<(String, usize)>;
 /// the view that shows a label's photographs.
 type Labelled<'a> = (&'a LabelCounts, &'static str, fn(&str) -> PhotosEffect);
 
-/// The places derived from `library`.
 pub(crate) fn derived(library: &PhotoLibrary) -> Vec<Derived<PhotoLibrary>> {
     let (folders, people, tags, objects, pets) = metadata_label_counts(library);
     let mut places = vec![
@@ -207,7 +206,6 @@ fn timeline(library: &PhotoLibrary) -> Derived<PhotoLibrary> {
     timeline
 }
 
-/// The published id of the timeline month `month`.
 pub(crate) fn timeline_month_resource_id(month: &str) -> String {
     crate::resource::derived_resource_id(&format!("timeline/month:{month}"))
 }
@@ -218,17 +216,14 @@ pub(crate) fn timeline_day_resource_id(day: &str) -> String {
     crate::resource::derived_resource_id(&format!("timeline/month:{month}/day:{day}"))
 }
 
-/// The published id of the folder `folder`.
 pub(crate) fn folder_resource_id(folder: &str) -> String {
     crate::resource::derived_resource_id(&label_id("folder", folder))
 }
 
-/// The published id of the person `person`.
 pub(crate) fn person_resource_id(person: &str) -> String {
     crate::resource::derived_resource_id(&format!("people/{}", label_id("person", person)))
 }
 
-/// The published id of the tag `tag`.
 pub(crate) fn tag_resource_id(tag: &str) -> String {
     crate::resource::derived_resource_id(&label_id("tag", tag))
 }

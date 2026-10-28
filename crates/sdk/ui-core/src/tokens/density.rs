@@ -84,7 +84,6 @@ mod tests {
         let r = |t: &crate::Theme| t.tokens.spacing.rhythm;
         assert!((r(&compact).sibling - r(&comfy).sibling * 0.75).abs() < 1e-4);
         assert!((r(&compact).section - 12.0).abs() < 1e-4);
-        // Control heights and text stay.
         assert!(
             (compact.tokens.metrics.min_pointer_target - comfy.tokens.metrics.min_pointer_target)
                 .abs()
@@ -101,7 +100,6 @@ mod tests {
         assert_eq!(r(&back), r(&comfy));
         let twice = compact.clone().with_density(Density::Compact);
         assert_eq!(m(&twice), m(&compact));
-        // A UI scale scales the compact rows too.
         let big = crate::Theme::dark()
             .with_ui_scale(2.0)
             .with_density(Density::Compact);

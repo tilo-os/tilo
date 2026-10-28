@@ -63,7 +63,6 @@ mod tests {
 
     #[test]
     fn shared_surface_registry_adds_removes_and_keeps_its_shape() {
-        // Phase `sharing_is_additive_and_idempotent`.
         {
             let mut shares = SharedSurfaces::default();
             shares.share(7, 42);
@@ -73,7 +72,6 @@ mod tests {
             assert_eq!(shares.0[&7], HashSet::from([42, 99]));
             assert!(shares.contains(7));
         }
-        // Phase `removing_one_peer_keeps_other_recipients`.
         {
             let mut shares = SharedSurfaces::default();
             shares.share(7, 42);
@@ -83,7 +81,6 @@ mod tests {
             assert_eq!(shares.0[&7], HashSet::from([99]));
             assert!(!shares.unshare_peer(7, 42));
         }
-        // Phase `removing_the_last_peer_prunes_the_surface`.
         {
             let mut shares = SharedSurfaces::default();
             shares.share(7, 42);
@@ -97,7 +94,6 @@ mod tests {
             assert_eq!(shares.unshare(8), Some(HashSet::from([42, 99])));
             assert!(!shares.contains(8));
         }
-        // Phase `serde_shape_remains_the_plain_surface_map`.
         {
             let mut shares = SharedSurfaces::default();
             shares.share(11, 100);
@@ -111,7 +107,6 @@ mod tests {
                 HashSet::from([100])
             );
         }
-        // Phase `workspace_api_preserves_the_registry_contract`.
         {
             let mut workspace = Workspace::new(WorkspaceId(1), "Demo");
             workspace.share_surface(7, 42);

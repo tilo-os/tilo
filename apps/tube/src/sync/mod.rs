@@ -11,7 +11,7 @@
 //!   framing layout, JSON package models), each **cited to the exact
 //!   grayjay-android source file** it was read from. Pure data + codec, always
 //!   compiled, hermetically unit-tested.
-//! * [`transport`] (feature `grayjay-sync`) — the live [`GrayjaySyncTransport`]:
+//! * [`transport`] (feature `grayjay-sync`) — the live [`GrayjaySyncTransport`](transport::GrayjaySyncTransport):
 //!   a blocking TCP client that runs the real `Noise_IK_25519_ChaChaPoly_BLAKE2b`
 //!   handshake (with a `Noise_N` pairing sub-handshake), the length-prefixed +
 //!   STREAM-chunked framing, the authorize exchange, and the gzip'd-JSON
@@ -204,17 +204,9 @@ pub struct PeerDescriptor {
 pub trait SyncTransport: Send {
     /// Begin pairing with a peer (e.g. by scanning its QR / entering a code).
     /// Returns the peer's stable [`PeerId`] on success.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if the pairing blob is invalid or the handshake fails.
     fn pair(&mut self, pairing_blob: &str) -> SyncResult<PeerId>;
 
     /// Push our state to a paired peer.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if the peer is unreachable or rejects the push.
     fn push(&mut self, peer: &PeerId, state: &SyncState) -> SyncResult<()>;
 
     /// Pull the peer's state (merged into ours by the caller — Tube's CRDT

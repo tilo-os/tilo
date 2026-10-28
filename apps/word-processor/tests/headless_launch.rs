@@ -23,7 +23,7 @@ impl Fixture {
             "inspect": inspect,
             "dump": self.0.join(format!("{name}-document.json")),
         });
-        let mut command = Command::new(env!("CARGO_BIN_EXE_word-processor"));
+        let mut command = Command::new(tilo_test_env::package_binary!("word-processor"));
         command
             .current_dir(&self.0)
             .arg("--headless-drive")

@@ -12,7 +12,7 @@ crate owns the components, their records and the GPU. See
 
 ```sh
 crates/browser/tilo-browser-runtime/scripts/build.sh /abs/out \
-  [--profile release|dev] [--[no-]wasm-opt] [--bundle runtime|desktop]
+  [--profile release|assert|dev|quick] [--[no-]wasm-opt] [--bundle runtime|desktop]
 python3 -m http.server -d /abs/out   # then open it in a browser with WebGPU
 ```
 
@@ -24,7 +24,11 @@ host modules and `index.html`, `fonts/` and `fonts.json`, `data/` and
 `data.json` (application data fetched on request) and `build.json`
 (revision, tools, profile and output hashes). `--profile release` compiles
 with Cargo's `wasm-release` profile and runs `wasm-opt` unless
-`--no-wasm-opt`. Tools: the pinned Rust toolchain with
+`--no-wasm-opt`. `--profile assert` is the same release optimisation with
+the assertions a development build has (`wasm-assert`: `debug_assertions`
+and overflow checks), for qualification and performance measurement: a
+bundle that drops the qualification checks is faster for the wrong reason.
+Tools: the pinned Rust toolchain with
 `wasm32-unknown-unknown`, a wasm-bindgen CLI matching the crate's pinned
 wasm-bindgen, binaryen, Node.js.
 
@@ -45,7 +49,11 @@ workspace's target directory as its own Cargo workspace (with that
 workspace's `[patch]`, profiles and lock file), so an app anywhere builds
 against the SDK checkout it names. The bundle lands in
 `<target>/tilo-app/web/<package>/bundle` in `build.sh`'s layout and opens at
-`app/#/me/<id>`; `--output` copies it. Page URLs (which room, app and
+`app/#/me/<id>`; `--output` copies it. `--release` with `--assertions` asks
+for the same release optimisation with `debug_assertions` and overflow
+checks kept (`wasm-assert`), which is what a qualified or measured bundle is
+built with; `--assertions` alone is refused, because an unoptimised build
+already asserts. Page URLs (which room, app and
 resource a page opens, desktop or full-tab app mode, history, share links) follow
 `docs/architecture/web-routing.md`, which replaces these query parameters. `package --target web` writes
 it in the immutable layout Cloud serves.

@@ -103,12 +103,13 @@ async fn a_member_fetches_a_bridged_avatar_from_the_room_host() {
         })
         .unwrap()
     };
-    // Content the host does not keep goes unanswered; the avatar it keeps
-    // comes back whole.
+    // Content the host does not keep is answered with word that it keeps
+    // none; the avatar it keeps comes back whole.
     session.publish_presence(want(&"0".repeat(64))).unwrap();
     session.publish_presence(want(&hash)).unwrap();
 
     let mut received = Vec::new();
+    let mut lacking = Vec::new();
     tilo_test_env::within("the avatar arrives", async {
         loop {
             let Inbound::RecordContent { from, frame } =
@@ -117,6 +118,14 @@ async fn a_member_fetches_a_bridged_avatar_from_the_room_host() {
                 continue;
             };
             assert_eq!(from, host.device_pubkey(), "the host answers");
+            if let Ok(NeighbourMsg::RecordContentLacks { hash, .. }) = postcard::from_bytes(&frame)
+            {
+                lacking.push(hash);
+                if !received.is_empty() && received.len() == avatar.len() {
+                    break;
+                }
+                continue;
+            }
             let NeighbourMsg::RecordContentPiece {
                 requester: to,
                 app_id,
@@ -142,7 +151,7 @@ async fn a_member_fetches_a_bridged_avatar_from_the_room_host() {
             );
             assert_eq!(offset, received.len() as u64, "pieces arrive in order");
             received.extend_from_slice(&bytes);
-            if received.len() as u64 == total {
+            if received.len() as u64 == total && !lacking.is_empty() {
                 break;
             }
         }
@@ -150,4 +159,9 @@ async fn a_member_fetches_a_bridged_avatar_from_the_room_host() {
     .await;
     assert_eq!(blake3::hash(&received).to_hex().as_str(), hash);
     assert_eq!(received, avatar);
+    assert_eq!(
+        lacking,
+        ["0".repeat(64)],
+        "what it does not keep, it says so"
+    );
 }

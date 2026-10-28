@@ -5,21 +5,10 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from restart_fixture import restart_fixture
 
 REPO = Path(__file__).resolve().parents[2]
 IMAGE = 'sha256:' + '1' * 64
-
-
-def restart_fixture(test):
-    """Give the next subTest phase of a merged test the fresh fixture it had
-    as its own test: tear down, run cleanups, reset instance state, set up."""
-    test.tearDown()
-    test.doCleanups()
-    fresh = type(test)(test._testMethodName).__dict__
-    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
-    test.__dict__.clear()
-    test.__dict__.update(fresh, **keep)
-    test.setUp()
 
 
 class ResealCommands(unittest.TestCase):
@@ -52,7 +41,7 @@ elif args[0] in ('rm', 'run'):
 elif args[0] == 'build':
     if '--iidfile' in args:
         open(args[args.index('--iidfile')+1], 'w').write('sha256:' + '2'*64)
-    open(os.environ['CONTAINERFILE'], 'w').write(sys.stdin.read())
+    open(os.environ['CONTAINERFILE'], 'w').write(open(args[args.index('-f')+1]).read())
 elif args[:2] != ['image', 'exists']: sys.exit(99)
 ''')
         (self.root / 'podman').chmod(0o755)

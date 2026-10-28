@@ -62,6 +62,32 @@ class FormatMigrationTests(unittest.TestCase):
             path.write_text("")
             self.assertIn("no longer declared", formats.against("main", root)[0])
 
+    def test_a_declaration_moved_to_a_new_file_is_found_there(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            self.git(root, "init", "-q", "-b", "main")
+            self.git(root, "config", "user.email", "t@example.com")
+            self.git(root, "config", "user.name", "t")
+            old = root / "crates/x/src/lib.rs"
+            old.parent.mkdir(parents=True)
+            old.write_text(declaration(1))
+            other = root / "crates/x/src/other.rs"
+            other.write_text("// nothing\n")
+            self.git(root, "add", ".")
+            self.git(root, "commit", "-qm", "base")
+            # Into a file git doesn't track yet.
+            old.write_text("")
+            new = root / "crates/x/src/state.rs"
+            new.write_text(declaration(1))
+            self.assertEqual(formats.against("main", root), [])
+            new.write_text(declaration(2))
+            self.assertIn("no longer brings up version 1", formats.against("main", root)[0])
+            # Into a tracked file, committed.
+            new.unlink()
+            other.write_text(declaration(1))
+            self.git(root, "commit", "-qam", "moved")
+            self.assertEqual(formats.against("main~1", root), [])
+
     def test_the_repository_holds_to_it(self):
         self.assertEqual(formats.check(), [])
         self.assertIn("desktop state", formats.declarations(formats.sources(formats.ROOT)))

@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 use super::*;
+use crate::external_broker::tests::speaks;
 use crate::routing::LinkState;
 
 const MODEM_PATH: &str = "/org/freedesktop/ModemManager1/Modem/7";
@@ -344,6 +345,13 @@ impl Drop for DeadlineFixture {
     }
 }
 
+/// Budget for a send or read the fixture answers at once, when the test needs
+/// it to reach the modem. A send's budget also covers the durable
+/// reservation, whose fsync takes seconds on a loaded host, and a read's
+/// several D-Bus round trips stall just as long there, so give the runtime's
+/// maximum: only a hang uses it up.
+const ANSWERED_BUDGET: Duration = Duration::from_secs(60);
+
 fn owner() -> Owner {
     Owner {
         principal: "11".repeat(32),
@@ -421,7 +429,7 @@ async fn revocation_during_create_never_sends_or_rewrites_the_private_journal() 
                 &route(),
                 "interrupted",
                 "private fixture text",
-                Duration::from_secs(2)
+                ANSWERED_BUDGET
             )
             .await,
         Err(CheckedSendError::Transport(SendError::Uncertain))
@@ -448,7 +456,7 @@ async fn actual_dbus_send_is_submitted_and_durable_operation_never_retries() {
             &route(),
             "op",
             "private fixture text",
-            Duration::from_secs(2),
+            ANSWERED_BUDGET,
         )
         .await
         .unwrap();
@@ -561,7 +569,7 @@ async fn sim_switch_wrong_recipient_or_cross_modem_object_after_create_never_sen
                     &route(),
                     "op",
                     "fixture text",
-                    Duration::from_secs(2)
+                    ANSWERED_BUDGET
                 )
                 .await,
             Err(CheckedSendError::Transport(SendError::Uncertain))
@@ -676,7 +684,7 @@ async fn drive_sms_send(
             return std::task::Poll::Ready(None);
         }
         assert!(
-            started.elapsed() < Duration::from_secs(2),
+            started.elapsed() < tilo_test_env::hang_bound(),
             "private SMS fixture did not reach its controlled RPC phase"
         );
         cx.waker().wake_by_ref();
@@ -712,7 +720,7 @@ async fn deadline_after_create_stops_before_send_and_keeps_uncertainty_without_r
                 return std::task::Poll::Ready(());
             }
             assert!(
-                started.elapsed() < Duration::from_secs(2),
+                started.elapsed() < tilo_test_env::hang_bound(),
                 "private SMS Create was not observed"
             );
             cx.waker().wake_by_ref();
@@ -770,7 +778,7 @@ async fn received_text_is_exact_complete_and_read_only() {
             &binding(),
             &route(),
             MESSAGE_PATH,
-            Duration::from_secs(2),
+            ANSWERED_BUDGET,
         )
         .await
         .unwrap();
@@ -783,7 +791,7 @@ async fn received_text_is_exact_complete_and_read_only() {
             &binding(),
             &route(),
             MESSAGE_PATH,
-            Duration::from_secs(2),
+            ANSWERED_BUDGET,
         )
         .await
         .unwrap();
@@ -948,13 +956,13 @@ async fn state_changed(fixture: &Fixture) {
 #[cfg(feature = "signal-broker")]
 async fn wait_inbox(broker: &crate::external_broker::ExternalBroker) {
     let deadline = tokio::time::Instant::now()
-        .checked_add(Duration::from_secs(5))
+        .checked_add(tilo_test_env::hang_bound())
         .expect("bounded fixture deadline");
     loop {
         let page = broker
             .client()
             .history()
-            .read(contact_route())
+            .read(contact_route(), None)
             .await
             .unwrap();
         if !page.messages.is_empty() {
@@ -978,7 +986,7 @@ async fn subscribed_sms_initial_enumeration_is_private_durable_and_read_only() {
     let page = broker
         .client()
         .history()
-        .read(contact_route())
+        .read(contact_route(), None)
         .await
         .unwrap();
     assert_eq!(page.messages.len(), 1);
@@ -1026,7 +1034,7 @@ async fn subscribed_sms_added_partial_then_state_complete_persists_once() {
     }
     added(&fixture).await;
     let deadline = tokio::time::Instant::now()
-        .checked_add(Duration::from_secs(5))
+        .checked_add(tilo_test_env::hang_bound())
         .expect("bounded fixture deadline");
     while fixture.state.lock().unwrap().state_reads == 0 {
         assert!(tokio::time::Instant::now() < deadline);
@@ -1036,7 +1044,7 @@ async fn subscribed_sms_added_partial_then_state_complete_persists_once() {
         broker
             .client()
             .history()
-            .read(contact_route())
+            .read(contact_route(), None)
             .await
             .unwrap()
             .messages
@@ -1050,7 +1058,7 @@ async fn subscribed_sms_added_partial_then_state_complete_persists_once() {
     let page = broker
         .client()
         .history()
-        .read(contact_route())
+        .read(contact_route(), None)
         .await
         .unwrap();
     assert_eq!(page.messages.len(), 1);
@@ -1073,7 +1081,7 @@ async fn subscribed_sms_unknown_recipient_has_no_route_or_private_history() {
         broker
             .client()
             .history()
-            .read(contact_route())
+            .read(contact_route(), None)
             .await
             .unwrap()
             .messages
@@ -1087,7 +1095,7 @@ async fn subscribed_sms_unknown_recipient_has_no_route_or_private_history() {
         broker
             .client()
             .history()
-            .read(contact_route())
+            .read(contact_route(), None)
             .await
             .unwrap()
             .messages
@@ -1115,7 +1123,7 @@ async fn subscribed_sms_sim_change_reports_failed_and_keeps_native_bus_owned_by_
     fixture.state.lock().unwrap().iccid = "8901000000000000002".into();
     added(&fixture).await;
     let deadline = tokio::time::Instant::now()
-        .checked_add(Duration::from_secs(5))
+        .checked_add(tilo_test_env::hang_bound())
         .expect("bounded fixture deadline");
     while supervisor.client().account_state(&account) != AccountState::Failed {
         assert!(
@@ -1129,7 +1137,7 @@ async fn subscribed_sms_sim_change_reports_failed_and_keeps_native_bus_owned_by_
         broker
             .client()
             .history()
-            .read(contact_route())
+            .read(contact_route(), None)
             .await
             .unwrap()
             .messages
@@ -1177,7 +1185,7 @@ async fn subscribed_sms_daemon_replacement_never_rebinds_and_fails_owned_receive
     assert_ne!(replacement.unique_name(), fixture.server.unique_name());
     added(&fixture).await;
     let deadline = tokio::time::Instant::now()
-        .checked_add(Duration::from_secs(5))
+        .checked_add(tilo_test_env::hang_bound())
         .expect("bounded fixture deadline");
     while supervisor.client().account_state(&account) != AccountState::Failed {
         assert!(
@@ -1188,7 +1196,11 @@ async fn subscribed_sms_daemon_replacement_never_rebinds_and_fails_owned_receive
     }
     assert!(!supervisor.client().supports(&contact_route()));
     assert_eq!(
-        supervisor.client().history().read(contact_route()).await,
+        supervisor
+            .client()
+            .history()
+            .read(contact_route(), None)
+            .await,
         Err(tilo_messaging::HistoryError::Unavailable)
     );
     let state = fixture.state.lock().unwrap();
@@ -1212,7 +1224,7 @@ async fn subscribed_sms_persistence_failure_never_publishes_ready_history() {
     receive_state(&mut fixture.state.lock().unwrap());
     added(&fixture).await;
     let deadline = tokio::time::Instant::now()
-        .checked_add(Duration::from_secs(5))
+        .checked_add(tilo_test_env::hang_bound())
         .expect("bounded fixture deadline");
     while supervisor.client().account_state(&account) != AccountState::Failed {
         assert!(
@@ -1222,7 +1234,11 @@ async fn subscribed_sms_persistence_failure_never_publishes_ready_history() {
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert_eq!(
-        supervisor.client().history().read(contact_route()).await,
+        supervisor
+            .client()
+            .history()
+            .read(contact_route(), None)
+            .await,
         Err(tilo_messaging::HistoryError::Unavailable)
     );
     assert!(!supervisor.client().supports(&contact_route()));
@@ -1248,7 +1264,7 @@ async fn subscribed_sms_excessive_native_inbox_refuses_instead_of_truncating() {
         broker
             .client()
             .history()
-            .read(contact_route())
+            .read(contact_route(), None)
             .await
             .unwrap()
             .messages
@@ -1298,7 +1314,7 @@ async fn actual_sms_broker_receives_private_durable_exact_route_history_without_
     let page = broker
         .client()
         .history()
-        .read(contact_route())
+        .read(contact_route(), None)
         .await
         .unwrap();
     assert_eq!(page.messages.len(), 1);
@@ -1418,7 +1434,7 @@ async fn actual_sms_arrival_reply_and_revocation_keep_private_history_out_of_sha
             .wait_until(ui::time::Duration::from_secs(5), |h| {
                 h.a11y_nodes()
                     .iter()
-                    .any(|(_, node)| node.label() == Some("private incoming SMS"))
+                    .any(|(_, node)| speaks(node.label(), "private incoming SMS"))
             }),
         "SMS arrival must refresh the selected private view"
     );
@@ -1451,7 +1467,7 @@ async fn actual_sms_arrival_reply_and_revocation_keep_private_history_out_of_sha
         app.harness()
             .a11y_nodes()
             .iter()
-            .any(|(_, node)| node.label() == Some("private SMS reply"))
+            .any(|(_, node)| speaks(node.label(), "private SMS reply"))
     );
     assert!(!app.harness().dump_json().contains("private SMS reply"));
     {

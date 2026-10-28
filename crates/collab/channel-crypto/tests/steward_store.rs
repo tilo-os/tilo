@@ -1,6 +1,3 @@
-//! A steward kept in memory and exported, as a browser keeps it, signing
-//! through a key that answers later.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -229,7 +226,6 @@ fn every_point_a_change_can_stop_at_reopens_whole() {
             channel,
             &browser,
         );
-        // The journal keeps genesis and its head.
         let recorded = step >= 2;
         assert_eq!(
             reopened.journal().frames().len(),
@@ -307,4 +303,40 @@ fn an_admission_reaches_everyone_else_without_what_its_recipients_join_from() {
     );
     second.receive(admission, &vault()).unwrap();
     assert_eq!(second.access(), Access::Ready { epoch: 2 });
+}
+
+#[test]
+fn a_member_takes_over_with_the_key_history_and_admits_the_rest() {
+    let channel = ChannelId::new();
+    let browser = SigningKey::from_bytes(&[7; 32]);
+    let laptop = SigningKey::from_bytes(&[8; 32]);
+    let phone = SigningKey::from_bytes(&[9; 32]);
+    let mut steward = open(MemoryStewardStore::new(), channel, &browser);
+    let mut first = waiting(channel, &laptop, &browser);
+    let requests = asked(&mut first, &laptop);
+    let allowed = BTreeSet::from([public(&laptop)]);
+    pollster::block_on(steward.reconcile_async(&allowed, &requests, &vault())).unwrap();
+    deliver(&steward, &mut first);
+    assert_eq!(first.access(), Access::Ready { epoch: 1 });
+
+    // The steward is gone; the laptop goes on with the group, alone in it.
+    let records = first.steward_records(&vault()).unwrap().expect("joined");
+    let mut successor = open(records, channel, &laptop);
+    let genesis = successor.journal().frames().first().unwrap().clone();
+    assert!(matches!(
+        genesis.action,
+        collab_types::MlsGovernanceAction::Genesis
+    ));
+    assert_eq!((genesis.epoch, genesis.signed_by), (2, public(&laptop)));
+    let keys = successor.content_keys().unwrap();
+    assert!(keys.holds_epoch(1), "what was sealed before still opens");
+
+    // The phone asks the new steward and reads the channel's history.
+    let mut second = waiting(channel, &phone, &laptop);
+    let requests = asked(&mut second, &phone);
+    let allowed = BTreeSet::from([public(&phone)]);
+    pollster::block_on(successor.reconcile_async(&allowed, &requests, &vault())).unwrap();
+    deliver(&successor, &mut second);
+    assert_eq!(second.access(), Access::Ready { epoch: 3 });
+    assert!(second.content_keys().unwrap().holds_epoch(1));
 }

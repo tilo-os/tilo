@@ -5,8 +5,7 @@
 //! policy, coverage, durability, receipts and window contents — so both admit it
 //! here. What differs between them is only data: how the receiver identifies
 //! the sender ([`Writer`]), who it pinned as the governance writer
-//! ([`AuthorityPin`]) and how the room's window contents are owned
-//! ([`ContentOwnership`]). Each caller keeps its own storage and projection.
+//! ([`AuthorityPin`]). Each caller keeps its own storage and projection.
 //!
 //! The whole batch is refused or the whole candidate is returned: a partial
 //! merge would advance local heads past refused operations.
@@ -14,6 +13,7 @@ use automerge::AutoCommit;
 use tilo_action_policy::{ActionKind, Answer, Context, TreePath};
 
 use super::media;
+use tilo_desktop_model::projection::room_layout_choice;
 
 /// Who may change a room's governance, as the receiver pinned it from local,
 /// authenticated knowledge — an invite's signed authority, the person's own
@@ -77,20 +77,6 @@ impl Writer<'_> {
     }
 }
 
-/// Who owns the entries of a room's window contents.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ContentOwnership {
-    /// The `contents_owners_v1` registry names each namespace's owner; a room
-    /// without one is owned by the pinned authority device
-    /// ([`crate::topology::validate`]).
-    Registry,
-    /// Each machine owns the entries minted under its id salt. The receiver
-    /// refuses a batch that rewrites an entry carrying `local_salt` that both
-    /// sides already hold
-    /// ([`tilo_desktop_model::projection::changed_owned_entries`]).
-    Salted { local_salt: u16 },
-}
-
 /// Everything [`admit_room_changes`] decides a batch against.
 #[derive(Clone, Copy, Debug)]
 pub struct RoomAdmission<'a> {
@@ -100,7 +86,6 @@ pub struct RoomAdmission<'a> {
     pub room: &'a str,
     pub source: Writer<'a>,
     pub authority: AuthorityPin<'a>,
-    pub contents: ContentOwnership,
     /// Seconds since the Unix epoch, for grant expiry.
     pub caps_now: u64,
 }
@@ -111,6 +96,9 @@ pub struct RoomAdmission<'a> {
 pub struct AdmittedRoom {
     pub candidate: AutoCommit,
     pub media: Option<media::RoomMediaV1>,
+    /// The candidate is a newer base ([`super::base`]) replacing the
+    /// document held, not that document with the batch applied.
+    pub rebased: bool,
 }
 
 /// Why a batch was refused. Display strings are the peer-state messages.
@@ -127,13 +115,8 @@ pub enum RoomRefusal {
     DeclaredRoomMismatch,
     /// The batch changes governance and its sender is not the pinned writer.
     GovernanceWriter,
-    /// The batch changes window contents its sender does not own.
-    Topology(String),
-    /// The batch rewrites `n` window entries this machine owns.
-    OwnedContents(usize),
     /// The batch rewrites an effect receipt.
     ReceiptImmutable,
-    /// The batch rewinds checkpoint coverage.
     Coverage(String),
     /// The batch rewinds a durable receipt.
     Durability(String),
@@ -146,17 +129,11 @@ impl std::fmt::Display for RoomRefusal {
         match self {
             Self::GovernanceMissing => f.write_str("room governance missing"),
             Self::WriteForbidden => f.write_str("room write forbidden"),
-            Self::Malformed(error)
-            | Self::Topology(error)
-            | Self::Coverage(error)
-            | Self::Durability(error) => f.write_str(error),
+            Self::Malformed(error) | Self::Coverage(error) | Self::Durability(error) => {
+                f.write_str(error)
+            }
             Self::DeclaredRoomMismatch => f.write_str("declared room mismatch"),
             Self::GovernanceWriter => f.write_str("governance writer is not pinned authority"),
-            Self::OwnedContents(entries) => write!(
-                f,
-                "owned-content conflict: the batch rewrites {entries} window entries this \
-                 machine owns"
-            ),
             Self::ReceiptImmutable => f.write_str("effect receipt is immutable"),
             Self::Media(error) => write!(f, "{error}"),
         }
@@ -180,12 +157,34 @@ pub fn admit_room_changes(
     input: RoomAdmission<'_>,
     changes: &[Vec<u8>],
 ) -> Result<AdmittedRoom, RoomRefusal> {
-    if !input.authority.admits(&input.source) {
+    let governs = input.authority.admits(&input.source);
+    if !governs {
         may_write(input.before, input.room, &input.source, input.caps_now)?;
     }
-    let candidate = super::candidate(input.before, changes).map_err(RoomRefusal::Malformed)?;
-    let media = check_candidate(&input, &candidate)?;
-    Ok(AdmittedRoom { candidate, media })
+    match super::base::lineage(input.before, changes) {
+        super::base::Lineage::Same(changes) => {
+            let candidate =
+                super::candidate(input.before, &changes).map_err(RoomRefusal::Malformed)?;
+            let media = check_candidate(&input, &candidate)?;
+            Ok(AdmittedRoom {
+                candidate,
+                media,
+                rebased: false,
+            })
+        }
+        super::base::Lineage::Newer if governs => {
+            let candidate = super::candidate(None, changes).map_err(RoomRefusal::Malformed)?;
+            // The receiver projects what it owns onto the base it adopts, so a
+            // base leaving out or changing its entries holds only until then.
+            let media = checked(&input, &candidate)?;
+            Ok(AdmittedRoom {
+                candidate,
+                media,
+                rebased: true,
+            })
+        }
+        super::base::Lineage::Newer => Err(RoomRefusal::GovernanceWriter),
+    }
 }
 
 /// Check a candidate room document against `input.before`, however it was
@@ -197,7 +196,7 @@ pub fn admit_room_changes(
 /// 2. A governance change — owner, capabilities, identities, media,
 ///    coverage, receipts, durability or import proposals — comes from the
 ///    pinned writer ([`super::governance_unchanged`]).
-/// 3. Window contents change only by their owner ([`ContentOwnership`]).
+/// 3. The room's layout scope changes only by the pinned writer.
 /// 4. Effect receipts are immutable ([`super::immutable_receipts`]).
 /// 5. Coverage and durable receipts never rewind
 ///    ([`crate::coverage::monotonic`], [`crate::durability::monotonic`]).
@@ -211,13 +210,19 @@ pub fn check_candidate(
     input: &RoomAdmission<'_>,
     candidate: &AutoCommit,
 ) -> Result<Option<media::RoomMediaV1>, RoomRefusal> {
+    checked(input, candidate)
+}
+
+fn checked(
+    input: &RoomAdmission<'_>,
+    candidate: &AutoCommit,
+) -> Result<Option<media::RoomMediaV1>, RoomRefusal> {
     let RoomAdmission {
         before,
         room,
         source,
         authority,
-        contents,
-        caps_now: _,
+        ..
     } = *input;
     let governs = authority.admits(&source);
     let declared = uuid::Uuid::parse_str(room).map_err(|_| RoomRefusal::DeclaredRoomMismatch)?;
@@ -227,24 +232,8 @@ pub fn check_candidate(
     if !governs && !super::governance_unchanged(before, candidate) {
         return Err(RoomRefusal::GovernanceWriter);
     }
-    match contents {
-        ContentOwnership::Registry => {
-            let AuthorityPin::Device(pinned) = authority else {
-                return Err(RoomRefusal::Topology(
-                    "topology registry requires a pinned authority device".into(),
-                ));
-            };
-            crate::topology::validate(before, candidate, source.key, pinned)
-                .map_err(RoomRefusal::Topology)?;
-        }
-        ContentOwnership::Salted { local_salt } => {
-            let rewritten = tilo_desktop_model::projection::changed_owned_entries(
-                before, candidate, local_salt,
-            );
-            if rewritten > 0 {
-                return Err(RoomRefusal::OwnedContents(rewritten));
-            }
-        }
+    if !governs && before.and_then(room_layout_choice) != room_layout_choice(candidate) {
+        return Err(RoomRefusal::GovernanceWriter);
     }
     if !super::immutable_receipts(before, candidate) {
         return Err(RoomRefusal::ReceiptImmutable);

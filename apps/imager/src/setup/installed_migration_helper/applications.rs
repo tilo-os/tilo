@@ -12,6 +12,15 @@ pub(super) fn review(grants: Grants) -> Result<Session, String> {
     let receipts =
         child(&grants.workspace, "receipts-applications").map_err(|error| error.to_string())?;
     let source = migration_handoff::mount_read_only(&plan).map_err(|error| error.to_string())?;
+    imager_backend::setup::deferred_handoff::import_selected_from_source(
+        &plan,
+        source.path(),
+        &grants.home,
+        &grants.workspace,
+        super::current_person(),
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .map_err(|error| error.to_string())?;
     let quarantine = grants.workspace.join("imported-applications");
     let adoption_journal = grants.workspace.join("adoption-applications.journal");
     let mut session = match std::fs::symlink_metadata(&adoption_journal) {

@@ -92,7 +92,6 @@ impl<J: Judge> ModerationAgent<J> {
         Self { judge }
     }
 
-    /// The model the agent asks.
     pub fn model(&self) -> &str {
         self.judge.model()
     }

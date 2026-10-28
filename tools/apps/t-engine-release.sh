@@ -10,6 +10,10 @@
 #                        OUT/compiled, then seal a copy with throwaway keys, exactly as `sign` will
 #   sign ARCH BUILT OUT  TAPP_PUBLISHER_IDENTITY and RUNTIME_BUNDLE_SIGNING_KEY: seal BUILT/compiled
 #                        as the signed runtime bundle and its runtime package, compiling nothing
+#   dev ARCH BUILT OUT   no credentials: seal BUILT/compiled with a key thrown away, as build's
+#                        rehearsal does, and keep its runtime bundle in OUT/bundles/<version>: the
+#                        engine a development layer ships (tilo-vm's apps+runtime pack on t, through
+#                        TILO_RUNTIME_BUNDLE_DIR) where the registry doesn't offer it. Never published
 #   upload SIGNED..      REGISTRY_TOKEN: upload each package's thin form and payload objects
 #   submit SIGNED..      TAPP_PUBLISHER_IDENTITY: sign and submit each package's registry entry
 #
@@ -80,6 +84,23 @@ case $command in
       "$(commit_epoch "$T_COMMIT")"
     printf 'Signed the engine %s for %s\n' "$(package_version "$out")" "$arch"
     ;;
+  dev)
+    arch=${1:?usage: t-engine-release.sh dev ARCH BUILT OUT} built=${2:?} out=$(realpath -m "${3:?}")
+    os/dev/assert-native-arch.sh "$arch"
+    # The commit the build's provenance names (zeros for a working tree's build on t): sealing
+    # checks the compiled files against it.
+    source=$(jq -er '.source' "$built/compiled/build.json")
+    work=$scratch/engine-dev
+    rm -rf "$work" "$out"
+    mkdir -p "$work" "$out/bundles"
+    cp -a "$built/compiled/." "$work/"
+    REQUESTED_PUBLISH=false T_COMMIT=$source release_tool seal --arch "$arch" --source "$source" \
+      --sequence 1 --out "$work"
+    version=$(python3 -I -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["version"])' \
+      "$work/runtime/bundle.toml")
+    cp -a "$work/runtime" "$out/bundles/$version"
+    printf 'Sealed the engine %s for %s from %s for development layers\n' "$version" "$arch" "$source"
+    ;;
   upload)
     release_only
     token=${REGISTRY_TOKEN:?the package token is not set: the check needs secrets = [\"REGISTRY_TOKEN\"]}
@@ -113,6 +134,6 @@ case $command in
     printf 'Submitted the engine of %s to %s\n' "$T_COMMIT" "$registry_url"
     ;;
   *)
-    die "usage: t-engine-release.sh build|sign|upload|submit ..."
+    die "usage: t-engine-release.sh build|dev|sign|upload|submit ..."
     ;;
 esac

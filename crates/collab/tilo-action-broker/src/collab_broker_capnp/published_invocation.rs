@@ -524,7 +524,7 @@ impl OriginalInvocationData {
                 if !person.may_in(
                     workspace,
                     &self.node(workspace),
-                    self.spec.contract.kind,
+                    self.spec.contract.need().kind,
                     seconds,
                 ) {
                     return Err("original invocation caller is no longer authorized");
@@ -581,6 +581,27 @@ impl OriginalInvocationData {
             *id = invocation;
         }
         caller
+    }
+
+    /// Whether an application invoked this itself on its own connection, as
+    /// the person who admitted it (a button in its window running its own
+    /// published action), rather than the person at one of the host's doors,
+    /// an agent or another member asking for it.
+    pub(super) fn through_app_door(&self) -> bool {
+        matches!(&self.caller, InvocationCaller::Local { admitted, .. } if admitted.agent_id.is_none())
+    }
+
+    /// Whether application `app` invoked this itself through its own door,
+    /// as [`Self::through_app_door`], rather than the person on a
+    /// connection of their own.
+    pub(super) fn through_door_of(&self, app: &str) -> bool {
+        self.through_app_door()
+            && matches!(&self.caller, InvocationCaller::Local { route, .. } if route.app_id == app)
+    }
+
+    /// Whether this was delivered to application `app` in `room`.
+    pub(super) fn delivered_to(&self, app: &str, room: &str) -> bool {
+        self.route.app_id == app && self.route.cluster_id == room
     }
 
     pub(super) fn permits_launch_in(&self, room: &str) -> bool {
@@ -742,11 +763,6 @@ impl OriginalInvocation {
     pub fn policy_time(&self) -> &crate::peer_actions::PolicyTime {
         &self.data.time
     }
-    /// The original caller's device certificate.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the original caller carried no certificate.
     pub fn certificate(&self) -> Result<&tilo_user_identity::DeviceCert, String> {
         match &self.data.caller {
             // A network caller's verified device certificate is its signed
@@ -773,10 +789,6 @@ impl OriginalInvocation {
     }
     /// Pure custody check: no owner callback, workspace snapshot or Store open.
     /// Its returned sample belongs to the original registered clock and origin.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the broker, worker, certificate or clock lapsed.
     pub fn check_custody(&self) -> Result<u64, String> {
         if self
             .data
@@ -801,7 +813,7 @@ impl OriginalInvocation {
                     .lock()
                     .map_err(|_| "worker registry unavailable")?;
                 if workers
-                    .get(&self.peer)
+                    .get(self.peer, &worker.route)
                     .and_then(|entry| entry.worker_registration.as_ref())
                     != Some(worker)
                 {
@@ -815,9 +827,13 @@ impl OriginalInvocation {
                 {
                     return Err("original native target connection retired or replaced".into());
                 }
-                self.check_execution_frontier(&state)?;
             }
         }
+        // Custody is only who holds the target, and the policy on top of it
+        // is the operation's, the same for every holder: an execution lease
+        // keeps its captured facts through cooperative cancellation, while
+        // outside effects (external moderation, approved checks, private
+        // drafts) also run `check_execution_frontier` on every recheck.
         drop(state);
         tilo_user_identity::verify_device_cert_at(self.certificate()?, now)
             .map_err(|_| "original invocation certificate expired")?;
@@ -1084,7 +1100,7 @@ impl OriginalInvocation {
                     .host_workers
                     .lock()
                     .map_err(|_| "worker registry unavailable")?
-                    .get(&self.peer)
+                    .get(self.peer, &worker.route)
                     .cloned()
                     .ok_or("original worker connection retired")?;
                 if admitted.worker_registration.as_ref() != Some(worker) {
@@ -1133,7 +1149,7 @@ impl OriginalInvocation {
             if !actor.may_in(
                 workspace,
                 &self.data.node(workspace),
-                self.data.spec.contract.kind,
+                self.data.spec.contract.need().kind,
                 seconds,
             ) {
                 return Err("original invocation caller is no longer authorized".to_string());
@@ -1148,10 +1164,6 @@ impl OriginalInvocation {
 impl CapnpBrokerState {
     /// Allocate the actual socket and its opaque host-local callback together.
     /// A second socket with an equal route/certificate gets a different token.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the broker refuses the worker connection.
     pub fn connect_local_worker_with_authorizer(
         self: &Arc<Self>,
         route: CrdtRoute,
@@ -1187,7 +1199,7 @@ impl CapnpBrokerState {
             };
             let original = Arc::new(OriginalInvocation { broker: broker.clone(), peer, worker: TargetCustody::Registered(Box::new(worker.clone())), data });
             original.check_lifecycle()?;
-            let route = ui::collaboration::RouteSpec {
+            let route = runtime_collab::route::RouteSpec {
                 app_id: worker.route.app_id.clone(),
                 cluster_id: worker.route.cluster_id.parse().map_err(|_| "invalid original worker room")?,
                 record: (!worker.route.record_id.is_empty()).then(|| worker.route.record_id.clone()),

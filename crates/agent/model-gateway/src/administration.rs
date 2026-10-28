@@ -83,6 +83,11 @@ fn validate_descriptions(config: &ProviderConfig) -> Result<(), ModelError> {
             }
         }
     }
+    if config.agent_models.len() > 256
+        || config.agent_models.keys().any(|agent| !bounded(agent, 256))
+    {
+        return Err(invalid());
+    }
     Ok(())
 }
 

@@ -1,0 +1,62 @@
+[package]
+name = "tilo-handoff"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+
+[lib]
+name = "tilo_handoff"
+path = "src/lib.rs"
+
+[features]
+# The authenticated peer transport and identity bootstrap. The installer
+# helper imports only the native prepared preflight below, so it depends on
+# this crate with `default-features = false` and never carries Iroh.
+default = ["peer"]
+peer = [
+    "dep:base64",
+    "dep:ed25519-dalek",
+    "dep:runtime-identity",
+    "dep:tilo-files",
+    "dep:tilo-identity-host",
+    "dep:tilo-net-p2p",
+    "dep:tilo-seal",
+    "dep:tilo-user-identity",
+    "dep:tokio",
+    "dep:zeroize",
+]
+# Counts of what source workers refused, for dependents' tests.
+test-support = []
+
+[dependencies]
+base64 = { workspace = true, optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+hex.workspace = true
+runtime-identity = { path = "../../runtime/runtime-identity", optional = true }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+# The shared public prepared-setup sidecar format, with no backend or network
+# dependency.
+staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
+tilo-files = { path = "../tilo-files", optional = true }
+tilo-identity-host = { path = "../../runtime/tilo-identity-host", optional = true }
+tilo-net-p2p = { path = "../tilo-net-p2p", optional = true }
+tilo-seal = { path = "../../system/tilo-seal", optional = true }
+tilo-user-identity = { path = "../../collab/tilo-user-identity", optional = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"], optional = true }
+uuid.workspace = true
+zeroize = { workspace = true, optional = true }
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+rustix = { workspace = true, features = ["process"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true

@@ -36,12 +36,14 @@ runuser -u legacy-e2e -- env PATH="$PATH" \
 
 # A relay-launched app end to end: an in-process relay and worker, the
 # worker's real legacy VM and headless shell, the window streamed to the
-# member and their keystrokes back into the guest.
+# member and their keystrokes back into the guest. iroh's link changes and
+# rebinds and QUIC's path events are logged too: a relay connection that
+# stops carrying packets then says what changed under it.
 runuser -u legacy-e2e -- env PATH="$PATH" \
   WGPU_BACKEND=vulkan \
   VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
   WGPU_ADAPTER_NAME=llvmpipe \
-  RUST_LOG=warn \
+  RUST_LOG=warn,iroh::socket=debug,noq_proto::connection=debug \
   TILO_LEGACY_E2E_IMAGE="$PWD/e2e/disk/disk.qcow2" \
   TILO_LEGACY_E2E_TILO_LEGACY="$PWD/e2e/bin/tilo-legacy" \
   TILO_LEGACY_E2E_SHELL="$PWD/e2e/bin/shell" \

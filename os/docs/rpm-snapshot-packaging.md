@@ -25,9 +25,9 @@ environment would conceal the omission. The boundary regression tests cover both
 
 ## Local preparation
 
-Publication normally runs through `.forgejo/workflows/build-rpms.yml`, which
-tags `registry.tilo.so/tilo/rpms:set-<fingerprint>` and is also a reusable
-workflow for image builds. Local builds are supported for preparation and
+Publication runs through t's RPM snapshot chain (`image-rpms-<arch>`,
+`image-rpms`, `provenance-rpms`, `sign-rpms`, `publish-rpms`), which tags
+`registry.tilo.so/tilo/rpms:set-<fingerprint>` from stable. Local builds are supported for preparation and
 diagnosis; they do not publish, sign or promote an artifact. There is no
 `os/dev/snapshot-rpms.sh` helper.
 

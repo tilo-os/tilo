@@ -15,7 +15,7 @@ use std::process::Command;
 fn bin_path() -> PathBuf {
     // CARGO_BIN_EXE_<name> is injected by cargo at build time
     // for integration tests. The bin name is `tilo-app-package`.
-    PathBuf::from(env!("CARGO_BIN_EXE_tilo-app-package"))
+    tilo_test_env::package_binary!("tilo-app-package")
 }
 
 /// Tiny manifest fixture — same shape as the tilo-app-package fixtures

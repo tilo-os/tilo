@@ -51,10 +51,6 @@ impl SubjectError {
 
 /// How much of each pixel of `picture` (straight RGBA, `width` by
 /// `height`) is its subject.
-///
-/// # Errors
-/// Returns that no model is installed or reachable, that the picture is
-/// empty, or the model's failure.
 pub fn find_subject(rgba: &[u8], width: u32, height: u32) -> Result<Subject, SubjectError> {
     let image = RgbaImage::from_raw(width, height, rgba.to_vec())
         .filter(|_| width > 0 && height > 0)
@@ -71,17 +67,17 @@ pub fn find_subject(rgba: &[u8], width: u32, height: u32) -> Result<Subject, Sub
     };
     let jpeg = encode_jpeg(&sent, 90)?;
     let hash = hex::encode(Sha256::digest(rgba));
-    let request = tilo_model_gateway::VisionImage {
+    let request = tilo_model_client::VisionImage {
         media_type: "image/jpeg".into(),
         data_base64: base64::engine::general_purpose::STANDARD.encode(&jpeg),
         source_content_hash: hash,
     };
-    let answer = tilo_model_gateway::segment_subject(request).map_err(|error| match error {
-        tilo_model_gateway::ClientError::Unavailable => {
+    let answer = tilo_model_client::segment_subject(request).map_err(|error| match error {
+        tilo_model_client::ClientError::Unavailable => {
             SubjectError::Unavailable("the model service is not available to this app".into())
         }
-        tilo_model_gateway::ClientError::Rejected(message)
-            if message.contains(tilo_model_gateway::NO_SEGMENTATION_MODEL)
+        tilo_model_client::ClientError::Rejected(message)
+            if message.contains(tilo_model_client::NO_SEGMENTATION_MODEL)
                 || message.contains("not authorized")
                 || message.contains("unknown variant") =>
         {

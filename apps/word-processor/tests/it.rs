@@ -28,9 +28,12 @@ mod support;
 mod framework_host;
 #[path = "framework_read.rs"]
 mod framework_read;
+mod window_documents;
 
 #[path = "framework_undo.rs"]
 mod framework_undo;
+
+mod scroll_cost;
 
 #[path = "writer_benchmark.rs"]
 mod writer_benchmark;

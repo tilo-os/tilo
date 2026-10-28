@@ -31,9 +31,9 @@ key = "passwords-saved-item"
 reason = "Closing the item editor after Save looks like Cancel, so the deliberate save names the item it kept."
 
 [[allow]]
-file = "apps/maps/src/app.rs"
-text = "Saved"
-reason = "The label of a place's Save toggle while the place is in the saved places: a bookmark, not persistence."
+unit = "apps-maps"
+key = "maps-saved"
+reason = "The label of a place's Save toggle while the place is in the saved places: a bookmark, not persistence, now that the label is catalogue copy rather than a literal."
 
 [[allow]]
 file = "apps/shortcuts/src/view.rs"

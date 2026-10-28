@@ -17,8 +17,8 @@ fn fixture() -> (
 ) {
     let mut tree = WorkspaceTree::default();
     let mut workspace = Workspace::new(WorkspaceId(71), "MCP");
-    let room = workspace.room.to_string();
-    let actor = crate::shell::state::local_user_id_for_room(&workspace.room);
+    let room = workspace.room().to_string();
+    let actor = crate::shell::state::local_user_id_for_room(&workspace.room());
     workspace.set_owner(actor.clone());
     tree.desktop.workspaces.push(workspace);
     tree.set_active(WorkspaceId(71));
@@ -77,7 +77,7 @@ async fn protocol_errors_and_request_metadata_are_validated() {
     }
     // Phase `null_id_is_rejected_before_mutating_dispatch_and_valid_id_boundaries_hold`.
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let (fixture, room, actor) = fixture();
             let server = McpServer::new(BrokerActionHost::new(fixture.broker.clone()), room, actor);
             let mut null_id = call(
@@ -120,7 +120,7 @@ async fn protocol_errors_and_request_metadata_are_validated() {
                 assert_eq!(reply["id"], id);
                 assert_eq!(reply["result"], json!({}));
             }
-        })
+        }))
         .await;
     // Phase `protocol_and_argument_boundaries`.
     {
@@ -192,7 +192,7 @@ async fn protocol_errors_and_request_metadata_are_validated() {
         );
     }
     // Phase `request_metadata_is_accepted_without_becoming_broker_authority`.
-    tokio::task::LocalSet::new().run_until(async {
+    tokio::task::LocalSet::new().run_until(Box::pin(async {
         let (mut fixture, room, actor) = fixture();
         let server = McpServer::new(BrokerActionHost::new(fixture.broker.clone()), room, actor.clone());
         let metadata = json!({"progressToken":"progress-1","actor":"foreign","workspace":"foreign-room"});
@@ -210,7 +210,7 @@ async fn protocol_errors_and_request_metadata_are_validated() {
         let mut spoof = call("tilo_list_apps", &json!({"actor":"foreign"}));
         spoof["params"]["_meta"] = metadata;
         assert_eq!(server.handle(spoof).await.unwrap()["result"]["isError"], true);
-    }).await;
+    })).await;
     // Phase `request_metadata_must_be_an_object_with_a_valid_progress_token`.
     {
         let (fixture, room, actor) = fixture();
@@ -256,7 +256,7 @@ async fn protocol_errors_and_request_metadata_are_validated() {
 )]
 async fn broker_queries_and_resources_are_live_and_authority_scoped() {
     // Phase `actual_broker_query_resolve_and_stale_invocation`.
-    tokio::task::LocalSet::new().run_until(async {
+    tokio::task::LocalSet::new().run_until(Box::pin(async {
         let (fixture, room, actor) = fixture();
         let server = McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room,actor);
         let roots=server.handle(call("tilo_list_apps",&json!({}))).await.unwrap();
@@ -270,7 +270,7 @@ async fn broker_queries_and_resources_are_live_and_authority_scoped() {
         let invoke=server.handle(call("tilo_invoke",&json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}})));
         let (reply,())=tokio::join!(invoke, async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         assert_eq!(reply.unwrap()["result"]["isError"],true);
-    }).await;
+    })).await;
     // Phase `resources_are_live_room_scoped_and_reads_use_authority`.
     tokio::task::LocalSet::new().run_until(Box::pin(async {
         let (fixture, room, actor) = fixture();
@@ -281,7 +281,12 @@ async fn broker_queries_and_resources_are_live_and_authority_scoped() {
         let (reply,())=tokio::join!(read,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         assert!(reply.unwrap()["result"]["contents"][0]["text"].as_str().unwrap().contains("directory-r1"));
         let other=McpServer::new(BrokerActionHost::new(fixture.broker.clone()),"different-room".into(),"outsider".into());
-        assert_eq!(other.handle(request("resources/list",&json!({}))).await.unwrap()["result"]["resources"],json!([]));
+        // A room this device does not hold is not an empty one: the agent is
+        // refused with the reason, and is told nothing of any other room.
+        let listed=other.handle(request("resources/list",&json!({}))).await.unwrap();
+        assert!(listed.get("error").is_some(), "{listed}");
+        assert!(listed.get("result").is_none(), "{listed}");
+        assert!(!listed.to_string().contains("tilo://apps/71"), "{listed}");
         assert!(other.handle(request("resources/read",&json!({"uri":"tilo://apps/71"}))).await.unwrap().get("error").is_some());
         let denied=McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room,"outsider".into());
         let read=denied.handle(request("resources/read",&json!({"uri":"tilo://apps/71"})));
@@ -352,8 +357,8 @@ async fn broker_queries_and_resources_are_live_and_authority_scoped() {
     tokio::task::LocalSet::new().run_until(Box::pin(async {
         let mut tree = WorkspaceTree::default();
         let mut workspace = Workspace::new(WorkspaceId(71), "First connection");
-        let room = workspace.room.to_string();
-        let actor = crate::shell::state::local_user_id_for_room(&workspace.room);
+        let room = workspace.room().to_string();
+        let actor = crate::shell::state::local_user_id_for_room(&workspace.room());
         workspace.set_owner(actor.clone());
         tree.desktop.workspaces.push(workspace);
         tree.set_active(WorkspaceId(71));
@@ -417,7 +422,7 @@ async fn invocations_preserve_actor_arguments_and_start_once() {
         assert_ne!(status["result"]["structuredContent"]["update"]["state"],"succeeded");
     })).await;
     // Phase `a_retried_invocation_id_starts_the_action_once`.
-    tokio::task::LocalSet::new().run_until(async {
+    tokio::task::LocalSet::new().run_until(Box::pin(async {
         let (mut fixture,room,actor)=fixture();
         let server=McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room.clone(),actor.clone());
         let id="6a1e5c3a-9d2f-4a6b-8c1e-2f3a4b5c6d7e";
@@ -433,10 +438,10 @@ async fn invocations_preserve_actor_arguments_and_start_once() {
         assert_eq!(fixture.resolve_count(),1,"nor re-resolves the directory");
         let other=json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{"changed":true},"invocation_id":id});
         assert_eq!(server.handle(call("tilo_invoke",&other)).await.unwrap()["result"]["isError"],true,"an id cannot be reused for another request");
-    }).await;
+    })).await;
     // Phase `invocation_preserves_typed_argument_maps_through_the_broker`.
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let (mut fixture, room, actor) = fixture();
             let server = McpServer::new(BrokerActionHost::new(fixture.broker.clone()), room, actor);
             let original = json!({
@@ -500,7 +505,7 @@ async fn invocations_preserve_actor_arguments_and_start_once() {
                 tilo_actions::ActionArgs::bind_json(&params, &numeric_crop).is_err(),
                 "a numeric crop region must fail canonical text validation"
             );
-        })
+        }))
         .await;
 }
 
@@ -599,8 +604,8 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
         assert!(
             timeout["result"]["content"][0]["text"]
                 .as_str()
-                .unwrap()
-                .starts_with("TimedOut")
+                .is_some_and(|text| text.starts_with("the desktop's actions did not answer within")),
+            "{timeout}"
         );
     }
     // Phase `the_person_confirms_on_their_device_and_terminal_content_survives_the_broker`.
@@ -655,14 +660,12 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
         let id=reply["result"]["structuredContent"]["invocation_id"].as_str().unwrap().to_owned();
         let invocation:tilo_actions::InvocationId=serde_json::from_value(reply["result"]["structuredContent"]["update"]["invocation"].clone()).unwrap();
         assert_eq!(invocation.0.to_string(),id,"the update speaks in the caller's invocation id");
-        // The job is the MCP client's agent's, acting for the person.
         let tilo_actions::remote::CallerPrincipal::Agent(agent) = server.execution_caller().principal().clone() else {
             panic!("the MCP client is an agent");
         };
         assert_eq!(server.execution_caller().acting_for_person(), Some(actor_name.as_str()));
         let job=fixture.broker.statuses(&format!("agent:{agent}")).into_iter().map(|(job,_)|job).max().expect("the broker job behind it");
         let output=tilo_actions::ActionOutput {value:Some(json!({"content":"sha256:123","width":200})),resources:vec!["content:sha256:123".into()]};
-        // Scoped applications answer with the exact stable UUID they received.
         let (first_job,first_invocation)=fixture.take_invocation_identity().expect("first actual delivery");
         let (delivered_job,delivered_invocation)=fixture.take_invocation_identity().expect("second actual delivery");
         assert_ne!(first_job,delivered_job);

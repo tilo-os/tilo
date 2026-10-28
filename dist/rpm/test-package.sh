@@ -85,7 +85,7 @@ grep -Fxiq "$bundle_publisher" /etc/tilo/runtime-bundle-trusted-publishers.txt
 # The ush supervisor runs these: a relay environment's pty bridge, the relay
 # picker's asker, and the legacy VM service behind app shims.
 for program in /usr/libexec/tilo-ush /usr/libexec/tilo-relay-environment \
-               /usr/libexec/tilo-relay-offers /usr/bin/tilo-legacy; do
+               /usr/libexec/tilo-relay-offers /usr/libexec/tilo/tilo-legacy; do
     test -x "$program"
     test "$(rpm -qf "$program")" = "$(rpm -q tilo-session-apps)"
 done

@@ -140,9 +140,9 @@ impl RichTextSource for DraftField {
 }
 
 /// The source behind Chat's one retained composer. Ordinary channels point
-/// at their shared document draft; a direct Agent conversation points at a
-/// peer-local draft keyed by the exact workspace and Agent. Switching never
-/// copies private text into the room document.
+/// at their shared document draft; a direct conversation with a person points
+/// at a peer-local draft keyed by the exact workspace and person. Switching
+/// never copies private text into the room document.
 pub struct ComposerSource {
     shared: DraftField,
     private: LocalState<HashMap<String, Draft>>,
@@ -286,13 +286,9 @@ impl RichTextSource for ComposerSource {
     }
 }
 
-/// Private routes distinguish certified people from agent/task editor routes.
+/// The private route of a direct conversation with a certified person.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ConversationKey {
-    Agent {
-        workspace: String,
-        route: String,
-    },
     Person {
         workspace: String,
         public_key: String,
@@ -301,27 +297,16 @@ pub enum ConversationKey {
 
 impl ConversationKey {
     pub(crate) fn draft_key(&self) -> String {
-        let (kind, workspace, target) = match self {
-            Self::Agent { workspace, route } => ("agent", workspace, route.clone()),
-            Self::Person {
-                workspace,
-                public_key,
-            } => ("person", workspace, public_key.clone()),
-        };
+        let Self::Person {
+            workspace,
+            public_key,
+        } = self;
         format!(
-            "{kind}:{}:{workspace}:{}:{target}",
+            "person:{}:{workspace}:{}:{public_key}",
             workspace.len(),
-            target.len()
+            public_key.len()
         )
     }
-}
-
-fn agent_draft_key(workspace: &str, agent: &str) -> String {
-    ConversationKey::Agent {
-        workspace: workspace.into(),
-        route: agent.into(),
-    }
-    .draft_key()
 }
 
 /// The SDK editor as a chat composer.
@@ -431,11 +416,6 @@ impl DraftComposer {
         self.host.widget_mut().source_mut().read_only = read_only;
     }
 
-    /// Edit the private draft for one authenticated direct-Agent route.
-    pub fn set_agent_draft(&mut self, workspace: &str, agent: &str) {
-        self.set_private_draft(agent_draft_key(workspace, agent));
-    }
-
     pub fn set_conversation_draft(&mut self, conversation: &ConversationKey) {
         self.set_private_draft(conversation.draft_key());
     }
@@ -463,43 +443,6 @@ impl DraftComposer {
     /// Plain text currently held by the attached private draft.
     pub fn private_plain(&self) -> Option<String> {
         self.host.widget().source().private_plain()
-    }
-
-    pub(crate) fn private_revision_for(&self, workspace: &str, agent: &str) -> Option<u64> {
-        let key = agent_draft_key(workspace, agent);
-        self.host.widget().source().private.with(|drafts| {
-            drafts
-                .get(&key)
-                .and_then(tilo_rich_text::RichTextSource::revision)
-        })
-    }
-
-    pub(crate) fn clear_private_for_revision(
-        &mut self,
-        workspace: &str,
-        agent: &str,
-        expected: u64,
-    ) -> bool {
-        let key = agent_draft_key(workspace, agent);
-        let mut cleared = false;
-        self.host
-            .widget_mut()
-            .source_mut()
-            .private
-            .update(|drafts| {
-                let Some(draft) = drafts.get_mut(&key) else {
-                    return;
-                };
-                if tilo_rich_text::RichTextSource::revision(draft) == Some(expected) {
-                    draft.clear();
-                    cleared = true;
-                }
-            });
-        if cleared {
-            self.host.widget_mut().source_mut().observe();
-            self.host.widget_mut().present_now();
-        }
-        cleared
     }
 
     pub(crate) fn set_conversation_text(&mut self, conversation: &ConversationKey, text: &str) {
@@ -757,8 +700,11 @@ impl<S: RichTextSource + 'static> Composer<S> {
         doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
         // Show the draft as it is now first, so the edit is made against it.
+        let before = ui::tilo_resource::profiling::Phase::start("chat.composer.sync_before");
         self.host.sync(doc, &automerge::ROOT);
+        before.end();
         let mut handled = false;
+        let edit = ui::tilo_resource::profiling::Phase::start("chat.composer.edit");
         self.host.handle_event(
             event,
             scale,
@@ -767,6 +713,8 @@ impl<S: RichTextSource + 'static> Composer<S> {
             &automerge::ROOT,
             &mut handled,
         );
+        edit.end();
+        let _after = ui::tilo_resource::profiling::Phase::start("chat.composer.sync_after");
         self.host.sync(doc, &automerge::ROOT);
         handled
     }

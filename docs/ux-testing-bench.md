@@ -52,7 +52,9 @@ Scenario JSON has a `name`, user `goal`, `viewport`, `budget` for clicks and key
 - `wheel` injects line or physical-pixel input at a logical pointer position or the visible center of a unique semantic `target`, with gesture phase. Scale converts physical movement to logical distance.
 - `wait_state` waits for an adapter state outcome with a bounded timeout.
 - `checkpoint` captures pixels, the inspection tree, resource/action contracts and native workspace/tab state.
-- Checks cover visibility, absence, spacing, alignment, overlap, target size, explicit pixel contrast, target movement, image-region translation, stationary image regions, resources, semantic values/selection and native state.
+- Checks cover visibility, absence, spacing, alignment, overlap, target size, keyboard focus, explicit pixel contrast, target movement, image-region translation, stationary image regions, resources, semantic values/selection and native state.
+
+The `focus` check names a widget path, a test id or a `semantic:` name and passes when that control is where the runner's keyboard focus is: the widget itself, or a control inside it that publishes `focused`. It is the width-class check values cannot stand in for, because shape decides which controls exist at which width and a journey that only reads values can pass while the keyboard can no longer reach the primary action. Its observed evidence names the focus owner, and the checkpoint's inspection file records the same tree. Use it beside `visible` and `target_size` on the same target: reachable, drawn and big enough to hit are three separate promises.
 
 Every journey must end with an outcome assertion. Failures retain expected and observed values. A missing or ambiguous target fails measurements; missing geometry does not prove a control is absent. The Files scroll scenario checks both moving list pixels and a stationary workspace chip. Target-relative image regions use `{"target":"semantic:Files","inset":[12,32,12,32]}` (left/top/right/bottom logical-pixel insets). Both captures must have identical target bounds; the same screen region is sampled in both, so moving the whole container cannot pass. Blank stationary regions and unchanged scroll pixels fail.
 
@@ -64,7 +66,9 @@ Each native run exports the permission-filtered shell catalogue to `initial.acti
 
 ## Matrix and limits
 
-`--matrix` executes all eight original journeys across baseline, compact (800×700), light, high-contrast, Retina input scale and 200% text: 48 runs. Click routes use the actual semantic control bounds. Files scrolling uses its real viewport and a target-relative stationary workspace chip. Settings also scrolls its General body to the summary and back before renaming, within the original click/key budget.
+`--matrix` executes all nine journeys across baseline, compact (800×700), light, high-contrast, Retina input scale and 200% text: 54 runs. Click routes use the actual semantic control bounds. Files scrolling uses its real viewport and a target-relative stationary workspace chip. Settings also scrolls its General body to the summary and back before renaming, within the original click/key budget.
+
+`copy-paste.json` copies all of one document and pastes it into another, all through the keyboard: select all, copy, open the second file, paste. Its select-all checkpoint reads the editor's published value and text selection, which is the only way a document's selection is checkable without reading pixels. An editor that draws a selection but publishes none fails it at the source.
 
 Contrast remains two explicit rendered pixel pairs per variant at a minimum 4.5:1. `VARIANT_PIXEL_PROBES` in `run-suite.py` contains separately authored compact and large-text glyph interiors; other variants retain the original pairs. These probes deliberately sample the Home name and app shortcut hint, not icons or blank wallpaper. When typography/layout changes, inspect the rendered glyphs and re-author affected probes; do not lower the contrast threshold.
 

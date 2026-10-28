@@ -1,18 +1,9 @@
 import hashlib,importlib.util,json,os,subprocess,sys,tarfile,tempfile,unittest
 from pathlib import Path
 from unittest.mock import patch
+from restart_fixture import restart_fixture
 ROOT=Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('failure',ROOT/'os/dev/kernel_failure_checkpoint.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
-def restart_fixture(test):
-    """Give the next subTest phase of a merged test the fresh fixture it had
-    as its own test: tear down, run cleanups, reset instance state, set up."""
-    test.tearDown()
-    test.doCleanups()
-    fresh = type(test)(test._testMethodName).__dict__
-    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
-    test.__dict__.clear()
-    test.__dict__.update(fresh, **keep)
-    test.setUp()
 
 
 class FailureCheckpoint(unittest.TestCase):

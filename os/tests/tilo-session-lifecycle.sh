@@ -20,7 +20,6 @@ selinux_policy="$repo/os/usr/share/tilo/selinux/tilo-base.cil"
 identity_unit="$repo/os/usr/lib/systemd/user/tilo-identity.service"
 recipient_unit="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.service"
 recipient_socket="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.socket"
-release_workflow="$repo/.forgejo/workflows/build-image.yml"
 shell_main="$repo/crates/session/shell/src/linux_main.rs"
 
 grep -Fqx 'readonly DBUS_UPDATE=/usr/bin/dbus-update-activation-environment' "$wrapper"
@@ -134,13 +133,6 @@ engine_deps_line=$(grep -n '&& gst-inspect-1.0 aacparse >/dev/null' "$repo/os/Co
 shell_link_check_line=$(grep -n 'missing="$(ldd /usr/bin/shell /usr/bin/xwayland-satellite' "$repo/os/Containerfile" | tail -1 | cut -d: -f1)
 test "$engine_deps_line" -lt "$shell_link_check_line"
 grep -Fq 'the browser engine has unresolved runtime libraries:' "$repo/os/Containerfile"
-grep -Fq 'busctl --user status org.freedesktop.impl.portal.desktop.tilo' "$release_workflow"
-# First-use actions are now driven through the installed AT-SPI endpoint;
-# keeping stale blind-keyboard assertions here made the FUSE lane reject the
-# stronger accessibility release gate before any filesystem test could run.
-grep -Fq './os/dev/vm.sh test native-atspi-smoke.sh oobe-actions' "$release_workflow"
-grep -Fq './os/dev/vm.sh keys tab ret' "$release_workflow"
-grep -Fq 'identity ceremony did not produce the certified chain' "$release_workflow"
 
 tmp_root="${TMPDIR:-/tmp}"
 tmp=$(mktemp -d "$tmp_root/tilo-session-lifecycle.XXXXXX")
@@ -309,6 +301,36 @@ head -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 start=.* pid
 grep -Fqx "desktop-output --backend drm trace=$slow_dir/frame-trace.csv" "$slow_dir/latest.log"
 tail -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 end=.* status=5 logout_request=no restart_request=no$'
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
+# The recorder persists its start record before it marks itself ready, so the
+# wrapper may stop waiting on the record alone. A ready mark that comes after
+# that must still be gone with the session, not left in the runtime directory.
+late_ready_recorder="$tmp/late-ready-flight-recorder"
+cat >"$late_ready_recorder" <<SH
+#!/bin/bash
+ready=\$TILO_FLIGHT_RECORD_READY
+unset TILO_FLIGHT_RECORD_READY
+(sleep 0.5; : >"\$ready") &
+"$TILO_FLIGHT_RECORDER" "\$@"
+status=\$?
+wait
+exit \$status
+SH
+chmod 0755 "$late_ready_recorder"
+late_ready_wrapper="$tmp/tilo-session-late-ready"
+tilo_stage_script "$wrapper" "$late_ready_wrapper" \
+  SYSTEMCTL="$fake_systemctl" \
+  DBUS_UPDATE="$fake_dbus_update" \
+  SHELL_BIN="$fake_shell" \
+  IMAGE_FLAVOUR="$tmp/no-image-flavour" \
+  FLIGHT_RECORDER="$late_ready_recorder"
+set +e
+XDG_STATE_HOME="$tmp/late-ready-state" XDG_RUNTIME_DIR="$runtime_dir" \
+  TILO_SESSION_TEST_LOG="$tmp/late-ready-log" TILO_SESSION_DESKTOP_STATUS=5 \
+  timeout 20 "$late_ready_wrapper" --backend drm >"$tmp/late-ready-stdout"
+status=$?
+set -e
+[ "$status" = 5 ]
+[ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
 # A full or failing disk must never keep the person from logging in. Here the
 # state directory cannot exist at all (its parent is a file), so every write
 # the wrapper and the recorder try fails, as on a full disk; the tests may run
@@ -342,6 +364,9 @@ if [ -s "$held_log.holder" ]; then
   kill "$(cat "$held_log.holder")" 2>/dev/null || true
 fi
 [ "$held_status" = 9 ]
+# Asked to finish, the recorder still publishes the output it relayed.
+grep -Fqx "desktop-output --backend headless trace=$tmp/held-state/tilo/session-logs/frame-trace.csv" \
+  "$tmp/held-state/tilo/session-logs/latest.log"
 tail -n 1 "$tmp/held-state/tilo/session-logs/latest.log" \
   | grep -Eq '^tilo-flight-record-v1 end=.* status=9 logout_request=no restart_request=no$'
 cat >"$tmp/expected" <<'EOF'

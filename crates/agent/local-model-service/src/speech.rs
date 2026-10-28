@@ -48,8 +48,6 @@ pub fn speech_model_file(
 
 /// Require a separately receipt-checked acoustic graph when the signed image
 /// catalogue declares one. Legacy catalogues remain recognizer-only.
-/// # Errors
-/// A declared but uninstalled, changed or unaccepted graph fails before Ready.
 pub fn speech_activity_file(
     root: &Path,
     catalog: &VerifiedCatalog,
@@ -150,8 +148,6 @@ pub fn speech_model_bytes(
 }
 
 /// Apply the system parser sandbox before loading untrusted native weights.
-/// # Errors
-/// Fails closed if full Landlock or seccomp enforcement is unavailable.
 pub fn confine_worker() -> Result<(), SpeechError> {
     use sandbox_core::{landlock, seccomp};
     let policy = landlock::RulesetSpec::application(Vec::new(), landlock::NetRestriction::DenyAll);
@@ -356,8 +352,6 @@ impl SpeechEngine {
     }
     /// Decode 16 kHz mono samples, replacing a draft rather than appending
     /// competing hypotheses. Caller supplies complete bounded phrase audio.
-    /// # Errors
-    /// Fails on oversized/invalid audio, native failure or invalid text.
     pub fn transcribe(
         &mut self,
         samples: &[f32],

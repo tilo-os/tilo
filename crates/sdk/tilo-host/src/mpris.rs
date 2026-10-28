@@ -274,14 +274,12 @@ mod tests {
 
     #[test]
     fn mpris_names_paths_and_status_map_to_valid_bus_values() {
-        // Case `playback_status_maps_to_mpris_strings`.
         {
             assert_eq!(PlaybackStatus::Playing.as_mpris(), "Playing");
             assert_eq!(PlaybackStatus::Paused.as_mpris(), "Paused");
             assert_eq!(PlaybackStatus::Stopped.as_mpris(), "Stopped");
         }
 
-        // Case `config_builds_mpris_bus_name`.
         {
             let c = MprisConfig::new("tilo-tube", "Tilo Tube");
             assert_eq!(c.bus_name, "org.mpris.MediaPlayer2.tilo-tube");
@@ -289,7 +287,6 @@ mod tests {
             assert_eq!(c.desktop_entry, "tilo-tube");
         }
 
-        // Case `track_object_path_is_valid_and_sanitised`.
         {
             assert_eq!(
                 track_object_path(""),
@@ -306,7 +303,6 @@ mod tests {
 
     #[test]
     fn mpris_republish_dedups_and_disabled_handles_are_inert() {
-        // Case `republish_dedups_but_reacts_to_material_change`.
         {
             let base = PlayerSnapshot::default();
             let mut same = base.clone();
@@ -327,7 +323,6 @@ mod tests {
             assert!(track.should_republish(&base));
         }
 
-        // Case `disabled_handle_is_inert`.
         {
             let mut h = MprisHandle::disabled();
             assert!(!h.is_active());

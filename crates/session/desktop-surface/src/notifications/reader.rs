@@ -115,6 +115,19 @@ impl NotificationReader {
         self.back_focused
     }
 
+    /// Whether the page's bar fade or a glide needs frames.
+    pub fn needs_animation_frame(&self) -> bool {
+        self.theme
+            .as_ref()
+            .is_some_and(|theme| self.region.needs_animation_frame(theme))
+    }
+
+    /// Step a glide after a flick to the frame's time; returns whether the
+    /// page moved.
+    pub fn advance(&mut self) -> bool {
+        self.region.advance()
+    }
+
     pub fn event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
         let Some(theme) = &self.theme else {
             return false;

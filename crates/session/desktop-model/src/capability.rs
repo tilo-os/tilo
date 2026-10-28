@@ -25,6 +25,9 @@ pub const GRANT_SESSION: Expiry = Expiry::EndOfSession;
 /// "Always" — survives a restart.
 pub const GRANT_ALWAYS: Expiry = Expiry::Never;
 
+/// The device scope of [`Capability::DesktopControl`].
+pub const DESKTOP_CONTROL_DEVICE: &str = "desktop-control";
+
 /// Per-app capability grant stored on a [`Workspace`](crate::workspace::Workspace). Each variant maps
 /// to its own enforcement layer: Bubblewrap allowlist for filesystem,
 /// Pipewire ACL for camera/mic, nftables for network.
@@ -86,6 +89,11 @@ pub enum Capability {
     /// filter otherwise refuses. Applied when the app is launched: the
     /// launcher leaves the three `io_uring` calls out of its filter.
     IoUring { scope: GrantScope },
+    /// Using the desktop's actions beyond the app's own workspace, from a
+    /// program running in it (`tilo action` in a terminal). Decided at the
+    /// desktop's prompt and kept here only when the person said "Always";
+    /// "this tab" lasts as long as the tab and is held in memory.
+    DesktopControl { scope: GrantScope },
 }
 
 impl Capability {
@@ -132,6 +140,9 @@ impl Capability {
                 vec![(Scope::Device("process-commands".into()), Access::Read)]
             }
             Capability::IoUring { .. } => vec![(Scope::Device("io-uring".into()), Access::Read)],
+            Capability::DesktopControl { .. } => {
+                vec![(Scope::Device(DESKTOP_CONTROL_DEVICE.into()), Access::Write)]
+            }
             Capability::Network { hosts, .. } => match hosts {
                 // An allowlist means exactly those hosts; `None` is the
                 // only thing that produces a wildcard scope — behaving
@@ -159,6 +170,7 @@ impl Capability {
             | Capability::Processes { scope }
             | Capability::ProcessCommands { scope }
             | Capability::IoUring { scope }
+            | Capability::DesktopControl { scope }
             | Capability::Network { scope, .. } => *scope,
         }
     }
@@ -193,6 +205,9 @@ impl Capability {
                 Some(Capability::ProcessCommands { scope })
             }
             Scope::Device(d) if d == "io-uring" => Some(Capability::IoUring { scope }),
+            Scope::Device(d) if d == DESKTOP_CONTROL_DEVICE => {
+                Some(Capability::DesktopControl { scope })
+            }
             Scope::NetHost(h) => Some(Capability::Network {
                 hosts: if h == "*" {
                     None

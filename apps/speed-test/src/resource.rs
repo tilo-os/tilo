@@ -85,14 +85,17 @@ impl SpeedTest {
     }
 }
 
-/// What anyone can do with a run: the button, the palette, an agent.
+/// What anyone can do with a run: the button, the palette, an agent. A run
+/// measures this device's own connection and shares nothing, so a guest in
+/// a public room runs it as its owner does.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "so.tilo.speed-test.run", device_only)]
+#[effect(operation = "so.tilo.speed-test.run")]
 pub enum SpeedEffect {
     /// Run speed test.
-    #[effect(job, cancellable)]
+    #[effect(job, cancellable, own_device)]
     Start,
     /// Stop speed test.
+    #[effect(own_device)]
     Stop,
 }
 
@@ -242,5 +245,28 @@ mod tests {
                 "Cleared the measurements"
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::SpeedTestShell::scenarios() {
+            let mut app = TestApp::<super::SpeedTestShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
     }
 }

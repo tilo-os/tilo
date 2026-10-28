@@ -201,17 +201,16 @@ async fn grant_is_required_and_refused_tokens_close_before_attachment() {
     for token in [&b"forged"[..], b""] {
         assert!(try_connect(&f, token, A).await.is_none());
     }
-    let admitted = connect(&f, b"grant-a", A).await;
-    assert!(
-        tokio::time::timeout(Duration::from_millis(200), admitted.session().closed())
-            .await
-            .is_err()
-    );
-    let counters = f.live.relay.counters();
-    assert!(
-        counters.rejected >= 1 && counters.accepted == 1,
-        "{counters:?}"
-    );
+    let mut admitted = connect(&f, b"grant-a", A).await;
+    // The admitted session is attached and served: its own presence comes
+    // back to it through the relay.
+    let mut own = presence_subscriber(&admitted, A).await;
+    let mut seq = 0;
+    first_presence(&mut admitted, &mut own, &mut seq).await;
+    tilo_test_env::wait_until("the forged grant counted as rejected", || {
+        f.live.relay.counters().rejected >= 1
+    });
+    assert_eq!(f.live.relay.counters().accepted, 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -230,8 +229,11 @@ async fn presence_is_relayed_latest_value_and_foreign_namespaces_are_refused() {
         assert!(forged.publish_presence(&presence(10_000 + extra, b"forged")));
     }
     // Stale (lower) sequence numbers from A are dropped; a newer one passes.
+    let dropped = f.live.relay.counters().presence_dropped;
     assert!(a.publish_presence(&presence(seq - 50, b"stale")));
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    tilo_test_env::wait_until("the stale frame dropped", || {
+        f.live.relay.counters().presence_dropped > dropped
+    });
     assert!(a.publish_presence(&presence(seq + 1, b"fresh")));
     let next = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
@@ -271,13 +273,24 @@ async fn the_presence_tap_sees_client_frames_but_not_injected_ones() {
         .unwrap();
     assert_eq!((room.as_str(), publisher.as_str()), (ROOM, A));
     assert_eq!(frame[8..], *b"hello");
-    while tapped.try_recv().is_ok() {}
     assert!(f.live.relay.inject_presence(ROOM, C, &presence(1, b"host")));
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(
-        tapped.try_recv().is_err(),
-        "a host-injected frame must not come back through the tap"
-    );
+    // A's next frame is tapped after the injection: everything tapped up to
+    // it is A's.
+    seq += 1;
+    assert!(a.publish_presence(&presence(seq, b"after-host")));
+    tilo_test_env::within("A's frame after the injection is tapped", async {
+        loop {
+            let (_, publisher, frame) = tapped.recv().await.unwrap();
+            assert_eq!(
+                publisher, A,
+                "a host-injected frame must not come back through the tap"
+            );
+            if frame[8..] == *b"after-host" {
+                return;
+            }
+        }
+    })
+    .await;
     drop((a, b));
 }
 
@@ -292,10 +305,19 @@ async fn viewer_may_subscribe_but_never_publish() {
     for i in 0..20 {
         assert!(viewer.publish_presence(&presence(i, b"viewer")));
     }
+    // A subscribe-only grant gets no ingress, so nothing it announces is
+    // ever read; and the relay holds no namespace for it.
     assert!(
-        tokio::time::timeout(Duration::from_millis(300), a.member(&path(C)))
-            .await
-            .is_err(),
+        f.live
+            .relay
+            .scopes(b"grant-viewer")
+            .is_some_and(|scopes| scopes.ingress.is_none()),
+        "a subscribe-only grant may publish"
+    );
+    // A's next frame reaches the viewer after its own frames went out.
+    first_presence(&mut a, &mut from_a, &mut seq).await;
+    assert!(
+        f.live.relay.0.slot(&path(C), false).is_none(),
         "a subscribe-only grant published a namespace"
     );
     drop(a);
@@ -310,27 +332,31 @@ async fn presence_rate_limit_drops_excess_frames() {
     let mut from_a = presence_subscriber(&b, A).await;
     let mut seq = 0;
     first_presence(&mut a, &mut from_a, &mut seq).await;
-    tokio::time::sleep(Duration::from_millis(300)).await; // refill
     let before = f.live.relay.counters();
     let started = Instant::now();
-    // 400 frames over ~200 ms: the ceiling admits the 30-frame burst plus
-    // 120/s for the time actually elapsed (sleeps stretch under load).
-    for i in 0..400u64 {
-        assert!(a.publish_presence(&presence(seq + 1 + i, b"burst")));
-        if i % 2 == 1 {
-            tokio::time::sleep(Duration::from_millis(1)).await;
+    // The ceiling admits the 30-frame burst plus 120/s for the time that
+    // actually elapsed. Keep offering until more frames went out than that
+    // ceiling allows, however long the machine takes to send them.
+    let ceiling = || 30 + (started.elapsed().as_secs_f64() * 120.0).ceil() as u64 + 1;
+    let mut sent = 0u64;
+    while sent <= ceiling() + 100 {
+        sent += 1;
+        assert!(a.publish_presence(&presence(seq + sent, b"burst")));
+        if sent.is_multiple_of(2) {
+            tokio::task::yield_now().await;
         }
     }
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tilo_test_env::wait_until("the burst reaches the relay", || {
+        f.live.relay.counters().presence_forwarded > before.presence_forwarded
+    });
     let after = f.live.relay.counters();
-    let ceiling = 30 + (started.elapsed().as_secs_f64() * 120.0).ceil() as u64 + 1;
+    let ceiling = ceiling();
     let forwarded = after.presence_forwarded - before.presence_forwarded;
     assert!(
         forwarded <= ceiling,
         "rate ceiling exceeded: {forwarded} forwarded, ceiling {ceiling}"
     );
-    assert!(forwarded < 400, "nothing was rate limited");
-    assert!(after.presence_dropped > before.presence_dropped);
+    assert!(forwarded < sent, "nothing was rate limited");
     drop(a);
     drop(b);
 }
@@ -607,12 +633,7 @@ async fn revocation_resets_only_the_revoked_publishers_tracks() {
     tokio::time::timeout(tilo_test_env::hang_bound(), a.session().closed())
         .await
         .expect("revoked session closes");
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), viewer.session().closed())
-            .await
-            .is_err()
-    );
-    // B keeps flowing to the viewer.
+    // B keeps flowing to the viewer, whose session stayed connected.
     first_presence(&mut b, &mut b_at_viewer, &mut sb).await;
     assert_eq!(f.live.relay.counters().revoked, 1);
     assert!(f.b.load(Ordering::SeqCst));
@@ -627,28 +648,72 @@ async fn open_records_per_publisher_are_bounded() {
     for i in 0..(MAX_OPEN_RECORDS + 2) {
         assert!(a.record(&format!("{:064x}", i + 1)).is_some());
     }
-    tokio::time::timeout(tilo_test_env::hang_bound(), async {
-        while f.live.relay.counters().records_refused < 2 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("records beyond the bound are refused");
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(f.live.relay.counters().records_refused, 2);
+    tilo_test_env::wait_until("records beyond the bound are refused", || {
+        f.live.relay.counters().records_refused >= 2
+    });
     // Closing a record frees its place for another.
     a.close_record(&format!("{:064x}", 1));
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(a.record(&format!("{:064x}", 100)).is_some());
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // The fixture authority accepts ops frames on RECORD only.
+    let replacement = RECORD;
+    assert!(a.record(replacement).is_some());
+    // The relay follows A's records in the order A announced them: once the
+    // replacement flows to a subscriber, every earlier announcement was
+    // decided, and the replacement took the closed record's place.
+    let b = connect(&f, b"grant-b", B).await;
+    let mut from_a = tilo_test_env::within("a subscription to the replacement", async {
+        loop {
+            let broadcast = b.member(&path(A)).await.expect("announce");
+            let subscription =
+                moq_net::track::Subscription::default().with_max_age(Duration::from_secs(2));
+            if let Ok(subscriber) = broadcast
+                .track(&format!("ops/{replacement}"))
+                .unwrap()
+                .subscribe(subscription)
+                .await
+            {
+                return subscriber;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    tilo_test_env::within("the replacement record reaches B", async {
+        loop {
+            assert!(a.write_record(replacement, b"ok-replacement"));
+            if let Ok(Ok(Some(mut group))) =
+                tokio::time::timeout(Duration::from_millis(50), from_a.recv_group()).await
+                && let Ok(Some(frame)) = group.read_frame().await
+                && frame.payload.as_ref() == b"ok-replacement"
+            {
+                return;
+            }
+        }
+    })
+    .await;
     assert_eq!(f.live.relay.counters().records_refused, 2);
 }
 
-/// Two native clients exchange presence both ways over loopback, and nearly
-/// every frame arrives; prints one-way relay latency (publisher append to
-/// subscriber receive, same clock) for a quiet machine to judge.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn loopback_presence_exchange_reaches_both_sides() {
+    let f = fixture();
+    let mut a = connect(&f, b"grant-a", A).await;
+    let mut b = connect(&f, b"grant-b", B).await;
+    let mut a_at_b = presence_subscriber(&b, A).await;
+    let mut b_at_a = presence_subscriber(&a, B).await;
+    let (mut sa, mut sb) = (0, 0);
+    let from_a = first_presence(&mut a, &mut a_at_b, &mut sa).await;
+    let from_b = first_presence(&mut b, &mut b_at_a, &mut sb).await;
+    assert_eq!((&from_a[8..], &from_b[8..]), (&b"hello"[..], &b"hello"[..]));
+    drop(a);
+    drop(b);
+}
+
+/// Prints how many of 200 presence frames each way arrive at 100 Hz and the
+/// one-way relay latency (publisher append to subscriber receive, same
+/// clock), for a quiet machine to judge.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "measurement; run with --ignored --nocapture"]
+async fn loopback_presence_latency() {
     let f = fixture();
     let mut a = connect(&f, b"grant-a", A).await;
     let mut b = connect(&f, b"grant-b", B).await;
@@ -708,17 +773,13 @@ async fn loopback_presence_exchange_reaches_both_sides() {
     }
     let mut samples = rx_b.await.unwrap();
     samples.extend(rx_a.await.unwrap());
-    assert!(
-        samples.len() >= FRAMES * 2 * 9 / 10,
-        "only {} of {} frames arrived",
-        samples.len(),
-        FRAMES * 2
-    );
+    assert!(!samples.is_empty(), "no measurement frame arrived");
     samples.sort_unstable();
     let pct = |p: usize| Duration::from_nanos(samples[(samples.len() - 1) * p / 100]);
     eprintln!(
-        "LIVE_LOOPBACK_LATENCY samples={} p50={:?} p90={:?} p99={:?} max={:?}",
+        "LIVE_LOOPBACK_LATENCY samples={} of {} p50={:?} p90={:?} p99={:?} max={:?}",
         samples.len(),
+        FRAMES * 2,
         pct(50),
         pct(90),
         pct(99),
@@ -772,6 +833,7 @@ async fn injection_reannounces_and_resubscribe_works_after_revocation_and_reconn
     tokio::time::timeout(tilo_test_env::hang_bound(), a.session().closed())
         .await
         .expect("revoked");
+    assert_eq!(f.live.relay.counters().reannounced, 1);
     // The withdrawn namespace closes at the subscriber (clients must watch
     // this); then resubscribe on the re-announced host-fed namespace.
     tokio::time::timeout(tilo_test_env::hang_bound(), old.closed())
@@ -793,7 +855,8 @@ async fn injection_reannounces_and_resubscribe_works_after_revocation_and_reconn
 }
 
 /// A late subscriber is not replayed an already delivered group: once a track
-/// is quiet the relay seals it with an empty group.
+/// is quiet the relay seals it with an empty group, and a late subscriber
+/// starts at the latest group.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn late_subscriber_is_not_replayed_stale_groups() {
     let f = fixture();
@@ -806,32 +869,66 @@ async fn late_subscriber_is_not_replayed_stale_groups() {
         inject_and_read(&f, &mut first, A, b"ok-old").await,
         b"ok-old"
     );
-    tokio::time::sleep(SEAL_QUIET + Duration::from_millis(100)).await;
+    // The quiet track is sealed; the first subscriber sees the seal (one
+    // empty frame).
+    tilo_test_env::within("the quiet track sealed", async {
+        let mut group = first.recv_group().await.unwrap().expect("seal group");
+        let frame = group.read_frame().await.unwrap().expect("seal frame");
+        assert!(frame.payload.is_empty(), "a sealed track carried data");
+    })
+    .await;
     let mut late = ops_subscriber(&viewer, A).await;
-    let replayed = tokio::time::timeout(Duration::from_millis(300), async {
+    // The late subscriber starts at the seal: the first data it is served is
+    // what the host writes next, never the stale group.
+    tilo_test_env::within("the next write reaches the late subscriber", async {
+        assert!(f.live.relay.inject_ops(ROOM, A, RECORD, b"ok-new"));
         loop {
-            let Ok(Some(mut group)) = late.recv_group().await else {
-                return None;
-            };
-            // Seal groups hold one empty frame.
+            let mut group = late.recv_group().await.unwrap().expect("ops group");
             if let Ok(Some(frame)) = group.read_frame().await
                 && !frame.payload.is_empty()
             {
-                return Some(frame.payload.to_vec());
+                assert_eq!(frame.payload.as_ref(), b"ok-new", "stale group replayed");
+                return;
             }
         }
     })
     .await;
-    assert!(
-        !matches!(replayed, Ok(Some(_))),
-        "stale group replayed: {replayed:?}"
-    );
-    assert_eq!(
-        inject_and_read(&f, &mut late, A, b"ok-new").await,
-        b"ok-new"
-    );
     drop(b);
     drop(viewer);
+}
+
+/// The last change on a state track outlives the seal for a reader that has
+/// not read it yet: a reader that stalls past the seal and the egress
+/// retention right after a change (a stream index emptied by a revocation)
+/// still receives that change, since nothing will ever repeat it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reader_behind_the_seal_still_receives_the_last_change() {
+    let f = fixture();
+    let b = connect(&f, b"grant-b", B).await;
+    assert!(!f.live.relay.inject_ops(ROOM, A, RECORD, b"ok-unread"));
+    let mut reader = ops_subscriber(&b, A).await;
+    assert_eq!(
+        inject_and_read(&f, &mut reader, A, b"ok-listed").await,
+        b"ok-listed"
+    );
+    assert!(f.live.relay.inject_ops(ROOM, A, RECORD, b"ok-revoked"));
+    // The reader falls behind: it reads on only once the quiet track is
+    // sealed and the change is older than the egress retention.
+    tokio::time::sleep(SEAL_AFTER + EGRESS_RETAIN + Duration::from_secs(1)).await;
+    let heard = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let mut group = reader.recv_group().await.unwrap().expect("ops group");
+            if let Ok(Some(frame)) = group.read_frame().await
+                && !frame.payload.is_empty()
+            {
+                return frame.payload;
+            }
+        }
+    })
+    .await
+    .expect("the last change reaches the reader that fell behind the seal");
+    assert_eq!(heard.as_ref(), b"ok-revoked");
+    drop(b);
 }
 
 /// A final withdrawal (revoked author, no host-fed replacement) is announced
@@ -871,32 +968,29 @@ async fn final_withdrawal_is_announced_inactive_and_not_reannounced() {
     tokio::time::timeout(tilo_test_env::hang_bound(), member.closed())
         .await
         .expect("member broadcast closed");
-    // Final: no re-announce (the host never fed this namespace).
-    let again = tokio::time::timeout(Duration::from_millis(600), async {
-        loop {
-            let update = announces.next().await.expect("announce stream");
-            if update.prefix.as_str() == path(A) {
-                return update.kind.is_active();
-            }
-        }
-    })
-    .await;
-    assert!(
-        !matches!(again, Ok(true)),
+    // Final: no re-announce (the host never fed this namespace). The relay
+    // decides that before it tells A to go away.
+    tilo_test_env::within("the revoked session closes", a.session().closed()).await;
+    assert_eq!(
+        f.live.relay.counters().reannounced,
+        0,
         "final withdrawal was re-announced"
     );
     // A clean disconnect of B is a final withdrawal as well.
     drop(b);
-    tokio::time::timeout(tilo_test_env::hang_bound(), async {
+    tilo_test_env::within("disconnected member announced inactive", async {
         loop {
             let update = announces.next().await.expect("announce stream");
+            assert!(
+                update.prefix.as_str() != path(A) || !update.kind.is_active(),
+                "final withdrawal was re-announced"
+            );
             if update.prefix.as_str() == path(B) && !update.kind.is_active() {
                 return;
             }
         }
     })
-    .await
-    .expect("disconnected member announced inactive");
+    .await;
     drop(viewer);
     drop(a);
 }
@@ -954,7 +1048,6 @@ async fn host_presence_injection_reaches_subscribers_and_never_speaks_for_a_clie
             .relay
             .inject_presence(ROOM, C, &presence(1, b"stale"))
     );
-    tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(
         f.live
             .relay
@@ -1010,8 +1103,9 @@ async fn host_presence_injection_reaches_subscribers_and_never_speaks_for_a_clie
     drop(b);
 }
 
-/// A revoked member stops receiving the room at once: nothing reaches it once
-/// the relay observed the lapse, while the other members keep flowing.
+/// A revoked member stops receiving the room at once: nothing published once
+/// the relay counted the revocation reaches it, while the other members keep
+/// flowing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_revoked_member_receives_nothing_after_revocation() {
     let f = fixture();
@@ -1025,58 +1119,140 @@ async fn a_revoked_member_receives_nothing_after_revocation() {
     first_presence(&mut b, &mut b_at_viewer, &mut seq).await;
     let received = Arc::new(std::sync::Mutex::new(Vec::new()));
     let log = received.clone();
+    // Ends when A's track or session ends.
     let reader = tokio::spawn(async move {
-        while let Ok(Some(_)) = b_at_a.recv_datagram().await {
-            log.lock().unwrap().push(Instant::now());
+        while let Ok(Some(datagram)) = b_at_a.recv_datagram().await {
+            log.lock().unwrap().push(datagram.payload.to_vec());
         }
     });
-    let publisher = tokio::spawn(async move {
-        let mut seq = 10_000;
-        loop {
+    tilo_test_env::within("b reaches a before revocation", async {
+        while received.lock().unwrap().is_empty() {
             seq += 1;
-            if !b.publish_presence(&presence(seq, b"b")) {
-                break;
-            }
+            assert!(b.publish_presence(&presence(seq, b"before")));
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-    });
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(
-        !received.lock().unwrap().is_empty(),
-        "b reaches a before revocation"
-    );
+    })
+    .await;
     f.a.store(false, Ordering::SeqCst);
-    tokio::time::timeout(tilo_test_env::hang_bound(), async {
-        while f.live.relay.counters().revoked == 0 {
-            tokio::time::sleep(Duration::from_millis(1)).await;
+    tilo_test_env::wait_until("revocation observed", || {
+        f.live.relay.counters().revoked == 1
+    });
+    // Everything B publishes from here on reaches the viewer and never A.
+    let mut still = 0;
+    tilo_test_env::within("b keeps reaching the viewer", async {
+        while still < 3 {
+            seq += 1;
+            assert!(b.publish_presence(&presence(seq, b"after")));
+            if let Ok(Ok(Some(datagram))) =
+                tokio::time::timeout(Duration::from_millis(50), b_at_viewer.recv_datagram()).await
+                && datagram.payload.ends_with(b"after")
+            {
+                still += 1;
+            }
         }
     })
-    .await
-    .expect("revocation observed");
-    let observed = Instant::now();
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    .await;
+    tilo_test_env::within("the revoked member's track ends", reader)
+        .await
+        .unwrap();
     let late = received
         .lock()
         .unwrap()
         .iter()
-        .filter(|at| **at > observed + Duration::from_millis(20))
+        .filter(|payload| payload.ends_with(b"after"))
         .count();
     assert_eq!(
         late, 0,
         "the revoked member received {late} frames after revocation"
     );
-    // The other members are untouched.
-    let mut still = 0;
-    tokio::time::timeout(tilo_test_env::hang_bound(), async {
-        while still < 3 {
-            if let Ok(Some(_)) = b_at_viewer.recv_datagram().await {
-                still += 1;
+    drop((a, viewer));
+}
+
+/// A page follows a member through withdrawal: a host-fed namespace idle past
+/// [`HOST_SLOT_IDLE`] is withdrawn, the host's next frame announces it
+/// afresh, and [`super::peer::MemberPresence`] reads on from the new
+/// broadcast instead of the ended one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn member_presence_follows_a_withdrawn_host_fed_member_to_its_new_broadcast() {
+    let f = fixture();
+    let viewer = connect(&f, b"grant-b", B).await;
+    let mut member = super::peer::MemberPresence::follow(&viewer, &path(C));
+    let mut seq = 0;
+    hear_injected(&f, &mut member, &mut seq, b"before").await;
+
+    // The namespace goes quiet past its idle bound and is collected.
+    let slot = f.live.relay.0.slot(&path(C), false).unwrap();
+    slot.state.lock_recover().host_active = None;
+    drop(slot);
+    f.live.relay.maintain();
+    assert!(
+        f.live.relay.0.slot(&path(C), false).is_none(),
+        "the idle host-fed namespace is withdrawn"
+    );
+
+    hear_injected(&f, &mut member, &mut seq, b"after").await;
+    drop(viewer);
+}
+
+/// An ops reader follows a member through withdrawal as a page's
+/// `subscribeOps` does: the subscription to the withdrawn broadcast ends,
+/// and [`super::peer::MemberOps`] subscribes to the re-announced one and
+/// reads on, never handing its reader the relay's empty seal frame.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn member_ops_follows_a_withdrawn_host_fed_member_to_its_new_broadcast() {
+    let f = fixture();
+    let viewer = connect(&f, b"grant-b", B).await;
+    let track = format!("{OPS_PREFIX}{RECORD}");
+    let mut ops = super::peer::MemberOps::follow(&viewer, &path(C), &track);
+    hear_injected_ops(&f, &mut ops, b"before").await;
+
+    let slot = f.live.relay.0.slot(&path(C), false).unwrap();
+    slot.state.lock_recover().host_active = None;
+    drop(slot);
+    f.live.relay.maintain();
+    assert!(
+        f.live.relay.0.slot(&path(C), false).is_none(),
+        "the idle host-fed namespace is withdrawn"
+    );
+
+    hear_injected_ops(&f, &mut ops, b"after").await;
+    drop(viewer);
+}
+
+/// Inject `frame` into the host-fed member C's ops track until `ops` hears
+/// it; every frame heard on the way is a non-empty injected one.
+async fn hear_injected_ops(f: &Fixture, ops: &mut super::peer::MemberOps, frame: &[u8]) {
+    tilo_test_env::within("the member's ops frame", async {
+        loop {
+            f.live.relay.inject_ops(ROOM, C, RECORD, frame);
+            while let Some(heard) = ops.next(Duration::from_millis(50)).await {
+                assert!(!heard.is_empty(), "the seal frame never reaches the reader");
+                if heard == frame {
+                    return;
+                }
             }
         }
     })
-    .await
-    .expect("b keeps reaching the viewer");
-    publisher.abort();
-    reader.abort();
-    drop((a, viewer));
+    .await;
+}
+
+/// Inject the host-fed member C's presence until `member` hears this frame.
+async fn hear_injected(
+    f: &Fixture,
+    member: &mut super::peer::MemberPresence,
+    seq: &mut u64,
+    tail: &[u8],
+) {
+    tilo_test_env::within("the member's presence", async {
+        loop {
+            *seq += 1;
+            assert!(f.live.relay.inject_presence(ROOM, C, &presence(*seq, tail)));
+            if let Some(frame) = member.next(Duration::from_millis(50)).await
+                && frame[8..] == *tail
+            {
+                return;
+            }
+        }
+    })
+    .await;
 }

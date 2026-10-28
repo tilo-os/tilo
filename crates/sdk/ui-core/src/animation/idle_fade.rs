@@ -33,7 +33,6 @@ impl IdleFade {
         }
     }
 
-    /// The same fade, last woken at `last_activity`.
     #[must_use]
     pub(crate) const fn woken_at(mut self, last_activity: Option<Instant>) -> Self {
         self.last_activity = last_activity;

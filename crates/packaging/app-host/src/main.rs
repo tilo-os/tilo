@@ -106,5 +106,5 @@ fn init_tracing() {
 /// running, so the builds an earlier one left are collected here. A failure
 /// is logged and retried on the next start.
 fn startup(store: &PackageStore, catalog: &Catalog, max_store_bytes: u64) {
-    app_host::service::collect_after_change(store, catalog, max_store_bytes);
+    app_host::service::collect_after_change(store, catalog, max_store_bytes, &[]);
 }

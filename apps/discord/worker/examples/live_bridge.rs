@@ -690,10 +690,12 @@ async fn live(token: String, guild_id: String) -> usize {
 
     room.act_on_messages(
         &room.ada,
-        chat::parts::ChatPart::REACT.with(chat::messages::chat_part::React {
-            message: Id::from_raw(&first),
-            emoji: "👍".into(),
-        }),
+        chat::parts::ChatPart::paths()
+            .messages
+            .item(&Id::from_raw(&first))
+            .reactions
+            .react("👍")
+            .into(),
     )
     .await;
     let reacted = settle(&mut runner, "reaction", || async {

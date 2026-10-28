@@ -15,6 +15,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from hang import HANG_BOUND
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts/headless-examples"))
@@ -64,7 +65,7 @@ class TerminalObservationTests(unittest.TestCase):
                             str(path), accepted(), None,
                             public_failure_path=destination if export else None)
                 finally:
-                    worker.join(timeout=6)
+                    worker.join(timeout=HANG_BOUND)
                 self.assertFalse(worker.is_alive())
                 self.assertEqual(errors, [])
             self.assertEqual(requests, [{"op": "actions_status", "invocation_id": 37}])

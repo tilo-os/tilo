@@ -12,6 +12,8 @@ import time
 import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dev'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools/tests'))
+from hang import HANG_BOUND  # noqa: E402
 import signing_spool as spool
 from test_development_boot import synthetic_uki
 
@@ -58,7 +60,7 @@ class SigningSpoolTests(unittest.TestCase):
                                '/usr/local/bin/tilo-crypto when required by signer, and non-group-writable '
                                '/var/lib; run in the isolated tools container described in REMOTE-SIGNING.md') from error
         probe = subprocess.run(['/usr/bin/unshare', '--mount', '--propagation', 'private', '/usr/bin/true'],
-                               capture_output=True, timeout=10)
+                               capture_output=True, timeout=HANG_BOUND)
         if probe.returncode:
             raise RuntimeError('signing-spool prerequisite missing: isolated mount namespace capability '
                                '(SYS_ADMIN in the disposable tools container)')
@@ -152,7 +154,7 @@ class SigningSpoolTests(unittest.TestCase):
                     errors.append(error)
             thread = threading.Thread(target=remote)
             thread.start()
-            deadline = time.monotonic() + 2
+            deadline = time.monotonic() + HANG_BOUND
             requests = []
             while not requests and time.monotonic() < deadline:
                 requests = list((self.work / 'spool').glob('*/request.json'))
@@ -160,7 +162,7 @@ class SigningSpoolTests(unittest.TestCase):
             self.assertEqual(len(requests), 1)
             policy = self.policy(data)
             receipt = self.service(requests[0].parent, policy)
-            thread.join(timeout=5)
+            thread.join(timeout=HANG_BOUND)
             self.assertFalse(thread.is_alive())
             self.assertEqual(errors, [])
             self.assertFalse(receipt['private_keys_transferred'])
@@ -190,7 +192,7 @@ class SigningSpoolTests(unittest.TestCase):
                     errors.append(error)
             thread = threading.Thread(target=remote)
             thread.start()
-            deadline = time.monotonic() + 2
+            deadline = time.monotonic() + HANG_BOUND
             requests = []
             while not requests and time.monotonic() < deadline:
                 requests = list((self.work / 'spool').glob('*/request.json'))
@@ -201,7 +203,7 @@ class SigningSpoolTests(unittest.TestCase):
             response = {k: metadata[k] for k in ('schema', 'request_id', 'context_sha256', 'operation', 'input_sha256')}
             response.update(request_id='0' * 32, output_sha256='0' * 64, output_bytes=256)
             spool.publish(directory / 'response.json', spool.canonical(response))
-            thread.join(timeout=5)
+            thread.join(timeout=HANG_BOUND)
             self.assertFalse(thread.is_alive())
             self.assertEqual(len(errors), 1)
             self.assertIsInstance(errors[0], ValueError)
@@ -344,7 +346,7 @@ subprocess.run([home+'/signer','sign-sha256-rsa-pkcs1',source,destination],check
 """
             result = subprocess.run(['/usr/bin/unshare', '--mount', '--propagation', 'private',
                                      '/usr/bin/python3', '-c', script, str(self.home), str(source), str(output)],
-                                    capture_output=True, timeout=30)
+                                    capture_output=True, timeout=HANG_BOUND)
             self.assertEqual(result.returncode, 0, 'fixture signer failed with actual read-only home')
             spool.signer.run(['/usr/local/bin/tilo-crypto', 'verify-rsa-sha256',
                               str(self.home / 'pcr.pub'), str(source), str(output)])

@@ -83,8 +83,8 @@ fn a_continued_window_waits_for_its_record_then_reopens_on_it() {
     env.set("XDG_DATA_HOME", data.path());
 
     let mut ws = Workspace::new(WorkspaceId::from(next_id()), "shared");
-    ws.set_owner("quinten");
-    let room = ws.room;
+    ws.set_owner("ada");
+    let room = ws.room();
     let tab = next_id();
     let mut strip = Strip::new(StripId::from(next_id()), "Main");
     strip.window_groups.push(WindowGroup {
@@ -99,6 +99,7 @@ fn a_continued_window_waits_for_its_record_then_reopens_on_it() {
                 note: String::new(),
                 missing: None,
             },
+            app_title: None,
         }],
         width: WindowWidth::Normal,
         maximized: false,

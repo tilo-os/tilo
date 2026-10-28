@@ -85,12 +85,6 @@ pub async fn fetch_index_bytes(registry: &RegistryRef) -> Result<Vec<u8>> {
 /// Resolve `app_id` (optionally constrained by `req`) to verified
 /// bytes across all configured registries. Binds one client endpoint
 /// for the whole sweep.
-///
-/// # Errors
-///
-/// Returns an error if a trusted registry's entry fails to download
-/// or verify (fail-closed), or if no configured registry offers
-/// `app_id` for `host`.
 pub async fn fetch_tapp(
     config: &RegistriesConfig,
     app_id: &str,
@@ -185,11 +179,6 @@ async fn try_registry(
 /// Convenience: load the registries config (global + optional
 /// workspace), detect the host, and fetch. `version` is an optional
 /// semver requirement string (`"^1.2"`, `"=0.3.0"`, …).
-///
-/// # Errors
-///
-/// Returns an error if the config fails to load, `version` isn't a
-/// valid semver requirement, or [`fetch_tapp`] fails.
 pub async fn resolve_and_fetch(
     workspace_root: Option<&std::path::Path>,
     host: &HostProfile,

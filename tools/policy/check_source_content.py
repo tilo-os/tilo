@@ -145,9 +145,9 @@ def main():
         print("Source content inspection failed: " + str(error), file=sys.stderr)
         return 1
     if failures:
-        print("\n".join(failures), file=sys.stderr)
+        print("\n".join(failures))
         return 1
-    print(f"Source content OK: {count} inspected blobs; exact asset exceptions applied")
+    print(f"Source content OK: {count} inspected blobs; exact asset exceptions applied", file=sys.stderr)
     return 0
 
 

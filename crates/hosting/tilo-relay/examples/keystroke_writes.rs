@@ -263,6 +263,7 @@ async fn run() {
         doc.splice_text(&body, end, 0, "a").unwrap();
         doc.commit_edit("fixture", "body");
         let message = owner
+            .publication_mut()
             .publish_incremental(
                 APP,
                 RECORD,

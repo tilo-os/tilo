@@ -22,8 +22,8 @@ use ui::widget::BlockContent;
 use ui::widget::marks::Mark;
 
 use crate::model::{
-    Background, ElementKind, FILL_ROLES, Layout, PaletteKind, SLIDE_H, SLIDE_W, STROKE_ROLES,
-    TextAlign,
+    Background, DeckLook, ElementKind, FILL_ROLES, Layout, PaletteKind, SLIDE_H, SLIDE_W,
+    STROKE_ROLES, TextAlign,
 };
 
 /// The most slides one deck holds.
@@ -39,6 +39,9 @@ pub struct Deck {
     pub title: String,
     /// Theme
     pub palette: PaletteKind,
+    /// Light or dark: the deck's surfaces and inks, the same on every
+    /// screen whatever the reader's UI theme.
+    pub look: DeckLook,
     /// Slides
     pub slides: Collection<Slide>,
 }
@@ -166,7 +169,8 @@ pub struct NewElement {
     /// A text box's words, a paragraph per line.
     #[serde(default)]
     pub text: Option<String>,
-    /// A picture's content id.
+    /// A picture's content id: `asset:blake3:<hash>`, or the
+    /// `tilo.content:<hash>` address another app or an import answered.
     #[serde(default)]
     pub src: Option<String>,
     /// Fill colour, and a text box's text colour: a palette role (accent,
@@ -206,7 +210,7 @@ impl NewElement {
     /// colours do not fit its kind.
     fn data(&self) -> Result<ElementData, Refusal> {
         let text = self.text.clone().unwrap_or_default();
-        let src = self.src.clone().unwrap_or_default();
+        let src = self.src.as_deref().map(picture_id).unwrap_or_default();
         if !text.is_empty() && self.kind != ElementKind::Text {
             return Err(Refusal::new("only a text element takes `text`"));
         }
@@ -249,6 +253,22 @@ impl NewElement {
         element.italic = self.italic.unwrap_or(element.italic);
         element.radius = self.radius.unwrap_or(element.radius);
         Ok(ElementData::of(&element))
+    }
+}
+
+/// The picture id a deck stores for `src`: content the room holds
+/// (`tilo.content:<hash>`) is the same bytes under the deck's own prefix, so
+/// a picture another app kept or an agent was handed goes straight onto a
+/// slide.
+fn picture_id(src: &str) -> String {
+    let src = src.trim();
+    match ui::tilo_actions::content_hash(src) {
+        Some(hash) => format!(
+            "{}{}",
+            crate::assets::ASSET_PREFIX,
+            hash.to_ascii_lowercase()
+        ),
+        None => src.to_owned(),
     }
 }
 
@@ -385,6 +405,7 @@ impl SlideData {
     label = "Deck",
     initialize = Deck::starter,
     search = crate::search::entries,
+    facts = crate::outline::facts,
     answer = Deck::outline
 )]
 impl Deck {
@@ -392,7 +413,9 @@ impl Deck {
     ///
     /// A new slide after `after` (last when none), its title and body text
     /// boxes holding `title` and `body` when given. A `title` layout makes a
-    /// cover slide.
+    /// cover slide. A new deck's starter slide that nothing has changed yet
+    /// gives way to it, so a deck an agent composes keeps no empty first
+    /// slide; a starter someone edited stays.
     #[action(answers)]
     pub fn add_slide(
         &mut self,
@@ -400,10 +423,16 @@ impl Deck {
         #[param("Title")] title: Option<String>,
         #[param("Body, a paragraph per line")] body: Option<String>,
         #[param("Layout")] layout: Option<Layout>,
-        #[param("The slide it goes after; last when none")] after: Option<Id>,
+        #[param("The slide it goes after (its id or number from 1); last when none")] after: Option<
+            Id,
+        >,
     ) -> Result<(), Refusal> {
         let slide = crate::actions::authored_slide(title.as_deref(), body.as_deref(), layout);
         let data = SlideData::of(&slide).reminted(cx);
+        let after = after.map(|after| self.slide_key(&after)).transpose()?;
+        let starter = self
+            .untouched_starter_slide()
+            .filter(|starter| after.is_none() || after.as_ref() == Some(starter));
         let at = match &after {
             Some(after) => self
                 .slides
@@ -412,7 +441,11 @@ impl Deck {
                 .saturating_add(1),
             None => self.slides.len(),
         };
-        self.insert(at, &data)
+        self.insert(at, &data)?;
+        if let Some(starter) = starter {
+            self.slides.remove(&starter);
+        }
+        Ok(())
     }
 
     /// Insert slide
@@ -433,6 +466,7 @@ impl Deck {
     /// A copy of the slide, right after it.
     #[action(item = slides)]
     pub fn duplicate_slide(&mut self, cx: &mut ActionCx, slide: &Id) -> Result<(), Refusal> {
+        let slide = &self.slide_key(slide)?;
         let at = self.slides.position(slide).ok_or("no such slide")?;
         let original = self.slides.get(slide).ok_or("no such slide")?.clone();
         let mut copy = original;
@@ -452,6 +486,7 @@ impl Deck {
     /// Delete slide
     #[action(item = slides, destructive)]
     pub fn delete_slide(&mut self, slide: &Id) -> Result<(), Refusal> {
+        let slide = &self.slide_key(slide)?;
         if !self.slides.contains(slide) {
             return Err(Refusal::new("no such slide"));
         }
@@ -471,6 +506,7 @@ impl Deck {
         slide: &Id,
         #[param("Where the slide ends up, counting from 0")] position: usize,
     ) -> Result<(), Refusal> {
+        let slide = &self.slide_key(slide)?;
         if position >= self.slides.len() {
             return Err(Refusal::new("the deck has no slide at that position"));
         }
@@ -492,6 +528,7 @@ impl Deck {
         #[param("New title")] title: Option<String>,
         #[param("New body, a paragraph per line")] body: Option<String>,
     ) -> Result<(), Refusal> {
+        let slide = &self.slide_key(slide)?;
         let target = self.slides.get_mut(slide).ok_or("no such slide")?;
         let boxes: Vec<Id> = target
             .elements
@@ -542,6 +579,7 @@ impl Deck {
         slide: &Id,
         #[param("What to add, where, and any style")] element: NewElement,
     ) -> Result<(), Refusal> {
+        let slide = &self.slide_key(slide)?;
         let mut data = element.data()?;
         data.id = cx.uuid().to_string();
         self.place_element(slide, &data)
@@ -563,6 +601,7 @@ impl Deck {
     /// Delete element
     #[action(item = slides.elements, destructive)]
     pub fn delete_element(&mut self, slide: &Id, element: &Id) -> Result<(), Refusal> {
+        let slide = &self.slide_key(slide)?;
         let target = self.slides.get_mut(slide).ok_or("no such slide")?;
         target
             .elements
@@ -574,6 +613,7 @@ impl Deck {
     /// Bring to front
     #[action(item = slides.elements)]
     pub fn bring_to_front(&mut self, slide: &Id, element: &Id) -> Result<(), Refusal> {
+        let slide = &self.slide_key(slide)?;
         let target = self.slides.get_mut(slide).ok_or("no such slide")?;
         let top = target.elements.len();
         if !target.elements.move_to(element, top) {
@@ -585,6 +625,7 @@ impl Deck {
     /// Send to back
     #[action(item = slides.elements)]
     pub fn send_to_back(&mut self, slide: &Id, element: &Id) -> Result<(), Refusal> {
+        let slide = &self.slide_key(slide)?;
         let target = self.slides.get_mut(slide).ok_or("no such slide")?;
         if !target.elements.move_to(element, 0) {
             return Err(Refusal::new("no such element"));
@@ -594,13 +635,14 @@ impl Deck {
 
     /// Replace deck
     ///
-    /// Replace the whole deck — its title, theme and every slide — with
+    /// Replace the whole deck — its title, theme, look and every slide — with
     /// another: a presentation file opened into it.
     #[action]
     pub fn replace_deck(
         &mut self,
         #[param("Title")] title: String,
         #[param("Theme")] palette: PaletteKind,
+        #[param("Light or dark; light when left out")] look: Option<DeckLook>,
         #[param("Slides, in order")] slides: Vec<SlideData>,
     ) -> Result<(), Refusal> {
         if slides.is_empty() {
@@ -624,6 +666,7 @@ impl Deck {
         }
         self.title = title;
         self.palette = palette;
+        self.look = look.unwrap_or_default();
         self.slides = replaced;
         Ok(())
     }
@@ -666,8 +709,74 @@ impl Deck {
         Self {
             title: deck.title,
             palette: deck.palette,
+            look: deck.look,
             slides,
         }
+    }
+
+    /// The id of the slide `key` names: its id (also as `#id` or the
+    /// slide's item resource id), or its number counting from 1 as the
+    /// outline shows it, so a caller that counted slides needs no id.
+    ///
+    /// # Errors
+    /// Refuses a key that names no slide.
+    pub fn slide_key(&self, key: &Id) -> Result<Id, Refusal> {
+        if self.slides.contains(key) {
+            return Ok(key.clone());
+        }
+        let text = key.as_str().trim();
+        let text = text
+            .trim_start_matches('{')
+            .trim_end_matches('}')
+            .trim_start_matches('#');
+        if let Some((_, id)) = tilo_resource::items::item_of_resource::<Self>(text)
+            && self.slides.contains(&id)
+        {
+            return Ok(id);
+        }
+        if self.slides.contains(&Id::from(text)) {
+            return Ok(Id::from(text));
+        }
+        if let Ok(number) = text.parse::<usize>() {
+            return number
+                .checked_sub(1)
+                .and_then(|at| self.slides.ids().nth(at))
+                .cloned()
+                .ok_or_else(|| {
+                    Refusal::new(format!(
+                        "the deck has no slide {number}: its slides are numbered 1 to {}",
+                        self.slides.len()
+                    ))
+                });
+        }
+        Err(Refusal::new(format!(
+            "no slide `{text}`: name one by its id or its number from 1"
+        )))
+    }
+
+    /// The starter slide a new deck begins with, while it is the deck's
+    /// only slide and nothing has changed it.
+    fn untouched_starter_slide(&self) -> Option<Id> {
+        let starter = Self::starter();
+        let (id, _) = self
+            .slides
+            .iter()
+            .next()
+            .filter(|_| self.slides.len() == 1)?;
+        let (starter_id, _) = starter.slides.iter().next()?;
+        if id != starter_id {
+            return None;
+        }
+        let shown = |deck: &Self| mirror(deck).slides.first().map(SlideData::of);
+        (shown(self) == shown(&starter)).then(|| id.clone())
+    }
+
+    /// Whether the deck is still the one a new record begins with: its
+    /// untouched starter slide under its starter title. An import replaces
+    /// only such a deck, never one someone wrote.
+    #[must_use]
+    pub fn is_untouched(&self) -> bool {
+        self.title == Self::starter().title && self.untouched_starter_slide().is_some()
     }
 
     fn insert(&mut self, at: usize, slide: &SlideData) -> Result<(), Refusal> {
@@ -696,6 +805,7 @@ impl Deck {
         }
         let stored = element.stored();
         tilo_resource::Model::check(&stored)?;
+        let slide = &self.slide_key(slide)?;
         let target = self.slides.get_mut(slide).ok_or("no such slide")?;
         if target.elements.len() >= MAX_ELEMENTS_PER_SLIDE {
             return Err(Refusal::new("a slide holds at most 10000 elements"));
@@ -738,6 +848,7 @@ pub fn mirror(deck: &Deck) -> crate::model::Deck {
     crate::model::Deck {
         title: deck.title.clone(),
         palette: deck.palette,
+        look: deck.look,
         slides: deck
             .slides
             .iter()
@@ -819,6 +930,28 @@ pub fn mark_all(blocks: &[BlockContent], mark: &Mark, on: bool) -> RichTextActio
         name: name.to_owned(),
         value: on.then_some(value),
         also_clear: Vec::new(),
+    }
+}
+
+/// The rich-text op making every paragraph of a text box showing `blocks`
+/// a bulleted list (`Some(false)`), a numbered one (`Some(true)`), or
+/// paragraphs again (`None`), each at the top of the outline.
+#[must_use]
+pub fn list_all(blocks: &[BlockContent], list: Option<bool>) -> RichTextAction {
+    let (kind, level) = match list {
+        Some(_) => ("list_item", Some(0)),
+        None => ("paragraph", None),
+    };
+    RichTextAction::SetParagraphStyle {
+        region: tilo_document::action::RegionKind::Body,
+        blocks: blocks
+            .iter()
+            .filter(|block| !block.id.is_empty())
+            .map(|block| block.id.clone())
+            .collect(),
+        kind: kind.to_owned(),
+        level,
+        ordered: list,
     }
 }
 

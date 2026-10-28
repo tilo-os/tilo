@@ -147,7 +147,7 @@ impl ShellOverlayHost {
 
     /// Show the passing time to the trigger sources, start whatever fired,
     /// and bring the keymap's shortcut chords up to date. Runs each frame;
-    /// does real work at most every [`TICK_INTERVAL`]. Whether a run was
+    /// does real work at most every `TICK_INTERVAL`. Whether a run was
     /// started.
     pub fn tick_shortcut_triggers(&mut self) -> bool {
         let now = Instant::now();
@@ -202,7 +202,7 @@ impl ShellOverlayHost {
             let state = chrome.borrow();
             let tree = state.tree();
             let armed = armed(&tree.desktop.workspaces, |workspace| {
-                state.local_user_for_room(&workspace.room)
+                state.local_user_for_room(&workspace.room())
             });
             let chords = trigger_chords(&armed);
             let mut firings = self.shortcut_triggers.triggers.observe(event, &armed);
@@ -218,7 +218,7 @@ impl ShellOverlayHost {
                     .desktop
                     .workspaces
                     .iter()
-                    .map(|workspace| (workspace.room.to_string(), workspace.name.clone()))
+                    .map(|workspace| (workspace.room().to_string(), workspace.name.clone()))
                     .collect();
                 firings.extend(
                     self.shortcut_triggers
@@ -270,12 +270,16 @@ impl ShellOverlayHost {
         if !replace_trigger_chords(&mut keymap, chords) {
             return;
         }
-        if !self.desktop_controls.is_explicit()
-            && let Err(error) = keymap.save()
-        {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert(
+            "chords".into(),
+            serde_json::to_value(&keymap.actions).unwrap_or_default(),
+        );
+        if let Err(error) = self.keep_shortcuts(&keymap, "set-action-chords", &arguments) {
             tracing::warn!(%error, "shortcut chords were not saved to settings");
         }
         self.shortcut_config = keymap;
+        self.refresh_nested_shortcuts();
     }
 
     fn start_firings(&self, firings: Vec<Firing>) -> bool {
@@ -295,8 +299,8 @@ impl ShellOverlayHost {
                 tree.desktop
                     .workspaces
                     .iter()
-                    .find(|workspace| workspace.room.to_string() == firing.room)
-                    .map(|workspace| state.local_user_for_room(&workspace.room))
+                    .find(|workspace| workspace.room().to_string() == firing.room)
+                    .map(|workspace| state.local_user_for_room(&workspace.room()))
             };
             let Some(person) = person else {
                 continue;
@@ -412,7 +416,7 @@ impl ShellOverlayHost {
             let state = chrome.borrow();
             let tree = state.tree();
             let armed = armed(&tree.desktop.workspaces, |workspace| {
-                state.local_user_for_room(&workspace.room)
+                state.local_user_for_room(&workspace.room())
             });
             let firings = self
                 .shortcut_triggers
@@ -445,12 +449,12 @@ impl ShellOverlayHost {
                     .desktop
                     .workspaces
                     .iter()
-                    .find(|workspace| workspace.room.to_string() == room),
+                    .find(|workspace| workspace.room().to_string() == room),
                 None => tree.desktop.active_workspace(),
             };
             let caller = workspace.map(|workspace| {
-                Caller::local_person(state.local_user_for_room(&workspace.room))
-                    .in_room(workspace.room.to_string())
+                Caller::local_person(state.local_user_for_room(&workspace.room()))
+                    .in_room(workspace.room().to_string())
             });
             drop(tree);
             caller

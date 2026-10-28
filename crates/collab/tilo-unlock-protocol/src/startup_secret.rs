@@ -52,9 +52,6 @@ pub fn validate(secret: &str, tpm_pin: bool) -> Result<(), &'static str> {
 
 /// Validate against the same startup policy with a presentation-independent
 /// rejection reason. `validate` retains its original diagnostic contract.
-///
-/// # Errors
-/// Returns the first failed requirement in the existing policy order.
 pub fn validate_typed(secret: &str, tpm_pin: bool) -> Result<(), ValidationError> {
     const COMMON_BASES: &[&str] = &[
         "password",

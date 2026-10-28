@@ -1,5 +1,3 @@
-//! pin / unpin flip a package's pin and persist in the package store.
-
 #![allow(
     clippy::unwrap_used,
     reason = "in a test these are the assertion, not a hazard"

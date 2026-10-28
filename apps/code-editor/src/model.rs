@@ -202,6 +202,68 @@ impl TreeNode {
     }
 }
 
+/// One directory level as the tree shows it: its folders and files by
+/// name, each sorted, build output and VCS internals left out.
+#[derive(Debug, Default)]
+pub struct Listing {
+    folders: Vec<(String, PathBuf)>,
+    files: Vec<(String, PathBuf)>,
+}
+
+/// Read one directory level for the tree (see [`Project::load_children`]).
+///
+/// # Errors
+/// Returns an error if the directory listing can't be read.
+pub fn read_folder(path: &Path) -> io::Result<Listing> {
+    // Collect and sort before inserting, so the arena order matches the
+    // display order and a folder's children do not shuffle between reads.
+    let mut listing = Listing::default();
+    for entry in std::fs::read_dir(path)? {
+        let Ok(entry) = entry else { continue };
+        let name = entry.file_name().to_string_lossy().to_string();
+        let child_path = entry.path();
+        // Skipped by *name*, not by type: in a git worktree `.git` is a
+        // file holding a gitdir pointer, not a directory, and a
+        // directory-only test lets it through as an openable source file.
+        if crate::disk::is_ignored_dir(&name) {
+            continue;
+        }
+        let Ok(ft) = entry.file_type() else { continue };
+        // `file_type` does not follow symlinks, so a link pointing back up
+        // the tree cannot make the walk cycle.
+        if ft.is_symlink() {
+            continue;
+        }
+        if ft.is_dir() {
+            listing.folders.push((name, child_path));
+        } else if ft.is_file() {
+            listing.files.push((name, child_path));
+        }
+    }
+    listing.folders.sort_by_key(|a| a.0.to_lowercase());
+    listing.files.sort_by_key(|a| a.0.to_lowercase());
+    Ok(listing)
+}
+
+/// Read every directory from `root` down to the one holding `path`, for
+/// [`Project::adopt_folders`] and [`Project::reveal_read`]: what revealing
+/// a file in a never-expanded tree reads.
+pub fn read_folders_along(root: &Path, path: &Path) -> Vec<(PathBuf, io::Result<Listing>)> {
+    let Some(parent) = path.parent() else {
+        return Vec::new();
+    };
+    let Ok(rel) = parent.strip_prefix(root) else {
+        return Vec::new();
+    };
+    let mut folder = root.to_path_buf();
+    let mut read = vec![(folder.clone(), read_folder(&folder))];
+    for component in rel.components() {
+        folder = folder.join(component);
+        read.push((folder.clone(), read_folder(&folder)));
+    }
+    read
+}
+
 /// The whole project: a flat arena of nodes plus the root id. Tree shape is
 /// expressed through `parent` / `children`.
 #[derive(Clone, Debug, Default)]
@@ -468,7 +530,6 @@ impl Project {
         }
     }
 
-    /// Add an in-memory folder under `parent`, returning its id.
     pub fn add_folder(&mut self, parent: NodeId, name: &str) -> NodeId {
         self.insert_folder(parent, name, None, false)
     }
@@ -662,8 +723,6 @@ impl Project {
         }
     }
 
-    // ---- real filesystem projection ---------------------------------------
-
     /// Build a project rooted at the real directory `path`, reading its top
     /// level immediately. Sub-folders are read lazily on first expansion via
     /// [`Project::load_children`], so opening a large tree is cheap.
@@ -733,6 +792,26 @@ impl Project {
     /// a path in a folder that has very likely never been expanded, so the
     /// lazily-loaded tree has no node for it yet.
     pub fn reveal_path(&mut self, path: &Path) -> Option<NodeId> {
+        self.reveal_with(path, Self::load_children)
+    }
+
+    /// [`Self::reveal_path`] over folders already read: what
+    /// [`read_folders_along`] read for it, adopted with [`Self::adopt_folders`].
+    /// Reads nothing; `None` where a folder on the way was not read.
+    pub fn reveal_read(&mut self, path: &Path) -> Option<NodeId> {
+        self.reveal_with(path, |project, id| {
+            if project.folder_to_read(id).is_some() {
+                return Err(io::Error::other("folder not read"));
+            }
+            Ok(())
+        })
+    }
+
+    fn reveal_with(
+        &mut self,
+        path: &Path,
+        mut load: impl FnMut(&mut Self, NodeId) -> io::Result<()>,
+    ) -> Option<NodeId> {
         if let Some(id) = self.node_for_path(path) {
             return Some(id);
         }
@@ -745,7 +824,7 @@ impl Project {
         while let Some(component) = components.next() {
             walked = walked.join(component);
             // Reading the parent is what materialises this component as a node.
-            self.load_children(current).ok()?;
+            load(self, current).ok()?;
             let child = self.node_for_path(&walked)?;
             if components.peek().is_some() {
                 // An intermediate component: a folder we must descend into.
@@ -804,52 +883,39 @@ impl Project {
     /// # Errors
     /// Returns an error if the folder's directory listing can't be read.
     pub fn load_children(&mut self, id: NodeId) -> io::Result<()> {
-        let (path, already_loaded) = match self.nodes.get(&id) {
-            Some(TreeNode {
-                disk_path: Some(p),
-                kind: NodeKind::Folder { loaded, .. },
-                ..
-            }) => (p.clone(), *loaded),
-            _ => return Ok(()),
-        };
-        if already_loaded {
+        let Some(path) = self.folder_to_read(id) else {
             return Ok(());
+        };
+        let listing = read_folder(&path)?;
+        self.adopt_listing(id, listing);
+        Ok(())
+    }
+
+    /// The directory a disk-backed folder that has not been read yet stands
+    /// for; `None` for any other node.
+    pub fn folder_to_read(&self, id: NodeId) -> Option<PathBuf> {
+        match self.nodes.get(&id) {
+            Some(TreeNode {
+                disk_path: Some(path),
+                kind: NodeKind::Folder { loaded: false, .. },
+                ..
+            }) => Some(path.clone()),
+            _ => None,
         }
-        // Collect and sort before inserting, so the arena order matches the
-        // display order and a folder's children do not shuffle between reads.
-        let mut folders: Vec<(String, PathBuf)> = Vec::new();
-        let mut files: Vec<(String, PathBuf)> = Vec::new();
-        for entry in std::fs::read_dir(&path)? {
-            let Ok(entry) = entry else { continue };
-            let name = entry.file_name().to_string_lossy().to_string();
-            let child_path = entry.path();
-            // Skipped by *name*, not by type: in a git worktree `.git` is a
-            // file holding a gitdir pointer, not a directory, and a
-            // directory-only test lets it through as an openable source file.
-            if crate::disk::is_ignored_dir(&name) {
-                continue;
-            }
-            let Ok(ft) = entry.file_type() else { continue };
-            // `file_type` does not follow symlinks, so a link pointing back up
-            // the tree cannot make the walk cycle.
-            if ft.is_symlink() {
-                continue;
-            }
-            if ft.is_dir() {
-                folders.push((name, child_path));
-            } else if ft.is_file() {
-                files.push((name, child_path));
-            }
+    }
+
+    /// Give folder `id` the children [`read_folder`] found, unless it was
+    /// read already.
+    pub fn adopt_listing(&mut self, id: NodeId, listing: Listing) {
+        if self.folder_to_read(id).is_none() {
+            return;
         }
-        folders.sort_by_key(|a| a.0.to_lowercase());
-        files.sort_by_key(|a| a.0.to_lowercase());
-        for (name, p) in folders {
+        for (name, p) in listing.folders {
             self.add_disk_folder(id, &name, &p);
         }
-        for (name, p) in files {
+        for (name, p) in listing.files {
             self.add_disk_file(id, &name, &p);
         }
-
         if let Some(TreeNode {
             kind: NodeKind::Folder { loaded, .. },
             ..
@@ -857,7 +923,17 @@ impl Project {
         {
             *loaded = true;
         }
-        Ok(())
+    }
+
+    /// Adopt what [`read_folders_along`] read, outermost first, so each
+    /// folder is a node by the time its own listing comes.
+    pub fn adopt_folders(&mut self, read: Vec<(PathBuf, io::Result<Listing>)>) {
+        for (path, listing) in read {
+            let (Some(id), Ok(listing)) = (self.node_for_path(&path), listing) else {
+                continue;
+            };
+            self.adopt_listing(id, listing);
+        }
     }
 
     /// The bytes to seed a file buffer with: the in-memory seed if present,
@@ -1069,7 +1145,6 @@ impl Session {
         true
     }
 
-    /// The shown buffer when it is `node`.
     pub fn buffer_of(&self, node: NodeId) -> Option<&OpenBuffer> {
         self.buffer.as_ref().filter(|b| b.node == node)
     }
@@ -1119,7 +1194,6 @@ mod tests {
 
     #[test]
     fn in_memory_tree_orders_expands_and_adopts_document_ids() {
-        // Each phase builds its own project.
         tree_visible_rows_respect_expansion();
         folders_sort_before_files();
         adopt_file_tracks_a_document_buffer_and_advances_the_allocator();
@@ -1153,7 +1227,6 @@ mod tests {
         let orphan = 7;
         assert!(p.get(orphan).is_none());
         p.adopt_file(orphan, "untitled-7.txt");
-        // It is now a tracked file under the root, visible in the tree.
         assert!(!p.get(orphan).unwrap().is_folder());
         assert!(p.visible_rows().contains(&orphan));
         // The allocator will not reissue the adopted id.
@@ -1167,7 +1240,6 @@ mod tests {
 
     #[test]
     fn a_session_shows_one_file_and_compares_dirty_state() {
-        // Each phase builds its own session or buffer.
         opening_another_file_replaces_the_shown_one();
         dirty_is_a_comparison_with_disk_not_a_sticky_flag();
     }
@@ -1195,8 +1267,6 @@ mod tests {
         assert!(s.active_buffer().is_none());
     }
 
-    // ---- real filesystem projection -----------------------------------
-
     /// A small on-disk project shaped like a real one: nested source, build
     /// output that must be invisible, and a VCS directory.
     fn disk_fixture() -> tempfile::TempDir {
@@ -1221,7 +1291,6 @@ mod tests {
 
     #[test]
     fn disk_projection_is_lazy_and_reads_files_on_demand() {
-        // Each phase builds a fresh on-disk fixture and projection.
         from_dir_projects_the_real_top_level_only();
         expanding_a_folder_reads_its_children_on_demand();
         load_children_is_idempotent();
@@ -1235,7 +1304,6 @@ mod tests {
         let d = disk_fixture();
         let p = Project::from_dir(d.path()).expect("open the fixture directory");
 
-        // The top level is there…
         let top = names(&p);
         assert!(top.contains(&"src".to_string()));
         assert!(top.contains(&"Cargo.toml".to_string()));
@@ -1261,7 +1329,6 @@ mod tests {
         let shown = names(&p);
         assert!(shown.contains(&"main.rs".to_string()));
         assert!(shown.contains(&"inner".to_string()));
-        // Still lazy one level further down.
         assert!(!shown.contains(&"deep.rs".to_string()));
     }
 
@@ -1292,7 +1359,6 @@ mod tests {
         assert_eq!(p.disk_path_of(id).as_deref(), Some(target.as_path()));
         // The folders along the way were expanded, so it is actually visible.
         assert!(names(&p).contains(&"deep.rs".to_string()));
-        // And it is idempotent.
         assert_eq!(p.reveal_path(&target), Some(id));
     }
 

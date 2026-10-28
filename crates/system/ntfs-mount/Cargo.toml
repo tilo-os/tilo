@@ -19,17 +19,19 @@ required-features = ["service"]
 default = ["service"]
 # The root service. The shell and Settings only speak the protocol and
 # depend on this crate without it.
-service = ["dep:tilo-sandbox-core"]
+service = ["dep:tilo-sandbox-core", "dep:tilo-seat-peer"]
 
 [dependencies]
 libc.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+tilo-seat-peer = { path = "../seat-peer", optional = true }
 tilo-sandbox-core = { path = "../sandbox-core", optional = true }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

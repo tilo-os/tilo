@@ -30,6 +30,8 @@ if (process.env.CI === 'true' && process.env.CHROME && process.env.RUNNER_TEMP &
   process.exit(status);
 }
 const shots = process.env.SHOTS_DIR ?? '.';
+// The screenshots' directory is this script's output: callers name it, it makes it.
+(await import('node:fs')).mkdirSync(shots, {recursive: true});
 const version = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
 const ws = new WebSocket(version.webSocketDebuggerUrl);
 await new Promise(r => ws.addEventListener('open', r, {once: true}));

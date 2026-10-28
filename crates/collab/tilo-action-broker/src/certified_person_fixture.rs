@@ -75,11 +75,11 @@ pub fn certified_person_fixture_for_seeds(
     };
     tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
     let room = collab_types::person_room(&certificate.user_public_key);
-    let mut workspace = crate::test_support::Workspace::new(
+    let mut workspace = crate::test_support::Workspace::in_room(
         crate::test_support::WorkspaceId(71),
+        tilo_desktop_model::RoomId::parse(&room.to_string()).unwrap(),
         "Synthetic personal room",
     );
-    workspace.set_room(tilo_desktop_model::RoomId::parse(&room.to_string()).unwrap());
     workspace.set_owner(hex::encode(certificate.user_public_key));
     let mut tree = crate::test_support::WorkspaceTree::default();
     tree.workspaces.push(workspace);

@@ -25,7 +25,6 @@ use tilo_doc::document::{MarkSpan, MarkValue};
 
 use super::Segment;
 
-/// `segments` as Markdown.
 pub fn render(segments: &[Segment]) -> String {
     let mut out = String::new();
     let mut index = 0;

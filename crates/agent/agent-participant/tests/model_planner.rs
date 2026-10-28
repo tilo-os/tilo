@@ -46,12 +46,13 @@ fn context_with(app_id: &str) -> (PlanContext, DocumentRoute, Replica) {
     let route = DocumentRoute {
         app_id: app_id.into(),
         cluster_id: ROOM.into(),
-        record: app.record().to_owned(),
+        record: app.wire_record().to_owned(),
     };
     let context = PlanContext {
         open: vec![(route.clone(), app.survey())],
         known: Vec::new(),
         apps: vec![SCRATCHPAD.into(), NOTES.into()],
+        ..PlanContext::default()
     };
     (context, route, app)
 }
@@ -93,6 +94,8 @@ fn explicit_steps_still_bypass_the_model() {
         why: String::new(),
         then: None,
         reply: None,
+        wait: None,
+        ..Answer::default()
     })));
     let steps = planner
         .plan(
@@ -116,6 +119,8 @@ fn an_answer_outside_the_offers_is_refused_and_an_open_continues() {
         why: String::new(),
         then: None,
         reply: None,
+        wait: None,
+        ..Answer::default()
     })));
     let refused = invented.plan("tidy up", &context).unwrap_err();
     assert!(refused.contains("not offered"), "{refused}");
@@ -126,6 +131,8 @@ fn an_answer_outside_the_offers_is_refused_and_an_open_continues() {
         why: String::new(),
         then: Some("add a page called Plans".into()),
         reply: None,
+        wait: None,
+        ..Answer::default()
     })));
     let steps = opening.plan("open notes and add a page", &context).unwrap();
     assert_eq!(steps[0].app, "so.tilo.notes");

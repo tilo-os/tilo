@@ -20,6 +20,8 @@ fn creating_then_visiting_another_note_keeps_creation_reachable_by_ctrl_z() {
         initial + 1,
         "the visible new-note affordance creates one canonical note"
     );
+    // The new note opens to be named; Enter keeps its name.
+    live.key("Enter");
 
     let other = page_rect(&live, fixture.root).center();
     live.click_at(other.x, other.y);

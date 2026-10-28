@@ -13,6 +13,7 @@ verifies the live accessibility/resource/control inventory.
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 import tomllib
@@ -118,12 +119,236 @@ TRUNCATING_SEARCH = re.compile(
     r"\.take\s*\(\s*DEFAULT_SEARCH_INDEX_LIMIT(?:\s*\.\s*saturating_sub\s*\([^)]*\))?\s*\)"
 )
 
+# Any button in any app is an action. A toolkit control activates either
+# through the action system (`on_action` with a resource action binding;
+# `on_effect`, `on_own_device_effect` and `on_view` with a published native
+# action; the framework's bound controls) or through one of these callbacks,
+# whose closure the palette, agents, history, undo and permission checks never
+# see. Each call with an argument counts, whether the closure is written there
+# or comes from a helper, a function or a variable. A widget's own handler of
+# the same name called on `self` is no control.
+CONTROL_CALLBACKS = frozenset(
+    {
+        "on_activate", "on_activate_entry", "on_change", "on_check",
+        "on_chosen_change", "on_clear_filters", "on_click", "on_context_menu_item",
+        "on_delete", "on_drop", "on_files", "on_heading_action", "on_move",
+        "on_name_group", "on_navigate", "on_open_entry", "on_outcome", "on_remove",
+        "on_rename", "on_retry",
+        "on_revert", "on_row_action", "on_row_click", "on_save",
+        "on_section_action", "on_seek", "on_select", "on_station", "on_submit",
+        "on_toggle", "on_undo_band",
+    }
+)
+# The toolkit's other closure-taking `on_*` builders, and why none is a
+# control's activation. Every closure-taking `pub fn on_*` of the toolkit
+# widgets and the framework view is in one of the two sets, so a new one is
+# classified when it is added.
+NOT_CONTROL_CALLBACKS = {
+    "on_effect": "activates a published native effect action",
+    "on_own_device_effect": "activates a published native effect action",
+    "on_view": "activates a published native view action",
+    "on_dismiss": "a dialog's or popover's close control, published as a native view action; "
+    "a banner's follows its published dismiss button",
+    "on_expand": "folds or unfolds a row: what this window shows, no edit",
+    "on_open_toggle": "folds or unfolds a disclosure: what this window shows, no edit",
+    "on_header_click": "sorts a table by a column: what this window shows, no edit",
+    "on_edit_requested": "turns a breadcrumb into its editable field: what this window shows",
+    "on_overflow": "opens the menu of a breadcrumb's hidden places",
+    "on_back": "answers the navigation shell's Back, a published native view action",
+    "on_context": "pointer gesture that places a context menu",
+    "on_context_menu": "pointer gesture that places a context menu",
+    "on_row_context_menu": "pointer gesture that places a context menu",
+    "on_row_drag_begin": "start of a drag gesture",
+    "on_load_request": "lazy loading of a tree's children",
+    "on_open": "answers the resource's published open action",
+    "on_open_item": "answers the resource's published open action",
+    "on_stage": "stages view state for a screenshot scenario",
+    "on_screen_reader_chord": "the host's observer of the screen reader chord, not a control",
+}
+# Buttons a toolkit composite draws itself and runs a closure for: a row's
+# and a property's actions, a row's swipe actions, a card's hover action, a
+# navigation list's item actions, each with the number of arguments its
+# toolkit builder takes. A call counts by that call site, whatever its
+# arguments are written as (`Icon::X`, a variable, a function's result): the
+# builder's name with the builder's arity. Other methods of the same name (a
+# toolbar's `action(ToolbarAction)`, a spec's `action(name)`) take a different
+# number. Every closure-taking toolkit method of one of these names must take
+# the arity written here, so a changed signature changes what is counted. A
+# composite that publishes its buttons itself (a dialog's footer) is in
+# NOT_ACTION_BUTTONS.
+ACTION_BUTTON_BUILDERS = {
+    "action": 3,
+    "hover_action": 3,
+    "swipe_action": 4,
+    "item_actions": 2,
+}
+ACTION_BUTTON_METHOD = re.compile(
+    r"(?<!\.)\.\s*(" + "|".join(sorted(ACTION_BUTTON_BUILDERS)) + r")\s*\("
+)
+ACTION_BUTTON_CALL = ACTION_BUTTON_METHOD
+# Closure-taking toolkit builders named `*action*` that are neither counted
+# above nor controls: why.
+NOT_ACTION_BUTTONS = {
+    "icon_action": "a menu entry, published as the open menu's own control",
+    "destructive_action": "a menu entry, published as the open menu's own control",
+    "actions_group": "binds each hit to its published action",
+    "primary_action": "a dialog's footer button, published as the dialog's own control",
+    "secondary_action": "a dialog's footer button, published as the dialog's own control",
+    "tertiary_action": "a dialog's footer button, published as the dialog's own control",
+}
+CONTROL_CALLBACK_SOURCES = ("crates/sdk/ui-core/src", "crates/sdk/tilo-app/src/framework")
+CLOSURE_CALLBACK_DEFINITION = re.compile(
+    r"\bpub\s+fn\s+(on_[a-z_]+|[a-z_]*action[a-z_]*)\s*(<[^{;]*?>)?\s*\(([^{;]*?)\)\s*(?:->[^{;]*?)?(where[^{;]*)?\{",
+    re.DOTALL,
+)
+CLOSURE_TYPE = re.compile(r"\bFn(?:Mut|Once)?\s*\(")
+
+
+def closure_controls(code: str, raw: str, matches: list[re.Match]) -> list[re.Match]:
+    """The callback calls that hand a control something to run: not a
+    widget's own handler called on `self`, nor a call without arguments."""
+    kept = []
+    for match in matches:
+        if code[match.end() :].lstrip().startswith(")"):
+            continue
+        before = code[: match.start()].rstrip()
+        if re.search(r"(?<![\w.])self$", before):
+            continue
+        kept.append(match)
+    return kept
+
+
+def call_arguments(code: str, raw: str, open_paren: int) -> int:
+    """How many arguments the call whose `(` is at `open_paren` passes.
+    `code` has literals blanked; `raw` at the same offsets tells a blanked
+    literal argument from an empty slot (a trailing comma)."""
+    count = 0
+    depth = 0
+    start = open_paren + 1
+    index = start
+    while index < len(code):
+        char = code[index]
+        if depth == 0 and char == "|" and code[start:index].strip() in ("", "move"):
+            # A closure's parameters: their commas separate no arguments.
+            close = code.find("|", index + 1)
+            index = len(code) if close < 0 else close + 1
+            continue
+        if code.startswith("::<", index):
+            # A turbofish's commas separate type arguments.
+            angle = 0
+            index += 2
+            while index < len(code):
+                angle += {"<": 1, ">": -1}.get(code[index], 0)
+                index += 1
+                if angle == 0:
+                    break
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+        elif char == "," and depth == 0:
+            count += 1
+            start = index + 1
+        index += 1
+    last = code[start:index]
+    if last.strip() or re.search(r"\"|'\\?.'", raw[start:index]):
+        count += 1
+    return count
+
+
+def closure_action_buttons(code: str, raw: str, matches: list[re.Match]) -> list[re.Match]:
+    """The closure-run buttons among `matches`: a builder method passed its
+    toolkit arity."""
+    kept = []
+    for match in closure_controls(code, raw, matches):
+        method = ACTION_BUTTON_METHOD.match(code, match.start())
+        if method and call_arguments(code, raw, match.end() - 1) != ACTION_BUTTON_BUILDERS[method.group(1)]:
+            continue
+        kept.append(match)
+    return kept
+
+
+def split_parameters(parameters: str) -> list[str]:
+    """A signature's parameters, split at its top-level commas."""
+    parts, depth, start = [], 0, 0
+    for index, char in enumerate(parameters):
+        if char in "(<[{":
+            depth += 1
+        elif char in ")>]}" and not (char == ">" and parameters[index - 1] == "-"):
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(parameters[start:index])
+            start = index + 1
+    parts.append(parameters[start:])
+    return [part.strip() for part in parts if part.strip()]
+
+
+def unclassified_control_callbacks(root: Path) -> list[Violation]:
+    """Closure-taking toolkit `on_*` builders neither counted nor excused."""
+    known = (
+        CONTROL_CALLBACKS
+        | NOT_CONTROL_CALLBACKS.keys()
+        | ACTION_BUTTON_BUILDERS.keys()
+        | NOT_ACTION_BUTTONS.keys()
+    )
+    violations = []
+    for directory in CONTROL_CALLBACK_SOURCES:
+        for source in sorted((root / directory).rglob("*.rs")):
+            raw = source.read_text(encoding="utf-8")
+            code = production_code(raw)
+            for match in CLOSURE_CALLBACK_DEFINITION.finditer(code):
+                name, generics, arguments, bounds = match.groups()
+                signature = f"{generics or ''} {arguments} {bounds or ''}"
+                if not CLOSURE_TYPE.search(signature):
+                    continue
+                arity = ACTION_BUTTON_BUILDERS.get(name)
+                parameters = [
+                    parameter
+                    for parameter in split_parameters(arguments)
+                    if not re.fullmatch(r"&?\s*(?:'\w+\s+)?(?:mut\s+)?self", parameter)
+                ]
+                if arity is not None and len(parameters) != len(split_parameters(arguments)):
+                    if len(parameters) != arity:
+                        violations.append(
+                            Violation(
+                                source,
+                                line_number(raw, match.start()),
+                                f"closure-taking `{name}` takes {len(parameters)} arguments, but "
+                                f"ACTION_BUTTON_BUILDERS counts its calls with {arity}: update "
+                                f"it in {Path(__file__).name}",
+                            )
+                        )
+                    continue
+                if name in known:
+                    continue
+                violations.append(
+                    Violation(
+                        source,
+                        line_number(raw, match.start()),
+                        f"closure-taking `{name}` is unclassified: add it to CONTROL_CALLBACKS "
+                        "or ACTION_BUTTON_BUILDERS (a control's activation) or "
+                        "NOT_CONTROL_CALLBACKS or NOT_ACTION_BUTTONS with its reason in "
+                        f"{Path(__file__).name}",
+                    )
+                )
+    return violations
+
+
 # These limits record the reviewed amount of bypass-shaped code. New work must
 # use the shared action route or update the auditable baseline.
 RATCHETS = {
-    "raw_on_click_closure": (
-        re.compile(r"\.on_click\s*\(\s*(?:move\s*)?\|[^|]*\|", re.DOTALL),
-        "new raw on_click closure; bind the control to the resource/action route",
+    "closure_control": (
+        re.compile(r"\.\s*(?:" + "|".join(sorted(CONTROL_CALLBACKS)) + r")\s*\("),
+        "new closure-activated control; bind it to a resource action (`on_action`), a "
+        "published effect or view (`on_effect`, `on_view`) or a framework bound control",
+    ),
+    "closure_action_button": (
+        ACTION_BUTTON_CALL,
+        "new closure-run button of a toolkit composite (a row's, a property's or a card's "
+        "action); bind it to a resource action or publish it",
     ),
     "bespoke_command_entry": (
         re.compile(r"\bCommandEntry\s*::\s*new\s*\("),
@@ -147,6 +372,13 @@ RATCHETS = {
         "SearchEntry values from Resource::search or ResourceSurface::search_entries",
     ),
 }
+# Which matches of a ratchet count, given the file's code and raw text.
+RATCHET_FILTERS = {
+    "closure_control": closure_controls,
+    "closure_action_button": closure_action_buttons,
+}
+# Ratchets of the shipped app: test files and `#[cfg(test)]` items are exempt.
+PRODUCTION_RATCHETS = {"closure_control", "closure_action_button"}
 
 # The one resource/action/view model (docs/architecture/README.md): an app's
 # edits go through the framework `Dispatcher`, it launches as a `ResourceApp`,
@@ -460,6 +692,33 @@ def is_compute_package(app_dir: Path) -> bool:
     )
 
 
+def owning_app(root: Path, crate_dir: Path) -> str | None:
+    """The app a part crate belongs to, or None.
+
+    A part crate (`apps/browser-parts`, `apps/settings-rare`) is a library
+    split out of one app so the app's engine library can load it: it has no
+    `tilo-app.toml` of its own and is never launched. It publishes through
+    the app that links it, so that app's contract covers it. The owner is
+    the one launched app (with a `tilo-app.toml`) that depends on it by
+    path at runtime.
+    """
+    if (crate_dir / "tilo-app.toml").is_file():
+        return None
+    owners = []
+    for manifest_path in sorted((root / "apps").glob("*/Cargo.toml")):
+        app_dir = manifest_path.parent
+        if app_dir == crate_dir or not (app_dir / "tilo-app.toml").is_file():
+            continue
+        with manifest_path.open("rb") as handle:
+            manifest = tomllib.load(handle)
+        for table in runtime_dependency_tables(manifest):
+            for specification in table.values():
+                path = specification.get("path") if isinstance(specification, dict) else None
+                if isinstance(path, str) and (app_dir / path).resolve() == crate_dir.resolve():
+                    owners.append(app_dir.name)
+    return owners[0] if len(owners) == 1 else None
+
+
 def is_ui_core_dependency(alias: str, specification: object) -> bool:
     if package_name(alias, specification) == "ui":
         return True
@@ -516,17 +775,24 @@ def audit_ratchets(
     violations: list[Violation],
     *,
     workspace: bool | None = None,
+    counts: dict[tuple[str, str], int] | None = None,
 ) -> None:
+    """Hold each source to its ceilings; record every count in `counts`."""
     if workspace is None:
         workspace = root.resolve() == ROOT.resolve()
+    if counts is None:
+        counts = {}
     for source, source_text in sources:
         relative = source.relative_to(root).as_posix()
         code = code_only(source_text)
-        rules = [(rule, pattern, reason, code) for rule, (pattern, reason) in RATCHETS.items()]
+        production = "" if is_test_source(relative) else production_code(source_text)
+        rules = [
+            (rule, pattern, reason, production if rule in PRODUCTION_RATCHETS else code)
+            for rule, (pattern, reason) in RATCHETS.items()
+        ]
         # A Tilo workspace invariant, like the app host check in `audit`; the
         # miniature SDK apps the policy tests build are not held to it.
         if workspace:
-            production = "" if is_test_source(relative) else production_code(source_text)
             rules += [
                 (rule, pattern, reason, production)
                 for rule, (pattern, reason) in MODEL_RATCHETS.items()
@@ -536,8 +802,14 @@ def audit_ratchets(
                 (rule, pattern, reason, shipped)
                 for rule, (pattern, reason) in WORKSPACE_RATCHETS.items()
             ]
+        parts = relative.split("/")
+        if len(parts) > 2 and parts[0] == "apps" and dynamic_resource_host(root / "apps" / parts[1]):
+            rules = [entry for entry in rules if entry[0] not in DYNAMIC_HOST_RULES]
         for rule, pattern, reason, code in rules:
             matches = list(pattern.finditer(code))
+            if rule in RATCHET_FILTERS:
+                matches = RATCHET_FILTERS[rule](code, source_text, matches)
+            counts[(rule, relative)] = len(matches)
             limit = baseline.get(rule, {}).get(relative, 0)
             if len(matches) <= limit:
                 if len(matches) < limit:
@@ -545,7 +817,8 @@ def audit_ratchets(
                         Violation(
                             root / baseline_file(relative),
                             1,
-                            f"stale {rule} ceiling for {relative}: lower {limit} to {len(matches)}",
+                            f"stale {rule} ceiling for {relative}: lower {limit} to {len(matches)} "
+                            f"({Path(__file__).name} --write-baseline)",
                         )
                     )
                 continue
@@ -568,18 +841,80 @@ def legacy_api_sources(owner: Path, directories: tuple[str, ...]) -> list[tuple[
     return sources
 
 
+# What an app runs on, read from its entry point: `ui::main!(App)` runs an
+# application root, `ui::main!(definition = ..)` registers a shared definition
+# and draws in the browser, and anything else (a daemon, a compute entrypoint)
+# is no window. The first two publish resources and so commit a
+# `surface.toml` (`docs/architecture/resources.md` §6); the launcher never
+# opens the others, so they publish nothing the catalogue reads.
+REMOTE_ENTRY = re.compile(
+    r"ui\s*::\s*main\s*!\s*\(\s*definition\s*[=,)]"
+)
+WINDOW_ENTRY = re.compile(r"ui\s*::\s*main\s*!\s*\(\s*(?![=,)])", re.DOTALL)
+GUI_ENTRYPOINT = re.compile(r"^\s*type\s*=\s*\"gui\"", re.MULTILINE)
+SURFACE = "surface.toml"
+
+
+def launches_a_surface(manifest_path: Path) -> bool:
+    """Whether the app at `manifest_path` opens a window that publishes its
+    resources, and so commits its public surface."""
+    app_dir = manifest_path.parent
+    manifest = manifest_path.read_text(encoding="utf-8")
+    main = app_dir / "src" / "main.rs"
+    if not main.is_file():
+        return False
+    source = code_only(main.read_text(encoding="utf-8"))
+    if REMOTE_ENTRY.search(source):
+        return False
+    if WINDOW_ENTRY.search(source):
+        return True
+    return GUI_ENTRYPOINT.search(manifest) is not None
+
+
+def committed_surfaces() -> int:
+    """How many apps commit a `surface.toml`."""
+    return len(list((ROOT / "apps").glob(f"*/{SURFACE}")))
+
+
+def audit_public_surfaces(root: Path) -> list[Violation]:
+    """Every windowed app commits the public surface its binary reports.
+
+    `tilo-app check` compares the committed `surface.toml` with the code; an
+    app it would silently pass over because the file is missing is the one
+    place the comparison cannot run, and the surface is what a receiver
+    without the app decides its changes against.
+    """
+    violations = []
+    for manifest_path in sorted((root / "apps").glob("*/tilo-app.toml")):
+        app_dir = manifest_path.parent
+        if launches_a_surface(manifest_path) and not (app_dir / SURFACE).is_file():
+            violations.append(
+                Violation(
+                    manifest_path,
+                    1,
+                    "a windowed app commits its public surface: write it with "
+                    "`tilo-app surface` (docs/architecture/resources.md §6)",
+                )
+            )
+    return violations
+
+
 def audit_legacy_apis(
     sources: list[tuple[Path, str]],
     violations: list[Violation],
     *,
     endpoint: bool = False,
+    dynamic_host: bool = False,
 ) -> None:
     """Refuse every use of an API the model replaced in `sources`; an
-    address in a protocol endpoint's (`endpoint`) is its data."""
+    address in a protocol endpoint's (`endpoint`) is its data, and a dynamic
+    resource host (`dynamic_host`) keeps `DYNAMIC_HOST_LEGACY_APIS`."""
     for source, source_text in sources:
         code = code_only(source_text)
         for rule, (pattern, reason) in LEGACY_API_BANS.items():
             if endpoint and rule == "action_address_new":
+                continue
+            if dynamic_host and rule in DYNAMIC_HOST_LEGACY_APIS:
                 continue
             matches = list(pattern.finditer(code))
             if rule in LEGACY_API_BAN_FILTERS:
@@ -1391,6 +1726,38 @@ def audit_search_provider_limits(
     return found
 
 
+# An app that hosts other apps' resources, which exist only at run time (the tilolang host runs
+# packages written in the app language). Its resources and actions come from the packages'
+# metadata through the platform crate it depends on, so its own source holds none of the
+# `Resource`/`ActionSpec` values this audit looks for. The dependency is checked, so the
+# exemption cannot outlive the crate that publishes them.
+DYNAMIC_RESOURCE_HOSTS = {"tilolang": "tilolang-tilo"}
+
+
+def dynamic_resource_host(app_dir: Path) -> bool:
+    """Whether the app publishes its resources through the platform crate that describes
+    them from package metadata at run time."""
+    crate = DYNAMIC_RESOURCE_HOSTS.get(app_dir.name)
+    manifest = app_dir / "Cargo.toml"
+    return (
+        crate is not None
+        and manifest.is_file()
+        and re.search(rf"^{re.escape(crate)}\s*=", manifest.read_text(encoding="utf-8"), re.M)
+        is not None
+    )
+
+
+# What a dynamic resource host (above) has beside the typed framework apps: the dev workbench holds
+# one document per replica it runs; search is a catalogue over resources that are only known at
+# run time, so there is no typed `Resource::search` to publish from; and the controls it draws for
+# a package's views report their events to the host, which applies the action reference the
+# package's view attached to the control (a typed field edit or verb of the package), so no
+# control's closure is an action of its own.
+DYNAMIC_HOST_RULES = frozenset({"widget_owned_document", "widget_search_source", "closure_control"})
+# The legacy APIs a dynamic resource host keeps: its one resource, the room of packages, is
+# described from the packages' metadata at run time, so there is no record to derive it from.
+DYNAMIC_HOST_LEGACY_APIS = frozenset({"hand_resource_impl"})
+
 PUBLISH_ACTIONS = re.compile(r"\bCollabRequest\s*::\s*PublishActions\b")
 
 
@@ -1409,7 +1776,11 @@ def headless_action_service(app_dir: Path, code: str) -> bool:
     )
 
 
-def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
+def audit(
+    root: Path = ROOT, counts: dict[tuple[str, str], int] | None = None
+) -> tuple[list[Violation], int]:
+    """The contract's violations and the number of app crates; each ratchet
+    count by `(rule, path)` goes into `counts`."""
     violations: list[Violation] = []
     # This is a Tilo framework invariant, not a requirement on the isolated
     # miniature app repositories used below and by third-party SDK consumers.
@@ -1504,12 +1875,13 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
         main_path = manifest_path.parent / "src" / "main.rs"
         main_raw = main_path.read_text(encoding="utf-8") if main_path.is_file() else ""
         main_code = code_only(live_launch_registration_code(main_raw))
-        audit_ratchets(root, sources, ratchet_baseline, violations)
+        audit_ratchets(root, sources, ratchet_baseline, violations, counts=counts)
         if root.resolve() == ROOT.resolve():
             audit_legacy_apis(
                 legacy_api_sources(manifest_path.parent, ("src", "tests", "examples", "benches")),
                 violations,
                 endpoint=manifest_path.parent.name in PROTOCOL_ENDPOINTS,
+                dynamic_host=dynamic_resource_host(manifest_path.parent),
             )
         found_providers = audit_search_provider_limits(root, sources, violations)
         for key in SEARCH_LIMIT_EXEMPTIONS:
@@ -1528,12 +1900,15 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
         # depend on it), not an app: the apps embedding it publish its actions.
         # A compute package runs for the action of the app that requested it.
         # A headless service has no widget tree to publish from; it publishes
-        # its action descriptors to the broker directly.
+        # its action descriptors to the broker directly. A part crate
+        # publishes through the one app that links it (`owning_app`).
         if (
             app_name != "agent"
             and not app_name.endswith("-model")
             and not compute_package
+            and not dynamic_resource_host(manifest_path.parent)
             and not headless_action_service(manifest_path.parent, combined)
+            and owning_app(root, manifest_path.parent) is None
         ):
             framework_host = (
                 FRAMEWORK_APP.search(combined) is not None
@@ -1662,20 +2037,84 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
     if root.resolve() == ROOT.resolve():
         for manifest_path in sorted((root / "examples" / "apps").glob("*/Cargo.toml")):
             audit_legacy_apis(legacy_api_sources(manifest_path.parent, ("src", "tests")), violations)
+        violations.extend(audit_public_surfaces(root))
+        violations.extend(unclassified_control_callbacks(root))
 
     return violations, len(manifests)
 
 
+def write_baseline(
+    root: Path,
+    counts: dict[tuple[str, str], int],
+    baseline: dict[str, dict[str, int]],
+    seed: set[str],
+) -> None:
+    """Rewrite the per-app baseline files: lower every ceiling to its count
+    and drop those at zero. A ceiling is never raised, and a new one only for
+    a rule in `seed` that has no ceiling anywhere yet (introducing a ratchet
+    over existing debt)."""
+    ceilings: dict[str, dict[str, int]] = {}
+    for (rule, relative), count in counts.items():
+        limit = baseline.get(rule, {}).get(relative)
+        if limit is None and rule in seed:
+            limit = count
+        if limit is not None and min(limit, count) > 0:
+            ceilings.setdefault(rule, {})[relative] = min(limit, count)
+    files: dict[Path, dict[str, dict[str, int]]] = {}
+    for rule, entries in ceilings.items():
+        for relative, limit in entries.items():
+            files.setdefault(root / baseline_file(relative), {}).setdefault(rule, {})[relative] = limit
+    for path in (root / BASELINE).glob("*.toml"):
+        if path not in files:
+            path.unlink()
+    for path, rules in files.items():
+        lines = []
+        for rule in sorted(rules):
+            lines.append(f"[ratchets.{rule}]")
+            lines += [f'"{relative}" = {limit}' for relative, limit in sorted(rules[rule].items())]
+            lines.append("")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--write-baseline",
+        action="store_true",
+        help="lower each ratchet ceiling to its count and drop those at zero; never raises one",
+    )
+    parser.add_argument(
+        "--seed",
+        action="append",
+        default=[],
+        metavar="RULE",
+        help="with --write-baseline, record the current counts of a ratchet that has no ceiling yet",
+    )
+    arguments = parser.parse_args()
+    if arguments.seed and not arguments.write_baseline:
+        parser.error("--seed needs --write-baseline")
+    if arguments.write_baseline:
+        baseline = load_ratchet_baseline(ROOT)
+        for rule in arguments.seed:
+            if rule not in RATCHET_REASONS or rule in CLOSED_RATCHETS:
+                parser.error(f"--seed {rule}: not an open ratchet")
+            if rule in baseline:
+                parser.error(f"--seed {rule}: it has ceilings; they only fall")
+        counts: dict[tuple[str, str], int] = {}
+        audit(ROOT, counts)
+        write_baseline(ROOT, counts, baseline, set(arguments.seed))
     violations, app_count = audit()
     if violations:
         print("application resource/action contract FAILED", file=sys.stderr)
         for violation in violations:
-            print(f"  {violation.display(ROOT)}", file=sys.stderr)
+            print(violation.display(ROOT))
         return 1
     print(
         "application resource/action contract OK "
-        f"({app_count} app crates; one resource/action protocol)"
+        f"({app_count} app crates, {committed_surfaces()} committed surfaces; "
+        "one resource/action protocol)",
+        file=sys.stderr,
     )
     return 0
 

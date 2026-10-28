@@ -25,8 +25,6 @@ use ui::collaboration::{CertifiedEndpointIdentity, CollabEvent, CollabRequest};
 
 const TEST_ROOM: uuid::Uuid = uuid::Uuid::from_u128(0x6f2a_5fce_f612_46ac_9228_f6a3_ace4_9a11);
 const ROOT_KEY: [u8; 32] = [91; 32];
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: Duration = Duration::from_secs(30);
 
 pub const fn room() -> uuid::Uuid {
     TEST_ROOM
@@ -135,10 +133,6 @@ impl TypedPeer {
             .ok_or_else(|| anyhow::anyhow!("peer has not announced its route"))?
             .recv(self.timeout)
     }
-
-    pub fn set_read_timeout(&mut self, timeout: Option<Duration>) {
-        self.timeout = timeout.unwrap_or(Duration::from_millis(200));
-    }
 }
 
 /// Spawn the production broker harness with precisely the action grants a
@@ -181,11 +175,11 @@ pub fn spawn_with_agent_grants(
     ) else {
         unreachable!("person key creates a person principal")
     };
-    let mut workspace = shell::shell::state::Workspace::new(
+    let mut workspace = shell::shell::state::Workspace::in_room(
         shell::shell::state::WorkspaceId(1),
+        shell::shell::state::RoomId::parse(&TEST_ROOM.to_string()).unwrap(),
         "Agent integration room",
     );
-    workspace.set_room(shell::shell::state::RoomId::parse(&TEST_ROOM.to_string()).unwrap());
     workspace.set_owner(principal.clone());
     let owner = tilo_action_policy::Subject::person(principal);
     // Operators answer in the room's documents.
@@ -251,7 +245,7 @@ pub fn spawn_with_agent_grants(
     }
     // App fixtures use the same agent-only endpoint as Scribe. Device
     // enrollment, room membership, and exact app authority remain separate.
-    for host in ["quinten", "photos", "files"] {
+    for host in ["ada", "photos", "files"] {
         workspace.admit_agent_preset(
             host,
             tilo_action_policy::roles::AgentPreset::Operator,
@@ -262,8 +256,8 @@ pub fn spawn_with_agent_grants(
     // routes. Grant each observed route explicitly: the production capability
     // check deliberately does not alias app authority.
     for (host, app) in [
-        ("quinten", "dev.tilo.word-processor"),
-        ("quinten", "so.tilo.word-processor"),
+        ("ada", "dev.tilo.word-processor"),
+        ("ada", "so.tilo.word-processor"),
         ("photos", "dev.tilo.photos"),
         ("photos", "so.tilo.photos"),
         ("files", "so.tilo.file-explorer"),
@@ -273,7 +267,7 @@ pub fn spawn_with_agent_grants(
     }
     let mut tree = shell::shell::state::WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
-    let trusted_devices = ["quinten", "Scribe", "files", "photos"]
+    let trusted_devices = ["ada", "Scribe", "files", "photos"]
         .map(|handle| device_key(handle).verifying_key().to_bytes())
         .into_iter()
         .collect();

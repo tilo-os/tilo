@@ -4,7 +4,7 @@ use crate::application_view::{
     validate_identity,
 };
 use crate::launch::LaunchError;
-use crate::permissions::{PermissionContext, PermissionScope, UserId};
+use crate::permissions::{PermissionContext, PermissionScope, SharedPermissions, UserId};
 use crate::record::{
     RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordReservation, RecordStore,
 };
@@ -12,6 +12,7 @@ use crate::view::{ThawError, View};
 use crate::wake::{WakeEvent, WakeHandle, WakeScope};
 use crate::widget::{AppWidget, IconDescriptor};
 use automerge::AutoCommit;
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -20,14 +21,20 @@ mod host;
 mod open_file;
 pub mod registry;
 pub use host::{ApplicationHost, NativeProcessHost, NativeProfile};
+#[cfg(test)]
+pub(crate) use host::{follow_host_authority, manual_authority_watch};
 pub use open_file::{MAX_OPEN_FILE_BYTES, OpenFile, OpenFileReceipt};
 
 pub type InstanceId = u64;
 pub type ComponentFactory =
     fn(HostContext, LaunchTarget, RestoreInput) -> Result<AppComponent, LaunchError>;
 pub struct ApplicationDefinition {
-    pub app_id: &'static str,
-    pub title: &'static str,
+    /// The app's package id. Owned: a runtime that runs installed packages
+    /// (tilolang) learns it from the launch (`TILO_PACKAGE_ID`), not from its
+    /// source. [`Self::app_id`] borrows it for as long as the definition lives.
+    pub app_id: Cow<'static, str>,
+    /// The app's name, as the definition's runtime learns it.
+    pub title: Cow<'static, str>,
     pub icon: IconDescriptor,
     pub record_kind: RecordKind,
     pub required: Vec<PermissionScope>,
@@ -40,12 +47,32 @@ pub struct ApplicationDefinition {
     /// everyone in the room shares), rather than a record per window: every
     /// window of the app in the room opens it, and the first creates it.
     pub room_record: bool,
+    /// The app's window shows before the room's record is read: a record this device holds
+    /// opens off the frame, and the component takes it in when it is decoded
+    /// ([`HostContext::record_opening`]). Only for an app that
+    /// [keeps one record per room](Self::room_record).
+    pub opens_before_record: bool,
     pub create: ComponentFactory,
 }
 
 /// The entry of [`ApplicationDefinition::opens`] that opens files of every
 /// type.
 pub const ANY_MEDIA_TYPE: &str = "*/*";
+
+impl ApplicationDefinition {
+    /// The app's package id, borrowed from the definition: `'static` for the
+    /// definitions every host keeps for the life of the process.
+    #[must_use]
+    pub fn app_id(&self) -> &str {
+        &self.app_id
+    }
+
+    /// The app's name, borrowed from the definition.
+    #[must_use]
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+}
 #[non_exhaustive]
 pub enum LaunchTarget {
     New,
@@ -69,7 +96,7 @@ pub struct HostContextInputs {
     pub views: Rc<InstanceViewStore>,
     pub device_id: String,
     pub instance_id: InstanceId,
-    pub permissions: Rc<RefCell<PermissionContext>>,
+    pub permissions: SharedPermissions,
     /// The trusted local person, retained independently of later action attribution.
     pub author: UserId,
     pub action_context: tilo_actions::ActionContext,
@@ -86,7 +113,7 @@ pub struct HostContext {
     record: RecordCheckout,
     reservation: Option<RecordReservation>,
     initialization: Option<crate::collaboration::native_initial::RecordInitialization>,
-    permissions: Rc<RefCell<PermissionContext>>,
+    permissions: SharedPermissions,
     author: UserId,
     host_person: UserId,
     action_context: tilo_actions::ActionContext,
@@ -110,6 +137,9 @@ pub struct HostContext {
     /// Where the app keeps the person's own records on this device, when
     /// the host keeps them ([`Self::provide_person_records`]).
     person: Option<crate::record::person::PersonRecords>,
+    /// Where the app opens the records every app of the room opens, when
+    /// the host keeps them ([`Self::provide_workspace_records`]).
+    workspace: Option<crate::record::workspace::WorkspaceRecords>,
     /// The file areas the host gave it ([`Self::provide_files`]); the
     /// person's own otherwise.
     files: Option<crate::storage::AppFiles>,
@@ -129,7 +159,6 @@ pub struct HostContext {
 /// it played under.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PlaybackHandoff {
-    /// The position to continue from.
     pub position_ms: u64,
     /// Whether playback was running and continues running here.
     pub resume_playing: bool,
@@ -155,17 +184,40 @@ pub struct LaunchOption {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Capture {
     scenario: Option<String>,
+    driven: bool,
 }
 
 impl Capture {
     /// A capture of the named scenario; `None` is a plain `--shots`.
     pub fn new(scenario: Option<String>) -> Self {
-        Self { scenario }
+        Self {
+            scenario,
+            driven: false,
+        }
+    }
+
+    /// A headless drive of the named scenario (`--headless-drive` with
+    /// `--scenario`): built from the scenario's fixtures as its capture is,
+    /// and still starting nothing on its own, but an action the drive
+    /// invokes runs, as a person's click or an agent's call does. Every
+    /// action the app publishes is then reachable in the scene its
+    /// screenshots show.
+    pub fn driven(scenario: Option<String>) -> Self {
+        Self {
+            scenario,
+            driven: true,
+        }
     }
 
     /// The scenario captured; `None` for a plain `--shots`.
     pub fn scenario(&self) -> Option<&str> {
         self.scenario.as_deref()
+    }
+
+    /// Whether a headless drive invokes the window's actions
+    /// ([`Self::driven`]) rather than only photographing it.
+    pub fn is_driven(&self) -> bool {
+        self.driven
     }
 }
 
@@ -323,7 +375,7 @@ pub struct Reopener {
     views: Rc<InstanceViewStore>,
     device_id: String,
     instance_id: InstanceId,
-    permissions: Rc<RefCell<PermissionContext>>,
+    permissions: SharedPermissions,
     author: UserId,
     action_context: tilo_actions::ActionContext,
     writes_as_author: bool,
@@ -331,6 +383,7 @@ pub struct Reopener {
     content: Option<tilo_content::ContentStore>,
     settings: crate::storage::SettingsDocument,
     person: Option<crate::record::person::PersonRecords>,
+    workspace: Option<crate::record::workspace::WorkspaceRecords>,
     files: Option<crate::storage::AppFiles>,
     private: bool,
     replacement: Rc<RefCell<Option<PendingReplacement>>>,
@@ -368,7 +421,7 @@ impl Reopener {
                 views: Rc::clone(&self.views),
                 device_id: self.device_id.clone(),
                 instance_id: self.instance_id,
-                permissions: Rc::clone(&self.permissions),
+                permissions: self.permissions.clone(),
                 author: self.author.clone(),
                 action_context: self.action_context.clone(),
             },
@@ -381,6 +434,7 @@ impl Reopener {
         context.content.clone_from(&self.content);
         context.settings = self.settings.clone();
         context.person.clone_from(&self.person);
+        context.workspace.clone_from(&self.workspace);
         context.files.clone_from(&self.files);
         context.private = self.private;
         Ok((context, target))
@@ -430,7 +484,7 @@ impl HostContext {
             views: Rc::clone(&self.views),
             device_id: self.device_id.clone(),
             instance_id: self.instance_id,
-            permissions: Rc::clone(&self.permissions),
+            permissions: self.permissions.clone(),
             author: self.author.clone(),
             action_context: self.action_context.clone(),
             writes_as_author: self.writes_as_author,
@@ -438,6 +492,7 @@ impl HostContext {
             content: self.content.clone(),
             settings: self.settings.clone(),
             person: self.person.clone(),
+            workspace: self.workspace.clone(),
             files: self.files.clone(),
             private: self.private,
             replacement: Rc::clone(&self.replacement),
@@ -506,14 +561,14 @@ impl HostContext {
             author,
             action_context,
         } = inputs;
-        validate_identity(definition.app_id).map_err(LaunchError::Restore)?;
+        validate_identity(definition.app_id()).map_err(LaunchError::Restore)?;
         validate_identity(definition.record_kind.as_str()).map_err(LaunchError::Restore)?;
         validate_identity(&device_id).map_err(LaunchError::Restore)?;
         validate_identity(&author.0).map_err(LaunchError::Restore)?;
         let (profile, package, workspace) = records
             .canonical_namespace()
             .ok_or(LaunchError::BindingMismatch)?;
-        if package != definition.app_id
+        if package != definition.app_id()
             || !views.matches_namespace(&profile, &device_id, &workspace)
         {
             return Err(LaunchError::BindingMismatch);
@@ -557,9 +612,13 @@ impl HostContext {
                 {
                     return Err(LaunchError::BindingMismatch);
                 }
-                records
-                    .try_open_record(checkout)
-                    .map_err(LaunchError::Record)?;
+                // A record opening off the frame is taken in by the component that shows
+                // before it ([`HostContext::record_opening`]), not here.
+                if !records.is_opening(&checkout.id) {
+                    records
+                        .try_open_record(checkout)
+                        .map_err(LaunchError::Record)?;
+                }
                 (checkout.clone(), None)
             }
         };
@@ -569,6 +628,10 @@ impl HostContext {
             &record,
         )
         .map_err(|error| LaunchError::Record(RecordOpenError::Initialization(error)))?;
+        // Another replica's change to the window's records (a collaborator's
+        // edit, a room's bot posting) wakes the window to show it.
+        let wake_scope = WakeScope::new();
+        records.wake_on_arrival(wake_scope.handle());
         Ok(Self {
             app_id: package,
             instance_id,
@@ -583,7 +646,7 @@ impl HostContext {
             author,
             action_context,
             writes_as_author: false,
-            wake_scope: WakeScope::new(),
+            wake_scope,
             construction: Rc::new(()),
             lifetime_id: uuid::Uuid::new_v4(),
             queued_controls: Rc::default(),
@@ -599,6 +662,7 @@ impl HostContext {
             capture: None,
             settings: crate::storage::SettingsDocument::Session,
             person: None,
+            workspace: None,
             files: None,
             replacement: Rc::default(),
             launch_arguments: Vec::new(),
@@ -648,7 +712,6 @@ impl HostContext {
         );
         self.content = Some(store);
     }
-    /// The content store the host lent, if any.
     pub fn content(&self) -> Option<&tilo_content::ContentStore> {
         self.content.as_ref()
     }
@@ -695,6 +758,18 @@ impl HostContext {
     /// that lends nothing leaves the app on its own services.
     pub fn lend<T: std::any::Any>(&mut self, service: T) {
         self.lent.push(Box::new(service));
+    }
+    /// Lend the component a service already boxed: what a component that showed before its
+    /// record hands the one that shows it (`T` stays the service's own type).
+    pub fn lend_boxed(&mut self, service: Box<dyn std::any::Any>) {
+        self.lent.push(service);
+    }
+    /// The record this context opened, while it is still opening off the frame
+    /// ([`RecordStore::begin_opening`]): the component shows before it, and takes it in.
+    pub fn record_opening(&self) -> Option<crate::record::RecordOpening> {
+        self.records
+            .is_opening(&self.record.id)
+            .then(|| self.records.opening(&self.record))
     }
     /// The services the host lent, once.
     pub fn take_lent(&mut self) -> Vec<Box<dyn std::any::Any>> {
@@ -767,6 +842,12 @@ impl HostContext {
     /// The participant's permissions as they change while the component runs
     /// (a role change, a revoked share). Components that present themselves
     /// read-only hold this instead of deciding once at launch.
+    /// Lower this instance to reading: what a window replaying a recording
+    /// offers whoever holds it. Nothing it shows can be changed through it.
+    pub fn restrict_to_reading(&mut self) {
+        let reading = self.permissions.borrow().read_only();
+        self.permissions = crate::permissions::SharedPermissions::new(reading);
+    }
     pub fn live_permissions(&self) -> crate::permissions::LivePermissions {
         crate::permissions::LivePermissions::shared(self.permissions.clone())
     }
@@ -849,6 +930,18 @@ impl HostContext {
     pub fn provide_person_records(&mut self, records: crate::record::person::PersonRecords) {
         self.person = Some(records);
     }
+    /// Give the component the records every app of its room opens
+    /// ([`crate::record::workspace`]), kept beside the record it shows.
+    pub fn provide_workspace_records(
+        &mut self,
+        records: crate::record::workspace::WorkspaceRecords,
+    ) {
+        self.workspace = Some(records);
+    }
+    /// The records every app of the room opens, when the host keeps them.
+    pub fn workspace_records(&self) -> Option<&crate::record::workspace::WorkspaceRecords> {
+        self.workspace.as_ref()
+    }
     /// This device, as the host names it: stable across launches of the app
     /// on it, distinct on each of the person's devices.
     pub fn device_id(&self) -> &str {
@@ -862,8 +955,6 @@ impl HostContext {
     /// is read: `migrate` makes at most one deterministic housekeeping change
     /// (two devices migrating the same document make the same one) and
     /// answers whether it changed anything.
-    /// # Errors
-    /// The record is not open here, or the migration failed.
     pub fn migrate_record(
         &self,
         migrate: impl FnOnce(&mut AutoCommit) -> Result<bool, String>,
@@ -887,8 +978,6 @@ impl HostContext {
     /// arriving over sync are merged: validated first, attributed to them in
     /// history, and never on this participant's undo stack. Returns whether
     /// anything changed.
-    /// # Errors
-    /// The document is not a valid copy of this record, or it is not open.
     pub fn merge_peer_document(&self, document: Vec<u8>) -> Result<bool, String> {
         self.records.merge_peer_document(&self.record, document)
     }
@@ -1033,9 +1122,13 @@ impl ApplicationDefinition {
     /// [`ANY_MEDIA_TYPE`] among [`Self::opens`] opens every file.
     pub fn opens_media_type(&self, media_type: &str) -> bool {
         open_file::media_type_essence(media_type).is_some_and(|essence| {
-            self.opens
-                .iter()
-                .any(|opens| *opens == ANY_MEDIA_TYPE || *opens == essence.as_str())
+            // Every app opens a recording of its own records, to replay it;
+            // its factory refuses one it cannot replay.
+            essence == tilo_content::RECORDING.mime
+                || self
+                    .opens
+                    .iter()
+                    .any(|opens| *opens == ANY_MEDIA_TYPE || *opens == essence.as_str())
         })
     }
     /// Validate, invoke the one factory under its lifetime, then restore presentation only.
@@ -1121,11 +1214,13 @@ impl ApplicationDefinition {
         let entry = context.wake_scope.enter();
         let result = (self.create)(context, target, restore).and_then(|mut component| {
             if !Rc::ptr_eq(&construction, &component.context.construction)
-                || !records.is_ready(&record.id)
+                || !(records.is_ready(&record.id) || records.is_opening(&record.id))
             {
                 return Err(LaunchError::BindingMismatch);
             }
-            if let Some(saved) = local {
+            // A component shown before its record restores nothing of it: the component built
+            // once the record is had restores the saved view.
+            if let Some(saved) = local.filter(|_| !records.is_opening(&record.id)) {
                 component
                     .restore_local_pair_owned(&saved)
                     .map_err(LaunchError::Restore)?;
@@ -1214,25 +1309,26 @@ pub struct AppComponent {
     report_drained: bool,
     registry_owner: Rc<()>,
     providers: Rc<RefCell<ProviderPayloads>>,
-    /// The record durability last delivered to the root, and when it was
-    /// sampled.
-    record_save: Option<(crate::record::RecordSaveStatus, crate::time::Instant)>,
+    /// The record durability last delivered to the root.
+    record_save: Option<crate::record::RecordSaveStatus>,
     /// Whether a change to the delivered durability has yet to be presented.
     save_status_changed: bool,
+    /// What the record's store calls, from its own thread, when the writes
+    /// a "Saving…" waits on have resolved: this component's wake, so the
+    /// window syncs and samples the record's durability again then.
+    save_wake: Option<durable_store::ReadyWake>,
 }
-
-/// How soon a component whose record is still being written samples its
-/// durability again. The writer settles off the event loop and nothing wakes
-/// the window when it does, so a "Saving…" would otherwise stay on screen,
-/// and in the accessibility tree, until the next unrelated event.
-const SAVING_RESAMPLE: crate::time::Duration = crate::time::Duration::from_millis(100);
 
 impl AppComponent {
     /// The component the app built to show another record in this one's
     /// place, once: the host closes this component and mounts that one.
     pub fn take_replacement(&mut self) -> Option<ComponentReplacement> {
-        let pending = self.context.replacement.borrow_mut().take()?;
-        pending.take()
+        let pending = self.context.replacement.borrow_mut().take();
+        if let Some(pending) = pending {
+            return pending.take();
+        }
+        let _entry = self.context.wake_scope.enter();
+        self.root.as_deref_mut()?.take_component_replacement()
     }
     /// What this component's app would open another record with.
     #[cfg(test)]
@@ -1242,6 +1338,12 @@ impl AppComponent {
     /// Set how the hosting window treats this component's tree.
     pub const fn set_behaviour(&mut self, behaviour: ComponentBehaviour) {
         self.behaviour = behaviour;
+    }
+    /// Whether the app declares its windows withheld from everything that
+    /// leaves the device ([`ComponentBehaviour::capture_protected`]).
+    #[must_use]
+    pub const fn capture_protected(&self) -> bool {
+        self.behaviour.capture_protected
     }
     /// The id of the application this component is an instance of.
     pub fn app_id(&self) -> &str {
@@ -1309,6 +1411,23 @@ impl AppComponent {
         files: crate::history_mode::checked_files::FileHistorySource,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
         self.register_history_of(definition, Some(files))
+    }
+    /// Open History at `entry` when the window starts, as a window replaying
+    /// a recording opens at its first step. Refused before History is
+    /// registered.
+    ///
+    /// # Errors
+    /// [`crate::history_mode::HistoryRegistrationError::Missing`] when no
+    /// History is registered.
+    pub fn open_history_at(
+        &mut self,
+        entry: crate::HistoryEntryId,
+    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
+        self.history
+            .as_mut()
+            .ok_or(crate::history_mode::HistoryRegistrationError::Missing)?
+            .opening_at = Some(entry);
+        Ok(())
     }
     fn register_history_of(
         &mut self,
@@ -1398,6 +1517,11 @@ impl AppComponent {
     /// arrived.
     pub(crate) fn project_record_save_status(&mut self) -> bool {
         let captured = self.callback_binding();
+        let context = &self.context;
+        let wake = std::sync::Arc::clone(self.save_wake.get_or_insert_with(|| {
+            let handle = context.wake_handle();
+            std::sync::Arc::new(move || handle.wake())
+        }));
         let sampled = self
             .with_live_component(&captured, |binding, root, _registry| {
                 if root.take_save_retry()
@@ -1409,9 +1533,28 @@ impl AppComponent {
                 for refusal in &refusals {
                     root.record_refused(refusal);
                 }
-                let status = binding.records.save_status(&binding.checkout.id).ok()?;
+                for text in root.take_notices() {
+                    if let Err(error) = binding.records.hold_notice(&binding.checkout.id, text) {
+                        tracing::warn!(%error, "a notice could not wait for the room");
+                    }
+                }
+                let said = binding.records.take_said(&binding.checkout.id);
+                for text in &said {
+                    root.record_said(text);
+                }
+                let mut status = binding.records.save_status(&binding.checkout.id).ok()?;
+                if status == crate::record::RecordSaveStatus::Saving {
+                    // Still being written: the record's store wakes this
+                    // component once the write lands; nothing samples it
+                    // again on a timer. Sampled again once armed, so a write
+                    // that landed in between is shown now.
+                    binding
+                        .records
+                        .wake_on_save_progress(&binding.checkout.id, wake);
+                    status = binding.records.save_status(&binding.checkout.id).ok()?;
+                }
                 root.record_save_status(status.clone());
-                Some((status, !refusals.is_empty()))
+                Some((status, !refusals.is_empty() || !said.is_empty()))
             })
             .ok()
             .flatten();
@@ -1423,8 +1566,8 @@ impl AppComponent {
             || self
                 .record_save
                 .as_ref()
-                .is_some_and(|(previous, _)| *previous != status);
-        self.record_save = Some((status, crate::time::now()));
+                .is_some_and(|previous| *previous != status);
+        self.record_save = Some(status);
         if changed {
             // The caller syncs the root again with the new state; a frame
             // shows it. An `App` asks for that frame through
@@ -1436,17 +1579,12 @@ impl AppComponent {
         changed
     }
 
-    /// When the window must sync again without input: shortly after the
-    /// last sample while the record is still being written, so the moment
-    /// it becomes durable is shown. The deadline is fixed to the sample: one
-    /// computed from the time it is asked for would never come due.
-    pub(crate) fn save_status_wake_deadline(&self) -> Option<crate::time::Instant> {
-        match &self.record_save {
-            Some((crate::record::RecordSaveStatus::Saving, sampled)) => {
-                sampled.checked_add(SAVING_RESAMPLE)
-            }
-            _ => None,
-        }
+    /// Whether the record's last sampled durability is still being written.
+    pub(crate) fn record_saving(&self) -> bool {
+        matches!(
+            &self.record_save,
+            Some(crate::record::RecordSaveStatus::Saving)
+        )
     }
 
     /// Whether the delivered durability changed since this was last asked,
@@ -1458,18 +1596,7 @@ impl AppComponent {
     /// The durability last delivered, as sampled.
     #[cfg(test)]
     pub(crate) fn sampled_record_save(&self) -> Option<&crate::record::RecordSaveStatus> {
-        self.record_save.as_ref().map(|(status, _)| status)
-    }
-
-    /// Move the last durability sample back past its resample interval, so a
-    /// test reaches the moment its deadline comes due without waiting for it.
-    #[cfg(test)]
-    pub(crate) fn age_record_save_sample(&mut self) {
-        if let Some((_, sampled)) = &mut self.record_save {
-            *sampled = sampled
-                .checked_sub(SAVING_RESAMPLE * 2)
-                .expect("the monotonic clock started before the sample's resample interval");
-        }
+        self.record_save.as_ref()
     }
 
     pub fn new(
@@ -1512,6 +1639,7 @@ impl AppComponent {
             registry_owner,
             record_save: None,
             save_status_changed: false,
+            save_wake: None,
             host_owner_wakes: None,
         }
     }
@@ -1579,6 +1707,12 @@ impl AppComponent {
     }
     pub fn record(&self) -> &RecordCheckout {
         self.context.record()
+    }
+    /// The content store this component reads its record's content from: the
+    /// host's store joined to the lane this window keeps, so what the window
+    /// asks for is its own to ask.
+    pub fn content(&self) -> Option<tilo_content::ContentStore> {
+        self.context.content().cloned()
     }
     /// # Errors
     /// A component can be mounted once and a closed lifetime cannot be reopened.
@@ -1926,15 +2060,25 @@ impl AppComponent {
                 .collect::<Vec<_>>(),
         );
         let result = if let Some(root) = owned.0.as_deref_mut() {
-            let result = self
-                .context
-                .records
-                .with_checked(&self.context.record.id, |doc| {
-                    for invocation in &owned.2 {
-                        root.poll_resource_operation(*invocation, true, doc, &automerge::ROOT);
-                    }
-                })
-                .map_err(|error| error.to_string());
+            // A component shown before its record ran no operation on it, and has none to end.
+            let result = if self.context.records.is_opening(&self.context.record.id) {
+                Ok(())
+            } else {
+                self.context
+                    .records
+                    .with_checked(&self.context.record.id, |doc| {
+                        for invocation in &owned.2 {
+                            crate::widget::poll_resource_operation(
+                                &mut *root,
+                                *invocation,
+                                true,
+                                doc,
+                                &automerge::ROOT,
+                            );
+                        }
+                    })
+                    .map_err(|error| error.to_string())
+            };
             crate::widget::unmount_native_views(root);
             result
         } else {
@@ -2020,6 +2164,9 @@ impl crate::search::SearchProvider for ComponentProvider {
         self.invoke(|provider| provider.facets())
             .unwrap_or_default()
     }
+    fn open_action(&self) -> Option<tilo_actions::ActionAddress> {
+        self.invoke(|provider| provider.open_action()).flatten()
+    }
     fn search_scopes(&self) -> Vec<crate::search::ScopeDecl> {
         self.invoke(|provider| provider.search_scopes())
             .unwrap_or_default()
@@ -2080,8 +2227,6 @@ pub struct ComponentCloseReport {
 }
 impl ComponentCloseReport {
     /// Retry the same dirty canonical owner, retaining it until durability succeeds.
-    /// # Errors
-    /// Returns the original owner's current persistence failure.
     pub fn retry_record(&mut self) -> Result<(), String> {
         if let Some(records) = &self.record_retry {
             match &self.record_retry_target {
@@ -2128,10 +2273,12 @@ impl ApplicationCatalog {
         &mut self,
         definition: &'static ApplicationDefinition,
     ) -> Result<(), LaunchError> {
-        if self.definitions.contains_key(definition.app_id) {
-            return Err(LaunchError::DuplicateApplication(definition.app_id.into()));
+        if self.definitions.contains_key(definition.app_id()) {
+            return Err(LaunchError::DuplicateApplication(
+                definition.app_id().into(),
+            ));
         }
-        self.definitions.insert(definition.app_id, definition);
+        self.definitions.insert(definition.app_id(), definition);
         Ok(())
     }
     /// # Errors
@@ -2206,12 +2353,10 @@ mod cleanup_tests {
     }
     #[test]
     fn panics_propagate_after_the_registry_drops_under_a_closed_scope() {
-        // Case `root_panic_still_drops_registry_under_closed_scope_and_propagates`.
         {
             assert_closed_cleanup("root");
         }
 
-        // Case `registry_panic_propagates_after_both_closed_scope_drops`.
         {
             assert_closed_cleanup("registry");
         }
@@ -2305,14 +2450,15 @@ mod bound_lifetime_tests {
         let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
         let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
         let definition = ApplicationDefinition {
-            app_id: "dev.tilo.mount-probe",
-            title: "Mount probe",
+            app_id: "dev.tilo.mount-probe".into(),
+            title: "Mount probe".into(),
             icon: IconDescriptor::Glyph("P"),
             record_kind: RecordKind::new("probe"),
             required: vec![],
             optional: vec![],
             opens: &[],
             room_record: false,
+            opens_before_record: false,
             create: factory,
         };
         let supplied = RecordId::for_tab(55);
@@ -2324,7 +2470,9 @@ mod bound_lifetime_tests {
                     views: views.clone(),
                     device_id: "D".into(),
                     instance_id: 7,
-                    permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+                    permissions: crate::permissions::SharedPermissions::new(
+                        PermissionContext::permissive(),
+                    ),
                     author: UserId("probe-author".into()),
                     action_context: tilo_actions::ActionContext::default(),
                 },
@@ -2352,14 +2500,15 @@ mod bound_lifetime_tests {
         let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
         let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
         let definition = ApplicationDefinition {
-            app_id: "dev.tilo.mount-probe",
-            title: "Mount probe",
+            app_id: "dev.tilo.mount-probe".into(),
+            title: "Mount probe".into(),
             icon: IconDescriptor::Glyph("P"),
             record_kind: RecordKind::new("probe"),
             required: vec![],
             optional: vec![],
             opens: &[],
             room_record: false,
+            opens_before_record: false,
             create: factory,
         };
         let prepare = |checkout| {
@@ -2370,7 +2519,9 @@ mod bound_lifetime_tests {
                     views: views.clone(),
                     device_id: "D".into(),
                     instance_id: 7,
-                    permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+                    permissions: crate::permissions::SharedPermissions::new(
+                        PermissionContext::permissive(),
+                    ),
                     author: UserId("probe-author".into()),
                     action_context: tilo_actions::ActionContext::default(),
                 },
@@ -2405,7 +2556,6 @@ mod bound_lifetime_tests {
 
     #[test]
     fn component_lifetimes_refuse_stale_wakes_loans_and_busy_entries() {
-        // Case `actual_component_reopen_refuses_queued_old_wakes_and_busy_store_entry`.
         {
             let temp = tempfile::tempdir().unwrap();
             let mut owners = crate::record::RecordOwners::new(temp.path().into());
@@ -2413,14 +2563,15 @@ mod bound_lifetime_tests {
             let views =
                 Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
             let definition = ApplicationDefinition {
-                app_id: "so.tilo.mount-probe",
-                title: "Mount probe",
+                app_id: "so.tilo.mount-probe".into(),
+                title: "Mount probe".into(),
                 icon: IconDescriptor::Glyph("P"),
                 record_kind: RecordKind::new("probe"),
                 required: vec![],
                 optional: vec![],
                 opens: &[],
                 room_record: false,
+                opens_before_record: false,
                 create: factory,
             };
             let prepare = |target: &LaunchTarget| {
@@ -2431,7 +2582,9 @@ mod bound_lifetime_tests {
                         views: views.clone(),
                         device_id: "D".into(),
                         instance_id: 7,
-                        permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+                        permissions: crate::permissions::SharedPermissions::new(
+                            PermissionContext::permissive(),
+                        ),
                         author: UserId("probe-author".into()),
                         action_context: tilo_actions::ActionContext::default(),
                     },
@@ -2501,14 +2654,15 @@ mod bound_lifetime_tests {
             let views =
                 Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
             let definition = ApplicationDefinition {
-                app_id: "so.tilo.mount-probe",
-                title: "Mount probe",
+                app_id: "so.tilo.mount-probe".into(),
+                title: "Mount probe".into(),
                 icon: IconDescriptor::Glyph("P"),
                 record_kind: RecordKind::new("probe"),
                 required: vec![],
                 optional: vec![],
                 opens: &[],
                 room_record: false,
+                opens_before_record: false,
                 create: factory,
             };
             let context = HostContext::prepare(
@@ -2518,7 +2672,9 @@ mod bound_lifetime_tests {
                     views,
                     device_id: "D".into(),
                     instance_id: 7,
-                    permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+                    permissions: crate::permissions::SharedPermissions::new(
+                        PermissionContext::permissive(),
+                    ),
                     author: UserId("probe-author".into()),
                     action_context: tilo_actions::ActionContext::default(),
                 },
@@ -2664,6 +2820,48 @@ mod portable_tests {
         assert_eq!(reopened.author(), &UserId("agent".into()));
         assert_eq!(reopened.host_person(), &probe::author());
         assert_eq!(reopened.callback_binding().host_person, probe::author());
+    }
+
+    /// The compositor runs apps on its frame loop: checkpointing and closing
+    /// one there must never wait for a store's writer thread (an fsync),
+    /// and the document and View still reach the disk.
+    #[test]
+    fn checkpointing_and_closing_on_the_frame_loop_never_wait_on_storage() {
+        let host = probe::ProbeHost::new();
+        let root = host.root();
+        // Opened before: a frame loop opens a record through the store's
+        // own thread, which is not what this test is about.
+        let mut component =
+            probe::instantiate_probe(&host, 7, LaunchTarget::New, RestoreInput::None).unwrap();
+        let checkout = {
+            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+            let checkout = component.record().clone();
+            assert_eq!(component.checkpoint_for_close(), Vec::<String>::new());
+            let report = component.close();
+            assert_eq!(report.record_error, None);
+            assert_eq!(report.view_error, None);
+            drop(component);
+            checkout
+        };
+        // Off the loop the stores may wait for their last commits.
+        let probe::ProbeHost {
+            owners,
+            records,
+            views,
+            temp,
+        } = host;
+        drop((records, owners, views));
+        let mut owners = crate::record::RecordOwners::new(root.clone());
+        let records = owners.open(probe::APP, probe::ROOM).unwrap();
+        assert!(records.open_record(&checkout), "the record was saved");
+        assert_eq!(probe::body(&records, &checkout), "initialized");
+        let saved = InstanceViewStore::new(root, probe::DEVICE, probe::ROOM)
+            .unwrap()
+            .load(7)
+            .unwrap()
+            .expect("the View was saved");
+        assert_eq!(saved.record_id, checkout.id.as_str());
+        drop((records, owners, temp));
     }
 
     #[test]

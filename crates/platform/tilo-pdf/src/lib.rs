@@ -134,7 +134,6 @@ use tilo_sandbox::shm;
 /// Documents larger than this are refused before any parsing.
 pub const MAX_DOCUMENT_BYTES: u64 = 512 * 1024 * 1024;
 
-/// Name of the helper executable.
 pub const HELPER_NAME: &str = "tilo-pdf-helper";
 
 /// A rendered image: RGBA8, straight alpha (opaque on white), rows packed
@@ -324,6 +323,63 @@ pub fn first_page_preview(pdf: &[u8], width: u32, height: u32) -> Option<(Vec<u8
     };
     let bitmap = doc.render(0, &options).ok()?;
     Some((bitmap.pixels().to_vec(), bitmap.width(), bitmap.height()))
+}
+
+/// The `pdf`'s pages in order, each rasterised through [`Engine::shared`] to
+/// fit a `width` x `height` box; [`Self::render`] one page at a time, and how
+/// many the document holds.
+///
+/// A print preview pages through this: the person checks page 7 of 40 before
+/// forty pages are printed, so the count and any page have to come from the
+/// same open document.
+pub struct PagePreview {
+    doc: Document,
+}
+
+impl PagePreview {
+    /// `pdf` open in the shared engine, or `None` when no engine answers or
+    /// the document cannot be read.
+    #[must_use]
+    pub fn open(pdf: &[u8]) -> Option<Self> {
+        Some(Self {
+            doc: Engine::shared().ok()?.open_bytes(pdf).ok()?,
+        })
+    }
+
+    /// How many pages the document has.
+    #[must_use]
+    pub fn page_count(&self) -> usize {
+        self.doc.page_count()
+    }
+
+    /// Page `page` (0-based) drawn to fit `width` x `height`: straight-alpha
+    /// RGBA pixels and their size. `None` past the last page, or when the
+    /// page cannot be drawn.
+    #[must_use]
+    pub fn render(&self, page: usize, width: u32, height: u32) -> Option<(Vec<u8>, u32, u32)> {
+        let size = self.doc.page_size(page)?;
+        if !(size.width.is_finite()
+            && size.height.is_finite()
+            && size.width > 0.0
+            && size.height > 0.0)
+        {
+            return None;
+        }
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "preview boxes are a few hundred pixels"
+        )]
+        let scale = (width.max(1) as f32 / size.width).min(height.max(1) as f32 / size.height);
+        let options = RenderOptions {
+            scale,
+            rotation: Rotation::None,
+            region: None,
+            annotations: true,
+            reader_markup: true,
+        };
+        let bitmap = self.doc.render(page, &options).ok()?;
+        Some((bitmap.pixels().to_vec(), bitmap.width(), bitmap.height()))
+    }
 }
 
 /// What [`sandboxed_for_test`] decided.
@@ -745,7 +801,6 @@ struct TextCache {
 
 const TEXT_CACHE_PAGES: usize = 64;
 
-/// One search hit.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchHit {
     /// 0-based page.
@@ -810,7 +865,6 @@ impl Document {
         self.info.pages.get(page).copied()
     }
 
-    /// Display size of page `page`.
     #[must_use]
     pub fn page_size(&self, page: usize) -> Option<PageSize> {
         self.page(page).map(|g| g.size())

@@ -455,6 +455,16 @@ pub enum RichTextAction {
     /// made); edited blocks are edited in place, the rest inserted or
     /// removed. Unlike [`Self::ReplaceBody`] it does not recreate the body.
     SyncBody { markdown: String },
+    /// Replace the first occurrence of `find` in the body's text (every
+    /// occurrence with `all`) by `replace`, in place: other text, marks,
+    /// images and blocks stay. Resolved as it applies; refused when `find`
+    /// is not in the body.
+    ReplaceText {
+        find: String,
+        replace: String,
+        #[serde(default)]
+        all: bool,
+    },
     /// Replace the whole body with `blocks`, formatted as they are: text an
     /// app brings with marks Markdown cannot carry (a note's links to other
     /// notes, a slide's runs, a copied fragment).
@@ -589,7 +599,8 @@ impl RichTextAction {
             | Self::ShiftIndent { .. }
             | Self::MoveBlock { .. }
             | Self::DeleteBlocks { .. }
-            | Self::SyncBody { .. } => ActionDomain::Blocks,
+            | Self::SyncBody { .. }
+            | Self::ReplaceText { .. } => ActionDomain::Blocks,
         }
     }
 }
@@ -2073,6 +2084,17 @@ fn apply_replace_formatted(dm: &mut DocMut, format: ImportFormat, bytes: &[u8]) 
 /// document was last read from or written to.
 pub const FILE_DIGEST: &str = "file_digest";
 
+/// The document meta key holding whether the document has changed since the
+/// file whose content address is [`FILE_DIGEST`] took it: the work a file
+/// does not hold yet.
+///
+/// Every action that changes the body sets it, and the two that put a file's
+/// content in the document — [`RichTextAction::ReplaceFormatted`] and
+/// [`RichTextAction::NoteFileWritten`] — clear it. So an undone edit reads
+/// as unsaved too: the document did change since the file was written, and
+/// over-reporting that is the safe direction for anyone closing a window.
+pub const UNSAVED: &str = "unsaved";
+
 fn import_formatted(
     dm: &mut DocMut,
     format: ImportFormat,
@@ -2765,6 +2787,13 @@ impl RichTextAction {
                 }
             }
         }
+        // The document now holds work its file does not (or, for the two
+        // actions that take a file's content, work it does).
+        let file_took_it = matches!(
+            self,
+            RichTextAction::NoteFileWritten { .. } | RichTextAction::ReplaceFormatted { .. }
+        );
+        dm.set_meta_flag(UNSAVED, !file_took_it);
         Ok(())
     }
 }

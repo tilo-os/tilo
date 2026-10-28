@@ -403,7 +403,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn native_state_rows_survive_reopen_and_decode_older_layouts() {
-        // Phase `epochs_nodes_and_materialized_paths_survive_a_reopen`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("meta.redb");
@@ -481,7 +480,6 @@ mod tests {
                 Some([4; 16])
             );
         }
-        // Phase `rows_written_before_records_were_kept_still_decode`.
         {
             #[derive(Serialize)]
             struct Old {

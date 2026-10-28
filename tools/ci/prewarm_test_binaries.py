@@ -105,7 +105,7 @@ def stop_owned(process):
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
-    process.wait(timeout=2)
+    process.wait()
 
 
 def cancel_listings(signum, frame):

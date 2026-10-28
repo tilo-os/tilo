@@ -13,8 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::{
     AppKind, Collaborator, DesktopTree, RoomId, Strip, StripId, Tab, TileContent, UserId,
-    WindowGroup, WindowWidth, Workspace, WorkspaceEffectReceipt, WorkspaceId, WorkspaceTask,
-    WorkspaceTaskAuditEvent, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
+    WindowGroup, WindowWidth, Workspace, WorkspaceEffectReceipt, WorkspaceId,
 };
 
 /// The local user every [`TestHost`] answers for.
@@ -41,8 +40,7 @@ pub(crate) fn next_id() -> u64 {
 }
 
 fn empty_workspace(id: WorkspaceId, name: &str, strips: Vec<Strip>) -> Workspace {
-    let mut workspace = Workspace::new(id, name);
-    workspace.set_room(RoomId::new());
+    let mut workspace = Workspace::in_room(id, RoomId::new(), name);
     workspace.strips = strips;
     workspace
 }
@@ -97,6 +95,7 @@ impl TestTree {
                 kind,
                 label: label.into(),
             },
+            app_title: None,
         };
         let tabs = vec![
             tab("Notes", AppKind::Other("Notes".into()), "Notes"),
@@ -177,7 +176,7 @@ impl TestTree {
         let ws_id = WorkspaceId(next_id());
         let strip_id = StripId(next_id());
         let workspace = empty_workspace(ws_id, name, vec![Strip::new(strip_id, "Main")]);
-        let room = workspace.room;
+        let room = workspace.room();
         self.desktop.active_strip.insert(ws_id, strip_id);
         self.desktop.workspaces.push(workspace);
         tilo_desktop_model::desktop_doc::append_workspace(&mut self.doc, ws_id, name, room);
@@ -335,87 +334,6 @@ impl TestTree {
         true
     }
 
-    pub fn create_workspace_task(
-        &mut self,
-        workspace_id: WorkspaceId,
-        title: impl Into<String>,
-        actor: impl Into<String>,
-        assigned_agent: Option<String>,
-        route: WorkspaceTaskRoute,
-        resource: Option<WorkspaceTaskResource>,
-    ) -> Option<String> {
-        let title = title.into().trim().to_string();
-        if title.is_empty() {
-            return None;
-        }
-        let actor = actor.into();
-        let now = tilo_clock::unix_now_i64();
-        let id = format!("task:{}", uuid::Uuid::new_v4());
-        let task = WorkspaceTask {
-            id: id.clone(),
-            title: title.clone(),
-            created_by: actor.clone(),
-            assigned_agent,
-            route,
-            status: WorkspaceTaskStatus::Queued,
-            resource,
-            subject: None,
-            created_at: now,
-            updated_at: now,
-            audit: vec![WorkspaceTaskAuditEvent::new(
-                now,
-                actor,
-                "create-task",
-                [("title", tilo_actions::Scalar::text(&title))],
-            )],
-        };
-        self.desktop
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id == workspace_id)?
-            .tasks
-            .push(task.clone());
-        if tilo_desktop_model::desktop_doc::upsert_task(&mut self.doc, workspace_id, &task) {
-            self.commit_room_change();
-        }
-        Some(id)
-    }
-
-    pub fn set_workspace_task_status(
-        &mut self,
-        workspace_id: WorkspaceId,
-        task_id: &str,
-        status: WorkspaceTaskStatus,
-        actor: &str,
-    ) -> bool {
-        let now = tilo_clock::unix_now_i64();
-        let Some(task) = self
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id == workspace_id)
-            .and_then(|workspace| workspace.tasks.iter_mut().find(|task| task.id == task_id))
-        else {
-            return false;
-        };
-        if task.status == status {
-            return false;
-        }
-        task.status = status;
-        task.updated_at = now;
-        task.audit.push(WorkspaceTaskAuditEvent::new(
-            now,
-            actor,
-            "set-status",
-            [("status", tilo_actions::Scalar::from(status.key()))],
-        ));
-        let task = task.clone();
-        if tilo_desktop_model::desktop_doc::upsert_task(&mut self.doc, workspace_id, &task) {
-            self.commit_room_change();
-        }
-        true
-    }
-
     pub fn export_changes_since(&mut self, since: &[ChangeHash]) -> Vec<Vec<u8>> {
         self.doc
             .get_changes(since)
@@ -448,26 +366,6 @@ impl ActivityTree for TestTree {
     fn resync_activity_cache(&mut self) -> Result<(), String> {
         self.resync_cache_from_doc();
         Ok(())
-    }
-    fn create_workspace_task(
-        &mut self,
-        workspace: WorkspaceId,
-        title: String,
-        actor: String,
-        agent: Option<String>,
-        route: WorkspaceTaskRoute,
-        resource: Option<WorkspaceTaskResource>,
-    ) -> Option<String> {
-        Self::create_workspace_task(self, workspace, title, actor, agent, route, resource)
-    }
-    fn set_workspace_task_status(
-        &mut self,
-        workspace: WorkspaceId,
-        id: &str,
-        status: WorkspaceTaskStatus,
-        actor: &str,
-    ) -> bool {
-        Self::set_workspace_task_status(self, workspace, id, status, actor)
     }
 }
 
@@ -506,11 +404,5 @@ impl ActivityHost for TestHost {
     }
     fn all_workspaces_available(&self) -> bool {
         true
-    }
-    fn agent_members(&self, workspace: &Workspace) -> Vec<(String, tilo_action_policy::KindSet)> {
-        workspace.agent_members_at(tilo_clock::unix_now())
-    }
-    fn launch_agent(&self, _agent: &str, _workspace: &Workspace) -> Result<(), String> {
-        Ok(())
     }
 }

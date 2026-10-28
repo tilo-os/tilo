@@ -6,7 +6,7 @@
 //! runs when one of its inputs announces a change
 //! ([`tilo_identity_host::policy_change`]) or when the earliest expiry the
 //! last check read comes due, which [`PolicySchedule::checked`]'s caller
-//! registers with [`tilo_identity_host::policy_change::wake_at`]. Nothing runs
+//! registers with [`announce_at`]. Nothing runs
 //! while neither happens.
 //!
 //! Announcements coalesce: a re-check runs at once for the first change after
@@ -78,6 +78,32 @@ impl PolicySchedule {
 /// but may run ahead of it after the wall clock was set back.
 pub const fn wall_instant(policy_at_ns: u64, policy_now_ns: u64, wall_now_ns: u64) -> u64 {
     wall_now_ns.saturating_add(policy_at_ns.saturating_sub(policy_now_ns))
+}
+
+/// Have the process's policy clock announce a change when the wall clock
+/// reaches `unix_ns` ([`tilo_identity_host::policy_change::wake_at`]).
+pub fn announce_at(unix_ns: u64) {
+    #[cfg(test)]
+    ANNOUNCE_AT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(unix_ns);
+    tilo_identity_host::policy_change::wake_at(unix_ns);
+}
+
+/// Every instant [`announce_at`] was asked for in this process, in order:
+/// a test that holds the wall clock sees what the broker registered, and
+/// announces it itself when it moves the clock there.
+#[cfg(test)]
+static ANNOUNCE_AT: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+
+/// See [`ANNOUNCE_AT`].
+#[cfg(test)]
+pub fn announced_at() -> Vec<u64> {
+    ANNOUNCE_AT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 /// The first whole Unix second at or after `at_ns`: when a check that reads

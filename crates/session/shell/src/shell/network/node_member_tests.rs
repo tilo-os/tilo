@@ -72,7 +72,6 @@ fn document(title: &str) -> Vec<u8> {
     doc.save()
 }
 
-/// Whether any file under `dir` contains `needle`.
 fn holds(dir: &std::path::Path, needle: &[u8]) -> bool {
     std::fs::read_dir(dir).unwrap().any(|entry| {
         let path = entry.unwrap().path();
@@ -228,19 +227,22 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
     // invitation it redeems.
     let room = RoomId::parse(&acme.room).unwrap();
     net.join_host_rooms();
+    // Its workspace is made as the join starts; the room is held once the
+    // replica installs into it.
     until("the session to hold the company workspace", || {
         net.tick();
         let tree = tree.read();
         (tree.requires_native_owner(room)
+            && !tree.is_joining(room)
             && tree
                 .desktop
                 .workspaces
                 .iter()
-                .any(|workspace| workspace.room == room))
+                .any(|workspace| workspace.room() == room))
         .then_some(())
     });
     assert_eq!(
-        tree.read().desktop.active_workspace().unwrap().room,
+        tree.read().desktop.active_workspace().unwrap().room(),
         room,
         "the first host room is the session's active workspace"
     );
@@ -254,7 +256,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
             .desktop
             .workspaces
             .iter()
-            .filter(|workspace| workspace.room == room)
+            .filter(|workspace| workspace.room() == room)
             .count(),
         1,
         "a room the session holds is not joined again"

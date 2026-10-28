@@ -140,7 +140,6 @@ mod tests {
     }
     #[test]
     fn handoff_rows_associate_the_right_frame_and_never_fabricate_clocks() {
-        // Case `handoff_disabled_does_not_sample_or_construct_emit_rows`.
         {
             let mut recorder = None;
             received_with(
@@ -157,7 +156,6 @@ mod tests {
             });
         }
 
-        // Case `handoff_associates_previous_epilogue_and_own_log_with_next_received_frame`.
         {
             let mut recorder = Some(Recorder::default());
             let ticks = std::cell::Cell::new(2);
@@ -235,7 +233,6 @@ mod tests {
             assert_eq!(recorder.unwrap().frame.unwrap().ix, 1);
         }
 
-        // Case `handoff_unavailable_clocks_remain_null_and_stages_do_not_shift`.
         {
             let mut recorder = Some(Recorder::default());
             received_with(&mut recorder, 8, Some(90), None, None, || None, |_| {});

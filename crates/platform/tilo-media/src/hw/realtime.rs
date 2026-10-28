@@ -47,7 +47,6 @@ impl StreamCodec {
         StreamCodec::Av1,
     ];
 
-    /// The label carried on the wire.
     pub fn wire_label(self) -> &'static str {
         match self {
             StreamCodec::H264 => "h264",
@@ -416,7 +415,6 @@ mod tests {
 
     #[test]
     fn realtime_encoder_tables_and_candidate_order() {
-        // Phase `wire_labels_round_trip_and_keep_the_legacy_spellings`.
         {
             // "h264" and "hevc-main10" are what older peers already send.
             assert_eq!(StreamCodec::H264.wire_label(), "h264");
@@ -426,7 +424,6 @@ mod tests {
             }
             assert_eq!(StreamCodec::from_wire_label("h266"), None);
         }
-        // Phase `every_table_lists_hardware_before_software`.
         {
             for codec in StreamCodec::ALL {
                 for table in [realtime_encoders(codec), realtime_decoders(codec)] {
@@ -441,7 +438,6 @@ mod tests {
                 }
             }
         }
-        // Phase `no_patented_software_encoder_is_ever_a_candidate`.
         {
             for codec in StreamCodec::ALL {
                 for e in realtime_encoders(codec) {
@@ -466,7 +462,6 @@ mod tests {
                 "HEVC encode is hardware-only"
             );
         }
-        // Phase `auto_prefers_hardware_then_royalty_free_then_cisco`.
         {
             let got = realtime_candidates(
                 realtime_decoders(StreamCodec::Av1),
@@ -493,7 +488,6 @@ mod tests {
                 "libaom's real-time profile first; SVT-AV1 has no working low-delay mode"
             );
         }
-        // Phase `software_only_never_offers_hardware`.
         {
             let got = realtime_candidates(
                 realtime_encoders(StreamCodec::Vp9),
@@ -502,7 +496,6 @@ mod tests {
             );
             assert_eq!(names(&got), ["vp9enc"]);
         }
-        // Phase `a_preferred_family_leads_and_other_hardware_trails_software`.
         {
             let got = realtime_candidates(
                 realtime_encoders(StreamCodec::H264),
@@ -511,7 +504,6 @@ mod tests {
             );
             assert_eq!(names(&got), ["nvh264enc", "openh264enc", "vah264enc"]);
         }
-        // Phase `an_empty_registry_yields_no_candidates_rather_than_a_guess`.
         {
             for codec in StreamCodec::ALL {
                 assert!(

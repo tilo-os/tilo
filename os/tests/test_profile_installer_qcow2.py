@@ -19,7 +19,10 @@ REPO = HELPER.parents[2]
 
 
 def staging_handoff():
-    """This checkout's build of the helper the extractor unpacks handoffs with."""
+    """This checkout's build of the helper the extractor unpacks handoffs with, or the one
+    TILO_STAGING_HANDOFF_BIN names."""
+    if os.environ.get("TILO_STAGING_HANDOFF_BIN"):
+        return os.environ["TILO_STAGING_HANDOFF_BIN"]
     subprocess.run(["cargo", "build", "--quiet", "--manifest-path", str(REPO / "Cargo.toml"),
                     "-p", "tilo-install-helpers", "--bin", "tilo-staging-handoff"], check=True)
     target = Path(os.environ.get("CARGO_TARGET_DIR", REPO / "target"))

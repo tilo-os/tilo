@@ -8,7 +8,7 @@ use super::*;
 struct Verified {
     tree: crate::test_support::WorkspaceTreeHandle,
     room: String,
-    agents: Mutex<Vec<ui::history_source::RosterAgent>>,
+    agents: Mutex<Vec<collab_types::history::RosterAgent>>,
 }
 
 impl crate::services::WorkspaceAuthority for Verified {
@@ -20,7 +20,7 @@ impl crate::services::WorkspaceAuthority for Verified {
         Ok(())
     }
 
-    fn history_agents(&self, room: &str) -> Vec<ui::history_source::RosterAgent> {
+    fn history_agents(&self, room: &str) -> Vec<collab_types::history::RosterAgent> {
         if room == self.room {
             self.agents.lock().unwrap().clone()
         } else {
@@ -29,8 +29,8 @@ impl crate::services::WorkspaceAuthority for Verified {
     }
 }
 
-fn scribe(label: &str) -> ui::history_source::RosterAgent {
-    ui::history_source::RosterAgent {
+fn scribe(label: &str) -> collab_types::history::RosterAgent {
+    collab_types::history::RosterAgent {
         device: [3; 32],
         person: [1; 32],
         person_name: "Ada".into(),
@@ -42,7 +42,7 @@ fn scribe(label: &str) -> ui::history_source::RosterAgent {
 
 fn history_frames(
     rx: &mut mpsc::UnboundedReceiver<ContextEnvelope>,
-) -> Vec<Vec<ui::history_source::RosterAgent>> {
+) -> Vec<Vec<collab_types::history::RosterAgent>> {
     let mut frames = Vec::new();
     while let Ok(envelope) = rx.try_recv() {
         if let ContextEnvelope::HistoryAgents(agents) = envelope {

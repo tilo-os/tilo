@@ -10,32 +10,83 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Button, Column, Element, EmptyState, ListRow, Row, Section, SectionHeader, SegmentedStyle,
-    Spacer, Text, ToggleGroup, Widget,
+    Button, Column, Element, EmptyState, ListRow, Row, Section, SectionHeader, Spacer, Text, Widget,
 };
 
 use super::{BrowserWidget, LibrarySection, library_filter_matches};
 use crate::actions::{BOOKMARKS_SCOPE, DOWNLOADS_SCOPE, HISTORY_SCOPE, history_resource_id};
 use crate::downloads::DownloadStatus;
-use crate::resource::{Browser, bookmark_resource_id};
+use crate::resource::{Browser, CATALOG, bookmark_resource_id};
 
 /// How many rows a section materialises. The rest stay reachable through
 /// search, which is bounded by its own pages.
 const ROW_LIMIT: usize = 50;
 
-/// The library's sections in tab order, with the resource each one shows.
+/// The library's sections in tab order, with the copy that names each one and
+/// the resource it shows.
 const SECTIONS: [(LibrarySection, &str, &str); 4] = [
-    (LibrarySection::History, "History", HISTORY_SCOPE),
-    (LibrarySection::Bookmarks, "Bookmarks", BOOKMARKS_SCOPE),
-    (LibrarySection::Downloads, "Downloads", DOWNLOADS_SCOPE),
+    (
+        LibrarySection::History,
+        "browser-library-section-history",
+        HISTORY_SCOPE,
+    ),
+    (
+        LibrarySection::Bookmarks,
+        "browser-library-section-bookmarks",
+        BOOKMARKS_SCOPE,
+    ),
+    (
+        LibrarySection::Downloads,
+        "browser-library-section-downloads",
+        DOWNLOADS_SCOPE,
+    ),
     (
         LibrarySection::Extensions,
-        "Extensions",
+        "browser-library-section-extensions",
         "browser.extensions",
     ),
 ];
 
+/// A row's name for assistive technology: a sentence from the catalogue with
+/// the thing it acts on interpolated.
+fn named(key: &str, title: &str) -> String {
+    CATALOG.t_args(
+        key,
+        &[("title", ui::i18n::ArgValue::Text(title.to_owned()))],
+    )
+}
+
+/// A download row's name for assistive technology.
+fn named_download(key: &str, name: &str) -> String {
+    CATALOG.t_args(key, &[("name", ui::i18n::ArgValue::Text(name.to_owned()))])
+}
+
+/// What the window bar's location commits for the Library itself.
+pub(super) const LIBRARY_LOCATION: &str = "browser:library";
+
 impl BrowserWidget {
+    /// Where the window bar puts the Library: the Library, then the section
+    /// on screen, each committing its place (the section, its resource).
+    pub(super) fn library_segments(&self) -> Vec<(String, &'static str)> {
+        let mut segments = vec![(CATALOG.t("browser-library-title"), LIBRARY_LOCATION)];
+        segments.extend(
+            SECTIONS
+                .iter()
+                .find(|(section, ..)| *section == self.library_section)
+                .map(|(_, label, resource)| (CATALOG.t(label), *resource)),
+        );
+        segments
+    }
+
+    /// The Library's section whose resource is `place`, as a bar segment
+    /// commits it.
+    pub(super) fn library_section_at(place: &str) -> Option<&'static str> {
+        SECTIONS
+            .iter()
+            .find(|(_, _, resource)| *resource == place)
+            .map(|(_, _, resource)| *resource)
+    }
+
     /// The visited pages, newest first, in one group per day: Today,
     /// Yesterday, the days of the past week by name, then dates. Each row
     /// says where the page is and when it was last open.
@@ -77,6 +128,23 @@ impl BrowserWidget {
             if let Some(binding) = self.unit_binding(&id, "open") {
                 row = row.on_action(binding);
             }
+            // One page can be forgotten without losing the rest, through the
+            // same verb that clears all of them. A window that keeps no
+            // history record of its own publishes no such row, and offers no
+            // removal.
+            let forget: Vec<Button> = self
+                .unit_binding(&id, "forget-visit")
+                .map(|binding| {
+                    Button::icon_only(
+                        &format!("{id}.forget"),
+                        Icon::Trash2,
+                        &named("browser-library-forget-visit", title),
+                    )
+                    .on_action(binding)
+                })
+                .into_iter()
+                .collect();
+            let row = crate::rows::with_buttons(row, forget);
             match groups.last_mut() {
                 Some((current, rows)) if *current == heading => rows.push(Box::new(row)),
                 _ => groups.push((heading, vec![Box::new(row) as Element])),
@@ -93,6 +161,33 @@ impl BrowserWidget {
                 }) as Element
             })
             .collect()
+    }
+
+    /// Forget one visited page in the person's record, and show the history
+    /// it leaves: the same verb the Settings row clears all of them with,
+    /// for one page. A window that keeps no record of its own has nothing to
+    /// forget from.
+    pub(super) fn forget_visit(&mut self, url: &str) -> Result<(), String> {
+        let record = self
+            .person_history
+            .as_ref()
+            .ok_or("This window keeps no browsing history to forget from")?;
+        let url = url.trim();
+        if url.is_empty() {
+            return Err("a page is forgotten by its address".into());
+        }
+        record
+            .invoke(&crate::history::BrowsingHistory::FORGET.with(url.to_owned()))
+            .map_err(|error| {
+                tracing::warn!(%error, "browser visit was not forgotten");
+                "Couldn’t forget this page because Browser could not save the change. It is still in your history."
+                    .to_string()
+            })?;
+        self.follow_history();
+        self.suggestions.clear();
+        self.last_query = None;
+        self.structure_dirty = true;
+        Ok(())
     }
 
     pub(super) fn bookmark_rows(&self) -> Vec<Element> {
@@ -119,7 +214,7 @@ impl BrowserWidget {
                     Button::icon_only(
                         &format!("{id}.remove"),
                         Icon::Trash2,
-                        &format!("Remove bookmark {title}"),
+                        &named("browser-library-remove-bookmark", title),
                     ),
                     &id,
                     "remove-bookmark",
@@ -161,8 +256,13 @@ impl BrowserWidget {
                         });
                         actions.push(
                             self.bind_button(
-                                Button::new(&format!("{id}.cancel"), "Cancel")
-                                    .with_accessible_name(&format!("Cancel download {name}")),
+                                Button::new(
+                                    &format!("{id}.cancel"),
+                                    &CATALOG.t("browser-download-cancel"),
+                                )
+                                .with_accessible_name(
+                                    &named_download("browser-download-cancel-name", name),
+                                ),
                                 &id,
                                 "cancel",
                             ),
@@ -174,8 +274,13 @@ impl BrowserWidget {
                         }
                         actions.push(
                             self.bind_button(
-                                Button::new(&format!("{id}.reveal"), "Show in Files")
-                                    .with_accessible_name(&format!("Show {name} in Files")),
+                                Button::new(
+                                    &format!("{id}.reveal"),
+                                    &CATALOG.t("browser-download-reveal"),
+                                )
+                                .with_accessible_name(
+                                    &named_download("browser-download-reveal-name", name),
+                                ),
                                 &id,
                                 "reveal",
                             ),
@@ -185,8 +290,13 @@ impl BrowserWidget {
                         row = row.error();
                         actions.push(
                             self.bind_button(
-                                Button::new(&format!("{id}.retry"), "Retry")
-                                    .with_accessible_name(&format!("Retry download {name}")),
+                                Button::new(
+                                    &format!("{id}.retry"),
+                                    &CATALOG.t("browser-download-retry"),
+                                )
+                                .with_accessible_name(
+                                    &named_download("browser-download-retry-name", name),
+                                ),
                                 &id,
                                 "retry",
                             ),
@@ -197,7 +307,7 @@ impl BrowserWidget {
                 match progress {
                     Some(bar) => crate::rows::with_progress(
                         line,
-                        bar.with_label(format!("Downloading {name}")),
+                        bar.with_label(named_download("browser-download-downloading", name)),
                         theme,
                     ),
                     None => Box::new(line) as Element,
@@ -218,23 +328,26 @@ impl BrowserWidget {
     /// What the section shows when it has no rows: one sentence.
     fn library_empty_state(&self) -> EmptyState {
         if !self.library_filter.get().is_empty() {
-            return EmptyState::new("No matching items").with_icon(Icon::Search);
+            return EmptyState::new(CATALOG.t("browser-library-no-match")).with_icon(Icon::Search);
         }
         match self.library_section {
             LibrarySection::History if self.history_paused() => {
-                EmptyState::new("History is paused in this window").with_icon(Icon::Pause)
+                EmptyState::new(CATALOG.t("browser-library-history-paused")).with_icon(Icon::Pause)
             }
             LibrarySection::History => {
-                EmptyState::new("No browsing history yet").with_icon(Icon::History)
+                EmptyState::new(CATALOG.t("browser-library-history-empty")).with_icon(Icon::History)
             }
-            LibrarySection::Bookmarks => EmptyState::new("No bookmarks yet")
-                .with_icon(Icon::Star)
-                .with_message("Select the star in the address bar to keep a page."),
+            LibrarySection::Bookmarks => {
+                EmptyState::new(CATALOG.t("browser-library-bookmarks-empty"))
+                    .with_icon(Icon::Star)
+                    .with_message(CATALOG.t("browser-library-bookmarks-empty-hint"))
+            }
             LibrarySection::Downloads => {
-                EmptyState::new("No downloads yet").with_icon(Icon::Download)
+                EmptyState::new(CATALOG.t("browser-downloads-empty")).with_icon(Icon::Download)
             }
             LibrarySection::Extensions => {
-                EmptyState::new("No extensions installed").with_icon(Icon::Layers)
+                EmptyState::new(CATALOG.t("browser-library-extensions-empty"))
+                    .with_icon(Icon::Layers)
             }
         }
     }
@@ -305,30 +418,26 @@ impl BrowserWidget {
         Box::new(body.push(list))
     }
 
-    pub(super) fn build_library_composition(
-        &self,
-        theme: &Theme,
-        notices: &[crate::notice::Notice],
-    ) -> Box<dyn Widget> {
-        let current = SECTIONS
-            .iter()
-            .position(|(section, ..)| *section == self.library_section)
-            .unwrap_or(0);
-
+    /// The Library's own header outside a Tilo session: its title, Pause
+    /// history, Clear filter, search and Done. While the desktop's bar
+    /// hosts the window, the bar's location names the Library, Clear filter
+    /// is its action, Pause history is in its menu, its search is the bar's
+    /// and its Library button closes it.
+    fn library_header(&self, current: usize) -> Row {
         let mut header = Row::new().no_wrap().push(Box::new(
-            Text::new("Library")
+            Text::new(&CATALOG.t("browser-library-title"))
                 .with_role(TextRole::LargeTitle)
                 .with_heading_level(1),
         ));
         header = header.push(Box::new(Spacer::new()));
         if self.library_section == LibrarySection::History {
-            let label = if self.history_paused() {
-                "Resume history"
+            let label = CATALOG.t(if self.history_paused() {
+                "browser-library-resume"
             } else {
-                "Pause history"
-            };
+                "browser-library-pause"
+            });
             header = header.push(Box::new(self.bind_button(
-                Button::new("browser.library.history-pause", label),
+                Button::new("browser.library.history-pause", &label),
                 "browser.session",
                 "toggle-pause",
             )));
@@ -338,7 +447,7 @@ impl BrowserWidget {
                 Button::icon_only(
                     "browser.library.clear-filter",
                     Icon::X,
-                    "Clear library filter",
+                    &CATALOG.t("browser-library-clear-filter"),
                 ),
                 "browser.library",
                 "clear-library-filter",
@@ -350,25 +459,39 @@ impl BrowserWidget {
         if let Some((_, label, scope)) = SECTIONS.get(current)
             && self.library_section != LibrarySection::Extensions
         {
+            // window-bar: fallback, the bar's search while it hosts the window
             header = header.push(Box::new(search_button(SearchRequest::within(
-                ScopeDecl::new(*scope, *label),
+                ScopeDecl::new(*scope, CATALOG.t(label)),
             ))));
         }
         header = header.push(Box::new(self.bind_button(
-            Button::new("browser.library.close", "Done"),
+            Button::new("browser.library.close", &CATALOG.t("browser-library-done")),
             "browser",
             "show-page",
         )));
 
+        header
+    }
+
+    pub(super) fn build_library_composition(
+        &self,
+        theme: &Theme,
+        notices: &[crate::notice::Notice],
+    ) -> Box<dyn Widget> {
+        let current = SECTIONS
+            .iter()
+            .position(|(section, ..)| *section == self.library_section)
+            .unwrap_or(0);
+        let header = (!ui::window_toolbar::is_hosted()).then(|| self.library_header(current));
+
         let queue = self.pending_commands.clone();
-        let tabs = ToggleGroup::new(
+        let tabs = ui::widget::ViewTabs::new(
             SECTIONS
                 .iter()
-                .map(|(_, label, _)| Segment::new(*label))
+                .map(|(_, label, _)| Segment::new(CATALOG.t(label)))
                 .collect(),
             current,
         )
-        .with_style(SegmentedStyle::Tabs)
         .on_view("browser.library.sections", move |index| {
             if let Some((_, _, resource)) = SECTIONS.get(index) {
                 queue.update(|commands| commands.push(((*resource).to_owned(), "show".to_owned())));
@@ -376,15 +499,15 @@ impl BrowserWidget {
         });
 
         let mut parts: Vec<Element> = notices.iter().map(|notice| notice.widget(false)).collect();
-        parts.extend([
-            Box::new(header) as Element,
-            Box::new(
-                Row::new()
-                    .no_wrap()
-                    .with_padding(0.0, 0.0)
-                    .push(Box::new(tabs)),
-            ),
-        ]);
+        if let Some(header) = header {
+            parts.push(Box::new(header));
+        }
+        parts.push(Box::new(
+            Row::new()
+                .no_wrap()
+                .with_padding(0.0, 0.0)
+                .push(Box::new(tabs)),
+        ));
         if matches!(
             self.library_section,
             LibrarySection::Bookmarks | LibrarySection::History
@@ -397,7 +520,6 @@ impl BrowserWidget {
     }
 }
 
-/// A visit's Unix time as the local date and time.
 fn visit_time(unix_secs: u64) -> Option<chrono::DateTime<chrono::Local>> {
     let secs = i64::try_from(unix_secs).ok()?;
     chrono::DateTime::from_timestamp(secs, 0).map(|utc| utc.with_timezone(&chrono::Local))

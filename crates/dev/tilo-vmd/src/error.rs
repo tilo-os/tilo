@@ -24,6 +24,8 @@ pub enum DaemonError {
     DisplayLayout { slot: String, detail: String },
     #[error("slot '{slot}' could not get a throwaway test identity: {detail}")]
     TestIdentity { slot: String, detail: String },
+    #[error("slot '{slot}' could not become this VM's person: {detail}")]
+    DeviceIdentity { slot: String, detail: String },
     #[error("'{0}' is reserved for VM-wide components")]
     ReservedName(String),
     #[error("'{0}' is not a valid slot name")]
@@ -161,6 +163,7 @@ impl DaemonError {
             Self::Apply { .. }
             | Self::DisplayLayout { .. }
             | Self::TestIdentity { .. }
+            | Self::DeviceIdentity { .. }
             | Self::SessionParity { .. }
             | Self::SessionFailed { .. }
             | Self::DesktopFailed { .. }
@@ -208,6 +211,9 @@ impl DaemonError {
             ),
             Self::TestIdentity { slot, .. } => format!(
                 "the slot's shell must be a dev build (a dev image, or a dev-profile swap) and its user must not hold a real identity; tilo-vm logs {slot} shows what the compositor did"
+            ),
+            Self::DeviceIdentity { slot, .. } => format!(
+                "one slot per VM can be its person, and only before the machine holds an identity: on a fresh VM, tilo-vm slot create {slot} --headful --identity device; tilo-vm logs {slot} shows what onboarding did"
             ),
             Self::ReservedName(_) => {
                 "pick another slot name; VM-wide components go in with: tilo-vm swap --slot vm <component>"
@@ -345,7 +351,8 @@ impl DaemonError {
             | Self::ControlMissing(_)
             | Self::HeadlessInput(_)
             | Self::DisplayLayout { .. }
-            | Self::TestIdentity { .. } => Some("tilo-vm guide driving"),
+            | Self::TestIdentity { .. }
+            | Self::DeviceIdentity { .. } => Some("tilo-vm guide driving"),
             Self::KernelLayer(_) | Self::BootLoader { .. } | Self::Initramfs { .. } => {
                 Some("tilo-vm guide kernel")
             }
@@ -455,7 +462,7 @@ mod tests {
             DaemonError::LoggedOut("device".into()),
             DaemonError::DeviceSlot("removed".into()),
             DaemonError::SessionStopped("a".into()),
-            DaemonError::ControlMissing("/usr/bin/tilo-control".into()),
+            DaemonError::ControlMissing("/usr/libexec/tilo/tilo-control".into()),
             DaemonError::Apply {
                 step: "s".into(),
                 detail: "d".into(),
@@ -467,6 +474,10 @@ mod tests {
             DaemonError::TestIdentity {
                 slot: "a".into(),
                 detail: "error [identity_exists]: already has an identity".into(),
+            },
+            DaemonError::DeviceIdentity {
+                slot: "a".into(),
+                detail: "this VM already holds an identity".into(),
             },
             DaemonError::SessionFailed {
                 slot: "a".into(),
@@ -539,6 +550,7 @@ mod tests {
                 | DaemonError::BadOutputs(_)
                 | DaemonError::DisplayLayout { .. }
                 | DaemonError::TestIdentity { .. }
+                | DaemonError::DeviceIdentity { .. }
                 | DaemonError::ReservedName(_)
                 | DaemonError::InvalidName(_)
                 | DaemonError::LayerNotFound(_)

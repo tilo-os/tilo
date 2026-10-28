@@ -34,6 +34,9 @@ parse changes without applying them"):
   panicking or corrupting the saved document;
 - `Automerge::parse_changes` parses and checksums changes without applying
   them;
+- `automerge::work()` counts, per thread, the ops an apply walks, the op id
+  slabs searched and the changes an ancestry walk visits
+  (`TILO(work-count)`), for tests that pin cost without timing it;
 - three `#[allow]`s for warnings the current compiler raises in upstream code.
 
 The manifest gives the fork its own package name. Binary test fixtures and

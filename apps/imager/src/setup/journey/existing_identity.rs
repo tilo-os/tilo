@@ -4,14 +4,16 @@ use super::super::{prepared_identity::PreparedIdentity, strings::t};
 use std::{
     path::PathBuf,
     rc::Rc,
-    sync::{Arc, mpsc},
+    sync::{Arc, Mutex, PoisonError, mpsc},
 };
-use ui::widget::{Button, Field, LabelPlacement, Text, TextInput, TextInputKind, Widget};
-use zeroize::Zeroizing;
+use ui::widget::{Button, FieldRole, Presentation, SecretKind, SecretPrompt, Text, Widget};
+use zeroize::{Zeroize, Zeroizing};
 
 pub(super) struct ExistingIdentity {
     source: Option<PathBuf>,
-    password: ui::LocalState<String>,
+    /// The backup's passphrase as typed, kept outside the prompt that takes
+    /// it: the page is built afresh as it changes.
+    password: Arc<Mutex<String>>,
     worker: Option<mpsc::Receiver<Result<Arc<PreparedIdentity>, ()>>>,
     picker: Option<ui::PortalChannel>,
     prepared: Option<Arc<PreparedIdentity>>,
@@ -21,7 +23,7 @@ impl Default for ExistingIdentity {
     fn default() -> Self {
         Self {
             source: None,
-            password: ui::LocalState::new(String::new()),
+            password: Arc::new(Mutex::new(String::new())),
             worker: None,
             picker: None,
             prepared: None,
@@ -60,7 +62,7 @@ impl ExistingIdentity {
         }
         self.prepared = None;
         self.source = Some(path);
-        self.password.set(String::new());
+        self.clear_password();
         self.state = "selected";
         Ok(())
     }
@@ -69,7 +71,7 @@ impl ExistingIdentity {
             return Err("installer-existing-busy");
         }
         self.source = None;
-        self.password.set(String::new());
+        self.clear_password();
         self.state = "";
         Ok(())
     }
@@ -90,8 +92,16 @@ impl ExistingIdentity {
         if self.busy() || self.source.is_none() || password.len() > 4096 {
             return Err("installer-existing-password-required");
         }
-        self.password.set(password.to_string());
+        let mut stored = self.password.lock().unwrap_or_else(PoisonError::into_inner);
+        stored.zeroize();
+        stored.push_str(&password);
         Ok(())
+    }
+    fn clear_password(&self) {
+        self.password
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .zeroize();
     }
     pub fn use_current(&mut self) -> Result<(), &'static str> {
         imager_backend::prepared_identity::require_supported()
@@ -153,8 +163,9 @@ impl ExistingIdentity {
             .source
             .clone()
             .ok_or("installer-existing-file-required")?;
-        let password = Zeroizing::new(self.password.get());
-        self.password.set(String::new());
+        let password = Zeroizing::new(std::mem::take(
+            &mut *self.password.lock().unwrap_or_else(PoisonError::into_inner),
+        ));
         if password.is_empty() {
             return Err("installer-existing-password-required");
         }
@@ -220,12 +231,7 @@ impl ExistingIdentity {
     pub fn projection(&self) -> serde_json::Value {
         serde_json::json!({"state": if self.state.is_empty() { "unconnected" } else { self.state }, "public_key": self.prepared.as_ref().map(|prepared| hex::encode(prepared.public_key()))})
     }
-    pub fn view(
-        &self,
-        choose: Rc<dyn Fn()>,
-        edit: Rc<dyn Fn(String)>,
-        submit: Rc<dyn Fn()>,
-    ) -> Box<dyn Widget> {
+    pub fn view(&self, choose: Rc<dyn Fn()>, submit: Rc<dyn Fn()>) -> Box<dyn Widget> {
         let mut body = crate::page::stack();
         if self.busy() {
             return Box::new(body.push(Box::new(Text::new(&t("installer-existing-restoring")))));
@@ -247,28 +253,28 @@ impl ExistingIdentity {
                 );
             }
         }
+        let failed = (self.state == "failed").then(|| t("installer-existing-failed"));
         if self.source.is_some() {
+            // The passphrase is asked with the one password prompt; a backup
+            // it could not open is said under it.
             body = body.push(Box::new(
-                Field::new(
-                    t("installer-existing-password-label"),
-                    TextInput::from_state(&self.password)
-                        .with_id("installer.existing.password")
-                        .with_kind(TextInputKind::Password)
-                        .with_secret(true)
-                        .on_change(move |value| edit(value.to_string()))
-                        .on_submit(move |_| submit()),
-                )
-                .with_label_placement(Some(LabelPlacement::Above)),
+                SecretPrompt::new(SecretKind::Secret)
+                    .with_presentation(Presentation::DialogBody)
+                    .with_id("installer.existing.password")
+                    .with_label(FieldRole::Secret, t("installer-existing-password-label"))
+                    .with_secret_buffer(Arc::clone(&self.password))
+                    .with_error(failed)
+                    .on_submit(move || submit()),
             ));
         } else {
             body = body.push(Box::new(Text::new(&t("installer-existing-file-body"))));
-        }
-        if self.state == "failed" {
-            body = body.push(Box::new(
-                Text::new(&t("installer-existing-failed"))
-                    .with_id("installer.existing.failure")
-                    .with_live(ui::a11y::Politeness::Assertive),
-            ));
+            if let Some(failed) = failed {
+                body = body.push(Box::new(
+                    Text::new(&failed)
+                        .with_id("installer.existing.failure")
+                        .with_live(ui::a11y::Politeness::Assertive),
+                ));
+            }
         }
         Box::new(
             body.push(Box::new(

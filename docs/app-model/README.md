@@ -55,8 +55,8 @@ You give Tilo a manifest and a payload. In return:
   │manifest.toml│  │   │collection.qcl  │ │  │  <pkg-id>/            │──▶ │  cwd=payload/        │
   └─────────────┘  ╰─▶ │blobs/<hex>...  │─╯  │    manifest.toml       │    │  TILO_SVC_*_FD=<fd>   │
                        └────────────────┘    │    bin/<entrypoint>    │    │ identity broker fd   │
-      cargo build       tilo-app-package pack          └───────────────────────┘    └──────────────────────┘
-      (release)         (BLAKE3 + sign)       tilo-install install          tilo-install run
+      cargo build       tilo package pack          └───────────────────────┘    └──────────────────────┘
+      (release)         (BLAKE3 + sign)       tilo app install          tilo-install run
                                               (verify + unpack + register) (fork + exec bwrap)
 ```
 

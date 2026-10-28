@@ -14,12 +14,16 @@ extern crate tilo_browser_runtime;
 
 mod activity;
 mod apps;
+mod feedback;
 mod lazy;
 mod split;
 
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
 fn start() {
+    tilo_browser_runtime::start();
     activity::register();
     lazy::register();
     apps::register();
+    // After the apps: the composer stays last in launcher order.
+    feedback::register();
 }

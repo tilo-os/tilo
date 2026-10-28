@@ -292,7 +292,6 @@ const RUN_MODELED: &[&[u8]] = &[
 struct InlineCapture {
     /// Start offset of the segment being captured; `None` between the segments of a field.
     start: Option<usize>,
-    /// Element depth inside the segment.
     depth: i32,
     /// `<w:r>` + the run's properties, when the segment started inside a run; closed with `</w:r>`.
     prefix: Option<String>,
@@ -1452,7 +1451,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn imports_block_structure_lists_tables_and_fidelity_atoms() {
-        // Phase `imports_headings_and_paragraphs`.
         {
             let body = concat!(
                 r#"<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>Title</w:t></w:r></w:p>"#,
@@ -1475,7 +1473,6 @@ mod tests {
             assert_eq!(snap.blocks[1].kind, "paragraph");
             assert_eq!(snap.blocks[1].text, "Hello");
         }
-        // Phase `imports_heading_via_named_style_with_style_alignment`.
         {
             // A custom style derived from Heading1 that also centres text: heading detection + alignment come from the resolved style.
             let styles = concat!(
@@ -1506,7 +1503,6 @@ mod tests {
                 "alignment from the style"
             );
         }
-        // Phase `imports_numbered_and_bulleted_lists`.
         {
             let numbering = concat!(
                 r#"<w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/></w:lvl></w:abstractNum>"#,
@@ -1546,7 +1542,6 @@ mod tests {
                 "bullet numId → unordered"
             );
         }
-        // Phase `imports_table_as_editable_cells`.
         {
             let body = concat!(
                 r#"<w:tbl>"#,
@@ -1573,7 +1568,6 @@ mod tests {
             assert_eq!(cells[3].attrs.get("row"), Some(&AttrVal::Int(1)));
             assert_eq!(cells[3].attrs.get("col"), Some(&AttrVal::Int(1)));
         }
-        // Phase `captures_unmodeled_body_element_as_fidelity_atom`.
         {
             let body = concat!(
                 r#"<w:p><w:r><w:t>before</w:t></w:r></w:p>"#,
@@ -1611,7 +1605,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn imports_run_and_paragraph_formatting_and_named_styles() {
-        // Phase `imports_run_props_as_marks`.
         {
             use tilo_doc::document::MarkValue;
             let body = concat!(
@@ -1663,7 +1656,6 @@ mod tests {
             );
             let _ = MarkValue::Bool(true);
         }
-        // Phase `imports_align_font_size_and_family`.
         {
             use tilo_doc::document::MarkValue;
             let body = concat!(
@@ -1703,7 +1695,6 @@ mod tests {
                 b.marks
             );
         }
-        // Phase `imports_named_character_style_and_whitespace`.
         {
             let styles =
                 r#"<w:style w:type="character" w:styleId="Strong"><w:rPr><w:b/></w:rPr></w:style>"#;
@@ -1736,7 +1727,6 @@ mod tests {
             assert!(p1.text.contains('\t'), "w:tab → tab: {:?}", p1.text);
             assert_eq!(p1.text, "one\ntwo\tthree");
         }
-        // Phase `imports_named_paragraph_style_into_container`.
         {
             // A custom paragraph style carrying formatting lifts into the styles container, pointed at via `w:styleId`.
             let styles = concat!(
@@ -1816,7 +1806,6 @@ mod tests {
 
     #[test]
     fn imports_and_roundtrips_document_and_run_language() {
-        // Phase `imports_run_language_as_mark`.
         {
             use tilo_doc::document::MarkValue;
             // A run carrying `<w:lang w:val="fr"/>` → a `lang` run mark with the tag.
@@ -1846,7 +1835,6 @@ mod tests {
                 p.marks
             );
         }
-        // Phase `imports_document_default_language`.
         {
             // `docDefaults > rPrDefault > rPr > w:lang` sets the document default; the style's own `w:lang` proves only the run default is read.
             let styles = concat!(
@@ -1869,7 +1857,6 @@ mod tests {
                 "document default language from docDefaults"
             );
         }
-        // Phase `document_and_run_language_roundtrip`.
         {
             use tilo_doc::document::MarkValue;
             // A `de-DE` default language plus a `fr`-marked run must both survive export→import.

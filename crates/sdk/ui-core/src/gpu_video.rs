@@ -4,7 +4,7 @@
 //! 10-bit. Two paths bring that to the screen without the CPU touching a
 //! pixel:
 //!
-//! * **Zero-copy.** The picture never left the GPU: [`crate::dmabuf_import`]
+//! * **Zero-copy.** The picture never left the GPU: `crate::dmabuf_import`
 //!   aliases its dmabuf as textures. Reachable only for a linear buffer (see
 //!   that module for why).
 //! * **Plane upload.** The decoder produced planes in system memory — what
@@ -512,7 +512,6 @@ mod tests {
 
     #[test]
     fn yuv_conversion_constants_map_range_and_chroma_like_the_cpu_path() {
-        // Case `limited_range_constants_expand_video_black_and_white_to_the_full_scale`.
         {
             let u = ConvertUniform::for_colorimetry(
                 Colorimetry {
@@ -535,7 +534,6 @@ mod tests {
             );
         }
 
-        // Case `full_range_constants_are_the_identity`.
         {
             let u = ConvertUniform::for_colorimetry(
                 Colorimetry {
@@ -549,7 +547,6 @@ mod tests {
             assert_eq!(u.range[2], 1.0, "no chroma scaling");
         }
 
-        // Case `neutral_chroma_stays_grey_under_every_matrix`.
         {
             // A sign error or a swapped coefficient shows up here immediately.
             for matrix in [YuvMatrix::Bt601, YuvMatrix::Bt709, YuvMatrix::Bt2020] {
@@ -567,7 +564,6 @@ mod tests {
             }
         }
 
-        // Case `pure_chroma_pushes_the_expected_channel`.
         {
             let u = ConvertUniform::for_colorimetry(
                 Colorimetry {
@@ -587,7 +583,6 @@ mod tests {
             );
         }
 
-        // Case `the_gpu_matrix_agrees_with_the_cpu_fallback`.
         {
             // `media::frame::planar_to_rgba` is the CPU path for consumers that
             // cannot use a GPU. The two must not diverge, or a frame would change
@@ -662,7 +657,6 @@ mod tests {
 
     #[test]
     fn video_uniform_is_packed_as_the_shader_declares() {
-        // Case `the_uniform_is_packed_as_the_shader_declares_it`.
         {
             // Two vec4s, 32 bytes; a mismatch here reads garbage constants in the
             // shader and produces a plausible-but-wrong picture.

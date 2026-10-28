@@ -160,12 +160,24 @@ pub fn build_outgoing(req: &Request, env_vars: &HashMap<String, String>) -> Outg
 /// The shared client. In a page, requests to sites that do not allow the
 /// page to read their responses go through the host's fetch proxy when it
 /// offers one.
+/// The longest one request may take, from sending it to the last byte of its
+/// body. A server that never answers is a failure with a reason, not an app
+/// that waits forever with its only primary action disabled.
+pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How often a request in flight looks at its cancellation flag.
+const CANCEL_SLICE: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Why a request stopped before the server answered.
+pub const CANCELLED: &str = "The request was cancelled.";
+
 fn client() -> Result<&'static tilo_net::Client, String> {
     static CLIENT: OnceLock<Result<tilo_net::Client, String>> = OnceLock::new();
     CLIENT
         .get_or_init(|| {
             tilo_net::Client::builder()
                 .user_agent("tilo-api-tester/0.1")
+                .timeout(REQUEST_TIMEOUT)
                 .fetch_proxy(tilo_net::proxy::ProxyUse::CrossOrigin)
                 .build()
                 .map_err(|e| e.to_string())
@@ -174,9 +186,58 @@ fn client() -> Result<&'static tilo_net::Client, String> {
         .map_err(Clone::clone)
 }
 
-/// Perform the request and collect the response. The caller runs it on the
+/// Perform the request and collect the response, giving up when
+/// `cancelled` is set (the person pressed Cancel, or the app is closing) or
+/// when the request outlives [`REQUEST_TIMEOUT`]. The caller runs it on the
 /// app runtime so the UI stays responsive.
-pub async fn send(out: &Outgoing) -> Result<ResponseData, String> {
+pub async fn send(
+    out: &Outgoing,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<ResponseData, String> {
+    let request = send_once(out);
+    let watch = watch_for_cancel(cancelled);
+    match race(request, watch).await {
+        Ok(response) => response,
+        Err(Cancelled) => Err(CANCELLED.to_owned()),
+    }
+}
+
+/// Wait in slices, reporting as soon as `cancelled` is set.
+async fn watch_for_cancel(cancelled: &std::sync::atomic::AtomicBool) -> Cancelled {
+    loop {
+        ui::rt::sleep(CANCEL_SLICE).await;
+        if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return Cancelled;
+        }
+    }
+}
+
+/// A request that was cancelled.
+struct Cancelled;
+
+/// Which of two futures finished first, dropping the other. Written out
+/// rather than pulled in: the toolkit has no `select` of its own, and this
+/// app needs exactly one.
+async fn race<T>(
+    work: impl std::future::Future<Output = T>,
+    stop: impl std::future::Future<Output = Cancelled>,
+) -> Result<T, Cancelled> {
+    let mut work = std::pin::pin!(work);
+    let mut stop = std::pin::pin!(stop);
+    std::future::poll_fn(move |cx| {
+        if let std::task::Poll::Ready(value) = work.as_mut().poll(cx) {
+            return std::task::Poll::Ready(Ok(value));
+        }
+        if let std::task::Poll::Ready(stop) = stop.as_mut().poll(cx) {
+            return std::task::Poll::Ready(Err(stop));
+        }
+        std::task::Poll::Pending
+    })
+    .await
+}
+
+/// Perform the request and collect the response.
+async fn send_once(out: &Outgoing) -> Result<ResponseData, String> {
     let client = client()?;
     let method = tilo_net::Method::from_bytes(out.method.as_bytes())
         .map_err(|e| format!("invalid method: {e}"))?;
@@ -189,7 +250,7 @@ pub async fn send(out: &Outgoing) -> Result<ResponseData, String> {
     }
 
     let started = ui::time::now();
-    let resp = builder.send().await.map_err(|e| describe(&e))?;
+    let mut resp = builder.send().await.map_err(|e| describe(&e))?;
     let status = resp.status();
     let status_text = status.canonical_reason().unwrap_or("").to_string();
     let headers: Vec<KeyValue> = resp
@@ -202,18 +263,164 @@ pub async fn send(out: &Outgoing) -> Result<ResponseData, String> {
         .find(|h| h.key.eq_ignore_ascii_case("content-type"))
         .map(|h| h.value.clone())
         .unwrap_or_default();
-    let body = resp.text().await.map_err(|e| describe(&e))?;
+    let declared = resp.content_length();
+    let (bytes, complete) = read_shown(&mut resp).await?;
     let duration_ms = started.elapsed().as_millis() as u64;
+    let received = bytes.len();
+    let size_bytes = match (complete, declared.and_then(|n| usize::try_from(n).ok())) {
+        (true, _) | (false, None) => received,
+        (false, Some(declared)) => declared.max(received),
+    };
+    let shown = ShownBody::of(bytes, complete, textual(&content_type));
 
     Ok(ResponseData {
         status: status.as_u16(),
         status_text,
         duration_ms,
-        size_bytes: body.len(),
+        size_bytes,
+        size_exact: complete || declared.is_some(),
+        shown_bytes: shown.bytes,
+        binary: shown.binary,
         headers,
-        body,
+        body: shown.text,
         content_type,
     })
+}
+
+/// What a sent request answers whoever sent it: the response as the pane
+/// shows it, with its headers by name.
+#[must_use]
+pub fn answer(response: &ResponseData) -> serde_json::Value {
+    serde_json::json!({
+        "status": response.status,
+        "status_text": response.status_text,
+        "duration_ms": response.duration_ms,
+        "content_type": response.content_type,
+        "headers": response
+            .headers
+            .iter()
+            .map(|header| serde_json::json!({"name": header.key, "value": header.value}))
+            .collect::<Vec<_>>(),
+        "size_bytes": response.size_bytes,
+        "size_exact": response.size_exact,
+        "shown_bytes": response.shown_bytes,
+        "binary": response.binary,
+        "body": response.body,
+    })
+}
+
+/// The most of a response body the app downloads to show (2 MiB): the
+/// response pane lays its text out line by line, so a download of gigabytes
+/// would hold all of it in memory and freeze the window. The rest is never
+/// read; the pane says how much it shows.
+pub const MAX_SHOWN_BODY_BYTES: usize = 2 * 1024 * 1024;
+
+/// The most of a binary body shown as hex (64 KiB): each byte takes a few
+/// characters of the dump.
+pub const MAX_HEX_BYTES: usize = 64 * 1024;
+
+/// The body up to [`MAX_SHOWN_BODY_BYTES`], and whether that is all of it.
+async fn read_shown(resp: &mut tilo_net::Response) -> Result<(Vec<u8>, bool), String> {
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| describe(&e))? {
+        let room = MAX_SHOWN_BODY_BYTES.saturating_sub(body.len());
+        if chunk.len() > room {
+            body.extend_from_slice(chunk.get(..room).unwrap_or_default());
+            return Ok((body, false));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok((body, true))
+}
+
+/// A body as the response pane shows it.
+struct ShownBody {
+    text: String,
+    /// How many of the body's bytes `text` shows.
+    bytes: usize,
+    binary: bool,
+}
+
+impl ShownBody {
+    /// Text as text; anything else that is not UTF-8 as a hex dump of its
+    /// start. A body cut short may end inside a character, which is not
+    /// binary, and a `textual` one in another encoding is shown with its
+    /// stray bytes replaced.
+    fn of(bytes: Vec<u8>, complete: bool, textual: bool) -> Self {
+        match String::from_utf8(bytes) {
+            Ok(text) => Self {
+                bytes: text.len(),
+                text,
+                binary: false,
+            },
+            Err(error) => {
+                let utf8 = error.utf8_error();
+                let bytes = error.into_bytes();
+                if textual || (!complete && utf8.error_len().is_none()) {
+                    let end = if textual {
+                        bytes.len()
+                    } else {
+                        utf8.valid_up_to()
+                    };
+                    let shown = bytes.get(..end).unwrap_or_default();
+                    return Self {
+                        bytes: shown.len(),
+                        text: String::from_utf8_lossy(shown).into_owned(),
+                        binary: false,
+                    };
+                }
+                let dumped = bytes.get(..MAX_HEX_BYTES).unwrap_or(&bytes);
+                Self {
+                    text: hex_dump(dumped),
+                    bytes: dumped.len(),
+                    binary: true,
+                }
+            }
+        }
+    }
+}
+
+/// Whether `content_type` names text, which is shown as text even when it
+/// is not UTF-8.
+fn textual(content_type: &str) -> bool {
+    let essence = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    essence.starts_with("text/")
+        || ["json", "xml", "javascript", "x-www-form-urlencoded"]
+            .iter()
+            .any(|kind| essence.contains(kind))
+}
+
+/// `bytes` as lines of sixteen: the offset, the bytes in hex, and the bytes
+/// that are printable ASCII (a dot for the rest).
+fn hex_dump(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len().div_ceil(16).saturating_mul(78));
+    for (row, line) in bytes.chunks(16).enumerate() {
+        let _ = write!(out, "{:08x} ", row.saturating_mul(16));
+        for column in 0..16 {
+            match line.get(column) {
+                Some(byte) => {
+                    let _ = write!(out, " {byte:02x}");
+                }
+                None => out.push_str("   "),
+            }
+        }
+        out.push_str("  ");
+        out.extend(line.iter().map(|&byte| {
+            if byte.is_ascii_graphic() || byte == b' ' {
+                char::from(byte)
+            } else {
+                '.'
+            }
+        }));
+        out.push('\n');
+    }
+    out
 }
 
 /// A request error for the response pane, naming the fix for a browser that
@@ -254,6 +461,9 @@ pub fn sample_response() -> ResponseData {
         status_text: "OK".into(),
         duration_ms: 84,
         size_bytes: body.len(),
+        size_exact: true,
+        shown_bytes: body.len(),
+        binary: false,
         headers: vec![
             KeyValue::new("content-type", "application/json; charset=utf-8"),
             KeyValue::new("cache-control", "no-cache, private"),

@@ -340,7 +340,6 @@ impl ScreenCastBackend {
                 return Err(Ended::Failed);
             }
 
-            // Parse the negotiated options, clamped to what we support.
             let producer_available = self.ctx.screencast_provisioner.is_available();
             let supported_types = producer_available
                 .then(|| self.ctx.screencast_provisioner.available_source_types())
@@ -449,7 +448,12 @@ impl ScreenCastBackend {
                 resource: LifecycleResource::Prompt,
             };
             let request_path = handle.to_string();
-            let cancel = move |_: &LifecycleEntry| cancellation.store(true, Ordering::Release);
+            let prompts = self.ctx.prompts.clone();
+            let withdrawn = request_path.clone();
+            let cancel = move |_: &LifecycleEntry| {
+                cancellation.store(true, Ordering::Release);
+                prompts.cancel_request(&withdrawn);
+            };
             self.lifecycle
                 .with_request(connection, &request_path, request_entry, cancel, async {
                     // SelectSources is mandatory. Never synthesize a session from fields
@@ -486,11 +490,12 @@ impl ScreenCastBackend {
                     // restore token is the only fast path.
                     if !session.restored && !session.consented {
                         let cap_template = Capability::Screencast { scope: GRANT_ONCE };
-                        let outcome = flow::resolve(
+                        let outcome = flow::resolve_for_request(
                             &self.ctx,
                             auth.caller.clone(),
                             CapabilityKind::Screencast,
                             cap_template,
+                            request_path.clone(),
                         )
                         .await;
                         if cancelled.load(Ordering::Acquire) || !outcome.is_allowed() {
@@ -679,19 +684,16 @@ mod tests {
 
     #[test]
     fn screencast_start_responses_carry_streams_and_restore_data() {
-        // Phase `start_allow_returns_response_zero_with_streams_key`.
         {
             let (code, results) = outcome_to_start_response_for_tests(PromptOutcome::AllowOnce);
             assert_eq!(code, 0);
             assert!(results.contains_key("streams"));
         }
-        // Phase `start_deny_returns_response_one_no_results`.
         {
             let (code, results) = outcome_to_start_response_for_tests(PromptOutcome::Deny);
             assert_eq!(code, 1);
             assert!(results.is_empty());
         }
-        // Phase `start_returns_non_empty_streams_on_allow`.
         {
             let info = PipewireStreamInfo {
                 node_id: 99,
@@ -712,7 +714,6 @@ mod tests {
             assert!(streams[0].1.contains_key("source_type"));
             assert!(streams[0].1.contains_key("id"));
         }
-        // Phase `start_response_includes_standard_restore_data_when_persisted`.
         {
             let info = PipewireStreamInfo {
                 node_id: 3,
@@ -739,7 +740,6 @@ mod tests {
 
     #[test]
     fn screencast_restore_authority_is_app_bound_durable_and_revocable() {
-        // Phase `standard_restore_data_round_trips_only_tilo_uuid_payloads`.
         {
             let key = uuid::Uuid::new_v4().to_string();
             let mut options = HashMap::new();
@@ -758,7 +758,6 @@ mod tests {
             );
             assert_eq!(restore_key(&options), None);
         }
-        // Phase `durable_restore_survives_a_store_restart_and_stays_app_bound`.
         {
             let root = std::env::temp_dir().join(format!("tilo-sc-{}", uuid::Uuid::new_v4()));
             let path = root.join("restore.json");
@@ -775,7 +774,6 @@ mod tests {
             );
             let _ = std::fs::remove_dir_all(root);
         }
-        // Phase `corrupt_durable_restore_is_quarantined_and_never_restored`.
         {
             let root = std::env::temp_dir().join(format!("tilo-sc-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&root).expect("root");
@@ -811,9 +809,7 @@ mod tests {
             selected_source_types(source_type::WINDOW | source_type::VIRTUAL, true),
             vec![source_type::WINDOW, source_type::VIRTUAL]
         );
-        // Empty mask defaults to monitor.
         assert_eq!(selected_source_types(0, true), vec![source_type::MONITOR]);
-        // Phase `size_from_options_reads_and_defaults`.
         {
             let mut opts: HashMap<String, OwnedValue> = HashMap::new();
             let size: (u32, u32) = (640, 480);
@@ -824,7 +820,6 @@ mod tests {
             assert_eq!(size_from_options(&opts), (640, 480));
             assert_eq!(size_from_options(&HashMap::new()), (1920, 1080));
         }
-        // Phase `available_types_and_modes_cover_the_spec_bits`.
         assert_eq!(source_type::ALL, 1 | 2 | 4);
         assert_eq!(cursor_mode::ALL, 1 | 2 | 4);
         // Phase `screencast_provisioner_records_source_type_and_size`.

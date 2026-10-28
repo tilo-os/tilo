@@ -12,7 +12,7 @@ Two lanes measure them. Neither blocks a merge.
 
 | Lane | Where | Clock | KPI ids |
 |---|---|---|---|
-| Nightly, compositor side | `perf-scheduled.yml` job `latency`, a headless debug compositor on the shared `runner` class, lavapipe | input taken by the loop → frame finished (headless has no flip) | `latency.input_to_frame.pointer`, `latency.workspace_switch.{first_frame,settled,dropped_frames}` |
+| Nightly, compositor side | t's `perf-latency` check, a headless debug compositor on a shared t node, lavapipe | input taken by the loop → frame finished (headless has no flip) | `latency.input_to_frame.pointer`, `latency.workspace_switch.{first_frame,settled,dropped_frames}` |
 | Weekly, report-only | a reference machine below, through `tilo-vm` | kernel input event → KMS presentation (the flip's vblank) | `hw.key_to_present.notes.<hz>hz`, `hw.workspace_switch.{first_frame,settled,dropped_frames}.<hz>hz` |
 
 The nightly lane answers "did the compositor's own work get slower". Its input
@@ -47,14 +47,14 @@ window and enable the greeter's presentation diagnostics, as
 `scripts/perf/README.md` ("Physical device Notes latency") describes. Then:
 
 ```sh
-TILO_VM=yoga tilo-vm vm status            # the booted image digest
+TILO_VM=yoga tilo device vm status            # the booted image digest
 python3 scripts/perf/device_latency_bench.py --device yoga --slot device \
   --commit <deployed shell commit> --image-digest sha256:<digest> \
   --out target/device-latency-$(date +%F)
 ```
 
 It types 500 keys into a fresh scratch Notes page (never an existing note) and
-times 100 workspace switches, both through `tilo-vm input`, the kernel input
+times 100 workspace switches, both through `tilo device input`, the kernel input
 path. A key the editor did not adopt, a frame without hardware presentation
 feedback or a chord the compositor did not report fails the run; a partial run
 never produces records. The records land in `<out>/records.jsonl`, compared

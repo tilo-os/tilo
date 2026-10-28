@@ -441,7 +441,6 @@ fn room_states(state: &Path) -> Vec<PathBuf> {
     rooms
 }
 
-/// The relay snapshot of each room, with its age.
 fn relay_snapshots(rooms: &[PathBuf]) -> Vec<(MetricsSnapshot, Duration)> {
     rooms
         .iter()

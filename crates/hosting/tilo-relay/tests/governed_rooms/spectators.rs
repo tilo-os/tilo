@@ -9,6 +9,15 @@ use super::*;
 
 const WATCH_ONLY: &str = "a spectator only watches this room";
 
+/// Content the room's host keeps: one item, by its BLAKE3 address.
+struct Kept(Vec<u8>);
+
+impl tilo_relay::rooms::RoomContent for Kept {
+    fn read(&self, _room: &str, _app: &str, hash: &str) -> Option<Vec<u8>> {
+        (blake3::hash(&self.0).to_hex().as_str() == hash).then(|| self.0.clone())
+    }
+}
+
 /// Invite `person` to `room` as `role` and redeem the invitation with
 /// `device`, as a page's join does: the device's replica of the room.
 async fn join(
@@ -214,11 +223,31 @@ async fn spectators_read_a_public_room_write_nothing_and_fill_only_its_seats() {
     let watcher_key = watcher.device_pubkey();
     let watching = connect(&relay, &watcher).await;
     assert_eq!(subscribe(&watching, workspace_id).await, Ok(()));
+    // Asked what it may do, the page hears it writes nowhere, as the room's
+    // viewer: no refusal for a device the room's roster never lists.
+    for node in tilo_action_policy::roles::telling_nodes(&room.room) {
+        assert_eq!(
+            relay
+                .rooms()
+                .unwrap()
+                .page_rooms(
+                    &watcher.cert,
+                    tilo_relay_protocol::rooms::RoomsRequest::Permits {
+                        room: room.room.clone(),
+                        node: node.to_string(),
+                    },
+                )
+                .await,
+            tilo_relay_protocol::rooms::RoomsReply::Permits(false),
+            "{node}"
+        );
+    }
     crate::common::wait_until_subscribed(&relay, workspace_id, &watcher_key).await;
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "topic", "welcome").unwrap();
     doc.commit_edit("fixture", "topic");
     let welcome = alice_peer
+        .publication_mut()
         .publish_incremental(APP, "", doc.save_after(&[]), &laptop.sk, SystemTime::now())
         .unwrap();
     publish(&alice_session, &welcome);
@@ -418,6 +447,46 @@ async fn spectators_read_a_public_room_write_nothing_and_fill_only_its_seats() {
     )
     .await;
     assert_eq!(cursor, b"Bob's cursor");
+
+    // A public room's spectator reads what members read: the room's host
+    // answers it the content those records reference.
+    let image = b"an image a member posted".to_vec();
+    let hash = blake3::hash(&image).to_hex().to_string();
+    relay
+        .rooms()
+        .expect("the host governs rooms")
+        .serve_content(std::sync::Arc::new(Kept(image.clone())));
+    let want = tilo_relay::AttributedPresence {
+        author: watcher_key,
+        body: postcard::to_stdvec(&NeighbourMsg::RecordContentWant {
+            requester: tilo_peer_state::peer_handle(&watcher_key),
+            app_id: "so.tilo.chat".into(),
+            cluster_id: room.room.clone(),
+            hash: hash.clone(),
+        })
+        .unwrap(),
+    }
+    .encode()
+    .unwrap();
+    watching
+        .send(Envelope::Presence {
+            workspace_id,
+            payload: want,
+        })
+        .unwrap();
+    let piece = answer(
+        "the host answers the spectator's request",
+        &watching,
+        |envelope| match envelope {
+            Envelope::RecordContent { frame, .. } => Some(frame),
+            _ => None,
+        },
+    )
+    .await;
+    let Ok(NeighbourMsg::RecordContentPiece { bytes, .. }) = postcard::from_bytes(&piece) else {
+        panic!("a piece of content");
+    };
+    assert_eq!(bytes, image);
 
     // Two seats: a second page watches, a third is refused until one leaves.
     let second = connect(&relay, &watching_device(&spectator, 42)).await;

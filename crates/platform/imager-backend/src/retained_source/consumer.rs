@@ -10,9 +10,6 @@ mod native_namespace;
 
 /// Authenticate and run the canonical consuming helper. Arguments route only
 /// its inherited transport; they cannot grant source or namespace authority.
-/// # Errors
-/// Returns an error if helper authentication, argument validation, bootstrap,
-/// namespace setup or consumer execution fails, or if this host is unsupported.
 pub fn run(arguments: impl Iterator<Item = OsString>) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {

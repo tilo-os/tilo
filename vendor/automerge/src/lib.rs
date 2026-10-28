@@ -292,6 +292,7 @@ mod text_value;
 pub mod transaction;
 mod types;
 mod value;
+mod work;
 
 pub use crate::anonymize::AnonymizeError;
 pub use crate::automerge::{Automerge, LoadOptions, OnPartialLoad, SaveOptions, StringMigration};
@@ -316,6 +317,7 @@ pub use text_value::ConcreteTextValue;
 pub use transaction::BlockOrText;
 pub use types::{ActorId, ChangeHash, ObjType, OpType, ParseChangeHashError, Prop, TextEncoding};
 pub use value::{ScalarValue, Value};
+pub use work::{work, Work};
 
 /// The object ID for the root map of a document
 pub const ROOT: ObjId = ObjId::Root;

@@ -43,7 +43,26 @@ fn krate() -> Tokens {
 /// remove (removing one by field edit asks no confirmation),
 /// `#[model(default = expr)]` (what the field reads as when the document
 /// holds none: a required field with a sensible derivation, so an item
-/// missing it still reads; the next whole write stores it).
+/// missing it still reads; the next whole write stores it),
+/// `#[model(trust = "sensitive")]` (every edit of it asks for confirmation:
+/// a change can expose the person), `#[model(trust = "weakening")]`
+/// (it also crosses a security boundary: any change can weaken the person's
+/// security, so an agent or script acting for them needs their own grant)
+/// and `#[model(weaker = ..)]` (only a change making it weaker than it is
+/// now does: `weaker = "higher"` or `"lower"` for a number, with
+/// `weakest = N` for the value weaker than any, such as a lock delay's `0`
+/// for never; `weaker = true` or `false` for a switch; a list of values
+/// from the strongest to the weakest for a choice), `#[model(range =
+/// low..=high)]` on a number and `#[model(choices = expr)]` on a text (what
+/// the field may hold: published in its value's schema and held by the
+/// record's own check, through every door).
+///
+/// Type attributes: `#[model(check = path)]` (its invariant, with
+/// `check_reads`/`check_items` saying what it reads), `#[model(label =
+/// "..")]`, `#[model(defaults)]` (the type's `Default` is what each field
+/// holds until changed, published with it) and `#[model(field(name,
+/// options..))]` (a field's options given on the type, for a record whose
+/// fields a shared macro writes).
 ///
 /// A struct's `Model::SHAPE` lists its stored fields, so layout-aware services
 /// (History restore) reconcile it field by field.
@@ -104,15 +123,24 @@ mod schema;
 /// scripts alike. See `tilo_resource::effect`.
 ///
 /// `#[effect(operation = "app.effects")]` names the vocabulary's operation
-/// type; `device_only` beside it marks every effect device-only. Each variant is unit or has named fields (the effect's typed
+/// type. Each variant is unit or has named fields (the effect's typed
 /// parameters, `#[param("…")]` describing one); its id is the variant name in
 /// kebab case and its label the first doc line. Variant options:
 /// `#[effect(label = "...", view, row, job, cancellable, returns,
-/// destructive, privileged, idempotent, device_only, programmatic, untrusted, opens_path, member, risk = "path", kind = "read")]`.
-/// A `device_only` effect reaches the files, hardware or services of the
-/// device it runs on: only the person at that device may invoke it. In a
-/// vocabulary marked `device_only`, `#[effect(device_only = false)]` exempts
-/// one effect that reaches nothing of the device (a personal setting). Generates `impl Effect` and one `ActionRef`
+/// destructive, privileged, idempotent, own_device, attended, audience = "agents", untrusted, opens_path, member, risk = "path", kind = "read",
+/// host_render, tag = some::TAG)]`. `host_render` marks an effect a host
+/// answers in a render service of its own rather than the record's app
+/// worker; `tag` (repeatable) adds a contract tag, a `&'static str` constant;
+/// `outside_with = "path"` makes a `kind = "read"` effect reach outside only
+/// when that parameter is given (an export writing the file it names).
+/// Who may run an effect is decided by its kind, like any action. An
+/// `own_device` effect's whole scope is the invoking person's own device,
+/// touching nothing shared and no one else (their clipboard, their own
+/// appearance): a room's grants have nothing to consent to. An `attended`
+/// effect needs its person attending (a chooser, a sign-in, a secret shown):
+/// whoever acts for them is always asked first, while the person's own click
+/// is their decision and, like an `own_device` effect, needs no room's
+/// consent and runs only on their own device. Generates `impl Effect` and one `ActionRef`
 /// constant per variant (`Backups::RESTORE`) for binding controls.
 #[proc_macro_derive(Effect, attributes(effect, param))]
 pub fn derive_effect(input: TokenStream) -> TokenStream {
@@ -142,6 +170,120 @@ struct FieldOptions {
     resource: bool,
     /// `default = expr`: what an absent field reads as.
     default: Option<Expr>,
+    /// `trust = "sensitive" | "weakening"`: the `Trust` variant it names.
+    trust: Option<syn::LitStr>,
+    /// `weaker = "higher" | "lower" | bool | ["strongest", .., "weakest"]`:
+    /// which way a change weakens security.
+    weaker: Option<Expr>,
+    /// `weakest = N`: the number weaker than any (a delay's `0`, never).
+    weakest: Option<syn::LitInt>,
+    /// `range = low..=high`: the numbers it may hold.
+    range: Option<(Expr, Expr)>,
+    /// `choices = expr`: the texts it may hold, any expression a `&[&str]`
+    /// borrows.
+    choices: Option<Expr>,
+}
+
+impl FieldOptions {
+    /// The field's `Trust`, as an expression.
+    fn trust(&self, krate: &Tokens) -> syn::Result<Tokens> {
+        let named = self.trust.as_ref().map(syn::LitStr::value);
+        let numeric = matches!(
+            &self.weaker,
+            Some(Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(_),
+                ..
+            }))
+        );
+        if let Some(weakest) = self.weakest.as_ref().filter(|_| !numeric) {
+            return Err(syn::Error::new(
+                weakest.span(),
+                "`weakest` goes with `weaker = \"higher\"` or `weaker = \"lower\"`",
+            ));
+        }
+        let Some(weaker) = &self.weaker else {
+            return Ok(match named.as_deref() {
+                None => quote!(#krate::Trust::Ordinary),
+                Some("sensitive") => quote!(#krate::Trust::Sensitive),
+                Some("weakening") => quote!(#krate::Trust::Weakening),
+                Some(_) => {
+                    return Err(syn::Error::new(
+                        self.trust.span(),
+                        "expected `trust = \"sensitive\"` or `trust = \"weakening\"`",
+                    ));
+                }
+            });
+        };
+        if named.as_deref().is_some_and(|named| named != "weakening") {
+            return Err(syn::Error::new(
+                self.trust.span(),
+                "`weaker` makes the field weaken one way: drop `trust` or make it \"weakening\"",
+            ));
+        }
+        let unexpected = || {
+            syn::Error::new(
+                weaker.span(),
+                "expected `weaker = \"higher\"`, `\"lower\"`, `true`, `false` or a list of \
+                 values from the strongest to the weakest",
+            )
+        };
+        let weakest = if let Some(weakest) = &self.weakest {
+            let weakest: i64 = weakest.base10_parse()?;
+            quote!(::core::option::Option::Some(#weakest))
+        } else {
+            quote!(::core::option::Option::None)
+        };
+        let string = |expr: &Expr| match expr {
+            Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(text),
+                ..
+            }) => Some(text.value()),
+            _ => None,
+        };
+        let weaker = match weaker {
+            Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(rule),
+                ..
+            }) if rule.value() == "higher" => {
+                quote!(#krate::Weaker::Higher { weakest: #weakest })
+            }
+            Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(rule),
+                ..
+            }) if rule.value() == "lower" => quote!(#krate::Weaker::Lower { weakest: #weakest }),
+            Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Bool(weak),
+                ..
+            }) => {
+                let order = if weak.value {
+                    ["false", "true"]
+                } else {
+                    ["true", "false"]
+                };
+                quote!(#krate::Weaker::Order(&[#(#order),*]))
+            }
+            Expr::Array(values) => {
+                // Each value as the JSON text of the string it serializes to.
+                let order = values
+                    .elems
+                    .iter()
+                    .map(|value| {
+                        string(value)
+                            .filter(|text| {
+                                !text
+                                    .chars()
+                                    .any(|c| c == '"' || c == '\\' || c.is_control())
+                            })
+                            .map(|text| format!("\"{text}\""))
+                            .ok_or_else(unexpected)
+                    })
+                    .collect::<syn::Result<Vec<_>>>()?;
+                quote!(#krate::Weaker::Order(&[#(#order),*]))
+            }
+            _ => return Err(unexpected()),
+        };
+        Ok(quote!(#krate::Trust::Weakens(#weaker)))
+    }
 }
 
 fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
@@ -167,6 +309,22 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
                 options.resource = true;
             } else if meta.path.is_ident("default") {
                 options.default = Some(meta.value()?.parse()?);
+            } else if meta.path.is_ident("trust") {
+                options.trust = Some(meta.value()?.parse()?);
+            } else if meta.path.is_ident("weaker") {
+                options.weaker = Some(meta.value()?.parse()?);
+            } else if meta.path.is_ident("weakest") {
+                options.weakest = Some(meta.value()?.parse()?);
+            } else if meta.path.is_ident("range") {
+                let range: syn::ExprRange = meta.value()?.parse()?;
+                match (range.start, range.limits, range.end) {
+                    (Some(start), syn::RangeLimits::Closed(_), Some(end)) => {
+                        options.range = Some((*start, *end));
+                    }
+                    _ => return Err(meta.error("expected `range = low..=high`")),
+                }
+            } else if meta.path.is_ident("choices") {
+                options.choices = Some(meta.value()?.parse()?);
             } else if meta.path.is_ident("remove") {
                 let how: syn::LitStr = meta.value()?.parse()?;
                 if how.value() != "quiet" {
@@ -176,7 +334,9 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
             } else {
                 return Err(meta.error(
                     "expected `skip`, `rename = \"...\"`, `label`, `readonly`, `unit`, `atom`, \
-                     `whole`, `resource`, `default = ..` or `remove = \"quiet\"`",
+                     `whole`, `resource`, `default = ..`, `trust = \"..\"`, `weaker = ..`, \
+                     `weakest = N`, `range = low..=high`, `choices = ..` or \
+                     `remove = \"quiet\"`",
                 ));
             }
             Ok(())
@@ -193,6 +353,10 @@ struct ContainerOptions {
     /// `label = "first last"`: the fields whose texts, joined by spaces,
     /// name a value.
     label: Vec<String>,
+    /// `label = path`: the function that names a value, where its name is
+    /// not a field's text as stored (a place kept as `xdg:documents` is
+    /// "Documents").
+    label_with: Option<syn::Path>,
     /// `check_reads = "a b"`: the fields the invariant reads; an edit of
     /// none of them (nor of an item of `check_items`) cannot break it.
     check_reads: Option<Vec<String>>,
@@ -200,9 +364,82 @@ struct ContainerOptions {
     /// counts (not reads): adding or removing one can break it, an edit
     /// inside one cannot.
     check_items: Vec<String>,
+    /// `defaults`: the type's `Default` is what each field holds until
+    /// someone changes it, published with the field.
+    defaults: bool,
+    /// `field(name, options..)`: a field's options given on the type, for a
+    /// record whose fields a shared macro writes.
+    field_options: Vec<(String, Tokens)>,
+}
+
+/// `audience = "people" | "agents" | "everyone"` on an action or effect:
+/// the `tilo_actions::Audience` variant it names.
+fn audience_option(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<syn::Ident> {
+    let value = meta.value()?.parse::<syn::LitStr>()?;
+    let variant = match value.value().as_str() {
+        "everyone" => "Everyone",
+        "people" => "People",
+        "agents" => "Agents",
+        _ => {
+            return Err(syn::Error::new(
+                value.span(),
+                "expected `audience = \"people\"`, `\"agents\"` or `\"everyone\"`",
+            ));
+        }
+    };
+    Ok(syn::Ident::new(variant, value.span()))
 }
 
 /// Fields named by a space-separated `"a b"` list.
+/// `keywords = "mkdir, make directory"`: an action's other words, one
+/// phrase each, comma separated. An empty phrase or one that is the same
+/// word twice is a mistake in the declaration, not a word anyone types.
+fn keyword_list(list: &syn::LitStr) -> syn::Result<Vec<String>> {
+    let mut words: Vec<String> = Vec::new();
+    for word in list.value().split(',').map(str::trim) {
+        if word.is_empty() {
+            return Err(syn::Error::new(list.span(), "a keyword is empty"));
+        }
+        if words.iter().any(|seen| seen.eq_ignore_ascii_case(word)) {
+            return Err(syn::Error::new(
+                list.span(),
+                format!("the keyword `{word}` is listed twice"),
+            ));
+        }
+        words.push(word.to_owned());
+    }
+    Ok(words)
+}
+
+/// `icon = "folder-plus"`: a picture by its Lucide name, lowercase words
+/// joined by hyphens. Whether the toolkit draws that name is checked where
+/// the toolkit is: each app's tests resolve every icon it declares.
+fn icon_name(name: &syn::LitStr) -> syn::Result<String> {
+    let value = name.value();
+    let well_formed = !value.is_empty()
+        && value.split('-').all(|word| {
+            !word.is_empty()
+                && word
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        });
+    if !well_formed {
+        return Err(syn::Error::new(
+            name.span(),
+            "an icon is named by its Lucide name, such as `folder-plus`",
+        ));
+    }
+    Ok(value)
+}
+
+/// `Some("…")` or `None`, as tokens of an `Option<&'static str>`.
+fn optional_str(value: Option<&str>) -> proc_macro2::TokenStream {
+    value.map_or_else(
+        || quote::quote!(::core::option::Option::None),
+        |value| quote::quote!(::core::option::Option::Some(#value)),
+    )
+}
+
 fn field_list(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Vec<String>> {
     let fields = meta.value()?.parse::<syn::LitStr>()?;
     Ok(fields
@@ -212,7 +449,8 @@ fn field_list(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Vec<String>>
         .collect())
 }
 
-/// `#[model(check = path, label = "first last")]` on the type.
+/// `#[model(check = path, label = "first last")]` on the type, or
+/// `label = path` naming the function `fn(&Self) -> String` that names it.
 fn container_options(attrs: &[Attribute]) -> syn::Result<ContainerOptions> {
     let mut options = ContainerOptions::default();
     for attr in attrs.iter().filter(|attr| attr.path().is_ident("model")) {
@@ -226,8 +464,30 @@ fn container_options(attrs: &[Attribute]) -> syn::Result<ContainerOptions> {
             } else if meta.path.is_ident("check_items") {
                 options.check_items = field_list(&meta)?;
                 Ok(())
+            } else if meta.path.is_ident("defaults") {
+                options.defaults = true;
+                Ok(())
+            } else if meta.path.is_ident("field") {
+                let content;
+                syn::parenthesized!(content in meta.input);
+                let field: syn::Ident = content.parse()?;
+                content.parse::<syn::Token![,]>()?;
+                options
+                    .field_options
+                    .push((field.to_string(), content.parse::<Tokens>()?));
+                Ok(())
             } else if meta.path.is_ident("label") {
-                options.label = field_list(&meta)?;
+                let value = meta.value()?;
+                if !value.peek(syn::LitStr) {
+                    options.label_with = Some(value.parse::<syn::Path>()?);
+                    return Ok(());
+                }
+                options.label = value
+                    .parse::<syn::LitStr>()?
+                    .value()
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect();
                 if options.label.is_empty() {
                     return Err(meta.error("`label = \"..\"` names the fields that make the label"));
                 }
@@ -235,7 +495,8 @@ fn container_options(attrs: &[Attribute]) -> syn::Result<ContainerOptions> {
             } else {
                 Err(meta.error(
                     "expected `check = path`, `check_reads = \"field ..\"`, \
-                     `check_items = \"field ..\"` or `label = \"field field ..\"` on the type",
+                     `check_items = \"field ..\"`, `defaults`, `field(name, options..)`, \
+                     `label = \"field field ..\"` or `label = path` on the type",
                 ))
             }
         })?;
@@ -246,6 +507,18 @@ fn container_options(attrs: &[Attribute]) -> syn::Result<ContainerOptions> {
             Span::call_site(),
             "`check_reads` and `check_items` say what a `check = path` reads",
         ));
+    }
+    // A field named twice is not the label twice: the second mention would
+    // silently name no field, and the label would read as if it had.
+    let mut named: Vec<&str> = Vec::new();
+    for part in &options.label {
+        if named.contains(&part.as_str()) {
+            return Err(syn::Error::new(
+                Span::call_site(),
+                format!("`label = \"..\"` names `{part}` twice"),
+            ));
+        }
+        named.push(part);
     }
     Ok(options)
 }
@@ -438,7 +711,6 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 impl #impl_generics #krate::Settable for #name #type_generics #where_clause {}
 
                 impl #impl_generics #krate::Model for #name #type_generics #where_clause {
-                    // Run by one set of functions for every such enum.
                     const TABLE: &'static #table::ModelTable = &#table::ModelTable::of_unit(&Self::__UNIT);
                     type Paths<__R> = #krate::Path<__R, Self>;
 
@@ -476,12 +748,26 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
     let ContainerOptions {
         check,
         label: label_parts,
+        label_with,
         check_reads,
         check_items,
+        defaults,
+        field_options: given_options,
     } = container_options(&input.attrs)?;
+    for (given, _) in &given_options {
+        if !fields
+            .named
+            .iter()
+            .any(|field| field.ident.as_ref().is_some_and(|ident| ident == given))
+        {
+            return Err(syn::Error::new(
+                Span::call_site(),
+                format!("`field({given}, ..)` names no field of `{name}`"),
+            ));
+        }
+    }
     // Each stored field's key by its name, for what the check reads.
     let mut keys: Vec<(String, String)> = Vec::new();
-    let own_check_const = check.is_some();
     let paths_name = format_ident!("{}Paths", name);
     let mut paths_generics = input.generics.clone();
     paths_generics.params.insert(0, syn::parse_quote!(__R));
@@ -527,6 +813,12 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
     let mut path_clones = Vec::new();
     let mut collection_names = Vec::new();
     let mut outbox_names = Vec::new();
+    // What each field declares it may hold (`range`, `choices`): checked
+    // with the record's own invariant, by the keys of the fields declaring.
+    let mut declared_checks = Vec::new();
+    let mut declared_keys = Vec::new();
+    // Each field's published value schema, narrowed by its declarations.
+    let mut schema_fns = Vec::new();
     let owner = snake_case(&name.to_string()).replace('_', "-");
     for field in &fields.named {
         let ident = field
@@ -535,7 +827,13 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             .ok_or_else(|| syn::Error::new(field.span(), "named field without a name"))?;
         let ty = &field.ty;
         let field_vis = &field.vis;
-        let options = field_options(&field.attrs)?;
+        let mut attrs = field.attrs.clone();
+        for (given, tokens) in &given_options {
+            if *ident == given {
+                attrs.push(syn::parse_quote!(#[model(#tokens)]));
+            }
+        }
+        let options = field_options(&attrs)?;
         let key = options.rename.clone().unwrap_or_else(|| ident.to_string());
         if !options.skip {
             keys.push((ident.to_string(), key.clone()));
@@ -561,7 +859,11 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 || humanize(&field_name),
                 |line| line.trim_end_matches('.').to_owned(),
             );
-        let (unit, readonly, is_label) = (options.unit, options.readonly, options.label);
+        // An outbox is its own storage unit: what a change queues in it is
+        // what reaches outside the record, and a receiver tells that from
+        // the units the change wrote without the app's code.
+        let outbox = last_ident(ty).is_some_and(|(name, _)| name == "Outbox");
+        let (unit, readonly, is_label) = (options.unit || outbox, options.readonly, options.label);
         let label_part = label_parts
             .iter()
             .position(|part| *part == field_name)
@@ -572,6 +874,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             label_fields.push((label_part, descs.len()));
         }
         let quiet_remove = options.quiet_remove;
+        let trust = options.trust(&krate)?;
         if is_label {
             if label.is_some() {
                 return Err(syn::Error::new(
@@ -586,7 +889,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         } else {
             quote!(<#ty as #krate::Model>::TABLE)
         };
-        if last_ident(ty).is_some_and(|(name, _)| name == "Outbox") {
+        if outbox {
             outbox_names.push(field_name.clone());
         }
         let keyed = last_ident(ty).is_some_and(|(name, _)| name == "Keyed" || name == "Ordered");
@@ -619,6 +922,46 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         } else {
             quote!(::core::option::Option::None)
         };
+        let schema_fn = format_ident!("__schema_{}", ident);
+        let mut narrowed = quote!(<#ty as #krate::Model>::value_schema());
+        if let Some((low, high)) = &options.range {
+            narrowed = quote!(#krate::schema::range(
+                #narrowed,
+                ::core::option::Option::Some(#krate::__private::serde_json::json!(#low)),
+                ::core::option::Option::Some(#krate::__private::serde_json::json!(#high)),
+            ));
+            declared_checks.push(quote!(#krate::__private::declared_range(
+                &value.#ident,
+                #krate::__private::declared_bound(&(#low)),
+                #krate::__private::declared_bound(&(#high)),
+                #key,
+            )?;));
+        }
+        if let Some(choices) = &options.choices {
+            narrowed = quote!(#krate::schema::choices(#narrowed, &#choices));
+            declared_checks.push(quote!(#krate::__private::declared_choices(
+                &value.#ident,
+                &#choices,
+                #key,
+            )?;));
+        }
+        if options.range.is_some() || options.choices.is_some() {
+            declared_keys.push(key.clone());
+        }
+        if defaults {
+            narrowed = quote!(#krate::schema::with_default(
+                #narrowed,
+                ::core::option::Option::Some(#krate::Model::to_json(
+                    &<Self as ::core::default::Default>::default().#ident,
+                )),
+            ));
+        }
+        schema_fns.push(quote! {
+            #[doc(hidden)]
+            fn #schema_fn() -> #krate::__private::serde_json::Value {
+                #narrowed
+            }
+        });
         let ty_text = quote!(#ty)
             .to_string()
             .replace(" < ", "<")
@@ -640,7 +983,8 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             label: #is_label,
             label_part: #label_part,
             quiet_remove: #quiet_remove,
-            schema: <#ty as #krate::Model>::value_schema,
+            trust: #trust,
+            schema: Self::#schema_fn,
             text: #krate::stored_text::<#ty>,
             absent: #krate::absent_scalar::<#ty>,
             resource: #resource,
@@ -671,9 +1015,23 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 )
             })
     };
+    let own_check_const = check.is_some() || !declared_checks.is_empty();
+    if !declared_checks.is_empty() {
+        checks_const.push(quote!(true));
+    }
+    // A record checking only what its fields declare reads only them.
+    let check_reads = match (check.is_some(), check_reads) {
+        (false, _) => Some(Vec::new()),
+        (true, reads) => reads,
+    };
     let check_reads = match check_reads {
         Some(fields) => {
-            let fields = fields.iter().map(key_of).collect::<syn::Result<Vec<_>>>()?;
+            let mut fields = fields.iter().map(key_of).collect::<syn::Result<Vec<_>>>()?;
+            for key in &declared_keys {
+                if !fields.contains(key) {
+                    fields.push(key.clone());
+                }
+            }
             let items = check_items
                 .iter()
                 .map(key_of)
@@ -707,54 +1065,76 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             quote!(::core::option::Option::Some(#position))
         },
     );
-    let label_fn = if label.is_none() && label_fields.is_empty() {
+    let label_with_desc = label_with.as_ref().map_or_else(
+        || quote!(::core::option::Option::None),
+        |_| quote!(::core::option::Option::Some(Self::__label_with)),
+    );
+    let label_with_fn = label_with.as_ref().map_or_else(
+        || quote!(),
+        |path| {
+            quote! {
+                #[doc(hidden)]
+                fn __label_with(
+                    value: &dyn ::core::any::Any,
+                ) -> ::core::option::Option<::std::string::String> {
+                    value.downcast_ref::<Self>().map(#path)
+                }
+            }
+        },
+    );
+    let label_fn = if label.is_none() && label_fields.is_empty() && label_with.is_none() {
         quote!()
     } else {
         quote! {
-            /// The label: the texts of its label fields joined by spaces,
-            /// else its `#[model(label)]` field.
+            /// The label: what its `label = path` names it, else the texts
+            /// of its label fields joined by spaces, else its
+            /// `#[model(label)]` field.
             #[inline]
             fn label(&self) -> ::core::option::Option<::std::string::String> {
                 #table::label(&Self::__RECORD, self)
             }
         }
     };
-    let (own_check, own_check_fns) = check.as_ref().map_or_else(
-        || (quote!(::core::option::Option::None), quote!()),
-        |path| {
-            (
-                quote!(::core::option::Option::Some(#table::OwnCheck {
-                    check: Self::__own_check,
-                    read: Self::__read_record,
-                    reads: #check_reads,
-                })),
-                quote! {
-                    fn __own_check(
-                        value: &dyn ::core::any::Any,
-                    ) -> ::core::result::Result<(), #krate::Refusal> {
-                        match value.downcast_ref::<Self>() {
-                            ::core::option::Option::Some(value) => {
-                                #krate::__private::check_outcome(#path(value))
-                            }
-                            ::core::option::Option::None => ::core::result::Result::Ok(()),
+    let user_check = check
+        .as_ref()
+        .map(|path| quote!(#krate::__private::check_outcome(#path(value))?;));
+    let (own_check, own_check_fns) = if own_check_const {
+        (
+            quote!(::core::option::Option::Some(#table::OwnCheck {
+                check: Self::__own_check,
+                read: Self::__read_record,
+                reads: #check_reads,
+            })),
+            quote! {
+                fn __own_check(
+                    value: &dyn ::core::any::Any,
+                ) -> ::core::result::Result<(), #krate::Refusal> {
+                    match value.downcast_ref::<Self>() {
+                        ::core::option::Option::Some(value) => {
+                            #(#declared_checks)*
+                            #user_check
+                            ::core::result::Result::Ok(())
                         }
+                        ::core::option::Option::None => ::core::result::Result::Ok(()),
                     }
+                }
 
-                    fn __read_record(
-                        doc: &#krate::Doc,
-                        obj: &#krate::__private::ObjId,
-                    ) -> ::core::result::Result<
-                        ::std::boxed::Box<dyn ::core::any::Any>,
-                        #krate::ModelError,
-                    > {
-                        ::core::result::Result::Ok(::std::boxed::Box::new(
-                            <Self as #krate::Fields>::read_fields(doc, obj)?,
-                        ))
-                    }
-                },
-            )
-        },
-    );
+                fn __read_record(
+                    doc: &#krate::Doc,
+                    obj: &#krate::__private::ObjId,
+                ) -> ::core::result::Result<
+                    ::std::boxed::Box<dyn ::core::any::Any>,
+                    #krate::ModelError,
+                > {
+                    ::core::result::Result::Ok(::std::boxed::Box::new(
+                        <Self as #krate::Fields>::read_fields(doc, obj)?,
+                    ))
+                }
+            },
+        )
+    } else {
+        (quote!(::core::option::Option::None), quote!())
+    };
     let collections = if collection_names.is_empty() {
         quote!()
     } else {
@@ -821,11 +1201,14 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 own_check: #own_check,
                 label: #label_index,
                 label_parts: &[#(#label_positions),*],
+                label_with: #label_with_desc,
                 name: ::core::any::type_name::<Self>,
                 shape: <Self as #krate::Model>::SHAPE,
                 checks: <Self as #krate::Model>::CHECKS,
                 has_ops: <Self as #krate::Model>::OPS,
             };
+
+            #label_with_fn
 
             #[allow(clippy::match_single_binding, reason = "a record may have no stored field")]
             fn __field(
@@ -860,6 +1243,8 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             }
 
             #own_check_fns
+
+            #(#schema_fns)*
 
             /// The fields holding a `Collection`, by name: where actions on
             /// an item can act.
@@ -1192,6 +1577,35 @@ fn last_ident(ty: &Type) -> Option<(String, Option<&Type>)> {
     Some((segment.ident.to_string(), inner))
 }
 
+/// How a parameter of Rust type `ty` holds bytes, when it does (`Vec<u8>`,
+/// or a list of them): the decoder that takes them inline or by a content
+/// reference, and the schema saying both. Actions carry intent and
+/// references; bytes travel by session transport into the content store.
+fn byte_param(ty: &Type) -> Option<(Tokens, Tokens)> {
+    let krate = krate();
+    let is_bytes = |ty: &Type| {
+        last_ident(ty).is_some_and(|(name, inner)| {
+            name == "Vec"
+                && inner
+                    .and_then(last_ident)
+                    .is_some_and(|(byte, _)| byte == "u8")
+        })
+    };
+    let (name, inner) = last_ident(ty)?;
+    if is_bytes(ty) {
+        return Some((
+            quote!(#krate::content::bytes),
+            quote!(#krate::content::bytes_schema),
+        ));
+    }
+    (name == "Vec" && inner.is_some_and(is_bytes)).then(|| {
+        (
+            quote!(#krate::content::byte_lists),
+            quote!(#krate::content::byte_list_schema),
+        )
+    })
+}
+
 /// The declared type of a parameter of Rust type `ty`, and whether it is
 /// optional. An app's own type is what its schema says it is written as
 /// when `schema` (the type implements `JsonSchema`), else an object.
@@ -1315,10 +1729,16 @@ fn is_action_cx(ty: &Type) -> bool {
 /// like the parameter, or the record's only one; `#[action(item = field)]`
 /// names it otherwise, and anything else does not compile.
 ///
-/// Action options: `label = "..."`, `destructive` (people confirm it, through
-/// any door), `housekeeping` (a change about the record rather than to it,
+/// Action options: `label = "..."`, `destructive` (it deletes or overwrites:
+/// when Undo takes it back, as it does any change of the document alone, it
+/// runs at once and offers Undo; otherwise people confirm it, through any
+/// door), `irreversible` (it also loses what Undo cannot bring back, such
+/// as a secret every device forgets: a destructive one is confirmed even
+/// though Undo reverts its document change), `housekeeping` (a change
+/// about the record rather than to it,
 /// such as a read marker), `external` (content from outside, nobody's undo
-/// step), `field = "..."` (an action that writes only that field is placed
+/// step), `local` (an action of a record with a `queue` that queues nothing,
+/// so an undoable change rather than one reaching outside), `field = "..."` (an action that writes only that field is placed
 /// below it, so a grant on the field reaches it: someone who may only
 /// comment may add to the `comments`).
 ///
@@ -1330,7 +1750,9 @@ fn is_action_cx(ty: &Type) -> bool {
 /// `scopes = path`, `read_content = path` (`fn(&Self, Option<&Id>) ->
 /// Result<serde_json::Value, String>`), `read_content_in_doc = path` (the same
 /// read, `fn(&Self, &Doc, Option<&Id>) -> ...`, for one that needs the
-/// document itself) and `views = path`.
+/// document itself), `facts = path` (`fn(&Self) -> Result<serde_json::Value,
+/// String>`, the compact summary `Resource::facts` states), `history_text`
+/// (History shows this type's versions as text) and `views = path`.
 #[proc_macro_attribute]
 pub fn resource(attr: TokenStream, item: TokenStream) -> TokenStream {
     let options = match verbs::resource_options(attr) {

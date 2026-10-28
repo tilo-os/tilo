@@ -836,8 +836,8 @@ impl InstallProfile {
             purpose: install_profile_model::default_purpose(),
             hostname: "tilo-workstation".into(),
             user: UserAccount {
-                full_name: "Quinten".into(),
-                username: "quinten".into(),
+                full_name: "Ada".into(),
+                username: "ada".into(),
                 password: "•••••••••".into(),
             },
             locale: "en_US.UTF-8".into(),
@@ -1119,7 +1119,7 @@ pub fn sample_recent_sources() -> Vec<Source> {
         sample_source(),
         Source {
             kind: SourceKind::IsoFile,
-            path: "/home/quinten/Downloads/Fedora-Workstation-Live-42.iso".into(),
+            path: "/home/user/Downloads/Fedora-Workstation-Live-42.iso".into(),
             name: "Fedora-Workstation-Live-42.iso".into(),
             size: 2_113_929_216,
             label: "Fedora-WS-Live-42-1-1".into(),
@@ -1129,7 +1129,7 @@ pub fn sample_recent_sources() -> Vec<Source> {
         },
         Source {
             kind: SourceKind::IsoFile,
-            path: "/home/quinten/Downloads/archlinux-2026.06.01-x86_64.iso".into(),
+            path: "/home/user/Downloads/archlinux-2026.06.01-x86_64.iso".into(),
             name: "archlinux-2026.06.01-x86_64.iso".into(),
             size: 1_181_116_006,
             label: "ARCH_202606".into(),

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createLiveLayer, connectPeer, httpsPost, inspectInvitation, joinWorkspace, liveEndpoints, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withCustody, withStartFields} from './peer.mjs';
+import {createLiveLayer, connectPeer, httpsPost, inspectInvitation, joinWorkspace, liveEndpoints, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, renewDevice, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withCustody, withStartFields} from './peer.mjs';
 
 const ROOM = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const SEALED = 0x53;
@@ -12,8 +12,10 @@ const SELF = 'dd'.repeat(32);
 const OTHER = 'cc'.repeat(32);
 const AGENT = 'ee'.repeat(32);
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
+/** The shared hang bound: a wait this long means the code under test is stuck. */
+const HANG_BOUND_MS = Number(process.env.TILO_TEST_HANG_BOUND_SECS || 120) * 1000;
 /** Resolves once `check()` holds; a loaded runner takes longer, not forever. */
-async function until(check, what, timeoutMs = 10_000) {
+async function until(check, what, timeoutMs = HANG_BOUND_MS) {
   const deadline = Date.now() + timeoutMs;
   while (!check()) {
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
@@ -98,6 +100,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
       return JSON.stringify(calls.status.length < 2 ? {kind: 'waiting'} : {kind: 'admitted', room: ROOM, workspaceId: '7', name: 'Acme', role: 'Editor'});
     },
     encodeLivePresence: json => new TextEncoder().encode(json),
+    presenceColor: id => `#${String(id).padEnd(6, '0').slice(0, 6).replace(/[^0-9a-f]/g, '0')}`,
     decodeLiveFrame: bytes => {
       const value = JSON.parse(new TextDecoder().decode(bytes));
       return JSON.stringify(value.kind ? value : {kind: 'presence', frame: value});
@@ -110,7 +113,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
         const listeners = [];
         const durable = [];
         peer = {
-          config: JSON.parse(config), configText: config, custody, namespace, record, save, post, channelVault, disposed: false, reconnects: 0,
+          config: JSON.parse(config), configText: config, custody, namespace, record, save, post, channelVault, disposed: false, reconnects: 0, retries: 0,
           phase,
           records: [],
           admission: 'ready',
@@ -118,6 +121,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
           refreshes: 0,
           snapshot: () => JSON.stringify({phase: peer.phase, deviceId: 'dd', outgoingPending: 0, health: {version: 1, admission: {phase: peer.admission, pendingPrerequisites: peer.admission === 'ready' ? 0 : 1}}}),
           subscribe: listener => listeners.push(listener),
+          sessionToken: () => 'ce'.repeat(32),
           joinRoom: room => { peer.room = room; },
           liveGrant: async (room, ...agent) => {
             calls.grants++;
@@ -134,6 +138,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
           takeRemoteActionEvents: () => '[]',
           sendRemoteAction: () => {},
           reconnect: () => { peer.reconnects++; },
+          retryNow: () => { peer.retries++; },
           refresh: () => { peer.refreshes++; peer.onRefresh?.(); },
           reportFailure: (surface, asset, code, message) => {
             if (!['storage-transaction-failed', 'storage-quota', 'storage-denied', 'asset-unavailable', 'gpu-unavailable', 'gpu-device-lost', 'renderer-initialization-failed'].includes(code)) throw new Error(`unknown failure code ${code}`);
@@ -263,17 +268,20 @@ test('a watching page sees the members live and sends nothing of its own', async
   const presence = [];
   peer.live.onPresence(value => presence.push(value.publisher));
   session.memberWatcher(OTHER, true);
-  session.presenceSubscribers.get(OTHER)(sealedFrame({seq: 1, sentAtMs: Date.now(), focus: null, pointer: [1, 2], selection: null, drag: null}), performance.now());
+  session.presenceSubscribers.get(OTHER)(sealedFrame({seq: 1, sentAtMs: Date.now(), focus: null, pointer: {strip: '1', at: [1, 2]}, selection: null, drag: null}), performance.now());
   await until(() => presence.length, 'a member\'s cursor');
 
-  peer.live.publishPresence({pointer: [5, 6]});
+  peer.live.publishPresence({pointer: {strip: '1', at: [5, 6]}});
   const record = {app: 'so.tilo.notes', record: 'note-1'};
   assert.equal(peer.live.publishPreview(record, [{kind: 'insert', at: '01', text: 'x'}]), false);
   peer.live.endPreview(record);
   peer.setDisplayName('Visitor');
   runtime.peer.here = async () => { throw new Error('a watching page posted /here'); };
   assert.deepEqual(await peer.here(null, [{id: '01', action: 'Edited', resource: 'Note', app: 'Notes', at_ms: 1}]), []);
-  await new Promise(resolve => setTimeout(resolve, 50));
+  // A presence change leaves at the end of the task it was made in (nothing
+  // was sent before, so no rate limit defers it): one turn of the event loop
+  // has run every send these calls queued.
+  await settle();
   assert.deepEqual(session.presence, []);
   assert.deepEqual(session.ops, []);
   assert.deepEqual(session.closedOps, []);
@@ -305,7 +313,7 @@ test('the live layer joins over the carrier with the session grant and interpola
   peer.live.onPresence(value => presence.push(value.publisher));
   session.memberWatcher(OTHER, true);
   assert.deepEqual(peer.live.members(), [OTHER]);
-  const frame = {seq: 1, sentAtMs: Date.now(), focus: null, pointer: [1, 2], selection: null, drag: null};
+  const frame = {seq: 1, sentAtMs: Date.now(), focus: null, pointer: {strip: '1', at: [1, 2]}, selection: null, drag: null};
   // An unsealed frame is never opened.
   session.presenceSubscribers.get(OTHER)(new TextEncoder().encode(JSON.stringify(frame)), performance.now());
   await settle();
@@ -314,7 +322,7 @@ test('the live layer joins over the carrier with the session grant and interpola
   await until(() => presence.length, 'the sealed presence');
   assert.deepEqual(presence, [OTHER]);
   const [remote] = peer.live.remoteState(performance.now() + 50);
-  assert.deepEqual(remote.pointer, [1, 2]);
+  assert.deepEqual(remote.pointer, {strip: '1', at: [1, 2]});
 
   const record = {app: 'so.tilo.notes', record: 'note-1'};
   peer.live.watchRecord(record);
@@ -326,12 +334,12 @@ test('the live layer joins over the carrier with the session grant and interpola
   runtime.peer.emit('ready', [{kind: 'durable', record}]);
   assert.equal(Object.keys(peer.live.remoteState()[0].previews).length, 0, 'the durable change supersedes previews');
 
-  peer.live.publishPresence({pointer: [5, 6]});
+  peer.live.publishPresence({pointer: {strip: '1', at: [5, 6]}});
   // The publisher sends at most 120 frames/s: the pointer may wait out the
   // interval after the participant frame.
   const lastSent = () => openedFrame(session.presence.at(-1));
   await until(() => lastSent().pointer !== null, 'the pointer frame');
-  assert.deepEqual(lastSent().pointer, [5, 6]);
+  assert.deepEqual(lastSent().pointer, {strip: '1', at: [5, 6]});
   assert.ok(peer.live.publishPreview(record, [{kind: 'insert', at: '01', text: 'y'}]));
   await until(() => session.ops.length, 'the sealed preview frame');
   assert.equal(session.ops.at(-1).name, track);
@@ -354,7 +362,7 @@ test('a lost live session reconnects with a fresh grant', async () => {
   const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
   await until(() => peer.live.state === 'live', 'the live layer');
   liveCarriers.connects[0].close();
-  await new Promise(resolve => setTimeout(resolve, 400));
+  await until(() => liveCarriers.connects.length === 2 && peer.live.state === 'live', 'the reconnect');
   assert.equal(liveCarriers.connects.length, 2);
   assert.equal(runtime.calls.grants, 2);
   await peer.dispose();
@@ -370,7 +378,7 @@ test('late decryption cannot revive a departed or rejoined publisher', async () 
   const original = runtime.peer.openLive.bind(runtime.peer);
   let release;
   runtime.peer.openLive = (...args) => new Promise(resolve => { release = () => resolve(original(...args)); });
-  session.presenceSubscribers.get(OTHER)(sealedFrame({seq:1,sentAtMs:1,pointer:[1,2]}),1);
+  session.presenceSubscribers.get(OTHER)(sealedFrame({seq:1,sentAtMs:1,pointer: {strip: '1', at: [1, 2]}}),1);
   session.memberWatcher(OTHER, false);
   session.memberWatcher(OTHER, true);
   release();
@@ -436,6 +444,27 @@ function profileFakes(runtime) {
 const hostCertOf = (user, device) => ({user_public_key: Array(32).fill(user), device_public_key: Array(32).fill(device)});
 const textOf = bytes => (bytes === undefined ? undefined : new TextDecoder().decode(bytes));
 const person = () => ({kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)});
+
+test('a renewed device is a new key in a namespace of its own; what the old key kept is never opened for it', async () => {
+  const rows = new Map();
+  const namespaces = {getItem: key => rows.get(key) ?? null, setItem: (key, value) => rows.set(key, value)};
+  const profile = 'tilo-identity:ee@host.example:8443';
+  let destroyed = false;
+  const old = {slot: 1, created: false, destroy: async () => { destroyed = true; }};
+  const opened = [];
+  const open = async name => { opened.push(name); return {slot: 1, created: true}; };
+  const renewed = await renewDevice(old, profile, {open, namespaces, random: bytes => bytes.fill(0xab)});
+  assert.ok(destroyed, 'the old key is forgotten');
+  assert.deepEqual(opened, [profile]);
+  assert.equal(renewed.created, true);
+  assert.equal(profileDevice(profile, namespaces, 1), `${PROFILE_DEVICE}:${'ab'.repeat(16)}#1`);
+  assert.equal(profileDevice(profile, namespaces, 0), PROFILE_DEVICE, 'other slots stay where they were');
+  // Another tab took the freed slot first: the key opened instead is not
+  // new, and keeps its namespace.
+  const taken = await renewDevice({slot: 0, destroy: async () => {}}, profile, {open: async () => ({slot: 2, created: false}), namespaces});
+  assert.equal(taken.created, false);
+  assert.equal(profileDevice(profile, namespaces, 2), `${PROFILE_DEVICE}#2`);
+});
 
 test('a device the host set up again admitted keeps its state apart; what was kept for the previous host is never opened for it', async () => {
   const runtime = fakeRuntime();
@@ -626,7 +655,7 @@ test('with a profile the peer keeps its state in the profile storage and mounts 
   await again.dispose();
 });
 
-test('a presence subscription that ends while the member stays is retried', async () => {
+test('a presence subscription that ends while the member stays is retried', async t => {
   const runtime = fakeRuntime();
   const liveCarriers = fakeCarriers();
   const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
@@ -634,13 +663,17 @@ test('a presence subscription that ends while the member stays is retried', asyn
   const [session] = liveCarriers.connects;
   session.memberWatcher(OTHER, true);
   assert.equal(session.presenceEnds.length, 1);
+  // The retry backoff runs on the test's clock: past every backoff step, a
+  // retry that was scheduled has run, and one that was not never will.
+  t.mock.timers.enable({apis: ['setTimeout']});
   session.presenceEnds[0]();
-  await new Promise(resolve => setTimeout(resolve, 150));
+  t.mock.timers.tick(60_000);
   assert.equal(session.presenceEnds.length, 2, 'subscribed again');
   session.memberWatcher(OTHER, false);
   session.presenceEnds[1]();
-  await new Promise(resolve => setTimeout(resolve, 150));
+  t.mock.timers.tick(60_000);
   assert.equal(session.presenceEnds.length, 2, 'not after the member left');
+  t.mock.timers.reset();
   await peer.dispose();
 });
 
@@ -823,6 +856,53 @@ test('the live grant waits until the room admitted the device', async () => {
   await peer.dispose();
 });
 
+test("a person's presence colour is the runtime's for who they are, whatever their device key", async () => {
+  const runtime = fakeRuntime();
+  const peer = await connect(options(runtime, memoryStore()));
+  // The page computes no colour of its own: the runtime's for the user
+  // root, which a device key kept sealed (no public key here) cannot blank.
+  assert.equal(peer.participant.color, runtime.presenceColor('bb'.repeat(32)));
+  await peer.dispose();
+});
+
+test('leaving the page leaves the live plane and its host session at once, so others take it down; back online, the session retries now', async () => {
+  const page = new EventTarget();
+  globalThis.addEventListener = page.addEventListener.bind(page);
+  globalThis.removeEventListener = page.removeEventListener.bind(page);
+  const navigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  const beacons = [];
+  Object.defineProperty(globalThis, 'navigator', {configurable: true, value: {sendBeacon: (url, body) => { beacons.push([url, body]); return true; }}});
+  try {
+    const runtime = fakeRuntime();
+    const liveCarriers = fakeCarriers();
+    const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
+    await until(() => peer.live.state === 'live', 'the live layer');
+    let closed = false;
+    liveCarriers.connects[0].closed.then(() => { closed = true; });
+    page.dispatchEvent(Object.assign(new Event('pagehide'), {persisted: true}));
+    await tick();
+    assert.equal(peer.live.state, 'live', 'a page kept to come back to stays');
+    assert.deepEqual(beacons, [], 'and keeps its host session');
+    page.dispatchEvent(Object.assign(new Event('pagehide'), {persisted: false}));
+    await tick();
+    assert.equal(peer.live.state, 'closed');
+    assert.ok(closed, 'its session closed, withdrawing its announcement');
+    assert.deepEqual(beacons, [['https://host.example:8443/peer/v1/session/end', 'ce'.repeat(32)]],
+      'the host hears the page went, its session token the body');
+    // Back online, the session tries again now instead of after its backoff.
+    page.dispatchEvent(new Event('online'));
+    assert.equal(runtime.peer.retries, 1);
+    await peer.dispose();
+    page.dispatchEvent(new Event('online'));
+    assert.equal(runtime.peer.retries, 1, 'not once the page let the session go');
+  } finally {
+    delete globalThis.addEventListener;
+    delete globalThis.removeEventListener;
+    if (navigator) Object.defineProperty(globalThis, 'navigator', navigator);
+    else delete globalThis.navigator;
+  }
+});
+
 test('whenReady rejects when the host refuses the device', async () => {
   const runtime = fakeRuntime({phase: 'admitting'});
   const peer = await connect(options(runtime, memoryStore()));
@@ -908,9 +988,9 @@ test('mounts publish through their own view: the one acted in speaks, and an age
   const sent = anchor => until(() => selections().at(-1) === anchor, `the caret ${anchor}`);
   writer.options.live().publishPresence({selection: {anchor: 'w1', head: 'w1'}});
   await sent('w1');
-  // A hidden helper's caret never overwrites the person's.
-  helper.options.live().publishPresence({selection: {anchor: 'h1', head: 'h1'}});
-  await new Promise(resolve => setTimeout(resolve, 50));
+  // A hidden helper's caret never overwrites the person's: it never
+  // reaches the layer.
+  assert.equal(helper.options.live().publishPresence({selection: {anchor: 'h1', head: 'h1'}}), false);
   assert.equal(selections().at(-1), 'w1');
   assert.ok(!selections().includes('h1'));
   helperTarget.fire('pointerdown');
@@ -942,9 +1022,10 @@ test('an action through a mount speaks for the person only if it moved that moun
   await sent('w1');
   chat.options.live().publishPresence({selection: {anchor: 'c1', head: 'c1'}});
   // Posting leaves Chat's caret where it was: the person stays in the writer.
-  chat.onInvoke = () => chat.options.live().publishPresence({selection: {anchor: 'c1', head: 'c1'}});
+  let posted;
+  chat.onInvoke = () => { posted = chat.options.live().publishPresence({selection: {anchor: 'c1', head: 'c1'}}); };
   assert.deepEqual(chat.invokeAction('chat.channel:general', 'post', {value: 'hi'}), {state: 'completed'});
-  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(posted, false, 'Chat\'s unchanged caret never reaches the layer');
   assert.ok(!selections().includes('c1'));
   // Selecting a message moves it: Chat speaks now.
   chat.onInvoke = () => chat.options.live().publishPresence({selection: {anchor: 'c2', head: 'c2'}});
@@ -957,7 +1038,7 @@ test('the room\'s records this page holds, and waiting for one', async () => {
   const runtime = fakeRuntime();
   const peer = await connect(options(runtime, memoryStore()));
   assert.deepEqual(peer.records(), []);
-  const arrived = peer.whenRecord('so.tilo.word-processor', 'derived:default@tab:0000000000000000', {timeoutMs: 1000});
+  const arrived = peer.whenRecord('so.tilo.word-processor', 'derived:default@tab:0000000000000000', {timeoutMs: HANG_BOUND_MS});
   runtime.peer.records.push({app: 'so.tilo.word-processor', record: 'derived:default@tab:0000000000000000'});
   runtime.peer.emit();
   await arrived;
@@ -1136,9 +1217,9 @@ test('an old membership retry cannot replace a rejoined publishers presence subs
     const currentRetry = timers.at(-1);
     oldRetry();
     currentRetry();
-    session.presenceSubscribers.get(OTHER)(sealedFrame({seq: 1, sentAtMs: 1, pointer: [10, 20]}), 1);
+    session.presenceSubscribers.get(OTHER)(sealedFrame({seq: 1, sentAtMs: 1, pointer: {strip: '1', at: [10, 20]}}), 1);
     await settle();
-    assert.deepEqual(layer.remoteState(1).map(remote => remote.pointer), [[10, 20]], 'the current membership must retain a working subscription');
+    assert.deepEqual(layer.remoteState(1).map(remote => remote.pointer?.at), [[10, 20]], 'the current membership must retain a working subscription');
   } finally {
     layer.stop();
   }

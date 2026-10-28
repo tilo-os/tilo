@@ -283,7 +283,6 @@ mod tests {
 
     #[test]
     fn sync_status_persists_bounded_messages_last_success_and_concurrent_reports() {
-        // Phase `status_round_trips_and_messages_are_bounded_one_line`.
         {
             let root =
                 std::env::temp_dir().join(format!("tilo-account-status-{}", uuid::Uuid::new_v4()));
@@ -306,7 +305,6 @@ mod tests {
             std::fs::remove_dir_all(root).ok();
         }
 
-        // Phase `reporter_preserves_last_success_across_auth_failure`.
         {
             let root = std::env::temp_dir()
                 .join(format!("tilo-account-reporter-{}", uuid::Uuid::new_v4()));
@@ -329,7 +327,6 @@ mod tests {
             std::fs::remove_dir_all(root).ok();
         }
 
-        // Phase `reporters_serialize_cross_thread_updates`.
         {
             let root = std::env::temp_dir().join(format!(
                 "tilo-account-reporter-lock-{}",

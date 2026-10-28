@@ -235,13 +235,13 @@ fn a_window_s_first_frame_needs_none_of_the_pipelines_it_defers() {
     let started = crate::time::now();
     while deferring.deferred_pipelines().pending > 0 {
         assert!(
-            started.elapsed() < crate::HANG_BOUND,
+            started.elapsed() < tilo_test_env::hang_bound(),
             "the deferred pipelines never arrived"
         );
         std::thread::park_timeout(std::time::Duration::from_millis(5));
     }
     finished
-        .recv_timeout(crate::HANG_BOUND)
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("the builder reports it built every deferred pipeline");
     assert_same(
         "after the build",
@@ -304,7 +304,7 @@ fn a_build_started_at_once_serves_the_first_frame() {
         "with the build running, a frame waits for it and builds nothing itself"
     );
     finished
-        .recv_timeout(crate::HANG_BOUND)
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("the build reports it built every deferred pipeline");
     assert_eq!(early.deferred_pipelines().pending, 0);
     assert_same(
@@ -365,7 +365,7 @@ fn the_web_renderer_awaits_only_the_first_frame_s_pipelines() {
     let started = crate::time::now();
     while web.deferred_pipelines().pending > 0 {
         assert!(
-            started.elapsed() < crate::HANG_BOUND,
+            started.elapsed() < tilo_test_env::hang_bound(),
             "the deferred pipelines never arrived"
         );
         std::thread::park_timeout(std::time::Duration::from_millis(5));
@@ -380,4 +380,103 @@ fn the_web_renderer_awaits_only_the_first_frame_s_pipelines() {
         after_clips.built_inline,
         "compiled asynchronously, nothing is created inline again"
     );
+}
+
+/// The web's deferred pipelines compile one at a time, each started once the
+/// one before it is in: a browser does not cancel a closed page's compiles,
+/// so all of them at once kept other pages from drawing. A frame that
+/// dispatches one still queued does not wait for the queue: it creates that
+/// one at once.
+#[test]
+fn the_web_renderer_compiles_deferred_pipelines_one_at_a_time_but_a_frame_takes_its_own_at_once() {
+    let gpu = crate::offscreen::shared_gpu().expect("shared GPU context");
+    let mut eager = Renderer::new(&gpu.device, options()).unwrap();
+    let clips = many_clips_scene();
+    let expected_clips = draw(&gpu, &mut eager, &clips);
+    let mut web = pollster::block_on(Renderer::new_async_deferring(
+        &gpu.device,
+        options(),
+        PipelineDeferral::Unused,
+    ))
+    .unwrap();
+    let _ = draw(&gpu, &mut web, &window_scene());
+    let deferred = web.deferred_pipelines().pending;
+    assert!(deferred > 2, "{deferred}");
+
+    web.start_deferred_pipelines_async(&gpu.device);
+    // Natively a compile is in as soon as it starts; still, each poll
+    // installs only the one compiling and starts the next.
+    assert_eq!(web.deferred_pipelines().pending, deferred - 1);
+    assert_eq!(web.deferred_pipelines().pending, deferred - 2);
+
+    assert_same(
+        "many clips with compiles queued",
+        &draw(&gpu, &mut web, &clips),
+        &expected_clips,
+    );
+    let after_clips = web.deferred_pipelines();
+    assert!(
+        after_clips.built_inline >= 1,
+        "the clip reduce was created for the frame, not left behind the queue: {after_clips:?}"
+    );
+
+    let mut last = after_clips.pending;
+    let started = crate::time::now();
+    while last > 0 {
+        assert!(
+            started.elapsed() < tilo_test_env::hang_bound(),
+            "the deferred pipelines never arrived"
+        );
+        let now = web.deferred_pipelines().pending;
+        assert!(last - now <= 1, "one at a time: {last} to {now}");
+        last = now;
+    }
+    assert_same(
+        "after the compiles",
+        &draw(&gpu, &mut web, &clips),
+        &expected_clips,
+    );
+}
+
+#[test]
+fn a_window_s_damage_only_frame_builds_no_pipeline_once_the_deferred_build_is_done() {
+    let gpu = crate::offscreen::shared_gpu().expect("shared GPU context");
+    let mut window =
+        Renderer::new_deferring(&gpu.device, options(), PipelineDeferral::Unused).unwrap();
+    assert!(
+        window.sparse_fine_supported(),
+        "the adapter draws damage-only frames"
+    );
+    let scene = window_scene();
+    let _ = draw(&gpu, &mut window, &scene);
+    let (built, finished) = std::sync::mpsc::channel();
+    window.start_deferred_pipelines(&gpu.device, move || {
+        let _ = built.send(());
+    });
+    finished
+        .recv_timeout(tilo_test_env::hang_bound())
+        .expect("the build reports it built every deferred pipeline");
+    let target = target(&gpu.device);
+    let damage = window
+        .render_to_texture_with_damage(
+            &gpu.device,
+            &gpu.queue,
+            &scene,
+            &target.view,
+            &RenderParams {
+                base_color: Color::from_rgb8(10, 10, 12),
+                width: WIDTH,
+                height: HEIGHT,
+                antialiasing_method: AaConfig::Area,
+            },
+            &[vello::FineDamageRect {
+                x: 16,
+                y: 40,
+                width: 120,
+                height: 24,
+            }],
+        )
+        .expect("the damage renders");
+    assert!(damage.is_some(), "the frame took the damage-only path");
+    assert_eq!(window.deferred_pipelines().built_inline, 0);
 }

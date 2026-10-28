@@ -185,12 +185,26 @@ impl Session {
             .recv::<ServiceMessage>()
             .map_err(|error| format!("render service: {error}"))?;
         let ServiceMessage::Welcome {
-            limits, font_roots, ..
+            limits,
+            font_roots,
+            renderer,
+            ..
         } = welcome.message
         else {
             return Err("the render service did not welcome this app".to_owned());
         };
         tilo_startup_metrics::mark("remote-render-connect-done");
+        // The window's adapter line, as a window drawing on its own device
+        // logs it (`gpu::report_adapter`): GPU health and the startup gate
+        // read which device drew this window, here the service's.
+        crate::diag!(
+            "{} window adapter {:?} type={} backend={} driver={:?} via=render-service",
+            crate::gpu::ADAPTER_LINE_PREFIX,
+            renderer.name,
+            renderer.device_type,
+            renderer.backend,
+            renderer.driver
+        );
         Ok(Self {
             channel: Arc::new(channel),
             ring,
@@ -365,6 +379,8 @@ fn take_session() -> Result<Session, String> {
 #[derive(Default)]
 struct Sink {
     channel: Mutex<(u64, Option<Arc<Channel>>)>,
+    /// The window is closing: its channel is shut and no new one is opened.
+    stopped: AtomicBool,
 }
 
 impl Sink {
@@ -375,7 +391,28 @@ impl Sink {
     fn replace(&self, channel: Arc<Channel>) {
         let mut current = self.channel.lock_recover();
         current.0 = current.0.wrapping_add(1);
+        // A channel opened while the window was being stopped is shut at
+        // once, under the lock `stop` takes, so no reconnect outlives it.
+        if self.stopped.load(Ordering::Acquire) {
+            let _ = channel.shut_down();
+        }
         current.1 = Some(channel);
+    }
+
+    /// End the worker's wait on the service. A frame the service holds back,
+    /// waiting for a buffer the compositor no longer releases because the
+    /// window is closing, would otherwise keep the worker, and the app's exit
+    /// joining it, waiting for ever.
+    fn stop(&self) {
+        let current = self.channel.lock_recover();
+        self.stopped.store(true, Ordering::Release);
+        if let Some(channel) = &current.1 {
+            let _ = channel.shut_down();
+        }
+    }
+
+    fn stopped(&self) -> bool {
+        self.stopped.load(Ordering::Acquire)
     }
 
     /// Send `message` on the channel of `epoch`, if it is still the current one.
@@ -437,6 +474,7 @@ pub(crate) fn spawn(
     // in-process renderer (`create_window_render`); the launch connected
     // while the app constructed, so this rarely waits.
     let session = worker.open()?;
+    let sink = worker.sink.clone();
     let join = tilo_rt::spawn_thread("ui-render-remote", move || {
         tilo_startup_metrics::mark("render-worker-start");
         tilo_rt::mark_ui_thread();
@@ -450,7 +488,12 @@ pub(crate) fn spawn(
         frame_complete,
         retry: super::retry::RenderRetryState::default(),
         full_repaint,
+        // The render service opens its device as this process would.
+        texture_limit: Arc::new(std::sync::atomic::AtomicU32::new(
+            crate::gpu::requested_texture_limit(),
+        )),
         join: Some(join),
+        interrupt: Some(Box::new(move || sink.stop())),
     })
 }
 
@@ -529,6 +572,10 @@ impl Worker {
                         tracing::error!(%reason, "frame not sent to the render service");
                         FrameOutcome::Skipped
                     }
+                    Err(Lost::Disconnected(_)) if self.sink.stopped() => {
+                        session = None;
+                        FrameOutcome::Skipped
+                    }
                     Err(Lost::Disconnected(reason)) => {
                         tracing::warn!(%reason, "render service gone; reconnecting");
                         session = self.open().ok();
@@ -536,6 +583,8 @@ impl Worker {
                         FrameOutcome::Skipped
                     }
                 }
+            } else if self.sink.stopped() {
+                FrameOutcome::Skipped
             } else {
                 session = self.open().ok();
                 self.repaint();
@@ -793,6 +842,12 @@ impl Worker {
             }
             Refusal::Invalid(reason) | Refusal::OverLimit(reason) => {
                 tracing::error!(%reason, "the render service refused a frame");
+                // The refused frame's damage never reached the service's
+                // buffer, so a later frame that repaints only its own damage
+                // would leave this one's regions stale on screen. The next
+                // frame is whole. It is not woken for: the same scene would
+                // be refused again.
+                self.full_repaint.store(true, Ordering::SeqCst);
                 FrameOutcome::Skipped
             }
         }
@@ -862,4 +917,39 @@ fn encode(session: &mut Session, job: &FrameJob<'_>, sequence: u64) -> Result<Ve
     }
     writer.finish()?;
     Ok(record)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The service end stays open throughout: only stopping ends the wait.
+    fn channel() -> (Arc<Channel>, Channel) {
+        let (app, service) = Channel::pair().expect("a channel pair");
+        (Arc::new(app), service)
+    }
+
+    #[test]
+    fn stopping_ends_a_wait_on_a_service_that_never_answers() {
+        let (app, _service) = channel();
+        let sink = Arc::new(Sink::default());
+        sink.replace(app.clone());
+        let waiting = std::thread::spawn(move || app.recv::<ServiceMessage>());
+        sink.stop();
+        let received = waiting.join().expect("the waiting thread");
+        assert!(matches!(received, Err(ChannelError::Closed)));
+        assert!(sink.stopped());
+    }
+
+    #[test]
+    fn a_channel_opened_after_stopping_is_shut_at_once() {
+        let sink = Sink::default();
+        sink.stop();
+        let (app, _service) = channel();
+        sink.replace(app.clone());
+        assert!(matches!(
+            app.recv::<ServiceMessage>(),
+            Err(ChannelError::Closed)
+        ));
+    }
 }

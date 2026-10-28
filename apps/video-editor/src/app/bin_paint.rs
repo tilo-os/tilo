@@ -85,12 +85,13 @@ impl VideoEditorApp {
         );
 
         let row_inset = S2 * ctx.scale;
-        let thumb_height = (rect.height() - 2.0 * row_inset).clamp(0.0, 64.0);
+        let thumb_width = 64.0 * ctx.scale;
+        let thumb_height = (rect.height() - 2.0 * row_inset).clamp(0.0, thumb_width);
         let thumb_y0 = rect.center().y - thumb_height / 2.0;
         let thumb = Rect::new(
             rect.x0 + row_inset,
             thumb_y0,
-            rect.x0 + row_inset + 64.0,
+            rect.x0 + row_inset + thumb_width,
             thumb_y0 + thumb_height,
         );
         let radius = f64::from(ctx.theme.tokens.radii.detail);
@@ -104,7 +105,15 @@ impl VideoEditorApp {
             radius,
             colors.media.letterbox,
         );
-        if media.kind.is_visual() {
+        if media.kind.is_generated() {
+            let size = f64::from(ctx.theme.tokens.metrics.icon_lg);
+            Icon::Type.draw(
+                ctx.scene,
+                ctx.transform,
+                Rect::from_center_size(thumb.center(), (size, size)),
+                colors.media.ink,
+            );
+        } else if media.kind.is_visual() {
             if let Some(thumbnail) = self.thumbnails.get(media_id) {
                 blit_thumb(ctx.scene, ctx.transform, thumbnail, thumb, radius);
             }
@@ -136,7 +145,9 @@ impl VideoEditorApp {
             }
         }
 
-        let pending = if media.kind.is_visual() {
+        let pending = if media.kind.is_generated() {
+            false
+        } else if media.kind.is_visual() {
             self.thumbnails.get(media_id).is_none()
         } else {
             matches!(
@@ -340,48 +351,6 @@ impl VideoEditorApp {
         );
         self.draw_scrollbar(scene, tf, theme, ScrollPane::Bin, r);
         scene.pop_layer();
-        // Last import outcome, pinned to the foot of the pane, through the
-        // toolkit's banner: a refusal stays until the next import replaces
-        // it, so it is never only findable by scrolling.
-        if let Some(notice) = &self.import_notice {
-            let strip = self.import_notice_rect(r, tr, theme);
-            let kind = notice.level.banner_kind();
-            // One line: the banner's own leading icon and insets take the
-            // rest of the strip.
-            let room = strip.width() - 2.0 * S4 - f64::from(theme.tokens.metrics.icon_md) - S2;
-            let shown = elide_at(
-                &notice.text,
-                room.max(0.0) as f32,
-                &theme.text(TextRole::Body).strong(),
-                tr,
-            );
-            ui::widget::Banner::paint(
-                &mut PaintCtx::new(scene, tf, tr, theme),
-                strip,
-                &ui::widget::BannerContent::new(kind, &shown),
-                Point::new(f64::MIN, f64::MIN),
-            );
-        }
-    }
-
-    /// Where the import outcome's banner sits: the foot of the bin, one
-    /// banner row tall, inset like the rows above it.
-    pub(super) fn import_notice_rect(
-        &self,
-        r: &Regions,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) -> Rect {
-        let title = theme.text(TextRole::Body).strong();
-        let h = (line_height(tr, &title) + S3 * 2.0)
-            .max(f64::from(theme.tokens.metrics.min_pointer_target));
-        let inset = S2 * self.bin_ui_scale();
-        Rect::new(
-            r.bin.x0 + inset,
-            r.bin.y1 - inset - h,
-            r.bin.x1 - inset,
-            r.bin.y1 - inset,
-        )
     }
 
     /// Draw feedback for a live bin→timeline drag: highlight the drop lane, mark

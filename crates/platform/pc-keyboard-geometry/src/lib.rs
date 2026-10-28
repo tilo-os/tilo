@@ -21,7 +21,6 @@ pub const SOURCE: &str = include_str!("../data/pc-keyboard-geometry.json");
 pub struct Geometry {
     // The published drawing's `width` and `height` are not read: a drawing
     // is cut to its keys.
-    /// Every key of the model.
     pub keys: Vec<Key>,
 }
 
@@ -49,7 +48,6 @@ pub fn models() -> Result<&'static BTreeMap<String, Geometry>, &'static str> {
 mod tests {
     use super::*;
 
-    /// Every model reads, with the keys its name promises.
     #[test]
     fn every_model_reads_with_its_keys() {
         let models = models().unwrap();

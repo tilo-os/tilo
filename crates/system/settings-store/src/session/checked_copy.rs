@@ -71,7 +71,7 @@ mod tests {
 
     #[test]
     fn missing_is_empty_but_malformed_input_is_not() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let root = dir.path().canonicalize().unwrap();
         let path = root.join("settings.json");
         let copy = CheckedCopy::open(&path).unwrap();

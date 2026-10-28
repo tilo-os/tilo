@@ -35,6 +35,10 @@ pub(super) struct Snapshot {
     plan: staging::plan::Plan,
     profile: imager_backend::imager_model::InstallProfile,
     migration: Option<MigrationIntent>,
+    /// Sensitive work finishes on the destination after its first-boot login
+    /// password exists; no ciphertext or preparation password crosses the
+    /// installation.
+    deferred: bool,
 }
 
 impl InstallerPreview {
@@ -187,8 +191,9 @@ impl InstallerPreview {
         self.recovery
             .evidence()
             .map_err(|_| "installer-recovery-copy-required")?;
+        let capture_files = self.selected_files()?;
         let wants_migration = self.journey.migrate == Some(true)
-            && (self.journey.categories[0] || self.selected_applications());
+            && (capture_files || self.selected_applications() || self.selected_source_anchor());
         let migration = if wants_migration {
             Some(
                 self.migration_selection
@@ -198,10 +203,7 @@ impl InstallerPreview {
         } else {
             None
         };
-        if self.journey.migrate == Some(true)
-            && self.journey.categories[0]
-            && self.selected_applications()
-        {
+        if self.journey.migrate == Some(true) && capture_files && self.selected_applications() {
             migration
                 .as_ref()
                 .ok_or("installer-preview-import-unavailable")?
@@ -244,6 +246,11 @@ impl InstallerPreview {
         {
             return Err("installer-preview-wrong-page");
         }
+        if self.sensitive_handoff_deferred() {
+            self.direct.belongings_pending = false;
+            self.direct.belongings_continue = false;
+            return Ok(());
+        }
         let identity = self
             .personal
             .prepared_handle()
@@ -268,6 +275,10 @@ impl InstallerPreview {
                     && self.belongings.browser.available())
                 .then(|| self.belongings.browser.selected())
                 .filter(|selected| !selected.profiles().is_empty()),
+                mail: self.selected_mail()?,
+
+                other_device: None,
+                tpm_target: None,
             },
             zeroize::Zeroizing::new(self.journey.password.clone()),
             Some(install_profile),
@@ -285,6 +296,86 @@ impl InstallerPreview {
         let profile = public
             .to_draft()
             .map_err(|_| "installer-preview-install-profile-invalid")?;
+        if self.sensitive_handoff_deferred() {
+            let tpm_target = self.tpm_target()?;
+            // The package keeps identity, accounts and browser. Mail, Home and
+            // applications stay in the source journal and are streamed after
+            // first boot, so a mailbox larger than the 32 MiB package bound
+            // never has to become installation ciphertext.
+            let migration = self.deferred_migration(tpm_target.is_some())?;
+            let snapshot = Snapshot {
+                facts: self
+                    .storage
+                    .facts
+                    .clone()
+                    .ok_or("installer-preview-storage-unavailable")?,
+                plan: self
+                    .storage
+                    .plan
+                    .as_ref()
+                    .and_then(|plan| plan.as_ref().ok())
+                    .cloned()
+                    .ok_or("installer-preview-storage-unavailable")?,
+                profile,
+                migration: migration.clone(),
+                deferred: true,
+            };
+            if let Some(prepared) = self.direct.prepared_belongings.clone() {
+                self.direct.pending = Some(snapshot);
+                return self.finish_direct(Some(prepared));
+            }
+            if let Some(target) = tpm_target {
+                // The package carries the approved identity and selected
+                // tokens under a machine-generated secret. Mail and retained
+                // files stay in the source journal, so a large mailbox never
+                // becomes installation ciphertext or exceeds the package bound.
+                let identity = self
+                    .personal
+                    .prepared_handle()
+                    .ok_or("installer-preview-identity-not-prepared")?;
+                let accounts = if self.journey.migrate == Some(true)
+                    && self.journey.categories[2]
+                    && self.accounts.has_prepared_connections()
+                {
+                    Some(
+                        self.accounts
+                            .prepared_handle()
+                            .ok_or("installer-preview-account-handoff-unavailable")?,
+                    )
+                } else {
+                    None
+                };
+                let secret = imager_backend::setup::prepared_tpm::generate_secret()
+                    .map_err(|_| "installer-preview-tpm-handoff-unavailable")?;
+                self.media_preparation.start_with_selections(
+                    identity,
+                    accounts,
+                    super::prepared_media::MediaSelections {
+                        sessions: self.belongings.sessions.selected_for_accounts(
+                            self.journey.migrate == Some(true) && self.journey.categories[2],
+                        ),
+                        home_applications: false,
+                        home: None,
+                        retained: migration,
+                        planned_direct: None,
+                        applications: None,
+                        browser: (self.journey.migrate == Some(true)
+                            && self.belongings.browser.available())
+                        .then(|| self.belongings.browser.selected())
+                        .filter(|selected| !selected.profiles().is_empty()),
+                        mail: None,
+                        other_device: None,
+                        tpm_target: Some(target),
+                    },
+                    secret,
+                    Some(public),
+                )?;
+                self.direct.pending = Some(snapshot);
+                return Ok(());
+            }
+            self.direct.pending = Some(snapshot);
+            return self.finish_direct(None);
+        }
         let identity = self
             .personal
             .prepared_handle()
@@ -305,13 +396,14 @@ impl InstallerPreview {
                 .ok_or("installer-preview-storage-unavailable")?,
             profile,
             migration,
+            deferred: false,
         };
         if snapshot.plan.shrink.is_none()
             && let Some(prepared) = self.direct.prepared_belongings.clone()
             && prepared.matches_reviewed_belongings(&identity, &public, snapshot.migration.as_ref())
         {
             self.direct.pending = Some(snapshot);
-            return self.finish_direct(prepared);
+            return self.finish_direct(Some(prepared));
         }
         self.media_preparation.start_with_selections(
             identity,
@@ -332,6 +424,10 @@ impl InstallerPreview {
                     && self.belongings.browser.available())
                 .then(|| self.belongings.browser.selected())
                 .filter(|selected| !selected.profiles().is_empty()),
+                mail: self.selected_mail()?,
+
+                other_device: None,
+                tpm_target: None,
             },
             zeroize::Zeroizing::new(self.journey.password.clone()),
             Some(public),
@@ -340,24 +436,143 @@ impl InstallerPreview {
         Ok(())
     }
 
+    /// Migration consent for retained original files that survives installation
+    /// without carrying identity, account or file ciphertext. The selected
+    /// mail, browser and Home decisions stay in a private journal inside the
+    /// source Home; the plan carries only its opaque operation and digest.
+    ///
+    /// Writing that journal needs the retained source's ownership and mounts,
+    /// which only the Linux-hosted installed system has; the backend owns that
+    /// decision and refuses the preparation elsewhere.
+    fn deferred_migration(
+        &self,
+        carried_by_package: bool,
+    ) -> Result<Option<MigrationIntent>, &'static str> {
+        if self.journey.migrate != Some(true) {
+            return Ok(None);
+        }
+        if !self.selected_files()?
+            && !self.selected_applications()
+            && !self.selected_source_anchor()
+        {
+            // A complete source with nothing selected has no Home or account
+            // journal to anchor. It must not capture an empty Home merely
+            // because the category defaulted on.
+            return Ok(None);
+        }
+        if !self.capabilities.prepared_installation {
+            return Err("installer-preview-deferred-handoff-unavailable");
+        }
+        let intent = self
+            .migration_selection
+            .reviewed_intent()
+            .ok_or("installer-preview-import-unavailable")?;
+        let source_home = self
+            .belongings
+            .home
+            .as_deref()
+            .ok_or("installer-preview-home-unavailable")?;
+        let exclusions = if self.selected_files()? {
+            self.migration_exclusions()?
+        } else {
+            Vec::new()
+        };
+        let exclusions = exclusions
+            .iter()
+            .map(|path| imager_backend::setup::migration_store::NativePath::encode(path))
+            .collect::<Vec<_>>();
+        let mail = self
+            .selected_mail()?
+            .map(|selection| selection.profiles)
+            .unwrap_or_default();
+        // Browser profiles and selected online accounts are already inside
+        // the TPM-protected package. Keeping them out of the journal prevents
+        // a second bookmarks/history import or a pending GOA row replacing the
+        // authentication the package carried.
+        let browser = if carried_by_package {
+            super::browser::SelectedSources::default()
+        } else {
+            self.belongings.browser.selected()
+        };
+        let account_sources = if carried_by_package || !self.journey.categories[2] {
+            Vec::new()
+        } else {
+            self.accounts
+                .selected_source_accounts(&self.belongings.accounts)
+        };
+        let plan = intent.source_plan();
+        let prepared = imager_backend::setup::deferred_handoff::prepare(
+            &imager_backend::setup::deferred_handoff::Prepare {
+                source_home,
+                plan: &plan,
+                exclusions: &exclusions,
+                mail: &mail,
+                browser: &browser,
+                applications: self.selected_applications(),
+                accounts: plan.categories.accounts,
+                account_sources: &account_sources,
+                accounts_in_package: carried_by_package && plan.categories.accounts,
+                browser_in_package: carried_by_package,
+            },
+        )
+        .map_err(|_| "installer-preview-deferred-handoff-unavailable")?;
+        intent
+            .attach_deferred_handoff(prepared.binding)
+            .map(Some)
+            .map_err(|_| "installer-preview-deferred-handoff-unavailable")
+    }
+
+    fn tpm_target(
+        &self,
+    ) -> Result<Option<imager_backend::setup::prepared_tpm::TargetAcquisition>, &'static str> {
+        // The live medium carries its own signed target bundle. A preparation
+        // host is not that image, so it uses the small target policy bundle
+        // published by the release catalog. The backend reviews either against
+        // the release authority pinned into this binary, never a
+        // caller-selected key.
+        let policy = crate::host::architecture()
+            .ok()
+            .flatten()
+            .and_then(|architecture| {
+                crate::release::bundled_target_policy_for_arch(architecture)
+                    .ok()
+                    .flatten()
+            });
+        imager_backend::setup::prepared_tpm::target_for_preparation(
+            &imager_backend::setup::prepared_tpm::AcquireRequest {
+                policy: policy.as_ref(),
+                cancel: &std::sync::atomic::AtomicBool::new(false),
+            },
+        )
+        .map_err(|_| "installer-preview-tpm-handoff-unavailable")
+    }
+
     pub(super) fn finish_direct(
         &mut self,
-        prepared: Arc<super::prepared_media::PreparedMedia>,
+        prepared: Option<Arc<super::prepared_media::PreparedMedia>>,
     ) -> Result<(), &'static str> {
         let mut snapshot = self
             .direct
             .pending
             .take()
             .ok_or("installer-preview-storage-unavailable")?;
-        prepared
-            .bind_recovery(
-                self.recovery
-                    .evidence()
-                    .map_err(|_| "installer-recovery-copy-required")?,
-                &snapshot.plan,
-            )
-            .map_err(|_| "installer-recovery-write-guard")?;
-        snapshot.profile.prepared_setup = Some(prepared.expectation().clone());
+        if let Some(prepared) = &prepared {
+            prepared
+                .bind_recovery(
+                    self.recovery
+                        .evidence()
+                        .map_err(|_| "installer-recovery-copy-required")?,
+                    &snapshot.plan,
+                )
+                .map_err(|_| "installer-recovery-write-guard")?;
+            snapshot.profile.prepared_setup = Some(prepared.expectation().clone());
+        } else {
+            // Deferred setups still require the independent recovery copy
+            // review before the privileged write can begin.
+            self.recovery
+                .evidence()
+                .map_err(|_| "installer-recovery-copy-required")?;
+        }
         let child =
             crate::setup::view::SetupApp::from_guided_review(crate::setup::view::ReviewedFullOs {
                 facts: snapshot.facts,
@@ -365,6 +580,7 @@ impl InstallerPreview {
                 profile: snapshot.profile,
                 migration: snapshot.migration,
                 prepared,
+                deferred: snapshot.deferred,
             })
             .map_err(|_| "installer-preview-direct-review-unavailable")?;
         let navigation = child.guided_navigation_guard();
@@ -494,7 +710,6 @@ mod tests {
             Err("installer-preview-storage-unavailable")
         );
         assert!(!preview.direct.active);
-        // The review row is an actual recovery route, with Save returning here.
         preview.journey.edit("storage").unwrap();
         assert_eq!(preview.journey.page, Page::Storage);
         assert!(preview.journey.saving_edit());

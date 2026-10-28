@@ -524,7 +524,6 @@ fn concurrent_add_and_remove_serialize_and_every_member_agrees_on_keys() {
     assert!(open(&mut carol, &host.ops[1]).is_err());
 }
 
-/// The keyring survives restart for every member.
 #[test]
 fn keyring_survives_restart_for_every_member() {
     let (channel, artifact, host, alice, bob, document) = populated_channel(40);

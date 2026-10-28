@@ -1,7 +1,7 @@
 //! The canonical desktop model shared by every host.
 //!
 //! `Workspace → Strip → WindowGroup → Tab`, plus the collaborators, grants,
-//! sandbox and tasks a workspace carries. Everything here is plain data
+//! sandbox and receipts a workspace carries. Everything here is plain data
 //! and pure functions over it: no windowing, rendering, transport, async
 //! runtime or host filesystem. Hosts own id minting (see [`IdMinter`]),
 //! persistence and admission of peer changes.
@@ -25,12 +25,11 @@ pub mod layout;
 pub mod ownership;
 pub mod partition;
 pub mod projection;
-pub mod records;
+pub mod receipt;
 pub mod serde_ids;
 pub mod service_member;
 pub mod shared_record;
 pub mod shared_surfaces;
-pub mod task;
 pub mod topology;
 pub mod tree;
 mod view;
@@ -47,17 +46,8 @@ pub use ids::{
 };
 pub use layout::{MissingApp, Strip, Tab, TileContent, WindowGroup};
 pub use partition::{Display, OutputPartition};
+pub use receipt::WorkspaceEffectReceipt;
 pub use shared_surfaces::SharedSurfaces;
-pub use task::{
-    MAX_WORKSPACE_TASK_DIRECTION_BYTES, MAX_WORKSPACE_TASK_INSTRUCTION_BYTES,
-    MAX_WORKSPACE_TASK_SUMMARY_BYTES, TASK_KIND, WorkspaceAgentRequest, WorkspaceEffectReceipt,
-    WorkspaceTask, WorkspaceTaskActiveRun, WorkspaceTaskApproval, WorkspaceTaskAuditEvent,
-    WorkspaceTaskConfirmation, WorkspaceTaskConfirmationAnswer, WorkspaceTaskConfirmationState,
-    WorkspaceTaskControl, WorkspaceTaskDirection, WorkspaceTaskDirectionApplied,
-    WorkspaceTaskExecution, WorkspaceTaskExecutionAuthority, WorkspaceTaskExecutionPhase,
-    WorkspaceTaskMutationReceipt, WorkspaceTaskMutationResult, WorkspaceTaskResource,
-    WorkspaceTaskRoute, WorkspaceTaskStatus,
-};
 pub use topology::{DropTarget, GroupShape, RemovedTab, TabMove};
 pub use tree::{DesktopTree, STATE_SCHEMA_VERSION};
 pub use width::WindowWidth;
@@ -65,5 +55,5 @@ pub use workspace::{
     APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID, GRANT_ACTION_ID,
     PRESET_ASSIGN_ACTION_ID, PRESET_SAVE_ACTION_ID, PresetMutationError, REVOKE_ACTION_ID, UserId,
     WORKSPACE_GOVERNANCE_APP_ID, Workspace, WorkspaceDefaultError, context_at, governance_of,
-    governance_resource_id, preset_assign_node, role_from_id, role_id, session_id, task_bound,
+    governance_resource_id, preset_assign_node, role_from_id, role_id, session_id,
 };

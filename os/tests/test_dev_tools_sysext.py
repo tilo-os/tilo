@@ -15,7 +15,7 @@ CONTAINERFILE = (ROOT / "os/Containerfile.dev").read_text(encoding="utf-8")
 SCRIPT_PATH = ROOT / "os/scripts/install-dev-toolchain.sh"
 SCRIPT = SCRIPT_PATH.read_text(encoding="utf-8")
 LAYERS = (ROOT / "crates/dev/tilo-vmd/src/layers.rs").read_text(encoding="utf-8")
-CLIENTS = "chromium gnome-text-editor featherpad qt6-qtwayland alacritty glx-utils"
+CLIENTS = "chromium gnome-text-editor featherpad qt6-qtwayland alacritty glx-utils xterm"
 
 
 def stage(name: str) -> str:

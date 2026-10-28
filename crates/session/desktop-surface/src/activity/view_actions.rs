@@ -31,10 +31,6 @@ impl WorkspaceViewRequest {
         }
     }
     /// Check that the requested workspace is present in `tree`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when the workspace is unavailable.
     pub fn validate(&self, tree: &DesktopTree) -> Result<(), String> {
         tree.workspaces
             .iter()
@@ -78,7 +74,9 @@ pub fn workspace_view_descriptors(
         .workspaces
         .iter()
         .map(|workspace| WorkspaceViewDescriptor {
-            id: format!("workspace.select.{}", workspace.id.0),
+            // Named by the room the workspace is, the same on every device:
+            // the local number is only a handle.
+            id: format!("workspace.select.{}", workspace.room()),
             label: crate::i18n::t_args(
                 "desktop-view-switch-workspace",
                 &[("workspace", workspace.name.as_str().into())],
@@ -94,11 +92,6 @@ pub fn workspace_view_descriptors(
                 "room.activity.open",
                 crate::i18n::t("desktop-view-review-activity"),
                 ActivityView::CatchUp,
-            ),
-            (
-                "room.activity.tasks",
-                crate::i18n::t("activity-title-tasks"),
-                ActivityView::Tasks,
             ),
             (
                 "room.activity.explore",

@@ -76,7 +76,7 @@ class BrokerTests(unittest.TestCase):
                         raise AssertionError('seekable input was staged before token acquisition')
             runner(argv, output, 65536, source=SeekableSource(data), timeout=30)
             self.assertEqual({(x[x.index('--region') + 1], x[x.index('--cluster-name') + 1]) for x in token_commands},
-                             {('us-west-2', 'podesta-burst-usw2')})
+                             {('us-west-2', 'burst-us')})
             self.assertEqual(events[0][1], data)
             self.assertEqual(output.getvalue(), b'public reply')
             with patch.object(b, 'MAX_STREAM', 10), self.assertRaises(ValueError):
@@ -131,8 +131,8 @@ class BrokerTests(unittest.TestCase):
         def stream(*args,**kwargs): captured.update(kwargs);return WS()
         def api(target):
             pod=types.SimpleNamespace(metadata=types.SimpleNamespace(uid='uid', labels={
-                    'app.kubernetes.io/managed-by':'sandbox-broker', 'podesta.ai/workload':'forgejo-ci',
-                    'podesta.ai/cluster':target}), status=types.SimpleNamespace(phase='Running'),
+                    'app.kubernetes.io/managed-by':'sandbox-broker', 'sandbox.example/workload':'forgejo-ci',
+                    'sandbox.example/cluster':target}), status=types.SimpleNamespace(phase='Running'),
                     spec=types.SimpleNamespace(containers=[types.SimpleNamespace(name='runner'),types.SimpleNamespace(name='dind')]))
             return types.SimpleNamespace(read_namespaced_pod=lambda *args,**kw:pod,
                                          connect_get_namespaced_pod_exec=None)

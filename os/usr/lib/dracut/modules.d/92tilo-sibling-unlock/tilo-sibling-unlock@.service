@@ -11,6 +11,6 @@ Type=simple
 # released its half; the prompt stays up meanwhile for a typed passphrase.
 # Stopping it (tilo-root-discover does once the volume is open) wipes the
 # material, the network profiles and the links.
-ExecStart=/usr/bin/tilo-sibling-unlock unlock %f
+ExecStart=/usr/libexec/tilo/tilo-sibling-unlock unlock %f
 KillMode=mixed
 TimeoutStopSec=15

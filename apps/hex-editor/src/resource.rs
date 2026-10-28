@@ -153,6 +153,8 @@ const SAMPLE_NAME: &str = "sample.png";
 impl ResourceApp for HexEditorShell {
     type Resource = HexEditor;
     const ID: &'static str = "so.tilo.hex-editor";
+    // Each window shows the document it opened, never another window's.
+    const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Hex Editor";
     const ICON: Option<&'static str> = Some("hex-editor");
     const OPENS: &'static [&'static str] = &[ui::application::ANY_MEDIA_TYPE];
@@ -446,5 +448,28 @@ mod tests {
             "the change is read in part"
         );
         assert_eq!(reader.state().bytes, state(&replica).bytes);
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::HexEditorShell::scenarios() {
+            let mut app = TestApp::<super::HexEditorShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
     }
 }

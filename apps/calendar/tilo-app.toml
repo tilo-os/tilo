@@ -25,10 +25,10 @@ x86_64 = "v3"
 aarch64 = "aarch64"
 
 [capabilities]
-optional = ["files.open", "files.save", "files.paths", "app-files", "secrets", "network.http", "network.fetch-proxy", "notifications"]
+optional = ["files.open", "files.save", "files.paths", "app-files", "secrets", "network.http", "network.fetch-proxy", "notifications", "open-uri"]
 
 [resources]
-kinds = ["calendar.calendar", "tilo.accounts", "tilo.rich-text"]
+kinds = ["calendar.calendar", "tilo.accounts", "tilo.contacts.identities", "tilo.rich-text"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -55,10 +55,11 @@ landlock   = "strict"
 mode = "host"
 
 [sandbox.portals]
+open-uri = "via-host"
 
 [sandbox.services]
-collab = "optional@2"
-tilo-fs = "optional@2"
+collab = "optional@10"
+tilo-fs = "optional@10"
 
 [entrypoint]
 bin             = "bin/calendar"

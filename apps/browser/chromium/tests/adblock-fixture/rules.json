@@ -1,0 +1,2 @@
+[{"id":1,"priority":1,"action":{"type":"block"},"condition":{"urlFilter":"/ads/","resourceTypes":["script","image","xmlhttprequest","sub_frame"]}},
+ {"id":2,"priority":1,"action":{"type":"redirect","redirect":{"extensionPath":"/ga.js"}},"condition":{"urlFilter":"/analytics/","resourceTypes":["script"]}}]

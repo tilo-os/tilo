@@ -7,7 +7,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 CHECK = ROOT / "os/scripts/check-shipped-runtimes.sh"
-ENGINE = "2026.10.17-chromium"
+ENGINE = "2026.10.23-chromium"
 NATIVE = "2026.07+native." + "0" * 32
 
 

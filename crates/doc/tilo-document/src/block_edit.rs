@@ -2,7 +2,7 @@
 //! kind or done flag, indent, move, delete, and replace the body from
 //! Markdown by diffing it against what is there.
 //!
-//! These are the [`RichTextAction`](crate::RichTextAction) variants an agent
+//! These are the [`RichTextAction`] variants an agent
 //! or script reaches through the declared actions of
 //! [`block_actions`](crate::block_actions). They name blocks by the ids
 //! [`block_markdown`](crate::block_markdown) reads (a unique prefix is
@@ -309,6 +309,9 @@ pub(crate) fn check(
                 block_id(&order, block)?;
             }
             Ok(())
+        }
+        RichTextAction::ReplaceText { find, replace, .. } => {
+            crate::replace_text::check(doc, c, find, replace)
         }
         RichTextAction::SyncBody { markdown } => {
             text_in_limits(markdown)?;
@@ -1083,6 +1086,9 @@ pub(crate) fn apply(dm: &mut DocMut<'_>, action: &RichTextAction) -> Vec<Written
             keep_a_paragraph(dm);
         }
         RichTextAction::SyncBody { markdown } => return sync_body(dm, markdown),
+        RichTextAction::ReplaceText { find, replace, all } => {
+            return crate::replace_text::apply(dm, find, replace, *all);
+        }
         _ => {}
     }
     written

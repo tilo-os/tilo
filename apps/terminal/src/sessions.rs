@@ -32,6 +32,22 @@ pub enum OpenState {
     NoRuntime(String),
 }
 
+/// Whether the environments the picker and the environments panel name
+/// came from the session's shell runtime.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Directory {
+    /// Not asked yet.
+    #[default]
+    Unasked,
+    /// The runtime answered: the list is its, and environments can be made.
+    Reached,
+    /// The runtime was asked and did not answer; why is in the log.
+    Unreachable,
+    /// Nothing here manages environments: this terminal has no connection
+    /// to a shell runtime.
+    NotHere,
+}
+
 pub(crate) type OpenAnswer = (
     Requester,
     Option<String>,
@@ -81,6 +97,8 @@ pub struct Sessions {
     recent: RecentTarget,
     /// Environments the picker offers, as last listed.
     pub environments: Vec<EnvironmentSummary>,
+    /// Whether that list came from the shell runtime.
+    pub directory: Directory,
     /// The person's relays an environment can run on, as last listed.
     pub relays: Vec<crate::target::RelaySummary>,
     /// Legacy VMs the legacy VM service reports. Empty until that service
@@ -91,6 +109,16 @@ pub struct Sessions {
     /// The person took the tab's offer of the device's own shell; opened at
     /// the next sync.
     pub host_requested: bool,
+    /// The places a listing off the UI thread found, once it answers.
+    listing: Option<std::sync::mpsc::Receiver<Listing>>,
+}
+
+/// What the supervisor listed: the environments (or why it could not), the
+/// person's relays (`None` where it could not say) and the legacy VMs.
+struct Listing {
+    environments: Result<Vec<EnvironmentSummary>, String>,
+    relays: Option<Vec<crate::target::RelaySummary>>,
+    legacy_vms: Vec<String>,
 }
 
 impl std::fmt::Debug for Sessions {
@@ -118,11 +146,13 @@ impl Sessions {
             target: None,
             recent,
             environments: Vec::new(),
+            directory: Directory::Unasked,
             legacy_vms: Vec::new(),
             relays: Vec::new(),
             allow: None,
             intent: None,
             host_requested: false,
+            listing: None,
         }
     }
 
@@ -321,10 +351,20 @@ impl Sessions {
         }
         if !self.environments_available() {
             self.environments.clear();
+            self.directory = Directory::NotHere;
             return;
         }
-        if let Ok(list) = self.directory_request(&serde_json::json!({"op": "list-environments"})) {
-            self.environments = list;
+        match self.source {
+            Source::Hosted { .. } => {
+                let listed =
+                    self.directory_request(&serde_json::json!({"op": "list-environments"}));
+                self.take_listing(listed);
+            }
+            // Only a shell-hosted tab reaches the runtime's directory.
+            Source::Standalone => self.directory = Directory::NotHere,
+            Source::None => {}
+            #[cfg(test)]
+            Source::Scripted(_) => {}
         }
         if matches!(self.source, Source::Hosted { .. })
             && let Ok(reply) =
@@ -334,10 +374,86 @@ impl Sessions {
         }
     }
 
+    /// [`Self::refresh_environments`] off the UI thread, for a picker that
+    /// is declared ahead of being opened (the window bar's): the listing
+    /// lands at a later [`Self::poll_environment_refresh`], and `waker`
+    /// brings that about. Only a shell-hosted tab lists anything.
+    pub(crate) fn refresh_environments_in_background(
+        &mut self,
+        waker: std::sync::Arc<std::sync::Mutex<ui::WakeHandle>>,
+    ) {
+        if !matches!(self.source, Source::Hosted { .. }) || self.listing.is_some() {
+            return;
+        }
+        let (send, receive) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("tilo-terminal-list-places".into())
+            .spawn(move || {
+                let legacy_vms = tilo_paths::xdg::data_home()
+                    .map(|data| legacy_vms_under(&data))
+                    .unwrap_or_default();
+                let environments = crate::HostedProcessServices::ask(
+                    &serde_json::json!({"op": "list-environments"}),
+                )
+                .and_then(|reply| parse_directory_reply(&reply));
+                let relays =
+                    crate::HostedProcessServices::ask(&serde_json::json!({"op": "list-relays"}))
+                        .ok()
+                        .map(|reply| parse_relays_reply(&reply));
+                let _ = send.send(Listing {
+                    environments,
+                    relays,
+                    legacy_vms,
+                });
+                crate::inner::request_terminal_wake(&waker);
+            });
+        if spawned.is_ok() {
+            self.listing = Some(receive);
+        }
+    }
+
+    /// Take what a listing off the UI thread found, once it answered.
+    /// Returns whether it did.
+    pub(crate) fn poll_environment_refresh(&mut self) -> bool {
+        let Some(receive) = self.listing.as_ref() else {
+            return false;
+        };
+        let listing = match receive.try_recv() {
+            Ok(listing) => listing,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.listing = None;
+                return false;
+            }
+        };
+        self.listing = None;
+        self.legacy_vms = listing.legacy_vms;
+        self.take_listing(listing.environments);
+        if let Some(relays) = listing.relays {
+            self.relays = relays;
+        }
+        true
+    }
+
+    /// What a listing answered: the list, or why there is none, which the
+    /// log keeps; the last list stays, for the picker always offers the
+    /// default environment.
+    fn take_listing(&mut self, listed: Result<Vec<EnvironmentSummary>, String>) {
+        match listed {
+            Ok(list) => {
+                self.environments = list;
+                self.directory = Directory::Reached;
+            }
+            Err(reason) => {
+                if self.directory != Directory::Unreachable {
+                    tracing::warn!(%reason, "terminal: the shell runtime did not list the environments");
+                }
+                self.directory = Directory::Unreachable;
+            }
+        }
+    }
+
     /// Create an environment named `name`; returns its record key.
-    ///
-    /// # Errors
-    /// Returns the supervisor's reason.
     pub fn create_environment(&mut self, name: &str) -> Result<String, String> {
         let name = name.trim();
         if name.is_empty() {
@@ -348,6 +464,7 @@ impl Sessions {
             "op": "create-environment",
             "name": name,
         }))?;
+        self.directory = Directory::Reached;
         self.environments
             .iter()
             .find(|env| !before.contains(&env.key))
@@ -355,10 +472,6 @@ impl Sessions {
             .ok_or_else(|| "the environment was not created".into())
     }
 
-    /// Rename the environment `record`.
-    ///
-    /// # Errors
-    /// Returns the supervisor's reason.
     pub fn rename_environment(&mut self, record: &str, name: &str) -> Result<(), String> {
         if !tilo_environment::is_record_key(record) {
             return Err("not an environment record".into());
@@ -373,9 +486,6 @@ impl Sessions {
     }
 
     /// Grant the environment `record` a folder, read-write or read-only.
-    ///
-    /// # Errors
-    /// Returns the supervisor's reason.
     pub fn grant_folder(&mut self, record: &str, path: &str, writable: bool) -> Result<(), String> {
         if !tilo_environment::is_record_key(record) {
             return Err("not an environment record".into());
@@ -403,9 +513,6 @@ impl Sessions {
 }
 
 /// Decode the supervisor's environment list.
-///
-/// # Errors
-/// Returns the supervisor's reason, or why the reply was not understood.
 pub(crate) fn parse_directory_reply(reply: &str) -> Result<Vec<EnvironmentSummary>, String> {
     #[derive(serde::Deserialize)]
     struct Entry {

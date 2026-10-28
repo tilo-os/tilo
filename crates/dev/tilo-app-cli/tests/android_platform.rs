@@ -178,7 +178,7 @@ impl Fixture {
             root.join("bin").display(),
             std::env::var("PATH").unwrap_or_default()
         );
-        let mut command = Command::new(env!("CARGO_BIN_EXE_tilo-app"));
+        let mut command = Command::new(tilo_test_env::package_binary!("tilo-app"));
         command
             .args(args)
             .current_dir(cwd)

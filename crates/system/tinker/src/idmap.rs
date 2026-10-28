@@ -23,30 +23,6 @@ pub fn inside_mapping() -> bool {
     std::env::var_os(MARKER).is_some()
 }
 
-/// The subordinate id range allocated to a user, as `(start, count)`.
-///
-/// Parsed from `/etc/subuid` / `/etc/subgid`. A user with no allocation can
-/// still open a layer, but service accounts inside it will not work.
-pub fn subordinate_range(file: &str, user: &str, uid: u32) -> Option<(u32, u32)> {
-    let text = std::fs::read_to_string(file).ok()?;
-    text.lines()
-        .find_map(|line| parse_subid_line(line, user, uid))
-}
-
-/// One `owner:start:count` line, or `None` if it is a comment, blank, or
-/// malformed. A single bad line must not hide a later good one, so this is
-/// deliberately per-line rather than short-circuiting the whole file.
-fn parse_subid_line(line: &str, user: &str, uid: u32) -> Option<(u32, u32)> {
-    let mut parts = line.split(':');
-    let owner = parts.next()?.trim();
-    if owner != user && owner.parse::<u32>() != Ok(uid) {
-        return None;
-    }
-    let start: u32 = parts.next()?.trim().parse().ok()?;
-    let count: u32 = parts.next()?.trim().parse().ok()?;
-    Some((start, count))
-}
-
 /// Re-execute the current binary inside the layer id mapping and never return.
 ///
 /// `unshare(1)`'s `--map-auto` reads `/etc/subuid` and delegates the actual map
@@ -97,51 +73,4 @@ pub fn ensure_mapped() -> anyhow::Result<()> {
         return Ok(());
     }
     Err(reexec_mapped())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-
-    fn subuid_file(body: &str) -> tempfile::NamedTempFile {
-        let mut f = tempfile::NamedTempFile::new().unwrap();
-        f.write_all(body.as_bytes()).unwrap();
-        f.flush().unwrap();
-        f
-    }
-
-    #[test]
-    fn subordinate_id_ranges_are_read_by_name_or_owner_and_tolerate_damage() {
-        // Phase `range_is_read_by_name`.
-        {
-            let f = subuid_file("other:100000:65536\nquinten:524288:65536\n");
-            let path = f.path().to_str().unwrap();
-            assert_eq!(
-                subordinate_range(path, "quinten", 1000),
-                Some((524_288, 65_536))
-            );
-            assert_eq!(subordinate_range(path, "nobody", 65534), None);
-        }
-        // Phase `range_is_also_read_by_numeric_owner`.
-        {
-            let f = subuid_file("1000:524288:65536\n");
-            assert_eq!(
-                subordinate_range(f.path().to_str().unwrap(), "someone", 1000),
-                Some((524_288, 65_536))
-            );
-        }
-        // Phase `a_missing_file_is_not_an_error`.
-        {
-            assert_eq!(subordinate_range("/nonexistent/subuid", "x", 0), None);
-        }
-        // Phase `malformed_lines_are_skipped_not_fatal`.
-        {
-            let f = subuid_file("garbage\nx:notanumber:1\nquinten:5:6\n");
-            assert_eq!(
-                subordinate_range(f.path().to_str().unwrap(), "quinten", 1000),
-                Some((5, 6))
-            );
-        }
-    }
 }

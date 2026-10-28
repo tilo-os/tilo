@@ -31,7 +31,7 @@ mod owner_commit_tests {
             let mut workspace = crate::test_support::Workspace::new(
                 crate::test_support::WorkspaceId(5), "Durability boundary");
             workspace.set_owner(&principal);
-            let route = CrdtRoute::record("so.tilo.word-processor", workspace.room.to_string(), "tab:0000000000000001");
+            let route = CrdtRoute::record("so.tilo.word-processor", workspace.room().to_string(), "tab:0000000000000001");
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);
             let membership = tree.shared();
@@ -57,9 +57,10 @@ mod owner_commit_tests {
                 person_chat_views: RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state, directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
-                channel_id: route.channel_key(), peer_id: 1, verified_identity: admitted,
+                channel_id: route.channel_key(), peer_id: 1, connection_id: 1, verified_identity: admitted,
                 record_kind: None,
-                lease: None,
+                route_access: RouteAccess::Own,
+                lease: None, _hold: None,
             });
             let mut document = automerge::AutoCommit::new();
             word_processor::initialize_empty_document(&mut document).unwrap();
@@ -110,7 +111,7 @@ mod owner_commit_tests {
                 workspace.set_owner(&principal);
                 let route = CrdtRoute::record(
                     "so.tilo.word-processor",
-                    workspace.room.to_string(),
+                    workspace.room().to_string(),
                     "tab:0000000000000001",
                 );
                 let mut tree = WorkspaceTree::default();
@@ -165,9 +166,12 @@ mod owner_commit_tests {
                             directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
                             channel_id: route.channel_key(),
                             peer_id: 1,
+                            connection_id: 1,
                             verified_identity: admitted,
                             record_kind: None,
+                            route_access: RouteAccess::Own,
                             lease: None,
+                            _hold: None,
                         });
                     let mut request = client.committed_document_request();
                     request.get().set_request(
@@ -244,7 +248,11 @@ mod owner_commit_tests {
         ) -> Option<Result<ui::collaboration::RouteSpec, String>> {
             std::mem::take(&mut self.ack).then(|| Ok(self.route.clone()))
         }
-        fn join_route(&mut self, route: ui::collaboration::RouteSpec) -> Result<(), String> {
+        fn join_route(
+            &mut self,
+            route: ui::collaboration::RouteSpec,
+            _: ui::record::RecordKind,
+        ) -> Result<(), String> {
             assert_eq!(route, self.route);
             Ok(())
         }
@@ -269,7 +277,7 @@ mod owner_commit_tests {
         let cache = ui::portable_storage::PortableStorage::new("worker-test", "device").unwrap();
         let mut owners = ui::record::RecordOwners::portable(cache.clone());
         let definition = word_processor::definition();
-        let records = owners.open(definition.app_id, &room.to_string()).unwrap();
+        let records = owners.open(definition.app_id(), &room.to_string()).unwrap();
         let views = Rc::new(
             ui::application_view::InstanceViewStore::portable(cache, &room.to_string()).unwrap(),
         );
@@ -280,9 +288,9 @@ mod owner_commit_tests {
                 views,
                 device_id: "device".into(),
                 instance_id: 1,
-                permissions: Rc::new(RefCell::new(
+                permissions: ui::permissions::SharedPermissions::new(
                     ui::permissions::PermissionContext::permissive(),
-                )),
+                ),
                 author: ui::permissions::UserId("worker".into()),
                 action_context: tilo_actions::ActionContext::default(),
             },
@@ -293,7 +301,7 @@ mod owner_commit_tests {
         let component = definition
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
             .unwrap();
-        let route = RouteSpec::record(definition.app_id, room, record.id.as_str());
+        let route = RouteSpec::record(definition.app_id(), room, record.id.as_str());
         let sent = Rc::new(RefCell::new(vec![]));
         let events = Rc::new(RefCell::new(vec![]));
         let mut manager = CollaborationManager::with_peer_transport(WorkerTransport {
@@ -303,7 +311,7 @@ mod owner_commit_tests {
             events: events.clone(),
         });
         manager.send(CollabRequest::Hello {
-            app_id: definition.app_id.into(),
+            app_id: definition.app_id().into(),
             cluster_id: room,
             record: Some(record.id.as_str().into()),
             record_kind: None,
@@ -401,11 +409,11 @@ mod owner_commit_tests {
         }
     }
     fn owner_tree(owner: &crate::test_owner::SessionOwner) -> WorkspaceTreeHandle {
-        let mut workspace = crate::test_support::Workspace::new(
+        let mut workspace = crate::test_support::Workspace::in_room(
             crate::test_support::WorkspaceId(72),
+            uuid::Uuid::parse_str(owner.peer().room()).unwrap().into(),
             "Actual owner barrier",
         );
-        workspace.set_room(uuid::Uuid::parse_str(owner.peer().room()).unwrap().into());
         workspace.set_owner(principal_id_for_root(
             owner.peer().authority().user_public_key,
         ));
@@ -528,7 +536,10 @@ mod owner_commit_tests {
         native: bool,
         enrolled: bool,
     ) -> OwnerFixture {
-        let owner = crate::test_owner::SessionOwner::initialize(&root.join("owner")).unwrap();
+        let mut owner = crate::test_owner::SessionOwner::initialize(&root.join("owner")).unwrap();
+        // The room's own person has a second device, so a test can present
+        // the same root from another device and only the device differs.
+        owner.admit_second_device().unwrap();
         let (handle, mailbox) = crate::test_owner::owner_commit::OwnerCommitMailbox::bounded(2);
         let route = CrdtRoute::record(
             "so.tilo.word-processor",
@@ -579,9 +590,12 @@ mod owner_commit_tests {
             directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
             channel_id: route.channel_key(),
             peer_id: 72,
+            connection_id: 72,
             verified_identity: admitted,
             record_kind: None,
+            route_access: RouteAccess::Own,
             lease: None,
+            _hold: None,
         });
         OwnerFixture {
             membership,
@@ -756,6 +770,10 @@ mod owner_commit_tests {
         f.state.pending_invocations.lock().unwrap().insert(
             1,
             PendingInvocation {
+                reach: tilo_action_policy::Reach {
+                    kind: tilo_actions::ActionKind::Outside,
+                    privileged: false,
+                },
                 caller: None,
                 activity: None,
                 owner: key.owner.clone(),
@@ -881,7 +899,10 @@ mod owner_commit_tests {
                             receipts.contains_key(&key.invocation.0.to_string()),
                             failure == 2 || failure == 3
                         );
-                        if failure != 3 {
+                        // A write that reached no durable byte is taken back
+                        // and the journal goes on; every other failure leaves
+                        // the store unproven, so the capability is withdrawn.
+                        if failure == 1 {
                             assert!(f.state.invocation_host().is_err());
                         }
                     }
@@ -927,7 +948,6 @@ mod owner_commit_tests {
             })
             .await;
     }
-    /// Exercises the public portable constructor, real SDK FD, checked Writer and sole actual owner.
     #[tokio::test(flavor = "current_thread")]
     async fn portable_constructor_checked_writer_commits_through_actual_owner_and_retires_authority()
      {
@@ -964,14 +984,12 @@ mod owner_commit_tests {
                     .admitted_room()
                     .ok_or("admitted owner governance unavailable")?;
                 let (name, policy) = tilo_peer_state::room::extract_governed_fields(doc);
-                let mut workspace = tilo_desktop_model::Workspace::new(
+                let mut workspace = tilo_desktop_model::Workspace::in_room(
                     tilo_desktop_model::WorkspaceId(72),
-                    name.unwrap_or_else(|| "Owner room".into()),
-                );
-                workspace.set_room(
                     uuid::Uuid::parse_str(peer.room())
                         .map_err(|e| e.to_string())?
                         .into(),
+                    name.unwrap_or_else(|| "Owner room".into()),
                 );
                 workspace.policy = policy;
                 let mut tree = tilo_desktop_model::DesktopTree::default();
@@ -998,10 +1016,10 @@ mod owner_commit_tests {
         let key = owner.signing_key().clone();
         let record = RecordId::for_tab(1);
         let definition = word_processor::definition();
-        let route = CrdtRoute::record(definition.app_id, room.to_string(), record.as_str());
+        let route = CrdtRoute::record(definition.app_id(), room.to_string(), record.as_str());
         let initial = owner
             .peer()
-            .document(definition.app_id, record.as_str())
+            .document(definition.app_id(), record.as_str())
             .unwrap();
         let committed = Arc::new(Mutex::new(Some(owner.peer().clone())));
         let authority = Arc::new(CurrentOwner(committed.clone()));
@@ -1055,7 +1073,7 @@ mod owner_commit_tests {
         assert!(
             CollaborationManager::for_route_fd_with_identity(
                 raw.into_raw_fd(),
-                definition.app_id,
+                definition.app_id(),
                 room,
                 Some(record.as_str().into()),
                 None,
@@ -1063,12 +1081,11 @@ mod owner_commit_tests {
             )
             .is_err()
         );
-        // A private worker descriptor also refuses a different record on the same app/room.
         let wrong = broker.connect_local_worker(route.clone(), &cert).unwrap();
         assert!(
             CollaborationManager::for_route_fd_with_identity(
                 wrong.into_raw_fd(),
-                definition.app_id,
+                definition.app_id(),
                 room,
                 Some("other-record".into()),
                 None,
@@ -1079,7 +1096,7 @@ mod owner_commit_tests {
         let stream = broker.connect_local_worker(route.clone(), &cert).unwrap();
         let manager = CollaborationManager::for_route_fd_with_identity(
             stream.into_raw_fd(),
-            definition.app_id,
+            definition.app_id(),
             room,
             Some(record.as_str().into()),
             None,
@@ -1090,7 +1107,7 @@ mod owner_commit_tests {
         cache
             .hydrate(
                 StorageKey::Record {
-                    package: definition.app_id.into(),
+                    package: definition.app_id().into(),
                     workspace: room.to_string(),
                     record: record.as_str().into(),
                 },
@@ -1099,7 +1116,7 @@ mod owner_commit_tests {
             )
             .unwrap();
         let mut owners = RecordOwners::portable(cache.clone());
-        let records = owners.open(definition.app_id, &room.to_string()).unwrap();
+        let records = owners.open(definition.app_id(), &room.to_string()).unwrap();
         let views = Rc::new(
             ui::application_view::InstanceViewStore::portable(cache, &room.to_string()).unwrap(),
         );
@@ -1116,9 +1133,9 @@ mod owner_commit_tests {
                 views,
                 device_id: "device".into(),
                 instance_id: 1,
-                permissions: Rc::new(RefCell::new(
+                permissions: ui::permissions::SharedPermissions::new(
                     ui::permissions::PermissionContext::permissive(),
-                )),
+                ),
                 author: ui::permissions::UserId(principal.clone()),
                 action_context: tilo_actions::ActionContext::default(),
             },
@@ -1255,7 +1272,7 @@ mod owner_commit_tests {
             .unwrap()
             .as_ref()
             .unwrap()
-            .document(definition.app_id, record.as_str())
+            .document(definition.app_id(), record.as_str())
             .unwrap();
         let mut saved_doc = automerge::AutoCommit::load(&saved).unwrap();
         assert_eq!(
@@ -1264,7 +1281,6 @@ mod owner_commit_tests {
             "terminal must follow actual owner commitment"
         );
         assert_ne!(initial, saved);
-        // Loss of the current owner authority withdraws admission and disclosure.
         *committed.lock().unwrap() = None;
         assert!(broker.connect_local_worker(route, &cert).is_err());
         assert!(
@@ -1295,7 +1311,9 @@ mod owner_commit_tests {
                 .unwrap();
         }
         let mut remote_doc = automerge::AutoCommit::load(
-            &remote.document(definition.app_id, record.as_str()).unwrap(),
+            &remote
+                .document(definition.app_id(), record.as_str())
+                .unwrap(),
         )
         .unwrap();
         assert_eq!(
@@ -1332,7 +1350,7 @@ mod owner_commit_tests {
             workspace.set_owner(principal_id_for_root(cert.user_public_key));
             let route = CrdtRoute::record(
                 "so.tilo.word-processor",
-                workspace.room.to_string(),
+                workspace.room().to_string(),
                 "document-1",
             );
             let mut tree = WorkspaceTree::default();
@@ -1780,7 +1798,7 @@ mod owner_commit_tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let root = canonical_tempdir();
-                let mut f = owner_fixture_with_native_config(root.path(), 0, true, false);
+                let f = owner_fixture_with_native_config(root.path(), 0, true, false);
                 assert!(!f.state.publisher.requires_owner_for(&f.route.cluster_id));
                 let mut subscriber = f.state.subscribe_ops(&f.route.channel_key(), 73);
                 let mut request = f.client.send_request();
@@ -1790,9 +1808,7 @@ mod owner_commit_tests {
                 request.send().promise.await.unwrap();
                 assert!(subscriber.try_recv().is_ok());
                 assert!(
-                    tokio::time::timeout(Duration::from_millis(20), f.mailbox.recv())
-                        .await
-                        .is_err(),
+                    f.mailbox.is_empty(),
                     "unenrolled legacy route must not acquire an unrelated native owner"
                 );
             })
@@ -1808,6 +1824,10 @@ mod owner_commit_tests {
                 let invocation = tilo_actions::InvocationId::new();
                 let (tx, _rx) = std::sync::mpsc::channel();
                 let pending = PendingInvocation {
+                    reach: tilo_action_policy::Reach {
+                        kind: tilo_actions::ActionKind::Outside,
+                        privileged: false,
+                    },
                     caller: None,
                     activity: None,
                     owner: InvocationOwner::Certified {
@@ -1922,11 +1942,7 @@ mod owner_commit_tests {
                 .await
                 .is_err()
         );
-        assert!(
-            tokio::time::timeout(Duration::from_millis(20), f.mailbox.recv())
-                .await
-                .is_err()
-        );
+        assert!(f.mailbox.is_empty());
     }
 
     fn prepared_effect_bytes(pending: &PendingInvocation) -> Vec<u8> {
@@ -2037,6 +2053,216 @@ mod owner_commit_tests {
         f.state
             .verify_action_caller(&f.route.cluster_id, &presentation)
             .unwrap()
+    }
+
+    /// A person's certified caller that their own device handed to agent
+    /// `agent`, as the standalone runtime's MCP door does.
+    fn delegated_owner_caller(f: &OwnerFixture, agent: &str) -> VerifiedActionCaller {
+        effect_owner_caller(f).delegated_to(agent)
+    }
+
+    /// A member device of the fixture's own person, other than the one that
+    /// admitted: the same root, a second device. It is a real device of this
+    /// room's person, so only its device key tells the two apart.
+    fn sibling_device_caller(f: &OwnerFixture) -> VerifiedActionCaller {
+        let certificate = f.owner.second_device();
+        let device = crate::test_owner::SessionOwner::second_device_key();
+        let room = f.route.cluster_id.clone();
+        let presentation = runtime_collab::CertifiedJoinIdentity {
+            workspace_id: room.clone(),
+            device_certificate: serde_json::to_vec(&certificate).unwrap(),
+            proof: device
+                .sign(&runtime_identity::collaboration_join_signing_bytes(&room))
+                .to_bytes()
+                .to_vec(),
+        }
+        .encode()
+        .unwrap();
+        f.state
+            .verify_action_caller(&f.route.cluster_id, &presentation)
+            .unwrap()
+    }
+
+    /// Exactly `prepare_owner_effect`, but the receipt names `actor` instead
+    /// of the caller's own effective actor: the shape a mismatched terminal
+    /// takes. Prepares the journal's own invocation, so `validate` decides.
+    fn prepare_owner_effect_claiming(
+        f: &OwnerFixture,
+        caller: &VerifiedActionCaller,
+        actor: &str,
+    ) -> Result<invocation_journal::PreparedEffect, String> {
+        let key = f
+            .state
+            .caller_key(caller, tilo_actions::InvocationId::new())?;
+        let context = tilo_actions::ActionContext::default();
+        let contract = tilo_actions::ActionContract::default();
+        let intent = serde_json::json!({"operation_kind":tilo_actions::OperationKind::Effect,"context":context,
+            "actor":actor,"contract":contract,"app_id":f.route.app_id,
+            "resource":format!("app.{}", f.route.app_id),"resource_kind":"app","action":"open"});
+        let update = tilo_actions::InvocationUpdate::Succeeded {
+            invocation: key.invocation,
+            output: tilo_actions::ActionOutput::default(),
+        };
+        let mut effect = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
+            key.invocation,
+            actor,
+            context,
+            tilo_actions::EffectReceiptStatus::Succeeded,
+            tilo_clock::unix_now_i64(),
+        );
+        effect.completed_at = 100;
+        let request = tilo_owner_commit::OwnerCommitRequest {
+            room: f.route.cluster_id.clone(),
+            operation: tilo_owner_commit::CommitOperation::EffectReceipt {
+                invocation: key.invocation.0,
+                redacted: serde_json::to_vec(&effect).map_err(|error| error.to_string())?,
+            },
+        };
+        let mut guard = f.state.journal.lock().unwrap();
+        let journal = guard.as_mut().unwrap().as_mut().unwrap();
+        journal.admit(key.clone(), intent, 1)?;
+        journal.prepare_effect(&key, update, &request)
+    }
+
+    /// The MCP door hands a person's certified session to their agent, and
+    /// that agent's own effect terminal is accepted: the durable owner, the
+    /// receipt actor and the validation all name the agent the person's
+    /// device delegated to. A receipt naming anyone else is still refused.
+    #[test]
+    fn a_delegated_agents_effect_terminal_is_owned_and_receipted_as_that_agent() {
+        let root = canonical_tempdir();
+        let f = owner_fixture(root.path());
+        let caller = delegated_owner_caller(&f, "mcp-7");
+        assert_eq!(caller.admitted.broker_actor().id, "agent:mcp-7");
+        let (key, request, prepared) = prepare_owner_effect(&f, &caller);
+        assert_eq!(
+            key.owner,
+            InvocationOwner::AuthenticatedLocal {
+                root: f.owner.peer().authority().user_public_key,
+                device: f.owner.peer().authority().device_public_key,
+                agent: Some("mcp-7".into()),
+            },
+            "the durable owner is the person's device delegated to its agent"
+        );
+        let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
+            serde_json::from_slice(match &request.operation {
+                tilo_owner_commit::CommitOperation::EffectReceipt { redacted, .. } => redacted,
+                _ => unreachable!(),
+            })
+            .unwrap();
+        assert_eq!(receipt.actor, "agent:mcp-7", "the receipt names who acted");
+        assert_eq!(
+            prepared.update,
+            tilo_actions::InvocationUpdate::Succeeded {
+                invocation: key.invocation,
+                output: tilo_actions::ActionOutput::default(),
+            }
+        );
+        // The same journal accepts the finished terminal off the prepared one.
+        let mut guard = f.state.journal.lock().unwrap();
+        let journal = guard.as_mut().unwrap().as_ref().unwrap();
+        assert_eq!(journal.lookup(&key).unwrap().unwrap().key.owner, key.owner);
+    }
+
+    #[test]
+    fn a_delegated_agents_effect_terminal_naming_anyone_else_is_refused() {
+        for mistaken in [None, Some("agent:mcp-8"), Some("agent:")] {
+            let root = canonical_tempdir();
+            let f = owner_fixture(root.path());
+            let caller = delegated_owner_caller(&f, "mcp-7");
+            // The person themselves, another agent, or a nameless agent: none
+            // of them acted, so none may be named.
+            let person = principal_id_for_root(f.owner.peer().authority().user_public_key);
+            let actor = mistaken.unwrap_or(&person);
+            let refusal = prepare_owner_effect_claiming(&f, &caller, actor)
+                .expect_err("a mismatched actor is still refused");
+            assert_eq!(
+                refusal, "prepared effect payload differs from admitted terminal",
+                "{actor}"
+            );
+        }
+    }
+
+    /// The certified door re-verifies a caller on every status, retry and
+    /// effect barrier. That recheck proves the same person and device and
+    /// keeps this caller's own delegation, so it cannot be satisfied by
+    /// another person's or another device's evidence, and a caller that
+    /// cannot back its delegation is refused rather than re-owned.
+    #[test]
+    fn a_delegated_callers_reverification_keeps_its_agent_owner() {
+        let root = canonical_tempdir();
+        let f = owner_fixture(root.path());
+        let caller = delegated_owner_caller(&f, "mcp-7");
+        let current = effect_owner_caller(&f);
+        let owner = caller.owner().unwrap();
+        assert_eq!(
+            owner,
+            InvocationOwner::AuthenticatedLocal {
+                root: f.owner.peer().authority().user_public_key,
+                device: f.owner.peer().authority().device_public_key,
+                agent: Some("mcp-7".into()),
+            }
+        );
+        assert_eq!(
+            caller.reverified(&current),
+            Ok(()),
+            "fresh verification of the same person and device passes"
+        );
+        // Re-verification re-establishes only the person and device. The
+        // delegation re-applied is the caller's own, never whatever the
+        // re-verified identity happened to admit, so this caller cannot
+        // drift onto the other agent's owner.
+        let elsewhere = delegated_owner_caller(&f, "mcp-8");
+        assert_ne!(elsewhere.owner().unwrap(), owner);
+        assert_eq!(caller.reverified(&elsewhere), Ok(()));
+        assert_eq!(caller.owner().unwrap(), owner);
+        // Another person's broker verifies another root and device: refused.
+        let other_root = canonical_tempdir();
+        let other = owner_fixture(other_root.path());
+        let stranger = effect_owner_caller(&other);
+        assert_eq!(
+            caller.reverified(&stranger),
+            Err("certified caller changed".into())
+        );
+        // The same person from a second device is a different device, too.
+        let sibling = sibling_device_caller(&f);
+        assert_eq!(
+            caller.reverified(&sibling),
+            Err("certified caller changed".into())
+        );
+        // A caller that lost the certificate backing its delegation is
+        // refused: never downgraded to the person it also happens to be.
+        let mut keyless = caller.clone();
+        keyless.admitted.certificate = None;
+        assert_eq!(
+            keyless.owner().unwrap_err(),
+            "admitted caller certificate missing"
+        );
+        assert_eq!(
+            caller.reverified(&keyless),
+            Err("admitted caller certificate missing".into())
+        );
+        assert!(keyless.reverified(&current).is_err());
+        // A delegation and its admission must agree, in either direction.
+        for admission in [
+            current.admitted.clone().delegated_to(Some("mcp-8")),
+            current.admitted.clone().delegated_to(None),
+        ] {
+            let mut mismatched = caller.clone();
+            mismatched.admitted = admission;
+            assert_eq!(
+                mismatched.owner().unwrap_err(),
+                "admitted caller does not carry its delegation"
+            );
+        }
+        // The person themselves is never owned as an agent's.
+        assert_eq!(
+            current.owner().unwrap(),
+            InvocationOwner::Certified {
+                root: f.owner.peer().authority().user_public_key,
+                device: f.owner.peer().authority().device_public_key,
+            }
+        );
     }
 
     fn prepare_owner_effect(

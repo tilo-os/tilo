@@ -3,6 +3,45 @@
 //! Apps describe intent (`command + K`, primary vs cancel); the host chooses
 //! the modifier label, event modifier, and dialog ordering for its platform.
 
+/// A row of a shortcut reference, as this platform spells it: `{cmd:K}` is
+/// the command key with K (Ctrl+K, or the Command key on a Mac),
+/// `{cmd+shift:Enter}` adds Shift, `{alt:Up}` is Alt with Up and `{F2}` is a
+/// key on its own, each in the active keyboard's legends. Everything else is
+/// shown as written.
+///
+/// A reference sheet that prints "Ctrl+S" as a string teaches a Mac user the
+/// wrong modifier, so every sheet spells its keys here.
+#[must_use]
+pub fn spell_shortcut(template: &str) -> String {
+    let conventions = PlatformConventions::default();
+    let mut out = String::new();
+    let mut rest = template;
+    while let Some((before, after)) = rest.split_once('{') {
+        out.push_str(before);
+        let Some((spec, tail)) = after.split_once('}') else {
+            out.push('{');
+            rest = after;
+            break;
+        };
+        let (modifiers, key) = spec.split_once(':').unwrap_or(("", spec));
+        let mut shortcut = if modifiers.contains("cmd") {
+            Shortcut::command(key)
+        } else {
+            Shortcut::key(key)
+        };
+        if modifiers.contains("shift") {
+            shortcut = shortcut.shift();
+        }
+        if modifiers.contains("alt") {
+            shortcut = shortcut.alt();
+        }
+        out.push_str(&shortcut.label(conventions));
+        rest = tail;
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Platform family relevant to human-interface conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
@@ -69,14 +108,22 @@ impl PlatformConventions {
         }
     }
 
-    /// Whether the platform's primary command modifier is currently held.
-    pub fn command_modifier_down(self, modifiers: winit::keyboard::ModifiersState) -> bool {
+    /// The platform's primary command modifier: Command (Super) on macOS,
+    /// Control elsewhere. The one place that says what a
+    /// [`Shortcut::command`] chord is pressed with; matching it, pressing it
+    /// in a test and sending it to a page all ask here.
+    pub const fn command_modifier(self) -> winit::keyboard::ModifiersState {
         match self.platform {
-            Platform::MacOs => modifiers.super_key(),
+            Platform::MacOs => winit::keyboard::ModifiersState::SUPER,
             Platform::Windows | Platform::Linux | Platform::Android | Platform::Other => {
-                modifiers.control_key()
+                winit::keyboard::ModifiersState::CONTROL
             }
         }
+    }
+
+    /// Whether the platform's primary command modifier is currently held.
+    pub fn command_modifier_down(self, modifiers: winit::keyboard::ModifiersState) -> bool {
+        modifiers.contains(self.command_modifier())
     }
 }
 
@@ -87,6 +134,9 @@ pub struct Shortcut {
     command: bool,
     shift: bool,
     alt: bool,
+    /// The desktop's own modifier (Super): the chords the system answers
+    /// whichever app has focus.
+    system: bool,
 }
 
 impl Shortcut {
@@ -96,6 +146,7 @@ impl Shortcut {
             command: true,
             shift: false,
             alt: false,
+            system: false,
         }
     }
 
@@ -107,7 +158,36 @@ impl Shortcut {
             command: false,
             shift: false,
             alt: false,
+            system: false,
         }
+    }
+
+    /// A chord as the desktop's shortcut table stores it: modifier names
+    /// (`Super`, `Ctrl`, `Alt`, `Shift`) and a key, spelled for display in
+    /// the active keyboard layout's legends.
+    pub fn chord<'a>(modifiers: impl IntoIterator<Item = &'a str>, key: &str) -> Self {
+        let mut shortcut = Self::key(crate::keycaps::active().key(key));
+        for modifier in modifiers {
+            match modifier.trim().to_ascii_lowercase().as_str() {
+                "super" | "meta" | "logo" | "win" => shortcut.system = true,
+                "ctrl" | "control" | "cmd" | "command" => shortcut.command = true,
+                "alt" | "option" => shortcut.alt = true,
+                "shift" => shortcut.shift = true,
+                _ => {}
+            }
+        }
+        shortcut
+    }
+
+    /// Held with the desktop's own modifier (Super).
+    #[must_use]
+    pub fn system(mut self) -> Self {
+        self.system = true;
+        self
+    }
+
+    pub fn has_system(&self) -> bool {
+        self.system
     }
 
     #[must_use]
@@ -159,6 +239,7 @@ impl Shortcut {
             keycaps
         };
         [
+            (self.system, KeyboardModifier::System),
             (self.command, KeyboardModifier::Command),
             (self.alt, KeyboardModifier::Alt),
             (self.shift, KeyboardModifier::Shift),
@@ -218,6 +299,21 @@ impl HostShortcut {
 mod tests {
     use super::*;
 
+    /// A desktop chord from the shortcut table (Super+F) reads with its
+    /// Super key, ahead of the others, in the standard menu spelling.
+    #[test]
+    fn a_desktop_chord_shows_its_super_key_first() {
+        let _us = crate::keycaps::scoped(crate::keycaps::Keycaps::US);
+        let linux = PlatformConventions::new(Platform::Linux);
+        assert_eq!(Shortcut::chord(["Super"], "f").label(linux), "Super+F");
+        assert_eq!(
+            Shortcut::chord(["Shift", "Super"], "pageup").label(linux),
+            "Super+Shift+Page Up"
+        );
+        assert!(Shortcut::from("Super+W").has_system());
+        assert!(!Shortcut::command("W").has_system());
+    }
+
     #[test]
     fn host_shortcuts_resolve_to_the_label_each_platform_shows() {
         for platform in [Platform::MacOs, Platform::Windows, Platform::Linux] {
@@ -265,7 +361,6 @@ mod tests {
 
     #[test]
     fn shortcuts_modifiers_and_dialog_order_follow_each_platform_hig() {
-        // Case `semantic_shortcut_formats_for_each_platform`.
         {
             let shortcut = Shortcut::command("K").shift();
             assert_eq!(
@@ -286,7 +381,6 @@ mod tests {
             );
         }
 
-        // Case `command_modifier_and_dialog_order_follow_platform_hig`.
         {
             let control = winit::keyboard::ModifiersState::CONTROL;
             let command = winit::keyboard::ModifiersState::SUPER;
@@ -325,6 +419,9 @@ impl From<&str> for Shortcut {
             alt: parts
                 .iter()
                 .any(|part| matches!(*part, "Alt" | "Option" | "⌥")),
+            system: parts
+                .iter()
+                .any(|part| matches!(*part, "Super" | "Meta" | "Win")),
         }
     }
 }

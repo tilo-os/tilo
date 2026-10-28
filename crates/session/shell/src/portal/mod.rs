@@ -108,6 +108,7 @@ pub mod notification;
 pub mod permission_store;
 pub mod picker_queue;
 pub mod print;
+pub mod prompt;
 #[cfg(any(test, target_os = "linux"))]
 #[cfg_attr(
     not(target_os = "linux"),
@@ -583,7 +584,7 @@ impl GrantStoreHandle {
             .workspaces
             .iter()
             .find(|workspace| workspace.id == caller.workspace_id)
-            .filter(|workspace| !workspace.room.is_nil())
+            .filter(|workspace| !workspace.room().is_nil())
             .map(|workspace| {
                 // A local slot survives joining a different room. Consent
                 // belongs to the durable room, never to that reusable slot.
@@ -591,7 +592,7 @@ impl GrantStoreHandle {
                 // their original room cannot be recovered safely.
                 format!(
                     "room:{}\u{1f}{}\u{1f}{}",
-                    workspace.room,
+                    workspace.room(),
                     caller.app_id,
                     kind.name()
                 )
@@ -664,7 +665,7 @@ impl GrantStoreHandle {
         tree.desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room.to_string() == room)
+            .find(|workspace| workspace.room().to_string() == room)
             .map(|workspace| PortalCaller::new(workspace.id, app_id))
     }
 
@@ -680,11 +681,11 @@ impl GrantStoreHandle {
     pub fn resolve_live_app(&self, app_id: &str) -> Option<PortalCaller> {
         let rooms = crate::shell::launcher::verified_workspaces_for_app(app_id);
         let tree = self.tree.read();
-        let mut matches = tree
-            .desktop
-            .workspaces
-            .iter()
-            .filter(|workspace| rooms.iter().any(|room| room == &workspace.room.to_string()));
+        let mut matches = tree.desktop.workspaces.iter().filter(|workspace| {
+            rooms
+                .iter()
+                .any(|room| room == &workspace.room().to_string())
+        });
         let workspace = matches.next()?;
         if matches.next().is_some() {
             return None;
@@ -723,6 +724,9 @@ fn capability_kind_and_scope(capability: &Capability) -> Option<(CapabilityKind,
         Capability::IoUring { scope } => (CapabilityKind::IoUring, *scope),
         // The shell runtime keeps this decision; no portal asks for it.
         Capability::HostShell { .. } => return None,
+        // The desktop asks this itself, of a program in an app reaching
+        // beyond its workspace (`compositor::workspace_door`).
+        Capability::DesktopControl { .. } => return None,
     })
 }
 
@@ -759,6 +763,28 @@ pub struct PendingGrant {
     /// One-shot reply channel: the shell's permission-prompt pump fulfils
     /// this on a user click; test mode fulfils it synchronously from [`PromptResolver`].
     pub reply: oneshot::Sender<PromptOutcome>,
+}
+
+impl PendingGrant {
+    /// The portal request that owns this prompt, when one does.
+    pub fn request_key(&self) -> Option<&str> {
+        self.request_key.as_deref()
+    }
+
+    /// A prompt no request owns, for tests that need one to queue.
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        caller: PortalCaller,
+        capability: Capability,
+        reply: oneshot::Sender<PromptOutcome>,
+    ) -> Self {
+        Self {
+            caller,
+            capability,
+            request_key: None,
+            reply,
+        }
+    }
 }
 
 /// Outcome of a permission prompt — mirrors [`ui::widget::PromptChoice`]
@@ -814,6 +840,51 @@ struct PromptQueueState {
     /// this beside the queue closes the close/enqueue race without ever
     /// cancelling an unrelated prompt.
     cancelled: HashSet<String>,
+    /// The questions on screen or waiting for it, one per app, room and
+    /// capability: an app asking again before the person answered gets no
+    /// second sheet ([`PromptQueueHandle::begin_asking`]).
+    asking: HashSet<String>,
+    /// Request-owned prompts whose resolver is still waiting, by request
+    /// key. Once the sheet has left `pending` for the screen its reply
+    /// sender travels with it, so `Request.Close` reaches the waiting
+    /// resolver through this instead ([`PromptQueueHandle::watch_withdrawal`]).
+    withdrawals: HashMap<String, oneshot::Sender<()>>,
+}
+
+/// Wakes a request-owned prompt's resolver when its request is closed, even
+/// after the sheet was taken onto the screen. The resolver then drops its
+/// reply receiver, which retires the sheet, and gives up its place in
+/// [`PromptQueueState::asking`].
+struct Withdrawal {
+    state: Arc<Mutex<PromptQueueState>>,
+    key: String,
+    withdrawn: oneshot::Receiver<()>,
+}
+
+impl Drop for Withdrawal {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.withdrawals.remove(&self.key);
+            // A close that raced the enqueue left its key behind; the
+            // request is over either way.
+            state.cancelled.remove(&self.key);
+        }
+    }
+}
+
+/// Holds one question's place in [`PromptQueueState::asking`] until the
+/// person answers it or its request goes away.
+struct Asking {
+    state: Arc<Mutex<PromptQueueState>>,
+    key: String,
+}
+
+impl Drop for Asking {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.asking.remove(&self.key);
+        }
+    }
 }
 
 impl PromptQueueHandle {
@@ -881,18 +952,52 @@ impl PromptQueueHandle {
         rx
     }
 
+    /// Claim the one prompt `consent_key` (an app, its room and a
+    /// capability) may have pending. `None` while that same question is
+    /// already waiting for the person: an app that repeats it before they
+    /// answer is refused instead of stacking sheet after sheet.
+    fn begin_asking(&self, consent_key: &str) -> Option<Asking> {
+        let mut state = self.state.lock().ok()?;
+        state.asking.insert(consent_key.to_owned()).then(|| Asking {
+            state: self.state.clone(),
+            key: consent_key.to_owned(),
+        })
+    }
+
+    /// Watch for `request_key`'s request being closed while its prompt waits
+    /// for the person ([`Self::cancel_request`]).
+    fn watch_withdrawal(&self, request_key: &str) -> Withdrawal {
+        let (tx, withdrawn) = oneshot::channel();
+        if let Ok(mut state) = self.state.lock() {
+            state.withdrawals.insert(request_key.to_owned(), tx);
+        }
+        Withdrawal {
+            state: self.state.clone(),
+            key: request_key.to_owned(),
+            withdrawn,
+        }
+    }
+
     /// Cancel precisely one request-owned prompt. The removed receiver is
-    /// resolved as Deny so the D-Bus method returns promptly; unkeyed prompts
-    /// and other request handles remain untouched.
+    /// resolved as Deny so the D-Bus method returns promptly; a sheet already
+    /// on screen is withdrawn by waking its resolver, which stops waiting for
+    /// it. Unkeyed prompts and other request handles remain untouched.
     pub fn cancel_request(&self, request_key: &str) -> bool {
-        let removed = self.state.lock().ok().and_then(|mut state| {
-            state.cancelled.insert(request_key.into());
-            state
+        let (removed, waiting) = self.state.lock().ok().map_or((None, None), |mut state| {
+            let removed = state
                 .pending
                 .iter()
                 .position(|pending| pending.request_key.as_deref() == Some(request_key))
-                .map(|index| state.pending.remove(index))
+                .map(|index| state.pending.remove(index));
+            if removed.is_some() {
+                return (removed, None);
+            }
+            state.cancelled.insert(request_key.into());
+            (None, state.withdrawals.remove(request_key))
         });
+        if let Some(waiting) = waiting {
+            let _ = waiting.send(());
+        }
         if let Some(pending) = removed {
             let _ = pending.reply.send(PromptOutcome::Deny);
             true
@@ -1077,8 +1182,8 @@ impl ConsentContext for PortalContext {
 
 pub mod flow {
     use super::{
-        Capability, CapabilityKind, ConsentContext, GRANT_ALWAYS, GRANT_ONCE, PortalCaller,
-        PromptOutcome,
+        Capability, CapabilityKind, ConsentContext, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION,
+        PortalCaller, PromptOutcome,
     };
 
     pub async fn resolve(
@@ -1112,14 +1217,34 @@ pub mod flow {
         let Some(consent_key) = ctx.grants().portal_consent_key(&caller, kind) else {
             return PromptOutcome::Deny;
         };
-        // Fast path — `Always`-scoped grant already present.
-        if matches!(ctx.grants().lookup(&caller, kind), Some(GRANT_ALWAYS)) {
-            return PromptOutcome::AllowAlways;
+        // An answer that still stands is not asked again: "Always", and
+        // "This session" until the session ends.
+        match ctx.grants().lookup(&caller, kind) {
+            Some(GRANT_ALWAYS) => return PromptOutcome::AllowAlways,
+            Some(GRANT_SESSION) => return PromptOutcome::AllowSession,
+            _ => {}
         }
+        let Some(_asking) = ctx.prompts().begin_asking(&consent_key) else {
+            return PromptOutcome::Deny;
+        };
+        // Watch before enqueueing, so no close can fall between the two.
+        let withdrawal = request_key
+            .as_deref()
+            .map(|key| ctx.prompts().watch_withdrawal(key));
         let rx = ctx
             .prompts()
             .enqueue_inner(caller.clone(), cap_template, request_key);
-        match rx.await {
+        let answered = match withdrawal {
+            // An answer that arrived first still counts; a withdrawn request
+            // stops waiting, which takes its sheet off the screen.
+            Some(mut withdrawal) => tokio::select! {
+                biased;
+                answered = rx => answered,
+                Ok(()) = &mut withdrawal.withdrawn => return PromptOutcome::Deny,
+            },
+            None => rx.await,
+        };
+        match answered {
             Ok(outcome) => finish(ctx, &caller, kind, consent_key, outcome),
             // A dead channel means the prompt pump shut down mid-flight — deny rather than hang the caller forever.
             Err(_) => PromptOutcome::Deny,
@@ -1424,6 +1549,171 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn this_session_is_not_asked_again_until_the_session_ends() {
+        let (store, id) = GrantStoreHandle::test_with_workspace(empty_ws(41));
+        let queue = PromptQueueHandle::new(PromptResolver::Channel);
+        let ctx = (store.clone(), queue.clone());
+        let caller = PortalCaller::new(id, "org.example.Meet");
+        let ask = || {
+            flow::resolve_for_request(
+                &ctx,
+                caller.clone(),
+                CapabilityKind::Camera,
+                Capability::Camera { scope: GRANT_ONCE },
+                "/request/camera".into(),
+            )
+        };
+        let first = ask();
+        tokio::pin!(first);
+        assert!(futures_util::poll!(&mut first).is_pending());
+        let prompts = queue.drain();
+        assert_eq!(prompts.len(), 1);
+        for prompt in prompts {
+            let _ = prompt.reply.send(PromptOutcome::AllowSession);
+        }
+        assert_eq!(first.await, PromptOutcome::AllowSession);
+
+        let again = ask();
+        tokio::pin!(again);
+        assert_eq!(
+            futures_util::poll!(&mut again),
+            std::task::Poll::Ready(PromptOutcome::AllowSession),
+            "an app allowed for this session must not be asked again"
+        );
+        assert_eq!(queue.queued_len(), 0);
+
+        // A different capability is its own question.
+        let microphone = flow::resolve(
+            &ctx,
+            caller.clone(),
+            CapabilityKind::Microphone,
+            Capability::Microphone { scope: GRANT_ONCE },
+        );
+        tokio::pin!(microphone);
+        assert!(futures_util::poll!(&mut microphone).is_pending());
+        assert_eq!(queue.queued_len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_app_repeating_a_question_gets_one_sheet_until_it_is_answered() {
+        let (store, id) = GrantStoreHandle::test_with_workspace(empty_ws(42));
+        let queue = PromptQueueHandle::new(PromptResolver::Channel);
+        let ctx = (store, queue.clone());
+        let caller = PortalCaller::new(id, "org.example.Nag");
+        let ask = || {
+            flow::resolve(
+                &ctx,
+                caller.clone(),
+                CapabilityKind::Camera,
+                Capability::Camera { scope: GRANT_ONCE },
+            )
+        };
+        let first = ask();
+        tokio::pin!(first);
+        assert!(futures_util::poll!(&mut first).is_pending());
+        for _ in 0..20 {
+            assert_eq!(
+                ask().await,
+                PromptOutcome::Deny,
+                "a repeat of a question still on screen is refused, not stacked"
+            );
+        }
+        assert_eq!(queue.queued_len(), 1, "one sheet, however often it asks");
+
+        // Another app, or another question, is not held back by it.
+        let other = PortalCaller::new(id, "org.example.Other");
+        let other_camera = flow::resolve(
+            &ctx,
+            other,
+            CapabilityKind::Camera,
+            Capability::Camera { scope: GRANT_ONCE },
+        );
+        tokio::pin!(other_camera);
+        assert!(futures_util::poll!(&mut other_camera).is_pending());
+        let microphone = flow::resolve(
+            &ctx,
+            caller.clone(),
+            CapabilityKind::Microphone,
+            Capability::Microphone { scope: GRANT_ONCE },
+        );
+        tokio::pin!(microphone);
+        assert!(futures_util::poll!(&mut microphone).is_pending());
+        assert_eq!(queue.queued_len(), 3);
+
+        // Once the person has answered, the app may ask again.
+        let prompts = queue.drain();
+        let first_prompt = prompts
+            .into_iter()
+            .find(|prompt| {
+                prompt.caller.app_id.as_str() == "org.example.Nag"
+                    && matches!(prompt.capability, Capability::Camera { .. })
+            })
+            .expect("the first camera question is queued");
+        first_prompt.reply.send(PromptOutcome::Deny).unwrap();
+        assert_eq!(first.await, PromptOutcome::Deny);
+        {
+            let again = ask();
+            tokio::pin!(again);
+            assert!(futures_util::poll!(&mut again).is_pending());
+            assert_eq!(queue.queued_len(), 1);
+        }
+
+        // A sheet that could not be shown gives its place up too.
+        let _ = queue.drain();
+        let after_unshown = ask();
+        tokio::pin!(after_unshown);
+        assert!(futures_util::poll!(&mut after_unshown).is_pending());
+        assert_eq!(queue.queued_len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_request_closed_while_its_sheet_is_up_takes_the_sheet_down() {
+        let (store, id) = GrantStoreHandle::test_with_workspace(empty_ws(43));
+        let queue = PromptQueueHandle::new(PromptResolver::Channel);
+        let ctx = (store, queue.clone());
+        let caller = PortalCaller::new(id, "org.example.Meet");
+        let ask = |request: &'static str| {
+            flow::resolve_for_request(
+                &ctx,
+                caller.clone(),
+                CapabilityKind::Camera,
+                Capability::Camera { scope: GRANT_ONCE },
+                request.into(),
+            )
+        };
+        let first = ask("/request/first");
+        tokio::pin!(first);
+        assert!(futures_util::poll!(&mut first).is_pending());
+        // The compositor takes the sheet onto the screen.
+        let on_screen = queue.drain();
+        assert_eq!(on_screen.len(), 1);
+
+        // Closing someone else's request leaves this one waiting.
+        assert!(queue.cancel_request("/request/elsewhere"));
+        assert!(futures_util::poll!(&mut first).is_pending());
+        assert!(!on_screen[0].reply.is_closed());
+
+        // The app withdraws its request while the person has not answered.
+        assert!(queue.cancel_request("/request/first"));
+        assert_eq!(
+            first.await,
+            PromptOutcome::Deny,
+            "a withdrawn request stops waiting for its sheet"
+        );
+        assert!(
+            on_screen[0].reply.is_closed(),
+            "the withdrawn request's sheet leaves the screen"
+        );
+
+        // The app asks again: it gets a sheet, not a refusal held over from
+        // the question it withdrew.
+        let again = ask("/request/second");
+        tokio::pin!(again);
+        assert!(futures_util::poll!(&mut again).is_pending());
+        assert_eq!(queue.queued_len(), 1);
+    }
+
+    #[tokio::test]
     async fn private_portal_prompt_cannot_approve_a_different_room() {
         for variant in 0..2 {
             for outcome in [
@@ -1459,7 +1749,7 @@ mod tests {
                     store
                         .tree_handle()
                         .write()
-                        .set_room_in_memory(id, crate::shell::state::RoomId::new())
+                        .stand_in_room(id, crate::shell::state::RoomId::new())
                 );
                 prompts
                     .into_iter()
@@ -1493,7 +1783,6 @@ mod tests {
             }
         ));
 
-        // A different local slot for the same room preserves durable consent.
         let moved_id = WorkspaceId(32);
         shared.write().desktop.workspaces[0].id = moved_id;
         let moved = PortalCaller::new(moved_id, "private-app");
@@ -1504,7 +1793,13 @@ mod tests {
             Some(GRANT_ALWAYS)
         );
 
-        shared.write().desktop.workspaces[0].set_room(crate::shell::state::RoomId::nil());
+        {
+            let mut tree = shared.write();
+            tree.desktop.workspaces[0] = crate::shell::state::rehomed(
+                &tree.desktop.workspaces[0],
+                crate::shell::state::RoomId::nil(),
+            );
+        }
         assert_eq!(restored.lookup(&moved, CapabilityKind::Camera), None);
         assert!(!restored.insert_portal_consent(
             &moved,
@@ -1526,10 +1821,10 @@ mod tests {
             assert!(store.insert_portal_consent(&caller, &Capability::Camera { scope }));
             assert_eq!(store.lookup(&caller, CapabilityKind::Camera), Some(scope));
 
-            // Joining an invitation preserves the local slot and replaces
-            // its collaboration room through the production join operation.
+            // A workspace of another room under the same local id (as a
+            // file from before joins kept): consent stays with the room.
             let joined_room = crate::shell::state::RoomId::new();
-            assert!(shared.write().set_room_in_memory(id, joined_room));
+            assert!(shared.write().stand_in_room(id, joined_room));
             assert_eq!(
                 store.lookup(&caller, CapabilityKind::Camera),
                 None,
@@ -1556,7 +1851,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn grant_store_resolves_capabilities_scopes_and_callers() {
-        // Phase `capability_kind_matches_filesystem_modes`.
         {
             let read = Capability::Filesystem {
                 path: "/tmp".into(),
@@ -1574,7 +1868,6 @@ mod tests {
             assert!(!CapabilityKind::FilesystemReadWrite.matches(&read));
             assert!(CapabilityKind::FilesystemReadWrite.matches(&rw));
         }
-        // Phase `grant_store_returns_strongest_scope`.
         {
             let mut ws = empty_ws(11);
             for scope in [GRANT_ONCE, GRANT_ALWAYS, GRANT_SESSION] {
@@ -1587,7 +1880,6 @@ mod tests {
                 Some(GRANT_ALWAYS)
             );
         }
-        // Phase `filesystem_path_granted_covers_exact_and_ancestor_paths`.
         {
             let mut ws = empty_ws(21);
             ws.grant_app(
@@ -1600,7 +1892,6 @@ mod tests {
             );
             let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
             let caller = PortalCaller::new(ws_id, "Editor");
-            // Exact match and any descendant are covered.
             assert!(store.filesystem_path_granted(&caller, std::path::Path::new("/home/u/proj")));
             assert!(
                 store
@@ -1617,14 +1908,12 @@ mod tests {
                     .filesystem_path_granted(&other, std::path::Path::new("/home/u/proj/main.ts"))
             );
         }
-        // Phase `grant_store_returns_none_for_missing_app`.
         {
             let ws = empty_ws(12);
             let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
             let caller = PortalCaller::new(ws_id, "no.such.app");
             assert!(store.lookup(&caller, CapabilityKind::Camera).is_none());
         }
-        // Phase `grant_store_insert_appends_into_workspace`.
         {
             let ws = empty_ws(13);
             let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
@@ -1685,7 +1974,6 @@ mod tests {
                  (audit C-3: shared WorkspaceTreeHandle ties subsystems together)",
             );
         }
-        // Phase `caller_map_round_trips`.
         {
             let m = CallerMap::new();
             let caller = PortalCaller::new(WorkspaceId(7), "app.x");
@@ -1697,7 +1985,6 @@ mod tests {
 
     #[test]
     fn prompt_queue_resolves_buffers_and_cancels_exactly_one_request() {
-        // Phase `prompt_queue_auto_allow_resolves_immediately`.
         {
             let q = PromptQueueHandle::new(PromptResolver::AutoAllow);
             let caller = PortalCaller::new(WorkspaceId(1), "app");
@@ -1708,7 +1995,6 @@ mod tests {
             // Nothing should have been buffered.
             assert_eq!(q.queued_len(), 0);
         }
-        // Phase `prompt_queue_channel_buffers_for_drain`.
         {
             let q = PromptQueueHandle::new(PromptResolver::Channel);
             let caller = PortalCaller::new(WorkspaceId(2), "app");
@@ -1719,7 +2005,6 @@ mod tests {
             assert_eq!(drained[0].caller, caller);
             assert_eq!(q.queued_len(), 0);
         }
-        // Phase `cancelling_one_request_prompt_never_removes_another`.
         {
             let q = PromptQueueHandle::new(PromptResolver::Channel);
             let caller = PortalCaller::new(WorkspaceId(3), "app");
@@ -1751,7 +2036,6 @@ mod tests {
                 "dropped UI sheet cancels only its own request"
             );
         }
-        // Phase `cancellation_before_enqueue_closes_the_request_enqueue_race`.
         {
             let q = PromptQueueHandle::new(PromptResolver::Channel);
             assert!(q.cancel_request("/request/racing"));
@@ -1774,7 +2058,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn flow_resolve_persists_only_session_and_always_outcomes() {
-        // Phase `flow_resolve_fast_path_always_grant_skips_prompt`.
         {
             // Channel mode would buffer any enqueued request, so an empty queue at the end proves the fast path bypassed it.
             let mut ws = empty_ws(21);
@@ -1802,7 +2085,6 @@ mod tests {
             assert_eq!(outcome, PromptOutcome::AllowAlways);
             assert_eq!(queue.queued_len(), 0, "fast path must skip enqueue");
         }
-        // Phase `flow_resolve_session_outcome_persists_grant`.
         {
             let ws = empty_ws(22);
             let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
@@ -1838,7 +2120,6 @@ mod tests {
                 "a local privacy choice must never enter replicated workspace state"
             );
         }
-        // Phase `always_portal_consent_is_private_and_survives_restart`.
         {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("consents.json");
@@ -1867,7 +2148,6 @@ mod tests {
                     .is_none()
             );
         }
-        // Phase `flow_resolve_once_outcome_does_not_persist`.
         {
             let ws = empty_ws(23);
             let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
@@ -1890,7 +2170,6 @@ mod tests {
                 "Once outcomes must not persist"
             );
         }
-        // Phase `flow_resolve_deny_outcome_is_propagated`.
         {
             let ws = empty_ws(24);
             let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);

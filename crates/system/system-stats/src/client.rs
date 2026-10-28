@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 
 use crate::protocol::{
-    Grant, Grants, Handoff, PROTOCOL, Refusal, Reply, Request, SERVICE, Snapshot, read_message,
+    Grants, Handoff, PROTOCOL, Refusal, Reply, Request, SERVICE, Snapshot, Storage, read_message,
     write_handoff, write_message,
 };
 
@@ -172,9 +172,6 @@ impl Client {
     }
 
     /// Dial the session's socket as the unconfined program `app_id`.
-    ///
-    /// # Errors
-    /// There is no session service to reach.
     pub fn connect_unconfined(socket: &std::path::Path, app_id: &str) -> std::io::Result<Self> {
         let mut stream = UnixStream::connect(socket)?;
         write_handoff(
@@ -312,16 +309,18 @@ impl Client {
         })?)
     }
 
-    /// Ask the person for `grant`; the connection's grants once they
-    /// answered yes.
+    /// The machine's storage: every block device, its partitions,
+    /// filesystems and encryption, and each drive's health.
     ///
     /// # Errors
-    /// They declined, or nobody could be asked.
-    pub fn ask_grant(&self, grant: Grant) -> Result<Grants, Refusal> {
-        match self.call(|request| Request::AskGrant { request, grant })? {
-            Reply::Grants { grants, .. } => Ok(grants),
+    /// The service's refusal.
+    pub fn storage(&self) -> Result<Storage, Refusal> {
+        match self.call(|request| Request::Storage { request })? {
+            Reply::Storage { storage, .. } => Ok(*storage),
             Reply::Refused { refusal, .. } => Err(refusal),
-            _ => Err(Refusal::Declined),
+            _ => Err(Refusal::Failed {
+                detail: "unexpected answer".into(),
+            }),
         }
     }
 }
@@ -360,7 +359,8 @@ fn deliver(inner: &Inner, reply: Reply) {
         }
         Reply::Grants { request, .. }
         | Reply::Ended { request, .. }
-        | Reply::Refused { request, .. } => {
+        | Reply::Refused { request, .. }
+        | Reply::Storage { request, .. } => {
             let waiter = lock(&inner.pending).remove(&request);
             if let Some(waiter) = waiter {
                 let _ = waiter.send(reply);

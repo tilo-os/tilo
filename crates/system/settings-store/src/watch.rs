@@ -48,11 +48,12 @@ pub fn watch_settings_at(
     let Some(file_name) = path.file_name().map(std::ffi::OsStr::to_os_string) else {
         return Err(std::io::Error::other("settings path has no file name"));
     };
-    watch_directory(
-        directory,
-        move |changed| changed.file_name() == Some(file_name.as_os_str()),
-        on_change,
-    )
+    watch_directory(directory, names_file(file_name), on_change)
+}
+
+/// Whether a changed path is the settings file named `file_name`.
+fn names_file(file_name: std::ffi::OsString) -> impl Fn(&Path) -> bool + Send + 'static {
+    move |changed| changed.file_name() == Some(file_name.as_os_str())
 }
 
 /// Watch the existing identity directory for selector and identity-record changes.
@@ -65,18 +66,19 @@ pub fn watch_identity_at(
     directory: &Path,
     on_change: impl Fn() + Send + 'static,
 ) -> std::io::Result<SettingsWatch> {
-    let root = directory.to_owned();
-    watch_directory(
-        directory,
-        move |path| {
-            path.parent() == Some(root.as_path())
-                && (path.file_name().is_some_and(|name| name == "active")
-                    || path
-                        .extension()
-                        .is_some_and(|extension| extension == "json"))
-        },
-        on_change,
-    )
+    watch_directory(directory, identity_entry(directory.to_owned()), on_change)
+}
+
+/// Whether a changed path is the identity selector or an identity record
+/// directly in `root`.
+fn identity_entry(root: std::path::PathBuf) -> impl Fn(&Path) -> bool + Send + 'static {
+    move |path| {
+        path.parent() == Some(root.as_path())
+            && (path.file_name().is_some_and(|name| name == "active")
+                || path
+                    .extension()
+                    .is_some_and(|extension| extension == "json"))
+    }
 }
 
 /// Watch atomic account-dictionary publications, excluding temporary files and
@@ -120,27 +122,57 @@ fn watch_directory(
 mod tests {
     use super::*;
     use std::sync::mpsc;
-    use std::time::Duration;
+
+    /// A watch whose every notification says what `look` saw when it ran.
+    fn watch_seeing<T: Send + 'static>(
+        start: impl FnOnce(Box<dyn Fn() + Send>) -> std::io::Result<SettingsWatch>,
+        look: impl Fn() -> T + Send + 'static,
+    ) -> (SettingsWatch, mpsc::Receiver<T>) {
+        let (sender, seen) = mpsc::channel();
+        let watch = start(Box::new(move || {
+            let _ = sender.send(look());
+        }))
+        .unwrap();
+        (watch, seen)
+    }
+
+    /// Waits for a notification that ran once `seen` holds.
+    fn notified_after<T>(what: &str, seen: &mpsc::Receiver<T>, holds: impl Fn(&T) -> bool) {
+        while !holds(&tilo_test_env::recv(what, seen)) {}
+    }
 
     #[test]
     fn identity_switch_and_selected_record_removal_wake_consumers() {
         let root = crate::tests::tmpdir();
-        let (sender, changes) = mpsc::channel();
-        let _watch = watch_identity_at(&root, move || {
-            let _ = sender.send(());
-        })
-        .unwrap();
-        std::fs::write(root.join("unrelated.txt"), "unrelated").unwrap();
-        assert!(changes.recv_timeout(Duration::from_millis(100)).is_err());
+        let looking = root.clone();
+        let (_watch, seen) = watch_seeing(
+            |on_change| watch_identity_at(&root, on_change),
+            move || {
+                (
+                    std::fs::read_to_string(looking.join("active")).ok(),
+                    looking.join("work.json").exists(),
+                )
+            },
+        );
         std::fs::write(root.join("active"), "work").unwrap();
-        changes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-        while changes.recv_timeout(Duration::from_millis(100)).is_ok() {}
+        notified_after("the identity switch", &seen, |(active, _)| {
+            active.as_deref() == Some("work")
+        });
         std::fs::write(root.join("work.json"), "{}").unwrap();
-        changes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-        while changes.recv_timeout(Duration::from_millis(100)).is_ok() {}
+        notified_after("the new record", &seen, |(_, record)| *record);
         std::fs::remove_file(root.join("work.json")).unwrap();
-        changes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+        notified_after("the record's removal", &seen, |(_, record)| !*record);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn only_the_selector_and_records_in_the_identity_directory_are_its_entries() {
+        let root = std::path::PathBuf::from("/identities");
+        let entry = identity_entry(root.clone());
+        assert!(entry(&root.join("active")));
+        assert!(entry(&root.join("work.json")));
+        assert!(!entry(&root.join("unrelated.txt")));
+        assert!(!entry(&root.join("nested").join("work.json")));
     }
 
     /// The watch threads this process runs, by thread id.
@@ -155,24 +187,6 @@ mod tests {
                     .is_ok_and(|name| name.trim() == tilo_files::native::CHANGE_WATCH_THREAD)
             })
             .collect()
-    }
-
-    /// How often the thread blocked, and whether it is blocked now.
-    #[cfg(target_os = "linux")]
-    fn blocked(tid: &str) -> (u64, bool) {
-        let status = std::fs::read_to_string(format!("/proc/self/task/{tid}/status")).unwrap();
-        let field = |name: &str| {
-            status
-                .lines()
-                .find_map(|line| line.strip_prefix(name))
-                .map(str::trim)
-                .unwrap_or_default()
-                .to_owned()
-        };
-        (
-            field("voluntary_ctxt_switches:").parse().unwrap(),
-            field("State:").starts_with('S'),
-        )
     }
 
     #[cfg(target_os = "linux")]
@@ -193,18 +207,18 @@ mod tests {
             tid = watch_threads()
                 .into_iter()
                 .find(|candidate| !before.contains(candidate));
-            tid.as_deref().is_some_and(|tid| blocked(tid).1)
+            tid.as_deref()
+                .is_some_and(|tid| crate::tests::blocked(tid).1)
         });
         let tid = tid.unwrap();
-        let (switches, _) = blocked(&tid);
+        let (switches, _) = crate::tests::blocked(&tid);
         for _ in 0..20 {
             std::fs::read(&record).unwrap();
             let _ = std::fs::read_dir(&root).unwrap().count();
             std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
-        std::thread::sleep(Duration::from_millis(200));
         assert_eq!(
-            blocked(&tid).0,
+            crate::tests::blocked_count(&tid),
             switches,
             "reading the watched directory woke the watch thread"
         );
@@ -215,29 +229,36 @@ mod tests {
     fn an_atomic_rewrite_is_reported_and_sibling_files_are_not() {
         let root = crate::tests::tmpdir();
         let path = root.join("tilo").join("settings.json");
-        let (sender, changes) = mpsc::channel();
-        let _watch = watch_settings_at(&path, move || {
-            let _ = sender.send(());
-        })
-        .unwrap();
-
-        std::fs::write(root.join("tilo").join("unrelated.json"), "{}").unwrap();
-        assert!(
-            changes.recv_timeout(Duration::from_millis(300)).is_err(),
-            "a sibling file is not the settings document"
+        let looking = path.clone();
+        let (_watch, seen) = watch_seeing(
+            |on_change| watch_settings_at(&path, on_change),
+            move || crate::load_at(&looking),
         );
 
+        let theme_is = |theme: &'static str| {
+            move |document: &serde_json::Map<String, serde_json::Value>| {
+                document
+                    .get("appearance")
+                    .and_then(|appearance| appearance.get("theme"))
+                    .is_some_and(|seen| seen == theme)
+            }
+        };
         let mut theme = serde_json::Map::new();
         theme.insert("theme".into(), serde_json::json!("Light"));
         crate::update_section_at(&path, "appearance", theme.clone()).unwrap();
-        changes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-        while changes.recv_timeout(Duration::from_millis(100)).is_ok() {}
+        notified_after("the first save", &seen, theme_is("Light"));
 
         theme.insert("theme".into(), serde_json::json!("Dark"));
         crate::update_section_at(&path, "appearance", theme).unwrap();
-        changes
-            .recv_timeout(tilo_test_env::hang_bound())
-            .expect("a second atomic save still reaches the watch");
+        notified_after("a second atomic save", &seen, theme_is("Dark"));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_sibling_file_is_not_the_settings_document() {
+        let names = names_file("settings.json".into());
+        assert!(names(Path::new("/config/tilo/settings.json")));
+        assert!(!names(Path::new("/config/tilo/unrelated.json")));
+        assert!(!names(Path::new("/config/tilo/.settings.json.tmp")));
     }
 }

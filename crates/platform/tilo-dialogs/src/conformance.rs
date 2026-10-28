@@ -17,8 +17,11 @@ use crate::portal::{
 };
 use crate::{FilePicker, UriOpener};
 
-/// How long a backend may take to answer a request it must refuse.
-const ANSWER: Duration = Duration::from_secs(10);
+/// How long a backend may take to answer a request it must refuse before
+/// the check calls it hung.
+fn answer() -> Duration {
+    tilo_test_env::hang_bound()
+}
 
 /// Every request answers exactly once, and requests that cannot succeed fail
 /// cleanly instead of opening a chooser or hanging.
@@ -27,7 +30,7 @@ pub fn check_picker_contract(picker: &dyn FilePicker) {
         matches!(
             picker
                 .open_file(PickRequest::save("Save", "Save", "x.txt"))
-                .recv_timeout(ANSWER),
+                .recv_timeout(answer()),
             Ok(OpenFileOutcome::Failed(_))
         ),
         "an open-descriptor request must be a single-file Open chooser"
@@ -36,7 +39,7 @@ pub fn check_picker_contract(picker: &dyn FilePicker) {
         matches!(
             picker
                 .open_file(PickRequest::open_multiple("Open", "Open"))
-                .recv_timeout(ANSWER),
+                .recv_timeout(answer()),
             Ok(OpenFileOutcome::Failed(_))
         ),
         "an open-descriptor request must not be multi-select"
@@ -45,7 +48,7 @@ pub fn check_picker_contract(picker: &dyn FilePicker) {
         matches!(
             picker
                 .launch(LaunchRequest::open("relative/file.txt"))
-                .recv_timeout(ANSWER),
+                .recv_timeout(answer()),
             Ok(LaunchOutcome::Failed(_))
         ),
         "a relative path must never reach the desktop's opener"
@@ -54,7 +57,7 @@ pub fn check_picker_contract(picker: &dyn FilePicker) {
         matches!(
             picker
                 .save_contents(PickRequest::open("Open", "Open"), b"x".to_vec())
-                .recv_timeout(ANSWER),
+                .recv_timeout(answer()),
             Ok(SaveOutcome::Failed(_))
         ),
         "only a Save chooser saves contents"
@@ -63,7 +66,7 @@ pub fn check_picker_contract(picker: &dyn FilePicker) {
         matches!(
             picker
                 .pick_contents(PickRequest::directory("Folder", "Choose"))
-                .recv_timeout(ANSWER),
+                .recv_timeout(answer()),
             Ok(ContentsOutcome::Failed(_))
         ),
         "only an Open chooser delivers contents"

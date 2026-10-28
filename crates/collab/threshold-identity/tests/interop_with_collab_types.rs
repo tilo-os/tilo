@@ -169,7 +169,6 @@ fn threshold_signed_op_passes_inbound_validator() {
     let att_sig = collab_types::sign_event(&sig_bytes, &owner_sk).unwrap();
     attestation.signature = att_sig;
 
-    // Build the SignedOp.
     let artifact = ArtifactId::new();
     let mut op = SignedOp::new_unsigned(
         b"some-automerge-change".to_vec(),

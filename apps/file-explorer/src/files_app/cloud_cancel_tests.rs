@@ -9,10 +9,11 @@ use tilo_cloud_files::cloud::{CLOUD_FRAMING, CloudRequest, CloudResponse, Import
 fn cancel_action_closes_preparing_export_and_retry_records_only_failed_copy() {
     let mut env = tilo_test_env::ScopedEnv::new();
     let root = tempfile::tempdir().unwrap();
-    env.set("XDG_RUNTIME_DIR", root.path());
+    let runtime = tilo_test_env::runtime_tempdir().unwrap();
+    env.set("XDG_RUNTIME_DIR", runtime.path());
     let destination = root.path().join("Chosen");
     std::fs::create_dir(&destination).unwrap();
-    let socket = tilo_cloud_files::cloud::files_socket_in(root.path());
+    let socket = tilo_cloud_files::cloud::files_socket_in(runtime.path());
     std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     let entry = ImportEntry {
@@ -86,7 +87,7 @@ fn cancel_action_closes_preparing_export_and_retry_records_only_failed_copy() {
             account: "account".into(),
         })
         .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     while files.cloud.pending.is_some() {
         assert!(std::time::Instant::now() < deadline);
         files.poll_cloud();
@@ -100,9 +101,7 @@ fn cancel_action_closes_preparing_export_and_retry_records_only_failed_copy() {
         .run_effect(FilesEffect::ImportCloud { folder: None })
         .unwrap();
     files.poll_cloud();
-    ready_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .unwrap();
+    ready_rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
     files.run_effect(FilesEffect::CancelCloud).unwrap();
     while files.cloud.transfer.is_some() {
         assert!(std::time::Instant::now() < deadline);

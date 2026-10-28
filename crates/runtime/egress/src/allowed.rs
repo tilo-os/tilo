@@ -73,7 +73,6 @@ impl AllowedAddrs {
         }
     }
 
-    /// Whether `addr` is admitted at `now`.
     pub fn contains(&self, addr: IpAddr, now: Instant) -> bool {
         self.until.get(&addr).is_some_and(|until| *until > now)
     }

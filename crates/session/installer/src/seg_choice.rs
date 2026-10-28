@@ -79,6 +79,18 @@ impl SegChoice {
             control.fire();
         }
     }
+
+    /// The `i`th segment's fill and label ink. The chosen segment takes the
+    /// accent with the theme's own label for it: the accent is light in high
+    /// contrast and on a soft dark theme, where a white label vanishes.
+    fn segment_face(&self, i: usize, theme: &Theme) -> (Color, Color) {
+        let colors = &theme.tokens.colors;
+        if i == self.selected {
+            (colors.intent.accent, colors.intent.on_accent)
+        } else {
+            (colors.surfaces.raised, theme.text_primary)
+        }
+    }
 }
 
 impl Widget for SegChoice {
@@ -130,11 +142,7 @@ impl Widget for SegChoice {
         // Per-segment fills, clipped to the rounded outer shape.
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &outer);
         for (i, seg) in self.segment_rects.iter().enumerate() {
-            let fill = if i == self.selected {
-                theme.tokens.colors.intent.accent
-            } else {
-                theme.tokens.colors.surfaces.raised
-            };
+            let (fill, _) = self.segment_face(i, theme);
             scene.fill(Fill::NonZero, transform, fill, None, seg);
         }
         scene.pop_layer();
@@ -170,11 +178,7 @@ impl Widget for SegChoice {
             .zip(self.labels.iter())
             .enumerate()
         {
-            let color = if i == self.selected {
-                Color::WHITE
-            } else {
-                theme.text_primary
-            };
+            let (_, color) = self.segment_face(i, theme);
             let (tw, th) = text_renderer.measure(label, LABEL_SIZE, None);
             let tx = seg.center().x - f64::from(tw) / 2.0;
             let ty = seg.y0 + (seg.height() - f64::from(th)) / 2.0;
@@ -282,6 +286,27 @@ mod tests {
     use crate::control::{Press, Presses};
 
     use ui::synthetic_input::named_key;
+
+    #[test]
+    fn every_segment_label_reads_on_its_fill_in_every_theme() {
+        use ui::theme::Preset;
+        use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
+
+        let labels = vec!["btrfs".into(), "ext4".into()];
+        let choice = SegChoice::new(labels, Vec::new(), 0);
+        for preset in Preset::ALL {
+            let theme = Theme::preset(preset);
+            for i in 0..2 {
+                let (fill, ink) = choice.segment_face(i, &theme);
+                let ratio = ui::a11y::contrast_ratio(ink, fill);
+                assert!(
+                    ratio >= ON_FILL_MIN_CONTRAST,
+                    "{}: segment {i} label reads at {ratio:.2}:1 on its fill",
+                    preset.id()
+                );
+            }
+        }
+    }
 
     #[test]
     fn arrowing_fires_the_neighbouring_segments_action() {

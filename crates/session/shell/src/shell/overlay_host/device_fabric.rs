@@ -103,6 +103,9 @@ pub struct DeviceFabricView {
     pub(crate) remote_capture: crate::shell::remote_capture::runtime::RemoteCaptureView,
     /// Boots of the person's devices waiting for `device.unlock` here.
     pub device_unlocks: Vec<crate::shell::device_unlock_runtime::DeviceUnlockConsentView>,
+    /// Routing traffic through the person's devices, as this session last
+    /// published it; `None` where it does not run.
+    pub device_vpn: Option<settings_store::device_vpn::DeviceVpnStatus>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -116,6 +119,11 @@ pub enum DeviceFabricUiAction {
     /// device awake on its LAN.
     WakeDevice {
         device: String,
+    },
+    /// Move the window in front here to `target`, another of the person's
+    /// devices: it shows that window from now on.
+    ShowWindowOn {
+        target: crate::shell::personal_continuity::DeviceId,
     },
     HandoffMedia {
         session_id: String,
@@ -229,6 +237,22 @@ pub enum DeviceFabricUiAction {
         request_digest: [u8; 32],
         approved: bool,
     },
+    /// Route this device's traffic through `device` (endpoint id, hex).
+    RouteThrough {
+        device: String,
+    },
+    /// Stop routing this device's traffic through `device`.
+    StopRouteThrough {
+        device: String,
+    },
+    /// Stop `device` routing its traffic through this one.
+    StopExitUser {
+        device: String,
+    },
+    /// Let the person's other devices route through this one, or stop.
+    ShareConnection {
+        on: bool,
+    },
     /// Remove a device from the person's fleet.
     RemoveDevice {
         device: crate::shell::personal_continuity::DeviceId,
@@ -289,7 +313,6 @@ pub(super) enum DeviceFabricPaneRow {
     SpeakerMembership(crate::shell::speaker_group_runtime::SpeakerMembershipView),
     /// Opens Settings → Speakers to make a new set.
     SpeakerSetup,
-    RemoteCaptureConsent(crate::shell::remote_capture::runtime::RemoteCaptureConsentView),
     RemoteCaptureSource(crate::shell::remote_capture::device::RemoteCaptureKind),
     RemoteCaptureSession(crate::shell::remote_capture::runtime::RemoteCaptureSessionView),
     RemoteCaptureDegraded(crate::shell::remote_capture::runtime::RemoteCaptureDegradedView),
@@ -301,7 +324,6 @@ pub(super) enum DeviceFabricPaneRow {
     LocalGamepad(crate::shell::physical_gamepad::LocalPhysicalGamepadView),
     MediaHandoff(crate::shell::device_fabric_runtime::MediaHandoffStatusView),
     Media(FabricMediaView),
-    LocalOutput(LocalMediaOutputView),
     LocalInput(LocalMediaInputView),
     Tethering(crate::shell::personal_tethering_runtime::TetheringStatusView),
     Device(FabricDeviceView),
@@ -417,13 +439,9 @@ pub(super) fn device_fabric_pane_rows(
                 .cloned()
                 .map(DeviceFabricPaneRow::RemoteAudioSource),
         )
-        .chain(
-            view.remote_capture
-                .consents
-                .iter()
-                .cloned()
-                .map(DeviceFabricPaneRow::RemoteCaptureConsent),
-        )
+        // A request to share this device's camera, microphone or scanner
+        // is asked on the consent sheet (`device_fabric_runtime::
+        // remote_capture`), never as a row here.
         .chain(
             [
                 (
@@ -507,12 +525,8 @@ pub(super) fn device_fabric_pane_rows(
                 .cloned()
                 .map(DeviceFabricPaneRow::Media),
         )
-        .chain(
-            view.local_outputs
-                .iter()
-                .cloned()
-                .map(DeviceFabricPaneRow::LocalOutput),
-        )
+        // This machine's sound outputs are chosen under the volume slider,
+        // the one place speaker choice lives.
         .chain(
             view.local_inputs
                 .iter()
@@ -592,7 +606,7 @@ pub(super) fn sentence_case(text: &str) -> String {
 
 /// The catalogue key naming a remote input ("camera"), as the `$input` of a
 /// sentence.
-pub(super) const fn remote_capture_kind_key(
+pub(crate) const fn remote_capture_kind_key(
     kind: crate::shell::remote_capture::device::RemoteCaptureKind,
 ) -> &'static str {
     match kind {

@@ -12,6 +12,10 @@ pub struct PreviewView {
     pub scroll: (f64, f64),
     pub zoom: f64,
     pub page: Option<String>,
+    /// The live window's own presentation (a mode, the open item), so a
+    /// past version opens as the window shows it, drawn by the same view
+    /// ([`crate::application_view::ApplicationViewState`]).
+    pub application: Option<crate::application_view::ApplicationLocalView>,
 }
 
 impl Default for PreviewView {
@@ -20,6 +24,7 @@ impl Default for PreviewView {
             scroll: (0.0, 0.0),
             zoom: 1.0,
             page: None,
+            application: None,
         }
     }
 }

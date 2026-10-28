@@ -111,9 +111,6 @@ fn searchable_window() -> WindowGroup {
     group
 }
 
-// USER REQUIREMENT (2026-10-19): "search right next to the title (clicking it
-// expands into an in-place search field)" and "In place: it acts on this
-// window or app. Lists filter, documents highlight with "n of m"."
 #[test]
 fn find_opens_the_search_in_the_window_bar_and_highlights_the_document_with_n_of_m() {
     let mut group = searchable_window();
@@ -157,8 +154,6 @@ fn find_opens_the_search_in_the_window_bar_and_highlights_the_document_with_n_of
     assert!(draft(&mut group).cleared, "closing stops the highlights");
 }
 
-// USER REQUIREMENT (2026-10-19): "The scope widens step by step (this view →
-// this app → everywhere)."
 #[test]
 fn find_again_widens_the_search_to_the_whole_app_with_the_query() {
     let mut group = searchable_window();
@@ -226,10 +221,6 @@ fn app_window_in_its_own_process() -> WindowGroup {
     group
 }
 
-// USER REQUIREMENT (2026-10-19): "In place: it acts on this window or app.
-// Lists filter" -- for an app that runs as its own window, whose list the
-// window cannot look into: it goes by what the app offers over its
-// connection.
 #[test]
 fn an_app_in_its_own_process_gets_the_query_and_the_bar_shows_its_count() {
     use crate::window_toolbar::{SearchCount, SearchOffer, ToolbarEvent, WindowOffer};
@@ -238,8 +229,11 @@ fn an_app_in_its_own_process_gets_the_query_and_the_bar_shows_its_count() {
         search: SearchOffer::List,
         ..WindowOffer::default()
     };
-    assert!(group.set_tab_window_offer(1, Some(list)));
-    assert!(!group.set_tab_window_offer(1, Some(list)), "nothing new");
+    assert!(group.set_tab_window_offer(1, Some(list.clone())));
+    assert!(
+        !group.set_tab_window_offer(1, Some(list.clone())),
+        "nothing new"
+    );
 
     group.open_search(crate::tokens::MotionSource::Pointer);
     assert!(group.window_search().is_open() && group.window_search().is_remote());
@@ -301,4 +295,74 @@ fn an_app_in_its_own_process_with_nothing_to_search_in_place_opens_the_platform_
         Some(SearchReach::App)
     );
     assert!(group.take_toolbar_events().is_empty());
+}
+
+/// Lay the window out and draw it, as its host does in a frame.
+fn laid_out_window(group: &mut WindowGroup) {
+    use taffy::prelude::TaffyMaxContent;
+    let theme = Theme::dark();
+    let mut taffy = TaffyTree::<()>::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let node = group.build_layout(&mut taffy, &theme, &mut node_map);
+    let root = taffy.parent_node(Style::default(), &[node]);
+    taffy
+        .compute_layout(root, Size::MAX_CONTENT)
+        .expect("the window lays out");
+    group.apply_layout(&taffy, node, Point::ZERO);
+    // The bar's search lays itself out as it is drawn.
+    group.draw(
+        &mut Scene::new(),
+        Affine::IDENTITY,
+        &mut TextRenderer::new(),
+        &theme,
+        &PresenceCtx::empty(),
+    );
+}
+
+/// What the bar's top layer paints, for a host that draws it itself.
+fn bar_top_layer_tags(group: &mut WindowGroup) -> usize {
+    let mut scene = Scene::new();
+    group.draw_bar_popups(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut TextRenderer::new(),
+        &Theme::dark(),
+        &PresenceCtx::empty(),
+    );
+    scene.encoding().draw_tags.len()
+}
+
+#[test]
+fn a_host_that_paints_the_bars_top_layer_itself_paints_the_open_search_options() {
+    use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
+    let mut group = searchable_window();
+    group.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
+    let mut find = Dispatch::new().modifiers(ModifiersState::CONTROL);
+    find.send(&mut group, &char_key("f"));
+    let mut typing = Dispatch::new();
+    for key in ["c", "a", "t"] {
+        typing.send(&mut group, &char_key(key));
+    }
+    laid_out_window(&mut group);
+    let closed = bar_top_layer_tags(&mut group);
+
+    let (_, options) = group
+        .window_search()
+        .test_rects()
+        .into_iter()
+        .find(|(name, _)| name == "window-search-options")
+        .expect("the options control is in the bar");
+    let mut pointer = Dispatch::new();
+    pointer.send(
+        &mut group,
+        &cursor_moved(options.center().x, options.center().y),
+    );
+    pointer.send(&mut group, &mouse_press());
+    pointer.send(&mut group, &mouse_release());
+    assert!(group.window_search().options_open());
+    laid_out_window(&mut group);
+    assert!(
+        bar_top_layer_tags(&mut group) > closed,
+        "the options panel is painted with the bar's menus"
+    );
 }

@@ -1,4 +1,7 @@
 use super::*;
+
+/// Remote actions: who may still act, and what acting costs.
+mod remote_action_tests;
 use tilo_lock::MutexRecover as _;
 use tilo_relay_shell::ShellAuthority as _;
 use tilo_user_identity::{
@@ -418,18 +421,21 @@ async fn route_prefix_beyond_cap_scenario() {
     let authority =
         tilo_relay_protocol::retention::RetentionAuthority::new(room, cert.clone()).unwrap();
     let baseline = publisher
+        .publication_mut()
         .durable_bootstrap_messages(&key, now, 1)
         .unwrap()
         .iter()
         .map(|message| frame(&authority, message))
         .collect::<Vec<_>>();
     let next = publisher
+        .publication_mut()
         .durable_bootstrap_messages(&key, now, 2)
         .unwrap()
         .iter()
         .map(|message| frame(&authority, message))
         .collect::<Vec<_>>();
     let third = publisher
+        .publication_mut()
         .durable_bootstrap_messages(&key, now, 3)
         .unwrap()
         .iter()
@@ -1998,6 +2004,13 @@ async fn plain_subscription_discards_stale_lag_after_explicit_unsubscribe() {
         .await;
 }
 
+/// A read-only state request whose reply queues on the state lane like any
+/// other: a stand-in for replies waiting behind a held writer.
+fn reply_filler(workspace_id: u64) -> Vec<u8> {
+    tilo_delivery_protocol::transport_v2::encode_state(&Envelope::VoiceCalls { workspace_id })
+        .unwrap()
+}
+
 enum LagBoundary {
     Live,
     Unsubscribed,
@@ -2144,24 +2157,46 @@ async fn paused_state_private_roundtrip(
         );
         let unsubscribed = matches!(boundary, LagBoundary::Unsubscribed);
         if unsubscribed {
-            for frame in [Envelope::Unsubscribe { workspace_id: id }, Envelope::Ping] {
-                bw.write_all(&tilo_delivery_protocol::transport_v2::encode_state(&frame).unwrap())
+            bw.write_all(
+                &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Unsubscribe {
+                    workspace_id: id,
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+            // A heartbeat is answered ahead of a control still running, so
+            // the unsubscribe's own effect is what this waits for.
+            tilo_test_env::within("the explicit unsubscribe to complete", async {
+                while workspace
+                    .lock()
                     .await
-                    .unwrap();
-            }
-            let closed = tilo_test_env::within("the explicit unsubscribe to complete", async {
-                loop {
-                    match br.read_next().await.unwrap() {
-                        Some(EnvelopeV2::State(Envelope::Pong)) => break false,
-                        Some(EnvelopeV2::State(
-                            Envelope::Delta { .. } | Envelope::Ready { .. },
-                        )) => {}
-                        None => break true,
-                        other => panic!("unexpected explicit-unsubscribe reply: {other:?}"),
-                    }
+                    .state_sessions
+                    .contains_key(&b.device_public_key)
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                 }
             })
             .await;
+            bw.write_all(
+                &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Ping).unwrap(),
+            )
+            .await
+            .unwrap();
+            let closed =
+                tilo_test_env::within("the session to answer after its unsubscribe", async {
+                    loop {
+                        match br.read_next().await.unwrap() {
+                            Some(EnvelopeV2::State(Envelope::Pong)) => break false,
+                            Some(EnvelopeV2::State(
+                                Envelope::Delta { .. } | Envelope::Ready { .. },
+                            )) => {}
+                            None => break true,
+                            other => panic!("unexpected explicit-unsubscribe reply: {other:?}"),
+                        }
+                    }
+                })
+                .await;
             if closed {
                 // The relay ended the session: say how, not just that it did.
                 let ended = tilo_test_env::within("the closed session's outcome", tasks.remove(1))
@@ -2193,10 +2228,15 @@ async fn paused_state_private_roundtrip(
             .unwrap();
         let mut frames = Vec::new();
         let mut ready = 0_usize;
+        // The heartbeat answers at once, possibly ahead of a catch-up still
+        // replaying: a live subscription waits for its replay's Ready too.
+        // An unsubscribed one starts no replay, so its Pong follows every
+        // reply the lag hint could have produced.
+        let mut answered = false;
         tilo_test_env::within("retained catch-up before the next peer reply", async {
-            loop {
+            while !(answered && (unsubscribed || ready > 0)) {
                 match br.read_next().await.unwrap() {
-                    Some(EnvelopeV2::State(Envelope::Pong)) => break,
+                    Some(EnvelopeV2::State(Envelope::Pong)) => answered = true,
                     Some(EnvelopeV2::State(Envelope::Ready { .. })) => {
                         ready = ready.checked_add(1).unwrap();
                     }
@@ -2305,12 +2345,10 @@ async fn paused_state_private_roundtrip(
     }
     reached.await.unwrap();
     if held_cleanup {
+        // Replies that queue behind the held replay until the reply queue,
+        // then the reader's backlog, is full.
         for _ in 0..if full_backlog { 64 } else { 12 } {
-            aw.write_all(
-                &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Ping).unwrap(),
-            )
-            .await
-            .unwrap();
+            aw.write_all(&reply_filler(id)).await.unwrap();
         }
     }
     if full_backlog {
@@ -2334,15 +2372,28 @@ async fn paused_state_private_roundtrip(
             Some(EnvelopeV2::State(Envelope::Ready { .. }))
         ));
         for _ in 0..64 {
-            assert_eq!(
+            assert!(matches!(
                 ar.read_next().await.unwrap(),
-                Some(EnvelopeV2::State(Envelope::Pong))
-            );
+                Some(EnvelopeV2::State(Envelope::VoiceCallList { .. }))
+            ));
         }
         for task in tasks {
             task.abort();
         }
         return;
+    }
+    if held_cleanup {
+        // Behind a full reply queue and a writer held in the replay's store
+        // cleanup, as on a slow disk, a heartbeat is still answered.
+        aw.write_all(&tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Ping).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            tilo_test_env::within("a heartbeat answered under the held replay", ar.read_next())
+                .await
+                .unwrap(),
+            Some(EnvelopeV2::State(Envelope::Pong))
+        );
     }
     assert!(
         store.load_retained().unwrap().is_empty(),
@@ -2487,7 +2538,7 @@ async fn heartbeat_keeps_progress_during_unrelated_workspace_admission() {
 }
 
 #[tokio::test]
-async fn heartbeat_does_not_overtake_queued_capability_control() {
+async fn heartbeat_is_answered_ahead_of_queued_capability_control() {
     capability_control_lookahead(false, 4).await;
 }
 
@@ -2670,18 +2721,16 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
         )
         .await
         .unwrap();
-        // A real later private response proves this reader and writer are
-        // live. Only an earlier control may hold the heartbeat behind it.
-        let first = tilo_test_env::within("the heartbeat or later private reply", ar.read_next())
+        // The heartbeat is answered at once, ahead of the held state
+        // admission and of any capability control queued behind it; a real
+        // later private response proves the reader and writer stay live.
+        let first = tilo_test_env::within("the heartbeat", ar.read_next())
             .await
             .unwrap();
-        let later = if !gated && first == Some(EnvelopeV2::State(Envelope::Pong)) {
+        let later =
             tilo_test_env::within("the private response after the heartbeat", ar.read_next())
                 .await
-                .unwrap()
-        } else {
-            None
-        };
+                .unwrap();
         assert!(store.load_retained().unwrap().is_empty());
         drop(release);
         let owner = crate::persistence::handle(&held_workspace).await;
@@ -2693,16 +2742,10 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
                 .await
                 .unwrap();
         assert_eq!(delivered_state, Some(EnvelopeV2::State(envelope)));
-        let after_control = if gated
-            && matches!(&first, Some(EnvelopeV2::Delivered { action, .. }) if action == &response)
-        {
-            let ready = tilo_test_env::within("the queued capability reply", ar.read_next())
+        let ready = if gated {
+            tilo_test_env::within("the queued capability reply", ar.read_next())
                 .await
-                .unwrap();
-            let pong = tilo_test_env::within("the heartbeat after its control", ar.read_next())
-                .await
-                .unwrap();
-            Some((ready, pong))
+                .unwrap()
         } else {
             None
         };
@@ -2710,26 +2753,19 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
             task.abort();
             let _ = task.await;
         }
+        assert_eq!(
+            first,
+            Some(EnvelopeV2::State(Envelope::Pong)),
+            "a live transport withheld its heartbeat behind a held state admission or control"
+        );
+        assert!(
+            matches!(later, Some(EnvelopeV2::Delivered { action, .. }) if action == response),
+            "heartbeat progress lost the authorized private response"
+        );
         if gated {
             assert!(
-                matches!(first, Some(EnvelopeV2::Delivered { action, .. }) if action == response),
-                "a heartbeat crossed its earlier capability control"
-            );
-            let (ready, pong) = after_control.unwrap();
-            assert!(matches!(
-                ready,
-                Some(EnvelopeV2::ActionsReady { room, .. }) if room == rooms[0]
-            ));
-            assert_eq!(pong, Some(EnvelopeV2::State(Envelope::Pong)));
-        } else {
-            assert_eq!(
-                first,
-                Some(EnvelopeV2::State(Envelope::Pong)),
-                "a live transport withheld its heartbeat behind unrelated state admission"
-            );
-            assert!(
-                matches!(later, Some(EnvelopeV2::Delivered { action, .. }) if action == response),
-                "heartbeat progress lost the authorized private response"
+                matches!(ready, Some(EnvelopeV2::ActionsReady { room, .. }) if room == rooms[0]),
+                "the capability control lost its reply: {ready:?}"
             );
         }
         return;
@@ -2774,12 +2810,10 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
     }
     reached.await.unwrap();
     if reply_wait {
+        // Replies that queue behind the held replay until the reply queue
+        // is full: the reader then waits on the writer.
         for _ in 0..12 {
-            aw.write_all(
-                &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Ping).unwrap(),
-            )
-            .await
-            .unwrap();
+            aw.write_all(&reply_filler(ids[2])).await.unwrap();
         }
     }
     let capability = match control {
@@ -3399,388 +3433,6 @@ impl crate::app_serving::AppServingPlane for CountingPlane {
 }
 
 #[tokio::test]
-async fn revoked_device_remote_action_is_refused() {
-    invalidated_device_remote_action_is_refused(false).await;
-}
-
-#[tokio::test]
-async fn removed_member_remote_action_is_refused() {
-    invalidated_device_remote_action_is_refused(true).await;
-}
-
-/// No access audit runs here: the handler itself refuses the next frame of
-/// a device revoked or removed while its subscription is still registered.
-async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
-    let (root, user) = UserIdentity::generate("alice", 1);
-    let (host, _) = certified_device(&root, user.public_key, "host");
-    let (a, _) = certified_device(&root, user.public_key, "a");
-    let id = 11;
-    let tmp = tempfile::tempdir().unwrap();
-    let mut wr = crate::workspace::WorkspaceRuntime::open(
-        tmp.path(),
-        id,
-        true,
-        crate::workspace::Membership::default(),
-    )
-    .unwrap();
-    wr.admit_device(a.device_public_key).unwrap();
-    let (atx, _arx) = mpsc::channel(2);
-    let (ap, _apr) = mpsc::channel(2);
-    let (disconnect, _disconnect_rx) = mpsc::channel(1);
-    wr.add_subscriber(Subscriber {
-        device_public_key: a.device_public_key,
-        role: a.role,
-        tx: atx.clone(),
-        disconnect: disconnect.clone(),
-    });
-    let registry = Arc::new(AsyncMutex::new(HashMap::from([(
-        id,
-        Arc::new(AsyncMutex::new(wr)),
-    )])));
-    let trust = Arc::new(std::sync::RwLock::new(
-        crate::policy::TrustPolicy::AllowMatchingUser,
-    ));
-    let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
-    let metrics = Arc::new(crate::metrics::Metrics::default());
-    let counting = Arc::new(CountingPlane::default());
-    let plane: Arc<dyn crate::app_serving::AppServingPlane> = counting.clone();
-    let session = SessionCtx {
-        workspaces: &registry,
-        autobind: None,
-        outbound: &atx,
-        state_outbound: None,
-        connection_live: None,
-        own_user_public_key: &user.public_key,
-        own_device_cert: &host.cert,
-        own_device_public_key: &host.cert.device_public_key,
-        app_serving: Some(&plane),
-        metrics: &metrics,
-        trust_policy: &trust,
-        disconnect: &disconnect,
-        presence: None,
-        private_tx: &ap,
-        revocations: &revocations,
-        live_bridge: None,
-        agents: Box::leak(Box::default()),
-        positions: None,
-        compactor: None,
-        member_limits: None,
-        resumes: Box::leak(Box::default()),
-        lag: Box::leak(Box::default()),
-    };
-    let frame = tilo_actions::remote::RemoteActionFrame::new(
-        tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
-            correlation: 1,
-            query: tilo_actions::remote::CatalogueQuery::default(),
-        },
-    )
-    .encode()
-    .unwrap();
-    let route = || RemoteActionRoute {
-        workspace_id: id,
-        version: crate::transport::REMOTE_ACTION_ENVELOPE_VERSION,
-        to: host.device_public_key,
-    };
-    let served = || counting.0.load(std::sync::atomic::Ordering::SeqCst);
-
-    // A current member reaches the plane through this very path.
-    assert_eq!(
-        handle_remote_action(&a, &session, &[id], route(), frame.clone()).await,
-        None
-    );
-    assert_eq!(served(), 1);
-
-    if remove_membership {
-        let workspace = registry.lock().await[&id].clone();
-        crate::workspace_io::replace_membership(&workspace, Vec::new())
-            .await
-            .unwrap();
-        assert!(
-            workspace
-                .lock()
-                .await
-                .subscribers
-                .contains_key(&a.device_public_key)
-        );
-    } else {
-        let mut entry = tilo_user_identity::RevocationEntry {
-            user_public_key: user.public_key,
-            revoked_device_public_key: a.device_public_key,
-            revoked_at_ns: 1,
-            reason: tilo_user_identity::RevocationReason::Lost,
-            signature: [0; 64],
-        };
-        tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
-        revocations.write().unwrap().insert(entry).unwrap();
-    }
-    let refused = handle_remote_action(&a, &session, &[id], route(), frame).await;
-    let Some(Envelope::RemoteActionUndeliverable {
-        reason,
-        to_device_public_key,
-        ..
-    }) = refused
-    else {
-        panic!("an invalidated device is answered as undeliverable, got {refused:?}");
-    };
-    assert_eq!(to_device_public_key, host.device_public_key);
-    assert_eq!(
-        UnavailableReason::from_wire_reason(&reason),
-        Some(UnavailableReason::NotAuthorised),
-        "{reason}"
-    );
-    assert_eq!(served(), 1, "an invalidated device never reaches the plane");
-}
-
-/// An action the host runs for a member spends that member's change
-/// budget, as a change they send does; reading the catalogue spends none.
-#[tokio::test]
-async fn a_members_actions_served_by_the_host_spend_their_change_budget() {
-    let (root, user) = UserIdentity::generate("alice", 1);
-    let (host, _) = certified_device(&root, user.public_key, "host");
-    // A guest: another person than the host's, whose budget applies.
-    let (guest_root, guest) = UserIdentity::generate("guest", 1);
-    let (a, _) = certified_device(&guest_root, guest.public_key, "a");
-    let id = 12;
-    let tmp = tempfile::tempdir().unwrap();
-    let mut wr = crate::workspace::WorkspaceRuntime::open(
-        tmp.path(),
-        id,
-        true,
-        crate::workspace::Membership::default(),
-    )
-    .unwrap();
-    wr.admit_device(a.device_public_key).unwrap();
-    let (atx, _arx) = mpsc::channel(2);
-    let (ap, _apr) = mpsc::channel(2);
-    let (disconnect, _disconnect_rx) = mpsc::channel(1);
-    wr.add_subscriber(Subscriber {
-        device_public_key: a.device_public_key,
-        role: a.role,
-        tx: atx.clone(),
-        disconnect: disconnect.clone(),
-    });
-    let registry = Arc::new(AsyncMutex::new(HashMap::from([(
-        id,
-        Arc::new(AsyncMutex::new(wr)),
-    )])));
-    let trust = Arc::new(std::sync::RwLock::new(crate::policy::TrustPolicy::AllowAny));
-    let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
-    let metrics = Arc::new(crate::metrics::Metrics::default());
-    let counting = Arc::new(CountingPlane::default());
-    let plane: Arc<dyn crate::app_serving::AppServingPlane> = counting.clone();
-    let limits =
-        crate::member_limits::MemberLimits::new(crate::member_limits::MemberLimitsConfig {
-            changes_per_window: 1,
-            window_secs: 3600,
-            burst: 2,
-            ..crate::member_limits::MemberLimitsConfig::default()
-        });
-    let session = SessionCtx {
-        workspaces: &registry,
-        autobind: None,
-        outbound: &atx,
-        state_outbound: None,
-        connection_live: None,
-        own_user_public_key: &user.public_key,
-        own_device_cert: &host.cert,
-        own_device_public_key: &host.cert.device_public_key,
-        app_serving: Some(&plane),
-        metrics: &metrics,
-        trust_policy: &trust,
-        disconnect: &disconnect,
-        presence: None,
-        private_tx: &ap,
-        revocations: &revocations,
-        live_bridge: None,
-        agents: Box::leak(Box::default()),
-        positions: None,
-        compactor: None,
-        member_limits: Some(&limits),
-        resumes: Box::leak(Box::default()),
-        lag: Box::leak(Box::default()),
-    };
-    let encode = |message| {
-        tilo_actions::remote::RemoteActionFrame::new(message)
-            .encode()
-            .unwrap()
-    };
-    let invoke = || {
-        encode(tilo_actions::remote::RemoteActionMessage::Invoke(
-            tilo_actions::remote::InvokeRequest {
-                on_behalf_of: None,
-                invocation: tilo_actions::InvocationId::new(),
-                target: tilo_actions::remote::RemoteActionTarget {
-                    provider: "record:so.tilo.discord:".into(),
-                    address: tilo_actions::ActionAddress::new("", "link-account"),
-                },
-                argument: tilo_actions::remote::InvokeArgument::None,
-                context: None,
-                confirmation: None,
-                revision: None,
-                wait_ms: None,
-                appearance: None,
-            },
-        ))
-    };
-    let route = || RemoteActionRoute {
-        workspace_id: id,
-        version: crate::transport::REMOTE_ACTION_ENVELOPE_VERSION,
-        to: host.device_public_key,
-    };
-    let served = || counting.0.load(std::sync::atomic::Ordering::SeqCst);
-    for _ in 0..2 {
-        assert_eq!(
-            handle_remote_action(&a, &session, &[id], route(), invoke()).await,
-            None
-        );
-    }
-    assert_eq!(served(), 2, "within the burst, the host runs them");
-    let refused = handle_remote_action(&a, &session, &[id], route(), invoke()).await;
-    let Some(Envelope::RemoteActionUndeliverable { reason, .. }) = refused else {
-        panic!("a spent budget is refused, got {refused:?}");
-    };
-    assert_eq!(
-        UnavailableReason::from_wire_reason(&reason),
-        Some(UnavailableReason::Backpressure),
-        "{reason}"
-    );
-    assert_eq!(served(), 2, "a refused action never reaches the host");
-    let catalogue = encode(
-        tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
-            correlation: 1,
-            query: tilo_actions::remote::CatalogueQuery::default(),
-        },
-    );
-    assert_eq!(
-        handle_remote_action(&a, &session, &[id], route(), catalogue).await,
-        None
-    );
-    assert_eq!(served(), 3, "reading spends no change budget");
-}
-
-#[tokio::test]
-async fn route_private_refuses_an_agent_whose_delegation_expired() {
-    let (root, user) = UserIdentity::generate("alice", 1);
-    let (a, _) = certified_device(&root, user.public_key, "a");
-    let (b, _) = certified_device(&root, user.public_key, "b");
-    let room = uuid::Uuid::from_u128(7);
-    let id = crate::room_workspace_id(&room.to_string()).unwrap();
-    let tmp = tempfile::tempdir().unwrap();
-    let mut wr = crate::workspace::WorkspaceRuntime::open(
-        tmp.path(),
-        id,
-        true,
-        crate::workspace::Membership::default(),
-    )
-    .unwrap();
-    wr.admit_device(a.device_public_key).unwrap();
-    wr.admit_device(b.device_public_key).unwrap();
-    let (atx, _arx) = mpsc::channel(2);
-    let (btx, _brx) = mpsc::channel(2);
-    let (ap, _apr) = mpsc::channel(2);
-    let (bp, mut bpr) = mpsc::channel(4);
-    let (disconnect, _disconnect_rx) = mpsc::channel(1);
-    let (recipient_disconnect, _recipient_disconnect_rx) = mpsc::channel(1);
-    for (peer, tx, private, session_disconnect) in [
-        (&a, &atx, &ap, &disconnect),
-        (&b, &btx, &bp, &recipient_disconnect),
-    ] {
-        wr.add_subscriber(Subscriber {
-            device_public_key: peer.device_public_key,
-            role: peer.role,
-            tx: tx.clone(),
-            disconnect: session_disconnect.clone(),
-        });
-        wr.action_targets.insert(
-            peer.device_public_key,
-            ActionTarget {
-                broker_host: None,
-                broker_protocol: false,
-                room,
-                peer: peer.clone(),
-                state_tx: tx.clone(),
-                tx: private.clone(),
-            },
-        );
-    }
-    let registry = Arc::new(AsyncMutex::new(HashMap::from([(
-        id,
-        Arc::new(AsyncMutex::new(wr)),
-    )])));
-    let trust = Arc::new(std::sync::RwLock::new(
-        crate::policy::TrustPolicy::AllowMatchingUser,
-    ));
-    let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
-    let metrics = Arc::new(crate::metrics::Metrics::default());
-    let agents = AgentRegistry::default();
-    let session = SessionCtx {
-        workspaces: &registry,
-        autobind: None,
-        outbound: &atx,
-        state_outbound: None,
-        connection_live: None,
-        own_user_public_key: &user.public_key,
-        own_device_cert: &a.cert,
-        own_device_public_key: &a.cert.device_public_key,
-        app_serving: None,
-        metrics: &metrics,
-        trust_policy: &trust,
-        disconnect: &disconnect,
-        presence: None,
-        private_tx: &ap,
-        revocations: &revocations,
-        live_bridge: None,
-        agents: &agents,
-        positions: None,
-        compactor: None,
-        member_limits: None,
-        resumes: Box::leak(Box::default()),
-        lag: Box::leak(Box::default()),
-    };
-    let action = DirectedAction {
-        room,
-        request_id: uuid::Uuid::from_u128(8),
-        source: a.device_public_key,
-        target: b.device_public_key,
-        message: ActionMessage::CatalogueRefresh { scope: None },
-    };
-    // Signed for this room, already past its expiry: what a delegation
-    // looks like once its window closed under a live session.
-    let expired = |device: [u8; 32]| {
-        tilo_relay_protocol::delegation::Delegation::sign(
-            &root,
-            device,
-            tilo_relay_protocol::delegation::Delegate::Agent {
-                agent_id: "helper".into(),
-            },
-            "Helper",
-            [1, 2, 3],
-            tilo_relay_protocol::delegation::DelegateScope {
-                rooms: vec![room.to_string()],
-                apps: Vec::new(),
-            },
-            1,
-            2,
-        )
-        .unwrap()
-    };
-
-    assert_eq!(route_private(&action, &a, &session).await.unwrap(), None);
-    assert!(matches!(bpr.try_recv(), Ok(PrivateOutbound::Delivery(_))));
-
-    for agent in [a.device_public_key, b.device_public_key] {
-        agents.write().unwrap().clear();
-        agents.write().unwrap().insert(agent, Some(expired(agent)));
-        assert_eq!(
-            route_private(&action, &a, &session).await.unwrap(),
-            Some(UnavailableReason::NotAuthorised),
-            "an expired agent at either end is refused per frame"
-        );
-        assert!(bpr.try_recv().is_err(), "nothing reaches the target");
-    }
-}
-
-#[tokio::test]
 async fn replacement_action_capability_requires_enable_then_durable_registration() {
     let (root, user) = UserIdentity::generate("alice", 1);
     let (source, _) = certified_device(&root, user.public_key, "source");
@@ -4079,7 +3731,6 @@ async fn bounded_private_queue_for_room_namespace() {
         !private_may_overtake(
             &EnvelopeV2::Directed(action.clone()),
             Some(id),
-            false,
             std::iter::empty(),
         ),
         "private traffic must not overtake its room's state control"
@@ -4491,4 +4142,101 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
     let observed = crate::AttributedPresence::decode(&payload).unwrap();
     assert_eq!(observed.author, browser.device_public_key);
     assert_eq!(observed.body, forged.body);
+}
+
+/// A heartbeat is answered while the session's writer is held behind a live
+/// frame whose authorization waits for the room's lock: a slow store under
+/// that lock never makes the host look silent.
+#[tokio::test]
+async fn heartbeat_is_answered_while_the_writer_waits_on_the_room() {
+    let (root, user) = UserIdentity::generate("owner", 1);
+    let (b, _) = certified_device(&root, user.public_key, "b");
+    let room = uuid::Uuid::from_u128(91);
+    let id = crate::room_workspace_id(&room.to_string()).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut runtime = crate::workspace::WorkspaceRuntime::open(
+        tmp.path(),
+        id,
+        true,
+        crate::workspace::Membership::default(),
+    )
+    .unwrap();
+    runtime.admit_device(b.device_public_key).unwrap();
+    let workspace = Arc::new(AsyncMutex::new(runtime));
+    let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, workspace.clone())])));
+    let (client, server) = tokio::io::duplex(65536);
+    let (read, write) = tokio::io::split(server);
+    let session = tokio::spawn(run_peer_stream(
+        b.clone(),
+        read,
+        write,
+        PeerContext {
+            workspaces: registry,
+            autobind: None,
+            revocations: Arc::new(std::sync::RwLock::new(RevocationList::new())),
+            trust_policy: Arc::new(std::sync::RwLock::new(
+                crate::policy::TrustPolicy::AllowMatchingUser,
+            )),
+            own_user_public_key: user.public_key,
+            own_device_cert: b.cert.clone(),
+            own_device_public_key: b.cert.device_public_key,
+            app_serving: None,
+            metrics: Arc::new(crate::metrics::Metrics::default()),
+            live_bridge: None,
+            agents: crate::peer::AgentRegistry::default(),
+            positions: None,
+            compactor: None,
+            member_limits: None,
+        },
+        std::future::pending::<()>(),
+    ));
+    let (read, mut write) = tokio::io::split(client);
+    let mut reader = SessionReader::new(read);
+    write
+        .write_all(
+            &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Subscribe {
+                workspace_id: id,
+            })
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        reader.read_next().await.unwrap(),
+        Some(EnvelopeV2::State(Envelope::Ready { .. }))
+    ));
+    let outbound = workspace.lock().await.subscribers[&b.device_public_key]
+        .tx
+        .clone();
+    // Hold the room: the writer's authorization of the next live frame waits
+    // for it, as it waits for a slow store under it.
+    let held = workspace.lock().await;
+    outbound
+        .send(Envelope::Presence {
+            workspace_id: id,
+            payload: vec![1],
+        })
+        .await
+        .unwrap();
+    tilo_test_env::within("the writer to take the live frame", async {
+        while outbound.capacity() < outbound.max_capacity() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    write
+        .write_all(&tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Ping).unwrap())
+        .await
+        .unwrap();
+    let answer = tilo_test_env::within("the heartbeat's answer while the writer waits", async {
+        reader.read_next().await.unwrap()
+    })
+    .await;
+    assert!(
+        matches!(answer, Some(EnvelopeV2::State(Envelope::Pong))),
+        "the heartbeat must be answered ahead of the held live frame: {answer:?}"
+    );
+    drop(held);
+    session.abort();
+    let _ = session.await;
 }

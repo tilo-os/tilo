@@ -344,11 +344,6 @@ struct CastFeedbackContext<'a> {
 /// Watches receiver telemetry until the session is asked to stop, reloading
 /// the receiver after a stall and (when `adaptive`) publishing a new capture
 /// profile every 3 seconds.
-///
-/// # Errors
-///
-/// Returns an error if the receiver stops fetching the stream after three
-/// recovery attempts, or if reloading the stream on the receiver fails.
 fn run_adaptive_feedback_loop(
     ctx: &CastFeedbackContext<'_>,
     adaptive: bool,
@@ -572,7 +567,6 @@ mod tests {
 
     #[test]
     fn fcast_receivers_load_hls_served_without_other_runtime_files() {
-        // Phase `simulated_fcast_receiver_accepts_the_production_connect_and_hls_load`.
         {
             const VERSION_OPCODE: u8 = 11;
             const PLAY_OPCODE: u8 = 1;
@@ -582,7 +576,7 @@ mod tests {
             let receiver = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().expect("accept FCast sender");
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
                     .expect("receiver timeout");
                 let (opcode, hello) = read_fcast_packet(&mut stream);
                 assert_eq!(opcode, VERSION_OPCODE);
@@ -628,7 +622,6 @@ mod tests {
                 .expect("load projection URL");
             receiver.join().expect("FCast simulator assertions");
         }
-        // Phase `media_server_serves_hls_without_exposing_other_runtime_files`.
         {
             let root = std::env::temp_dir().join(format!(
                 "tilo-projector-http-{}-{:?}",
@@ -684,7 +677,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn link_feedback_and_h264_muxing_produce_a_playable_bounded_stream() {
-        // Phase `link_feedback_scales_continuously_without_crossing_the_display_ceiling`.
         {
             let ceiling = CaptureProfile::new(2560, 1440, 60, 15_000);
             let current = CaptureProfile::new(1920, 1080, 60, 10_000);

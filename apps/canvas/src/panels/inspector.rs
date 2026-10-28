@@ -115,7 +115,6 @@ fn words(name: &str) -> String {
     name.replace('-', " ")
 }
 
-/// The inspector.
 pub fn panel(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let tools = tools.clone();
     cx.switch(&tools.tool.clone(), move |cx, tool| {
@@ -751,16 +750,14 @@ fn artwork(cx: &ViewCx<Artwork>) -> Element {
         |art: &Artwork| art.ground.texture.clone(),
         Artwork::SET_TEXTURE,
     );
-    let dispatch = cx.dispatcher();
     let ground_now = cx.read(|art| art.and_then(|art| packed(&art.ground.colour)));
-    let grounds = swatches(&GROUNDS, GROUNDS.iter().map(|rgb| hex(*rgb)).collect(), 7)
-        .with_cell(f64::from(SWATCH))
-        .selecting(GROUNDS.iter().position(|rgb| Some(*rgb) == ground_now))
-        .on_change(move |index| {
-            if let Some(rgb) = GROUNDS.get(index) {
-                dispatch.submit(Artwork::SET_GROUND.with(hex(*rgb)));
-            }
-        });
+    let grounds = cx.actions().bind(
+        swatches(&GROUNDS, GROUNDS.iter().map(|rgb| hex(*rgb)).collect(), 7)
+            .with_cell(f64::from(SWATCH))
+            .selecting(GROUNDS.iter().position(|rgb| Some(*rgb) == ground_now)),
+        Artwork::SET_GROUND
+            .map(|index: usize| GROUNDS.get(index).map_or_else(String::new, |rgb| hex(*rgb))),
+    );
     section(vec![
         heading("canvas-artwork"),
         field(
@@ -989,6 +986,42 @@ impl Paint {
     }
 
     /// `value` painted by the marks `ids`, as one invocation.
+    /// `swatches`, each choosing its entry of `values` for `ids` through the
+    /// paint's published edit.
+    fn bind(
+        &self,
+        cx: &ViewCx<Artwork>,
+        swatches: ColorSwatchPicker,
+        ids: &[String],
+        values: Vec<String>,
+    ) -> ColorSwatchPicker {
+        let ids = ids.to_vec();
+        let value = move |index: usize| values.get(index).cloned().unwrap_or_default();
+        match self {
+            Self::Fill => cx.actions().bind(
+                swatches,
+                Artwork::SET_FILL.map(move |index| (ids.clone(), value(index))),
+            ),
+            Self::Stroke => cx.actions().bind(
+                swatches,
+                Artwork::SET_STROKE.map(move |index| (ids.clone(), value(index))),
+            ),
+            Self::Stop(gradient, stop) => {
+                let (gradient, stop) = (gradient.clone(), *stop);
+                cx.actions().bind(
+                    swatches,
+                    Artwork::SET_GRADIENT.map(move |index| {
+                        let mut gradient = gradient.clone();
+                        if let Some(entry) = gradient.stops.get_mut(stop) {
+                            entry.1 = value(index);
+                        }
+                        (ids.clone(), gradient)
+                    }),
+                )
+            }
+        }
+    }
+
     fn invoke(&self, ids: &[String], value: String) -> Invoke<Artwork> {
         match self {
             Self::Fill => Artwork::SET_FILL.with((ids.to_vec(), value)),
@@ -1033,19 +1066,11 @@ fn paints(
             )
         };
     let selected = current.and_then(|current| values.iter().position(|value| value == current));
-    let dispatch = cx.dispatcher();
-    let targets = ids.to_vec();
-    let chosen = values;
     let columns = if colours.len() > 14 { 8 } else { 7 };
-    let picked = paint.clone();
     let swatches = self::swatches(&colours, names, columns)
         .with_cell(f64::from(SWATCH))
-        .selecting(selected)
-        .on_change(move |index| {
-            if let Some(value) = chosen.get(index) {
-                dispatch.submit(picked.invoke(&targets, value.clone()));
-            }
-        });
+        .selecting(selected);
+    let swatches = paint.bind(cx, swatches, ids, values);
     let text = LocalState::new(current.unwrap_or("none").to_owned());
     let input = TextInput::from_state(&text)
         .with_id(paint.id())

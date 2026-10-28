@@ -23,7 +23,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_app_package::{Manifest, SigningIdentity, pack};
 
 fn install_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_tilo-install"))
+    tilo_test_env::package_binary!("tilo-install")
 }
 
 /// A package that declares no runtime bundle, so the lifecycle tests
@@ -215,7 +215,6 @@ fn installs_list_verify_report_and_serve_thin_packages() {
         let env = Env::new();
         let v1 = env.tapp("1.0.0", b"version one", None);
 
-        // --- install -----------------------------------------------------
         let (ok, out, err) = env.cmd(&["install", v1.to_str().unwrap()]);
         assert!(ok, "install failed: {out}{err}");
         assert!(out.contains("installed: so.tilo.lifecycle 1.0.0"), "{out}");
@@ -230,13 +229,11 @@ fn installs_list_verify_report_and_serve_thin_packages() {
             env.registry_toml()
         );
 
-        // --- list --------------------------------------------------------
         let (ok, out, _) = env.cmd(&["list"]);
         assert!(ok);
         assert!(out.contains("so.tilo.lifecycle"), "{out}");
         assert!(out.contains("1.0.0"), "{out}");
 
-        // --- verify ------------------------------------------------------
         let (ok, out, err) = env.cmd(&["verify"]);
         assert!(ok, "verify failed: {out}{err}");
         assert!(out.contains("ok       so.tilo.lifecycle 1.0.0"), "{out}");
@@ -245,7 +242,6 @@ fn installs_list_verify_report_and_serve_thin_packages() {
         // have to be treated differently.
         env.seed_state();
 
-        // --- update ------------------------------------------------------
         let v2 = env.tapp("1.1.0", b"version two", None);
         let (ok, out, err) = env.cmd(&[
             "update",
@@ -275,7 +271,6 @@ fn installs_list_verify_report_and_serve_thin_packages() {
         assert!(ok, "verify after update failed: {out}{err}");
         assert!(out.contains("ok       so.tilo.lifecycle 1.1.0"), "{out}");
 
-        // --- uninstall ---------------------------------------------------
         let installed_tree = env.payload_root();
         let (ok, out, err) = env.cmd(&["uninstall", "so.tilo.lifecycle", "--keep-state"]);
         assert!(ok, "uninstall failed: {out}{err}");
@@ -423,7 +418,6 @@ fn dry_runs_and_runtime_dependencies_are_reported_before_anything_changes() {
             "--dry-run must not touch the registry"
         );
 
-        // And the same for an update and an uninstall.
         assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
         env.seed_state();
         let v2 = env.tapp("2.0.0", b"two", None);
@@ -567,7 +561,6 @@ fn updates_refuse_downgrades_foreign_packages_and_unapproved_publishers() {
         let v1 = env.tapp("1.0.0", b"one", None);
         assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
 
-        // Same signing key, different package id.
         let build = env.home.path().join("other");
         let payload = build.join("payload");
         write_payload(&payload, b"other app");
@@ -834,7 +827,7 @@ fn an_app_is_not_installed_or_updated_without_the_optional_runtime_it_pins() {
 
     // Update: a build pinning an engine this device lacks does not replace
     // the working one.
-    let v2 = env.tapp_pinning_optional("2.0.0", b"two", "tilo-runtime/2026.10.17-chromium");
+    let v2 = env.tapp_pinning_optional("2.0.0", b"two", "tilo-runtime/2026.10.23-chromium");
     let (ok, out, err) = env.cmd(&[
         "update",
         "so.tilo.lifecycle",
@@ -842,7 +835,7 @@ fn an_app_is_not_installed_or_updated_without_the_optional_runtime_it_pins() {
         v2.to_str().unwrap(),
     ]);
     assert!(!ok, "update must refuse: {out}{err}");
-    assert!(err.contains("2026.10.17-chromium"), "{err}");
+    assert!(err.contains("2026.10.23-chromium"), "{err}");
     assert_eq!(
         std::fs::read(env.payload_root().join("bin/app")).unwrap(),
         b"one",
@@ -853,7 +846,7 @@ fn an_app_is_not_installed_or_updated_without_the_optional_runtime_it_pins() {
     let bundle = env
         .xdg_data()
         .join("tilo-runtime")
-        .join("2026.10.17-chromium");
+        .join("2026.10.23-chromium");
     std::fs::create_dir_all(&bundle).unwrap();
     std::fs::write(bundle.join("bundle.toml"), b"").unwrap();
     let (ok, out, err) = env.cmd(&[

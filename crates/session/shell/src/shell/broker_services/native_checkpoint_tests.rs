@@ -1,4 +1,3 @@
-//! The installed room service, certified broker admission, and real retained backend.
 use super::*;
 use tilo_peer_state::workspace_checkpoint::{CheckpointCommand, CheckpointRequest};
 
@@ -109,7 +108,7 @@ impl CheckpointDriver {
         let mut pending = self
             .host
             .invoke(&self.caller, self.request(action, arguments, invocation));
-        let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             match pending.poll_ready() {
                 PendingPoll::Ready(receipt) => {
@@ -273,7 +272,11 @@ fn native_checkpoint_public_capture_inspect_find_and_name_movement() {
     let first = driver
         .invoke(
             "capture",
-            serde_json::json!({"name":"first", "routes":routes}),
+            serde_json::json!({
+                "name":"first",
+                "description":"before the rewrite",
+                "routes":routes
+            }),
             capture,
         )
         .unwrap();
@@ -315,11 +318,29 @@ fn assert_original_capture_retry(
         driver
             .invoke(
                 "capture",
-                serde_json::json!({"name":"first", "routes":routes}),
+                serde_json::json!({
+                    "name":"first",
+                    "description":"before the rewrite",
+                    "routes":routes
+                }),
                 capture
             )
             .unwrap(),
         *first
+    );
+    assert!(
+        driver
+            .invoke(
+                "capture",
+                serde_json::json!({
+                    "name":"first",
+                    "description":"after the rewrite",
+                    "routes":routes
+                }),
+                tilo_actions::InvocationId::new()
+            )
+            .is_err(),
+        "a retained id keeps the words it was captured with"
     );
     assert!(
         driver
@@ -341,6 +362,18 @@ fn assert_checkpoint_movement(
 ) {
     assert_eq!(manifest["entries"].as_array().unwrap().len(), 1);
     assert!(manifest.get("documents").is_none());
+    assert_eq!(manifest["description"], "before the rewrite");
+    assert_eq!(
+        manifest["completeness"],
+        serde_json::json!({
+            "complete": true,
+            "native_app_records_only": true,
+            "file_topology": false,
+            "referenced_content": false,
+            "governance": false
+        }),
+        "a native manifest states what it does not hold instead of leaving it unsaid"
+    );
     assert_eq!(
         manifest["author"],
         serde_json::json!(fixture.certificate.user_public_key)
@@ -356,7 +389,7 @@ fn assert_checkpoint_movement(
     let second = driver
         .invoke(
             "capture",
-            serde_json::json!({"name":"second", "routes":routes}),
+            serde_json::json!({"name":"second", "description":"", "routes":routes}),
             second_id,
         )
         .unwrap();
@@ -482,7 +515,7 @@ fn assert_checkpoint_admission_refused(
 ) {
     use tilo_actions::remote::PendingPoll;
     let mut pending = host.invoke(&driver.caller, request);
-    let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         match pending.poll_ready() {
             PendingPoll::Ready(receipt) => {
@@ -730,7 +763,10 @@ fn native_checkpoint_broker_rechecks_current_read_and_room_write_on_invoke_and_o
                 &fixture.certificate,
             )
             .unwrap();
-        let completion = job.completion.recv_timeout(Duration::from_secs(3)).unwrap();
+        let completion = job
+            .completion
+            .recv_timeout(tilo_test_env::hang_bound())
+            .unwrap();
         assert!(completion.code.is_empty(), "{}", completion.message);
         for (index, (action, arguments, invocation)) in operations.iter().enumerate() {
             if revoke_write && index >= 2 {
@@ -796,6 +832,7 @@ fn native_checkpoint_service_rechecks_current_source_rights_for_reads_and_origin
         caller: member.clone(),
         command: CheckpointCommand::Capture {
             name: "member".into(),
+            description: String::new(),
             routes: serde_json::from_value(routes).unwrap(),
         },
     };
@@ -828,7 +865,10 @@ fn native_checkpoint_service_rechecks_current_source_rights_for_reads_and_origin
             &fixture.certificate,
         )
         .unwrap();
-    let completion = job.completion.recv_timeout(Duration::from_secs(3)).unwrap();
+    let completion = job
+        .completion
+        .recv_timeout(tilo_test_env::hang_bound())
+        .unwrap();
     assert!(completion.code.is_empty(), "{}", completion.message);
     assert!(
         runtime
@@ -1099,6 +1139,7 @@ fn native_checkpoint_service_refuses_bad_sources_and_missing_custody() {
         caller: fixture.certificate.clone(),
         command: CheckpointCommand::Capture {
             name: "bounded".into(),
+            description: String::new(),
             routes: Vec::new(),
         },
     };
@@ -1110,6 +1151,7 @@ fn native_checkpoint_service_refuses_bad_sources_and_missing_custody() {
     let mut oversized = request.clone();
     oversized.command = CheckpointCommand::Capture {
         name: "too-many".into(),
+        description: String::new(),
         routes: (0..33)
             .map(
                 |index| tilo_peer_state::workspace_checkpoint::CheckpointRoute {
@@ -1123,6 +1165,7 @@ fn native_checkpoint_service_refuses_bad_sources_and_missing_custody() {
     let mut missing = request;
     missing.command = CheckpointCommand::Capture {
         name: "missing".into(),
+        description: String::new(),
         routes: vec![tilo_peer_state::workspace_checkpoint::CheckpointRoute {
             app: "so.tilo.chat".into(),
             record: "absent".into(),

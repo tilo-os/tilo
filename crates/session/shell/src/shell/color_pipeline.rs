@@ -10,9 +10,9 @@
 //! headless is driving a DRM connector in an HDR signalling mode, see
 //! [`OutputColorState::from_display`].
 
-use crate::collab::colorimetry::{ColorPrimaries, Colorimetry, TransferCharacteristics};
 use crate::shell::hdr_display::DisplayCapabilities;
 use crate::shell::hdr_tonemap::HdrTonemapConfig;
+use neighbour_wire::colorimetry::{ColorPrimaries, Colorimetry, TransferCharacteristics};
 
 /// WGSL source for the SDR → HDR output-encode compute shader, the GPU
 /// mirror of [`map_sdr_pixel_to_pq_bt2020`]. Validated through `naga` in tests.
@@ -339,7 +339,6 @@ pub fn sanitize_sdr_white_nits(nits: f32) -> f32 {
 /// Entries of [`SdrToPqEncoder`]'s PQ table, indexed in the square-root
 /// domain so the steep low end of PQ keeps sub-code precision.
 const PQ_TABLE_LEN: usize = 4096;
-/// The last index of that table.
 const PQ_TABLE_LAST: u16 = 4095;
 
 /// Table-driven SDR → PQ BT.2020 encoder for the CPU scanout path.
@@ -621,7 +620,7 @@ pub fn plan_surface_op(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collab::colorimetry::{ColorRange, MatrixCoefficients};
+    use neighbour_wire::colorimetry::{ColorRange, MatrixCoefficients};
 
     fn approx(a: f32, b: f32, eps: f32) -> bool {
         (a - b).abs() <= eps
@@ -878,7 +877,6 @@ mod tests {
             );
             assert_eq!(encoder.encode([0, 0, 0]), [0, 0, 0], "black stays PQ zero");
         }
-        // SDR white lands on the configured brightness, neutral.
         let encoder = SdrToPqEncoder::new(SDR_REFERENCE_WHITE_NITS);
         let white = encoder.encode([255, 255, 255]);
         for code in white {

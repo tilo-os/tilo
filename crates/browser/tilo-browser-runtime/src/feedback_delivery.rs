@@ -11,15 +11,32 @@ use tilo_actions::remote::{
     RemoteActionTarget,
 };
 use tilo_app::feedback::{Error, Submission};
+use tilo_app::feedback::{MaskedScreenshot, ReviewText};
 use tilo_browser_peer::{PeerEvent, PeerEvents, PeerHandle};
 use tilo_desktop::feedback::Destination;
 use tilo_desktop::feedback::transport::{
-    Enrollment, Identity, NoCapture, SignedReceipt, Startup, Transport,
+    Capture, Enrollment, Identity, NoCapture, SignedReceipt, Startup, Transport,
 };
 use tilo_user_identity::DeviceCert;
 
+/// How long the owner's admission of this reporter stands: long enough to
+/// write and send a report after reviewing it, short enough that a person
+/// the room removes cannot file for long after. While the page is admitted
+/// it asks again before then ([`ADMISSION_RENEW`]), so a Send never meets a
+/// lapsed admission.
+const ADMISSION_FRESH: Duration = Duration::from_secs(60);
+/// How old an admission is when the page asks the owner for a new one.
+const ADMISSION_RENEW: Duration = Duration::from_secs(40);
+/// How long a question to the owner is waited for before it is asked again.
+const ASK_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a report the owner took is not filed again while its receipt
+/// is awaited: the owner keeps it, and only its picture may still be on
+/// its way there.
+const FILED_STANDS: Duration = Duration::from_secs(120);
+
 thread_local! { static CONNECTIONS: RefCell<HashMap<u32, Rc<RefCell<Connection>>>> = RefCell::new(HashMap::new()); }
-struct Connection {
+
+pub(crate) struct Connection {
     peer: PeerHandle,
     events: PeerEvents,
     reporter: DeviceCert,
@@ -30,8 +47,15 @@ struct Connection {
     pending: HashMap<u64, (web_time::Instant, Option<Submission>)>,
     /// Reports filed through the owner, by the invocation that files them.
     filing: HashMap<tilo_actions::InvocationId, (web_time::Instant, Submission)>,
+    /// Reports the owner took, by id, and when.
+    filed: HashMap<String, web_time::Instant>,
     admission: Option<(Enrollment, web_time::Instant)>,
     receipts: HashMap<String, SignedReceipt>,
+    /// The model the owner lends to look over reviews, as its last answer
+    /// named it.
+    pub(crate) reviewer: Option<String>,
+    /// Reviews asked of the owner's model, by the question that asks.
+    reviews: HashMap<u64, crate::feedback_review::Answer>,
     installed: bool,
     error: Option<String>,
 }
@@ -72,8 +96,11 @@ pub(crate) fn configure(
             serial: 0,
             pending: HashMap::new(),
             filing: HashMap::new(),
+            filed: HashMap::new(),
             admission: None,
             receipts: HashMap::new(),
+            reviewer: None,
+            reviews: HashMap::new(),
             installed: false,
             error: None,
         };
@@ -81,6 +108,10 @@ pub(crate) fn configure(
         connections.insert(id, Rc::new(RefCell::new(connection)));
         Ok(())
     })
+}
+/// The connection to the owner of peer `id`'s feedback destination.
+pub(crate) fn connection(id: u32) -> Option<Rc<RefCell<Connection>>> {
+    CONNECTIONS.with_borrow(|connections| connections.get(&id).cloned())
 }
 pub(crate) fn forget(id: u32) {
     CONNECTIONS.with_borrow_mut(|connections| {
@@ -106,8 +137,38 @@ pub(crate) fn status(id: u32) -> String {
 }
 impl Connection {
     fn request(&mut self, submission: Option<Submission>) -> Result<(), String> {
+        self.ask(submission, None).map(drop)
+    }
+    /// Ask the owner's model to look over a report's review `prompt`; the
+    /// answer comes back to `answer`.
+    pub(crate) fn ask_review(
+        &mut self,
+        prompt: String,
+        answer: crate::feedback_review::Answer,
+    ) -> Result<(), String> {
+        let correlation = self.ask(None, Some(prompt))?;
+        self.reviews.insert(correlation, answer);
+        Ok(())
+    }
+    /// Reviews whose question is no longer waited for end unanswered.
+    fn settle_reviews(&mut self) {
+        let pending = &self.pending;
+        self.reviews.retain(|correlation, answer| {
+            let waiting = pending.contains_key(correlation);
+            if !waiting {
+                answer.set(None);
+            }
+            waiting
+        });
+    }
+    fn ask(
+        &mut self,
+        submission: Option<Submission>,
+        review: Option<String>,
+    ) -> Result<u64, String> {
         self.pending
-            .retain(|_, (sent, _)| sent.elapsed() < Duration::from_secs(30));
+            .retain(|_, (sent, _)| sent.elapsed() < ASK_TIMEOUT);
+        self.settle_reviews();
         if self.pending.len() >= 8 {
             return Err("feedback owner requests pending".into());
         }
@@ -124,6 +185,7 @@ impl Connection {
                     .map(serde_json::to_value)
                     .transpose()
                     .map_err(|error| error.to_string())?,
+                review,
             },
         })
         .encode()
@@ -132,14 +194,26 @@ impl Connection {
             .send_remote_action(self.workspace, self.owner.device_public_key, frame)?;
         self.pending
             .insert(self.serial, (web_time::Instant::now(), submission));
-        Ok(())
+        Ok(self.serial)
     }
     /// File `submission` through the owner's own submit action. It runs
     /// there as this reporter, so filing needs only their right to comment,
     /// and is done when the owner's durable store holds it.
+    /// A report being filed or filed recently is not filed again: the
+    /// composer resends while it waits for the receipt, which the owner
+    /// signs only once its picture arrived too.
     fn file(&mut self, submission: &Submission) -> Result<(), String> {
         self.filing
             .retain(|_, (sent, _)| sent.elapsed() < Duration::from_secs(30));
+        self.filed.retain(|_, took| took.elapsed() < FILED_STANDS);
+        if self.filed.contains_key(&submission.id)
+            || self
+                .filing
+                .values()
+                .any(|(_, filing)| filing.id == submission.id)
+        {
+            return Ok(());
+        }
         if self.filing.len() >= 8 {
             return Err("feedback reports pending".into());
         }
@@ -195,7 +269,7 @@ impl Connection {
         }
         self.admission
             .as_ref()
-            .filter(|(_, received)| received.elapsed() < Duration::from_secs(5))
+            .filter(|(_, received)| received.elapsed() < ADMISSION_FRESH)
             .map(|(admission, _)| admission.clone())
             .ok_or(Error::Invalid(
                 "fresh authenticated feedback admission required",
@@ -209,6 +283,16 @@ impl Connection {
         let Some((_, submission)) = self.filing.remove(&receipt.invocation) else {
             return;
         };
+        if matches!(
+            receipt.status,
+            ReceiptStatus::Completed { .. } | ReceiptStatus::Accepted
+        ) {
+            if self.filed.len() >= 8 {
+                self.filed.clear();
+            }
+            self.filed
+                .insert(submission.id.clone(), web_time::Instant::now());
+        }
         match receipt.status {
             ReceiptStatus::Completed { .. } => {
                 self.error = None;
@@ -239,6 +323,7 @@ pub(crate) fn pump(id: u32) {
     let Some(connection) = connection else {
         return;
     };
+    renew_admission(&mut connection.borrow_mut());
     let events = connection.borrow().events.drain();
     for event in events {
         let mut state = connection.borrow_mut();
@@ -266,12 +351,21 @@ pub(crate) fn pump(id: u32) {
                 let Some((_, submission)) = state.pending.remove(&correlation) else {
                     continue;
                 };
+                if let Some(review) = state.reviews.remove(&correlation) {
+                    review.set(
+                        result
+                            .as_ref()
+                            .ok()
+                            .and_then(|answer| answer.review.clone()),
+                    );
+                }
                 match result
                     .map_err(|error| format!("feedback owner refused: {error:?}"))
                     .and_then(|answer| state.admit(&answer).map(|admission| (answer, admission)))
                 {
                     Ok((answer, admission)) => {
                         state.admission = Some((admission.clone(), web_time::Instant::now()));
+                        state.reviewer.clone_from(&answer.reviewer);
                         state.error = None;
                         if let Some(submission) = submission
                             && let Some(receipt) = admission.receipt_in(&answer, &submission)
@@ -288,11 +382,11 @@ pub(crate) fn pump(id: u32) {
                                 Box::new(Session {
                                     connection: connection.clone(),
                                 }),
-                                Box::new(NoCapture),
+                                Box::new(page_recorder(id)),
                             )
                             .map_err(|error| error.to_string())
                             .and_then(|startup| {
-                                crate::browser::register_feedback_startup(id, startup)
+                                crate::feedback_code::register_feedback_startup(id, startup)
                             });
                             let mut state = connection.borrow_mut();
                             match setup {
@@ -313,12 +407,86 @@ pub(crate) fn pump(id: u32) {
             } if workspace_id == state.workspace && to == state.owner.device_public_key => {
                 state.admission = None;
                 state.pending.clear();
+                state.settle_reviews();
                 state.error = Some("feedback owner unavailable".into());
             }
             _ => {}
         }
     }
 }
+/// Ask the owner again before the admission lapses, once at a time, while
+/// the page holds one.
+fn renew_admission(connection: &mut Connection) {
+    let aging = connection
+        .admission
+        .as_ref()
+        .is_some_and(|(_, received)| received.elapsed() >= ADMISSION_RENEW);
+    let asking = connection
+        .pending
+        .values()
+        .any(|(sent, submission)| submission.is_none() && sent.elapsed() < ASK_TIMEOUT);
+    if aging && !asking {
+        // A refusal to send shows on the next pump as the owner's answer
+        // or as undeliverable; the admission held stays until then.
+        let _ = connection.request(None);
+    }
+}
+
+/// Keeps a report's masked picture in the page's content store, as a file
+/// posted in Chat is kept: the room's host asks the room for the pictures of
+/// the reports filed in its Chat and keeps its own copy, which its receipt
+/// waits for. The page captures nothing itself; the picker's masked crops
+/// are the only picture a report carries.
+struct PageContent;
+impl Capture for PageContent {
+    fn offers_screenshots(&self) -> bool {
+        NoCapture.offers_screenshots()
+    }
+    fn context(&mut self) -> Result<Vec<ReviewText>, Error> {
+        NoCapture.context()
+    }
+    fn capture(&mut self) -> Result<MaskedScreenshot, Error> {
+        NoCapture.capture()
+    }
+    fn persist(&mut self, image: &MaskedScreenshot) -> Result<(), Error> {
+        keep_picture(&crate::page_content::page_content(), image)
+    }
+}
+
+/// Records the window a report is about from the record peer `id`'s room
+/// committed, through the one recorder every desktop uses; the recording's
+/// bytes are kept in the page's content store beside the report's picture,
+/// and reach the room's host the same way.
+fn page_recorder(id: u32) -> tilo_desktop::feedback::recorder::WindowRecorder {
+    tilo_desktop::feedback::recorder::WindowRecorder {
+        documents: Box::new(move |workspace, app, record| {
+            crate::replication::committed_record(id, workspace, app, record)
+        }),
+        protected: Box::new(crate::capture_declarations::declared),
+        keep: Box::new(|bytes| {
+            crate::page_content::page_content()
+                .put(bytes)
+                .map_err(|error| error.to_string())
+        }),
+        now_ms: Box::new(|| i64::try_from(ui::time::unix_now_ms()).unwrap_or(i64::MAX)),
+        pictures: Box::new(PageContent),
+    }
+}
+
+/// Keep `image` in `content`, refusing a store that keeps other bytes.
+fn keep_picture(
+    content: &tilo_content::ContentStore,
+    image: &MaskedScreenshot,
+) -> Result<(), Error> {
+    let hash = content
+        .put(image.png())
+        .map_err(|_| Error::Invalid("the page has no room for the picture"))?;
+    if hash != image.reference().hash || content.read(&hash).as_deref() != Some(image.png()) {
+        return Err(Error::NotDurable);
+    }
+    Ok(())
+}
+
 fn identity(cert: &DeviceCert) -> Identity {
     Identity {
         user: cert.user_public_key,
@@ -355,6 +523,7 @@ impl Transport for Session {
         let mut connection = self.connection.borrow_mut();
         connection.current()?;
         if let Some(receipt) = connection.receipts.remove(&submission.id) {
+            connection.filed.remove(&submission.id);
             return Ok(Some(receipt));
         }
         if !connection
@@ -370,4 +539,19 @@ impl Transport for Session {
         }
         Ok(None)
     }
+}
+
+/// Ask the owner of `peer`'s destination for a fresh admission, which
+/// registers a new startup; whether it was asked.
+pub(crate) fn readmit(peer: u32) -> bool {
+    let Some(connection) = CONNECTIONS.with_borrow(|connections| connections.get(&peer).cloned())
+    else {
+        return false;
+    };
+    let Ok(mut state) = connection.try_borrow_mut() else {
+        return false;
+    };
+    state.installed = false;
+    state.error = None;
+    state.request(None).is_ok()
 }

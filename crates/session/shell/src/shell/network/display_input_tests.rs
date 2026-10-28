@@ -1,9 +1,6 @@
-//! The production arrangement publisher and lease actions, against certified
-//! synthetic identities and a private settings/state tree.
-
 use super::tests::{
-    authenticated_personal_peer, drain, personal_workspaces_network_for_test,
-    rich_display_network_snapshot,
+    authenticated_personal_peer, authenticated_workspace_peer, drain,
+    personal_workspaces_network_for_test, rich_display_network_snapshot,
 };
 use super::{NetCmd, PersonalFabricPayload, ShellNetwork};
 use crate::shell::continuity_policy::ContinuityPolicySnapshot;
@@ -19,11 +16,21 @@ struct Fixture {
     network: ShellNetwork,
     commands: mpsc::Receiver<NetCmd>,
     controller: DeviceId,
+    root: ed25519_dalek::SigningKey,
+    peer: iroh::SecretKey,
     _home: tilo_test_env::TestHome,
 }
 
+/// How the controller proves itself to the network under test.
+type Authenticate = fn(&ShellNetwork, &ed25519_dalek::SigningKey, &iroh::SecretKey);
+
 impl Fixture {
+    /// The controller is one of the person's own devices.
     fn new() -> Self {
+        Self::with_controller(authenticate_personal_device)
+    }
+
+    fn with_controller(authenticate: Authenticate) -> Self {
         let home = tilo_test_env::TestHome::new().unwrap();
         crate::shell::device_fabric_runtime::start_session_for_test();
         let root = ed25519_dalek::SigningKey::from_bytes(&[0xB1; 32]);
@@ -42,7 +49,7 @@ impl Fixture {
             .lock()
             .unwrap()
             .insert(*peer.public().as_bytes());
-        authenticated_personal_peer(&network, &root, &peer);
+        authenticate(&network, &root, &peer);
         let controller = DeviceId::new(hex::encode(peer.public().as_bytes())).unwrap();
         let local = network.personal_continuity_device.clone().unwrap();
         for owner in [&local, &controller] {
@@ -64,6 +71,8 @@ impl Fixture {
             network,
             commands,
             controller,
+            root,
+            peer,
             _home: home,
         }
     }
@@ -106,6 +115,14 @@ impl Fixture {
             })
             .collect()
     }
+}
+
+fn authenticate_personal_device(
+    network: &ShellNetwork,
+    root: &ed25519_dalek::SigningKey,
+    peer: &iroh::SecretKey,
+) {
+    authenticated_personal_peer(network, root, peer);
 }
 
 #[test]
@@ -209,7 +226,11 @@ fn recording_a_manual_decline_never_waits_for_the_disk() {
 
 #[test]
 fn automatic_display_input_requires_current_enrolment_and_certified_route() {
-    let mut fixture = Fixture::new();
+    // A personal-device certificate enrols its device by itself
+    // (docs/device-mesh.md). This controller proves one for its assigned
+    // workspaces only: its route is the person's, and only the registration
+    // the fixture made enrols it.
+    let mut fixture = Fixture::with_controller(authenticated_workspace_peer);
     Fixture::policy(true);
     fixture
         .network
@@ -260,6 +281,13 @@ fn automatic_display_input_requires_current_enrolment_and_certified_route() {
         "cached online presence does not supply route authority"
     );
     assert!(grant_input_control(&fixture.network, &fixture.controller).is_err());
+    // Enrolled, and its route certified again: now it is granted.
+    authenticated_workspace_peer(&fixture.network, &fixture.root, &fixture.peer);
+    fixture.refresh();
+    assert!(
+        !fixture.grants().is_empty(),
+        "an enrolled controller on a certified route is granted automatically"
+    );
     drop(fixture);
 }
 
@@ -594,6 +622,8 @@ struct SpatialSeat {
     _event_loop: smithay::reexports::calloop::EventLoop<'static, crate::compositor::state::State>,
     _display: smithay::reexports::wayland_server::Display<crate::compositor::state::State>,
     state: crate::compositor::state::State,
+    /// The keys the input admitted so far holds down.
+    held: BTreeSet<u32>,
 }
 #[cfg(target_os = "linux")]
 impl SpatialSeat {
@@ -605,6 +635,7 @@ impl SpatialSeat {
             _event_loop: event_loop,
             _display: display,
             state,
+            held: BTreeSet::new(),
         }
     }
     fn pump(&mut self) {
@@ -612,19 +643,23 @@ impl SpatialSeat {
             crate::compositor::native::dispatch_spatial_input_batch(&mut self.state, batch);
         }
     }
-    fn keys(&self) -> BTreeSet<u32> {
-        self.state
-            .seat
-            .get_keyboard()
-            .unwrap()
-            .pressed_keys()
-            .iter()
-            .map(|key| {
-                u32::from(*key)
-                    .checked_sub(8)
-                    .expect("seat key must be an XKB keycode")
-            })
-            .collect()
+    /// The keys down after the input admitted so far, as the event loop
+    /// would deliver it.
+    fn keys(&mut self) -> BTreeSet<u32> {
+        let held = &mut self.held;
+        for event in self.state.take_personal_fabric_input() {
+            if let crate::shell::device_fabric::FabricInputEvent::Key {
+                keycode, pressed, ..
+            } = event
+            {
+                if pressed {
+                    held.insert(keycode);
+                } else {
+                    held.remove(&keycode);
+                }
+            }
+        }
+        held.clone()
     }
 }
 fn spatial_key(keycode: u32, pressed: bool) -> crate::shell::device_fabric::FabricInputEvent {

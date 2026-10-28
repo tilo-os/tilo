@@ -23,7 +23,6 @@ use crate::model::PlotFn;
 /// The words one kind of formula list uses.
 #[derive(Clone, Copy, Debug)]
 pub struct Words {
-    /// Panel title.
     pub title: &'static str,
     /// What leads each formula (`y =`).
     pub prefix: &'static str,
@@ -66,7 +65,6 @@ pub struct Hover {
     pub row: Option<usize>,
     pub button: Option<(usize, RowButton)>,
     pub add: bool,
-    pub toggle: bool,
 }
 
 /// What the panel paints: the rows, which one is selected and whether the
@@ -152,7 +150,8 @@ impl PlotPanel {
             words,
             panel: SidePanel::new(
                 true,
-                f64::from(ui::tokens::Metrics::BASE.panel_width_utility),
+                f64::from(ui::tokens::Metrics::BASE.overview_width),
+                ui::widget::ContentKind::Page,
             ),
             rows: Vec::new(),
             add: Rect::ZERO,
@@ -188,8 +187,6 @@ impl PlotPanel {
         self.formula_size = theme.tokens.typography.size(TextRole::Title);
         self.m = PanelMetrics::of(theme);
     }
-
-    // -- editors -------------------------------------------------------------
 
     /// Reconcile the editors with the model's rows: one per row, fed the
     /// row's current formula. Local edits survive because `set_source` is a
@@ -238,7 +235,7 @@ impl PlotPanel {
     /// taller than the maximum clamps and scrolls within its editor.
     pub fn fit(&mut self, rows: &[PlotFn], tr: &mut TextRenderer, theme: &Theme) {
         self.scale_for(theme);
-        self.formula_size = mathfield::formula_size(theme, tr);
+        self.formula_size = mathfield::formula_size(theme);
         self.sync_fields(rows);
         let (prefix_w, _) = tr.measure_style(self.words.prefix, None, &theme.text(TextRole::Body));
         self.prefix_w = f64::from(prefix_w);
@@ -246,23 +243,20 @@ impl PlotPanel {
             .icon(Icon::Plus)
             .intrinsic_width(tr, theme);
         let pad = f64::from(theme.tokens.spacing.s2);
-        let renderer = f64::from(tr.text_scale());
         self.heights.clear();
         for field in &mut self.fields {
             field.set_size(self.formula_size);
-            // The formula's boxes are laid out in its own size units while its
-            // glyphs are drawn through the renderer, which grows them by its
-            // text scale: the editor holds the grown glyphs.
+            // The formula's boxes are laid out at the theme's size, which
+            // already includes the text scale, and they are painted at
+            // exactly that size: the measured content is the drawn content.
             let content = if field.is_empty() {
                 0.0
             } else {
-                field.content_height(tr) * renderer.max(1.0)
+                field.content_height(tr)
             };
             self.heights.push(self.m.editor_height(content) + 2.0 * pad);
         }
     }
-
-    // -- layout --------------------------------------------------------------
 
     /// Resolve the panel, the content column and every row for the window
     /// `area` and `count` formulas.
@@ -322,8 +316,6 @@ impl PlotPanel {
         );
     }
 
-    // -- geometry for tests and the accessibility tree ----------------------
-
     pub fn row_rect(&self, i: usize) -> Option<Rect> {
         self.rows.get(i).map(|r| r.row)
     }
@@ -342,17 +334,6 @@ impl PlotPanel {
         self.rows.get(i).map(|r| self.target_of(r.del))
     }
 
-    /// The panel's show/hide button, once placed.
-    pub fn toggle_rect(&self) -> Option<Rect> {
-        Some(self.panel.toggle_rect()).filter(|r| *r != Rect::ZERO)
-    }
-
-    /// Center of the show/hide button, once placed (test helper).
-    #[cfg(test)]
-    pub(crate) fn toggle_center(&self) -> Option<Point> {
-        self.toggle_rect().map(|r| r.center())
-    }
-
     /// Center of row `i`'s visibility toggle, once laid out (test helper).
     #[cfg(test)]
     pub(crate) fn vis_center(&self, i: usize) -> Option<Point> {
@@ -369,8 +350,6 @@ impl PlotPanel {
         let grow_y = ((self.target - face.height()) / 2.0).max(0.0);
         face.inflate(grow_x, grow_y)
     }
-
-    // -- hit-testing ---------------------------------------------------------
 
     pub fn row_at(&self, p: Point) -> Option<usize> {
         self.rows.iter().position(|r| r.row.contains(p))
@@ -406,7 +385,6 @@ impl PlotPanel {
             row: self.row_at(p),
             button,
             add: self.add_at(p),
-            toggle: self.panel.toggle_at(p),
         };
         let changed = next != self.hover;
         self.hover = next;
@@ -416,8 +394,6 @@ impl PlotPanel {
     pub fn hover(&self) -> Hover {
         self.hover
     }
-
-    // -- paint ---------------------------------------------------------------
 
     /// Paint the panel: its ground,
     /// its header, the rows, the add button and the show/hide button. The
@@ -431,8 +407,6 @@ impl PlotPanel {
         formulas: Formulas<'_>,
     ) {
         if self.panel.column() == Rect::ZERO {
-            self.panel
-                .paint_toggle(scene, t, tr, theme, self.hover.toggle);
             return;
         }
         let local = self.panel.paint_panel(scene, t, theme);
@@ -444,19 +418,12 @@ impl PlotPanel {
         if self.add != Rect::ZERO {
             Button::paint(scene, t, tr, &local, &add);
         }
-        let ground = if self.panel.toggle_on_content() {
-            theme
-        } else {
-            &local
-        };
-        self.panel
-            .paint_toggle(scene, t, tr, ground, self.hover.toggle);
     }
 
     fn draw_header(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, local: &Theme) {
         let header = self.panel.header_band();
         let mut ctx = PaintCtx::new(scene, t, tr, local);
-        let x = self.panel.toggle_rect().x1 + f64::from(local.tokens.spacing.s2);
+        let x = header.x0 + f64::from(local.tokens.spacing.s3);
         let room = (header.x1 - f64::from(local.tokens.spacing.s3) - x).max(0.0);
         ctx.text_role_in_band(
             self.words.title,
@@ -729,10 +696,11 @@ mod tests {
         );
     }
 
-    /// A renderer that carries the text scale itself (the live desktop) grows
-    /// the drawn glyphs, so the editor holds them.
+    /// A renderer that carries the text scale itself (the live desktop) paints
+    /// the formula at the theme's size, which already includes that scale: the
+    /// editor holds the grown glyphs exactly, not a multiple of them.
     #[test]
-    fn a_scaled_renderer_gets_an_editor_that_holds_the_grown_glyphs() {
+    fn a_scaled_renderer_gets_an_editor_that_holds_exactly_the_grown_glyphs() {
         let theme = Theme::dark().with_text_scale(1.5);
         let mut tr = TextRenderer::new();
         tr.set_text_scale(1.5);
@@ -741,11 +709,19 @@ mod tests {
         panel.fit(&rows, &mut tr, &theme);
         panel.layout(Rect::new(0.0, 0.0, 2200.0, 900.0), rows.len());
         let edit = panel.field_rect(0).expect("editor");
-        let content = panel.fields[0].content_height(&mut tr) * 1.5;
+        let content = panel.fields[0].content_height(&mut tr);
         assert!(
             content <= edit.height() + 0.5,
             "the stacked formula must fit its editor in full: content {content} vs {}",
             edit.height()
+        );
+        // The formula is set at the theme's resolved size, so it grows with
+        // the reader's text scale instead of staying at the 1× size.
+        let one = Theme::dark();
+        assert!(
+            panel.formula_size > mathfield::formula_size(&one) * 1.4,
+            "a 1.5× text scale sets a larger formula: {}",
+            panel.formula_size
         );
     }
 }

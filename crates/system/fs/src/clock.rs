@@ -37,11 +37,6 @@ struct TestClockFile {
 /// The initial value is validated before installation so a bad launch fails
 /// rather than briefly running with the system clock.  Subsequent read failures
 /// fail closed through [`unix_now_ms`].
-///
-/// # Errors
-///
-/// Returns an error when the path is not an absolute, owner-only regular file,
-/// its value is invalid, or another test clock was already installed.
 pub fn install_test_clock_file(path: &Path) -> Result<(), ClockConfigurationError> {
     let clock = TestClockFile::validate(path)?;
     TEST_CLOCK_FILE
@@ -214,7 +209,6 @@ mod tests {
         let clock = TestClockFile::validate(&path).unwrap();
         assert_eq!(clock.read().unwrap(), 1_234);
 
-        // Truncating the same inode is the supported deterministic clock move.
         fs::write(&path, b"1235").unwrap();
         assert_eq!(clock.read().unwrap(), 1_235);
         fs::write(&path, b"12x5").unwrap();

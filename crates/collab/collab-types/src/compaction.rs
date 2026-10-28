@@ -98,10 +98,6 @@ pub enum CompactionError {
 
 /// Encode a `CompactionCheckpoint` to canonical bytes — the format an
 /// op's payload field should carry when `kind == Compaction`.
-///
-/// # Errors
-///
-/// Returns [`CanonicalError`] if canonical serialisation fails.
 pub fn encode_compaction_payload(cp: &CompactionCheckpoint) -> Result<Vec<u8>, CanonicalError> {
     canonical_bytes(cp)
 }
@@ -129,10 +125,6 @@ pub fn parse_compaction_payload(op: &SignedOp) -> Result<CompactionCheckpoint, C
 ///
 /// Exposed so a host can mint a checkpoint with the same hashing rule
 /// receivers use, avoiding drift.
-///
-/// # Errors
-///
-/// Returns [`CanonicalError`] if canonicalising any op in `ops` fails.
 pub fn hash_op_prefix(ops: &[SignedOp]) -> Result<[u8; 32], CanonicalError> {
     hash_ops(ops)
 }
@@ -160,7 +152,6 @@ pub const SEALED_COMPACTION_VERSION: u8 = 1;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SealedCompaction {
-    /// [`SEALED_COMPACTION_VERSION`].
     pub version: u8,
     /// Highest superseded sequence per author, sorted by author, unique.
     /// A write is superseded when its author is listed and its sequence is
@@ -201,10 +192,6 @@ impl SealedCompaction {
     }
 
     /// Canonical bytes, the payload of the compaction op.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CanonicalError`] if canonical serialisation fails.
     pub fn encode(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(self)
     }
@@ -265,10 +252,6 @@ impl SealedCompaction {
 /// Digest of a set of sealed writes, independent of the order a replica
 /// admitted them in: each op's canonical bytes, sorted by `(author, seq)`,
 /// SHA-256 over the concatenation (as [`hash_op_prefix`]).
-///
-/// # Errors
-///
-/// Returns [`CanonicalError`] if canonicalising any op fails.
 pub fn hash_sealed_prefix<'a>(
     ops: impl IntoIterator<Item = &'a SignedOp>,
 ) -> Result<[u8; 32], CanonicalError> {
@@ -324,8 +307,6 @@ mod tests {
             };
             let bytes = encode_compaction_payload(&cp).expect("encode");
 
-            // Build a SignedOp carrying the encoded payload and the
-            // matching kind.
             let (_, pk) = generate_keypair();
             let op = SignedOp::new_unsigned(
                 bytes,
@@ -343,7 +324,7 @@ mod tests {
         // Phase: parse_compaction_payload_rejects_wrong_op_kind.
         {
             // A SignedOp with kind=Splice carrying a checkpoint-shaped
-            // payload still must be rejected — the role table gives Editors
+            // payload still must be rejected — the grants give Editors
             // Splice but NOT Compaction, and a typed error here lets the audit
             // log distinguish forgery from a genuine malformed payload.
             let cp = CompactionCheckpoint {

@@ -133,6 +133,16 @@ fn bootc_status_field_bytes(bytes: &[u8], selector: &str) -> Result<String, Stri
         .get("status")
         .and_then(serde_json::Value::as_object)
         .ok_or("bootc status has no object-valued status field")?;
+    // Whether the next boot takes the rollback deployment rather than the
+    // booted one: after the boot loader fell back to an older deployment, the
+    // newer one that failed is still bootc's default until it is settled.
+    if selector == "rollback-queued" {
+        return match status.get("rollbackQueued") {
+            None | Some(serde_json::Value::Null) => Ok(String::new()),
+            Some(serde_json::Value::Bool(queued)) => Ok(queued.to_string()),
+            Some(_) => Err("bootc status.rollbackQueued is not a boolean".into()),
+        };
+    }
     let (deployment, path): (&str, &[&str]) = match selector {
         "booted-image" => ("booted", &["image", "image", "image"]),
         "staged-image" => ("staged", &["image", "image", "image"]),
@@ -140,9 +150,12 @@ fn bootc_status_field_bytes(bytes: &[u8], selector: &str) -> Result<String, Stri
         "booted-version" => ("booted", &["image", "version"]),
         "staged-version" => ("staged", &["image", "version"]),
         "rollback-version" => ("rollback", &["image", "version"]),
+        "booted-timestamp" => ("booted", &["image", "timestamp"]),
+        "staged-timestamp" => ("staged", &["image", "timestamp"]),
         "rollback-timestamp" => ("rollback", &["image", "timestamp"]),
         "booted-composefs" => ("booted", &["composefs", "verity"]),
         "staged-composefs" => ("staged", &["composefs", "verity"]),
+        "rollback-composefs" => ("rollback", &["composefs", "verity"]),
         _ => return Err(format!("unsupported bootc status selector: {selector}")),
     };
     let Some(mut value) = status.get(deployment) else {
@@ -1111,6 +1124,47 @@ mod tests {
             assert_eq!(
                 bootc_status_field_bytes(rollback, "rollback-timestamp").unwrap(),
                 "2026-10-18T04:12:00Z"
+            );
+            assert_eq!(
+                bootc_status_field_bytes(status, "rollback-composefs").unwrap(),
+                ""
+            );
+            let queued = br#"{"status":{"rollbackQueued":true,"rollback":null}}"#;
+            assert_eq!(
+                bootc_status_field_bytes(queued, "rollback-queued").unwrap(),
+                "true"
+            );
+            assert_eq!(
+                bootc_status_field_bytes(
+                    br#"{"status":{"rollbackQueued":false}}"#,
+                    "rollback-queued"
+                )
+                .unwrap(),
+                "false"
+            );
+            assert_eq!(
+                bootc_status_field_bytes(status, "rollback-queued").unwrap(),
+                ""
+            );
+            assert!(
+                bootc_status_field_bytes(
+                    br#"{"status":{"rollbackQueued":"yes"}}"#,
+                    "rollback-queued"
+                )
+                .is_err()
+            );
+            let dated = br#"{"status":{"booted":{"image":{"timestamp":"2026-10-09T13:20:59Z"}},"staged":{"image":{"timestamp":"2026-10-20T08:00:00Z"}},"rollback":{"composefs":{"verity":"abc"}}}}"#;
+            assert_eq!(
+                bootc_status_field_bytes(dated, "booted-timestamp").unwrap(),
+                "2026-10-09T13:20:59Z"
+            );
+            assert_eq!(
+                bootc_status_field_bytes(dated, "staged-timestamp").unwrap(),
+                "2026-10-20T08:00:00Z"
+            );
+            assert_eq!(
+                bootc_status_field_bytes(dated, "rollback-composefs").unwrap(),
+                "abc"
             );
             assert!(bootc_status_field_bytes(status, "arbitrary-expression").is_err());
         }

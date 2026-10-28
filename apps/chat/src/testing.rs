@@ -49,7 +49,6 @@ pub(crate) fn starter(doc: &mut AutoCommit, me: &str, name: &str, initials: &str
     crate::demo::start(doc, me, name, initials).unwrap();
 }
 
-/// Introduce `me` into the chat in `doc`.
 pub(crate) fn introduce(doc: &mut AutoCommit, me: &str, name: &str, initials: &str) {
     crate::demo::introduce(doc, me, name, initials).unwrap();
 }
@@ -167,12 +166,10 @@ pub(crate) fn top_level(doc: &Room, channel: &str) -> usize {
     doc.messages().top_level(&Id::from_raw(channel))
 }
 
-/// `user`'s read mark in `channel`.
 pub(crate) fn read_mark(doc: &AutoCommit, channel: &str, user: &str) -> crate::parts::ReadMark {
     crate::projection::read(doc).read_mark(channel, user)
 }
 
-/// The draft `key`'s text.
 pub(crate) fn draft_text(doc: &AutoCommit, key: &str) -> String {
     crate::projection::draft_text(doc, key)
 }
@@ -191,7 +188,7 @@ pub(crate) fn operation(invoke: &Invoke<Chat>) -> serde_json::Value {
 
 /// Add the category `id` named `name` to `doc`.
 pub(crate) fn insert_category(doc: &mut AutoCommit, id: &str, name: &str) {
-    crate::demo::insert_category(doc, crate::model::ME, id, name).unwrap();
+    crate::demo::insert_category(doc, id, name).unwrap();
 }
 
 /// Add the channel `id` named `name` under `category` of `doc`.
@@ -202,7 +199,7 @@ pub(crate) fn insert_channel(
     name: &str,
     kind: crate::model::ChannelKind,
 ) {
-    crate::demo::insert_channel(doc, crate::model::ME, id, category, name, kind).unwrap();
+    crate::demo::insert_channel(doc, id, category, name, kind).unwrap();
 }
 
 /// The published report `id`, carrying the reads a window offers on it.
@@ -229,7 +226,6 @@ pub(crate) fn agent_reply() -> String {
     .to_string()
 }
 
-/// `record-work` of `work` on the message `summons`.
 pub(crate) fn record_work(
     summons: &str,
     work: &crate::model::AgentWork,
@@ -246,7 +242,6 @@ pub(crate) fn call_row(channel: &str) -> String {
     format!("{}/call", item("channels", channel))
 }
 
-/// `work` as an agent reports it.
 pub(crate) fn work_update(work: &crate::model::AgentWork) -> crate::record::WorkUpdate {
     use crate::model::{AgentRoute, AgentStepOutcome, AgentWorkState};
 
@@ -307,4 +302,111 @@ pub(crate) fn work_update(work: &crate::model::AgentWork) -> crate::record::Work
             })
             .collect(),
     }
+}
+
+/// A chat from before Chat's record was a model, as it was stored at
+/// `version`: each category's and channel's fields flat in its entry. At
+/// version 5 an order key sits beside them and the item holds an empty name
+/// and topic, written over the fields it could not read; at version 1 it
+/// holds neither.
+pub(crate) fn chat_kept_flat(version: u64) -> AutoCommit {
+    use serde_json::json;
+    use ui::tilo_resource::{Slot, evolution};
+    let opened = version >= 5;
+    let item = |key: &str, texts: &[&str]| {
+        let mut entry = serde_json::Map::new();
+        if opened {
+            entry.insert("k".into(), json!(key));
+            let held: serde_json::Map<_, _> = texts
+                .iter()
+                .map(|text| ((*text).to_owned(), json!({ "$text": "" })))
+                .collect();
+            entry.insert("v".into(), held.into());
+        }
+        entry
+    };
+    let with = |mut entry: serde_json::Map<String, serde_json::Value>,
+                fields: serde_json::Value| {
+        if let serde_json::Value::Object(fields) = fields {
+            entry.extend(fields);
+        }
+        serde_json::Value::Object(entry)
+    };
+    let mut doc = AutoCommit::new();
+    evolution::fixture(
+        &mut doc,
+        &automerge::ROOT,
+        &json!({
+            "categories": {
+                "cat_home_text": with(item("i", &["name"]), json!({
+                    "workspace": "ws_home", "name": "Channels", "order": 0,
+                })),
+                "cat_home_voice": with(item("", &["name"]), json!({
+                    "workspace": "ws_home", "name": "Voice", "order": 1,
+                })),
+            },
+            "channels": {
+                "c_general": with(item("i", &["name", "topic"]), json!({
+                    "workspace": "ws_home", "category": "cat_home_text",
+                    "name": "general", "topic": "", "kind": "text", "order": 0,
+                })),
+                "c_lounge": with(item("", &["name", "topic"]), json!({
+                    "workspace": "ws_home", "category": "cat_home_voice",
+                    "name": "Lounge", "topic": "", "kind": "voice", "order": 0,
+                })),
+            },
+        }),
+    )
+    .unwrap();
+    if version > 1 {
+        Slot::Key(&automerge::ROOT, evolution::VERSION_KEY)
+            .put_scalar(&mut doc, automerge::ScalarValue::Uint(version))
+            .unwrap();
+    }
+    doc.commit();
+    doc
+}
+
+/// The participant id of bo, whom no record names.
+pub(crate) const BO: &str = "5f0c2a9e7d41b36c8e9fa1d2047b5c3e6a8d9f10b2c4e6a7d8f9012b3c4d5e6f";
+
+/// A chat record of `version` that kept its messages in itself: `#general`
+/// with `first` by ada and `second` by [`BO`], `#random` with `elsewhere`
+/// by ada between them. Versions 1 and 2 kept them as a collection; one
+/// from before the record was a model (`flat`) as a list per channel, and
+/// ada's name, Ada Lovelace, under `users`.
+pub(crate) fn chat_with_kept_messages(version: u64, flat: bool) -> AutoCommit {
+    use serde_json::json;
+    use ui::tilo_resource::{Slot, evolution};
+    let channel = |key: &str, name: &str| json!({ "k": key, "v": { "name": { "$text": name } } });
+    let messages = if flat {
+        let row = |id: &str, author: &str, ts: i64, text: &str| json!({ "id": id, "author": author, "ts": ts, "text": { "$text": text } });
+        json!({
+            "c_general": [row("m1", "ada", 10, "first"), row("m2", BO, 20, "second")],
+            "c_random": [row("m3", "ada", 15, "elsewhere")],
+        })
+    } else {
+        let item = |key: &str, channel: &str, author: &str, ts: i64, text: &str| json!({ "k": key, "v": { "channel": channel, "author": author, "ts": ts, "text": text } });
+        json!({
+            "m1": item("a", "c_general", "ada", 10, "first"),
+            "m2": item("b", "c_general", BO, 20, "second"),
+            "m3": item("c", "c_random", "ada", 15, "elsewhere"),
+        })
+    };
+    let mut doc = AutoCommit::new();
+    evolution::fixture(
+        &mut doc,
+        &automerge::ROOT,
+        &json!({
+            "channels": { "c_general": channel("a", "general"), "c_random": channel("b", "random") },
+            "messages": messages,
+            "users": if flat { json!({ "ada": { "name": "Ada Lovelace" } }) } else { json!({}) },
+        }),
+    )
+    .unwrap();
+    Slot::Key(&automerge::ROOT, evolution::VERSION_KEY)
+        .put_scalar(&mut doc, automerge::ScalarValue::Uint(version))
+        .unwrap();
+    doc.commit();
+    doc
 }

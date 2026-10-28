@@ -23,6 +23,15 @@ struct Command {
 fn failure() -> io::Error {
     io::Error::other("Installed migration is unavailable or its grants changed")
 }
+
+/// The active first-boot person; no key is supplied through argv or JSON.
+fn current_person() -> [u8; 32] {
+    runtime_identity::identity_dir_from_env()
+        .ok()
+        .and_then(|directory| runtime_identity::resolve_active_identity(&directory))
+        .and_then(|active| runtime_identity::load_from_path(active).ok())
+        .map_or([0; 32], |signer| signer.group_public_key())
+}
 fn private(path: &Path) -> io::Result<()> {
     let root = PinnedDirectory::open_absolute(path)?;
     root.validate_destination()?;
@@ -115,6 +124,15 @@ impl Session {
         let receipts = child(&grants.workspace, "receipts").map_err(|error| error.to_string())?;
         let source =
             migration_handoff::mount_read_only(&plan).map_err(|error| error.to_string())?;
+        imager_backend::setup::deferred_handoff::import_selected_from_source(
+            &plan,
+            source.path(),
+            &grants.home,
+            &grants.workspace,
+            current_person(),
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .map_err(|error| error.to_string())?;
         let adoption_journal = grants.workspace.join("adoption.journal");
         match std::fs::symlink_metadata(&adoption_journal) {
             Ok(_) => {

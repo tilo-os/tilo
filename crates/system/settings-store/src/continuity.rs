@@ -91,8 +91,14 @@ policies! {
         "tilo.appearance.reduce_transparency",
         "tilo.appearance.forced_colors",
         "tilo.appearance.workspace_temperatures",
+        // The person's language roams; a device without its pack shows
+        // English until the pack is installed there.
+        "tilo.appearance.language",
         "tilo.appearance.studio",
         "tilo.identity.colour",
+        // What the person has learned of the desktop's controls: a hint
+        // taught on one device is not taught again on the next.
+        "tilo.control_hints.learned",
         "tilo.locale.currency",
         "tilo.locale.date_format",
         "tilo.locale.time_format",
@@ -173,13 +179,19 @@ policies! {
         // Like whether the touchpad is on, whether a mouse switches it off
         // says nothing about another device's touchpad.
         "tilo.input.touchpad_disabled_on_external_mouse",
+        // Where the device is decides its zone; another device is elsewhere.
+        "tilo.clock.automatic_zone",
         "tilo.power.auto_suspend",
         "tilo.power.suspend_minutes",
+        "tilo.power.battery_suspend_minutes",
         "tilo.power.saver_suspend_minutes",
         "tilo.power.balanced_suspend_minutes",
         "tilo.power.performance_suspend_minutes",
         "tilo.power.blank_minutes",
         "tilo.power.lock_minutes",
+        // Whether waking from sleep asks for the password describes the
+        // person, and every device they carry wants the same answer.
+        "tilo.power.lock_on_sleep",
         "tilo.power.lid_close_action",
         "tilo.power.power_key_action",
         "tilo.power.low_battery_percent",
@@ -218,6 +230,17 @@ policies! {
         "tilo.agent_providers.config",
         "tilo.collaboration.status_sharing",
         "tilo.collaboration.manual_status",
+        // Whether this device shares its connection, which device it routes
+        // through, and a stop asked of it: each about this device's network.
+        "tilo.device_vpn.exit",
+        "tilo.device_vpn.through",
+        "tilo.device_vpn.stop",
+        // The kill switches of this device's VPN profiles, which are its own
+        // `NetworkManager`'s, the profile last turned off here, and which are
+        // set to connect.
+        "tilo.device_vpn.profile_kill_switches",
+        "tilo.device_vpn.profile_release",
+        "tilo.device_vpn.profile_intent",
     ],
     Secret => [
         "tilo.agent_providers.api_key",
@@ -377,7 +400,6 @@ mod tests {
 
     #[test]
     fn continuity_policy_keys_are_canonical_and_private_values_stay_local() {
-        // Phase `policy_keys_are_unique_and_canonical`.
         {
             let mut keys = BTreeSet::new();
             for policy in POLICIES {
@@ -389,7 +411,6 @@ mod tests {
                 );
             }
         }
-        // Phase `credentials_and_hardware_are_never_personal`.
         {
             for key in [
                 "tilo.agent_providers.api_key",
@@ -406,7 +427,6 @@ mod tests {
                 assert!(!is_personal(key), "{key} must not roam");
             }
         }
-        // Phase `continuity_privacy_choices_are_device_local_and_audit_is_derived`.
         {
             for key in [
                 "tilo.continuity.enabled",
@@ -428,7 +448,6 @@ mod tests {
                 Some(SettingScope::Derived)
             );
         }
-        // Phase `unknown_settings_fail_closed`.
         {
             assert_eq!(classify("tilo.input.future_preference"), None);
             assert!(!is_personal("tilo.input.future_preference"));
@@ -471,7 +490,6 @@ mod tests {
 
     #[test]
     fn the_typed_registry_reviews_every_writer_and_ownership_boundary() {
-        // Phase `typed_registry_projects_only_reviewed_personal_values`.
         {
             let document = serde_json::json!({
                 "appearance": {
@@ -492,11 +510,10 @@ mod tests {
                 )])
             );
         }
-        // Phase `every_cross_crate_settings_writer_has_reviewed_leaves`.
         {
             // These are the non-core writers of settings.json. Core Settings
             // structs have their own schema-derived coverage test in
-            // apps/settings/src/prefs.rs. Keeping the other writer shapes here
+            // apps/settings-core/src/prefs.rs. Keeping the other writer shapes here
             // makes a new cross-crate leaf fail until its ownership is reviewed.
             let document = serde_json::json!({
                 "display_profiles": {"profiles": {}},
@@ -536,7 +553,6 @@ mod tests {
                 Vec::<String>::new()
             );
         }
-        // Phase `registry_names_all_ownership_boundaries`.
         {
             assert!(
                 POLICIES

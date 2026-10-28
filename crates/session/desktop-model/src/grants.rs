@@ -7,9 +7,10 @@
 
 use tilo_action_policy::{Change, Grant, Preset, Refusal};
 use tilo_actions::{ActionContext, ActionKey, Described, Did, Scalar};
+use tilo_sort::CompactSort as _;
 
 use crate::ids::WorkspaceId;
-use crate::task::WorkspaceEffectReceipt;
+use crate::receipt::WorkspaceEffectReceipt;
 use crate::tree::DesktopTree;
 use crate::workspace::{UserId, WORKSPACE_GOVERNANCE_APP_ID};
 
@@ -109,7 +110,7 @@ pub fn app_action_grant_context(
 /// Order a room's presets by name, ignoring case: the one order every reader
 /// and writer of a room's presets keeps.
 pub(crate) fn sort_presets(presets: &mut [Preset]) {
-    presets.sort_by_key(|preset| preset.name.to_lowercase());
+    presets.compact_sort_by_key(|preset| preset.name.to_lowercase());
 }
 
 #[cfg(test)]
@@ -125,8 +126,7 @@ mod tests {
 
     fn tree() -> (DesktopTree, WorkspaceId) {
         let id = WorkspaceId(1);
-        let mut workspace = Workspace::new(id, "Home");
-        workspace.set_room(RoomId::new());
+        let mut workspace = Workspace::in_room(id, RoomId::new(), "Home");
         workspace.set_owner("owner");
         (
             DesktopTree {
@@ -327,7 +327,6 @@ impl PolicyEdit {
             && self.sandbox_revoked.is_empty()
     }
 
-    /// The same edit, with `other`'s too.
     #[must_use]
     pub fn and(mut self, other: Self) -> Self {
         self.members.extend(other.members);

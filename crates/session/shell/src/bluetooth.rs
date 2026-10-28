@@ -241,11 +241,6 @@ impl PairingService {
     /// Failing to reach `BlueZ` is not fatal — a desktop with no Bluetooth is
     /// a desktop, so the caller logs and continues. What must never happen
     /// is the agent appearing registered when it isn't, since then pairings would silently fail with no prompt.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if connecting to `org.bluez` fails, or if `bluetoothd`
-    /// refuses to register the pairing agent.
     pub async fn start(handle: PairingPromptHandle) -> Result<Self, String> {
         let client = tokio::task::spawn_blocking(os_actions::bluez::shared_client)
             .await
@@ -256,10 +251,6 @@ impl PairingService {
     /// [`Self::start`] on a given client. `timeout` is how long a question
     /// waits for an answer, and how long a displayed code stays up without
     /// news from the device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `bluetoothd` refuses to register the agent.
     pub async fn start_with(
         client: BluezClient,
         handle: PairingPromptHandle,
@@ -432,7 +423,6 @@ mod tests {
 
     #[tokio::test]
     async fn pairing_prompts_carry_answers_verbatim_and_refuse_on_dismiss() {
-        // Phase `a_posted_prompt_is_readable_and_answerable`.
         {
             let h = PairingPromptHandle::new();
             assert!(!h.is_prompting());
@@ -471,7 +461,6 @@ mod tests {
             assert!(h.dismiss());
             assert_eq!(rx.await.unwrap(), PairingReply::Reject);
         }
-        // Phase `declining_is_carried_through_verbatim`.
         {
             let h = PairingPromptHandle::new();
             let (tx, rx) = PairingReplySender::channel();
@@ -479,7 +468,6 @@ mod tests {
             assert!(h.answer(PairingReply::Reject));
             assert_eq!(rx.await.unwrap(), PairingReply::Reject);
         }
-        // Phase `a_typed_passkey_is_carried_through_verbatim`.
         {
             let h = PairingPromptHandle::new();
             let (tx, rx) = PairingReplySender::channel();
@@ -491,7 +479,6 @@ mod tests {
 
     #[tokio::test]
     async fn prompts_expire_update_and_withdraw_without_consenting() {
-        // Phase `an_unanswered_question_expires_as_a_refusal`.
         {
             let h = PairingPromptHandle::new();
             let (tx, rx) = PairingReplySender::channel();
@@ -500,7 +487,6 @@ mod tests {
             assert!(!h.is_prompting());
             assert_eq!(rx.await.unwrap(), PairingReply::Reject);
         }
-        // Phase `an_old_timer_never_takes_down_a_newer_question`.
         {
             let h = PairingPromptHandle::new();
             let (tx1, _rx1) = PairingReplySender::channel();
@@ -554,7 +540,6 @@ mod tests {
                 Some("/org/bluez/hci0/dev_K")
             );
         }
-        // Phase `a_finished_pairing_takes_down_only_its_own_code`.
         {
             let h = PairingPromptHandle::new();
             let (tx, _rx) = PairingReplySender::channel();
@@ -578,7 +563,6 @@ mod tests {
                 "a question is answered, never finished for the person"
             );
         }
-        // Phase `every_change_wakes_the_chrome`.
         {
             let h = PairingPromptHandle::new();
             let wakes = Arc::new(AtomicUsize::new(0));

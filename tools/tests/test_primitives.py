@@ -20,6 +20,10 @@ fn paint(scene: &mut Scene, text: &mut TextRenderer, theme: &Theme, rect: Rect) 
     let facts = format!("{} · {}", who, when);
     let mark = "✓ Done";
     tracing::info!("synced {} — {}", a, b);
+    crate::stderr_guard::write_line(format_args!(
+        "paint-stats: wakes {} | owner {:?}",
+        a, b,
+    ));
 }
 
 #[cfg(test)]
@@ -55,6 +59,20 @@ class PrimitivesTests(unittest.TestCase):
         found = primitives.scan(root)
         self.assertIn(("crates/session/shell/src/panel.rs", "glyph-join"), found)
         self.assertFalse(any(file.startswith("crates/sdk") for file, _ in found))
+
+    def test_the_agents_model_text_is_out_of_the_text_rules_only(self):
+        root = self.fixture({
+            "apps/agent/src/tools.rs": HAND_ROLLED,
+            "apps/agent/src/tools/summary.rs": HAND_ROLLED,
+            "apps/agent/src/surface.rs": HAND_ROLLED,
+        })
+        found = primitives.scan(root)
+        for model_text in ("apps/agent/src/tools.rs", "apps/agent/src/tools/summary.rs"):
+            self.assertNotIn((model_text, "glyph-join"), found)
+            self.assertNotIn((model_text, "glyph-icon"), found)
+            self.assertIn((model_text, "hand-rolled"), found)
+            self.assertIn((model_text, "raw-colour"), found)
+        self.assertIn(("apps/agent/src/surface.rs", "glyph-join"), found)
 
     def test_the_baseline_only_shrinks(self):
         root = self.fixture({"apps/demo/src/view.rs": HAND_ROLLED})

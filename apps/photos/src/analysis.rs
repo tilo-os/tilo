@@ -62,12 +62,6 @@ pub fn recognize_text(
 /// This deliberately has no remote fallback. The caller must have discovered
 /// a signed, loopback capability and chosen this operation explicitly; only
 /// the compact result is returned for the caller to decide whether to share.
-///
-/// # Errors
-///
-/// Returns a stable, non-sensitive message if local bytes are unavailable or
-/// unsafe to decode/prepare, or if the signed local service rejects the fixed
-/// schema request.
 pub fn analyze_image(
     open: &OpenImage,
     capability: &tilo_vision::LocalVisionCapability,

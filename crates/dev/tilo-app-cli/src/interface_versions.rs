@@ -141,7 +141,6 @@ mod tests {
         .expect("manifest")
     }
 
-    // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
     #[test]
     fn a_manifest_at_another_service_version_is_told_the_exact_fix() {
         let tilo = ProvidedInterfaces::new([("runtime", 3), ("system", 1)], ["collab", "tilo-fs"]);

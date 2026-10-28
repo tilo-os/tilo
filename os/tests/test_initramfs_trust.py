@@ -11,6 +11,9 @@ from unittest.mock import patch
 import tempfile
 import unittest
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools/tests'))
+from hang import HANG_BOUND  # noqa: E402
+
 SPEC = importlib.util.spec_from_file_location('initramfs', Path(__file__).resolve().parents[1] / 'dev/initramfs-trust.py')
 verifier = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(verifier)
@@ -71,18 +74,34 @@ class InitramfsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             pidfile = Path(temporary) / 'descendant-pid'
             tool = (
-                'import subprocess,sys; from pathlib import Path; '
+                'import os,subprocess,sys; from pathlib import Path; '
                 'child=subprocess.Popen([sys.executable,"-c","import signal; signal.pause()"]); '
-                f'Path({str(pidfile)!r}).write_text(str(child.pid))'
+                f'Path({str(pidfile)!r} + ".pending").write_text(str(child.pid)); '
+                f'os.replace({str(pidfile)!r} + ".pending", {str(pidfile)!r})'
             )
+            # The deadline timer fires once the tool's descendant exists, never
+            # while a loaded runner is still starting the tool.
             script = f'''
-import importlib.util,sys,time
+import importlib.util,sys,threading,time,types
 from pathlib import Path
 spec=importlib.util.spec_from_file_location('verifier', {str(SPEC.origin)!r})
 verifier=importlib.util.module_from_spec(spec);spec.loader.exec_module(verifier)
+class AtDescendant(threading.Thread):
+    def __init__(self, _seconds, function):
+        super().__init__(daemon=True)
+        self.function, self.cancelled = function, threading.Event()
+    def run(self):
+        deadline = time.monotonic() + {HANG_BOUND!r}
+        while not Path({str(pidfile)!r}).exists() and time.monotonic() < deadline:
+            if self.cancelled.wait(0.01):
+                return
+        self.function()
+    def cancel(self):
+        self.cancelled.set()
+verifier.threading = types.SimpleNamespace(Timer=AtDescendant, Event=threading.Event)
 try:
     with verifier.child([sys.executable, '-c', {tool!r}], scratch=Path({temporary!r}),
-                        deadline=time.monotonic()+0.5) as output:
+                        deadline=time.monotonic()+{HANG_BOUND!r}) as output:
         output.read(1)
 except verifier.VerificationError:
     sys.exit(0)
@@ -90,7 +109,7 @@ sys.exit(1)
 '''
             try:
                 result = subprocess.run([sys.executable, '-c', script], capture_output=True,
-                                        text=True, timeout=5)
+                                        text=True, timeout=HANG_BOUND)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertTrue(pidfile.exists(), 'tool must actually launch its descendant')
             finally:

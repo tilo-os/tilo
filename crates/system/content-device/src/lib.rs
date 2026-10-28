@@ -15,7 +15,61 @@ use tilo_content::ContentStore;
 mod device;
 
 #[cfg(unix)]
+mod public;
+
+#[cfg(unix)]
 pub use device::DeviceBackend;
+#[cfg(unix)]
+pub use public::PublicCopy;
+
+/// What reading a public copy found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PublicState {
+    /// The whole copy, verified against its hash.
+    Here { bytes: Vec<u8>, hash: String },
+    /// Kept, and on its way: arriving for the first time, or again after
+    /// the device made room.
+    Arriving,
+    /// Nobody on this device keeps it.
+    NotKept,
+}
+
+/// A public file, on a host that has no device to keep one on: there is
+/// never one.
+#[cfg(not(unix))]
+#[derive(Clone)]
+pub struct PublicCopy(std::convert::Infallible);
+
+#[cfg(not(unix))]
+impl PublicCopy {
+    /// # Errors
+    ///
+    /// Never: there is no copy to keep.
+    pub fn keep(&self) -> std::io::Result<()> {
+        match self.0 {}
+    }
+
+    /// # Errors
+    ///
+    /// Never.
+    pub fn release(&self) -> std::io::Result<()> {
+        match self.0 {}
+    }
+
+    /// # Errors
+    ///
+    /// Never.
+    pub fn here(&self) -> std::io::Result<Option<String>> {
+        match self.0 {}
+    }
+
+    /// # Errors
+    ///
+    /// Never.
+    pub fn read(&self) -> std::io::Result<PublicState> {
+        match self.0 {}
+    }
+}
 
 /// The device content store, when the launcher handed this process its capability.
 /// Every returned store shares the one connection. Returns `None` on hosts without
@@ -28,6 +82,21 @@ pub fn device() -> Option<ContentStore> {
     }
     #[cfg(not(unix))]
     {
+        None
+    }
+}
+
+/// The public file `name` this device may keep a copy of, when the launcher handed this
+/// process its capability.
+#[must_use]
+pub fn public_copy(name: &'static str) -> Option<PublicCopy> {
+    #[cfg(unix)]
+    {
+        Some(PublicCopy::new(device::client()?.clone(), name))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = name;
         None
     }
 }

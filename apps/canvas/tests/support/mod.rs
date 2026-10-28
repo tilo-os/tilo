@@ -1,4 +1,3 @@
-//! Locate the real drawn control through its accessibility bounds.
 use ui::vello::kurbo::Rect;
 
 pub fn named_bounds(node: &ui::headless::InspectionNode, name: &str) -> Option<Rect> {

@@ -20,12 +20,12 @@
 
 use std::time::{Duration, Instant};
 
-use shell::collab::flatpak_share::SharedFlatpakSession;
-use shell::config::{EncoderChoice, FlatpakShareConfig};
-use shell::diagnostics::PeerSurfaceMetrics;
 use shell::network::protocol::{NeighbourMsg, PeerId, SurfaceId};
-use shell::network::streaming::{InputEvent, RemoteInputSink};
 use shell::shell::peer_view::{PeerView, PushOutcome};
+use tilo_window_share::config::{EncoderChoice, FlatpakShareConfig};
+use tilo_window_share::diagnostics::PeerSurfaceMetrics;
+use tilo_window_share::flatpak_share::SharedFlatpakSession;
+use tilo_window_share::streaming::{InputEvent, RemoteInputSink};
 // `mark_drawn` lives on the `Widget` trait (implemented by PeerView).
 use ui::widget::Widget;
 
@@ -227,7 +227,7 @@ fn session_delivers_30_frames_in_order() {
         }
         other => panic!("expected SurfaceStreamEnd, got {other:?}"),
     }
-    session.stop();
+    drop(session);
 }
 
 /// Holding off `mark_drawn` simulates the paint side stalling under real
@@ -314,7 +314,7 @@ fn backpressure_drops_frames_but_input_stream_still_delivers() {
         input_sink.events.len(),
     );
 
-    session.stop();
+    drop(session);
 }
 
 #[test]

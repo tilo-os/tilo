@@ -384,7 +384,7 @@ impl StorageAuthority {
     }
 
     /// What this device holds of the workspace, split by what losing the
-    /// device would cost ([`classify`]). It is answered to the person's own
+    /// device would cost (`classify`). It is answered to the person's own
     /// devices, so it carries counts and never a path.
     pub async fn residency(&self) -> ResidencySummary {
         let logical = self.logical_files();
@@ -1219,7 +1219,6 @@ mod tests {
 
     #[test]
     fn storage_attribution_and_candidates_fail_closed() {
-        // Phase `only_explicit_app_namespaces_are_attributed`.
         {
             assert_eq!(
                 app_from_path("/apps/org.tilo.Notes/a"),
@@ -1228,7 +1227,6 @@ mod tests {
             assert_eq!(app_from_path("/personal/notes"), None);
             assert_eq!(app_from_path("/apps"), None);
         }
-        // Phase `broken_or_cyclic_policy_ancestry_is_pinned_fail_closed`.
         {
             let record = fs_protocol::FileRecordId::new();
             let missing_parent = fs_protocol::FileRecordId::new();
@@ -1236,7 +1234,6 @@ mod tests {
             row.parent = Some(missing_parent);
             assert!(pinned_in_snapshot(&[row], record));
         }
-        // Phase `snapshot_candidates_skip_rows_that_cannot_be_reclaimed`.
         {
             let record_id = fs_protocol::FileRecordId::new();
             let logical = vec![LogicalFile {
@@ -1263,7 +1260,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn reclamation_tokens_and_leases_block_racing_mutation() {
-        // Phase `snapshot_selection_carries_all_race_tokens`.
         {
             let file = SyncedFileState {
                 workspace: "work".into(),
@@ -1286,7 +1282,6 @@ mod tests {
             assert_eq!(selection.inode, file.inode);
             assert_eq!(selection.version, file.version);
         }
-        // Phase `final_live_token_rejects_a_namespace_or_dirty_change`.
         {
             let namespace = Arc::new(Mutex::new(Namespace::new("storage-token").unwrap()));
             let dirty = Arc::new(Mutex::new(HashMap::<u64, Vec<u8>>::new()));
@@ -1353,7 +1348,6 @@ mod tests {
                 .is_err()
             );
         }
-        // Phase `live_authorization_lease_blocks_mutation_after_validation`.
         {
             let namespace = Arc::new(Mutex::new(Namespace::new("storage-lease").unwrap()));
             let dirty = Arc::new(Mutex::new(HashMap::<u64, Vec<u8>>::new()));

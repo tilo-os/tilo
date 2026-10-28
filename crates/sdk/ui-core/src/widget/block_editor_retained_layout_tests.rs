@@ -393,9 +393,6 @@ fn a_key_in_a_markdown_tables_source_damages_its_line_and_cell_not_the_table() {
     assert_damage_pixels(&before, &fixture, true);
 }
 
-/// How far a channel may move between two GPU renders of one scene.
-const GPU_ROUNDING: u8 = 1;
-
 fn assert_damage_pixels(before: &Scene, fixture: &RetainedEditor, sparse: bool) {
     let background = fixture.theme.tokens.colors.surfaces.content;
     let mut retained = crate::offscreen::OffscreenRenderer::new(1200, 1100);
@@ -418,21 +415,12 @@ fn assert_damage_pixels(before: &Scene, fixture: &RetainedEditor, sparse: bool) 
     let actual = retained.readback_current();
     assert_eq!(actual.len(), expected.len());
     // Where they differ, as pixel bounds, rather than two framebuffers. The
-    // GPU rasterizer itself rounds a pixel's channel one unit either way
-    // between two renders of the very same scene, so a difference that small
-    // is the rasterizer's, not retained paint's.
-    let differing: Vec<(usize, usize)> = actual
-        .chunks_exact(4)
-        .zip(expected.chunks_exact(4))
-        .enumerate()
-        .filter(|(_, (actual, expected))| {
-            actual
-                .iter()
-                .zip(expected.iter())
-                .any(|(a, e)| a.abs_diff(*e) > GPU_ROUNDING)
-        })
-        .map(|(index, _)| (index % 1200, index / 1200))
-        .collect();
+    // rasterizer renders a pixel ±1 depending on the rest of the encoding,
+    // so retained paint (undamaged pixels kept from the earlier scene) is
+    // compared as the GPU helper compares frames (see `crate::offscreen`).
+    let differing = crate::offscreen::OffscreenRenderer::positions_differing_beyond_aa(
+        &actual, &expected, 1200,
+    );
     let spread = differing.iter().fold(None, |spread, &(x, y)| {
         Some(spread.map_or(
             (x, y, x, y),
@@ -513,7 +501,6 @@ fn retained_wrapping_delete_clears_previous_taller_paint_bounds() {
             let old_row = fixture.editor.blocks[0].line.get_rect();
             fixture.key(Key::Named(NamedKey::Backspace), Modifiers::default());
             if fixture.editor.get_rect().height() < old_bounds.height() {
-                // The paragraph repaints where it painted, the taller row.
                 assert!(
                     fixture
                         .damage
@@ -587,33 +574,39 @@ fn retained_theme_and_viewport_changes_keep_full_paint_bounds() {
     }
 }
 
+/// A selection across blocks is painted by each block it covers: the rows
+/// it repaints match a full render.
 #[test]
-fn retained_document_selection_and_find_overlay_keep_full_paint_bounds() {
-    for find in [false, true] {
-        let blocks = (0..8)
-            .map(|index| {
-                Block::paragraph(&format!("Paragraph {index}: an ordinary document line."))
-            })
-            .collect();
-        let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
+fn retained_document_selection_repaints_its_rows_as_a_full_render_paints_them() {
+    let blocks = (0..8)
+        .map(|index| Block::paragraph(&format!("Paragraph {index}: an ordinary document line.")))
+        .collect();
+    let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
+    let before = fixture.scene.clone();
+    fixture.key(Key::Character("a".into()), ModifiersState::CONTROL.into());
+    assert!(fixture.editor.document_selection.is_some());
+    assert_damage_pixels(&before, &fixture, false);
+}
+
+/// A selection grown to a line's end and past it, where it marks the
+/// break, repaints its row as a full render paints it.
+#[test]
+fn retained_selection_past_a_line_end_matches_a_full_render() {
+    let blocks = (0..8)
+        .map(|index| Block::paragraph(&format!("Paragraph {index}: an ordinary document line.")))
+        .collect();
+    let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
+    for step in [NamedKey::End, NamedKey::ArrowRight, NamedKey::ArrowLeft] {
         let before = fixture.scene.clone();
-        let old_bounds = fixture.editor.get_rect();
-        if find {
-            fixture.editor.open_find();
-            fixture.frame();
-            assert!(fixture.editor.find_visible);
-        } else {
-            fixture.key(Key::Character("a".into()), ModifiersState::CONTROL.into());
-            assert!(fixture.editor.document_selection.is_some());
+        fixture.key(Key::Named(step), ModifiersState::SHIFT.into());
+        if fixture.damage.is_empty() {
+            assert!(
+                fixture.scene.encoding_eq(&before),
+                "Shift+{step:?} changed the editor's paint unseen"
+            );
+            continue;
         }
-        assert!(
-            fixture
-                .damage
-                .iter()
-                .any(|rect| rect.contains_rect(old_bounds)),
-            "document selection and global overlays retain full paint bounds"
-        );
-        assert_damage_pixels(&before, &fixture, false);
+        assert_damage_pixels(&before, &fixture, true);
     }
 }
 
@@ -656,7 +649,7 @@ fn retained_paragraph_layout_tracks_typing_reflow_clicks_and_attachments() {
                 let mut fixture = RetainedEditor::new(width, scale, false);
                 let initial = fixture.editor.blocks[0].line.get_rect().height();
                 let sentence =
-                    "Let's go. Hi this is Quinten speaking. Why does pressing Enter not work? ";
+                    "Let's go. Hi this is Ada speaking. Why does pressing Enter not work? ";
                 let content = sentence.repeat(3);
                 fixture.type_text(&content);
                 assert_eq!(
@@ -1355,7 +1348,6 @@ fn drag_handles_show_on_pointer_motion_and_go_on_typing_or_rest() {
         );
     });
     with_monotonic_time(gone, || {
-        // That wake's frame takes the faint handles away.
         fixture.frame();
         assert_eq!(fixture.editor.handle_opacity_drawn_for_test(), 0.0);
         assert!(quiet(&fixture), "faded handles need no frame or wake");

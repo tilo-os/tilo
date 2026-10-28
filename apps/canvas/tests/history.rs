@@ -11,6 +11,18 @@ use canvas::App;
 use serde_json::{Value, json};
 use ui::prelude::TestApp;
 
+/// A view of the artwork, waited for as the job it is.
+fn view(app: &mut TestApp<App>, id: &str, args: serde_json::Value) -> serde_json::Value {
+    let serde_json::Value::Object(args) = args else {
+        return serde_json::Value::Null;
+    };
+    let op = <canvas::resource::ViewOp as ui::tilo_resource::Effect>::decode(id, &args).unwrap();
+    app.effect(&op)
+        .unwrap()
+        .value
+        .unwrap_or(serde_json::Value::Null)
+}
+
 const RUN: &str = "mcp:painter";
 
 fn draw(app: &mut TestApp<App>, marks: &Value) {
@@ -63,13 +75,11 @@ fn a_bad_passage_is_found_by_diff_and_undone_by_its_run() {
         &json!([{"id": "blot", "shape": {"kind": "ellipse", "cx": 300, "cy": 300, "rx": 40, "ry": 30}, "fill": "#000000"}]),
     );
 
-    let diff = app
-        .call(
-            "compare-versions",
-            json!({"from": "before sky rework", "look": true}),
-        )
-        .unwrap()
-        .unwrap();
+    let diff = view(
+        &mut app,
+        "compare-versions",
+        json!({"from": "before sky rework", "look": true}),
+    );
     assert_eq!(ids(&diff["marks"]["added"]), ["blot"], "{diff}");
     assert_eq!(
         diff["marks"]["changed"],
@@ -97,10 +107,11 @@ fn a_bad_passage_is_found_by_diff_and_undone_by_its_run() {
     assert_eq!(undone["undone"].as_array().unwrap().len(), 2, "{undone}");
     assert_eq!(fill(&app, "sky").as_deref(), Some("#6fa8dc"));
     assert!(fill(&app, "blot").is_none());
-    let same = app
-        .call("compare-versions", json!({"from": "before sky rework"}))
-        .unwrap()
-        .unwrap();
+    let same = view(
+        &mut app,
+        "compare-versions",
+        json!({"from": "before sky rework"}),
+    );
     assert_eq!(same["same"], true, "{same}");
 
     let history = app.call("history", json!({})).unwrap().unwrap();
@@ -153,11 +164,8 @@ fn a_past_version_is_looked_at_and_its_marks_restored_by_id() {
     )
     .unwrap();
 
-    let now = app.call("inspect", json!({})).unwrap().unwrap();
-    let then = app
-        .call("inspect", json!({"version": "good"}))
-        .unwrap()
-        .unwrap();
+    let now = view(&mut app, "inspect", json!({}));
+    let then = view(&mut app, "inspect", json!({"version": "good"}));
     assert_eq!(then["version"].as_str().map(str::len), Some(12), "{then}");
     assert_ne!(then["revision"], now["revision"]);
     let fills = |inspected: &Value| -> Vec<String> {

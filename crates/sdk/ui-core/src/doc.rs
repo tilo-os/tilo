@@ -41,10 +41,6 @@ pub fn document<'a, 'doc>(
 }
 
 /// Read-only [`document`].
-///
-/// # Panics
-///
-/// Panics if the host lent another model.
 #[allow(
     clippy::panic,
     reason = "a document host lends its document; any other model is a host bug"
@@ -77,10 +73,6 @@ impl TextEdit {
 
 /// Prefer [`put_text_diffed`] when you have a parent object + key and want the
 /// `Text` created on first use.
-///
-/// # Panics
-///
-/// Panics if `text_id` does not resolve to a `Text` object in the document.
 pub fn splice_text_diffed(doc: &mut AutoCommit, text_id: &ObjId, new: &str) -> TextEdit {
     let cur = doc.text(text_id).unwrap_or_default();
     if cur == new {
@@ -329,7 +321,6 @@ mod tests {
             assert_eq!(doc.text(&tid).unwrap(), "hello world!");
         }
 
-        // Typing char by char keeps the document bounded.
         {
             let mut doc = AutoCommit::new();
             let mut s = String::new();

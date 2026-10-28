@@ -27,8 +27,8 @@ impl NotificationSeverity {
         }
     }
 
-    /// Maps onto the shared toast ramp so a desktop notification and an
-    /// in-app `ui::ToastStack` toast tint identically.
+    /// Maps onto the shared notice ramp so a desktop notification and a
+    /// window bar's notice tint identically.
     pub fn toast_kind(self) -> ToastKind {
         match self {
             Self::Info => ToastKind::Info,
@@ -126,7 +126,7 @@ pub const PERSISTENT_DISMISS: Duration = Duration::from_secs(86400);
 pub const NOT_NOW_ACTION: &str = "not-now";
 
 /// Max notifications in the active stack; older entries retire to history
-/// from the front (same FIFO as `ui::widget::toast::ToastStack`).
+/// from the front.
 pub const MAX_NOTIFICATIONS: usize = 6;
 
 /// Max entries in notification history (every banner that leaves the active
@@ -206,6 +206,10 @@ pub struct Notification {
     /// Sending application's display name; rendered as a caption above the
     /// title when present.
     pub app_name: Option<String>,
+    /// The sending application's own artwork, resolved from a launcher-
+    /// verified app id (or a lower-trust icon hint when there is none). The
+    /// leading glyph is the fallback. Never persisted.
+    pub app_image: Option<ui::icons::AppImage>,
     /// Launcher-attributed id. Unlike a sender-supplied name, this is not
     /// controlled by the notification sender and is the only key policy and
     /// grouping may use.
@@ -253,6 +257,7 @@ impl Notification {
             scheduled_target: None,
             from: None,
             app_name: None,
+            app_image: None,
             app_id: None,
             source_workspace: None,
             actions: Vec::new(),

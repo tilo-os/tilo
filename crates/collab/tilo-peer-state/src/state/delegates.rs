@@ -36,7 +36,6 @@ pub struct GovernedDelegateRow {
     /// When the governor withdrew it; it acts on nothing from then on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub withdrawn_at_ns: Option<u64>,
-    /// For a bot, its installation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installation: Option<crate::installation::Installation>,
 }
@@ -178,10 +177,6 @@ impl PeerGovernance<'_> {
         ))
     }
     /// Every delegated agent on this room's roster, acting or not at `now`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if room governance is missing or malformed.
     pub fn governed_agents(self, now: SystemTime) -> Result<Vec<GovernedAgent>, String> {
         let doc = self
             .peer
@@ -227,11 +222,6 @@ impl PeerGovernanceMut<'_> {
     /// device never becomes an agent (nor an agent an ordinary device).
     ///
     /// Returns whether governance changed.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the agent may not be admitted, or why governance could
-    /// not be updated.
     pub fn admit_agent(
         self,
         cert: DeviceCert,

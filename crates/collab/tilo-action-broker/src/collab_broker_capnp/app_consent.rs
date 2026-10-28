@@ -176,6 +176,9 @@ impl CapnpBrokerState {
                 || contract.risk.requires_confirmation(),
             confirming: false,
             moderation: None,
+            preview: None,
+            scope: None,
+            draft: None,
         };
         Some((consent, (descriptor.resource_kind.clone(), contract.need())))
     }

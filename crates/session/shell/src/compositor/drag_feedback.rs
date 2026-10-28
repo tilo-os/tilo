@@ -450,7 +450,6 @@ mod tests {
 
     #[test]
     fn drag_preview_shows_real_bounded_content() {
-        // Phase `mime_fallback_is_visual_before_payload_arrives`.
         assert!(matches!(
             preview_for_mimes(&["image/png".into()]),
             DragPreview::Kind(DragKind::Image)
@@ -467,7 +466,6 @@ mod tests {
             preview_for_mimes(&["text/uri-list".into()]),
             DragPreview::Kind(DragKind::File)
         ));
-        // Phase `raster_payload_becomes_a_bounded_real_preview`.
         {
             let source = image::RgbaImage::from_pixel(32, 18, image::Rgba([12, 90, 220, 255]));
             let mut encoded = Cursor::new(Vec::new());
@@ -495,7 +493,6 @@ mod tests {
             assert!(rect.width() <= PREVIEW_MAX_W && rect.height() <= PREVIEW_MAX_H);
             assert!((rect.width() / rect.height() - 32.0 / 18.0).abs() < 1e-10);
         }
-        // Phase `raster_payload_is_downscaled_to_the_decode_bound`.
         {
             let source = image::RgbaImage::from_pixel(800, 500, image::Rgba([12, 90, 220, 255]));
             let mut encoded = Cursor::new(Vec::new());
@@ -510,7 +507,6 @@ mod tests {
             assert!(width <= 560 && height <= 380);
             assert_eq!((width, height), (560, 350));
         }
-        // Phase `text_payload_keeps_content_not_only_a_type_label`.
         {
             let DragPreview::Text(text) = text_preview(b"A sentence selected in the editor")
                 .expect("text payload must produce a visual")

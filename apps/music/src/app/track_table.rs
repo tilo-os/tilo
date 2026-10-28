@@ -51,7 +51,6 @@ pub(super) struct TrackCell {
     pub offline_error: Option<String>,
     /// A file opened from disk: it is neither liked nor downloaded.
     pub local: bool,
-    pub place: Place,
 }
 
 /// Whether a row is the track playing now.
@@ -63,27 +62,6 @@ pub(super) enum Playback {
     Playing,
 }
 
-/// Where a row stands in its table: what it can move past.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Place {
-    Only,
-    First,
-    Middle,
-    Last,
-}
-
-impl Place {
-    pub(super) fn of(index: usize, len: usize) -> Self {
-        match (index == 0, index + 1 >= len) {
-            (true, true) => Self::Only,
-            (true, false) => Self::First,
-            (false, true) => Self::Last,
-            (false, false) => Self::Middle,
-        }
-    }
-}
-
-/// The second column of a table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Second {
     Album,
@@ -94,22 +72,15 @@ pub(super) enum Second {
 /// The actions a row offers under the pointer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Actions {
-    /// Like and keep offline.
+    /// Like and a compact menu for track management.
     Track,
-    /// Move up, move down and remove, then like and keep offline.
-    Reorder {
-        /// The rows are a playlist's (not the queue's).
-        playlist: bool,
-    },
-    /// The download's one action.
     Download,
 }
 
 impl Actions {
-    fn count(self) -> usize {
+    pub(super) fn count(self) -> usize {
         match self {
             Self::Track => 2,
-            Self::Reorder { .. } => 5,
             Self::Download => 1,
         }
     }
@@ -130,18 +101,24 @@ pub(super) struct Shape {
     pub index_width: f32,
     pub duration_width: f32,
     pub action_width: f32,
+    /// Rows spring to their new places when the songs change: the queue,
+    /// whose order the person changes in place.
+    pub moves: bool,
 }
 
 /// What a row asked for; the index is the row's place in the table.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum RowEvent {
     Play(usize),
+    /// The row was added to or taken out of the selection (Ctrl or Shift
+    /// with the press): nothing plays.
+    Select(usize),
+    /// A drag began on the row: the selected songs go with it.
+    Drag(usize),
     Menu(usize, Rect),
     Like(usize),
     Offline(usize),
-    MoveUp(usize),
-    MoveDown(usize),
-    Remove(usize),
+    More(usize),
 }
 
 type Events = Rc<RefCell<Vec<RowEvent>>>;
@@ -190,6 +167,8 @@ impl TrackTableHost {
             self.rows = rows;
         }
         if selected != self.selected || selected.is_some() {
+            // A revealed row is lifted alone; when the reveal ends, the
+            // person's own selection is theirs again.
             let mut selection = ui::selection::SelectionModel::new();
             if let Some(row) = selected {
                 selection.select_only(row);
@@ -198,6 +177,36 @@ impl TrackTableHost {
             self.selected = selected;
         }
         self.host.unplace();
+    }
+
+    /// Whether rows are on their way after the songs changed.
+    pub(super) fn rows_moving(&self) -> bool {
+        ui::widget::Widget::needs_animation_frame(self.host.widget())
+    }
+
+    /// The rows selected, by their place in the table.
+    pub(super) fn selected_rows(&self) -> Vec<usize> {
+        self.host.widget().selected_rows()
+    }
+
+    /// The songs selected, in the table's order.
+    pub(super) fn selected_ids(&self) -> Vec<String> {
+        self.selected_rows()
+            .into_iter()
+            .filter_map(|row| self.rows.get(row).map(|cell| cell.id.clone()))
+            .collect()
+    }
+
+    /// Select the rows of the songs `ids`, as they were selected before; a
+    /// song no longer in the table is left out.
+    pub(super) fn select_ids(&mut self, ids: &[String]) {
+        let mut selection = ui::selection::SelectionModel::new();
+        for (row, cell) in self.rows.iter().enumerate() {
+            if ids.contains(&cell.id) {
+                selection.toggle(row);
+            }
+        }
+        self.host.widget_mut().set_selection(selection);
     }
 
     pub(super) fn rows(&self) -> &[TrackCell] {
@@ -223,7 +232,12 @@ impl TrackTableHost {
             let header = table.header_height();
             bottom = top + table.content_height();
             let shown_top = top.max(clip.y0);
-            let shown_bottom = bottom.min(clip.y1);
+            // Leave breathing room above the transport and never paint the
+            // beginning of a row that cannot fit in full.
+            let limit = bottom.min(clip.y1 - f64::from(ctx.theme.tokens.spacing.rhythm.related));
+            let height = f64::from(self.shape.row_height);
+            let complete = ((limit - top - header) / height).floor().max(0.0);
+            let shown_bottom = top + header + complete * height;
             // Less than a header and a sliver of a row in view: nothing to
             // show.
             if shown_bottom - shown_top <= header + 1.0 {
@@ -276,7 +290,7 @@ impl TrackTableHost {
         (rect.y1 > body_top && rect.y0 < table.get_rect().y1).then_some(rect)
     }
 
-    /// Where the control `name` ("like", "offline", "up", "down", "remove")
+    /// Where the control `name` ("like", "offline", "more")
     /// of row `index` stands, while the row shows its actions.
     #[cfg(test)]
     pub(super) fn control_rect(&self, index: usize, name: &str) -> Option<Rect> {
@@ -342,12 +356,7 @@ fn build_table(shape: Shape, theme: &Theme, events: &Events) -> DataTable<TrackC
     .with_text_render(Box::new(
         move |row, scene, transform, text, cell, theme, state| {
             if !state.hovered && actions != Actions::Download {
-                paint_quiet_actions(
-                    &mut PaintCtx::new(scene, transform, text, theme),
-                    row,
-                    actions,
-                    cell,
-                );
+                paint_quiet_actions(&mut PaintCtx::new(scene, transform, text, theme), row, cell);
             }
         },
     ))
@@ -370,6 +379,7 @@ fn build_table(shape: Shape, theme: &Theme, events: &Events) -> DataTable<TrackC
     );
 
     let play = Rc::clone(events);
+    let drag = Rc::clone(events);
     let menu = Rc::clone(events);
     let mut table = DataTable::new(columns)
         .with_id("music.tracks")
@@ -377,12 +387,27 @@ fn build_table(shape: Shape, theme: &Theme, events: &Events) -> DataTable<TrackC
         .selectable(true)
         .host_scrolled()
         .with_row_height(shape.row_height)
-        .on_row_click(move |row, _, _| play.borrow_mut().push(RowEvent::Play(row)))
+        .on_row_click(move |row, ctrl, shift| {
+            // A press plays the song; with Ctrl or Shift it selects instead,
+            // for several songs to drag onto a playlist at once.
+            play.borrow_mut().push(if ctrl || shift {
+                RowEvent::Select(row)
+            } else {
+                RowEvent::Play(row)
+            });
+        })
+        .on_row_drag_begin(move |row, _, _| drag.borrow_mut().push(RowEvent::Drag(row)))
         .on_row_context_menu(move |row, _, rect| {
             menu.borrow_mut().push(RowEvent::Menu(row, rect));
         });
     if !(shape.header && shape.second.is_some()) {
         table = table.without_header();
+    }
+    if shape.moves {
+        table = table.with_row_key(|row: &TrackCell| {
+            use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+            BuildHasherDefault::<DefaultHasher>::default().hash_one(&row.id)
+        });
     }
     table
 }
@@ -514,18 +539,14 @@ pub(super) fn action_side(theme: &Theme) -> f64 {
     ButtonFace::height(ControlSize::Small, theme)
 }
 
-/// A row at rest: only what is already so shows, muted. A liked song keeps
-/// its mark, a downloaded or failed one its state, a download its progress.
-fn paint_quiet_actions(ctx: &mut PaintCtx<'_>, row: &TrackCell, actions: Actions, cell: Rect) {
+/// At rest a liked song keeps its muted heart; other actions stay in More.
+fn paint_quiet_actions(ctx: &mut PaintCtx<'_>, row: &TrackCell, cell: Rect) {
     if row.local {
         return;
     }
     let theme = ctx.theme;
     let glyph = |slot: Rect| square_around(slot.center(), f64::from(theme.tokens.metrics.icon_sm));
-    let (like, offline) = match actions {
-        Actions::Reorder { .. } => (3, 4),
-        Actions::Track | Actions::Download => (0, 1),
-    };
+    let like = 0;
     if row.liked {
         Icon::Heart.draw_filled(
             ctx.scene,
@@ -533,28 +554,6 @@ fn paint_quiet_actions(ctx: &mut PaintCtx<'_>, row: &TrackCell, actions: Actions
             glyph(action_slot(cell, like, theme)),
             theme.text_dim,
         );
-    }
-    let slot = action_slot(cell, offline, theme);
-    match row.offline {
-        Offline::Failed => Icon::TriangleAlert.draw(
-            ctx.scene,
-            ctx.transform,
-            glyph(slot),
-            theme.tokens.colors.semantic.danger,
-        ),
-        Offline::Cached => Icon::Check.draw(ctx.scene, ctx.transform, glyph(slot), theme.text_dim),
-        Offline::Downloading(percent) => {
-            let numeric = theme.text(TextRole::Caption).numeric();
-            text_right_in_band(
-                ctx,
-                &format!("{percent}%"),
-                &numeric,
-                theme.text_dim,
-                slot.x1,
-                slot,
-            );
-        }
-        Offline::Streamed => {}
     }
 }
 
@@ -582,32 +581,6 @@ fn action_buttons(
             .on_effect(move || sink.borrow_mut().push(event))
     };
     let mut cluster = Row::new().no_wrap().with_gap(0.0);
-    if let Actions::Reorder { playlist } = actions {
-        cluster = cluster
-            .push(Box::new(
-                button("up", Icon::ChevronUp, "Move up", RowEvent::MoveUp(index))
-                    .with_enabled(!matches!(row.place, Place::First | Place::Only)),
-            ))
-            .push(Box::new(
-                button(
-                    "down",
-                    Icon::ChevronDown,
-                    "Move down",
-                    RowEvent::MoveDown(index),
-                )
-                .with_enabled(!matches!(row.place, Place::Last | Place::Only)),
-            ))
-            .push(Box::new(button(
-                "remove",
-                Icon::X,
-                if playlist {
-                    "Remove from playlist"
-                } else {
-                    "Remove from queue"
-                },
-                RowEvent::Remove(index),
-            )));
-    }
     if actions != Actions::Download {
         cluster = cluster.push(Box::new(
             button(
@@ -619,6 +592,14 @@ fn action_buttons(
             .toggled(row.liked)
             .with_enabled(!row.local),
         ));
+    }
+    if actions != Actions::Download {
+        return Box::new(cluster.push(Box::new(button(
+            "more",
+            Icon::MoreHorizontal,
+            "Track actions",
+            RowEvent::More(index),
+        ))));
     }
     let (icon, label) = offline_button(row);
     let mut offline =

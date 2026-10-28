@@ -465,7 +465,6 @@ mod tests {
 
     #[test]
     fn preserved_parts_split_into_atoms_and_concatenate_back() {
-        // Phase `split_concatenates_back_verbatim`.
         {
             let atoms = split_atoms(TWO_STYLE_PART);
             // Two depth-1 siblings → two atoms: [prologue + root-open + style A], [style B + root-close]
@@ -484,7 +483,6 @@ mod tests {
             });
             assert!(!same_atom, "the two styles must be in SEPARATE atoms");
         }
-        // Phase `non_xml_part_stays_single_atom`.
         {
             let png = &[0x89u8, b'P', b'N', b'G', 0, 1, 2, 3][..];
             let atoms = split_atoms(png);

@@ -88,7 +88,7 @@ impl DisplayControlServices for NativeDisplayControl {
         if !tree.read().requires_native_owner(room) {
             let person =
                 tilo_action_broker::collab_broker_capnp::principal_id_for_root(context.root());
-            return super::launcher::action_authority::with_ordinary_person_admin(
+            return super::action_authority::with_ordinary_person_admin(
                 &tree, room, &person, execute,
             );
         }

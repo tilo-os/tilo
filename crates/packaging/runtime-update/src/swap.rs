@@ -9,10 +9,6 @@ use std::{
 /// sibling so both moves are renames on one filesystem. There is never a
 /// moment without a bundle at `current` longer than two renames, and if the
 /// second rename fails the old bundle is put back.
-///
-/// # Errors
-///
-/// `new` is not beside `current`, or a rename fails.
 pub fn replace_bundle(current: &Path, new: &Path) -> io::Result<()> {
     if current.parent() != new.parent() {
         return Err(io::Error::new(

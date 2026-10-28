@@ -3,12 +3,15 @@
 //! this device to the relay's voice carrier. Workers hold opaque local
 //! tickets; only the actor talks to the relay.
 mod authority;
+mod call_seal;
 mod devices;
 mod observer;
 mod output;
 pub(crate) use output::prepare_playback;
 mod session;
 pub(crate) use session::Factory;
+mod window_carrier;
+pub(crate) use window_carrier::WindowCarrier;
 #[cfg(test)]
 mod audio_tests;
 mod registry;
@@ -48,6 +51,11 @@ enum Operation {
     Open {
         owner: NativeWorkspaceOwner,
         target: CallTarget,
+    },
+    /// Join the window carrier of `room`.
+    OpenWindows {
+        owner: NativeWorkspaceOwner,
+        room: crate::shell::state::RoomId,
     },
     Heartbeat {
         ticket: Arc<Ticket>,

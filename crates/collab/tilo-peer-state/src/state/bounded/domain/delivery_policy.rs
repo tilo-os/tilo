@@ -5,11 +5,6 @@ impl<'peer> PeerRead<'peer> {
     /// Computes the historical delivery digest with every actual route read
     /// check. Parent retains current authenticated host/session, lock and clock.
     /// Arguments are host then device; neither becomes caller authority here.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`PeerDeliveryPolicyError`] if a party is not current or a route read check
-    /// fails.
     pub fn delivery_policy(
         &self,
         workspace: u64,

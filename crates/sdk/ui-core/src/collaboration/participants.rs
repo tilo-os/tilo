@@ -45,7 +45,6 @@ pub trait CollaborationTopology {
     fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)>;
 }
 
-/// The children collaboration reaches under `widget`.
 pub fn collaboration_children(widget: &mut dyn Widget) -> Vec<&mut (dyn Widget + '_)> {
     // Probe first: borrowing `widget` mutably only on the returning path
     // leaves it free for the fallback.
@@ -138,7 +137,6 @@ pub fn set_participant_host_in_children(widget: &mut dyn Widget, host: bool) {
     }
 }
 
-/// Presence of every participant view under `widget`.
 pub fn participant_presence(widget: &dyn Widget, doc: &AutoCommit) -> Vec<ParticipantPresence> {
     if let Some(participants) = capability::<dyn Participants>(widget) {
         return participants.participant_presence(doc);

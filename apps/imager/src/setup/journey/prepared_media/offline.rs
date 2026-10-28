@@ -612,6 +612,8 @@ fn reseal_amendment(
         reserved_data_bytes: AtomicU64::new(reserved),
         expectation,
         install_profile: original.install_profile.clone(),
+        other_device: original.other_device.clone(),
+        tpm_handoff: original.tpm_handoff.clone(),
         retained: {
             #[cfg(target_os = "linux")]
             {
@@ -762,6 +764,10 @@ mod tests {
                 }),
                 browser: Some(browser),
                 sessions: None,
+                mail: None,
+
+                other_device: None,
+                tpm_target: None,
             },
             Zeroizing::new(String::from_utf8(PASSWORD.to_vec()).unwrap()),
             "offline-full-selection".into(),

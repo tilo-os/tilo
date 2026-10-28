@@ -5,7 +5,7 @@
 //! is a verb with typed parameters. The buttons, the action palette, agents,
 //! scripts and tests all make the same edits and invoke the same verbs
 //! through the same door. A refused change changes nothing. A destructive verb
-//! needs confirmation wherever it is invoked.
+//! Undo takes back runs at once, wherever it is invoked, and offers Undo.
 
 /// The application id.
 pub const APP_ID: &str = "so.tilo.example.counter";
@@ -62,8 +62,9 @@ impl Counter {
         Ok(())
     }
 
-    /// Reset the count to zero. `destructive` makes every surface, from the
-    /// button to an agent, confirm before it runs.
+    /// Reset the count to zero. `destructive` marks it as losing the count;
+    /// since Undo brings the count back, every surface, from the button to an
+    /// agent, runs it at once and offers Undo.
     #[action(destructive)]
     pub fn reset(&mut self) {
         self.count = 0;
@@ -112,7 +113,10 @@ impl ResourceApp for App {
         let step = |id: &str, label: &str, amount: i64| {
             actions.bind_invocation(Button::new(id, label), Counter::ADD.with(amount))
         };
-        let reset = cx.button("counter-reset-button", Counter::RESET.invoke());
+        let reset = cx.button(
+            crate::locales::keys::COUNTER_RESET_BUTTON,
+            Counter::RESET.invoke(),
+        );
         Box::new(ui::column![
             Text::new("counter-heading").with_role(TextRole::Title),
             count,

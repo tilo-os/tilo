@@ -93,7 +93,12 @@ impl PublishInputs {
             .collect();
         Self {
             listed,
-            order: tree.desktop.workspaces.iter().map(|w| w.room).collect(),
+            order: tree
+                .desktop
+                .workspaces
+                .iter()
+                .map(crate::shell::state::Workspace::room)
+                .collect(),
             unpinned,
         }
     }
@@ -130,22 +135,22 @@ pub fn member_workspaces(tree: &WorkspaceTree, person: &str) -> BTreeMap<RoomId,
         .workspaces
         .iter()
         .filter(|workspace| {
-            !workspace.room.is_nil()
-                && !tree.requires_native_owner(workspace.room)
-                && !tree.continuation_rooms.contains(&workspace.room)
+            !workspace.room().is_nil()
+                && !tree.requires_native_owner(workspace.room())
+                && !tree.continuation_rooms.contains(&workspace.room())
         })
         .filter_map(|workspace| {
             let governor = if workspace.owner().map(String::as_str) == Some(person.as_str()) {
                 None
             } else {
                 let member = workspace.role_of(&person).is_some();
-                match tree.room_authority(workspace.room) {
+                match tree.room_authority(workspace.room()) {
                     RoomAuthority::Peer(governor) if member => Some(governor.as_str().to_string()),
                     _ => return None,
                 }
             };
             Some((
-                workspace.room,
+                workspace.room(),
                 Listed {
                     name: workspace.name.clone(),
                     governor,
@@ -248,9 +253,9 @@ impl PersonalWorkspaces {
     /// order. Returns whether the directory changed, which is when the
     /// other devices need a new snapshot.
     ///
-    /// Called every frame tick, so when neither the tree's workspaces nor the
-    /// directory changed since the last call it only compares the tree with
-    /// what it offered then.
+    /// Called after every write to the tree, so when neither the tree's
+    /// workspaces nor the directory changed since the last call it only
+    /// compares the tree with what it offered then.
     pub fn publish_local(&mut self, tree: &WorkspaceTree, person: &str) -> bool {
         let inputs = PublishInputs::of(tree, person);
         if self.published.as_ref() == Some(&inputs) {
@@ -320,8 +325,12 @@ impl PersonalWorkspaces {
         }
         // A workspace held at the last agreement and gone from this tree was
         // deleted (or left) here.
-        let present: std::collections::BTreeSet<RoomId> =
-            tree.desktop.workspaces.iter().map(|w| w.room).collect();
+        let present: std::collections::BTreeSet<RoomId> = tree
+            .desktop
+            .workspaces
+            .iter()
+            .map(crate::shell::state::Workspace::room)
+            .collect();
         let deleted: Vec<RoomId> = self
             .agreed
             .keys()
@@ -342,6 +351,13 @@ impl PersonalWorkspaces {
         changed
     }
 
+    /// Whether the last [`Self::publish_local`] wrote everything the tree
+    /// offered, and nothing moved the directory since: running it again on
+    /// the same tree would write nothing.
+    pub fn publish_settled(&self) -> bool {
+        self.published.is_some()
+    }
+
     /// Give the workspaces this tree holds positions in the directory that
     /// match their order here, when that order moved since the last
     /// agreement. Only entries out of place get a new position, so a
@@ -351,7 +367,7 @@ impl PersonalWorkspaces {
             .desktop
             .workspaces
             .iter()
-            .map(|w| w.room)
+            .map(crate::shell::state::Workspace::room)
             .filter(|room| self.agreed.contains_key(room))
             .collect();
         let agreed: Vec<RoomId> = self
@@ -455,7 +471,7 @@ impl PersonalWorkspaces {
             .desktop
             .workspaces
             .iter()
-            .map(|w| w.room)
+            .map(crate::shell::state::Workspace::room)
             .filter(|room| self.agreed.contains_key(room))
             .collect();
         self.persist();

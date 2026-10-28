@@ -1,35 +1,20 @@
 //! Native runs are recoverable from the canonical approved task, not a queue grant.
 pub(super) use super::native_task_launch::NativeLaunch;
 use super::{
-    AdmissionProvenance, CapnpBrokerState, DurableContext, InvocationInputs, InvocationJob,
-    InvocationKey, InvocationOwner, PendingTaskRun, TaskRunEnvelope, WorkspaceTaskStatus,
-    durable_local_invocation,
+    AdmissionProvenance, CapnpBrokerState, DurableContext, InvocationInputs, InvocationKey,
+    InvocationOwner, PendingTaskRun, StagedJob, TaskRunEnvelope, durable_local_invocation,
 };
 use crate::services::NativeTaskBinding;
 use std::sync::Arc;
-use tilo_peer_state::workspace_task::{WorkspaceTaskCommand, WorkspaceTaskFinish};
 use tokio::sync::mpsc;
 #[cfg(test)]
 #[path = "native_task_tests.rs"]
 mod tests;
 
-fn bounded_public_task_message(message: &str) -> Result<String, String> {
-    if message.trim().is_empty()
-        || message.len() > tilo_desktop_model::MAX_WORKSPACE_TASK_SUMMARY_BYTES
-    {
-        return Err("public task update is empty or exceeds the retained text limit".into());
-    }
-    Ok(message.to_owned())
-}
-
-/// How often a held re-ask samples its run's cancellation. The task owner
-/// signals no change for it, so it is read in-process here, at the cadence
-/// the agent used to ask across the connection; reading the run cancelled
-/// cancels its children, which ends the hold.
-const CANCELLATION_SAMPLE: std::time::Duration = std::time::Duration::from_millis(50);
-
 /// What a native task's re-ask of its child asked to wait for: the child
-/// moving past `seen` (with no `seen`, settling), until `until`.
+/// moving past `seen` (with no `seen`, settling) until `until`, or a child
+/// that waits for its person being decided.
+#[derive(Clone, Copy)]
 pub(super) struct ChildWait {
     seen: Option<tilo_actions::remote::UpdateMark>,
     until: tokio::time::Instant,
@@ -62,13 +47,24 @@ impl ChildWait {
         }))
     }
 
-    /// Whether `update` is news to the caller.
     fn arrived(&self, update: &tilo_actions::InvocationUpdate) -> bool {
         update.is_terminal()
             || self
                 .seen
                 .is_some_and(|seen| tilo_actions::remote::UpdateMark::of(update) != seen)
     }
+}
+
+/// A watch that notifies the returned wake on the next
+/// [`tilo_identity_host::policy_change`] announcement after each arming.
+fn decision_watch() -> (
+    Arc<tokio::sync::Notify>,
+    tilo_identity_host::policy_change::Watch,
+) {
+    let wake = Arc::new(tokio::sync::Notify::new());
+    let notify = Arc::clone(&wake);
+    let watch = tilo_identity_host::policy_change::Watch::new(move || notify.notify_one());
+    (wake, watch)
 }
 
 /// A native task's request about its child: the run, the child's stable
@@ -111,27 +107,6 @@ pub(super) fn child_provenance(
     )))
 }
 
-/// The step the run of `epoch` is paused at for its person, when a draft of
-/// it is still unsettled in the task's `control`: delivered with the run so
-/// an agent that restarted resumes at the draft rather than planning the
-/// task over, which would ask its person again for what they already saw.
-fn paused_step(
-    control: &tilo_desktop_model::WorkspaceTaskControl,
-    epoch: u64,
-) -> Option<runtime_collab::TaskRunPausedStep> {
-    let held = control
-        .confirmation
-        .as_ref()
-        .filter(|held| held.run_epoch == epoch)?;
-    Some(runtime_collab::TaskRunPausedStep {
-        app: held.app.clone(),
-        resource: held.resource.clone(),
-        action: held.action.clone(),
-        draft: held.draft.clone(),
-        arguments_digest: held.arguments_digest,
-    })
-}
-
 fn native_request(
     run: &PendingTaskRun,
     target: runtime_collab::TaskAction<'_>,
@@ -139,7 +114,7 @@ fn native_request(
     record: &str,
 ) -> serde_json::Value {
     let mut request = serde_json::json!({"task":run.task_id,
-        "epoch":run.native.as_ref().map(|binding| binding.epoch),
+        "epoch":run.native.epoch,
         "peer_id":target.peer_id,"app":app,"record":record,
         "resource":target.resource,"action":target.action,"argument":target.argument});
     if !target.provider.is_empty()
@@ -161,6 +136,65 @@ impl CapnpBrokerState {
         if let Some(observed) = self.observe_native_child(reask, wait, admission).await? {
             return Ok(observed);
         }
+        // A child that waits for its person is held, when the re-ask asked
+        // to be, until it is decided: the person answered the run's
+        // question, a grant was given or revoked, or the run stopped. The
+        // hold is this connection's call, so it also ends with the
+        // connection; nothing ends it on a clock.
+        if wait.is_none() {
+            return self.start_native_child(reask).await;
+        }
+        let (wake, watch) = decision_watch();
+        loop {
+            let _ = watch.arm();
+            match self.start_native_child(reask).await {
+                Err(error)
+                    if crate::services::NativeTaskActionRequirement::awaits_confirmation(
+                        &error.to_string(),
+                    ) => {}
+                started => return started,
+            }
+            if self
+                .task_run_cancelled(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)
+                .map_err(capnp::Error::failed)?
+            {
+                return Err(capnp::Error::failed(
+                    "the task was cancelled while its step waited for the person".into(),
+                ));
+            }
+            self.decision_may_change(&wake).await;
+            let (route, identity) = admission;
+            self.revalidate_admission(route, identity)?;
+        }
+    }
+
+    /// Until what decides a held re-ask may have changed: announced through
+    /// [`tilo_identity_host::policy_change`], which `wake` hears from a
+    /// [`decision_watch`] armed before the last look, or, on a host that
+    /// does not announce every such change, its next unannounced re-check.
+    async fn decision_may_change(&self, wake: &tokio::sync::Notify) {
+        if self.announces_decisions() {
+            wake.notified().await;
+        } else {
+            let recheck = super::committed_document::next_unannounced_recheck();
+            let _ = tokio::time::timeout_at(recheck, wake.notified()).await;
+        }
+    }
+
+    /// Whether every change a run's admission reads is announced through
+    /// [`tilo_identity_host::policy_change`].
+    fn announces_decisions(&self) -> bool {
+        self.membership
+            .as_ref()
+            .is_some_and(|membership| membership.announces_policy_changes())
+            && tilo_identity_host::policy_change::timers_reliable()
+    }
+
+    /// Start `reask`'s child, once its person answered where it asks first.
+    async fn start_native_child(
+        self: &std::sync::Arc<Self>,
+        reask: &ChildReask<'_>,
+    ) -> Result<(u64, tilo_actions::InvocationUpdate), capnp::Error> {
         if !reask.target.provider.is_empty() {
             return self
                 .launch_native_task_action(reask)
@@ -169,7 +203,6 @@ impl CapnpBrokerState {
         }
         let gate = self
             .native_confirmation_gate(reask)
-            .await
             .map_err(capnp::Error::failed)?;
         let (argument, confirmation) = match gate {
             super::native_task_confirmation::NativeGate::Proceed => (None, None),
@@ -220,17 +253,10 @@ impl CapnpBrokerState {
                     (confirmation.is_some(), witness.as_deref()),
                 ),
             )
+            .map_err(capnp::Error::failed)?
+            .start(self)
+            .await
             .map_err(capnp::Error::failed)?;
-        if let Some(confirmation) = confirmation {
-            let run = self
-                .task_run_for(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)
-                .map_err(capnp::Error::failed)?;
-            // The child started; a failure to clear the answer only leaves
-            // the card until the run ends.
-            if let Err(error) = self.settle_native_confirmation(&run, &confirmation).await {
-                tracing::warn!(%error, "confirmed task action started but its confirmation stayed");
-            }
-        }
         let update = self.invocation_status(job.id).ok_or_else(|| {
             capnp::Error::failed("accepted task action has no broker state".into())
         })?;
@@ -286,29 +312,24 @@ impl CapnpBrokerState {
         if let Some(current) = self.invocation_status(wire_id) {
             update = current;
         }
+        // The run stopping is announced with the publication that records
+        // it; reading it cancelled cancels the children, which ends the hold.
+        let (wake, watch) = decision_watch();
         let mut signalled = true;
         while !wait.arrived(&update) {
-            let now = tokio::time::Instant::now();
-            if now >= wait.until {
-                return;
+            let _ = watch.arm();
+            match self.task_run_cancelled(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)
+            {
+                Ok(false) => {}
+                Ok(true) | Err(_) => return,
             }
-            let sample = CANCELLATION_SAMPLE.min(wait.until.saturating_duration_since(now));
             tokio::select! {
                 signal = changes.changed(), if signalled => {
-                    // A broker going away stops signalling: sample only.
+                    // A broker going away stops signalling.
                     signalled = signal.is_ok();
                 }
-                () = tilo_rt::sleep(sample) => {
-                    match self.task_run_cancelled(
-                        reask.peer_id,
-                        reask.agent_id,
-                        reask.run_id,
-                        reask.lease,
-                    ) {
-                        Ok(false) => {}
-                        Ok(true) | Err(_) => return,
-                    }
-                }
+                () = self.decision_may_change(&wake) => {}
+                () = tokio::time::sleep_until(wait.until) => return,
             }
             match self.invocation_status(wire_id) {
                 Some(current) => update = current,
@@ -325,18 +346,8 @@ impl CapnpBrokerState {
         target: runtime_collab::TaskAction<'_>,
         caller: &durable_local_invocation::LocalCaller,
     ) -> Result<Option<(u64, tilo_actions::InvocationUpdate)>, String> {
-        let binding = run.native.as_ref().ok_or("native task binding absent")?;
-        let snapshot = self
-            .native_tasks(&run.cluster_id)
-            .ok_or("native task owner unavailable")?
-            .snapshot(&run.cluster_id)?;
-        if !snapshot.tasks.iter().any(|task| {
-            task.id == run.task_id && task.assigned_agent.as_deref() == Some(run.agent_id.as_str())
-        }) || snapshot
-            .controls
-            .get(&run.task_id)
-            .is_none_or(|control| control.run_epoch != binding.epoch)
-        {
+        let binding = &run.native;
+        if self.tracker_run_of(run)?.epoch != binding.epoch {
             return Err("native task observation source was replaced".into());
         }
         let record = {
@@ -365,19 +376,8 @@ impl CapnpBrokerState {
         let Some(record) = record else {
             return self.native_host_observation(run, target, caller, invocation);
         };
-        let requirement = caller.authorize_retained_task(
-            self,
-            (
-                &record,
-                &run.native
-                    .as_ref()
-                    .ok_or("native binding absent")?
-                    .actor()?,
-            ),
-        )?;
-        self.native_tasks(&run.cluster_id)
-            .ok_or("native task owner unavailable")?
-            .authorize_action(&run.cluster_id, &run.agent_id, &requirement)?;
+        let requirement = caller.authorize_retained_task(self, (&record, &run.native.actor()?))?;
+        self.authorize_task_action(run, &requirement)?;
         let (app, record_id) = if target.provider.is_empty() {
             let offered = self
                 .surfaces
@@ -417,8 +417,8 @@ impl CapnpBrokerState {
         Ok(Some((record.wire_id, update)))
     }
 
-    fn cancel_native_children(&self, run: &PendingTaskRun) -> Result<(), String> {
-        let binding = run.native.as_ref().ok_or("native task binding absent")?;
+    pub(super) fn cancel_native_children(&self, run: &PendingTaskRun) -> Result<(), String> {
+        let binding = &run.native;
         let owner = InvocationOwner::NativeTask {
             agent: run.agent_id.clone(),
             task: run.task_id.clone(),
@@ -450,7 +450,9 @@ impl CapnpBrokerState {
                     .lookup(&key)?
             };
             if let Some(record) = record {
-                self.cancel_durable_record(&record)?;
+                // The run has ended; nobody waits on its children's stop.
+                // Each hears of it only once durable (`invocation_cancellation`).
+                drop(self.cancel_durable_record(&record)?);
             }
         }
         Ok(())
@@ -463,18 +465,14 @@ impl CapnpBrokerState {
         invocation: tilo_actions::InvocationId,
         offered: (super::PublishedSurface, super::PublishedAction),
         (confirmed, witness): (bool, Option<&str>),
-    ) -> Result<InvocationJob, String> {
+    ) -> Result<StagedJob, String> {
         // Dispatch the exact contract checked by native task admission. A
         // concurrent publication must not replace it with a broader need.
         if offered.0.route.cluster_id != run.cluster_id {
             return Err("task target changed workspace".into());
         }
         let intent = native_request(run, target, &offered.0.app_id, &offered.0.route.record_id);
-        let actor = run
-            .native
-            .as_ref()
-            .ok_or("native binding absent")?
-            .actor()?;
+        let actor = run.native.actor()?;
         // Admission checked the person's answer for this exact invocation;
         // the token carries it to the dispatch, bound to these arguments.
         let token = if super::requires_store_witness(&offered.0.app_id, &offered.1.action) {
@@ -523,7 +521,7 @@ impl CapnpBrokerState {
             AdmissionProvenance {
                 durable: Some(DurableContext::Task {
                     caller,
-                    binding: run.native.as_ref().ok_or("native binding absent")?,
+                    binding: &run.native,
                     invocation,
                     intent: &intent,
                 }),
@@ -537,116 +535,7 @@ impl CapnpBrokerState {
         })
     }
 
-    pub(super) fn native_tasks(
-        &self,
-        room: &str,
-    ) -> Option<&Arc<dyn crate::services::WorkspaceTaskExecution>> {
-        self.services
-            .task_execution
-            .as_ref()
-            .filter(|service| service.requires_room(room))
-    }
-
-    pub(super) fn dispatch_native_task(&self, room: &str, task_id: &str) -> Result<u64, String> {
-        let service = self
-            .native_tasks(room)
-            .ok_or("native task execution unavailable")?;
-        let snapshot = service.snapshot(room)?;
-        let task = snapshot
-            .tasks
-            .iter()
-            .find(|task| task.id == task_id)
-            .ok_or("native task no longer exists")?;
-        let control = snapshot
-            .controls
-            .get(task_id)
-            .ok_or("native task control unavailable")?;
-        let run = control
-            .active_run
-            .as_ref()
-            .ok_or("review and approve the queued task first")?;
-        if task.status != WorkspaceTaskStatus::InProgress
-            || run.approval.is_none()
-            || task.assigned_agent.as_deref() != Some(run.agent_id.as_str())
-            || task
-                .resource
-                .as_ref()
-                .is_some_and(|resource| resource.agent_request.is_some())
-        {
-            return Err("task does not carry ordinary native run approval".into());
-        }
-        service.agent_snapshot(room, &run.agent_id)?;
-        let planning = match task.route {
-            tilo_desktop_model::WorkspaceTaskRoute::Model => runtime_collab::TaskRunPlanning::Model,
-            tilo_desktop_model::WorkspaceTaskRoute::RulesOnly => {
-                runtime_collab::TaskRunPlanning::RulesOnly
-            }
-            tilo_desktop_model::WorkspaceTaskRoute::Manual => {
-                return Err("manual tasks cannot execute".into());
-            }
-        };
-        let execution_budget = self.admitted_task_execution_budget(room, task)?;
-        let (peer_id, tx) = self
-            .task_subscribers
-            .lock()
-            .map_err(|_| "task subscribers unavailable")?
-            .iter()
-            .filter(|(_, subscriber)| {
-                subscriber.cluster_id == room
-                    && subscriber.agent_id == run.agent_id
-                    && !subscriber.tx.is_closed()
-            })
-            .min_by_key(|(peer, _)| **peer)
-            .map(|(peer, subscriber)| (*peer, subscriber.tx.clone()))
-            .ok_or("assigned agent is offline")?;
-        let digest =
-            blake3::hash(format!("native-task-v1\0{room}\0{task_id}\0{}", run.epoch).as_bytes());
-        let run_id = u64::from_le_bytes(
-            *digest
-                .as_bytes()
-                .first_chunk::<8>()
-                .ok_or("invalid run digest")?,
-        ) | (1 << 63);
-        let hex = digest.to_hex();
-        let lease = format!(
-            "native:{}:0",
-            hex.as_str().get(..32).ok_or("invalid run digest")?
-        );
-        let context = task.action_context();
-        self.offer_native_run(
-            room,
-            NativeTaskBinding {
-                task_id: task_id.into(),
-                agent_id: run.agent_id.clone(),
-                epoch: run.epoch,
-                revision: 0,
-                starter: run
-                    .approval
-                    .as_ref()
-                    .map(|approval| approval.person.clone()),
-            },
-            TaskRunEnvelope {
-                paused: paused_step(control, run.epoch),
-                task_id: task_id.into(),
-                title: task.title.clone(),
-                instruction: Some(
-                    control
-                        .instruction
-                        .clone()
-                        .unwrap_or_else(|| task.title.clone()),
-                ),
-                subject: task.subject.clone(),
-                run_id,
-                lease,
-                planning,
-                execution_budget,
-                action_context: context,
-            },
-            (peer_id, tx),
-        )
-    }
-
-    fn offer_native_run(
+    pub(super) fn offer_native_run(
         &self,
         room: &str,
         binding: NativeTaskBinding,
@@ -683,7 +572,7 @@ impl CapnpBrokerState {
                 lease: envelope.lease.clone(),
                 action_context: envelope.action_context.clone(),
                 terminal: false,
-                native: Some(binding),
+                native: binding,
             },
         );
         drop(pending);
@@ -705,7 +594,7 @@ impl CapnpBrokerState {
         })
     }
 
-    pub(super) fn refresh_native_task_delivery(&self) {
+    pub(super) fn refresh_native_task_delivery(self: &Arc<Self>) {
         let rooms = match self.task_subscribers.lock() {
             Ok(subscribers) => {
                 let rooms = subscribers
@@ -717,51 +606,7 @@ impl CapnpBrokerState {
             }
             Err(_) => return,
         };
-        for room in rooms {
-            let Some(service) = self.native_tasks(&room) else {
-                continue;
-            };
-            let Ok(snapshot) = service.snapshot(&room) else {
-                continue;
-            };
-            self.prune_native_run_routes(&room, &snapshot);
-            for task in snapshot
-                .tasks
-                .iter()
-                .filter(|task| task.status == WorkspaceTaskStatus::InProgress)
-            {
-                if let Err(error) = self.dispatch_native_task(&room, &task.id) {
-                    tracing::debug!(%error, task = %task.id, "native approved task not delivered");
-                }
-            }
-        }
-    }
-
-    fn prune_native_run_routes(
-        &self,
-        room: &str,
-        snapshot: &tilo_peer_state::workspace_task::WorkspaceTaskSnapshot,
-    ) {
-        let Ok(mut runs) = self.pending_task_runs.lock() else {
-            return;
-        };
-        if runs.len() < 256 {
-            return;
-        }
-        // Retire only transport routes for ended/replaced runs. Their owner
-        // state, pending decisions and durable effect deduplication remain.
-        runs.retain(|_, run| {
-            run.native.as_ref().is_none_or(|binding| {
-                run.cluster_id != room
-                    || snapshot
-                        .controls
-                        .get(&run.task_id)
-                        .and_then(|control| control.active_run.as_ref())
-                        .is_some_and(|active| {
-                            active.epoch == binding.epoch && active.agent_id == binding.agent_id
-                        })
-            })
-        });
+        self.refresh_tracker_runs(&rooms);
     }
 
     pub(super) fn native_task_status(
@@ -769,223 +614,6 @@ impl CapnpBrokerState {
         run: &PendingTaskRun,
         lease: &str,
     ) -> Result<runtime_collab::TaskRunStatus, String> {
-        let binding = run.native.as_ref().ok_or("not a native task run")?;
-        let (_, revision) =
-            runtime_collab::native_task_revision(lease).ok_or("invalid native task lease")?;
-        let snapshot = self
-            .native_tasks(&run.cluster_id)
-            .ok_or("native task owner unavailable")?
-            .agent_snapshot(&run.cluster_id, &run.agent_id)?;
-        let task = snapshot
-            .tasks
-            .iter()
-            .find(|task| task.id == run.task_id)
-            .ok_or("task was deleted")?;
-        let control = snapshot
-            .controls
-            .get(&run.task_id)
-            .ok_or("task control unavailable")?;
-        if task.status == WorkspaceTaskStatus::Cancelled {
-            if control.run_epoch != binding.epoch {
-                return Err("native cancellation belongs to another run".into());
-            }
-            self.cancel_native_children(run)?;
-            return Ok(runtime_collab::TaskRunStatus {
-                cancelled: true,
-                control: None,
-            });
-        }
-        let active = control.active_run.as_ref().ok_or("task run ended")?;
-        if active.epoch != binding.epoch
-            || active.agent_id != run.agent_id
-            || active.approval.is_none()
-        {
-            return Err("native task run was replaced".into());
-        }
-        let latest = control
-            .directions
-            .last()
-            .map_or(0, |direction| direction.revision);
-        if revision > active.applied_direction_revision {
-            return Err("task lease claims an unacknowledged direction".into());
-        }
-        let directions = control
-            .directions
-            .iter()
-            .filter(|direction| direction.revision > revision)
-            .take(runtime_collab::TaskRunControl::MAX_DIRECTIONS)
-            .map(|direction| runtime_collab::TaskDirection {
-                revision: direction.revision,
-                author: direction.author.clone(),
-                text: direction.text.clone(),
-                issued_at: direction.created_at,
-            })
-            .collect::<Vec<_>>();
-        let last = directions
-            .last()
-            .map_or(revision, |direction| direction.revision);
-        let control = runtime_collab::TaskRunControl {
-            version: 1,
-            task_id: run.task_id.clone(),
-            run_epoch: binding.epoch,
-            from_revision: revision,
-            applied_revision: active.applied_direction_revision,
-            latest_revision: latest,
-            directions,
-            has_more: last < latest,
-        };
-        control.validate()?;
-        Ok(runtime_collab::TaskRunStatus {
-            cancelled: false,
-            control: Some(control),
-        })
-    }
-
-    pub(super) async fn report_native_task(
-        &self,
-        run: PendingTaskRun,
-        update: runtime_collab::TaskRunUpdate,
-    ) -> Result<(), String> {
-        // An agent reports acceptance and its first progress without waiting
-        // in between, and a report's command is read from the state the one
-        // before committed (progress needs the accepted run). Applied
-        // concurrently, progress read the state before acceptance landed and
-        // was refused, failing the run at its end.
-        let _order = self.native_task_report_order.lock().await;
-        let binding = run.native.clone().ok_or("not a native task run")?;
-        let service = self
-            .native_tasks(&run.cluster_id)
-            .ok_or("native task owner unavailable")?;
-        if matches!(update, runtime_collab::TaskRunUpdate::Cancelled { .. }) {
-            let snapshot = service.snapshot(&run.cluster_id)?;
-            if snapshot
-                .tasks
-                .iter()
-                .any(|task| task.id == run.task_id && task.status == WorkspaceTaskStatus::Cancelled)
-                && snapshot
-                    .controls
-                    .get(&run.task_id)
-                    .is_some_and(|control| control.run_epoch == binding.epoch)
-            {
-                self.note_ended_task_run(&run, "cancelled");
-                return Ok(());
-            }
-        }
-        let ended = ended_outcome(&update);
-        let task_id = run.task_id.clone();
-        if matches!(
-            update,
-            runtime_collab::TaskRunUpdate::Failed { .. }
-                | runtime_collab::TaskRunUpdate::Cancelled { .. }
-        ) {
-            self.cancel_native_children(&run)?;
-        }
-        let command = match update {
-            runtime_collab::TaskRunUpdate::DirectionsApplied { revision } => {
-                WorkspaceTaskCommand::AppliedAck {
-                    task_id,
-                    run_epoch: binding.epoch,
-                    revision,
-                }
-            }
-            runtime_collab::TaskRunUpdate::Accepted => WorkspaceTaskCommand::ExecutionPhase {
-                task_id,
-                run_epoch: binding.epoch,
-                sequence: 0,
-                phase: tilo_desktop_model::WorkspaceTaskExecutionPhase::Accepted,
-            },
-            runtime_collab::TaskRunUpdate::Progress {
-                message,
-                presentation,
-            } => {
-                let snapshot = service.snapshot(&run.cluster_id)?;
-                let execution = snapshot
-                    .controls
-                    .get(&task_id)
-                    .and_then(|control| control.execution.as_ref())
-                    .filter(|execution| execution.run_epoch == binding.epoch)
-                    .ok_or("public progress requires accepted run")?;
-                let sequence = execution
-                    .sequence
-                    .checked_add(1)
-                    .ok_or("task sequence exhausted")?;
-                if let Some(presentation) = presentation {
-                    WorkspaceTaskCommand::Presentation {
-                        task_id,
-                        run_epoch: binding.epoch,
-                        sequence,
-                        presentation: presentation.bounded()?,
-                    }
-                } else {
-                    WorkspaceTaskCommand::PublicProgress {
-                        task_id,
-                        run_epoch: binding.epoch,
-                        sequence,
-                        message: bounded_public_task_message(&message)?,
-                    }
-                }
-            }
-            runtime_collab::TaskRunUpdate::Succeeded { message } => WorkspaceTaskCommand::Finish {
-                task_id,
-                run_epoch: binding.epoch,
-                outcome: WorkspaceTaskFinish::Done,
-                summary: bounded_public_task_message(&message)?,
-            },
-            runtime_collab::TaskRunUpdate::Failed { message }
-            | runtime_collab::TaskRunUpdate::Cancelled { message } => {
-                WorkspaceTaskCommand::Abandon {
-                    task_id,
-                    run_epoch: binding.epoch,
-                    reason: bounded_public_task_message(&message)?,
-                }
-            }
-        };
-        let receipt = service.report(&run.cluster_id, binding, command).await;
-        // What the run changed is in the documents whether or not its
-        // report was acknowledged: it is recorded for undo either way.
-        if let Some(outcome) = ended {
-            self.note_ended_task_run(&run, outcome);
-        }
-        if receipt?.binding.room != run.cluster_id {
-            return Err("native task report receipt room differs".into());
-        }
-        Ok(())
-    }
-
-    /// Hand the run that ended to history, which records what it changed as
-    /// one run of the agent's, attributed to it and undoable as a unit.
-    fn note_ended_task_run(&self, run: &PendingTaskRun, outcome: &str) {
-        let Some(service) = self.native_tasks(&run.cluster_id) else {
-            return;
-        };
-        let Ok(snapshot) = service.snapshot(&run.cluster_id) else {
-            return;
-        };
-        let Some(task) = snapshot.tasks.iter().find(|task| task.id == run.task_id) else {
-            return;
-        };
-        self.ended_runs.tasks.push(crate::task_runs::EndedTaskRun {
-            room: run.cluster_id.clone(),
-            task_id: task.id.clone(),
-            title: task.title.clone(),
-            agent: format!("agent:{}", run.agent_id),
-            person: task.created_by.clone(),
-            instruction: snapshot
-                .controls
-                .get(&task.id)
-                .and_then(|control| control.instruction.clone()),
-            outcome: outcome.to_owned(),
-        });
-    }
-}
-
-/// How a run that `update` ends ended, in a word history keeps; `None` for
-/// an update that does not end it.
-fn ended_outcome(update: &runtime_collab::TaskRunUpdate) -> Option<&'static str> {
-    match update {
-        runtime_collab::TaskRunUpdate::Succeeded { .. } => Some("completed"),
-        runtime_collab::TaskRunUpdate::Failed { .. } => Some("stopped"),
-        runtime_collab::TaskRunUpdate::Cancelled { .. } => Some("cancelled"),
-        _ => None,
+        self.tracker_status(run, lease)
     }
 }

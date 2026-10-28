@@ -12,6 +12,8 @@ use ui::framework::{
 };
 use ui::headless::FrameHarness;
 use ui::i18n::EmbeddedCatalog;
+
+use crate::i18n::t;
 use ui::tilo_resource::{self, Atom, Invoke, Model, resource};
 use ui::widget::Element;
 
@@ -70,7 +72,8 @@ ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
 /// Every `--scenario` the screenshot renderer stages.
 pub const SCENARIOS: &[&str] = &[
-    "changes", "split", "history", "branches", "commit", "discard", "empty", "narrow",
+    "changes", "split", "history", "branches", "commit", "conflict", "switch", "discard", "empty",
+    "narrow",
 ];
 
 /// Framework app: the git client widget over [`GitClient`].
@@ -133,18 +136,29 @@ impl ResourceApp for GitClientShell {
     /// Every scenario but the first-run `empty` one shows the bundled
     /// repository.
     fn fixture(fixture: &mut Fixture<GitClient>) {
-        if fixture.scenario() != Some("empty") {
-            let (model, diffs) = crate::sample::model();
-            fixture.provide(SampleRepository { model, diffs });
+        if fixture.scenario() == Some("empty") {
+            return;
         }
+        // The conflict capture is a repository mid-merge: one file both
+        // sides changed, waiting for the person to say which one wins.
+        let (model, diffs) = if fixture.scenario() == Some("conflict") {
+            crate::sample::model_with_conflict()
+        } else {
+            crate::sample::model()
+        };
+        fixture.provide(SampleRepository { model, diffs });
     }
 
     /// `discard` presses "Discard file" on a changed file: the host asks to
     /// confirm the destructive effect before it runs.
     fn scenario_input(name: Option<&str>, input: &mut FrameHarness) -> Result<(), String> {
         if name == Some("discard") {
+            // The name the button carries in whatever language the capture
+            // is running in, not the one this source file happens to spell:
+            // under `--pseudo-locale` the two differ, and a scenario that
+            // looks for English finds no button at all.
             let discard = input
-                .a11y_node_named("Discard file changes")
+                .a11y_node_named(&t("git-discard-file-name"))
                 .ok_or("no \"Discard file\" button on the changed file")?;
             input.perform_a11y_action(discard, &ui::a11y::Action::Activate)?;
         }
@@ -229,6 +243,93 @@ mod tests {
             .unwrap();
         std::fs::write(path.join("new.txt"), "new\n").unwrap();
         (dir, path)
+    }
+
+    /// A repository whose working tree is mid-merge: `file.txt` was rewritten
+    /// on both sides, so it waits for the person to say which one wins.
+    fn conflicted_repository(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let (dir, path) = scratch_repository(name);
+        std::fs::remove_file(path.join("new.txt")).unwrap();
+        crate::repo::create_branch(&path, "feature", None, true).unwrap();
+        std::fs::write(
+            path.join("file.txt"),
+            "one\ntheirs\ntheirs again\ntheirs once more\n",
+        )
+        .unwrap();
+        crate::repo::stage_file(&path, "file.txt").unwrap();
+        crate::repo::commit(&path, "their side").unwrap();
+        crate::repo::checkout_branch(&path, "master").unwrap();
+        std::fs::write(path.join("file.txt"), "one\nours\n").unwrap();
+        crate::repo::stage_file(&path, "file.txt").unwrap();
+        crate::repo::commit(&path, "our side").unwrap();
+        {
+            let repo = git2::Repository::open(&path).unwrap();
+            let tip = repo
+                .find_branch("feature", git2::BranchType::Local)
+                .unwrap()
+                .into_reference()
+                .peel_to_commit()
+                .unwrap();
+            let annotated = repo.find_annotated_commit(tip.id()).unwrap();
+            repo.merge(&[&annotated], None, None).unwrap();
+            assert!(
+                repo.index().unwrap().has_conflicts(),
+                "the fixture is conflicted"
+            );
+        }
+        (dir, path)
+    }
+
+    /// The only file a merge left conflicted is the change the window shows,
+    /// and the choice above it says what each side costs before it is made.
+    /// `o` keeps our side from the keyboard, which settles the file.
+    #[test]
+    fn a_conflict_says_what_each_side_costs_and_settles_by_key() {
+        let (_dir, path) = conflicted_repository("conflict-cost");
+        let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.settle();
+
+        let labels: Vec<String> = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect();
+        let note = labels
+            .iter()
+            .find(|label| label.contains("Both sides changed this file"))
+            .unwrap_or_else(|| panic!("the choice names its cost: {labels:?}"));
+        assert!(
+            note.contains("3 lines of theirs") && note.contains("one of your lines"),
+            "each side's cost is named: {note:?}"
+        );
+        for expected in [t("git-conflict-take-ours"), t("git-conflict-take-theirs")] {
+            assert!(
+                app.harness().a11y_node_named(&expected).is_some(),
+                "{expected:?} is offered"
+            );
+        }
+        assert!(
+            app.harness()
+                .a11y_node_named(&t("git-stage-file"))
+                .is_none(),
+            "the markers are not something to stage"
+        );
+
+        app.harness().key("o");
+        app.settle();
+        assert!(
+            !git2::Repository::open(&path)
+                .unwrap()
+                .index()
+                .unwrap()
+                .has_conflicts(),
+            "keeping our side settled the conflict"
+        );
+        assert_eq!(
+            std::fs::read_to_string(path.join("file.txt")).unwrap(),
+            "one\nours\n"
+        );
     }
 
     #[test]
@@ -425,71 +526,31 @@ mod tests {
         );
     }
 
+    /// The window bar's views switch the screens through the client's view
+    /// actions, changing no collaborative document.
     #[test]
-    fn painted_screen_swipes_use_the_live_view_actions_without_document_edits() {
-        use winit::event::TouchPhase::{Cancelled, Ended, Started};
-        fn control(
-            node: &ui::headless::InspectionNode,
-            target: &str,
-        ) -> Option<ui::a11y::AccessNode> {
-            fn find(node: &ui::a11y::AccessNode, target: &str) -> Option<ui::a11y::AccessNode> {
-                if node.action_target.as_deref() == Some(target) {
-                    return Some(node.clone());
-                }
-                node.children.iter().find_map(|child| find(child, target))
-            }
-            node.semantics
-                .as_ref()
-                .and_then(|node| find(node, target))
-                .or_else(|| {
-                    node.children
-                        .iter()
-                        .find_map(|child| control(child, target))
-                })
-        }
-        let (_dir, path) = scratch_repository("swipe-navigation");
+    fn the_bar_views_switch_screens_without_document_edits() {
+        let (_dir, path) = scratch_repository("bar-navigation");
         let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.harness().present_in_window_bar();
         app.settle();
         let before = app.peer_document().get_heads();
-        let start = control(&app.harness().inspection().root, "git.screen.history")
-            .unwrap()
-            .bounds
-            .unwrap()
-            .to_rect()
-            .center();
-        app.harness().touch(1, Started, start.x, start.y);
-        app.harness().touch(1, Ended, start.x - 90.0, start.y);
-        app.settle();
-        assert!(
-            control(&app.harness().inspection().root, "git.screen.history")
-                .unwrap()
-                .state
-                .selected
-        );
-        let start = control(&app.harness().inspection().root, "git.screen.history")
-            .unwrap()
-            .bounds
-            .unwrap()
-            .to_rect()
-            .center();
-        app.harness().touch(2, Started, start.x, start.y);
-        app.harness().touch(2, Cancelled, start.x - 90.0, start.y);
-        app.settle();
-        assert!(
-            control(&app.harness().inspection().root, "git.screen.history")
-                .unwrap()
-                .state
-                .selected
-        );
-        app.harness().touch(3, Started, start.x, start.y);
-        app.harness().touch(3, Ended, start.x + 90.0, start.y);
-        app.settle();
-        assert!(
-            control(&app.harness().inspection().root, "git.screen.changes")
-                .unwrap()
-                .state
-                .selected
-        );
+        let screen = |app: &mut TestApp<GitClientShell>| {
+            app.surface(|client: &mut GitClientApp| client.window_toolbar())
+                .and_then(|toolbar| toolbar.views)
+                .map(|views| views.chosen)
+        };
+        assert_eq!(screen(&mut app).as_deref(), Some("git.screen.changes"));
+        for target in [
+            "git.screen.history",
+            "git.screen.branches",
+            "git.screen.changes",
+        ] {
+            app.harness()
+                .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: target.into() });
+            app.settle();
+            assert_eq!(screen(&mut app).as_deref(), Some(target));
+        }
         assert_eq!(
             app.peer_document().get_heads(),
             before,
@@ -549,21 +610,26 @@ mod tests {
         );
     }
 
-    /// Work on the repository reaches this machine's disk, so only the
-    /// person at it may ask for it; the diff preferences are the person's
-    /// settings and reach nothing of the machine.
+    /// Work on the repository reaches outside the record, so the person's
+    /// answers decide it like any outside effect; the diff preferences only
+    /// read; choosing the repository opens a chooser for the person.
     #[test]
-    fn only_repository_work_is_device_only() {
+    fn repository_work_is_an_outside_effect_and_choosing_is_attended() {
         use ui::tilo_resource::Effect as _;
-        let device_only = |id: &str| {
+        let declaration = |id: &str| {
             GitClientEffect::declarations()
                 .into_iter()
                 .find(|decl| decl.id == id)
                 .unwrap_or_else(|| panic!("{id} is declared"))
-                .device_only
         };
         for id in ["commit", "stage-all", "fetch", "discard-file"] {
-            assert!(device_only(id), "{id}");
+            let work = declaration(id);
+            assert_eq!(
+                work.action_kind,
+                ui::tilo_actions::ActionKind::Outside,
+                "{id}"
+            );
+            assert!(!work.attended, "{id}");
         }
         for id in [
             "diff-layout",
@@ -571,8 +637,13 @@ mod tests {
             "show-whitespace",
             "wrap-lines",
         ] {
-            assert!(!device_only(id), "{id}");
+            assert_eq!(
+                declaration(id).action_kind,
+                ui::tilo_actions::ActionKind::Read,
+                "{id}"
+            );
         }
+        assert!(declaration("choose-repository").attended);
     }
 
     #[test]
@@ -581,7 +652,6 @@ mod tests {
             .into_iter()
             .find(|declaration| declaration.id == "run-approved-check")
             .expect("approved project check is on the actual repository effect surface");
-        assert!(!declaration.device_only);
         assert_eq!(
             declaration.answers,
             ui::tilo_resource::effect::Answers::Later {
@@ -807,7 +877,6 @@ mod tests {
             shown.contains(destination.to_str().unwrap()),
             "the actual checkout path is shown: {shown}"
         );
-        // Device paths stay out of the shared repository projection.
         assert!(
             !serde_json::to_string(&app.state().shared)
                 .unwrap()
@@ -829,24 +898,273 @@ mod tests {
         );
     }
 
-    /// The app-bar layout control and the palette's effect switch the
+    /// A repository with one commit, the branch `feature` beside the one
+    /// HEAD is on, and no uncommitted work.
+    fn clean_repository(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let (dir, path) = scratch_repository(name);
+        std::fs::remove_file(path.join("new.txt")).unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feature", &head, false).unwrap();
+        (dir, path)
+    }
+
+    fn local_branches(path: &std::path::Path) -> Vec<String> {
+        git2::Repository::open(path)
+            .unwrap()
+            .branches(Some(git2::BranchType::Local))
+            .unwrap()
+            .map(|branch| branch.unwrap().0.name().unwrap().unwrap().to_owned())
+            .collect()
+    }
+
+    fn head_of(path: &std::path::Path) -> String {
+        git2::Repository::open(path)
+            .unwrap()
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap()
+            .to_owned()
+    }
+
+    /// The question a dirty switch asks is answered from the keyboard: Enter
+    /// on the branch opens it, and Enter again takes the answer that keeps
+    /// the work — parking it on the stash — because that is the one the sheet
+    /// offers as its default. Nothing needed the pointer.
+    #[test]
+    fn the_switch_question_is_answered_from_the_keyboard() {
+        use crate::actions::GitClientEffect;
+
+        let (_dir, path) = clean_repository("keyboard-switch");
+        std::fs::write(path.join("file.txt"), "one\nedited\n").unwrap();
+        let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.settle();
+        let from = head_of(&path);
+
+        app.effect_on(
+            &crate::actions::branch_resource_id("feature"),
+            &GitClientEffect::CheckoutBranch {
+                name: "feature".into(),
+            },
+        )
+        .unwrap();
+        app.settle();
+        assert_eq!(
+            head_of(&path),
+            from,
+            "uncommitted work asks before the branch moves"
+        );
+        assert!(
+            app.harness().a11y_node_named(&t("git-cancel")).is_some(),
+            "the question and its answers are what a reader hears"
+        );
+
+        app.harness().key("Enter");
+        app.settle();
+        assert_eq!(head_of(&path), "feature", "Enter took the sheet's answer");
+        assert_eq!(
+            std::fs::read_to_string(path.join("file.txt")).unwrap(),
+            "one\n",
+            "the parked edits left the working tree"
+        );
+    }
+
+    /// Escape is the way out of a question, from the keyboard, as it is for
+    /// every other sheet.
+    #[test]
+    fn escape_puts_a_destructive_question_away() {
+        let (_dir, path) = clean_repository("keyboard-escape");
+        let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.effect(&crate::actions::GitClientEffect::ShowBranches)
+            .unwrap();
+        app.settle();
+        // The branches page opens on its first local branch, so Delete names
+        // the branch the page is showing.
+        assert_eq!(
+            local_branches(&path).first().map(String::as_str),
+            Some("feature")
+        );
+        app.harness().key("Delete");
+        app.settle();
+        assert!(
+            app.harness()
+                .a11y_node_named(&t("git-delete-branch"))
+                .is_some(),
+            "the sheet asks, naming the branch"
+        );
+        app.harness().key("Escape");
+        app.settle();
+        assert!(
+            local_branches(&path).iter().any(|name| name == "feature"),
+            "Escape answered the question: the branch is still there"
+        );
+    }
+
+    /// Deleting a branch asks a question whose default answer is the way out:
+    /// Enter alone cancels, and the arrow keys reach the destructive answer
+    /// for someone who means it.
+    #[test]
+    fn a_destructive_answer_is_never_what_enter_fires() {
+        let (_dir, path) = clean_repository("keyboard-delete");
+        let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.effect(&crate::actions::GitClientEffect::ShowBranches)
+            .unwrap();
+        app.settle();
+        app.harness().key("Delete");
+        app.settle();
+        app.harness().key("Enter");
+        app.settle();
+        assert!(
+            local_branches(&path).iter().any(|name| name == "feature"),
+            "Enter on a destructive question is its way out"
+        );
+
+        app.harness().key("Delete");
+        app.settle();
+        app.harness().key("ArrowRight");
+        app.harness().key("ArrowRight");
+        app.harness().key("Enter");
+        app.settle();
+        assert!(
+            !local_branches(&path).iter().any(|name| name == "feature"),
+            "two arrows and Enter take the answer the person chose"
+        );
+    }
+
+    /// A reader answers the same question the pointer and the keyboard
+    /// answer: the sheet's answers are buttons with their names, and
+    /// activating one does what pressing it does.
+    #[test]
+    fn a_reader_answers_the_same_question() {
+        use ui::a11y::Action;
+
+        let (_dir, path) = clean_repository("reader-delete");
+        let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.effect(&crate::actions::GitClientEffect::ShowBranches)
+            .unwrap();
+        app.settle();
+        app.harness().key("Delete");
+        app.settle();
+        let titled = |node: &ui::accesskit::Node| {
+            node.label()
+                .is_some_and(|label| label.starts_with("Delete feature?"))
+        };
+        let question = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| titled(node))
+            .map(|(_, node)| node.label().unwrap_or_default().to_owned());
+        let question = question.expect("the question is read out, naming the branch");
+        assert!(
+            question.contains("only this branch holds are lost"),
+            "a reader hears what answering costs, not just what is asked: {question:?}"
+        );
+        assert!(
+            app.harness().a11y_node_named(&t("git-cancel")).is_some(),
+            "the way out is one of the answers a reader can reach"
+        );
+        let answer = app
+            .harness()
+            .a11y_node_named(&t("git-delete-branch"))
+            .expect("the destructive answer is a named button");
+        app.harness()
+            .perform_a11y_action(answer, &Action::Activate)
+            .unwrap();
+        app.settle();
+        assert!(
+            !local_branches(&path).iter().any(|name| name == "feature"),
+            "activating the named answer deleted the branch"
+        );
+    }
+
+    /// Every destructive action the client publishes carries a sentence
+    /// saying what it costs. The palette, a script and an agent ask through
+    /// the action itself, and the sheet they get shows the action's own
+    /// description under its question — an action documented as its own
+    /// label asks "Discard file changes?" and then says nothing at all about
+    /// what is about to be lost.
+    #[test]
+    fn a_destructive_action_says_what_it_loses() {
+        use ui::tilo_actions::RiskLevel;
+
+        let (_dir, path) = scratch_repository("destructive-docs");
+        // A second branch, so the client publishes deleting one too.
+        crate::repo::create_branch(&path, "feature", None, false).unwrap();
+        let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.settle();
+        let actions = app.actions().unwrap();
+        let destructive: Vec<_> = actions
+            .iter()
+            .filter(|action| action.contract.risk == RiskLevel::Destructive)
+            .collect();
+        assert!(
+            destructive.len() >= 2,
+            "the client publishes its destructive acts: {:?}",
+            actions
+                .iter()
+                .map(|action| action.action_label.as_str())
+                .collect::<Vec<_>>()
+        );
+        for action in destructive {
+            let description = action
+                .description
+                .as_deref()
+                .unwrap_or_else(|| panic!("{} says nothing", action.action_label));
+            // What the sheet shows is the description without the heading it
+            // already has as its question.
+            let body = description
+                .trim()
+                .strip_prefix(action.action_label.trim())
+                .unwrap_or(description)
+                .trim();
+            assert!(
+                body.split_whitespace().count() >= 6,
+                "{} asks without saying what it costs: {body:?}",
+                action.action_label
+            );
+        }
+    }
+
+    /// Writing the message on a phone-width window: `c` focuses the field,
+    /// and the list column that holds it is the drawer there, so focusing it
+    /// reveals the drawer. Otherwise the person types into a field the width
+    /// of the window does not show.
+    #[test]
+    fn writing_the_message_reveals_the_column_it_is_written_in() {
+        let mut app = TestApp::<GitClientShell>::capture_at(Some("changes"), (390, 844)).unwrap();
+        app.settle();
+        let field = |app: &mut TestApp<GitClientShell>| {
+            app.harness()
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| node.label() == Some(t("git-commit-message").as_str()))
+                .and_then(|(_, node)| node.bounds())
+                .map(|bounds| (bounds.x0, bounds.x1))
+        };
+        assert_eq!(
+            field(&mut app),
+            None,
+            "a closed drawer does not paint the column at all"
+        );
+        app.harness().key("c");
+        app.settle();
+        let open = field(&mut app);
+        let Some((left, right)) = open else {
+            panic!("focusing the message field did not reveal its column");
+        };
+        assert!(
+            right > 0.0 && left < 390.0,
+            "the column the field is written in came into the window: {left}..{right}"
+        );
+    }
+
+    /// The window bar's layout item and the palette's effect switch the
     /// person's diff preference: kept beside the document, changing no
     /// document and on nobody's undo stack.
     #[test]
     fn diff_preferences_are_personal_settings() {
-        fn bounds(node: &ui::headless::InspectionNode, target: &str) -> Option<vello::kurbo::Rect> {
-            fn find(node: &ui::a11y::AccessNode, target: &str) -> Option<vello::kurbo::Rect> {
-                if node.action_target.as_deref() == Some(target) {
-                    return node.bounds.map(ui::a11y::AccessBounds::to_rect);
-                }
-                node.children.iter().find_map(|child| find(child, target))
-            }
-            node.semantics
-                .as_ref()
-                .and_then(|semantic| find(semantic, target))
-                .or_else(|| node.children.iter().find_map(|child| bounds(child, target)))
-        }
-
         let (_control_dir, control_path) = scratch_repository("preferences-controls");
         let mut app =
             TestApp::<GitClientShell>::launched(&[control_path.to_str().unwrap()]).unwrap();
@@ -863,12 +1181,13 @@ mod tests {
             launch_steps > 0,
             "the repository was opened through its real launch action"
         );
+        app.harness().present_in_window_bar();
         app.settle();
-        let control = bounds(&app.harness().inspection().root, "git.diff-layout.split")
-            .expect("the app bar exports its layout control")
-            .center();
         let before = app.peer_document().get_heads();
-        app.harness().click_at(control.x, control.y);
+        app.harness()
+            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+                id: "git.diff-layout.split".into(),
+            });
         app.settle();
         let layout = |app: &TestApp<GitClientShell>| app.settings::<Settings>().get().diff_layout;
         assert_eq!(layout(&app), DiffLayout::SideBySide);
@@ -920,7 +1239,6 @@ mod tests {
             "wrapping can be enabled again"
         );
 
-        // A preference stored by another window or device shows here.
         app.settings::<Settings>()
             .set(&Settings {
                 diff_layout: DiffLayout::Unified,
@@ -947,6 +1265,29 @@ mod tests {
         ] {
             assert_ne!(key, value);
             assert!(!value.is_empty());
+        }
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::GitClientShell::scenarios() {
+            let mut app = TestApp::<super::GitClientShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
         }
     }
 }

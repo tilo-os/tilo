@@ -24,8 +24,7 @@ fn tree_with_n_groups(n: u64) -> (DesktopTree, StripId, Vec<GroupId>) {
             focus_history: Vec::new(),
         })
         .collect();
-    let mut ws = Workspace::new(ws_id, "Test");
-    ws.set_room(RoomId::new());
+    let mut ws = Workspace::in_room(ws_id, RoomId::new(), "Test");
     ws.strips.push(strip);
     let mut active_strip = HashMap::new();
     active_strip.insert(ws_id, strip_id);
@@ -126,7 +125,6 @@ fn active_group_follows_closing_groups_and_resolves_neighbours() {
         tree.set_active_group(strip_id, b);
         let resolved = tree.resolve_active_group(strip_id, |id| id == a || id == c);
         assert_eq!(resolved, Some(b));
-        // Map is unchanged.
         assert_eq!(tree.active_group_for(strip_id), Some(b));
     }
     // Phase `resolve_active_group_walks_left_then_right`.

@@ -41,7 +41,6 @@ pub struct ServiceMember {
     pub kinds: KindSet,
     /// Wall-clock deadline (Unix seconds), if the grant expires.
     pub expires_at: Option<u64>,
-    /// The grant id, to revoke it by.
     pub grant_id: GrantId,
 }
 
@@ -50,7 +49,6 @@ pub fn service_principal(device: &Ed25519PublicKey) -> String {
     format!("{AGENT_PREFIX}{}", hex::encode(device.as_bytes()))
 }
 
-/// The device a service principal names, if it is one.
 pub fn service_device(principal: &str) -> Option<Ed25519PublicKey> {
     let hex_key = principal.strip_prefix(AGENT_PREFIX)?;
     let bytes: [u8; 32] = hex::decode(hex_key).ok()?.try_into().ok()?;

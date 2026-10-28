@@ -150,8 +150,6 @@ mod tests {
         b: String,
     }
 
-    /// Values round-trip via canonical bytes, trailing bytes are rejected, the domain tag changes
-    /// the digest, and the digest is deterministic.
     #[test]
     fn canonical_bytes_round_trip_exactly_and_digests_are_domain_separated() {
         // Phase: round_trip_via_canonical_bytes.

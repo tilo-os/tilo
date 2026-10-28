@@ -66,6 +66,7 @@ pub struct LogsShell;
 impl ResourceApp for LogsShell {
     type Resource = Logs;
     const ID: &'static str = "so.tilo.logs";
+    const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Journal];
     const TITLE: &'static str = "Logs";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
@@ -146,5 +147,28 @@ impl ResourceSurface<Logs, JournalEffect> for LogsApp {
 
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.entry_row(id)
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::LogsShell::scenarios() {
+            let mut app = TestApp::<super::LogsShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
     }
 }

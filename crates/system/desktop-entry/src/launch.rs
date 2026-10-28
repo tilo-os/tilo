@@ -121,6 +121,13 @@ pub enum HostLaunchError {
     NeedsTerminal { id: String },
     #[error("no application on this system has the desktop-file id {0}")]
     NotFound(String),
+    #[error("{name} can't be found: {} is gone", program.display())]
+    ProgramMissing {
+        name: String,
+        program: std::path::PathBuf,
+    },
+    #[error("{} is not a program that runs by itself", program.display())]
+    NotAProgram { program: std::path::PathBuf },
 }
 
 /// A resolved host-application launch: the exact argv and environment. Pure data — building
@@ -208,6 +215,12 @@ pub fn plan(entry: &DesktopEntry, env: &LaunchEnv) -> Result<HostLaunch, HostLau
     if entry.terminal {
         return Err(HostLaunchError::NeedsTerminal {
             id: entry.id.clone(),
+        });
+    }
+    if let Some(downloaded) = entry.downloaded.as_ref().filter(|d| !d.present) {
+        return Err(HostLaunchError::ProgramMissing {
+            name: entry.name.clone(),
+            program: downloaded.program.clone(),
         });
     }
     let mut argv = expanded_argv(entry, env)?.into_iter();
@@ -359,6 +372,15 @@ fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
         "ELECTRON_OZONE_PLATFORM_HINT".to_string(),
         "auto".to_string(),
     );
+    // The desktop draws every window's frame. Firefox on Wayland assumes it
+    // must draw its own, whatever the compositor says: it puts its tabs in a
+    // client-drawn title bar with a shadow margin around the window, and asks
+    // to keep that frame. This is the switch it reads instead; with it the
+    // window asks for the desktop's frame and fills its tab exactly.
+    env.insert(
+        "MOZ_GTK_TITLEBAR_DECORATION".to_string(),
+        "none".to_string(),
+    );
     env.insert(HOST_APP_ENV.to_string(), "1".to_string());
     for key in CLEARED_ENV {
         env.remove(*key);
@@ -415,6 +437,73 @@ pub fn plan_file(path: &std::path::Path, env: &LaunchEnv) -> Result<HostLaunch, 
         .and_then(|text| crate::entry::parse(&text, &id, path, &crate::locale::locale_candidates()))
         .ok_or_else(|| HostLaunchError::NotFound(path.display().to_string()))?;
     plan(&entry, env)
+}
+
+/// Plan running the program file at `path` itself, as opening a downloaded
+/// `AppImage` or executable in Files does: no desktop entry, no arguments,
+/// the environment and confinement of every host launch.
+///
+/// # Errors
+///
+/// [`HostLaunchError::NotAProgram`] when `path` is not absolute.
+pub fn plan_program(
+    path: &std::path::Path,
+    env: &LaunchEnv,
+) -> Result<HostLaunch, HostLaunchError> {
+    if !path.is_absolute() {
+        return Err(HostLaunchError::NotAProgram {
+            program: path.to_path_buf(),
+        });
+    }
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok(HostLaunch {
+        desktop_id: name.clone(),
+        display_name: name,
+        program: path.to_path_buf(),
+        args: Vec::new(),
+        env: build_env(env),
+        window_identities: Vec::new(),
+        source: EntrySource::Host,
+    })
+}
+
+/// Make the program file at `path` runnable by the person, as opening it
+/// does: a downloaded file arrives without the executable bit. Only a
+/// compiled program (an ELF file, which every `AppImage` is) is touched; a
+/// script is never made runnable this way.
+///
+/// # Errors
+///
+/// [`HostLaunchError::NotAProgram`] for anything but a regular ELF file, or
+/// when its mode can't be changed.
+#[cfg(unix)]
+pub fn make_runnable(path: &std::path::Path) -> Result<(), HostLaunchError> {
+    use std::io::Read as _;
+    use std::os::unix::fs::PermissionsExt as _;
+    let not_a_program = || HostLaunchError::NotAProgram {
+        program: path.to_path_buf(),
+    };
+    let meta = std::fs::metadata(path).map_err(|_| not_a_program())?;
+    let mut magic = [0_u8; 4];
+    let elf = meta.is_file()
+        && std::fs::File::open(path)
+            .and_then(|mut file| file.read_exact(&mut magic))
+            .is_ok()
+        && magic == *b"\x7fELF";
+    if !elf {
+        return Err(not_a_program());
+    }
+    let mode = meta.permissions().mode();
+    // Runnable by whoever may read it, as `chmod +x` on a downloaded file.
+    let wanted = mode | ((mode & 0o444) >> 2);
+    if wanted != mode {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(wanted))
+            .map_err(|_| not_a_program())?;
+    }
+    Ok(())
 }
 
 /// Find the entry with this desktop-file id on the current system and plan a launch for it.
@@ -716,6 +805,7 @@ mod tests {
                 "QT_AUTO_SCREEN_SCALE_FACTOR=1",
                 "QT_ENABLE_HIGHDPI_SCALING=1",
                 "ELECTRON_OZONE_PLATFORM_HINT=auto",
+                "MOZ_GTK_TITLEBAR_DECORATION=none",
                 "TILO_HOST_APP=1",
             ] {
                 assert!(

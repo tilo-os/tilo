@@ -19,9 +19,17 @@
 # hardware cursor plane on physical GPUs, where wlroots' composited software
 # cursor leaves a trail of old pointer stamps, and a software cursor only on
 # QEMU's virtio-gpu, whose hardware cursor renders Y-flipped and offset.
+#
+# If the graphical greeter exits without starting a session, tilo-cage-session
+# offers greetd's text greeter (agreety) on the same VT instead of exiting:
+# greetd stays up, so a greeter that cannot draw never restarts into systemd's
+# start limit and leaves the person without a way to sign in.
+#
+# Cage spans every display (`-m extend`); the greeter puts the sign-in card on
+# the built-in panel and the clock on the others (output_scale.rs).
 [terminal]
 vt = 1
 
 [default_session]
-command = "/usr/libexec/tilo-cage-session /usr/bin/tilo-greeter"
+command = "/usr/libexec/tilo-cage-session /usr/libexec/tilo/tilo-greeter"
 user = "greetd"

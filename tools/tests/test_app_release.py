@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 class AppReleaseTests(unittest.TestCase):
     def test_release_architectures_default_to_both_lanes_and_fail_closed(self):
         with self.subTest(phase='ordinary builds default to both native lanes'):
-            for ref, event in [("refs/heads/main", "push"), ("refs/pull/17/merge", "pull_request")]:
+            for ref, event in [("refs/heads/stable", "push"), ("refs/pull/17/merge", "pull_request")]:
                 with self.subTest(event=event):
                     self.assertEqual(
                         app_release.architecture_matrix(ref, event),
@@ -33,7 +33,7 @@ class AppReleaseTests(unittest.TestCase):
                     )
         with self.subTest(phase='manual build can explicitly select one architecture'):
             self.assertEqual(
-                app_release.architecture_matrix("refs/heads/main", "workflow_dispatch", requested="aarch64"),
+                app_release.architecture_matrix("refs/heads/stable", "workflow_dispatch", requested="aarch64"),
                 {"include": [{"arch": "aarch64", "runner": "runner-arm64", "build_runner": "runner-large-arm64"}]},
             )
         with self.subTest(phase='main architecture switch and tags cover both'):
@@ -45,7 +45,7 @@ class AppReleaseTests(unittest.TestCase):
             }
             self.assertEqual(
                 app_release.architecture_matrix(
-                    "refs/heads/main", "push", main_architectures="x86_64,aarch64"
+                    "refs/heads/stable", "push", main_architectures="x86_64,aarch64"
                 ),
                 both,
             )
@@ -58,10 +58,10 @@ class AppReleaseTests(unittest.TestCase):
         with self.subTest(phase='invalid release architecture fails closed'):
             with self.assertRaisesRegex(ValueError, "architectures must contain only"):
                 app_release.architecture_matrix(
-                    "refs/heads/main", "push", main_architectures="riscv64"
+                    "refs/heads/stable", "push", main_architectures="riscv64"
                 )
 
-    def test_collections_and_main_push_define_the_publication_boundary(self):
+    def test_collections_and_the_promotion_push_define_the_publication_boundary(self):
         with self.subTest(phase='wildcard collection tracks catalog'):
             cfg = {"collections": {"default": {"include": ["*"]}}}
             self.assertEqual(
@@ -92,7 +92,7 @@ class AppReleaseTests(unittest.TestCase):
                 ),
                 sorted(catalog),
             )
-        with self.subTest(phase='main push selects affected apps and publishes default collection'):
+        with self.subTest(phase='a promotion selects affected apps and publishes default collection'):
             workflow = (ROOT / ".forgejo/workflows/release-apps.yml").read_text(
                 encoding="utf-8"
             )
@@ -102,7 +102,7 @@ class AppReleaseTests(unittest.TestCase):
                 'python3 -I tools/ci/python.py tools/apps/app_release.py "${args[@]}"', 1
             )[0]
             push = workflow.split("  push:\n", 1)[1].split("  workflow_dispatch:\n", 1)[0]
-            self.assertIn("    branches: [main]", push)
+            self.assertIn("    branches: [stable]", push)
             self.assertNotIn("refs/heads/main", selection)
             # Superseded queued runs must not drop their changes: select
             # relative to the published collection, else rebuild it all.
@@ -115,7 +115,7 @@ class AppReleaseTests(unittest.TestCase):
             )
             self.assertIn('update_variable TILO_APP_COLLECTION_SOURCE "$GITHUB_SHA"',
                           (ROOT / "tools/apps/publish-collections.sh").read_text(encoding="utf-8"))
-            self.assertIn("if [[ $GITHUB_REF == refs/heads/main ]]; then", workflow)
+            self.assertIn("if [[ $GITHUB_REF == refs/heads/stable ]]; then", workflow)
             self.assertIn("collection=default", workflow)
 
             catalog = app_release.app_catalog(ROOT)
@@ -179,10 +179,10 @@ class AppReleaseTests(unittest.TestCase):
                     self.assertEqual(1, sum(len(values) for values in classified.values()))
             # Non-input prose and an unrelated CI helper must not become fleet rebuilds.
             self.assertEqual([], app_release.apps_from_changes(
-                ['docs/architecture.md', 'tools/ci/timing_report.py'], CATALOG))
+                ['docs/architecture.md', 'tools/ci/measure.sh'], CATALOG))
         with self.subTest(phase='check scheduling is not an app release dependency'):
-            paths = ['tools/ci/affected_packages.py', 'tools/tests/test_ci_select.py',
-                     'docs/ci-performance.md']
+            paths = ['tools/ci/suites.py', 'tools/tests/test_suites.py',
+                     'docs/t.md']
             self.assertEqual([], app_release.apps_from_changes(paths, CATALOG))
             self.assertEqual({'binary': [], 'packaging': [], 'verification': []},
                              app_release.input_classification(paths))
@@ -195,15 +195,15 @@ class AppReleaseTests(unittest.TestCase):
                 def git(*args):
                     return subprocess.check_output(['git', '-C', directory, *args], text=True).strip()
                 git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@invalid')
-                for relative in ('tools/ci/affected_packages.py', 'tools/ci/workspace_graph.py'):
+                for relative in ('tools/ci/suites.py', 'tools/ci/workspace_graph.py'):
                     target = root / relative
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text((ROOT / relative).read_text())
                 git('add', 'tools'); git('commit', '-qm', 'shared graph baseline')
                 base = git('rev-parse', 'HEAD')
-                scheduler = root / 'tools/ci/affected_packages.py'
-                scheduler.write_text(scheduler.read_text().replace('MAX_DEVELOPER_SHARDS = 2', 'MAX_DEVELOPER_SHARDS = 3'))
-                git('commit', '-qam', 'change check fanout')
+                scheduler = root / 'tools/ci/suites.py'
+                scheduler.write_text(scheduler.read_text().replace('SUITE_TIMEOUT_SECONDS = 600', 'SUITE_TIMEOUT_SECONDS = 601'))
+                git('commit', '-qam', 'change suite timeout')
                 args = SimpleNamespace(root=root, config=ROOT / 'dist/apps/app-collections.toml',
                                        tag='', apps='', base=base, collection='default')
                 with mock.patch.object(app_release, 'app_catalog', return_value=app_release.app_catalog(ROOT)), \

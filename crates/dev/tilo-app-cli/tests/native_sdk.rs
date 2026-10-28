@@ -86,7 +86,7 @@ fn prepare_fixture(temp: &Path) -> NativeFixture {
         .unwrap();
     let root = temp.join("sdk");
     copy_sources(&sources, &root);
-    let created = Command::new(env!("CARGO_BIN_EXE_tilo-app"))
+    let created = Command::new(tilo_test_env::package_binary!("tilo-app"))
         .args([
             "new",
             "sdk-authoring-proof",

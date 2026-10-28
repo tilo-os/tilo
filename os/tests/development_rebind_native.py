@@ -56,7 +56,7 @@ def install_synthetic_rollback(image_root):
         shutil.rmtree(destination)
     shutil.copytree(ROLLBACK_MODULE, destination)
     for relative in (
-            'usr/bin/tilo-rollback',
+            'usr/libexec/tilo/tilo-rollback',
             'usr/libexec/tilo-rollback-initrd-unlock',
             'usr/libexec/tilo-root-discover',
             'usr/lib/systemd/system-generators/tilo-root-generator'):

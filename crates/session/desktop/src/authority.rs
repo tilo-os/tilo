@@ -109,13 +109,13 @@ impl WorkspaceAuthority for Workspace {
         Workspace::role_of(self, user).filter(|_| !self.is_blocked(user))
     }
     fn actor_for_person(&self, user: &UserId) -> Actor {
-        Actor::person(user.clone()).in_room(self.room.to_string())
+        Actor::person(user.clone()).in_room(self.room().to_string())
     }
     fn actor_for_app(&self, app_id: &str) -> Actor {
-        Actor::app(app_id).in_room(self.room.to_string())
+        Actor::app(app_id).in_room(self.room().to_string())
     }
     fn actor_for_agent(&self, agent: &str) -> Actor {
-        Actor::agent(agent).in_room(self.room.to_string())
+        Actor::agent(agent).in_room(self.room().to_string())
     }
     fn roster(&self) -> Vec<(UserId, CapRole)> {
         Workspace::roster(self)

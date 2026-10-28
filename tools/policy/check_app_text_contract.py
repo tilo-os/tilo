@@ -133,12 +133,13 @@ def main() -> int:
     if violations:
         print("application text contract FAILED", file=sys.stderr)
         for violation in violations:
-            print(f"  {violation.display()}", file=sys.stderr)
+            print(violation.display())
         return 1
     print(
         "application text contract OK "
         f"({app_count} app crates use ui; {shared_users} contain text surfaces; "
-        "0 private shapers or raw glyph painters)"
+        "0 private shapers or raw glyph painters)",
+        file=sys.stderr,
     )
     return 0
 

@@ -1,8 +1,9 @@
 //! Device-local privacy policy for the personal continuity fabric.
 //!
 //! This is the single typed boundary between the settings document and shell
-//! continuity brokers. Missing, malformed, or partially-written settings are
-//! intentionally interpreted as disabled.
+//! continuity brokers. A switch the person never set is on
+//! ([`settings_store::continuity_privacy::ON_UNLESS_SET`]); a malformed one is
+//! off.
 
 use serde_json::{Map, Value};
 
@@ -12,7 +13,7 @@ use tilo_lock::MutexRecover as _;
 pub use settings_store::continuity_privacy::ContinuityCapability;
 
 /// An immutable, typed view of the committed device-local policy.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ContinuityPolicySnapshot {
     enabled: bool,
     automatic_display_input: bool,
@@ -21,13 +22,30 @@ pub struct ContinuityPolicySnapshot {
 }
 
 impl ContinuityPolicySnapshot {
-    /// Parse the settings document. Only literal booleans opt a capability in.
+    /// Everything stopped.
+    pub const OFF: Self = Self {
+        enabled: false,
+        automatic_display_input: false,
+        allowed: 0,
+    };
+
+    /// Parse the settings document. A switch that is absent takes its
+    /// default; one that is present is on only as a literal `true`.
     #[must_use]
     pub fn from_document(document: &Map<String, Value>) -> Self {
-        let Some(Value::Object(section)) = document.get("continuity") else {
-            return Self::default();
+        let empty = Map::new();
+        let section = match document.get("continuity") {
+            None => &empty,
+            Some(Value::Object(section)) => section,
+            Some(_) => return Self::OFF,
         };
-        let flag = |name: &str| section.get(name).and_then(Value::as_bool).unwrap_or(false);
+        let flag = |name: &str| {
+            section
+                .get(name)
+                .map_or(settings_store::continuity_privacy::ON_UNLESS_SET, |value| {
+                    value.as_bool() == Some(true)
+                })
+        };
         Self {
             enabled: flag("enabled"),
             automatic_display_input: flag("automatic_display_input"),
@@ -163,13 +181,19 @@ impl ContinuityPolicySnapshot {
             PersonalFabricAction::Tethering { .. } => ContinuityCapability::WifiSettings,
             // A legacy app keeps running on the device that hosts it; the
             // person's other devices show it through a stream of its window.
-            PersonalFabricAction::WindowViews { .. } => ContinuityCapability::AppContinuations,
+            PersonalFabricAction::WindowViews { .. } | PersonalFabricAction::ShowTab { .. } => {
+                ContinuityCapability::AppContinuations
+            }
             // Waking a sleeping device is administration of the person's own
             // machines, available like presence itself.
             PersonalFabricAction::WakeDevice { .. }
             | PersonalFabricAction::WakeReport { .. }
             | PersonalFabricAction::WakeProbe { .. }
-            | PersonalFabricAction::WakeProbeReply { .. } => return None,
+            | PersonalFabricAction::WakeProbeReply { .. }
+            // So is adding a device to the person, which each key holder
+            // asks them about.
+            | PersonalFabricAction::CertifyAsk { .. }
+            | PersonalFabricAction::CertifyAnswer { .. } => return None,
         })
     }
 
@@ -284,12 +308,15 @@ mod tests {
         let reads = std::cell::Cell::new(0_usize);
         let unfollowed = || {
             reads.set(reads.get().saturating_add(1));
-            ContinuityPolicySnapshot::default()
+            ContinuityPolicySnapshot::OFF
         };
         let _ = followed.current(unfollowed);
         assert_eq!(reads.get(), 1, "unfollowed, the document is read");
 
-        let source = std::sync::Arc::new(settings_store::HostDocument::new(Map::new(), |_| Ok(())));
+        let source = std::sync::Arc::new(settings_store::HostDocument::new(
+            document(&json!({"continuity": {"file_transfer": false}})),
+            |_| Ok(()),
+        ));
         let settings = settings_store::live::LiveSettings::start_from(source.clone(), || {});
         followed.follow(&settings);
         for _ in 0..1000 {
@@ -321,7 +348,10 @@ mod tests {
     #[test]
     fn the_cached_policy_follows_each_settings_generation() {
         use settings_store::SettingsSource as _;
-        let source = std::sync::Arc::new(settings_store::HostDocument::new(Map::new(), |_| Ok(())));
+        let source = std::sync::Arc::new(settings_store::HostDocument::new(
+            document(&json!({"continuity": {"typed_gamepad": false}})),
+            |_| Ok(()),
+        ));
         let settings = settings_store::live::LiveSettings::start_from(source.clone(), || {});
         let mut cache = ContinuityPolicyCache::new(&settings);
         assert!(!cache.current().permits(ContinuityCapability::TypedGamepad));
@@ -342,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn automatic_display_input_requires_a_literal_separate_opt_in() {
+    fn automatic_display_input_is_on_unless_set_and_set_only_by_a_literal_true() {
         for value in [
             json!(null),
             json!(false),
@@ -355,12 +385,11 @@ mod tests {
             ));
             assert!(!policy.automatic_display_input());
         }
-        let absent = ContinuityPolicySnapshot::from_document(&document(
-            &json!({"continuity": {"enabled":true,"display_input":true}}),
-        ));
-        assert!(!absent.automatic_display_input());
+        let absent = ContinuityPolicySnapshot::from_document(&document(&json!({})));
+        assert!(absent.automatic_display_input());
+        assert!(absent.permits(ContinuityCapability::DisplayInput));
         let explicit = ContinuityPolicySnapshot::from_document(&document(
-            &json!({"continuity": {"automatic_display_input":true}}),
+            &json!({"continuity": {"display_input": false, "automatic_display_input":true}}),
         ));
         assert!(explicit.automatic_display_input());
         assert!(
@@ -374,12 +403,23 @@ mod tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn continuity_policy_fails_closed_and_opts_in_each_capability_under_the_master_switch() {
-        fn absent_malformed_and_partial_policy_fail_closed() {
+    fn continuity_policy_is_on_unless_set_fails_closed_when_malformed_and_switches_each_capability()
+    {
+        fn unset_switches_are_on_and_malformed_ones_off() {
+            for value in [json!({}), json!({"continuity": {"enabled": true}})] {
+                let policy = ContinuityPolicySnapshot::from_document(&document(&value));
+                for capability in ContinuityCapability::ALL {
+                    assert!(policy.permits(capability), "{capability:?} is off unset");
+                }
+            }
+            let malformed = ContinuityCapability::ALL
+                .into_iter()
+                .map(|capability| (capability.key().to_owned(), json!("true")))
+                .collect::<Map<_, _>>();
             for value in [
-                json!({}),
                 json!({"continuity": true}),
-                json!({"continuity": {"enabled": true}}),
+                json!({"continuity": {"enabled": 1}}),
+                json!({"continuity": malformed}),
             ] {
                 let policy = ContinuityPolicySnapshot::from_document(&document(&value));
                 for capability in [
@@ -418,7 +458,7 @@ mod tests {
             assert!(!policy.permits(ContinuityCapability::AppContinuations));
         }
 
-        fn each_capability_is_independently_opted_in() {
+        fn each_capability_is_switched_on_its_own() {
             let names = [
                 ("clipboard", ContinuityCapability::Clipboard),
                 ("notifications", ContinuityCapability::Notifications),
@@ -431,8 +471,10 @@ mod tests {
                 ("app_continuations", ContinuityCapability::AppContinuations),
             ];
             for (enabled_name, enabled_capability) in names {
-                let mut section = Map::new();
-                section.insert("enabled".into(), Value::Bool(true));
+                let mut section = names
+                    .iter()
+                    .map(|(name, _)| ((*name).to_owned(), Value::Bool(false)))
+                    .collect::<Map<_, _>>();
                 section.insert(enabled_name.into(), Value::Bool(true));
                 let mut root = Map::new();
                 root.insert("continuity".into(), Value::Object(section));
@@ -492,16 +534,31 @@ mod tests {
             }
         }
 
-        absent_malformed_and_partial_policy_fail_closed();
+        unset_switches_are_on_and_malformed_ones_off();
         master_switch_overrides_the_full_capability_matrix();
-        each_capability_is_independently_opted_in();
+        each_capability_is_switched_on_its_own();
         per_capability_and_master_kill_switches_report_revocation();
     }
 
+    /// The policy with only the named capabilities on.
+    fn only(on: &[ContinuityCapability]) -> ContinuityPolicySnapshot {
+        let section = ContinuityCapability::ALL
+            .into_iter()
+            .map(|capability| (capability.key().to_owned(), json!(on.contains(&capability))))
+            .collect::<Map<_, _>>();
+        ContinuityPolicySnapshot::from_document(&document(&json!({ "continuity": section })))
+    }
+
     fn policy(media: bool, display_input: bool) -> ContinuityPolicySnapshot {
-        ContinuityPolicySnapshot::from_document(&document(&json!({
-            "continuity": {"enabled": true, "media": media, "display_input": display_input}
-        })))
+        let on = [
+            (media, ContinuityCapability::Media),
+            (display_input, ContinuityCapability::DisplayInput),
+        ];
+        only(
+            &on.into_iter()
+                .filter_map(|(on, capability)| on.then_some(capability))
+                .collect::<Vec<_>>(),
+        )
     }
 
     #[test]
@@ -545,7 +602,7 @@ mod tests {
         };
         assert_eq!(ContinuityPolicySnapshot::capability_for_action(&wake), None);
         assert!(policy(false, false).permits_action(&wake));
-        assert!(ContinuityPolicySnapshot::default().permits_action(&wake));
+        assert!(ContinuityPolicySnapshot::OFF.permits_action(&wake));
 
         let media_only = policy(true, false);
         assert!(media_only.permits_action(&clock_probe));
@@ -593,9 +650,7 @@ mod tests {
         assert!(!media_only.permits_action(&file_offer));
         assert!(media_only.permits_action(&ready));
 
-        let file_only = ContinuityPolicySnapshot::from_document(&document(&json!({
-            "continuity": {"enabled": true, "file_transfer": true}
-        })));
+        let file_only = only(&[ContinuityCapability::FileTransfer]);
         assert!(!file_only.permits_action(&media_offer));
         assert!(file_only.permits_action(&file_offer));
         assert!(file_only.permits_action(&ready));

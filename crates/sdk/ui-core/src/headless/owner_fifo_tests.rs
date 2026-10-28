@@ -1,4 +1,3 @@
-//! Real mounted owners through the host's retained exact-owner service route.
 use super::*;
 use crate::application::{AppComponent, HostContext, LaunchTarget, RestoreInput};
 use crate::application_test_support::{self as probe, ProbeHost};
@@ -17,6 +16,10 @@ struct Seen {
     drain_close_gate: Rc<RefCell<Option<Rc<Cell<bool>>>>>,
     drained: Rc<Cell<bool>>,
     saves: Rc<Cell<usize>>,
+    /// Whether the last save status the owner heard is Saved.
+    saved: Rc<Cell<bool>>,
+    /// Every save status the owner heard, as whether it was Saved.
+    heard: Rc<RefCell<Vec<bool>>>,
     write_next: Rc<Cell<bool>>,
     body: Rc<RefCell<String>>,
     wake: Rc<RefCell<Option<crate::WakeHandle>>>,
@@ -107,8 +110,15 @@ impl AppWidget for OwnerProbe {
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("Q")
     }
-    fn record_save_status(&mut self, _: crate::record::RecordSaveStatus) {
+    fn record_save_status(&mut self, status: crate::record::RecordSaveStatus) {
         self.seen.saves.set(self.seen.saves.get() + 1);
+        self.seen
+            .saved
+            .set(status == crate::record::RecordSaveStatus::Saved);
+        self.seen
+            .heard
+            .borrow_mut()
+            .push(status == crate::record::RecordSaveStatus::Saved);
     }
 }
 thread_local! { static ORDER: RefCell<Rc<RefCell<Vec<u64>>>> = RefCell::new(Rc::new(RefCell::new(Vec::new()))); }
@@ -240,6 +250,29 @@ fn close(frame: &mut FrameHarness, expected: usize) {
             && r.teardown_error.is_none())
     );
 }
+// Land every owner's first write and take up every wake its store calls.
+//
+// A store resolves a write on its own thread and only then calls the wake that
+// tells the owner to show it saved, so a sample can read the record as saved
+// while that wake is still on its way, and a wake that arrives while a test is
+// setting up the batch under test joins it. A flush returns only once every
+// queued write has had its wake called, so flushing, then servicing, and
+// repeating until the store has called nothing more leaves a queue that is
+// empty of store work rather than one that merely looks empty.
+fn settle_first_writes(host: &ProbeHost, frame: &mut FrameHarness, seen: &[Seen]) {
+    let deadline = crate::time::now() + tilo_test_env::hang_bound();
+    loop {
+        host.records.try_flush().unwrap();
+        frame.service_pending_owner_models().unwrap();
+        if !frame.has_pending_owner_models() && seen.iter().all(|owner| owner.saved.get()) {
+            return;
+        }
+        assert!(
+            crate::time::now() < deadline,
+            "every owner hears its first write saved"
+        );
+    }
+}
 #[test]
 fn one_dirty_hidden_owner_of_110_enters_only_its_actual_model_and_save_service_without_paint() {
     let host = ProbeHost::new();
@@ -255,6 +288,7 @@ fn one_dirty_hidden_owner_of_110_enters_only_its_actual_model_and_save_service_w
         &queue,
         owners.into_iter().map(|(owner, _, _)| owner).collect(),
     );
+    settle_first_writes(&host, &mut frame, &seen);
     let counts = seen
         .iter()
         .map(|s| (s.syncs.get(), s.saves.get()))
@@ -501,6 +535,14 @@ fn failed_and_unvisited_snapshot_owners_precede_callback_late_owner() {
     let (c, sc, _) = prepared(&host, &queue, 5222, false);
     let (d, sd, _) = prepared(&host, &queue, 5223, false);
     let (mut frame, _, _) = frame(&queue, vec![a, b, c, d]);
+    // Each owner's first write settles on its own, and the store wakes that
+    // owner from its thread when it does. Take those wakes up first, or one
+    // can land in the batch under test and appear as an extra owner.
+    settle_first_writes(
+        &host,
+        &mut frame,
+        &[sa.clone(), sb.clone(), sc.clone(), sd.clone()],
+    );
     *sa.late.borrow_mut() = Some(sd.wake.borrow().as_ref().unwrap().clone());
     sb.panic.set(true);
     for seen in [&sa, &sb, &sc] {
@@ -778,6 +820,9 @@ fn background_failed_ack_retries_checkpoint_on_real_new_wake_without_pending_cal
             .acknowledge(write.revision, Err("quota".into()))
             .unwrap();
     }
+    // The refused write is a durability change the store wakes the
+    // component for: its window takes that up and shows the failure.
+    let shown = frame.service_pending_owner_models();
     let failed = host.records.save_status(&checkout.id).unwrap();
     let callbacks = seen.syncs.get();
     let empty = frame.service_pending_owner_models();
@@ -794,6 +839,7 @@ fn background_failed_ack_retries_checkpoint_on_real_new_wake_without_pending_cal
     let reopened = reopened_body(mirror.clone(), &checkout);
     close_memory(&mut frame, 1, &backend, &mirror);
     assert_eq!(first.unwrap(), 1);
+    assert_eq!(shown.unwrap(), 1);
     assert_eq!(
         offered_count, 1,
         "only already-offered bytes reach the host ACK subject"
@@ -855,6 +901,13 @@ impl durable_store::DurableStore for RefusingStore {
         key: Option<&durable_store::StorageKey>,
     ) -> Result<(), durable_store::StoreError> {
         self.inner.flush(key)
+    }
+    fn wake_when_settled(
+        &self,
+        key: &durable_store::StorageKey,
+        wake: durable_store::ReadyWake,
+    ) -> durable_store::SettleWatch {
+        self.inner.wake_when_settled(key, wake)
     }
     fn lease(
         &self,
@@ -941,6 +994,10 @@ fn background_partial_batch_report_keeps_accepted_peer_bytes_before_later_busy_r
     let bid = b.component.record().id.clone();
     let (mut frame, _, _) = frame(&queue, vec![a, b]);
     commit_accepted(&backend, &mirror);
+    // Both records' first writes land, and their stores' wakes are taken up,
+    // before the batch under test.
+    other.records.try_flush().unwrap();
+    frame.service_pending_owner_models().unwrap();
     sa.write_next.set(true);
     sa.wake.borrow().as_ref().unwrap().wake();
     sb.wake.borrow().as_ref().unwrap().wake();
@@ -964,7 +1021,9 @@ fn background_partial_batch_report_keeps_accepted_peer_bytes_before_later_busy_r
     assert_eq!(accepted.len(), 1);
     assert_eq!(reopened, "background model write");
     assert!(retry.attempted);
-    assert_eq!(retry.completed, 1);
+    // The peer refused as busy, and the owner whose accepted bytes the
+    // store just acknowledged: its store wakes it to show them saved.
+    assert_eq!(retry.completed, 2);
     assert!(retry.result.is_ok());
     assert!(!empty.attempted);
     assert_eq!(empty.completed, 0);
@@ -982,6 +1041,9 @@ fn background_exact_offer_never_settles_unrelated_same_store_typing() {
     let bid = b.component.record().id.clone();
     let (mut frame, _, _) = frame(&queue, vec![a, b]);
     commit_accepted(&backend, &mirror);
+    // The records' first writes landed: their store's wakes are taken up
+    // before the offer under test.
+    frame.service_pending_owner_models().unwrap();
     host.records
         .with(&bid, |doc| {
             doc.put(ROOT, "body", "unrelated unfinished typing")
@@ -1013,4 +1075,34 @@ fn background_exact_offer_never_settles_unrelated_same_store_typing() {
         writes[0].key,
         durable_store::StorageKey::record(probe::APP, probe::ROOM, aid.storage_key())
     );
+}
+
+/// A window shows its record saved by measuring and drawing what the status
+/// changed. The change is no structure change: that would rebuild its host's
+/// layout tree and repaint the whole window for a save label after every
+/// keystroke.
+#[test]
+fn a_save_status_change_is_no_structure_change() {
+    let host = ProbeHost::new();
+    let queue = OwnerWakeQueue::default();
+    let (mut owner, seen, _) = prepared(&host, &queue, 7000, true);
+    let _ = owner.take_structure_change();
+    host.records.try_flush().unwrap();
+    owner.sync(&AutoCommit::new(), &ROOT);
+    let heard = seen.heard.borrow().clone();
+    assert!(
+        heard.windows(2).any(|pair| pair == [false, true]),
+        "the window heard its record being written, then saved: {heard:?}"
+    );
+    assert_eq!(
+        owner.take_structure_change(),
+        crate::widget::StructureChange::None,
+        "a save status change rebuilds no layout tree"
+    );
+    assert!(
+        owner.layout_needs_measure() && owner.needs_redraw(),
+        "what shows the status is measured and drawn again"
+    );
+    let (mut frame, _, _) = frame(&queue, vec![owner]);
+    close(&mut frame, 1);
 }

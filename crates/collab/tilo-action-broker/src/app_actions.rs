@@ -56,9 +56,7 @@ pub struct AppActionConsentRequest {
     pub resource: String,
     /// The action's id on `resource`, as a grant scopes it.
     pub action: String,
-    /// The resource as its publisher labels it.
     pub resource_label: String,
-    /// The action as its publisher labels it.
     pub action_label: String,
     pub risk: tilo_actions::RiskLevel,
     /// Whether each use still asks for confirmation, whatever is granted.
@@ -68,6 +66,19 @@ pub struct AppActionConsentRequest {
     pub confirming: bool,
     /// Exact external disclosure, decoded by the host rather than supplied as a label.
     pub moderation: Option<ModerationConsentPreview>,
+    /// Where a confirmation may also be allowed from now on, by the name the
+    /// person knows it by: the most specific place the invocation runs in,
+    /// such as the issue an agent works on. Confirming, the person may then
+    /// answer [`AppActionConsent::Always`] for it, which grants the action
+    /// there.
+    pub scope: Option<String>,
+    /// The invocation as the person reviews it, field by field, where they
+    /// confirm exact arguments: what is admitted is what these render.
+    pub draft: Option<tilo_actions::Draft>,
+    /// The change the step makes, before and after, where it previews it
+    /// ([`crate::services::Preview`]): the person decides on the difference,
+    /// and what they confirm is what it shows.
+    pub preview: Option<crate::services::Preview>,
 }
 
 /// The Store moderation disclosure and the root identity the host will use.
@@ -195,7 +206,23 @@ pub trait AppActionConsentPrompter: Send + Sync {
     /// Put `request` to the person. `None` when nobody is there to answer,
     /// which refuses the request without asking.
     fn ask(&self, request: AppActionConsentRequest) -> Option<oneshot::Receiver<AppActionConsent>>;
+
+    /// Tell the person about `request` without interrupting them, as an
+    /// ordinary notice; when they choose to answer it, `answer` is handed
+    /// what they answer on the sheet. `false` when nobody here is told.
+    fn notify(&self, request: AppActionConsentRequest, answer: AnswerLater) -> bool {
+        let _ = (request, answer);
+        false
+    }
+
+    /// Take back the notice of the request `handle`: answered or gone.
+    fn withdraw(&self, handle: &str) {
+        let _ = handle;
+    }
 }
+
+/// What a notified request does with the person's answer on the sheet.
+pub type AnswerLater = Box<dyn FnOnce(oneshot::Receiver<AppActionConsent>) + Send>;
 
 #[cfg(test)]
 mod tests {

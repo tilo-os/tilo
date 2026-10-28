@@ -83,7 +83,7 @@ Action IDs are opaque: locate Notes actions by their application and operation
 metadata, re-enumerating before Undo and Redo. Do not click a second time merely
 because an asynchronous activation has not finished.
 
-`notes-joined-runtime-2026-10-06.json` retains the relevant frame observations,
+[`notes-joined-runtime-2026-10-06.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/benchmarks/notes-joined-runtime-2026-10-06.json) retains the relevant frame observations,
 editor inspection, edit/history receipts, saved-state reopening and raw-file
 hashes. Full raw diagnostics remain at the recorded local paths. Probe 01
 failed on a replaced AT-SPI object; probe 02 corrected read observation.

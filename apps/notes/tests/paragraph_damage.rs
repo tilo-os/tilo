@@ -1,15 +1,14 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    reason = "a test places its clock a whole number of seconds after the epoch"
+)]
+
 //! Damage from the outer, ordinarily mounted component after real note input.
 use crate::component_support::*;
 use notes::read;
 use std::{cell::RefCell, rc::Rc};
-use ui::lock::MutexRecover as _;
 use ui::{Widget, headless::FrameHarness};
 use vello::{Scene, kurbo::Rect, peniko::Color};
-
-/// Bounds a wait that ends as soon as the window settles; only a hang
-/// reaches it. Settling is a fixed amount of work, but how long it takes on
-/// a builder running every other test beside it is not.
-const HANG_BOUND: ui::time::Duration = ui::time::Duration::from_secs(30);
 
 struct DamageWitness {
     inner: Box<dyn Widget>,
@@ -43,16 +42,27 @@ fn canonical_notes_default_motion_and_word_boundary_preserve_sparse_gpu_pixels()
 
 #[test]
 fn canonical_notes_timestamp_boundary_preserves_sparse_gpu_pixels() {
+    // The edit's own write stamps the note from the thread that saves it, not
+    // from the one typing: the clock this case moves on has to reach every
+    // thread of the process, so the case takes the process to itself.
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "canonical_notes_timestamp_boundary_preserves_sparse_gpu_pixels",
+        a_timestamp_boundary_at_the_time_the_case_moves_on,
+    );
+}
+
+fn a_timestamp_boundary_at_the_time_the_case_moves_on() {
+    // The note the case opens, and every write after it, is stamped from
+    // whichever thread lands the commit, so the clock spans the whole case.
+    let _held = ui::time::testing::hold_wall_everywhere(
+        ui::time::testing::OwnProcess::of_a_test_in_its_own_process(),
+        ui::time::UNIX_EPOCH + ui::time::Duration::from_secs(1_790_000_000),
+    );
     paragraph_input(false, "y", "xy", true);
 }
 
 fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timestamp: bool) {
-    // The wall clock is pinned for the whole process, and the timestamp case
-    // moves it a minute on: another case still typing would see its
-    // edited-at caption change under it, which is not what typing damages.
-    static CLOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _clock = CLOCK.lock_recover();
-    pin_edit_clock(1_790_000_000);
     let f = NotebookFixture::rich();
     let body = (0..18)
         .map(|index| format!("Paragraph {index}: an ordinary document line."))
@@ -78,7 +88,12 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     )
     .unwrap();
     driver.set_platform_conventions(ui::PlatformConventions::new(ui::Platform::Linux));
+    // When the note says it was edited is the test's to choose, and the
+    // timestamp case moves it a minute on: the time is handed to the panel,
+    // not pinned process-wide, and no case reads another's.
+    let mut clock = 1_790_000_000;
     open_note(&mut driver, 11, f.child, None);
+    hold_edit_clock(&mut driver, clock);
     driver
         .perform_named("block_editor", &ui::a11y::Action::Focus)
         .unwrap();
@@ -89,17 +104,12 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     // Autosave shows nothing, so no bubble keeps the window busy until the
     // write lands: wait for it (debounce, then saved) before the baseline,
     // or its completion would land in the typing measured below.
-    let written = std::time::Instant::now();
-    while written.elapsed() < std::time::Duration::from_secs(5)
-        && (written.elapsed() < std::time::Duration::from_millis(900)
-            || f.records.save_status(&checkout.id).ok()
-                != Some(ui::record::RecordSaveStatus::Saved))
-    {
-        std::thread::sleep(std::time::Duration::from_millis(100));
+    tilo_test_env::wait_until("the edit's write lands", || {
         driver.settle_for_capture(ui::time::Duration::from_millis(100));
-    }
+        f.records.save_status(&checkout.id).ok() == Some(ui::record::RecordSaveStatus::Saved)
+    });
     let started = ui::time::now();
-    let settled = driver.settle_for_capture(HANG_BOUND);
+    let settled = driver.settle_for_capture(tilo_test_env::hang_bound());
     if !settled {
         eprintln!(
             "paragraph-settle-demand key={key:?} reduce_motion={reduce_motion} timestamp={advance_timestamp} elapsed={:?}",
@@ -119,7 +129,7 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     // A key interaction draws its press and release. Retain the union of
     // actual frame damage; the unchanged release must not erase the press.
     damage.borrow_mut().clear();
-    type_with_timestamp(&mut driver, key, advance_timestamp);
+    let _moved_on = type_with_timestamp(&mut driver, key, advance_timestamp, &mut clock);
     let actual = f
         .records
         .read(&checkout.id, |doc| {
@@ -255,11 +265,12 @@ fn report_unsettled_scene(
     );
 }
 
-fn pin_edit_clock(seconds: u64) {
-    ui::time::freeze_wall(
-        ui::time::UNIX_EPOCH
-            .checked_add(ui::time::Duration::from_secs(seconds))
-            .unwrap(),
+/// Read the note's dates against the wall clock `seconds` after the epoch.
+fn hold_edit_clock(driver: &mut FrameHarness, seconds: u64) {
+    let at = ui::time::UNIX_EPOCH + ui::time::Duration::from_secs(seconds);
+    assert!(
+        notes::MainPanel::hold_clock_at(driver.root_widget_mut(), at),
+        "the fixture shows a note"
     );
 }
 
@@ -275,13 +286,27 @@ fn date_captions(driver: &FrameHarness) -> Vec<String> {
         .collect()
 }
 
-fn type_with_timestamp(driver: &mut FrameHarness, key: &str, advance_timestamp: bool) {
+fn type_with_timestamp(
+    driver: &mut FrameHarness,
+    key: &str,
+    advance_timestamp: bool,
+    clock: &mut u64,
+) -> Option<ui::time::testing::WallHold> {
     let before = advance_timestamp.then(|| date_captions(driver));
-    if advance_timestamp {
+    // The note's own write stamps it from the thread that saves, not from the
+    // one typing, so the clock has to be held over the whole process — which
+    // this case has to itself — for as long as the edit is in flight.
+    let moved_on = advance_timestamp.then(|| {
         // Only wall time advances: the ordinary action stamps a new minute
         // while the production monotonic animation clock continues running.
-        pin_edit_clock(1_790_000_120);
-    }
+        *clock = 1_790_000_120;
+        let at = ui::time::UNIX_EPOCH + ui::time::Duration::from_secs(*clock);
+        hold_edit_clock(driver, *clock);
+        ui::time::testing::hold_wall_everywhere(
+            ui::time::testing::OwnProcess::of_a_test_in_its_own_process(),
+            at,
+        )
+    });
     driver.key(key);
     if let Some(before) = before {
         assert!(
@@ -294,4 +319,5 @@ fn type_with_timestamp(driver: &mut FrameHarness, key: &str, advance_timestamp: 
             "the ordinary edit updates the painted metadata caption"
         );
     }
+    moved_on
 }

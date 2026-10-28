@@ -58,10 +58,11 @@ impl XlsxCodec {
             .map(parse_shared_strings)
             .unwrap_or_default();
         let mut parsed = ParsedWorkbook::default();
-        for (name, rid) in parse_workbook_sheets(workbook_xml)? {
+        for (name, rid, hidden) in parse_workbook_sheets(workbook_xml)? {
             let mut sheet = ParsedSheet {
                 name,
                 cells: Vec::new(),
+                hidden,
             };
             if let Some(ws_xml) = rels
                 .get(&rid)
@@ -149,7 +150,7 @@ fn serialize(
 }
 
 /// `(sheet name, r:id)` in document order.
-fn parse_workbook_sheets(xml: &[u8]) -> Result<Vec<(String, String)>, CodecError> {
+fn parse_workbook_sheets(xml: &[u8]) -> Result<Vec<(String, String, bool)>, CodecError> {
     let s = std::str::from_utf8(xml).map_err(|e| CodecError::Parse(e.to_string()))?;
     let mut reader = Reader::from_str(s);
     let mut out = Vec::new();
@@ -161,7 +162,9 @@ fn parse_workbook_sheets(xml: &[u8]) -> Result<Vec<(String, String)>, CodecError
             Event::Empty(e) | Event::Start(e) if local_name(&e) == b"sheet" => {
                 let name = attr_local(&e, b"name").unwrap_or_default();
                 let rid = attr_local(&e, b"id").unwrap_or_default(); // r:id
-                out.push((name, rid));
+                let hidden = attr_local(&e, b"state")
+                    .is_some_and(|state| state == "hidden" || state == "veryHidden");
+                out.push((name, rid, hidden));
             }
             Event::Eof => break,
             _ => {}
@@ -483,9 +486,14 @@ fn workbook_xml(snap: &WorkbookSnapshot) -> String {
     let mut used = HashSet::new();
     for (i, sheet) in snap.sheets.iter().enumerate() {
         let n = i.saturating_add(1);
+        let state = if sheet.hidden {
+            r#" state="hidden""#
+        } else {
+            ""
+        };
         let _ = write!(
             sheets,
-            r#"<sheet name="{}" sheetId="{n}" r:id="rIdSheet{n}"/>"#,
+            r#"<sheet name="{}" sheetId="{n}"{state} r:id="rIdSheet{n}"/>"#,
             escape_attr_quotes(&unique_sheet_name(&sheet.name, &mut used)),
         );
     }
@@ -572,6 +580,65 @@ pub fn date_style_refs(styles_xml: &[u8]) -> BTreeSet<String> {
         }
     }
     refs
+}
+
+/// Each cell style's number-format code, by style index as cells name it
+/// (`s=`): a custom code as written, a built-in one as Excel defines it.
+/// Styles in the General format are left out. Excel stores money and
+/// percentages as plain numbers, so the code is the only sign of either.
+pub fn number_format_codes(styles_xml: &[u8]) -> BTreeMap<String, String> {
+    let mut codes = BTreeMap::new();
+    let Ok(s) = std::str::from_utf8(styles_xml) else {
+        return codes;
+    };
+    let builtin = |id: u32| -> Option<&'static str> {
+        Some(match id {
+            1 => "0",
+            2 => "0.00",
+            3 => "#,##0",
+            4 | 37..=40 => "#,##0.00",
+            5 | 7 => "$#,##0.00",
+            6 | 8 => "$#,##0.00;[Red]-$#,##0.00",
+            9 => "0%",
+            10 => "0.00%",
+            11 => "0.00E+00",
+            14..=17 | 22 => "yyyy-mm-dd",
+            18..=21 | 45..=47 => "hh:mm",
+            _ => return None,
+        })
+    };
+    let mut reader = Reader::from_str(s);
+    let mut custom: HashMap<String, String> = HashMap::new();
+    let mut in_cell_xfs = false;
+    let mut index = 0usize;
+    while let Ok(ev) = reader.read_event() {
+        match ev {
+            Event::Start(e) | Event::Empty(e) if local_name(&e) == b"numFmt" => {
+                if let (Some(id), Some(code)) =
+                    (attr_local(&e, b"numFmtId"), attr_local(&e, b"formatCode"))
+                {
+                    custom.insert(id, code);
+                }
+            }
+            Event::Start(e) if local_name(&e) == b"cellXfs" => in_cell_xfs = true,
+            Event::End(e) if end_local_name(&e) == b"cellXfs" => in_cell_xfs = false,
+            Event::Start(e) | Event::Empty(e) if in_cell_xfs && local_name(&e) == b"xf" => {
+                let code = attr_local(&e, b"numFmtId").and_then(|id| {
+                    custom
+                        .get(&id)
+                        .cloned()
+                        .or_else(|| id.parse().ok().and_then(builtin).map(str::to_owned))
+                });
+                if let Some(code) = code.filter(|code| !code.eq_ignore_ascii_case("general")) {
+                    codes.insert(index.to_string(), code);
+                }
+                index = index.saturating_add(1);
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    codes
 }
 
 /// Whether a custom number-format code displays a date, time or duration:

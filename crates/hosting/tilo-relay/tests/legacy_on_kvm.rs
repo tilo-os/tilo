@@ -55,6 +55,50 @@ fn evdev(ch: char) -> u32 {
     }
 }
 
+/// The last lines of every log the member's VM left, under `root` (its area:
+/// the console) and in its runtime directories beside the system's temporary
+/// files (`TiloLegacyHost::member_runtime`: the supervisor and the headless
+/// shell), for a failure to say why the app ended: the step that runs this
+/// test keeps nothing of the VM.
+fn vm_logs(root: &std::path::Path) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let mut dirs = vec![root.to_path_buf()];
+    if let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) {
+        dirs.extend(
+            entries
+                .flatten()
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("tilo-legacy-")
+                })
+                .map(|entry| entry.path()),
+        );
+    }
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                dirs.push(path);
+            } else if kind.is_file() && path.extension().is_some_and(|ext| ext == "log") {
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                let lines: Vec<&str> = text.lines().collect();
+                let tail = lines[lines.len().saturating_sub(40)..].join("\n");
+                let _ = write!(out, "\n== {} (end)\n{tail}\n", path.display());
+            }
+        }
+    }
+    out
+}
+
 fn key(code: u32, pressed: bool) -> InputEvent {
     InputEvent::Key {
         keysym: code,
@@ -77,6 +121,11 @@ async fn a_relay_launched_legacy_app_streams_from_a_kvm_guest() {
     ) else {
         panic!("TILO_LEGACY_E2E_IMAGE, _TILO_LEGACY and _SHELL name the guest and binaries");
     };
+    // The relay and worker log why a launch ended (RUST_LOG, warn in CI).
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
     let provider = TestUser::fresh("Tilo hosting");
     let alice = TestUser::fresh("Alice");
     let relay_device = provider.enrol("relay", DeviceCapabilities::host());
@@ -88,7 +137,10 @@ async fn a_relay_launched_legacy_app_streams_from_a_kvm_guest() {
         .prefix("lw")
         .tempdir_in("/var/tmp")
         .unwrap();
-    let relay = Relay::start(
+    // No public relay servers, like the worker's and member's endpoints
+    // (`client_endpoint`): the step that runs this has no internet, and a
+    // relay probing servers it cannot reach only adds noise to its paths.
+    let relay = Relay::start_with_relay_mode(
         RelayConfig {
             state_root: state.path().to_path_buf(),
             trust_policy: TrustPolicy::AllowAny,
@@ -108,6 +160,7 @@ async fn a_relay_launched_legacy_app_streams_from_a_kvm_guest() {
             device_cert: relay_device.cert.clone(),
             revocations: RevocationList::new(),
         },
+        iroh::RelayMode::Disabled,
     )
     .await
     .unwrap();
@@ -207,7 +260,10 @@ async fn a_relay_launched_legacy_app_streams_from_a_kvm_guest() {
                     }
                     _ => {}
                 },
-                WindowFrame::Exited { code, .. } => panic!("the app ended early: {code:?}"),
+                WindowFrame::Exited { code, .. } => panic!(
+                    "the app ended early: {code:?}{}",
+                    vm_logs(worker_root.path())
+                ),
                 WindowFrame::Watching => {}
             }
         }

@@ -176,12 +176,6 @@ fn stage(
 }
 
 /// Run `--customize-image` when it is on the command line.
-///
-/// # Errors
-///
-/// Returns an error for bad arguments, unusable customization values, a
-/// target that is not a regular raw disk image file, or a failed copy onto
-/// its installed root.
 pub fn maybe_run(args: &[String]) -> Result<Option<i32>, Box<dyn std::error::Error>> {
     let Some(request) = parse(args)? else {
         return Ok(None);

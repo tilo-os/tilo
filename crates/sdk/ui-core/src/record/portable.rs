@@ -8,7 +8,7 @@ use super::{
 // The browser cache has its own key space (with a package-primary slot).
 use crate::portable_storage::StorageKey;
 
-fn key(package: &str, workspace: &str, id: &RecordId) -> StorageKey {
+pub(super) fn key(package: &str, workspace: &str, id: &RecordId) -> StorageKey {
     if id.is_package_primary() {
         return StorageKey::Primary {
             package: package.into(),
@@ -121,14 +121,19 @@ impl RecordSet {
                 errors.push(format!("{id}: busy"));
                 continue;
             };
+            let edited = doc.pending_ops() != 0;
             slot.action_state.commit_for_save(doc);
             let key = key(&self.package_id, &self.home, id);
             let actor = doc.get_actor().to_bytes().to_vec();
-            if let Err(e) = cache
+            match cache
                 .put_document(key.clone(), doc, Some(actor))
                 .and_then(|()| cache.flush(&key))
             {
-                errors.push(format!("{id}: {e}"));
+                // Edits that changed nothing stored are saved already: no
+                // acknowledgement will come to say so.
+                Ok(()) if edited => cache.durability_changed(&key),
+                Ok(()) => {}
+                Err(e) => errors.push(format!("{id}: {e}")),
             }
         }
         if errors.is_empty() {

@@ -6,8 +6,10 @@ import contextlib
 import datetime
 import io
 import re
+import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -68,6 +70,26 @@ class Relative(unittest.TestCase):
             "unit": "ms", "max": 1000.0, "min_delta": 1.0}})
         [row] = compare.compare([make(2.9, 6)], history(2, 2, 2, 2, 2), budgets, set(), set())
         self.assertEqual(row.status, "pass")
+
+    def test_a_measurement_the_store_holds_keeps_the_verdict_it_got(self):
+        # t returns a measuring check's earlier records while what it measures is unchanged:
+        # the same numbers again are not a second regression, nor a second baseline run.
+        past = history(10, 10, 10, 10, 10)
+        [first] = compare.compare([make(12.5, 6)], past, NO_BUDGETS, set(), set())
+        self.assertEqual(first.status, "regression-pending")
+        [again] = compare.compare([make(12.5, 6)], past + [first.record], NO_BUDGETS, set(), set())
+        self.assertEqual((again.status, again.failing), ("regression-pending", False))
+        self.assertIn("judged then", again.note)
+        # A new measurement of the same commit is judged as one.
+        [rerun] = compare.compare([make(12.5, 7)], past + [first.record], NO_BUDGETS, set(), set())
+        self.assertEqual((rerun.status, rerun.failing), ("regression", True))
+
+    def test_a_held_measurement_still_meets_todays_enforced_budget(self):
+        budgets = compare.Budgets(dict(compare.DEFAULTS), {"render.frame_ms.4k": {
+            "unit": "ms", "max": 11.0, "enforce": True}})
+        past = history(10, 10, 10, 10, 10) + [make(12, 6, status="pass")]
+        [again] = compare.compare([make(12, 6)], past, budgets, set(), set())
+        self.assertEqual((again.status, again.failing, again.over_budget), ("pass", True, True))
 
     def test_accept_restarts_the_baseline(self):
         past = history(10, 10, 10, 10, 10)
@@ -175,6 +197,15 @@ class Budgets(unittest.TestCase):
         self.assertEqual((row.status, row.failing), ("new", True))
         self.assertIn("over budget: p99 20 > 16.7 ms", row.note)
 
+    def test_an_enforced_miss_says_so_beside_a_quiet_status(self):
+        rows = compare.compare([make(20, 1)], [], self.budgets(True), set(), set())
+        self.assertTrue(rows[0].over_budget)
+        text = compare.summary(rows)
+        # The status alone would read `new`, which looks like a run that
+        # changed nothing; the run it is in fails.
+        self.assertIn("**over budget** (new)", text)
+        self.assertIn("1 results, 1 failing (1 over budget).", text)
+
     def test_a_target_miss_is_reported_only(self):
         [row] = compare.compare([make(20, 1)], [], self.budgets(False), set(), set())
         self.assertFalse(row.failing)
@@ -204,7 +235,17 @@ class Budgets(unittest.TestCase):
         self.assertIn("footprint.tapp.bytes.x86_64", budgets.kpis)
 
 
-WORKFLOWS = HERE.parents[1] / ".forgejo/workflows"
+ROOT = HERE.parents[1]
+SCHEDULED = ROOT / "tools/ci/perf-scheduled.sh"
+
+
+def t_checks() -> dict[str, dict]:
+    return {check["name"]: check for check in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
+
+
+def scheduled_groups() -> list[str]:
+    """The KPI groups tools/ci/perf-scheduled.sh measures, one t check each."""
+    return re.findall(r"^  ([a-z][a-z-]*)\)$", SCHEDULED.read_text(), re.M)
 
 
 def lane_budgets(**lanes: compare.Lane) -> compare.Budgets:
@@ -272,21 +313,53 @@ class Lanes(unittest.TestCase):
         self.assertEqual(budgets.owner("render.frame_cpu_ms"), "vm-acceptance")
         self.assertEqual(budgets.owner("render.shell.redraw_us.4k"), "perf-scheduled")
 
+    def test_every_benchmark_test_perf_scheduled_runs_exists(self):
+        # A filter that matches no test runs nothing and exits 0, so a renamed
+        # or removed benchmark is only noticed when its samples are missing.
+        script = SCHEDULED.read_text().replace("\\\n", " ")
+        filters = re.findall(r"cargo test [^\n]*?--lib\s+([\w:]+)\s+--", script)
+        self.assertIn("native_task_benchmark", [name.rsplit("::", 1)[-1] for name in filters])
+        # Cargo selects every test whose name contains the filter. One file
+        # at a time: the whole tree's sources at once do not fit the check.
+        missing = {name: re.compile(rf"\bfn \w*{name.rsplit('::', 1)[-1]}\w*\(") for name in filters}
+        for path in (path for top in ("apps", "crates") for path in (ROOT / top).rglob("*.rs")):
+            if not missing:
+                break
+            text = path.read_text(errors="replace")
+            missing = {name: pattern for name, pattern in missing.items() if not pattern.search(text)}
+        self.assertEqual(sorted(missing), [], "perf-scheduled.sh runs test filters that no test defines")
+
     def test_perf_scheduled_selects_exactly_its_lanes_groups(self):
         budgets = compare.load_budgets(compare.BUDGETS)
-        workflow = (WORKFLOWS / "perf-scheduled.yml").read_text()
-        [known] = re.findall(r"^\s*known=\(([^)]*)\)$", workflow, re.M)
-        self.assertEqual(set(known.split()), budgets.lane_groups("perf-scheduled"))
-        for group in known.split():
-            self.assertIn(f"\n  {group}:\n", workflow, f"perf-scheduled.yml has a {group} job")
-        self.assertIn("--lane perf-scheduled", workflow)
+        groups = scheduled_groups()
+        # hosting-room records are hosting's, footprint-image's footprint's
+        # (tools/ci/perf-compare.sh).
+        self.assertEqual({group.split("-")[0] for group in groups}, budgets.lane_groups("perf-scheduled"))
+        checks = t_checks()
+        # Whatever their outcome, so one failing group doesn't cost the others their records.
+        self.assertNotIn("needs", checks["perf-scheduled"])
+        self.assertEqual(set(checks["perf-scheduled"]["needs_any_outcome"]), {f"perf-{group}" for group in groups})
+        for group in groups:
+            self.assertEqual(checks[f"perf-{group}"]["run"], f"bash tools/ci/perf-scheduled.sh {group}")
+        compare_script = (ROOT / "tools/ci/perf-compare.sh").read_text()
+        self.assertIn('--lane perf-scheduled --groups "$groups"', compare_script)
+        self.assertIn('["lanes"]["perf-scheduled"]["groups"]', compare_script)
+        self.assertIn("T_NEEDS_FAILED", compare_script)
 
-    def test_vm_acceptance_owes_exactly_its_lanes_groups(self):
+    def test_vm_acceptance_owes_the_groups_of_the_checks_it_ran(self):
         budgets = compare.load_budgets(compare.BUDGETS)
-        workflow = (WORKFLOWS / "vm-acceptance.yml").read_text()
-        [groups] = re.findall(r"\|\| groups=([a-z,]+)$", workflow, re.M)
-        self.assertEqual(set(groups.split(",")), budgets.lane_groups("vm-acceptance"))
-        self.assertIn("--lane vm-acceptance", workflow)
+        perf = t_checks()["vm-acceptance-perf"]
+        self.assertEqual(perf["needs"], ["vm-acceptance"])
+        # The selection the acceptance job ran, never a fixed list: a dispatch of
+        # --only A14 is owed A14's groups, not the boot and idle ones it skipped.
+        self.assertNotRegex(perf["run"], r"--groups [a-z]+,")
+        self.assertIn('--groups "$(python3 scripts/vm-acceptance/selected_groups.py ', perf["run"])
+        selected = (ROOT / "scripts/vm-acceptance/selected_groups.py").read_text()
+        # That helper names only groups of the lane, and only through its checks.
+        self.assertIn("CHECKS = HERE / \"acceptance\" / \"checks\"", selected)
+        self.assertIn('ctx\\.record', selected)
+        for group in budgets.lane_groups("vm-acceptance"):
+            self.assertIn(group, run_groups("vm-acceptance"))
 
     def test_each_workflows_render_records_satisfy_the_repository_budgets(self):
         # The nightly failure this fixes: both workflows select render, and
@@ -304,6 +377,61 @@ class Lanes(unittest.TestCase):
         self.assertEqual([row.kpi for row in nightly if row.failing], [])
         vm = run("vm-acceptance")
         self.assertEqual([(row.kpi, row.failing) for row in vm], [("render.frame_cpu_ms", False)])
+
+
+class VmAcceptanceSubset(unittest.TestCase):
+    """A dispatched subset is owed its own checks' measurements, and no others.
+
+    A budget of a group the run was not selected to produce is never owed. A budget of
+    a group it was selected for is owed by whoever measures it in that lane, as before:
+    A14 alone does not owe A15's warm opens, though a full run still fails on them."""
+
+    def test_a_check_that_measures_into_the_lane_owes_its_groups_budgets(self):
+        rows = self.compare([make(1216, 1, kpi="app.startup_ms.file-explorer.first_in_session")],
+                            run_groups("vm-acceptance", "A14"))
+        self.assertEqual({row.kpi for row in rows if row.status == "missing"},
+                         {"app.open.warm_ms.file-explorer", "app.open.warm_ms.notes",
+                          "app.open.warm_ms.settings"})
+
+    def compare(self, current: list[record.Record], groups: set[str]) -> list[compare.Row]:
+        budgets = compare.load_budgets(compare.BUDGETS)
+        return compare.compare(current, [], budgets, groups, set(), "vm-acceptance")
+
+    def test_a_subset_is_owed_no_group_it_was_not_selected_to_produce(self):
+        rows = self.compare([make(1216, 1, kpi="app.startup_ms.file-explorer.first_in_session")],
+                            run_groups("vm-acceptance", "A14"))
+        missing = {row.kpi for row in rows if row.status == "missing"}
+        self.assertFalse(missing & {"boot.*", "idle.*", "memory.*"}, missing)
+
+    def test_a_full_run_is_still_owed_every_budget_of_its_lane(self):
+        rows = self.compare([make(1216, 1, kpi="app.startup_ms.file-explorer.first_in_session")],
+                            run_groups("vm-acceptance"))
+        missing = {row.kpi for row in rows if row.status == "missing"}
+        self.assertIn("boot.*", missing)
+        self.assertIn("idle.*", missing)
+        self.assertIn("app.open.warm_ms.notes", missing)
+
+    def test_a_selected_group_must_still_report_every_budget_in_it(self):
+        # A15 selected: its warm opens are owed, and a silent one still fails.
+        rows = self.compare([make(1216, 1, kpi="app.startup_ms.file-explorer.first_in_session")],
+                            run_groups("vm-acceptance", "A14,A15"))
+        self.assertEqual([(row.kpi, row.status) for row in rows if row.failing],
+                         [("memory.*", "missing"),
+                          ("app.open.warm_ms.file-explorer", "missing"),
+                          ("app.open.warm_ms.notes", "missing"),
+                          ("app.open.warm_ms.settings", "missing")])
+
+    def test_a_subset_comparing_a_group_the_lane_does_not_produce_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "lane vm-acceptance produces no KPI of group fs"):
+            self.compare([make(1216, 1, kpi="app.startup_ms.file-explorer.first_in_session")], {"fs"})
+
+
+def run_groups(lane: str, only: str = "") -> set[str]:
+    """The groups vm-acceptance-perf compares for the acceptance run's `--only`."""
+    helper = ROOT / "scripts/vm-acceptance/selected_groups.py"
+    printed = subprocess.run([sys.executable, str(helper), only], check=True,
+                             capture_output=True, text=True).stdout.strip()
+    return set(printed.split(","))
 
 
 class EndToEnd(unittest.TestCase):
@@ -335,6 +463,24 @@ class EndToEnd(unittest.TestCase):
                 self.assertEqual(status, expected, (root / f"{day}-1.md").read_text())
             self.assertIn("**regression**", (root / "7-1.md").read_text())
             self.assertEqual(len(list((root / "store" / "2026-10").glob("*.jsonl"))), 7)
+
+    def test_records_brought_again_are_neither_judged_nor_stored_twice(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "budgets.toml").write_text('[kpi."render.frame_ms.4k"]\nunit = "ms"\nmax = 1000.0\n')
+            for day in range(1, 6):
+                results = root / f"night-{day}.jsonl"
+                record.write(results, record.from_samples("render.frame_ms.4k", "ms", [10, 10, 11],
+                                                          started_at=f"2026-10-{day:02d}T01:15:00Z", **ENV))
+                self.assertEqual(self.run_compare(root, results, f"{day}-1"), 0)
+            slow = root / "night-6.jsonl"
+            record.write(slow, record.from_samples("render.frame_ms.4k", "ms", [13, 13, 14],
+                                                   started_at="2026-10-06T01:15:00Z", **ENV))
+            self.assertEqual(self.run_compare(root, slow, "6-1"), 0)
+            # The next candidate's run takes night 6's result from t's cache.
+            self.assertEqual(self.run_compare(root, slow, "7-1"), 0, (root / "7-1.md").read_text())
+            self.assertIn("judged then", (root / "7-1.md").read_text())
+            self.assertEqual(len(list((root / "store" / "2026-10").glob("*.jsonl"))), 6)
 
 
 if __name__ == "__main__":

@@ -1450,7 +1450,6 @@ mod tests {
 
     #[test]
     fn the_guest_bridge_is_fixed_hmac_bound_and_certificate_pinned() {
-        // Phase `bridge_accepts_only_its_fixed_host_only_endpoint`.
         {
             assert!(
                 GuestBridgeConfig::system(ApplicationPresentation::NativeRail)
@@ -1464,7 +1463,6 @@ mod tests {
                 Err(AgentError::InvalidEndpoint)
             ));
         }
-        // Phase `hmac_is_stable_and_body_bound`.
         {
             let key = [7_u8; 32];
             let first = hmac_hex(&key, b"7\nnonce\n", b"body");
@@ -1472,7 +1470,6 @@ mod tests {
             assert_ne!(first, hmac_hex(&key, b"7\nnonce\n", b"different"));
             assert!(constant_time_eq(first.as_bytes(), first.as_bytes()));
         }
-        // Phase `health_and_launch_certificates_must_match_the_enrolled_der_digest`.
         {
             let directory = tempfile::tempdir().unwrap();
             let secret = directory.path().join("bootstrap.secret");
@@ -1520,7 +1517,6 @@ mod tests {
                 Err(AgentError::Authentication)
             ));
         }
-        // Phase `owner_or_member_group_read_is_private_but_world_access_is_not`.
         {
             use std::os::unix::fs::PermissionsExt as _;
             let file = tempfile::NamedTempFile::new().unwrap();
@@ -1531,7 +1527,6 @@ mod tests {
                 &fs::metadata(file.path()).unwrap()
             ));
         }
-        // Phase `enrollment_pins_do_not_change_shared_session_state_permissions`.
         {
             let session = tempfile::tempdir().unwrap();
             let state = session.path().join("state.json");
@@ -1556,7 +1551,6 @@ mod tests {
 
     #[test]
     fn guest_installation_status_is_bounded_digest_bound_and_generation_bound() {
-        // Phase `installer_package_is_opaque_digest_bound_and_bounded`.
         {
             let package = InstallerPackage::new(InstallerKind::Msi, 4096, "a".repeat(64)).unwrap();
             assert!(valid_identifier(package.id()));
@@ -1571,7 +1565,6 @@ mod tests {
             assert!(InstallationOperationId::parse("too-short").is_err());
             assert!(InstallationOperationId::parse("a".repeat(48)).is_ok());
         }
-        // Phase `installation_status_rejects_unbounded_or_early_candidates`.
         {
             let operation = InstallationOperationId("a".repeat(48));
             let candidate = DiscoveredApplication {
@@ -1603,7 +1596,6 @@ mod tests {
                 .is_ok()
             );
         }
-        // Phase `installation_acceptance_can_only_prepare_app_focused_spice`.
         {
             let operation = "a".repeat(48);
             let accepted = WireInstallationAccepted {
@@ -1623,7 +1615,6 @@ mod tests {
             );
             assert!(prepared.presentation.endpoint.username.is_empty());
         }
-        // Phase `uninstallation_status_binds_success_to_a_catalog_generation`.
         {
             let operation = UninstallationOperationId::parse("e".repeat(48)).unwrap();
             assert!(
@@ -1651,7 +1642,6 @@ mod tests {
 
     #[test]
     fn guest_launches_keep_the_selected_presentation_and_its_credentials() {
-        // Phase `launch_rejects_a_guest_that_changes_selected_presentation`.
         {
             let launch = WireLaunch {
                 endpoint: "192.168.251.2:3389".to_string(),
@@ -1668,7 +1658,6 @@ mod tests {
                     .is_err()
             );
         }
-        // Phase `focused_spice_launch_has_no_rdp_credentials`.
         {
             let launch = WireLaunch {
                 endpoint: "192.168.251.2:3389".to_string(),
@@ -1685,7 +1674,6 @@ mod tests {
             assert!(launch.endpoint.username.is_empty());
             assert!(launch.password.expose().is_empty());
         }
-        // Phase `focused_spice_rejects_rdp_credentials_if_guest_sends_them`.
         {
             let launch = WireLaunch {
                 endpoint: "192.168.251.2:3389".to_string(),
@@ -1702,7 +1690,6 @@ mod tests {
                     .is_err()
             );
         }
-        // Phase `native_rail_launch_still_requires_rdp_credentials`.
         {
             let launch = WireLaunch {
                 endpoint: "192.168.251.2:3389".to_string(),

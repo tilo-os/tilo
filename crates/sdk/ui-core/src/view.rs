@@ -22,20 +22,13 @@ use serde::{Deserialize, Serialize};
 /// version it does not understand rather than mis-reading it.
 pub const FROZEN_VERSION: u32 = 1;
 
-/// A rectangle in physical pixels — the app's viewport at capture time.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct ViewRect {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-}
+pub use collab_types::presence::{ViewRect, ViewSubset};
 
 /// The focused widget's ephemeral presentation state, captured through the
 /// same mechanism the undo path uses to restore a caret across a rebuild.
 /// `ordinal` is stable exactly when the tree shape is — the condition under
 /// which restoring a caret is meaningful; `ephemeral` is the opaque string
-/// from [`crate::widget::Widget::get_state`]/`set_state`.
+/// from [`crate::undo::UndoPoints::get_state`]/`set_state`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct FocusView {
     pub ordinal: usize,
@@ -76,44 +69,14 @@ pub struct View {
     pub view_mode: Option<String>,
 }
 
-/// The broadcastable subset of a [`View`] — the region and resource a
-/// participant is looking at, minus the caret/selection.
-///
-/// Deliberately small and self-describing so it can travel inside the
-/// existing presence frame; it's what an **attach/follow** binds the local
-/// viewport to. The caret ([`View::focus`]) is intentionally excluded: it
-/// already has a dedicated presence payload (`Caret`/`Selection`) landing in
-/// the per-key caret maps, so re-sending it here would double-broadcast and
-/// re-key it away from the widget scopes those renderers read.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct ViewSubset {
-    /// Scroll offset(s) of the participant's scrollable content.
-    pub scroll: Vec<f64>,
-    /// The resource the participant currently has open, if any.
-    pub open_resource: Option<String>,
-    /// The participant's viewport rect in physical pixels.
-    pub viewport: ViewRect,
-    /// The participant's current view mode, if the app has one.
-    pub view_mode: Option<String>,
-}
-
-impl ViewSubset {
-    /// Project a full [`View`] onto the subset presence broadcasts. Drops
-    /// [`View::focus`] (broadcast separately as caret/selection presence).
-    pub fn from_view(view: &View) -> Self {
-        ViewSubset {
-            scroll: view.scroll.clone(),
-            open_resource: view.open_resource.clone(),
-            viewport: view.viewport,
-            view_mode: view.view_mode.clone(),
-        }
-    }
-
-    /// True at the starting point of a freshly-launched app that has not
-    /// scrolled, opened a resource, or been laid out — lets the broadcaster
-    /// skip the first frame's no-op send.
-    pub fn is_empty(&self) -> bool {
-        *self == ViewSubset::default()
+/// Project a full [`View`] onto the subset presence broadcasts. Drops
+/// [`View::focus`] (broadcast separately as caret/selection presence).
+pub fn broadcast_subset(view: &View) -> ViewSubset {
+    ViewSubset {
+        scroll: view.scroll.clone(),
+        open_resource: view.open_resource.clone(),
+        viewport: view.viewport,
+        view_mode: view.view_mode.clone(),
     }
 }
 
@@ -292,6 +255,9 @@ pub enum ThawError {
     BindingMismatch,
     /// Local View storage failed.
     Io(std::io::Error),
+    /// Local View storage is still opening the View on a thread that does
+    /// not wait for the disk; it wakes that thread once it is ready.
+    Opening,
 }
 
 impl std::fmt::Display for ThawError {
@@ -305,6 +271,7 @@ impl std::fmt::Display for ThawError {
             ThawError::InvalidView(reason) => write!(f, "invalid local view: {reason}"),
             ThawError::BindingMismatch => f.write_str("local view binding does not match"),
             ThawError::Io(error) => write!(f, "local view storage failed: {error}"),
+            ThawError::Opening => f.write_str("local view storage is still opening"),
             ThawError::State(reason) => write!(f, "frozen-app state failed to load: {reason}"),
         }
     }

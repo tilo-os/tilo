@@ -1,7 +1,3 @@
-//! Signing in to iCloud, two-factor codes, trust tokens, Advanced Data
-//! Protection and session renewal, against the provider's fake idmsa/setup
-//! endpoints.
-
 #![allow(clippy::unwrap_used, clippy::panic, reason = "test fixtures")]
 
 use std::sync::Arc;

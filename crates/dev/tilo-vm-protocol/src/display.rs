@@ -98,10 +98,6 @@ impl FromStr for OutputSpec {
 
 /// A comma-separated list of outputs, left to right, e.g.
 /// `2560x1600@2,1920x1080@1`.
-///
-/// # Errors
-/// A sentence naming the first output that does not parse, or a list that
-/// is empty or longer than [`MAX_OUTPUTS`].
 pub fn parse_outputs(text: &str) -> Result<Vec<OutputSpec>, String> {
     let outputs = text
         .split(',')

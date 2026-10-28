@@ -52,7 +52,7 @@ pub(crate) fn launch_scheduled_notification(
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room.to_string() == request.target.room)
+        .find(|workspace| workspace.room().to_string() == request.target.room)
         .cloned()
         .ok_or("notification's original room is unavailable")?;
     crate::shell::launcher::queue_package_target_in_workspace(
@@ -103,7 +103,7 @@ fn pending_snoozes_for_active_room(state: &ChromeState) -> Vec<crate::notificati
         .tree()
         .desktop
         .active_workspace()
-        .map(|workspace| workspace.room.to_string());
+        .map(|workspace| workspace.room().to_string());
     room.map_or_else(Vec::new, |room| state.snoozed_alarms(&room))
 }
 
@@ -114,12 +114,12 @@ fn snoozed_alarm_rows(
 ) -> Vec<crate::shell::search::SearchResult> {
     use crate::shell::search::action_api::ActionError;
     use crate::shell::search::{ResourceKind, SearchResult};
-    let actor = workspace.actor_for_person(&state.local_user_for_room(&workspace.room));
+    let actor = workspace.actor_for_person(&state.local_user_for_room(&workspace.room()));
     sources
         .into_iter()
         .filter_map(|source| {
             let id = snoozed_alarm_dismiss_id(&source.target);
-            if source.target.room != workspace.room.to_string()
+            if source.target.room != workspace.room().to_string()
                 || !crate::shell::search::providers::actions::shell_action_authorized_for(
                     workspace, &actor, &id,
                 )
@@ -174,6 +174,7 @@ fn snoozed_alarm_rows(
                 on_begin_invoke: Some(std::rc::Rc::new(move |_, _, chrome, _| {
                     begin_alarm_action(chrome, &address, &expected_room, Some(&source))
                 })),
+                resource: None,
             })
         })
         .collect()
@@ -190,8 +191,8 @@ pub(crate) fn alarm_action_rows(state: &ChromeState) -> Vec<crate::shell::search
     if !state.alarm_actions_available() {
         return Vec::new();
     }
-    let room = workspace.room.to_string();
-    let actor = workspace.actor_for_person(&state.local_user_for_room(&workspace.room));
+    let room = workspace.room().to_string();
+    let actor = workspace.actor_for_person(&state.local_user_for_room(&workspace.room()));
     let mut seen = std::collections::HashSet::new();
     let mut rows = Vec::new();
     for notice in state
@@ -246,6 +247,7 @@ pub(crate) fn alarm_action_rows(state: &ChromeState) -> Vec<crate::shell::search
                         begin_alarm_action(chrome, &action_id, &expected_room, None)
                     },
                 )),
+                resource: None,
             });
         }
     }
@@ -270,8 +272,9 @@ fn begin_alarm_action(
         let allowed = {
             let tree = state.tree();
             tree.desktop.active_workspace().is_some_and(|workspace| {
-                let actor = workspace.actor_for_person(&state.local_user_for_room(&workspace.room));
-                workspace.room.to_string() == expected_room
+                let actor =
+                    workspace.actor_for_person(&state.local_user_for_room(&workspace.room()));
+                workspace.room().to_string() == expected_room
                     && crate::shell::search::providers::actions::shell_action_authorized_for(
                         workspace, &actor, address,
                     )
@@ -319,6 +322,50 @@ pub fn announce_state_notice(chrome: &Chrome, notice: &crate::shell::persist::St
     );
 }
 
+/// A `Notify` sender's `image-data` hint as paint-ready artwork. The pixels
+/// say nothing about identity; they only lead the banner.
+struct WireImage {
+    key: String,
+    image: vello::peniko::ImageData,
+}
+
+impl ui::icons::AppImageSource for WireImage {
+    fn key(&self) -> &str {
+        &self.key
+    }
+
+    fn pixels(&self, _device_px: u32) -> Option<vello::peniko::ImageData> {
+        Some(self.image.clone())
+    }
+}
+
+fn wire_image(data: crate::notifications::IncomingImageData) -> ui::icons::AppImage {
+    let key = format!("notification:image-data:{}", blake3::hash(&data.rgba));
+    let image = ui::raster::rgba8(
+        vello::peniko::Blob::new(std::sync::Arc::new(data.rgba)),
+        data.width,
+        data.height,
+    );
+    ui::icons::AppImage::new(WireImage { key, image })
+}
+
+/// The sender's own name, shown explicitly as its claim. Bounded to one
+/// short line; an empty claim names nothing.
+fn sender_claim(app_name: &str) -> Option<String> {
+    let claim = app_name
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(64)
+        .collect::<String>();
+    let claim = claim.trim();
+    (!claim.is_empty()).then(|| {
+        crate::shell::i18n::t_args(
+            "notification-sender-claims",
+            &[("name", claim.to_string().into())],
+        )
+    })
+}
+
 /// A notification from a D-Bus `Notify` call. `urgency` 2 (critical) is
 /// forced persistent regardless of `expire_timeout` — the spec says critical
 /// must not auto-expire; otherwise `-1` → [`DEFAULT_DISMISS_AFTER`], `0` →
@@ -341,11 +388,27 @@ pub fn from_incoming(inc: IncomingNotification) -> Notification {
         }
     };
     notification.sender_id = Some(inc.dbus_id);
-    // `app_name` is sender-controlled in the freedesktop protocol. Only show
-    // the label derived from launcher attribution.
-    notification.app_name = app_id.as_ref().map(|id| {
-        crate::shell::launcher::display_name_for_app_id(id).unwrap_or_else(|| id.clone())
-    });
+    // `app_name` is sender-controlled in the freedesktop protocol. A
+    // launcher-attributed id names the app; without one, show the sender's
+    // own claim as a claim, never as verified identity.
+    notification.app_name = match app_id.as_deref() {
+        Some(id) => Some(
+            crate::shell::launcher::display_name_for_app_id(id).unwrap_or_else(|| id.to_string()),
+        ),
+        None => sender_claim(&inc.app_name),
+    };
+    // Artwork is chosen from verified identity first, then lower-trust hints
+    // that can only supply pixels (never policy or grouping).
+    notification.app_image = app_id
+        .as_deref()
+        .and_then(crate::app_icons::for_window_app_id)
+        .or_else(|| {
+            inc.desktop_entry
+                .as_deref()
+                .and_then(crate::app_icons::for_desktop_id)
+        })
+        .or_else(|| inc.image_data.clone().map(wire_image))
+        .or_else(|| inc.app_icon.as_deref().and_then(crate::app_icons::themed));
     notification.app_id = app_id;
     notification.source_workspace = inc.caller.as_ref().map(|c| c.workspace_id.0);
     // A communications app that names who a message is from, by display
@@ -452,7 +515,7 @@ pub fn remote_action_command(
 }
 
 /// The chrome as the shared stack's and centre's [`NotificationHost`]. With
-/// the Task Center's broker attached, a retained notification can be handed
+/// the room activity's broker attached, a retained notification can be handed
 /// to a live workspace agent.
 pub struct ChromeNotifications<'a> {
     chrome: &'a Chrome,
@@ -497,6 +560,13 @@ impl NotificationHost for ChromeNotifications<'_> {
         if let Some(actions) = state.device_asking_actions(notification.id) {
             return actions;
         }
+        if notification
+            .actions
+            .iter()
+            .any(|(key, _)| key.starts_with(crate::shell::app_action_consent::ANSWER_PREFIX))
+        {
+            return notification.actions.clone();
+        }
         let available = state.alarm_actions_available();
         if available && state.alarm_action_authorized(notification) {
             let snoozed = notification
@@ -513,6 +583,9 @@ impl NotificationHost for ChromeNotifications<'_> {
     }
 
     fn invoke_action(&self, id: u64, key: &str) {
+        if self.chrome.borrow_mut().answer_consent_notice(id, key) {
+            return;
+        }
         if matches!(key, "approve" | "decline")
             && self
                 .chrome
@@ -549,7 +622,7 @@ impl NotificationHost for ChromeNotifications<'_> {
     fn open_center(&self) {
         self.chrome
             .borrow_mut()
-            .open_quick_settings_level(crate::shell::quick_settings::QsLevel::Notifications);
+            .open_quick_settings_level(tilo_quick_settings::QsLevel::Notifications);
     }
 
     fn session_locked(&self) -> bool {
@@ -617,22 +690,21 @@ impl NotificationHost for ChromeNotifications<'_> {
     }
 
     fn hand_to_agent(&self, notification: &Notification) {
-        let (Some(agents), Some((workspace, room, agent))) =
-            (self.agents, self.live_agent(notification))
-        else {
+        let Some((_, room, agent)) = self.live_agent(notification) else {
             return;
         };
-        let task = self.chrome.borrow_mut().hand_history_notification_to_agent(
-            notification.id,
-            workspace,
-            &agent,
-        );
-        let Some(task) = task else {
+        let Some(room) = crate::shell::state::RoomId::parse(&room) else {
             return;
         };
-        if let Err(error) = agents.dispatch_task_in(&room, &task) {
-            tracing::warn!(%task, "handing a notification to {agent} failed: {error}");
-        }
+        let title: String = notification.title.chars().take(240).collect();
+        let body = if notification.body.is_empty() {
+            notification.title.clone()
+        } else {
+            format!("{}\n\n{}", notification.title, notification.body)
+        };
+        self.chrome
+            .borrow_mut()
+            .ask_agent(room, agent, (title, body));
     }
 
     fn changed(&self) {
@@ -653,7 +725,7 @@ mod tests {
 
     fn new_chrome() -> Chrome {
         let chrome = ChromeState::new(WorkspaceTree::default());
-        chrome.borrow_mut().set_notification_policy_for_tests(
+        chrome.borrow_mut().follow_notification_policy(
             settings_store::notification_policy::NotificationPolicy::default(),
         );
         chrome
@@ -669,6 +741,40 @@ mod tests {
             .map(|n| n.id)
             .collect();
         chrome.borrow_mut().present_notifications(at, &ids, false);
+    }
+
+    #[test]
+    fn an_unattributed_sender_is_named_as_its_own_claim() {
+        let mut inc = incoming(71, 1, 5000);
+        inc.caller = None;
+        inc.app_name = "Friendly\nTool".into();
+        let notification = from_incoming(inc);
+        assert_eq!(notification.app_id, None, "nothing verified it");
+        assert_eq!(
+            notification.app_name,
+            Some(crate::shell::i18n::t_args(
+                "notification-sender-claims",
+                &[("name", "FriendlyTool".into())]
+            )),
+            "the sender's name is shown as a claim, never as an app id"
+        );
+        assert!(notification.app_image.is_none(), "and it brings no artwork");
+    }
+
+    #[test]
+    fn a_verified_app_keeps_its_launcher_attribution() {
+        let inc = incoming(72, 1, 5000);
+        let notification = from_incoming(inc);
+        assert_eq!(notification.app_id.as_deref(), Some("org.mail"));
+        assert_eq!(
+            notification.app_name.as_deref(),
+            Some(
+                crate::shell::launcher::display_name_for_app_id("org.mail")
+                    .as_deref()
+                    .unwrap_or("org.mail")
+            ),
+            "the launcher's name (or the id) names a verified app"
+        );
     }
 
     #[test]
@@ -847,7 +953,6 @@ mod tests {
                     // toolkit toast and the two shell cards share one material.
                     let first = stack.rect();
                     let first_h = if state == "live" {
-                        // The shared toast card's height.
                         64.0
                     } else {
                         first.height()
@@ -880,16 +985,43 @@ mod tests {
         notification_stack_review_fixtures_are_written();
     }
 
-    // ---------- D-Bus bridge wiring ----------
-
     use crate::notifications::{CloseReason, IncomingNotification, NotificationBridge};
     use crate::portal::PortalCaller;
     use crate::shell::state::WorkspaceId;
+
+    #[test]
+    fn clicking_an_apps_notification_hands_it_an_activation_token_before_the_action() {
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
+        chrome.borrow_mut().mint_notification_activation_tokens();
+        bridge.push_incoming(incoming(41, 1, 5000));
+        chrome.borrow_mut().pump_dbus_notifications();
+        let id = chrome.borrow().notifications()[0].id;
+        assert!(chrome.borrow_mut().activate_notification(id));
+        assert!(
+            bridge.drain_action_events().is_empty(),
+            "the action waits for its token"
+        );
+        chrome
+            .borrow_mut()
+            .flush_notification_actions(|| Some("token-41".into()));
+        assert_eq!(bridge.take_action_token(41).as_deref(), Some("token-41"));
+        assert_eq!(bridge.drain_action_events(), vec![(41, "default".into())]);
+        assert_eq!(
+            bridge.drain_closed_events(),
+            vec![(41, CloseReason::Dismissed)]
+        );
+        assert_eq!(bridge.take_action_token(41), None, "one token, used once");
+    }
 
     fn incoming(dbus_id: u32, urgency: u8, expire: i32) -> IncomingNotification {
         IncomingNotification {
             dbus_id,
             app_name: "Mailer".into(),
+            app_icon: None,
+            desktop_entry: None,
+            image_data: None,
             summary: "New mail".into(),
             body: "secret subject".into(),
             actions: vec![("default".into(), "Open".into())],
@@ -903,6 +1035,33 @@ mod tests {
             incoming_call: false,
             machine_wide: false,
         }
+    }
+
+    /// Do not disturb turned on in Settings reaches the desktop with that
+    /// settings change; a frame that delivers notifications reads no settings.
+    #[test]
+    fn the_notification_policy_arrives_with_its_settings_change_not_with_a_frame() {
+        let _settings = crate::shell::test_support::install_settings(std::sync::Arc::new(
+            settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
+        ));
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
+        settings_store::notification_policy::NotificationPolicy::save_do_not_disturb(true)
+            .expect("keep the policy");
+        bridge.push_incoming(incoming(1, 1, 5000));
+        chrome.borrow_mut().pump_dbus_notifications();
+        assert!(
+            !chrome.borrow().dnd(),
+            "a frame reads no settings: the policy waits for its change"
+        );
+
+        chrome.borrow_mut().follow_notification_policy(
+            settings_store::notification_policy::NotificationPolicy::from_document(
+                &settings_store::load(),
+            ),
+        );
+        assert!(chrome.borrow().dnd(), "the settings change brings it");
     }
 
     #[test]
@@ -997,7 +1156,7 @@ mod tests {
     ) -> crate::notifications::RemoteContinuityNotification {
         crate::notifications::RemoteContinuityNotification {
             source_device: source.into(),
-            source_label: "Quinten's phone".into(),
+            source_label: "Ada's phone".into(),
             projection: crate::notifications::ContinuityNotificationProjection {
                 id: tilo_desktop::notifications::ContinuityNotificationId {
                     epoch: [7; 16],
@@ -1029,7 +1188,7 @@ mod tests {
             assert_eq!(notification.body, "Secret preview");
             assert_eq!(
                 notification.app_name.as_deref(),
-                Some("Mail · From Quinten's phone")
+                Some("Mail · From Ada's phone")
             );
             assert_eq!(notification.sender_id, None);
             assert_eq!(notification.source_workspace, None);
@@ -1102,15 +1261,21 @@ mod tests {
             let chrome = new_chrome();
             let bridge = NotificationBridge::new();
             chrome.borrow_mut().set_notification_bridge(bridge.clone());
-            let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
+            // The projection lives 10 ms: the pump is handed the clock it
+            // judges it by, so it is still live when it first shows it and
+            // has lapsed a moment later.
+            let now = tilo_clock::unix_now_ms();
             let mut projection = live_remote_projection(8, "Brief");
             projection.expires_unix_ms = now.saturating_add(10);
             let id = projection.id;
             assert!(bridge.receive_continuity_projection("phone", "Phone", projection, now));
-            chrome.borrow_mut().pump_dbus_notifications();
+            chrome
+                .borrow_mut()
+                .pump_remote_continuity_notifications_at(&bridge, now);
             assert_eq!(chrome.borrow().notifications().len(), 1);
-            bridge.expire_remote_continuity(now.saturating_add(11));
-            chrome.borrow_mut().pump_dbus_notifications();
+            chrome
+                .borrow_mut()
+                .pump_remote_continuity_notifications_at(&bridge, now.saturating_add(11));
             assert!(chrome.borrow().notifications().is_empty());
             assert!(chrome.borrow().notification_history().is_empty());
             assert!(!bridge.retire_remote_continuity("phone", id));
@@ -1321,9 +1486,7 @@ mod tests {
                 show_previews: false,
                 ..Default::default()
             };
-            chrome
-                .borrow_mut()
-                .set_notification_policy_for_tests(policy);
+            chrome.borrow_mut().follow_notification_policy(policy);
             bridge.push_incoming(incoming(91, 1, 5_000));
             chrome.borrow_mut().pump_dbus_notifications();
             let events = bridge.drain_continuity_outbound();
@@ -1353,6 +1516,25 @@ mod tests {
             chrome.borrow_mut().pump_dbus_notifications();
             assert_eq!(chrome.borrow().notification_badge_for("org.mail"), 12);
             assert_eq!(chrome.borrow().notification_badge_total(), 12);
+
+            // Turning app badges off hides that app's count everywhere it
+            // is drawn (its icon, the bell's total) while keeping the number
+            // itself, so turning them back on shows the real one.
+            let mut policy = settings_store::notification_policy::NotificationPolicy::default();
+            policy.per_app.insert(
+                "org.mail".into(),
+                settings_store::notification_policy::AppNotificationRule {
+                    badges: Some(false),
+                    ..Default::default()
+                },
+            );
+            chrome.borrow_mut().follow_notification_policy(policy);
+            assert_eq!(
+                chrome.borrow().notification_badge_for("org.mail"),
+                0,
+                "the app's own count follows its badge setting"
+            );
+            assert_eq!(chrome.borrow().notification_badge_total(), 0);
         }
 
         fn verified_foreign_identity_obeys_its_settings_rule() {
@@ -1367,9 +1549,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            chrome
-                .borrow_mut()
-                .set_notification_policy_for_tests(policy);
+            chrome.borrow_mut().follow_notification_policy(policy);
 
             let mut foreign = incoming(23, 1, 5000);
             // This is the identity the notification service derived from a
@@ -1528,7 +1708,7 @@ mod tests {
             let chrome = new_chrome();
             let bridge = NotificationBridge::new();
             chrome.borrow_mut().set_notification_bridge(bridge.clone());
-            chrome.borrow_mut().set_notification_policy_for_tests(
+            chrome.borrow_mut().follow_notification_policy(
                 settings_store::notification_policy::NotificationPolicy {
                     do_not_disturb: true,
                     ..settings_store::notification_policy::NotificationPolicy::default()
@@ -1582,7 +1762,7 @@ mod tests {
                 );
             }
             // Personal Settings writes the same policy; the shell adopts it.
-            chrome.borrow_mut().set_notification_policy_for_tests(
+            chrome.borrow_mut().follow_notification_policy(
                 settings_store::notification_policy::NotificationPolicy::default(),
             );
             let ch = chrome.borrow();
@@ -1593,7 +1773,7 @@ mod tests {
 
         fn a_focus_schedule_names_when_it_ends() {
             let chrome = new_chrome();
-            chrome.borrow_mut().set_notification_policy_for_tests(
+            chrome.borrow_mut().follow_notification_policy(
                 settings_store::notification_policy::NotificationPolicy {
                     focus: settings_store::notification_policy::FocusSchedule {
                         enabled: true,
@@ -1665,7 +1845,6 @@ mod tests {
                 "held notifications are not replayed as banners"
             );
             assert_eq!(chrome.borrow().notification_history().len(), 1);
-            // A fresh post now shows again.
             chrome.borrow_mut().push_notification("live", "");
             assert_eq!(chrome.borrow().notifications().len(), 1);
         }

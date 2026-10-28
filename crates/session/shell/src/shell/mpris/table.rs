@@ -78,6 +78,11 @@ pub(super) struct PlayerEntry {
     /// playhead that merely advances, so it is extrapolated from here.
     position_us: i64,
     observed_at: Instant,
+    /// When it appeared, and when it last started or stopped playing (`0`:
+    /// never played), on the table's own count, so the transport keys find
+    /// the player the person last listened to.
+    appeared: u64,
+    played: u64,
 }
 
 impl PlayerEntry {
@@ -150,6 +155,8 @@ impl PlayerEntry {
 #[derive(Debug, Default)]
 pub(super) struct PlayerTable {
     players: BTreeMap<String, PlayerEntry>,
+    /// Counts appearances and starts of playback, for [`Self::active_player`].
+    events: u64,
 }
 
 impl PlayerTable {
@@ -164,6 +171,8 @@ impl PlayerTable {
     }
 
     pub(super) fn apply(&mut self, event: PlayerEvent, now: Instant) -> Applied {
+        self.events = self.events.saturating_add(1);
+        let sequence = self.events;
         match event {
             PlayerEvent::Appeared {
                 bus_name,
@@ -182,17 +191,20 @@ impl PlayerTable {
                     .remove("Position")
                     .and_then(|value| i64::try_from(value).ok())
                     .unwrap_or(0);
-                self.players.insert(
-                    bus_name,
-                    PlayerEntry {
-                        unique_name,
-                        pid,
-                        package_id,
-                        properties,
-                        position_us,
-                        observed_at: now,
-                    },
-                );
+                let mut entry = PlayerEntry {
+                    unique_name,
+                    pid,
+                    package_id,
+                    properties,
+                    position_us,
+                    observed_at: now,
+                    appeared: sequence,
+                    played: 0,
+                };
+                if entry.is_playing() {
+                    entry.played = sequence;
+                }
+                self.players.insert(bus_name, entry);
                 Applied {
                     changed: true,
                     position_stale: false,
@@ -216,6 +228,7 @@ impl PlayerTable {
                 });
                 let mut applied = Applied::default();
                 for entry in self.owned_by(&unique_name) {
+                    let was_playing = entry.is_playing();
                     entry.rebase(now);
                     for name in &invalidated {
                         entry.properties.remove(name);
@@ -228,6 +241,9 @@ impl PlayerTable {
                     if let Some(position_us) = position {
                         entry.position_us = position_us;
                         entry.observed_at = now;
+                    }
+                    if was_playing != entry.is_playing() {
+                        entry.played = sequence;
                     }
                     applied.changed = true;
                     applied.position_stale |= moves_playhead && position.is_none();
@@ -313,13 +329,13 @@ impl PlayerTable {
     }
 
     /// The player the transport keys address, and whether it is playing:
-    /// the first one playing, else the first one, so play/pause resumes
-    /// whatever was last open.
+    /// the one playing that started last, else the one that stopped playing
+    /// last, so play/pause resumes what the person paused rather than
+    /// whichever player sorts first by name; else the one that appeared last.
     pub(super) fn active_player(&self) -> Option<(String, bool)> {
         self.players
             .iter()
-            .find(|(_, entry)| entry.is_playing())
-            .or_else(|| self.players.iter().next())
+            .max_by_key(|(_, entry)| (entry.is_playing(), entry.played, entry.appeared))
             .map(|(bus_name, entry)| (bus_name.clone(), entry.is_playing()))
     }
 
@@ -606,6 +622,57 @@ mod tests {
             Some(("org.mpris.MediaPlayer2.b".to_string(), true))
         );
         assert_eq!(table.playing(), ["org.mpris.MediaPlayer2.b".to_string()]);
+    }
+
+    #[test]
+    fn transport_keys_address_the_player_that_last_played() {
+        let now = Instant::now();
+        let mut table = PlayerTable::default();
+        let (browser, music) = (
+            "org.mpris.MediaPlayer2.chromium",
+            "org.mpris.MediaPlayer2.music",
+        );
+        table.apply(appeared(browser, ":1.1", None, "Paused"), now);
+        table.apply(appeared(music, ":1.2", None, "Playing"), now);
+        table.apply(
+            changed(":1.2", "PlaybackStatus", value("Paused".to_string())),
+            now,
+        );
+        assert_eq!(
+            table.active_player(),
+            Some((music.to_string(), false)),
+            "play resumes the music just paused, not the browser that sorts first"
+        );
+
+        table.apply(
+            changed(":1.1", "PlaybackStatus", value("Playing".to_string())),
+            now,
+        );
+        table.apply(
+            changed(":1.2", "PlaybackStatus", value("Playing".to_string())),
+            now,
+        );
+        assert_eq!(
+            table.active_player(),
+            Some((music.to_string(), true)),
+            "of two playing, pause stops the one started last"
+        );
+
+        let opened = "org.mpris.MediaPlayer2.video";
+        table.apply(
+            changed(":1.2", "PlaybackStatus", value("Paused".to_string())),
+            now,
+        );
+        table.apply(
+            changed(":1.1", "PlaybackStatus", value("Paused".to_string())),
+            now,
+        );
+        table.apply(appeared(opened, ":1.3", None, "Stopped"), now);
+        assert_eq!(
+            table.active_player(),
+            Some((browser.to_string(), false)),
+            "a player that only opened does not take the keys from one that played"
+        );
     }
 
     #[test]

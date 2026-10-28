@@ -121,11 +121,6 @@ impl ChangesetV1 {
     }
 
     /// Verify the schema and the author's signature.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unsupported version, a zero sequence or leaf
-    /// count, or a signature that does not verify.
     pub fn verify(&self) -> Result<(), ChangesetError> {
         if self.protocol_version != CHANGESET_VERSION {
             return Err(ChangesetError::UnsupportedVersion(self.protocol_version));
@@ -138,10 +133,6 @@ impl ChangesetV1 {
     }
 
     /// Canonical bytes of the header, for storage.
-    ///
-    /// # Errors
-    ///
-    /// Returns a canonical encoding error.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(self)
     }
@@ -149,11 +140,6 @@ impl ChangesetV1 {
 
 impl SignedChangesetV1 {
     /// Build and sign a changeset over `leaves` (any order; they are sorted).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when there are no leaves, a record appears twice,
-    /// or the signing key is not the actor's device.
     pub fn sign(
         workspace_id: Uuid,
         actor: FileActor,
@@ -182,11 +168,6 @@ impl SignedChangesetV1 {
     }
 
     /// Verify the signature and that the leaves are exactly the signed set.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid header, unsorted or duplicate
-    /// leaves, a wrong leaf count, or leaves that do not hash to the root.
     pub fn verify(&self) -> Result<(), ChangesetError> {
         self.header.verify()?;
         if self.leaves.len() as u64 != self.header.leaf_count {
@@ -200,25 +181,16 @@ impl SignedChangesetV1 {
     }
 
     /// Canonical bytes, for storage.
-    ///
-    /// # Errors
-    ///
-    /// Returns a canonical encoding error.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(self)
     }
 
     /// Decode stored canonical bytes. The signature is not checked again:
     /// it was verified when the changeset was made or accepted.
-    ///
-    /// # Errors
-    ///
-    /// Returns a canonical decoding error.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CanonicalError> {
         collab_types::canonical::from_canonical_bytes(bytes)
     }
 
-    /// The leaf of `record_id`, if the changeset touches it.
     #[must_use]
     pub fn leaf(&self, record_id: FileRecordId) -> Option<&ChangesetLeafV1> {
         self.leaves
@@ -247,10 +219,6 @@ fn validate_leaves(leaves: &[ChangesetLeafV1]) -> Result<(), ChangesetError> {
 }
 
 /// Digest of one leaf's envelopes, in sequence order.
-///
-/// # Errors
-///
-/// Returns a canonical encoding error.
 pub fn envelopes_digest<'a>(
     envelopes: impl IntoIterator<Item = &'a RecordEnvelopeV1>,
 ) -> Result<[u8; 32], CanonicalError> {
@@ -302,60 +270,6 @@ pub fn merkle_root(leaves: &[ChangesetLeafV1]) -> [u8; 32] {
         level = next_level(&level);
     }
     level.first().copied().unwrap_or([0; 32])
-}
-
-/// The sibling hashes from leaf `index` up to the root.
-#[must_use]
-pub fn inclusion_proof(leaves: &[ChangesetLeafV1], index: usize) -> Option<Vec<[u8; 32]>> {
-    if index >= leaves.len() {
-        return None;
-    }
-    let mut level: Vec<[u8; 32]> = leaves.iter().map(leaf_hash).collect();
-    let mut position = index;
-    let mut proof = Vec::new();
-    while level.len() > 1 {
-        let sibling = position ^ 1;
-        if let Some(hash) = level.get(sibling) {
-            proof.push(*hash);
-        }
-        level = next_level(&level);
-        position /= 2;
-    }
-    Some(proof)
-}
-
-/// Whether `leaf`, at `index` of `leaf_count` leaves, is covered by `root`.
-#[must_use]
-pub fn verify_inclusion(
-    root: &[u8; 32],
-    leaf_count: u64,
-    index: u64,
-    leaf: &ChangesetLeafV1,
-    proof: &[[u8; 32]],
-) -> bool {
-    if index >= leaf_count {
-        return false;
-    }
-    let mut hash = leaf_hash(leaf);
-    let mut position = index;
-    let mut width = leaf_count;
-    let mut siblings = proof.iter();
-    while width > 1 {
-        let has_sibling = position ^ 1 < width;
-        if has_sibling {
-            let Some(sibling) = siblings.next() else {
-                return false;
-            };
-            hash = if position.is_multiple_of(2) {
-                node_hash(&hash, sibling)
-            } else {
-                node_hash(sibling, &hash)
-            };
-        }
-        position /= 2;
-        width = width.div_ceil(2);
-    }
-    siblings.next().is_none() && hash == *root
 }
 
 #[derive(Debug, Error)]
@@ -452,44 +366,5 @@ mod tests {
             SignedChangesetV1::sign(Uuid::new_v4(), actor, 1, 0, twice, &key),
             Err(ChangesetError::UnsortedLeaves)
         ));
-    }
-
-    #[test]
-    fn every_leaf_has_an_inclusion_proof_against_the_signed_root() {
-        for n in [1_usize, 2, 3, 5, 8, 13, 100] {
-            let mut all = leaves(n);
-            all.sort_by_key(|leaf| leaf.record_id);
-            let root = merkle_root(&all);
-            for (index, leaf) in all.iter().enumerate() {
-                let proof = inclusion_proof(&all, index).unwrap();
-                assert!(proof.len() <= 7, "{n} leaves need at most log2 siblings");
-                assert!(verify_inclusion(
-                    &root,
-                    n as u64,
-                    index as u64,
-                    leaf,
-                    &proof
-                ));
-                let mut forged = *leaf;
-                forged.digest[0] ^= 1;
-                assert!(!verify_inclusion(
-                    &root,
-                    n as u64,
-                    index as u64,
-                    &forged,
-                    &proof
-                ));
-                if n > 1 {
-                    let other = (index + 1) % n;
-                    assert!(!verify_inclusion(
-                        &root,
-                        n as u64,
-                        other as u64,
-                        leaf,
-                        &proof
-                    ));
-                }
-            }
-        }
     }
 }

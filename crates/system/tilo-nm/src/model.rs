@@ -163,9 +163,96 @@ impl NetworkState {
     }
 }
 
+/// `NMActiveConnectionState`: where an active connection is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ActiveState {
+    /// A value this crate does not know.
+    #[default]
+    Unknown,
+    Activating,
+    Activated,
+    Deactivating,
+    Deactivated,
+}
+
+impl ActiveState {
+    /// Map `NMActiveConnectionState` (`0..=4`).
+    #[must_use]
+    pub const fn from_raw(raw: u32) -> Self {
+        match raw {
+            1 => Self::Activating,
+            2 => Self::Activated,
+            3 => Self::Deactivating,
+            4 => Self::Deactivated,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Whether an active connection going down for `reason`
+/// (`NMActiveConnectionStateReason`) was asked for: someone deactivated it
+/// (`USER_DISCONNECTED`, 2) or deleted its profile (`CONNECTION_REMOVED`,
+/// 11). Every other reason is the network's, the server's or the VPN
+/// service's doing.
+#[must_use]
+pub const fn ended_on_purpose(reason: u32) -> bool {
+    matches!(reason, 2 | 11)
+}
+
+/// Whether a connection type (`connection.type`) is a VPN: `WireGuard`, or a
+/// plugin's (`vpn`).
+#[must_use]
+pub fn is_vpn_type(kind: &str) -> bool {
+    matches!(kind, "vpn" | "wireguard")
+}
+
+/// A VPN `NetworkManager` has active.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ActiveVpn {
+    /// The profile's id.
+    pub uuid: String,
+    pub state: ActiveState,
+}
+
+/// What [`crate::NmClient::watch_vpns`] follows: the VPNs `NetworkManager`
+/// has active, and how often each was turned off on purpose.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VpnReading {
+    /// Whether `NetworkManager` answered; while it does not, nothing is
+    /// known to be active.
+    pub known: bool,
+    pub active: Vec<ActiveVpn>,
+    /// Per profile, how many times it went down on purpose since the watch
+    /// started ([`ended_on_purpose`]). A count, so a reader that misses a
+    /// reading still sees each one.
+    pub ended_on_purpose: std::collections::BTreeMap<String, u64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_state_and_reason_mapping() {
+        assert_eq!(
+            [0, 1, 2, 3, 4, 5].map(ActiveState::from_raw),
+            [
+                ActiveState::Unknown,
+                ActiveState::Activating,
+                ActiveState::Activated,
+                ActiveState::Deactivating,
+                ActiveState::Deactivated,
+                ActiveState::Unknown,
+            ]
+        );
+        assert!(ended_on_purpose(2), "deactivated by someone");
+        assert!(ended_on_purpose(11), "its profile deleted");
+        for reason in [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14] {
+            assert!(!ended_on_purpose(reason), "{reason}");
+        }
+        assert!(is_vpn_type("vpn") && is_vpn_type("wireguard"));
+        assert!(!is_vpn_type("802-11-wireless"));
+    }
 
     #[test]
     fn metered_mapping() {

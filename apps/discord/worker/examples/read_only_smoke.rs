@@ -126,6 +126,8 @@ async fn main() {
             FromWorker::Checkpoint { .. }
             | FromWorker::Metrics { .. }
             | FromWorker::Ready { .. }
+            | FromWorker::Calls { .. }
+            | FromWorker::Audio { .. }
             | FromWorker::Blob { .. } => {}
         }
     }

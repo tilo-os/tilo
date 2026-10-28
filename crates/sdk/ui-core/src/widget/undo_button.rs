@@ -106,13 +106,6 @@ impl UndoButton {
         self
     }
 
-    /// Override the tooltip. The default already names the shortcut.
-    #[must_use]
-    pub fn with_tooltip(mut self, tooltip: impl Into<String>) -> Self {
-        self.tooltip = tooltip.into();
-        self
-    }
-
     /// What the control does. Defaults to [`ButtonRole::Plain`]: a history
     /// control belongs in a toolbar, not competing with the primary action.
     #[must_use]

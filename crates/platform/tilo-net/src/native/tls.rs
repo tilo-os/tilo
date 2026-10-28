@@ -26,8 +26,9 @@ pub fn install_crypto_provider() {
 /// Roots from the Tilo system trust bundle.
 ///
 /// Unparsable entries are skipped; an unreadable bundle yields an empty store,
-/// so verification fails closed. The bundle exists only on Linux; elsewhere
-/// use [`client_config`], which asks the platform.
+/// so verification fails closed. The bundle exists on Linux, and Android's
+/// system store stands in for it there; on macOS use [`client_config`],
+/// which asks the platform.
 pub fn system_roots() -> RootCertStore {
     let mut roots = RootCertStore::empty();
     roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
@@ -35,9 +36,6 @@ pub fn system_roots() -> RootCertStore {
 }
 
 /// A client config that verifies servers against `roots`.
-///
-/// # Errors
-/// Only if the provider supports none of rustls' default protocol versions.
 pub fn client_config_with_roots(roots: RootCertStore) -> Result<ClientConfig, rustls::Error> {
     Ok(ClientConfig::builder_with_provider(crypto_provider())
         .with_safe_default_protocol_versions()?
@@ -46,12 +44,14 @@ pub fn client_config_with_roots(roots: RootCertStore) -> Result<ClientConfig, ru
 }
 
 /// A client config that verifies servers against the system's trust: the
-/// Tilo bundle on Linux, the Keychain on macOS. This is the verifier reqwest
-/// uses, so every Tilo client trusts the same servers.
+/// Tilo bundle on Linux, the Keychain on macOS, the system store on Android.
+/// This is the verifier reqwest uses, so every Tilo client trusts the same
+/// servers.
 ///
 /// # Errors
 /// If the provider supports none of rustls' default protocol versions, or the
 /// platform verifier cannot load the system's trust.
+#[cfg(not(target_os = "android"))]
 pub fn client_config() -> Result<ClientConfig, rustls::Error> {
     use rustls_platform_verifier::BuilderVerifierExt as _;
     Ok(ClientConfig::builder_with_provider(crypto_provider())
@@ -60,13 +60,18 @@ pub fn client_config() -> Result<ClientConfig, rustls::Error> {
         .with_no_client_auth())
 }
 
+/// On Android the platform verifier needs the app's JVM context and its own
+/// Kotlin classes, and aborts the process without them; Android's system
+/// store holds the same roots the platform trusts.
+#[cfg(target_os = "android")]
+pub fn client_config() -> Result<ClientConfig, rustls::Error> {
+    client_config_with_roots(system_roots())
+}
+
 /// A client config that trusts the server certificate `accept` admits, given
 /// its DER, instead of a chain to a root: a pinned certificate or hash, or any
 /// certificate the caller checks after the handshake. The handshake signature
 /// is still verified, so the server holds the admitted certificate's key.
-///
-/// # Errors
-/// Only if the provider supports none of rustls' default protocol versions.
 pub fn pinned_client_config(
     accept: impl Fn(&[u8]) -> bool + Send + Sync + 'static,
 ) -> Result<ClientConfig, rustls::Error> {
@@ -148,18 +153,15 @@ mod tests {
 
     #[test]
     fn the_ring_provider_installs_idempotently_and_builds_client_configs() {
-        // Phase `client_config_builds_with_the_ring_provider`.
         {
             assert!(client_config_with_roots(RootCertStore::empty()).is_ok());
             assert!(pinned_client_config(|_| true).is_ok());
         }
-        // Phase `install_is_idempotent`.
         {
             install_crypto_provider();
             install_crypto_provider();
             assert!(CryptoProvider::get_default().is_some());
         }
-        // Phase `the_platform_config_builds`.
         {
             assert!(client_config().is_ok());
         }

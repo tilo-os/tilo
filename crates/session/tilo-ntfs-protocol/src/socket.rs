@@ -39,9 +39,6 @@ pub fn connect(path: &str) -> io::Result<OwnedFd> {
     Ok(fd)
 }
 /// Accepts one connection before `deadline`.
-///
-/// # Errors
-/// Refuses interruption, expired deadlines and socket errors.
 pub fn accept(listener: &OwnedFd, deadline: Instant) -> io::Result<OwnedFd> {
     ready(listener, PollFlags::IN, deadline)?;
     Ok(rustix::net::accept_with(

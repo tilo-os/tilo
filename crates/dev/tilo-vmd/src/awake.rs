@@ -88,7 +88,7 @@ impl Lease {
 
 /// Whether `change` needs the lease file rewritten, and the lease it then
 /// holds. A request that would move a running lease's deadline by less than
-/// [`RENEW_GRANULARITY`] needs nothing; an explicit hold or release always
+/// `RENEW_GRANULARITY` needs nothing; an explicit hold or release always
 /// writes.
 pub fn renewal(stored: Option<Lease>, now: u64, change: Change) -> (Lease, bool) {
     let old = stored.unwrap_or_default();
@@ -236,11 +236,9 @@ mod tests {
         // A shorter hold is what was asked for, until the next request.
         let short = later.renewed(NOW + 600, Change::Hold(60));
         assert_eq!(short.deadline(), NOW + 660);
-        // An expired hold is dropped at the next request.
         let after = held.renewed(NOW + 8000, Change::Request);
         assert_eq!(after.hold_until, None);
         assert_eq!(after.deadline(), NOW + 9800);
-        // Off releases now, the hold too.
         let off = held.renewed(NOW + 700, Change::Off);
         assert!(!off.active(NOW + 700));
         assert_eq!(off.hold_until, None);
@@ -257,7 +255,6 @@ mod tests {
         let (same, write) = renewal(Some(lease), NOW + 30, Change::Request);
         assert!(!write);
         assert_eq!(same, lease);
-        // A minute later it moves.
         let (moved, write) = renewal(Some(lease), NOW + 60, Change::Request);
         assert!(write);
         assert_eq!(moved.deadline(), NOW + 1860);

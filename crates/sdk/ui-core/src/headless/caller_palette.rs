@@ -1,14 +1,13 @@
 //! Caller-only palette presentation. Submission transfers inert intent to the
 //! host; it never installs a worker route or executes an application effect.
 use super::{
-    ElementState, FrameHarness, HashMap, InspectionNode, Key, Point, WindowEvent,
-    collect_inspection,
+    ElementState, FrameHarness, HashMap, InspectionNode, Key, WindowEvent, collect_inspection,
 };
-use crate::action_palette::{ActionPalette, PendingOperation};
+use crate::action_palette::{ActionPaletteBox, PendingOperation};
 
 #[derive(Default)]
 pub(super) struct CallerPalette {
-    pub palette: Option<ActionPalette>,
+    pub palette: Option<ActionPaletteBox>,
     pub resources: Vec<tilo_actions::Resource>,
     pub pending: Option<PendingOperation>,
     /// Set by a root that answers the command chord itself.
@@ -63,7 +62,9 @@ impl FrameHarness {
         {
             return Err("Finish the current dialog or command first".into());
         }
-        let mut palette = ActionPalette::with_host_text(self.text.font_system.locale().to_owned());
+        let mut palette = self
+            .new_action_palette()
+            .ok_or_else(|| "Search is still loading".to_owned())?;
         palette.load_open_resources(&self.caller_resources());
         palette.open();
         palette.set_query(query);
@@ -71,6 +72,17 @@ impl FrameHarness {
         self.relayout();
         Ok(())
     }
+    /// The caller palette's rows as a person reads them, label and the line
+    /// under it, in display order; empty while it is closed.
+    #[must_use]
+    pub fn caller_palette_rows(&self) -> Vec<(String, Option<String>)> {
+        self.caller_palette
+            .palette
+            .as_ref()
+            .map(|palette| palette.result_rows())
+            .unwrap_or_default()
+    }
+
     pub fn take_caller_operation(&mut self) -> Option<PendingOperation> {
         self.invalidate_local();
         self.caller_palette.pending.take()
@@ -89,8 +101,9 @@ impl FrameHarness {
                 && self.caller_palette.pending.is_none()
                 && !self.global_search_pending()
             {
-                let mut palette =
-                    ActionPalette::with_host_text(self.text.font_system.locale().to_owned());
+                let Some(mut palette) = self.new_action_palette() else {
+                    return false;
+                };
                 palette.load_open_resources(&self.caller_resources());
                 palette.open();
                 self.caller_palette.palette = Some(palette);
@@ -201,13 +214,15 @@ impl FrameHarness {
     pub(super) fn draw_caller_palette(&mut self) {
         let transform = self.capture_draw_transform();
         if let Some(palette) = &mut self.caller_palette.palette {
-            let width = (f64::from(self.viewport.0) - 32.0).clamp(1.0, 640.0);
-            palette.layout_with_text(
-                &self.theme,
-                Point::new((f64::from(self.viewport.0) - width) / 2.0, 24.0),
-                width,
-                &mut self.text,
+            // The app's frame, under the window's bar where one is shown.
+            let window = vello::kurbo::Rect::new(
+                0.0,
+                0.0,
+                f64::from(self.viewport.0),
+                f64::from(self.viewport.1),
             );
+            let (origin, width) = palette.place_in(window, &self.theme);
+            palette.layout_with_text(&self.theme, origin, width, &mut self.text);
             palette.draw(
                 &mut self.scene,
                 transform,
@@ -315,8 +330,8 @@ mod tests {
                 payload: vec![],
             },
         );
-        action.kind = tilo_actions::OperationKind::Effect;
-        action.contract.confirmation = confirmation;
+        action.type_mut().kind = tilo_actions::OperationKind::Effect;
+        action.type_mut().contract.confirmation = confirmation;
         vec![
             tilo_actions::Resource::new(
                 "certified-host/room/record/revision",
@@ -383,9 +398,26 @@ mod tests {
         )));
         enter(&mut frame);
         assert!(frame.take_caller_operation().is_none());
+        // Cancel has the keyboard first; the name is typed in its field.
+        frame.send_host_event(&crate::synthetic_input::key_input(
+            &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+            winit::event::ElementState::Pressed,
+        ));
         frame.send_host_event(&WindowEvent::Ime(winit::event::Ime::Commit(
             "INSERT".into(),
         )));
+        // Return in the field stays the safe answer: the action's own button,
+        // past Cancel, goes ahead.
+        enter(&mut frame);
+        assert!(frame.take_caller_operation().is_none());
+        frame.send_host_event(&crate::synthetic_input::key_input(
+            &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+            winit::event::ElementState::Pressed,
+        ));
+        frame.send_host_event(&crate::synthetic_input::key_input(
+            &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+            winit::event::ElementState::Pressed,
+        ));
         enter(&mut frame);
         let intent = frame
             .take_caller_operation()
@@ -475,7 +507,9 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .result_labels(),
-            vec!["Writer — Insert table"]
+            // The row reads as the outcome alone: never the document's name
+            // joined on with a dash.
+            vec!["Insert table"]
         );
         frame.set_caller_actions(vec![]);
         assert!(

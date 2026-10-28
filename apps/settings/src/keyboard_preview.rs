@@ -1,8 +1,160 @@
 //! Native XKB legends over explicitly selected Open Group PC geometry.
+//!
+//! Compiling a drawing reads the installed XKB data, which takes long enough
+//! to hold a frame, so the window never compiles one: it asks for a drawing
+//! (`Preview::drawn`), shows that it is being drawn while it is compiled
+//! off the UI thread (`Preview::draw_in_background`), and is woken when it
+//! lands.
 use pc_keyboard_geometry::{Geometry, Key as GeometryKey};
-use std::sync::LazyLock;
+use std::collections::VecDeque;
+use std::sync::{Arc, LazyLock, Mutex};
+use ui::lock::MutexRecover as _;
 use ui::{KeyboardMap, KeyboardMapKey};
 use vello::kurbo::Point;
+
+/// What one keyboard drawing is compiled from: the layout, the physical
+/// keyboard, its XKB options and whether it is drawn compact.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Preview {
+    pub(crate) source: String,
+    pub(crate) model: String,
+    pub(crate) options: Option<String>,
+    pub(crate) compact: bool,
+}
+
+/// One compiled drawing's keys and size, or why it cannot be drawn.
+type Drawn = Result<(Vec<KeyboardMapKey>, taffy::Size<f64>), String>;
+
+/// The drawings compiled lately, oldest first, and those being compiled.
+#[derive(Default)]
+struct Drawings {
+    done: VecDeque<(Preview, Arc<Drawn>)>,
+    compiling: Vec<Preview>,
+}
+
+/// How many drawings are kept: the layouts a person flips between.
+const KEPT: usize = 8;
+
+static DRAWINGS: LazyLock<Mutex<Drawings>> = LazyLock::new(Mutex::default);
+
+thread_local! {
+    /// The drawing an effect checked against and found not yet compiled.
+    static NEEDED: std::cell::RefCell<Option<Preview>> = const { std::cell::RefCell::new(None) };
+}
+
+impl Preview {
+    pub(crate) fn new(source: &str, model: &str, options: Option<&str>, compact: bool) -> Self {
+        Self {
+            source: source.to_owned(),
+            model: model.to_owned(),
+            options: options.map(str::to_owned),
+            compact,
+        }
+    }
+
+    fn compiled(&self) -> Option<Arc<Drawn>> {
+        DRAWINGS
+            .lock_recover()
+            .done
+            .iter()
+            .find(|(preview, _)| preview == self)
+            .map(|(_, drawn)| Arc::clone(drawn))
+    }
+
+    /// Whether the drawing is compiled.
+    pub(crate) fn is_drawn(&self) -> bool {
+        self.compiled().is_some()
+    }
+
+    /// The drawing titled `label`, once it is compiled; never compiles it.
+    pub(crate) fn drawn(&self, label: String) -> Option<Result<KeyboardMap, String>> {
+        let drawn = self.compiled()?;
+        Some(match drawn.as_ref() {
+            Ok((keys, size)) => Ok(KeyboardMap::new(keys.clone(), *size, label)
+                .with_configuration(self.source.clone(), self.model.clone())),
+            Err(error) => Err(error.clone()),
+        })
+    }
+
+    /// [`Self::drawn`] for an effect that checks against the drawing: until
+    /// it is compiled, this refuses and notes it as needed
+    /// ([`take_needed`]), so the effect answers once it is.
+    ///
+    /// # Errors
+    /// Why the drawing cannot be made, or that it is not compiled yet.
+    pub(crate) fn needed(&self, label: String) -> Result<KeyboardMap, String> {
+        self.drawn(label).unwrap_or_else(|| {
+            NEEDED.with(|needed| *needed.borrow_mut() = Some(self.clone()));
+            Err("the keyboard is still being drawn".into())
+        })
+    }
+
+    /// Compile the drawing here and keep it. Reads the installed XKB data:
+    /// never on the UI thread.
+    pub(crate) fn compile(&self) {
+        crate::device_read::off_ui_thread();
+        let drawn = Arc::new(compile_drawing(self));
+        let mut drawings = DRAWINGS.lock_recover();
+        drawings.compiling.retain(|preview| preview != self);
+        drawings.done.retain(|(preview, _)| preview != self);
+        if drawings.done.len() >= KEPT {
+            drawings.done.pop_front();
+        }
+        drawings.done.push_back((self.clone(), drawn));
+    }
+
+    /// Compile the drawing off the UI thread unless it is compiled or being
+    /// compiled; the window is woken when it is. Called on the UI thread.
+    pub(crate) fn draw_in_background(&self) {
+        {
+            let mut drawings = DRAWINGS.lock_recover();
+            if drawings.done.iter().any(|(preview, _)| preview == self)
+                || drawings.compiling.contains(self)
+            {
+                return;
+            }
+            drawings.compiling.push(self.clone());
+        }
+        let preview = self.clone();
+        let wake = ui::WakeHandle::new();
+        let started = crate::device_read::thread(
+            "settings-keyboard-drawing",
+            Box::new(move || {
+                preview.compile();
+                wake.wake();
+            }),
+        );
+        if let Err(error) = started {
+            let failed = Arc::new(Err(format!("the keyboard could not be drawn: {error}")));
+            let mut drawings = DRAWINGS.lock_recover();
+            drawings.compiling.retain(|preview| preview != self);
+            drawings.done.push_back((self.clone(), failed));
+        }
+    }
+}
+
+/// The drawing an effect found not yet compiled, if one did since the last
+/// call ([`Preview::needed`]).
+pub(crate) fn take_needed() -> Option<Preview> {
+    NEEDED.with(|needed| needed.borrow_mut().take())
+}
+
+fn compile_drawing(preview: &Preview) -> Drawn {
+    let source = settings_store::hardware::KeyboardInputSource::parse(&preview.source)
+        .ok_or_else(|| "the source is not an XKB layout".to_owned())?;
+    let geometries = pc_keyboard_geometry::models()?;
+    let geometry = geometries
+        .get(preview.model.as_str())
+        .ok_or("unknown physical keyboard model")?;
+    let keys = if preview.compact {
+        compact_geometry(geometry).1
+    } else {
+        geometry.keys.clone()
+    };
+    let (size, keys) = tight(keys);
+    let keys = compile(&source, &preview.model, &keys, preview.options.as_deref())?;
+    Ok((keys, size))
+}
 
 pub(crate) fn valid_model(model: &str) -> bool {
     matches!(model, "pc104" | "pc105" | "jp106" | "kr106")
@@ -41,21 +193,9 @@ pub(crate) fn map_for_form(
     options: Option<&str>,
     compact: bool,
 ) -> Result<KeyboardMap, String> {
-    let source_id = source.to_owned();
-    let source = settings_store::hardware::KeyboardInputSource::parse(source)
-        .ok_or_else(|| "the source is not an XKB layout".to_owned())?;
-    let geometries = pc_keyboard_geometry::models()?;
-    let geometry = geometries
-        .get(model)
-        .ok_or("unknown physical keyboard model")?;
-    let keys = if compact {
-        compact_geometry(geometry).1
-    } else {
-        geometry.keys.clone()
-    };
-    let (size, keys) = tight(keys);
-    let keys = compile(&source, model, &keys, options)?;
-    Ok(KeyboardMap::new(keys, size, label).with_configuration(source_id, model.to_owned()))
+    let preview = Preview::new(source, model, options, compact);
+    let (keys, size) = compile_drawing(&preview)?;
+    Ok(KeyboardMap::new(keys, size, label).with_configuration(preview.source, preview.model))
 }
 
 /// The keys moved to the drawing's corner and the drawing cut to them, with
@@ -169,11 +309,11 @@ fn compact_geometry(geometry: &Geometry) -> (f64, Vec<GeometryKey>) {
 }
 
 #[cfg(test)]
-thread_local! { static COMPILES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+static COMPILES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(test)]
 pub(crate) fn compilation_count() -> usize {
-    COMPILES.with(std::cell::Cell::get)
+    COMPILES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Legends that would be unreadable at keycap size, spelled the way keycaps
@@ -201,19 +341,41 @@ fn compile(
     geometry: &[GeometryKey],
     options: Option<&str>,
 ) -> Result<Vec<KeyboardMapKey>, String> {
+    crate::device_read::off_ui_thread();
     #[cfg(test)]
-    COMPILES.with(|count| count.set(count.get() + 1));
-    let native = tilo_keyboard_map::compile(
+    COMPILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let names = geometry
+        .iter()
+        .map(|key| key.name.clone())
+        .collect::<Vec<_>>();
+    let native = match tilo_keyboard_map::compile(
         &source.layout,
         source.variant.as_deref().unwrap_or(""),
         model,
         options.unwrap_or(""),
-        &geometry
-            .iter()
-            .map(|key| key.name.clone())
-            .collect::<Vec<_>>(),
-    )
-    .map_err(|error| error.to_string())?;
+        &names,
+    ) {
+        Ok(keys) => keys,
+        Err(error) if error.is_unsupported() => {
+            // No installed keyboard data on this host. The drawing's shape is
+            // in the geometry and its keys' positions in the model, so a key
+            // can still be read and inspected; what it prints is the
+            // layout's to say, and nothing is drawn to print.
+            let levels = tilo_keyboard_map::unlabelled_levels(&names);
+            return Ok(finish(geometry, &levels, source));
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    Ok(finish(geometry, &native, source))
+}
+
+/// The drawing's keys: `native`'s legends for each position, laid out in
+/// `geometry`'s outlines.
+fn finish(
+    geometry: &[GeometryKey],
+    native: &[tilo_keyboard_map::Key],
+    source: &settings_store::hardware::KeyboardInputSource,
+) -> Vec<KeyboardMapKey> {
     // The legends printed on a keyboard of the previewed layout, whatever
     // language the desktop speaks.
     let caps = ui::Keycaps::from_xkb(
@@ -222,15 +384,15 @@ fn compile(
     );
     let english = ui::Keycaps::from_xkb("us", "");
     native
-        .into_iter()
+        .iter()
         .zip(geometry)
         .map(|(key, outline)| {
             let levels = key
                 .levels
-                .into_iter()
+                .iter()
                 .map(|symbols| {
                     symbols
-                        .into_iter()
+                        .iter()
                         .map(|symbol| {
                             let printed = caps.native_symbol(&symbol.name, &symbol.text);
                             // A layout whose keyboards print their own word
@@ -247,8 +409,8 @@ fn compile(
                         .join(" ")
                 })
                 .collect();
-            Ok(KeyboardMapKey {
-                name: key.name,
+            KeyboardMapKey {
+                name: key.name.clone(),
                 physical: key.physical,
                 outline: outline
                     .outline
@@ -256,7 +418,7 @@ fn compile(
                     .map(|&[x, y]| Point::new(x, y))
                     .collect(),
                 levels,
-            })
+            }
         })
         .collect()
 }

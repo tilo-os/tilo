@@ -2,6 +2,11 @@
 //! and reads events), the outside worker (which performs ops and reports
 //! events) and the bridge program's tests. Plain serde types: nothing here
 //! talks to Discord or to a room.
+//!
+//! This crate has no window and no surface of its own: it ships no
+//! `tilo-app.toml` and no `surface.toml`. What a person sees of Discord is
+//! `apps/discord`'s page over a `discord.guild` record, so an affordance
+//! missing from that page is that app's finding, not this vocabulary's.
 
 pub mod event;
 pub mod op;

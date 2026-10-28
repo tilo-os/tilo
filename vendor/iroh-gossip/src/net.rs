@@ -120,6 +120,8 @@ impl From<oneshot::error::RecvError> for Error {
 #[derive(Debug)]
 pub(crate) struct Inner {
     api: GossipApi,
+    /// TILO PATCH: see [`Gossip::connection`].
+    active_conns: ActiveConns,
     local_tx: mpsc::Sender<LocalActorMessage>,
     _actor_handle: AbortOnDropHandle<()>,
     max_message_size: usize,
@@ -146,6 +148,8 @@ impl ProtocolHandler for Gossip {
 pub struct Builder {
     config: proto::Config,
     alpn: Option<Bytes>,
+    // TILO PATCH: see `Builder::connections`.
+    connections: Option<mpsc::UnboundedSender<Connection>>,
 }
 
 impl Builder {
@@ -180,8 +184,25 @@ impl Builder {
         self
     }
 
+    // TILO PATCH: the application may share gossip's connections.
+    /// Hand every connection this gossip instance runs to `connections`, as
+    /// it starts to use it, whether it dialled the connection or accepted it.
+    ///
+    /// Gossip opens and accepts unidirectional streams only. An application
+    /// may carry a protocol of its own on the bidirectional streams of the
+    /// same connections, so that two endpoints keep one connection, with one
+    /// set of keep-alives and timers, rather than one per protocol. The
+    /// application must then accept those streams on every connection it is
+    /// handed; gossip never does. Connections are not handed over when this
+    /// is unset.
+    pub fn connections(mut self, connections: mpsc::UnboundedSender<Connection>) -> Self {
+        self.connections = Some(connections);
+        self
+    }
+
     /// Spawn a gossip actor and get a handle for it
     pub fn spawn(self, endpoint: Endpoint) -> Gossip {
+        let active_conns = ActiveConns::default();
         let metrics = Arc::new(Metrics::default());
         let address_lookup = GossipAddressLookup::default();
 
@@ -199,6 +220,8 @@ impl Builder {
             metrics.clone(),
             self.alpn,
             address_lookup,
+            self.connections,
+            active_conns.clone(),
         );
         let me = actor.endpoint.id().fmt_short();
         let max_message_size = actor.state.max_message_size();
@@ -210,6 +233,7 @@ impl Builder {
         Gossip {
             inner: Inner {
                 api,
+                active_conns,
                 local_tx,
                 _actor_handle: AbortOnDropHandle::new(actor_handle),
                 max_message_size,
@@ -226,6 +250,7 @@ impl Gossip {
         Builder {
             config: Default::default(),
             alpn: None,
+            connections: None,
         }
     }
 
@@ -238,6 +263,23 @@ impl Gossip {
     /// Get the maximum message size configured for this gossip actor.
     pub fn max_message_size(&self) -> usize {
         self.inner.max_message_size
+    }
+
+    // TILO PATCH: the application may share gossip's connections.
+    /// The connection gossip currently sends to `peer` on, if it has one: the
+    /// newest it dialled or accepted, until that closes.
+    ///
+    /// It is set before gossip handles anything that arrives on it, so it is
+    /// there for any peer an event names as a neighbor. See
+    /// [`Builder::connections`] for what an application may carry on it.
+    pub fn connection(&self, peer: EndpointId) -> Option<Connection> {
+        self.inner
+            .active_conns
+            .lock()
+            .expect("poisoned")
+            .get(&peer)
+            .filter(|conn| conn.close_reason().is_none())
+            .cloned()
     }
 
     /// Handle an incoming [`Connection`].
@@ -302,6 +344,11 @@ struct Actor {
     metrics: Arc<Metrics>,
     topic_event_forwarders: JoinSet<TopicId>,
     address_lookup: GossipAddressLookup,
+    /// TILO PATCH: where every connection goes as it starts to be used
+    /// ([`Builder::connections`]).
+    connections: Option<mpsc::UnboundedSender<Connection>>,
+    /// TILO PATCH: each peer's active connection ([`Gossip::connection`]).
+    active_conns: ActiveConns,
 }
 
 impl Actor {
@@ -311,6 +358,8 @@ impl Actor {
         metrics: Arc<Metrics>,
         alpn: Option<Bytes>,
         address_lookup: GossipAddressLookup,
+        connections: Option<mpsc::UnboundedSender<Connection>>,
+        active_conns: ActiveConns,
     ) -> (
         Self,
         mpsc::Sender<RpcMessage>,
@@ -346,6 +395,8 @@ impl Actor {
             local_rx,
             topic_event_forwarders: Default::default(),
             address_lookup,
+            connections,
+            active_conns,
         };
 
         (actor, rpc_tx, local_tx)
@@ -525,6 +576,16 @@ impl Actor {
     fn handle_connection(&mut self, peer_id: EndpointId, origin: ConnOrigin, conn: Connection) {
         let (send_tx, send_rx) = mpsc::channel(SEND_QUEUE_CAP);
         let conn_id = conn.stable_id();
+        // TILO PATCH: the application shares the connection
+        // (`Builder::connections`, `Gossip::connection`). The newest is the
+        // one gossip sends on, as `PeerState::accept_conn` decides.
+        self.active_conns
+            .lock()
+            .expect("poisoned")
+            .insert(peer_id, conn.clone());
+        if let Some(connections) = &self.connections {
+            connections.send(conn.clone()).ok();
+        }
 
         let queue = match self.peers.entry(peer_id) {
             Entry::Occupied(mut entry) => entry.get_mut().accept_conn(send_tx, conn_id),
@@ -571,6 +632,16 @@ impl Actor {
             conn.close(0u32.into(), b"close from disconnect");
         }
         let reason = conn.close_reason().expect("just closed");
+        // TILO PATCH: a closed connection is nobody's to share.
+        {
+            let mut active_conns = self.active_conns.lock().expect("poisoned");
+            if active_conns
+                .get(&peer_id)
+                .is_some_and(|active| active.stable_id() == conn.stable_id())
+            {
+                active_conns.remove(&peer_id);
+            }
+        }
         let error = task_result.err();
         debug!(%reason, ?error, "connection closed");
         if let Some(PeerState::Active {
@@ -755,6 +826,10 @@ impl Actor {
 }
 
 type ConnId = usize;
+
+/// TILO PATCH: each peer's active connection, which gossip sends on
+/// ([`Gossip::connection`]).
+type ActiveConns = Arc<std::sync::Mutex<HashMap<EndpointId, Connection>>>;
 
 #[derive(Debug)]
 enum PeerState {
@@ -1162,14 +1237,23 @@ pub(crate) mod tests {
                 .expect("endpoint is not closed")
                 .add(address_lookup.clone());
 
-            let (actor, to_actor_tx, conn_tx) =
-                Actor::new(endpoint, config, metrics.clone(), None, address_lookup);
+            let active_conns = ActiveConns::default();
+            let (actor, to_actor_tx, conn_tx) = Actor::new(
+                endpoint,
+                config,
+                metrics.clone(),
+                None,
+                address_lookup,
+                None,
+                active_conns.clone(),
+            );
             let max_message_size = actor.state.max_message_size();
 
             let _actor_handle = AbortOnDropHandle::new(task::spawn(n0_future::future::pending()));
             let gossip = Self {
                 inner: Inner {
                     api: GossipApi::local(to_actor_tx),
+                    active_conns,
                     local_tx: conn_tx,
                     _actor_handle,
                     max_message_size,
@@ -1970,6 +2054,97 @@ pub(crate) mod tests {
         drop(tx2);
         drop(rx1);
         drop(rx2);
+        router1.shutdown().await.std_context("shutdown router1")?;
+        router2.shutdown().await.std_context("shutdown router2")?;
+        Ok(())
+    }
+
+    /// TILO PATCH: both ends are handed the one connection gossip runs
+    /// between them, and a bidirectional stream on it reaches the other
+    /// end's application while gossip keeps working on the same connection.
+    #[tokio::test]
+    #[traced_test]
+    async fn gossip_shares_its_connection_with_the_application() -> n0_error::Result<()> {
+        let topic_id = TopicId::from([7u8; 32]);
+
+        let ep1 = Endpoint::bind(presets::Minimal).await?;
+        let ep2 = Endpoint::bind(presets::Minimal).await?;
+        let (conns1_tx, mut conns1) = mpsc::unbounded_channel();
+        let (conns2_tx, mut conns2) = mpsc::unbounded_channel();
+        let gossip1 = Gossip::builder().connections(conns1_tx).spawn(ep1.clone());
+        let gossip2 = Gossip::builder().connections(conns2_tx).spawn(ep2.clone());
+        let router1 = Router::builder(ep1.clone())
+            .accept(crate::ALPN, gossip1.clone())
+            .spawn();
+        let router2 = Router::builder(ep2.clone())
+            .accept(crate::ALPN, gossip2.clone())
+            .spawn();
+
+        let addr1 = router1.endpoint().addr();
+        let id1 = addr1.id;
+        let mem_lookup = MemoryLookup::new();
+        mem_lookup.add_endpoint_info(addr1);
+        router2.endpoint().address_lookup()?.add(mem_lookup);
+
+        let (tx1, mut rx1) = gossip1.subscribe(topic_id, vec![]).await?.split();
+        let (_tx2, mut rx2) = gossip2.subscribe(topic_id, vec![id1]).await?.split();
+        timeout(Duration::from_secs(3), rx1.joined())
+            .await
+            .std_context("wait rx1 join")??;
+        timeout(Duration::from_secs(3), rx2.joined())
+            .await
+            .std_context("wait rx2 join")??;
+
+        let conn1 = conns1
+            .try_recv()
+            .expect("endpoint 1 was handed its connection");
+        let conn2 = conns2
+            .try_recv()
+            .expect("endpoint 2 was handed its connection");
+        assert!(conns1.try_recv().is_err() && conns2.try_recv().is_err());
+        assert_eq!(conn1.remote_id(), ep2.id());
+        assert_eq!(conn2.remote_id(), ep1.id());
+        let active1 = gossip1
+            .connection(ep2.id())
+            .expect("endpoint 1 shares its connection");
+        let active2 = gossip2
+            .connection(ep1.id())
+            .expect("endpoint 2 shares its connection");
+        assert_eq!(active1.stable_id(), conn1.stable_id());
+        assert_eq!(active2.stable_id(), conn2.stable_id());
+        assert_eq!(ep1.metrics().socket.num_conns_opened.get(), 1);
+        assert_eq!(ep2.metrics().socket.num_conns_opened.get(), 1);
+
+        let (mut send, _recv) = conn2.open_bi().await.std_context("open bi")?;
+        send.write_all(b"beside gossip")
+            .await
+            .std_context("write")?;
+        send.finish().std_context("finish")?;
+        let (_send, mut recv) = timeout(Duration::from_secs(3), conn1.accept_bi())
+            .await
+            .std_context("wait bi stream")?
+            .std_context("accept bi")?;
+        let bytes = recv.read_to_end(64).await.std_context("read")?;
+        assert_eq!(&bytes[..], b"beside gossip");
+
+        tx1.broadcast(b"still gossiping".to_vec().into()).await?;
+        loop {
+            let event = timeout(Duration::from_secs(3), rx2.next())
+                .await
+                .std_context("wait for message on rx2")?;
+            match event {
+                Some(Ok(Event::Received(msg))) => {
+                    assert_eq!(&msg.content[..], b"still gossiping");
+                    break;
+                }
+                Some(Ok(_)) => {}
+                other => panic!("expected Received event, got {:?}", other),
+            }
+        }
+        assert_eq!(ep1.metrics().socket.num_conns_opened.get(), 1);
+        assert_eq!(ep2.metrics().socket.num_conns_opened.get(), 1);
+
+        drop(tx1);
         router1.shutdown().await.std_context("shutdown router1")?;
         router2.shutdown().await.std_context("shutdown router2")?;
         Ok(())

@@ -52,13 +52,16 @@ pub mod crypto;
 pub mod document_import;
 pub mod document_transfer;
 pub mod event;
+pub mod handoff;
 pub mod history;
 pub mod identity;
+pub mod inbound;
 pub mod mls_governance;
 pub mod op;
 pub mod ownership_transfer;
 pub mod peer;
 pub mod person_room;
+pub mod presence;
 pub mod realtime;
 pub mod receipt;
 pub mod redaction;
@@ -70,6 +73,7 @@ pub mod task_budget;
 pub mod task_presentation;
 pub mod units;
 pub mod validator;
+pub mod workspace_record;
 
 /// The URI scheme that asks an app to open one of its own records
 /// (`tilo-record:<record id>`): how a launch delivers an invocation to the
@@ -142,4 +146,7 @@ pub use validator::{
     ChannelState, DEFAULT_ROOM, ValidationError, document_node, named_record_of_channel,
     named_records, pattern_read_witnesses, validate_admitted_inbound_op, validate_inbound_op,
     validate_replayed_inbound_op,
+};
+pub use workspace_record::{
+    WORKSPACE_RECORDS, WorkspaceRecord, workspace_record, workspace_record_id,
 };

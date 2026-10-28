@@ -77,6 +77,7 @@ pub mod account_sources;
 pub mod account_store;
 pub mod account_transfer;
 pub mod applications_admission;
+pub mod browser_inventory;
 #[cfg(unix)]
 pub mod browser_profiles;
 #[cfg(not(unix))]
@@ -90,6 +91,8 @@ pub mod home_admission;
 pub mod home_transfer;
 pub mod icloud_setup;
 pub mod imager_model;
+#[cfg(target_os = "linux")]
+pub mod inode_changes;
 #[cfg(target_os = "linux")]
 pub mod installed_consumers;
 pub mod journey_media;
@@ -115,6 +118,7 @@ pub mod recovery;
 pub mod retained_source;
 pub mod staging;
 pub mod startup_password;
+pub mod support_report;
 pub mod windows_accounts;
 pub mod windows_inventory;
 pub mod windows_media;

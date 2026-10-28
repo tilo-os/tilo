@@ -18,7 +18,7 @@ use collab_types::{ArtifactId, PeerPresence, SignedOp};
 use crate::route::CrdtRoute;
 
 /// The network operations the broker's outbound half needs. A trait
-/// rather than a bare [`ShellNetwork`] so the routing decision can be
+/// rather than a bare `ShellNetwork` so the routing decision can be
 /// tested against a recording sink instead of standing up Iroh.
 pub trait PeerPublishSink: Send + Sync {
     fn app_document(
@@ -100,10 +100,6 @@ impl PeerPublisher {
             .is_some_and(|owner| owner.requires_room(room))
     }
     /// Health of the installed durable owner commit.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when no owner commit is installed or it is unhealthy.
     pub fn owner_commit_health(&self) -> Result<(), String> {
         self.owner_commit
             .as_ref()
@@ -112,10 +108,6 @@ impl PeerPublisher {
     }
     /// Commits one request through the installed durable owner. A document
     /// write carries the resource kind its app named for the record.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when no healthy owner commit is installed or the commit fails.
     pub async fn commit_owner(
         &self,
         request: tilo_owner_commit::OwnerCommitRequest,

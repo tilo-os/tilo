@@ -191,7 +191,6 @@ mod tests {
 
     #[test]
     fn occlusion_backoff_caps_probes_and_survives_unrelated_outcomes() {
-        // Case `occlusion_backoff_caps_and_eventually_probes_without_exposure`.
         {
             let mut state = RenderRetryState::default();
             let mut now = crate::time::now();
@@ -214,7 +213,6 @@ mod tests {
             }
         }
 
-        // Case `non_occlusion_outcomes_preserve_cadence_and_reset_streak`.
         {
             let now = crate::time::now();
             for outcome in [
@@ -241,7 +239,6 @@ mod tests {
             }
         }
 
-        // Case `explicit_probe_survives_old_outcomes_and_buffer_deferral`.
         {
             let now = crate::time::now();
             let mut state = RenderRetryState::default();
@@ -252,14 +249,12 @@ mod tests {
             state.observe(FrameOutcome::Occluded, now);
             assert!(state.allows(now));
             assert_eq!(state.deadline(), None);
-            // Buffer admission may defer repeatedly without consuming the request.
             assert!(state.allows(now));
             state.admitted();
             state.observe(FrameOutcome::Occluded, now);
             assert_eq!(state.deadline(), Some(now + FRAME_INTERVAL));
         }
 
-        // Case `visible_sibling_limits_retry_without_erasing_occlusion_history`.
         {
             let now = crate::time::now();
             let mut state = RenderRetryState::default();
@@ -279,7 +274,6 @@ mod tests {
     }
     #[test]
     fn retry_waits_defer_render_demand_but_keep_model_sibling_and_timer_work() {
-        // Case `blocked_render_only_demand_does_not_poll_but_visible_sibling_and_model_do`.
         {
             // Startup, tooltip, animation and overdue widget work share this gate.
             for _kind in ["startup", "tooltip", "animation", "widget"] {
@@ -296,7 +290,6 @@ mod tests {
             );
         }
 
-        // Case `selected_wait_defers_each_render_demand_but_preserves_visible_sibling`.
         {
             let now = crate::time::now();
             let retry = now + Duration::from_millis(250);
@@ -369,7 +362,6 @@ mod tests {
             );
         }
 
-        // Case `explicit_events_preserve_normal_idle_but_request_retry_recovery`.
         {
             let now = crate::time::now();
             let mut state = RenderRetryState::default();
@@ -390,7 +382,6 @@ mod tests {
             );
         }
 
-        // Case `overdue_widget_timer_waits_for_probe_without_losing_deadline`.
         {
             let now = crate::time::now();
             let retry = now + Duration::from_millis(250);

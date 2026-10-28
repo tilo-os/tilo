@@ -40,7 +40,7 @@ fn device_action_outcome(response: serde_json::Value) -> Outcome {
 }
 
 fn unix_now() -> u64 {
-    u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0)
+    tilo_clock::unix_now()
 }
 
 /// mDNS announces a machine by its host name's first label.

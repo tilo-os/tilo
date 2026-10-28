@@ -342,9 +342,6 @@ pub fn sandbox_env() -> Vec<(String, String)> {
 /// are the host's; the rest is the app's own directory.
 pub const SANDBOX_SESSION_CONFIG: &str = "/run/tilo/app/.config/tilo";
 
-/// Where the session `settings.json` is visible after [`push_session_settings_bind`].
-pub const SANDBOX_SESSION_SETTINGS: &str = "/run/tilo/app/.config/tilo/session/settings.json";
-
 /// How one part of the session's configuration reaches Settings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionBind {
@@ -359,31 +356,28 @@ pub enum SessionBind {
 }
 
 /// The parts of `~/.config/tilo` Settings reaches, by path under that root,
-/// and nothing else of it: not the identity store (records, root secrets,
-/// the active selector, device fleets — the host administers them behind
-/// its `tilo.identity` actions), the trust and revocation lists, the app
-/// registries, the session's settings records, or a file added there later.
+/// and nothing else of it: not the settings document or its records (Settings
+/// reads and writes the session's settings through the shell's settings
+/// service on its collaboration channel, as every app does, with the reach
+/// the image grants the device's settings app), not the identity store
+/// (records, root secrets, the active selector, device fleets — the host
+/// administers them behind its `tilo.identity` actions), the trust and
+/// revocation lists, the app registries, or a file added there later.
 ///
-/// - `session/`: the settings document (`settings_store::SESSION_DIR`). Its
-///   writers replace it by rename, which needs the directory, not the file;
-///   the directory holds nothing else.
 /// - `accounts/`: the account stores and their credential vault, which
 ///   Settings is the custodian of (Accounts pane, sign-in, refresh).
 /// - `state.json`, `continuity-provenance.json`: the workspace tree and the
 ///   roamed-settings provenance the shell writes, which the Permissions and
 ///   Devices panes show. Read-only: the workspace tree records every grant.
 pub const SESSION_SETTINGS_BINDS: &[(&str, SessionBind)] = &[
-    ("session", SessionBind::Writable),
     ("accounts", SessionBind::Writable),
     ("state.json", SessionBind::ReadOnly),
     ("continuity-provenance.json", SessionBind::ReadOnly),
 ];
 
 /// Bind the parts of the session's `~/.config/tilo` (`host_tilo_config`)
-/// Settings reaches ([`SESSION_SETTINGS_BINDS`]) over its remapped XDG path,
-/// so it reads and writes the documents the compositor watches, and name the
-/// settings document for it. The [`SessionBind::Writable`] directories must
-/// already exist on the host.
+/// Settings reaches ([`SESSION_SETTINGS_BINDS`]) over its remapped XDG path.
+/// The [`SessionBind::Writable`] directories must already exist on the host.
 pub fn push_session_settings_bind(argv: &mut Vec<String>, host_tilo_config: &Path) {
     for (relative, bind) in SESSION_SETTINGS_BINDS {
         let flag = match bind {
@@ -394,9 +388,6 @@ pub fn push_session_settings_bind(argv: &mut Vec<String>, host_tilo_config: &Pat
         argv.push(host_tilo_config.join(relative).display().to_string());
         argv.push(format!("{SANDBOX_SESSION_CONFIG}/{relative}"));
     }
-    argv.push("--setenv".to_string());
-    argv.push("TILO_SESSION_SETTINGS".to_string());
-    argv.push(SANDBOX_SESSION_SETTINGS.to_string());
 }
 
 #[cfg(test)]
@@ -409,7 +400,6 @@ mod tests {
         let dir = prepare_host_app_dir(data.path(), Some("room"), "so.tilo.notes")
             .expect("a fresh app directory");
         let elsewhere = tempfile::tempdir().expect("a directory the app must not reach");
-        // The app replaced `.local` with a link to somewhere on the host.
         std::fs::remove_dir_all(dir.join(".local")).expect("remove");
         std::os::unix::fs::symlink(elsewhere.path(), dir.join(".local")).expect("plant");
         let error = prepare_host_app_dir(data.path(), Some("room"), "so.tilo.notes")
@@ -498,7 +488,6 @@ mod tests {
             assert_ne!(a, b);
             assert!(!a.starts_with(&b) && !b.starts_with(&a));
         }
-        // Phase `no_workspace_means_the_personal_room`.
         {
             assert_eq!(room_slug(None), PERSONAL_ROOM);
             assert_eq!(room_slug(Some("")), PERSONAL_ROOM);
@@ -527,7 +516,6 @@ mod tests {
                 .expect("XDG_DATA_HOME is announced");
             assert_eq!(data, "/run/tilo/app/.local/share");
         }
-        // Phase `the_bind_is_read_write_at_the_fixed_path`.
         {
             let mut argv = Vec::new();
             push_app_dir(
@@ -546,16 +534,12 @@ mod tests {
                 "HOME must point inside the app dir: {argv:?}"
             );
         }
-        // Phase `settings_session_store_overlays_only_its_own_parts`.
         {
             let mut argv = Vec::new();
             push_session_settings_bind(&mut argv, Path::new("/home/ada/.config/tilo"));
             assert_eq!(
                 argv,
                 vec![
-                    "--bind",
-                    "/home/ada/.config/tilo/session",
-                    "/run/tilo/app/.config/tilo/session",
                     "--bind",
                     "/home/ada/.config/tilo/accounts",
                     "/run/tilo/app/.config/tilo/accounts",
@@ -565,10 +549,14 @@ mod tests {
                     "--ro-bind-try",
                     "/home/ada/.config/tilo/continuity-provenance.json",
                     "/run/tilo/app/.config/tilo/continuity-provenance.json",
-                    "--setenv",
-                    "TILO_SESSION_SETTINGS",
-                    SANDBOX_SESSION_SETTINGS,
                 ]
+            );
+            assert!(
+                !argv
+                    .iter()
+                    .any(|arg| arg.contains("/session") || arg == "TILO_SESSION_SETTINGS"),
+                "the settings document reaches Settings through the shell's settings service, \
+                 never a bind: {argv:?}"
             );
             assert!(
                 !argv.iter().any(|arg| arg == "/home/ada/.config/tilo"),
@@ -578,9 +566,7 @@ mod tests {
                 !argv.iter().any(|arg| arg.contains("/identity")),
                 "the identity store is the host's, never Settings': {argv:?}"
             );
-            assert!(SANDBOX_SESSION_SETTINGS.starts_with(SANDBOX_SESSION_CONFIG));
         }
-        // Phase `preparing_the_directory_creates_the_xdg_tree`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let dir = prepare_host_app_dir(tmp.path(), Some("room-a"), "so.tilo.notes").unwrap();
@@ -589,7 +575,6 @@ mod tests {
             assert!(dir.join(".cache").is_dir());
             assert_eq!(dir, tmp.path().join("tilo-rooms/room-a/so.tilo.notes"));
         }
-        // Phase `startup_traces_leave_the_apps_home`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let dir = prepare_host_app_dir(tmp.path(), Some("room-a"), "so.tilo.notes").unwrap();

@@ -14,6 +14,7 @@
 //! whole set again (`reset`) only on a new route.
 
 use std::collections::{BTreeMap, HashMap};
+use tilo_sort::CompactSort as _;
 
 /// Encoded bytes one [`IndexDelta`] may take; a larger change is sent as
 /// several.
@@ -264,7 +265,7 @@ impl Publisher {
                         .filter(|key| !next.contains_key(*key))
                         .cloned()
                         .collect();
-                    gone.sort();
+                    gone.compact_sort();
                     gone
                 },
             ),

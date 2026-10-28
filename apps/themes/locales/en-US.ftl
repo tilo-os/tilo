@@ -1,9 +1,10 @@
-themes-gallery = Gallery
 themes-yours = Your themes
+themes-none = No themes yet
 themes-new = New theme
 themes-untitled = Untitled theme
 themes-presets = Presets
 themes-use = Use
+themes-in-use = In use
 themes-customize = Customize
 themes-missing = This theme was deleted.
 themes-apply = Apply
@@ -101,3 +102,14 @@ themes-switch-polarity = { $dark ->
     [true] Made { $item } dark
    *[false] Made { $item } light
 }
+
+themes-import = Import theme
+themes-import-title = Import a theme
+themes-import-files = Theme files
+themes-imported = Imported { $name }
+themes-import-failed = Could not import { $name }: { $reason }
+themes-preview = Preview
+themes-preview-desktop = Desktop
+themes-preview-list = List
+themes-preview-dialog = Dialog
+themes-preview-presence = Presence

@@ -111,7 +111,6 @@ pub fn pretty_json(input: &str) -> Option<String> {
 pub enum TokenKind {
     /// Object key (before the colon).
     Key,
-    /// String value.
     StringValue,
     /// Number value.
     Number,
@@ -368,7 +367,6 @@ mod tests {
         // First line opens the object.
         assert!(lines[0].opens_block, "case tokenize");
         assert_eq!(lines[0].close_line, Some(lines.len() - 1), "case tokenize");
-        // Find the key token "name".
         let key_line = &lines[1];
         assert!(
             key_line
@@ -384,14 +382,12 @@ mod tests {
                 .any(|t| t.kind == TokenKind::StringValue && t.text.contains("Ada")),
             "case tokenize string value"
         );
-        // The age line carries a number.
         let has_number = lines.iter().any(|l| {
             l.tokens
                 .iter()
                 .any(|t| t.kind == TokenKind::Number && t.text == "36")
         });
         assert!(has_number, "case tokenize number");
-        // The active line carries the `true` keyword.
         let has_keyword = lines.iter().any(|l| {
             l.tokens
                 .iter()

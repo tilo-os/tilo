@@ -15,8 +15,7 @@ fn failure() -> io::Error {
     io::Error::other("Installed migration is unavailable or changed")
 }
 fn uid() -> u32 {
-    // SAFETY: geteuid reads current process credentials without preconditions.
-    unsafe { libc::geteuid() }
+    rustix::process::geteuid().as_raw()
 }
 pub(crate) fn child(parent: &File, name: &std::ffi::OsStr, flags: i32) -> io::Result<File> {
     use std::os::unix::ffi::OsStrExt;
@@ -332,6 +331,95 @@ impl Migration {
         self.result = serde_json::Value::Null;
         Ok(())
     }
+    /// Continue past, or come back later to, the operation in hand: it is
+    /// acknowledged and the next one waits.
+    fn finish(&mut self, op: &str) -> io::Result<()> {
+        if self.transfer_complete && self.cleanup_state != "finished" {
+            return Err(failure());
+        }
+        if op == "continue" && self.access.is_some() && self.state != "existing-files-available" {
+            return Err(failure());
+        }
+        if op == "continue"
+            && !["complete", "incomplete", "existing-files-available"].contains(&self.state)
+        {
+            return Err(failure());
+        }
+        if self.original_copy.is_some() && self.busy() {
+            return Err(failure());
+        }
+        if self.worker.as_ref().is_some_and(|_| {
+            [
+                "copying",
+                "restoring-applications",
+                "adopting",
+                "cancelling",
+                "reviewing",
+            ]
+            .contains(&self.state)
+        }) {
+            return Err(failure());
+        }
+        let id = self
+            .selected
+            .as_deref()
+            .or_else(|| self.operations.first().map(String::as_str))
+            .ok_or_else(failure)?
+            .to_owned();
+        let outcome = if op == "later" {
+            "deferred"
+        } else {
+            self.state
+        };
+        if self.state == "existing-files-available"
+            && let Some(access) = &self.access
+        {
+            crate::retained_files::acknowledge(&self.home, access)?;
+        } else {
+            self.acknowledge(&id, outcome)?;
+        }
+        self.worker = None;
+        self.original_copy = None;
+        self.original_copy_request = None;
+        self.original_copy_operation = None;
+        self.operations.retain(|operation| operation != &id);
+        self.selected = None;
+        self.original_copy_completion = serde_json::Value::Null;
+        self.state = "pending";
+        Ok(())
+    }
+    /// Hand the original copy's owner `op`: resume its cleanup, cancel or
+    /// retry it.
+    fn command_original_copy(&mut self, op: &str) -> io::Result<()> {
+        use launcher::retained_view::installed_copy::CopyOwnerCommand;
+        let worker = self.original_copy.as_ref().ok_or_else(failure)?;
+        let command = match op {
+            "cleanup-resume" if self.transfer_complete && self.cleanup_state == "pending" => {
+                CopyOwnerCommand::ResumeCleanup {
+                    operation: self.original_copy_operation.clone().ok_or_else(failure)?,
+                }
+            }
+            "cancel" if self.busy() => CopyOwnerCommand::Cancel {},
+            "retry" if ["failed", "cancelled", "incomplete"].contains(&self.state) => {
+                CopyOwnerCommand::Retry {}
+            }
+            _ => return Err(failure()),
+        };
+        worker.commands.send(command).map_err(|_| failure())?;
+        if op == "cancel" {
+            self.original_copy_completion = serde_json::Value::Null;
+        }
+        if op == "cleanup-resume" {
+            self.cleanup_state = "running";
+            return Ok(());
+        }
+        self.state = if op == "cancel" {
+            "cancelling"
+        } else {
+            "reviewing"
+        };
+        Ok(())
+    }
     pub(crate) fn invoke(&mut self, op: &str, selected: Option<&str>) -> io::Result<()> {
         if op == "review" {
             return self.review(selected);
@@ -349,89 +437,10 @@ impl Migration {
             return Ok(());
         }
         if op == "continue" || op == "later" {
-            if self.transfer_complete && self.cleanup_state != "finished" {
-                return Err(failure());
-            }
-            if op == "continue" && self.access.is_some() && self.state != "existing-files-available"
-            {
-                return Err(failure());
-            }
-            if op == "continue"
-                && !["complete", "incomplete", "existing-files-available"].contains(&self.state)
-            {
-                return Err(failure());
-            }
-            if self.original_copy.is_some() && self.busy() {
-                return Err(failure());
-            }
-            if self.worker.as_ref().is_some_and(|_| {
-                [
-                    "copying",
-                    "restoring-applications",
-                    "adopting",
-                    "cancelling",
-                    "reviewing",
-                ]
-                .contains(&self.state)
-            }) {
-                return Err(failure());
-            }
-            let id = self
-                .selected
-                .as_deref()
-                .or_else(|| self.operations.first().map(String::as_str))
-                .ok_or_else(failure)?
-                .to_owned();
-            let outcome = if op == "later" {
-                "deferred"
-            } else {
-                self.state
-            };
-            if self.state == "existing-files-available"
-                && let Some(access) = &self.access
-            {
-                crate::retained_files::acknowledge(&self.home, access)?;
-            } else {
-                self.acknowledge(&id, outcome)?;
-            }
-            self.worker = None;
-            self.original_copy = None;
-            self.original_copy_request = None;
-            self.original_copy_operation = None;
-            self.operations.retain(|operation| operation != &id);
-            self.selected = None;
-            self.original_copy_completion = serde_json::Value::Null;
-            self.state = "pending";
-            return Ok(());
+            return self.finish(op);
         }
-        if let Some(worker) = &self.original_copy {
-            use launcher::retained_view::installed_copy::CopyOwnerCommand;
-            let command = match op {
-                "cleanup-resume" if self.transfer_complete && self.cleanup_state == "pending" => {
-                    CopyOwnerCommand::ResumeCleanup {
-                        operation: self.original_copy_operation.clone().ok_or_else(failure)?,
-                    }
-                }
-                "cancel" if self.busy() => CopyOwnerCommand::Cancel {},
-                "retry" if ["failed", "cancelled", "incomplete"].contains(&self.state) => {
-                    CopyOwnerCommand::Retry {}
-                }
-                _ => return Err(failure()),
-            };
-            worker.commands.send(command).map_err(|_| failure())?;
-            if op == "cancel" {
-                self.original_copy_completion = serde_json::Value::Null;
-            }
-            if op == "cleanup-resume" {
-                self.cleanup_state = "running";
-                return Ok(());
-            }
-            self.state = if op == "cancel" {
-                "cancelling"
-            } else {
-                "reviewing"
-            };
-            return Ok(());
+        if self.original_copy.is_some() {
+            return self.command_original_copy(op);
         }
         let expected = match op {
             "start" => self.state == "reviewed",
@@ -499,118 +508,127 @@ impl Migration {
     pub(crate) fn take_original_copy_request(&mut self) -> Option<OriginalCopyRequest> {
         self.original_copy_request.take()
     }
-    pub(crate) fn poll(&mut self) -> bool {
-        if let Some(worker) = &self.original_copy {
-            use launcher::retained_view::installed_copy::CopyOwnerEvent;
-            let event = match worker.receiver.try_recv() {
-                Ok(event) => event,
-                Err(mpsc::TryRecvError::Empty) => return false,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    if !["complete", "cancelled", "failed"].contains(&self.state) {
-                        self.state = "failed";
-                        self.result = serde_json::Value::Null;
-                    }
-                    if self.transfer_complete && self.cleanup_state != "finished" {
-                        self.cleanup_state = "unavailable";
-                    }
-                    self.original_copy = None;
-                    return true;
+    /// Take the original copy's next event: its progress, its completion
+    /// and, once the transfer is done, its cleanup.
+    fn poll_original_copy(&mut self) -> bool {
+        use launcher::retained_view::installed_copy::CopyOwnerEvent;
+        let Some(worker) = &self.original_copy else {
+            return false;
+        };
+        let event = match worker.receiver.try_recv() {
+            Ok(event) => event,
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                if !["complete", "cancelled", "failed"].contains(&self.state) {
+                    self.state = "failed";
+                    self.result = serde_json::Value::Null;
                 }
-            };
-            if Some(event.operation()) != self.original_copy_operation.as_deref() {
-                self.original_copy_completion = serde_json::Value::Null;
-                if self.transfer_complete {
+                if self.transfer_complete && self.cleanup_state != "finished" {
                     self.cleanup_state = "unavailable";
-                    return true;
                 }
-                self.state = "failed";
                 self.original_copy = None;
+                return true;
+            }
+        };
+        if Some(event.operation()) != self.original_copy_operation.as_deref() {
+            self.original_copy_completion = serde_json::Value::Null;
+            if self.transfer_complete {
+                self.cleanup_state = "unavailable";
+                return true;
+            }
+            self.state = "failed";
+            self.original_copy = None;
+            self.result = serde_json::Value::Null;
+            return true;
+        }
+        if self.transfer_complete {
+            self.follow_cleanup(&event);
+            return true;
+        }
+        if let CopyOwnerEvent::Complete {
+            home_cipher_sha256,
+            applications_cipher_sha256,
+            ..
+        } = &event
+        {
+            if self.shared_files
+                && (home_cipher_sha256.is_some()
+                    || applications_cipher_sha256.as_ref().is_none_or(|digest| {
+                        digest.len() != 64
+                            || !digest
+                                .bytes()
+                                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                    }))
+            {
+                self.state = "failed";
                 self.result = serde_json::Value::Null;
                 return true;
             }
-            if self.transfer_complete {
-                self.cleanup_state = match &event {
-                    CopyOwnerEvent::CleanupPending {
-                        resumable: true, ..
-                    } => "pending",
-                    CopyOwnerEvent::CleanupPending { .. } => "unavailable",
-                    CopyOwnerEvent::CleanupFinished { .. } => "finished",
-                    _ => "unavailable",
-                };
-                self.cleanup_result =
-                    serde_json::to_value(&event).unwrap_or(serde_json::Value::Null);
-                if self.cleanup_state == "finished" && self.shared_files {
-                    let access = self.access.as_ref();
-                    let unchanged = access.is_some_and(|access| {
-                        crate::retained_files::request(&self.home, &access.operation)
-                            .ok()
-                            .flatten()
-                            .as_ref()
-                            == Some(access)
-                            && crate::retained_files::pending_applications_operation(
-                                &self.home, access,
-                            )
-                            .ok()
-                            .as_deref()
-                                == self.original_copy_operation.as_deref()
-                    });
-                    if !unchanged {
-                        self.cleanup_state = "unavailable";
-                        self.state = "failed";
-                        return true;
-                    }
-                    // This event is emitted only after the actual copy root,
-                    // importer and certified proof responder have retired.
-                    // Never acquire the RW source while its RO owner is live.
-                    self.access_request = self.access.clone();
-                    self.original_copy = None;
-                    self.original_copy_request = None;
-                    self.state = "reviewing";
-                }
-                return true;
+            // Preserve this real validated owner event when RW access later
+            // reports its own outcome. It is observation, never admission.
+            self.original_copy_completion =
+                serde_json::to_value(&event).unwrap_or(serde_json::Value::Null);
+            self.transfer_complete = true;
+            self.cleanup_state = "running";
+        }
+        self.state = match &event {
+            CopyOwnerEvent::Copying { .. } => "copying",
+            CopyOwnerEvent::Verifying { .. } => "verifying",
+            CopyOwnerEvent::Adopting { .. } => "adopting",
+            CopyOwnerEvent::RestoringApplications { .. } => "restoring-applications",
+            CopyOwnerEvent::Complete { .. } if self.shared_files => "releasing-applications",
+            CopyOwnerEvent::Complete { .. } => "complete",
+            CopyOwnerEvent::Cancelled { .. } => "cancelled",
+            CopyOwnerEvent::Failed { .. }
+            | CopyOwnerEvent::CleanupPending { .. }
+            | CopyOwnerEvent::CleanupFinished { .. } => "failed",
+            CopyOwnerEvent::RetirementPending { .. } => "retirement-pending",
+        };
+        self.result = serde_json::to_value(event).unwrap_or(serde_json::Value::Null);
+        true
+    }
+    /// The original copy's cleanup after its transfer: pending, finished or
+    /// unavailable. Finished, the shared files are reviewed again.
+    fn follow_cleanup(&mut self, event: &launcher::retained_view::installed_copy::CopyOwnerEvent) {
+        use launcher::retained_view::installed_copy::CopyOwnerEvent;
+        self.cleanup_state = match event {
+            CopyOwnerEvent::CleanupPending {
+                resumable: true, ..
+            } => "pending",
+            CopyOwnerEvent::CleanupFinished { .. } => "finished",
+            _ => "unavailable",
+        };
+        self.cleanup_result = serde_json::to_value(event).unwrap_or(serde_json::Value::Null);
+        if self.cleanup_state == "finished" && self.shared_files {
+            let access = self.access.as_ref();
+            let unchanged = access.is_some_and(|access| {
+                crate::retained_files::request(&self.home, &access.operation)
+                    .ok()
+                    .flatten()
+                    .as_ref()
+                    == Some(access)
+                    && crate::retained_files::pending_applications_operation(&self.home, access)
+                        .ok()
+                        .as_deref()
+                        == self.original_copy_operation.as_deref()
+            });
+            if !unchanged {
+                self.cleanup_state = "unavailable";
+                self.state = "failed";
+                return;
             }
-            if let CopyOwnerEvent::Complete {
-                home_cipher_sha256,
-                applications_cipher_sha256,
-                ..
-            } = &event
-            {
-                if self.shared_files
-                    && (home_cipher_sha256.is_some()
-                        || applications_cipher_sha256.as_ref().is_none_or(|digest| {
-                            digest.len() != 64
-                                || !digest.bytes().all(|byte| {
-                                    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
-                                })
-                        }))
-                {
-                    self.state = "failed";
-                    self.result = serde_json::Value::Null;
-                    return true;
-                }
-                // Preserve this real validated owner event when RW access later
-                // reports its own outcome. It is observation, never admission.
-                self.original_copy_completion =
-                    serde_json::to_value(&event).unwrap_or(serde_json::Value::Null);
-                self.transfer_complete = true;
-                self.cleanup_state = "running";
-            }
-            self.state = match &event {
-                CopyOwnerEvent::Copying { .. } => "copying",
-                CopyOwnerEvent::Verifying { .. } => "verifying",
-                CopyOwnerEvent::Adopting { .. } => "adopting",
-                CopyOwnerEvent::RestoringApplications { .. } => "restoring-applications",
-                CopyOwnerEvent::Complete { .. } if self.shared_files => "releasing-applications",
-                CopyOwnerEvent::Complete { .. } => "complete",
-                CopyOwnerEvent::Cancelled { .. } => "cancelled",
-                CopyOwnerEvent::Failed { .. } => "failed",
-                CopyOwnerEvent::RetirementPending { .. } => "retirement-pending",
-                CopyOwnerEvent::CleanupPending { .. } | CopyOwnerEvent::CleanupFinished { .. } => {
-                    "failed"
-                }
-            };
-            self.result = serde_json::to_value(event).unwrap_or(serde_json::Value::Null);
-            return true;
+            // This event is emitted only after the actual copy root,
+            // importer and certified proof responder have retired.
+            // Never acquire the RW source while its RO owner is live.
+            self.access_request = self.access.clone();
+            self.original_copy = None;
+            self.original_copy_request = None;
+            self.state = "reviewing";
+        }
+    }
+    pub(crate) fn poll(&mut self) -> bool {
+        if self.original_copy.is_some() {
+            return self.poll_original_copy();
         }
         if self.state == "releasing-applications" {
             let outcome = self.worker.as_mut().and_then(Worker::exited);
@@ -668,6 +686,10 @@ impl Migration {
                 self.state = state;
             }
             self.result = value;
+            // The browser import completes during the helper's review, before
+            // the home copy or adoption. Attach its signed projection now so
+            // the first Browser launch in this session can take it.
+            crate::onboarding_browser::attach_deferred_continuity();
         } else {
             self.state = "failed";
             self.result = serde_json::Value::Null;
@@ -732,6 +754,17 @@ impl Drop for Worker {
             });
         }
     }
+}
+
+/// Operation is routing only; the root independently opens its protected declaration.
+pub(crate) struct OriginalCopyRequest {
+    pub operation: String,
+    pub commands: mpsc::Receiver<launcher::retained_view::installed_copy::CopyOwnerCommand>,
+    pub events: mpsc::Sender<launcher::retained_view::installed_copy::CopyOwnerEvent>,
+}
+struct OriginalCopyWorker {
+    commands: mpsc::Sender<launcher::retained_view::installed_copy::CopyOwnerCommand>,
+    receiver: mpsc::Receiver<launcher::retained_view::installed_copy::CopyOwnerEvent>,
 }
 
 #[cfg(test)]
@@ -807,6 +840,7 @@ mod tests {
 
     #[test]
     fn completed_copy_cleanup_resume_uses_live_owner_and_preserves_completion() {
+        use launcher::retained_view::installed_copy::{CopyOwnerCommand, CopyOwnerEvent};
         let home = fixture();
         let operation = uuid::Uuid::new_v4().to_string();
         let plan = plans(home.path()).join(format!("{operation}.migration.json"));
@@ -815,7 +849,6 @@ mod tests {
         let mut migration = Migration::open(home.path().into());
         migration.invoke("review", Some(&operation)).unwrap();
         let request = migration.take_original_copy_request().unwrap();
-        use launcher::retained_view::installed_copy::{CopyOwnerCommand, CopyOwnerEvent};
         request
             .events
             .send(CopyOwnerEvent::Complete {
@@ -988,15 +1021,4 @@ mod tests {
         assert!(migration.pending());
         assert_eq!(migration.status()["state"], "unavailable");
     }
-}
-
-/// Operation is routing only; the root independently opens its protected declaration.
-pub(crate) struct OriginalCopyRequest {
-    pub operation: String,
-    pub commands: mpsc::Receiver<launcher::retained_view::installed_copy::CopyOwnerCommand>,
-    pub events: mpsc::Sender<launcher::retained_view::installed_copy::CopyOwnerEvent>,
-}
-struct OriginalCopyWorker {
-    commands: mpsc::Sender<launcher::retained_view::installed_copy::CopyOwnerCommand>,
-    receiver: mpsc::Receiver<launcher::retained_view::installed_copy::CopyOwnerEvent>,
 }

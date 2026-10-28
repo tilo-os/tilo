@@ -439,7 +439,7 @@ class Rechunk(unittest.TestCase):
                      "usr/lib/tilo-runtime/2026.10.9-chromium/lib/libcef.so",
                      "usr/share/fonts/dejavu/DejaVuSans.ttf", "usr/share/tilo/catalog.toml",
                      "usr/share/tilo/app-publisher.hex", "usr/lib/tilo/windows-runners/proton/wine",
-                     "usr/lib/tilo/helper", "usr/bin/shell", "usr/bin/tilo", "usr/bin/tilo-greeter",
+                     "usr/lib/tilo/helper", "usr/bin/shell", "usr/bin/tilo", "usr/libexec/tilo/tilo-greeter",
                      "usr/bin/bash", "usr/bin/fsck",
                      "usr/libexec/tilo-ush", "usr/libexec/tilo/session", "usr/libexec/sssd/krb5_child",
                      "boot/EFI/Linux/7.2.8.efi", "etc/hostname"):
@@ -449,7 +449,11 @@ class Rechunk(unittest.TestCase):
         font.write_text("glyphs")
         (rootfs / "usr/share/fonts/tilo/NotoSans.ttf").hardlink_to(font)
         (rootfs / "usr/share/tilo/font-catalogs/c1/NotoSans.ttf").hardlink_to(font)
-        (rootfs / "usr/bin/tilo-control").symlink_to("tilo-greeter")
+        # Tilo's programs live in /usr/libexec/tilo; their old names on PATH
+        # are links to tilo, which runs them.
+        (rootfs / "usr/libexec/tilo/tilo-control").symlink_to("tilo-greeter")
+        (rootfs / "usr/bin/tilo-greeter").symlink_to("tilo")
+        (rootfs / "usr/bin/tilo-control").symlink_to("tilo")
         calls = self.work / "calls"
         fake = self.work / "bin"
         fake.mkdir()

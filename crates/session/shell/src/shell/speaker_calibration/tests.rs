@@ -164,7 +164,6 @@ fn living_room() -> Script {
     VecDeque::from([
         // Desk plays: its own microphone, shelf's, the phone on the sofa.
         vec![heard(20.3, -1.0), heard(31.0, -12.0), heard(28.0, -6.0)],
-        // Shelf plays.
         vec![heard(56.0, -13.0), heard(45.3, -2.0), heard(51.0, -9.0)],
     ])
 }

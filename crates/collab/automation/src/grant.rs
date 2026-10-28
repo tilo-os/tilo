@@ -38,6 +38,122 @@ pub fn step_node(
         .action(address.action.clone())
 }
 
+/// [`step_node`] of a field edit acting at `at` below its resource (as
+/// [`edit_reach`] reads it): the node the room decides the edit at.
+#[must_use]
+pub fn step_node_at(
+    room: Option<&str>,
+    app_id: &str,
+    resource_kind: &str,
+    address: &ActionAddress,
+    at: &TreePath,
+) -> TreePath {
+    let base = match room {
+        Some(room) => TreePath::room(room),
+        None => TreePath::root().any(Level::Room),
+    };
+    base.app(app_id)
+        .kind(resource_kind)
+        .resource(address.resource.clone())
+        .joined(at)
+        .action(address.action.clone())
+}
+
+/// The field edit every record publishes, and its parameter holding the
+/// edit (`{path, op, ...}`).
+pub const FIELD_EDIT: &str = "field-edit";
+pub const EDIT_PARAM: &str = "edit";
+
+/// One step of a field edit's path as its binding shows it: `field`,
+/// `item`, `key` or `cell`, and its name when the program names it.
+type EditStep = (String, Option<String>);
+
+fn named(binding: &Binding) -> Option<String> {
+    match binding {
+        Binding::Literal(serde_json::Value::String(name)) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+/// The steps of the path a field edit's `edit` argument shows: a literal
+/// edit, or an [`Object`](Binding::Object) whose `path` is a literal or a
+/// [`List`](Binding::List) of one-member steps. `None` when its shape is
+/// only known when it runs.
+fn edit_steps(edit: &Binding) -> Option<Vec<EditStep>> {
+    let step_of_value = |step: &serde_json::Value| -> Option<EditStep> {
+        let (kind, id) = step.as_object()?.iter().next()?;
+        let id = match id {
+            serde_json::Value::String(id) => Some(id.clone()),
+            // A cell names its row and column; both are ids, never fields.
+            _ => None,
+        };
+        Some((kind.clone(), id))
+    };
+    let path = match edit {
+        Binding::Literal(edit) => {
+            return edit
+                .get("path")?
+                .as_array()?
+                .iter()
+                .map(step_of_value)
+                .collect();
+        }
+        Binding::Object(members) => members.get("path")?,
+        _ => return None,
+    };
+    match path {
+        Binding::Literal(serde_json::Value::Array(steps)) => {
+            steps.iter().map(step_of_value).collect()
+        }
+        Binding::List(steps) => steps
+            .iter()
+            .map(|step| match step {
+                Binding::Literal(step) => step_of_value(step),
+                Binding::Object(members) if members.len() == 1 => {
+                    let (kind, id) = members.iter().next()?;
+                    Some((kind.clone(), named(id)))
+                }
+                _ => None,
+            })
+            .collect(),
+        _ => None,
+    }
+}
+
+/// Where below its resource a field edit bound as `edit` acts, as the room
+/// decides it (`[item ›] field… `, the collection holding an item not a
+/// node of its own); an item or map key the program leaves to the run is
+/// any item or key. `None` when a field it changes is not named in the
+/// program: then only a grant over every field edit of the resource
+/// covers it.
+#[must_use]
+pub fn edit_reach(edit: &Binding) -> Option<TreePath> {
+    let steps = edit_steps(edit)?;
+    let mut tree = TreePath::root();
+    let mut item = false;
+    let mut steps = steps.iter().peekable();
+    while let Some((kind, id)) = steps.next() {
+        let next_is_item = matches!(steps.peek(), Some((next, _)) if next == "item");
+        tree = match (kind.as_str(), id) {
+            ("field", _) if !item && next_is_item => tree,
+            ("item", id) if !item => {
+                item = true;
+                match id {
+                    Some(id) => tree.item(id.clone()),
+                    None => tree.any(Level::Item),
+                }
+            }
+            ("field" | "key" | "item", Some(name)) => tree.push(Level::Field, name.clone()),
+            // An item or key chosen when the edit runs: any of them.
+            ("key" | "item", None) => tree.any(Level::Field),
+            ("cell", _) => tree.any(Level::Field).any(Level::Field),
+            // A field named only when it runs could be any field.
+            _ => return None,
+        };
+    }
+    Some(tree)
+}
+
 /// A rule naming one action on every room's matching resource, as a
 /// shortcut's grant usually does.
 #[must_use]
@@ -93,7 +209,6 @@ pub struct StepGrant {
     pub names_action: bool,
 }
 
-/// What `grant` answers for the action at `node` of `kind`.
 #[must_use]
 pub fn grant_answer(grant: &[Rule], node: &TreePath, kind: ActionKind) -> StepGrant {
     let subject = Subject::Shortcut(String::new());
@@ -125,14 +240,12 @@ pub fn grant_answer(grant: &[Rule], node: &TreePath, kind: ActionKind) -> StepGr
 /// The resources a permission reaches.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reach {
-    /// The one resource a step names.
     Resource(String),
     /// Every resource of a kind, for a step that picks its resource when it
     /// runs.
     Kind(String),
 }
 
-/// One permission the shortcut will use.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Permission {
     pub app_id: String,
@@ -151,6 +264,12 @@ impl Permission {
     /// weaker ones. It reaches the action anywhere in the resource: a record
     /// holding the kind's resources as items (a chat's workspace) publishes
     /// it on the item, and every member decides the change there.
+    ///
+    /// A field edit is granted anywhere in the resource too, even where its
+    /// program names the field: a door publishes and admits a field edit at
+    /// the resource, before it reads the edit's path, so a rule reaching
+    /// only one field would never be offered. What the edit may change is
+    /// the record's to say: its read-only fields take no field edit.
     #[must_use]
     pub fn rule(&self) -> Rule {
         let kinds = ActionKind::ALL
@@ -164,14 +283,18 @@ impl Permission {
         )
     }
 
-    /// Anywhere in the resources it reaches, in any room.
-    fn reached(&self) -> TreePath {
+    /// The resources it reaches, in any room.
+    fn resources(&self) -> TreePath {
         let app = TreePath::root().any(Level::Room).app(self.app_id.clone());
         match &self.reach {
             Reach::Resource(resource) => app.any(Level::Kind).resource(resource.clone()),
             Reach::Kind(kind) => app.kind(kind.clone()).any(Level::Resource),
         }
-        .rest()
+    }
+
+    /// Anywhere in the resources it reaches, in any room.
+    fn reached(&self) -> TreePath {
+        self.resources().rest()
     }
 }
 
@@ -184,7 +307,6 @@ pub fn least_privilege(steps: &[Step], catalog: &ActionCatalog) -> Vec<Permissio
     out
 }
 
-/// The grant rules for `permissions`.
 #[must_use]
 pub fn rules(permissions: &[Permission]) -> Vec<Rule> {
     permissions.iter().map(Permission::rule).collect()
@@ -206,12 +328,16 @@ fn collect(steps: &[Step], catalog: &ActionCatalog, out: &mut Vec<Permission>) {
                 };
                 add(catalog, action, target, out);
             }
-            StepKind::Ai { transform, .. } => add(
-                catalog,
-                &transform.key(),
-                ResourceTarget::Kind(AGENT_TRANSFORM_KIND),
-                out,
-            ),
+            StepKind::Ai { .. } | StepKind::Task { .. } => {
+                if let Some(transform) = step.kind.ai_transform() {
+                    add(
+                        catalog,
+                        &transform.key(),
+                        ResourceTarget::Kind(AGENT_TRANSFORM_KIND),
+                        out,
+                    );
+                }
+            }
             StepKind::If {
                 then, otherwise, ..
             } => {
@@ -249,7 +375,9 @@ fn add(
             None => return,
         },
     };
-    let kind = descriptor.map_or(ActionKind::Undoable, |descriptor| descriptor.contract.kind);
+    let kind = descriptor.map_or(ActionKind::Undoable, |descriptor| {
+        descriptor.contract.need().kind
+    });
     let label = match (&reach, descriptor) {
         (Reach::Resource(_), Some(descriptor)) => format!(
             "{} in {}",
@@ -307,7 +435,7 @@ pub fn trigger_rules(triggers: &[crate::TriggerSpec]) -> Vec<Rule> {
 
 /// The action a bot settling an outbox entry takes: the entry's result is
 /// a field edit of the resource that queued it.
-pub const SETTLE_ACTION: &str = "field-edit";
+pub const SETTLE_ACTION: &str = FIELD_EDIT;
 
 /// The field a connector's records keep their outbox under.
 pub const OUTBOX_FIELD: &str = "outbox";
@@ -328,22 +456,51 @@ fn settle_rules(permissions: &[Permission]) -> Vec<Rule> {
                     .any(Level::Item)
                     .rest()
                     .action(SETTLE_ACTION),
-                KindSet::READ_UNDOABLE,
+                // Taking an entry out of an outbox is judged as reaching
+                // outside, so the settle covers that kind too.
+                KindSet::ALL,
                 Answer::Allow,
             )
         })
         .collect()
 }
 
+/// The action bringing a record kept at an older storage version up to
+/// its kind's current one.
+pub const MIGRATE_ACTION: &str = "migrate";
+
+/// The rules for migrating the resources `permissions` change: a record
+/// kept at an older storage version is brought up when it is opened, and
+/// the bot sends that change before its own. A migration is the same
+/// change on every device holding the record, so whoever may change a
+/// resource may migrate it, reaching outside where its steps there do: a
+/// migration that rewrites an outbox is judged as reaching outside.
+fn migrate_rules(permissions: &[Permission]) -> Vec<Rule> {
+    let mut out: Vec<Rule> = Vec::new();
+    for permission in permissions
+        .iter()
+        .filter(|permission| permission.kind != ActionKind::Read)
+    {
+        let node = permission.resources().action(MIGRATE_ACTION);
+        let kinds = permission.rule().kinds;
+        match out.iter_mut().find(|rule| rule.node == node) {
+            Some(rule) => rule.kinds = rule.kinds.union(kinds),
+            None => out.push(Rule::new(node, kinds, Answer::Allow)),
+        }
+    }
+    out
+}
+
 /// The whole grant a program needs: its steps' least privilege, the
-/// settling of what they queue outside, then its triggers' reads. What a
-/// bot's stored grant must equal.
+/// settling of what they queue outside and the migrating of what they
+/// change, then its triggers' reads. What a bot's stored grant must equal.
 #[must_use]
 pub fn derived_rules(shortcut: &crate::Shortcut, catalog: &ActionCatalog) -> Vec<Rule> {
     let permissions = least_privilege(&shortcut.steps, catalog);
     let mut out = rules(&permissions);
     for rule in settle_rules(&permissions)
         .into_iter()
+        .chain(migrate_rules(&permissions))
         .chain(trigger_rules(&shortcut.triggers))
     {
         if !out.contains(&rule) {
@@ -372,8 +529,9 @@ pub fn unused_rules(shortcut: &crate::Shortcut) -> Vec<Rule> {
             }
             let app = rule.node.id_at(Level::App);
             let action = rule.node.id_at(Level::Action);
-            // Settling is judged by shape too: some step acts in the app.
-            let settles = action == Some(SETTLE_ACTION);
+            // Settling and migrating are judged by shape too: some step
+            // acts in the app.
+            let settles = action == Some(SETTLE_ACTION) || action == Some(MIGRATE_ACTION);
             !keys.iter().any(|key| {
                 app == Some(key.app.as_str()) && (settles || action == Some(key.action.as_str()))
             })
@@ -386,7 +544,11 @@ fn step_keys(steps: &[Step], out: &mut Vec<ActionKey>) {
     for step in steps {
         match &step.kind {
             StepKind::Invoke { action, .. } => out.push(action.clone()),
-            StepKind::Ai { transform, .. } => out.push(transform.key()),
+            StepKind::Ai { .. } | StepKind::Task { .. } => {
+                if let Some(transform) = step.kind.ai_transform() {
+                    out.push(transform.key());
+                }
+            }
             StepKind::If {
                 then, otherwise, ..
             } => {
@@ -490,7 +652,6 @@ mod tests {
             Answer::Deny
         );
 
-        // A narrower deny on the kind's undoable changes caps it.
         let mut restricted = kind.to_vec();
         restricted.push(action_rule(
             NOTES,
@@ -598,6 +759,7 @@ mod tests {
                     appearance: None,
                 },
             )],
+            step_timeout_secs: None,
             output: None,
             grant: vec![post, delete.clone()],
             triggers: vec![],
@@ -650,11 +812,162 @@ mod tests {
                     appearance: None,
                 },
             )],
+            step_timeout_secs: None,
             output: None,
             grant: settles,
             triggers: vec![],
             saved_by: None,
         };
         assert!(unused_rules(&shortcut).is_empty());
+    }
+
+    #[test]
+    fn whoever_changes_a_resource_may_migrate_it_as_far_as_its_steps_reach() {
+        let permission = |app: &str, kind: &str, action: &str, of| Permission {
+            app_id: app.into(),
+            reach: Reach::Kind(kind.into()),
+            action: action.into(),
+            kind: of,
+            label: String::new(),
+        };
+        let migrates = migrate_rules(&[
+            permission(
+                "so.tilo.discord",
+                "discord.guild",
+                "map",
+                ActionKind::Undoable,
+            ),
+            permission(
+                "so.tilo.discord",
+                "discord.guild",
+                "send",
+                ActionKind::Outside,
+            ),
+            permission(
+                "so.tilo.chat",
+                "chat.messages",
+                "post",
+                ActionKind::Undoable,
+            ),
+            permission(
+                "so.tilo.chat",
+                "chat.workspace",
+                "read-room",
+                ActionKind::Read,
+            ),
+        ]);
+        assert_eq!(
+            migrates.len(),
+            2,
+            "one rule per kind changed, none for a read"
+        );
+        // The guild's migration is decided at the record, the way the room
+        // claims it, and rewriting its outbox reaches outside as `send` does.
+        let guild = TreePath::room("r")
+            .app("so.tilo.discord")
+            .kind("discord.guild")
+            .resource("");
+        assert!(migrates[0].node.covers(&guild.action(MIGRATE_ACTION)));
+        assert_eq!(migrates[0].kinds, KindSet::ALL);
+        assert_eq!(migrates[1].kinds, KindSet::READ_UNDOABLE);
+        let shortcut = crate::Shortcut {
+            id: "bridge".into(),
+            name: "Bridge".into(),
+            inputs: vec![],
+            steps: vec![crate::Step::new(
+                "send",
+                crate::StepKind::Invoke {
+                    action: ActionKey::new("so.tilo.discord", "discord.guild", "send"),
+                    resource: crate::Selector::FirstOfKind("discord.guild".into()),
+                    args: std::collections::BTreeMap::default(),
+                    appearance: None,
+                },
+            )],
+            step_timeout_secs: None,
+            output: None,
+            grant: vec![migrates[0].clone()],
+            triggers: vec![],
+            saved_by: None,
+        };
+        assert!(unused_rules(&shortcut).is_empty());
+    }
+
+    /// A field edit whose program names the field it changes is granted
+    /// that field of any item, and decided where the room decides it.
+    #[test]
+    fn a_field_edit_is_granted_where_the_doors_decide_it() {
+        use std::collections::BTreeMap;
+
+        let literal = Binding::Literal;
+        let one = |kind: &str, binding: Binding| {
+            Binding::Object(BTreeMap::from([(kind.to_owned(), binding)]))
+        };
+        let react = Binding::Object(BTreeMap::from([
+            (
+                "path".to_owned(),
+                Binding::List(vec![
+                    one("field", literal("messages".into())),
+                    one("item", Binding::Var("item/message".into())),
+                    one("field", literal("reactions".into())),
+                ]),
+            ),
+            ("op".to_owned(), literal("react".into())),
+            ("emoji".to_owned(), Binding::Var("item/emoji".into())),
+        ]));
+        let step = |edit: Binding| {
+            crate::Step::new(
+                "edit",
+                crate::StepKind::Invoke {
+                    action: ActionKey::new(NOTES, "notes.chat", FIELD_EDIT),
+                    resource: crate::Selector::FirstOfKind("notes.chat".into()),
+                    args: BTreeMap::from([(EDIT_PARAM.to_owned(), edit)]),
+                    appearance: None,
+                },
+            )
+        };
+        let catalog = ActionCatalog::new(Vec::new());
+        let grant = rules(&least_privilege(&[step(react)], &catalog));
+        assert_eq!(
+            grant
+                .iter()
+                .map(|rule| rule.node.to_string())
+                .collect::<Vec<_>>(),
+            ["room:*/app:so.tilo.notes/kind:notes.chat/resource:*/**/action:field-edit"]
+        );
+
+        // The room decides a run's edit at its concrete path.
+        let decided = |path: serde_json::Value| {
+            let at = edit_reach(&literal(serde_json::json!({"path": path, "op": "react"})))
+                .expect("a literal path names its fields");
+            let node = step_node_at(
+                Some("room"),
+                NOTES,
+                "notes.chat",
+                &ActionAddress::new("chat", FIELD_EDIT),
+                &at,
+            );
+            grant_answer(&grant, &node, ActionKind::Undoable).answer
+        };
+        assert_eq!(
+            decided(
+                serde_json::json!([{"field": "messages"}, {"item": "m1"}, {"field": "reactions"}])
+            ),
+            Answer::Allow
+        );
+        // An edit bound whole when it runs is granted the same.
+        let whole = rules(&least_privilege(
+            &[step(Binding::Var("item/edit".into()))],
+            &catalog,
+        ));
+        assert_eq!(
+            whole[0].node.to_string(),
+            "room:*/app:so.tilo.notes/kind:notes.chat/resource:*/**/action:field-edit"
+        );
+        // So does one whose field is chosen when it runs.
+        let bound_field = Binding::Object(BTreeMap::from([(
+            "path".to_owned(),
+            Binding::List(vec![one("field", Binding::Var("item/field".into()))]),
+        )]));
+        assert_eq!(edit_reach(&bound_field), None);
     }
 }

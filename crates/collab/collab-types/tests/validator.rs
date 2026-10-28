@@ -193,8 +193,6 @@ fn rejection(case: &str, result: Result<(), ValidationError>) -> ValidationError
     }
 }
 
-// ---------- happy path and replay-slot bookkeeping ----------
-
 /// A valid op passes all eight steps — with and without a clearance gate —
 /// and the author's replay slot bumps on success only.
 #[test]
@@ -239,8 +237,6 @@ fn a_valid_op_passes_all_eight_steps_and_only_success_bumps_the_replay_slot() {
     assert!(!f.state.last_seq_per_author.contains_key(&f.author_pub));
 }
 
-/// Certified-roster admission reuses the policy without a role attestation,
-/// yet still rejects forgery, a forbidding role, a stale clock and replay.
 #[test]
 fn certified_roster_admission_reuses_the_policy_without_a_role_attestation() {
     let g = presets();
@@ -315,8 +311,6 @@ fn certified_roster_admission_reuses_the_policy_without_a_role_attestation() {
         })
     ));
 }
-
-// ---------- steps 1-4: attestation and signature ----------
 
 /// Steps 1-4 each reject their input: an unknown attestation, an issuer no
 /// longer authorised, a corrupted attestation signature, a corrupted or
@@ -460,8 +454,6 @@ fn steps_1_to_4_reject_unknown_unauthorised_or_forged_ops() {
     );
 }
 
-// ---------- steps 5-7: role, artifact, window, replay ----------
-
 /// Steps 5-7 reject an op class the role forbids, an unknown artifact, an op
 /// outside the attestation's window on either side, and a replayed or older
 /// sequence number.
@@ -543,8 +535,6 @@ fn steps_5_to_7_reject_forbidden_unknown_out_of_window_or_replayed_ops() {
         "expected ReplaySeq, got {e:?}"
     );
 }
-
-// ---------- step 8: clearance ----------
 
 /// Step 8 enforces the effective clearance (the max of channel floor and
 /// artifact classification) against a clearance from a trusted issuer.
@@ -700,7 +690,6 @@ fn a_pattern_read_deny_has_a_witness_and_a_named_or_field_grant_does_not() {
             KindSet::READ,
             Answer::Ask,
         ),
-        // Named records, below records, allowing, other kinds, other rooms.
         deny(document_node("room", "finance", "payroll")),
         deny(
             TreePath::room("room")

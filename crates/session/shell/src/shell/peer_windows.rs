@@ -85,8 +85,8 @@ pub(crate) fn settle_install(tree: &mut WorkspaceTree, package_id: &str, detail:
 }
 
 /// Visual review: a peer's window whose app is being fetched from the
-/// registry here, without starting a real install — the card a slow
-/// fetch shows, at the placement a launch would get.
+/// registry here, without starting a real install: the place a slow fetch
+/// holds, at the placement a launch would get.
 pub fn show_install_under_way_for_shots(
     tree: &mut WorkspaceTree,
     app_id: &str,
@@ -111,6 +111,7 @@ pub fn show_install_under_way_for_shots(
                 ),
                 missing: None,
             },
+            app_title: None,
         },
         placement,
     );
@@ -132,6 +133,16 @@ pub fn show_install_bytes_for_shots(app_id: &str, received: u64, total: u64) {
             total: Some(total),
         }),
     );
+}
+
+/// Visual review: the start of `package_id`, whose place a launch holds,
+/// fails with `detail`, as a launch whose process failed does: the place
+/// shows the failure, and the launch is over (no window will claim the
+/// place, and no deadline is left to expire).
+pub fn fail_launch_for_shots(tree: &mut WorkspaceTree, package_id: &str, detail: &str) -> bool {
+    launcher::clear_pending_placement(package_id);
+    let _ = crate::shell::catalogue::take_pending_launch(package_id);
+    settle_local_restore(tree, package_id, detail)
 }
 
 /// Tabs whose card's install button was pressed, drained by [`examine`].
@@ -230,7 +241,7 @@ pub(crate) fn reopen_local_restore(
 }
 
 /// None is a stale/nonlocal target; Some says whether this exact local card
-/// changed. Queued and opening cards are accepted without another reset.
+/// changed. Queued and opening places are accepted without another reset.
 fn reset_local_restore(
     tree: &mut WorkspaceTree,
     tab_id: TabId,
@@ -322,7 +333,6 @@ fn open_store_for(tree: &WorkspaceTree, tab: TabId, app_id: &str) {
     }
 }
 
-/// The Store's package.
 const STORE_PACKAGE_ID: &str = "so.tilo.store";
 
 /// Close a saved window that can't open here, at the person's word.
@@ -470,7 +480,7 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
         }
         // A governed room's window opens the record its owner created for
         // it; wait until this device has admitted it.
-        if !item.local && tree.requires_native_owner(workspace.room) {
+        if !item.local && tree.requires_native_owner(workspace.room()) {
             match prepare_hosted_record(tree, &item) {
                 Ok(true) => {}
                 Ok(false) => {
@@ -593,7 +603,7 @@ fn install_for(tree: &mut WorkspaceTree, tab: TabId) -> bool {
     if let Err(refusal) = admits(ws, &item.app_id) {
         return set_state(tree, tab, refusal, None);
     }
-    let (room, capabilities) = (ws.room, ws.launch_grants(tilo_clock::unix_now()));
+    let (room, capabilities) = (ws.room(), ws.launch_grants(tilo_clock::unix_now()));
     // Placement and any continued record are staged before the install
     // starts, so the window that finally maps lands in this tab.
     stage_continuation_for_tab(tree, &item);
@@ -633,11 +643,11 @@ pub(crate) fn set_hosted_record_reader(reader: Box<HostedRecordReader>) {
 /// in the saved view of the instance the tab launches as. `Ok(false)`
 /// while this device has not admitted the record yet.
 fn prepare_hosted_record(tree: &WorkspaceTree, item: &Pending) -> Result<bool, String> {
-    use crate::shell::record_hydration::{RecordAddress, keep, reopen_on};
+    use crate::shell::record_hydration::{RecordAddress, keep, landing, reopen_on};
     let Some(ws) = tree.desktop.workspaces.get(item.workspace) else {
         return Err("That workspace is gone".to_string());
     };
-    let room = ws.room;
+    let room = ws.room();
     let record = if let Some(record) = tree.room_tab_record(room, item.tab) {
         let Some(record) = ui::record::RecordId::parse(&record) else {
             return Ok(false);
@@ -677,9 +687,19 @@ fn prepare_hosted_record(tree: &WorkspaceTree, item: &Pending) -> Result<bool, S
         app_id: item.app_id.clone(),
         record,
     };
-    let kept = keep(&address, &data_home, &bytes)?;
-    reopen_on(&address, &data_home, item.tab, Some(&kept));
-    Ok(true)
+    // Kept on an earlier pass and still reaching the disk: the app reads
+    // it from there, and keeping it again would wait for the same write.
+    if landing(&address)? {
+        return Ok(false);
+    }
+    // Its profile's store opens the record on its own thread first.
+    let Some(kept) = keep(&address, &data_home, &bytes)? else {
+        return Ok(false);
+    };
+    if !reopen_on(&address, &data_home, item.tab, Some(&kept)) {
+        return Ok(false);
+    }
+    Ok(!landing(&address)?)
 }
 
 /// Whether any peer window is still waiting to be examined: an unanswered
@@ -876,17 +896,17 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), Refusal> {
     // Profile-backed windows need their exact record before launch. Native
     // committed rooms read through their owner: an app profile is neither
     // required nor an authority fallback for that path.
-    if !item.local && !tree.commits_native_documents(ws.room) {
-        bring_over_continued_record(item, ws.room)?;
+    if !item.local && !tree.commits_native_documents(ws.room()) {
+        bring_over_continued_record(item, ws.room())?;
     }
     stage_continuation_for_tab(tree, item);
     // The instance runs as the tab, whose saved view names the record the
     // room's owner created for it (`prepare_hosted_record`).
     if !item.local
-        && tree.requires_native_owner(ws.room)
-        && tree.room_tab_record(ws.room, item.tab).is_some()
+        && tree.requires_native_owner(ws.room())
+        && tree.room_tab_record(ws.room(), item.tab).is_some()
     {
-        launcher::stage_continuation_record(ws.room, item.tab, item.tab);
+        launcher::stage_continuation_record(ws.room(), item.tab, item.tab);
     }
     let launched = launcher::launch_in_workspace(&item.app_id, ws)
         .map(|_| ())
@@ -906,8 +926,11 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), Refusal> {
                 }
                 // The restored window belongs to this workspace, so an X11
                 // client joins that workspace's private X server.
-                return crate::shell::host_apps::launch(&app.desktop_id, Some(ws.room.to_string()))
-                    .map(|_| ());
+                return crate::shell::host_apps::launch(
+                    &app.desktop_id,
+                    Some(ws.room().to_string()),
+                )
+                .map(|_| ());
             }
             Err(err)
         });
@@ -951,7 +974,7 @@ fn stage_continuation_for_tab(tree: &WorkspaceTree, item: &Pending) {
     }
     // Before the launch, or a note written after races the window's toplevel.
     launcher::set_pending_placement(&item.app_id, Placement::IntoTab(item.tab));
-    launcher::clear_staged_continuation(ws.room, item.tab);
+    launcher::clear_staged_continuation(ws.room(), item.tab);
     let shared = crate::shell::personal_continuity_registry::global_registry();
     let Ok(mut registry) = shared.lock() else {
         return;
@@ -961,7 +984,7 @@ fn stage_continuation_for_tab(tree: &WorkspaceTree, item: &Pending) {
     // shadow an exact remote offer after a tab changes kind/room/app.
     registry.forget_local_binding(tab);
     if item.local {
-        let Some(record) = tree.local_app_record(item.tab, ws.room, &item.app_id) else {
+        let Some(record) = tree.local_app_record(item.tab, ws.room(), &item.app_id) else {
             return;
         };
         registry.bind_tab(
@@ -973,19 +996,19 @@ fn stage_continuation_for_tab(tree: &WorkspaceTree, item: &Pending) {
     else {
         return;
     };
-    let Some(record_instance) = registry.record_instance_for_tab(ws.room, tab, &launch) else {
+    let Some(record_instance) = registry.record_instance_for_tab(ws.room(), tab, &launch) else {
         return;
     };
-    if let Some(continuation) = registry.continuation_for_tab(ws.room, tab, &launch) {
+    if let Some(continuation) = registry.continuation_for_tab(ws.room(), tab, &launch) {
         launcher::stage_continuation_resume(
-            ws.room,
+            ws.room(),
             item.tab,
             continuation.resume.schema_version(),
             continuation.resume.bytes().to_vec(),
             record_instance.0,
         );
     } else {
-        launcher::stage_continuation_record(ws.room, item.tab, record_instance.0);
+        launcher::stage_continuation_record(ws.room(), item.tab, record_instance.0);
     }
 }
 
@@ -1032,8 +1055,11 @@ fn bring_over_continued_record(
     let Some(data_home) = ::launcher::appdir::host_data_home() else {
         return Ok(());
     };
-    let record = if kept_here(&address, &data_home) {
-        None
+    let Some(kept) = kept_here(&address, &data_home) else {
+        return Err(bringing_note());
+    };
+    let record = if let Some(kept) = kept {
+        Some(kept)
     } else {
         match hydrate(&address, &data_home) {
             Hydration::Waiting => return Err(bringing_note()),
@@ -1044,8 +1070,15 @@ fn bring_over_continued_record(
             }
         }
     };
-    crate::shell::record_hydration::reopen_on(&address, &data_home, instance, record.as_ref());
-    Ok(())
+    if !crate::shell::record_hydration::reopen_on(&address, &data_home, instance, record.as_ref()) {
+        return Err(bringing_note());
+    }
+    // The app reads what was kept from the disk: open it once it is there.
+    match crate::shell::record_hydration::landing(&address) {
+        Ok(false) => Ok(()),
+        Ok(true) => Err(bringing_note()),
+        Err(reason) => Err(reason),
+    }
 }
 
 /// Clear the note of every card whose record has stopped being on its way,
@@ -1064,7 +1097,7 @@ fn release_brought_over(tree: &mut WorkspaceTree) -> bool {
                 .filter_map(move |tab| match &tab.tile {
                     TileContent::PeerWindow {
                         app_id, note: slot, ..
-                    } if slot == note => Some((tab.id, app_id.clone(), ws.room)),
+                    } if slot == note => Some((tab.id, app_id.clone(), ws.room())),
                     _ => None,
                 })
         })
@@ -1081,8 +1114,9 @@ fn release_brought_over(tree: &mut WorkspaceTree) -> bool {
             local: false,
         };
         let still_waiting = continued_record(&item, room).is_some_and(|(address, _)| {
-            crate::shell::record_hydration::hydrate(&address, &data_home)
-                == crate::shell::record_hydration::Hydration::Waiting
+            crate::shell::record_hydration::landing(&address) == Ok(true)
+                || crate::shell::record_hydration::hydrate(&address, &data_home)
+                    == crate::shell::record_hydration::Hydration::Waiting
         });
         if !still_waiting {
             released |= set_note(tree, tab, String::new());
@@ -1251,7 +1285,7 @@ mod tests {
     const FILES: &str = "so.tilo.file-explorer";
 
     fn tree_with_local_app(app_id: &str) -> (WorkspaceTree, TabId) {
-        let mut ws = room_owned_by("quinten");
+        let mut ws = room_owned_by("ada");
         let tab = Tab {
             id: next_id(),
             title: "Legacy App".into(),
@@ -1260,6 +1294,7 @@ mod tests {
                 label: "Legacy App".into(),
                 note: String::new(),
             },
+            app_title: None,
         };
         let tab_id = tab.id;
         let group = WindowGroup {
@@ -1304,7 +1339,7 @@ mod tests {
     }
 
     #[test]
-    fn orphaned_local_opening_card_settles_once_without_losing_its_saved_record() {
+    fn orphaned_local_opening_place_settles_once_without_losing_its_saved_record() {
         let app = "dev.tilo.orphaned-saved-card";
         let (mut tree, orphan) = tree_with_local_app(app);
         set_note(&mut tree, orphan, OPENING.into());
@@ -1320,13 +1355,14 @@ mod tests {
                     label: "Still launching".into(),
                     note: OPENING.into(),
                 },
+                app_title: None,
             });
         tree.remember_local_app_record(live, 8124);
         let records = tree.local_app_records.clone();
         launcher::set_pending_placement(app, Placement::IntoTab(live));
         assert!(
             examine(&mut tree),
-            "an opening card with no exact launch must become recoverable"
+            "a pending place with no exact launch must become recoverable"
         );
         assert_eq!(
             local_app_note(&tree, orphan),
@@ -1356,7 +1392,7 @@ mod tests {
         let tile = tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0]
             .tile
             .clone();
-        let ui::widget::TileContent::App(mut card) =
+        let ui::widget::TileContent::App(card) =
             crate::shell::to_ui_tile_for_tab_with_inputs(&tile, tab, &inputs)
         else {
             panic!("the saved failure card must offer recovery, not only static text");
@@ -1371,25 +1407,24 @@ mod tests {
                 .iter()
                 .any(|binding| binding.control_id == id)
         );
-        let mut doc = automerge::AutoCommit::new();
-        assert!(!card.perform_semantic_action(
-            "reopen-window:wrong",
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT
-        ));
-        assert!(card.perform_semantic_action(
-            &id,
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT
-        ));
-        assert!(card.perform_semantic_action(
-            &id,
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT
-        ));
+        assert!(
+            !ui::widget::controls::control_action_bindings(card.as_ref())
+                .iter()
+                .any(|binding| binding.control_id == "reopen-window:wrong")
+        );
+        let card: Box<dyn ui::widget::Widget> = card;
+        let mut harness = ui::headless::FrameHarness::new(ui::State::new(), card, (456, 500));
+        harness.relayout();
+        assert!(
+            harness
+                .perform_named("reopen-window:wrong", &ui::a11y::Action::Activate)
+                .is_err()
+        );
+        for _ in 0..2 {
+            harness
+                .perform_named(&id, &ui::a11y::Action::Activate)
+                .expect("the exact recovery control");
+        }
         assert!(
             examine(&mut tree),
             "explicit recovery examines this saved tab"
@@ -1436,6 +1471,7 @@ mod tests {
                     label: "Second".into(),
                     note: "Interrupted".into(),
                 },
+                app_title: None,
             });
         tree.remember_local_app_record(first, 8191);
         tree.remember_local_app_record(second, 8192);
@@ -1546,7 +1582,7 @@ mod tests {
             let app = "dev.tilo.recovery-input-fixture";
             let (mut tree, tab) = tree_with_local_app(app);
             set_note(&mut tree, tab, "The launch was interrupted.".into());
-            let card = crate::shell::app_notice_card::AppNoticeCard::retry(
+            let card = crate::shell::app_notice_card::ReopenCard::new(
                 tab,
                 app,
                 "Saved window",
@@ -1584,25 +1620,19 @@ mod tests {
                     .into_iter()
                     .find(|resource| {
                         resource.label == crate::shell::i18n::t("shell-window-retry")
-                            && resource
-                                .actions
-                                .iter()
-                                .any(|action| action.id == "activate")
+                            && resource.actions.iter().any(|action| action.id == "invoke")
                     })
                     .expect("recovery is published through the native resource door");
                 harness
                     .invoke_action(
-                        &tilo_actions::ActionAddress::new(resource.id.as_str(), "activate"),
+                        &tilo_actions::ActionAddress::new(resource.id.as_str(), "invoke"),
                         &serde_json::Map::new(),
                         false,
                         None,
                     )
                     .expect("advertised saved-window recovery");
             } else {
-                let button = harness
-                    .root_widget()
-                    .synthetic_accessibility_rect(&[0])
-                    .expect("shared recovery button rectangle");
+                let button = harness.targets()[&format!("reopen-window:{tab}")];
                 harness.click_at(button.center().x, button.center().y);
             }
             assert!(
@@ -1630,6 +1660,7 @@ mod tests {
                     label: "Second saved window".into(),
                     note: String::new(),
                 },
+                app_title: None,
             });
         launcher::set_pending_placement(app, Placement::IntoTab(first));
         launcher::attach_continuity_instance_for_test(app, 42);
@@ -1674,7 +1705,6 @@ mod tests {
             "the workspace on screen is restored first"
         );
 
-        // The visible window's launch is in flight.
         launcher::set_pending_placement(visible_app, Placement::IntoTab(visible_tab));
         set_note(&mut tree, visible_tab, OPENING.into());
         for _ in 0..3 {
@@ -1734,8 +1764,8 @@ mod tests {
         set_note(&mut answered, answered_tab, NOT_INSTALLED.into());
         let (blank_app, _) = tree_with_local_app("  ");
         let (one_local, _) = tree_with_local_app("dev.tilo.one-local");
-        let (one_peer, _) = tree_with_peer_window(room_owned_by("quinten"));
-        let (mut many, _) = tree_with_peer_window_for(room_owned_by("quinten"), APP);
+        let (one_peer, _) = tree_with_peer_window(room_owned_by("ada"));
+        let (mut many, _) = tree_with_peer_window_for(room_owned_by("ada"), APP);
         for app in ["dev.tilo.second", "dev.tilo.third"] {
             let (other, _) = tree_with_local_app(app);
             many.desktop.workspaces.extend(other.desktop.workspaces);
@@ -1793,6 +1823,7 @@ mod tests {
                 note: String::new(),
                 missing: None,
             },
+            app_title: None,
         };
         let tab_id = tab.id;
         let group = WindowGroup {
@@ -1838,7 +1869,7 @@ mod tests {
     #[test]
     fn this_machines_own_window_of_an_app_is_found_in_any_workspace() {
         const SETTINGS: &str = "so.tilo.settings";
-        let (mut tree, _) = tree_with_peer_window_for(room_owned_by("quinten"), SETTINGS);
+        let (mut tree, _) = tree_with_peer_window_for(room_owned_by("ada"), SETTINGS);
         assert!(
             opened_here(&tree, SETTINGS).is_none(),
             "a peer's window is not ours"
@@ -1852,6 +1883,7 @@ mod tests {
                 app_id: SETTINGS.into(),
                 surface_id: 7,
             },
+            app_title: None,
         };
         let tab_id = tab.id;
         let group = WindowGroup {
@@ -1909,7 +1941,7 @@ mod tests {
     fn room_file_managers_alone_see_the_users_home() {
         fn a_file_manager_opened_for_the_room_can_see_the_users_home() {
             let home = tilo_paths::home().expect("the test machine has a home directory");
-            let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("quinten"), FILES);
+            let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("ada"), FILES);
 
             assert!(
                 !may_read(&tree.desktop.workspaces[0], FILES, &home),
@@ -1929,7 +1961,7 @@ mod tests {
 
         fn opening_another_app_for_the_room_grants_it_no_home() {
             let home = tilo_paths::home().expect("the test machine has a home directory");
-            let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("quinten"), APP);
+            let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("ada"), APP);
 
             let _ = examine(&mut tree);
 
@@ -1941,7 +1973,7 @@ mod tests {
 
         fn a_refused_file_manager_is_granted_nothing() {
             let home = tilo_paths::home().expect("the test machine has a home directory");
-            let mut ws = room_owned_by("quinten");
+            let mut ws = room_owned_by("ada");
             ws.policy.owner = None;
             let (mut tree, _tab) = tree_with_peer_window_for(ws, FILES);
 
@@ -1980,7 +2012,7 @@ mod tests {
     #[test]
     fn windows_to_return_to_are_this_machines_answered_openings() {
         fn a_window_this_machine_opened_for_the_room_is_found() {
-            let mut ws = room_owned_by("quinten");
+            let mut ws = room_owned_by("ada");
             let tab = Tab {
                 id: peer_id(),
                 title: "Word Processor".into(),
@@ -1988,6 +2020,7 @@ mod tests {
                     app_id: APP.into(),
                     surface_id: 4711,
                 },
+                app_title: None,
             };
             let tab_id = tab.id;
             let group = WindowGroup {
@@ -2016,7 +2049,7 @@ mod tests {
         }
 
         fn a_window_this_person_opened_is_not_one_to_return_to() {
-            let mut ws = room_owned_by("quinten");
+            let mut ws = room_owned_by("ada");
             let tab = Tab {
                 id: next_id(),
                 title: "Terminal".into(),
@@ -2024,6 +2057,7 @@ mod tests {
                     app_id: "so.tilo.terminal".into(),
                     surface_id: 99,
                 },
+                app_title: None,
             };
             let tab_id = tab.id;
             let group = WindowGroup {
@@ -2047,7 +2081,7 @@ mod tests {
         }
 
         fn an_unanswered_card_is_not_a_window_to_return_to() {
-            let (tree, _tab) = tree_with_peer_window(room_owned_by("quinten"));
+            let (tree, _tab) = tree_with_peer_window(room_owned_by("ada"));
             assert!(
                 opened_for_the_room(&tree.desktop.workspaces[0], APP, 0).is_none(),
                 "an unexamined peer window has no instance behind it yet"
@@ -2055,7 +2089,7 @@ mod tests {
         }
 
         fn a_note_is_what_marks_a_window_answered() {
-            let (mut tree, tab) = tree_with_peer_window(room_owned_by("quinten"));
+            let (mut tree, tab) = tree_with_peer_window(room_owned_by("ada"));
             assert!(any_pending(&tree), "an unexamined peer window is pending");
             assert!(set_note(
                 &mut tree,
@@ -2077,7 +2111,7 @@ mod tests {
     #[test]
     fn room_authority_admits_apps_only_with_an_owner_and_no_restriction() {
         fn a_room_with_an_owner_admits_its_apps() {
-            let ws = room_owned_by("quinten");
+            let ws = room_owned_by("ada");
             assert_eq!(admits(&ws, APP), Ok(()));
         }
 
@@ -2085,14 +2119,14 @@ mod tests {
         /// has replicated, exactly when a machine must not start processes
         /// on a peer's say-so.
         fn a_room_with_no_owner_admits_nothing() {
-            let mut ws = room_owned_by("quinten");
+            let mut ws = room_owned_by("ada");
             ws.policy.owner = None;
             let refusal = admits(&ws, APP).expect_err("an ownerless room must authorise nothing");
             assert_eq!(refusal, "This workspace has no owner yet");
         }
 
         fn an_ownerless_window_stays_pending_until_room_authority_arrives() {
-            let mut ws = room_owned_by("quinten");
+            let mut ws = room_owned_by("ada");
             ws.policy.owner = None;
             let (mut tree, tab) = tree_with_peer_window(ws);
             assert!(
@@ -2158,7 +2192,7 @@ mod tests {
 
         // A card answered before the catalogue arrived is answered again
         // once it does, and only then offers the install.
-        let (mut tree, tab) = tree_with_peer_window(room_owned_by("quinten"));
+        let (mut tree, tab) = tree_with_peer_window(room_owned_by("ada"));
         assert!(set_state(
             &mut tree,
             tab,
@@ -2181,7 +2215,7 @@ mod tests {
 
     #[test]
     fn only_a_pressed_install_on_an_installable_card_installs() {
-        let (mut tree, tab) = tree_with_peer_window(room_owned_by("quinten"));
+        let (mut tree, tab) = tree_with_peer_window(room_owned_by("ada"));
         assert!(set_state(
             &mut tree,
             tab,
@@ -2194,7 +2228,6 @@ mod tests {
         assert!(!start_requested_installs(&mut tree));
         assert_eq!(missing_of(&tree, tab), Some(MissingApp::Unavailable));
 
-        // Pressing the card's button queues exactly that tab.
         let mut card = crate::shell::app_notice_card::AppNoticeCard::install(
             tab,
             "Word Processor",
@@ -2270,7 +2303,7 @@ mod tests {
 
     #[test]
     fn a_window_hosted_on_another_device_is_never_opened_here() {
-        let (mut tree, tab) = tree_with_peer_window(room_owned_by("quinten"));
+        let (mut tree, tab) = tree_with_peer_window(room_owned_by("ada"));
         tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile =
             TileContent::HostedWindow {
                 app_id: "org.gimp.GIMP".into(),

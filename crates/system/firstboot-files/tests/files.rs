@@ -25,7 +25,9 @@ use tilo_firstboot_files::{
     DIR, Error, Files, Owner, Result, System, Writer, defaults, ownership, publish, write_file,
 };
 
-const HELPER: &str = env!("CARGO_BIN_EXE_tilo-firstboot-files");
+fn helper_binary() -> std::path::PathBuf {
+    tilo_test_env::package_binary!("tilo-firstboot-files")
+}
 const COMPLETE_INTENT: &[u8] = b"fixtureuser:!tilo-firstboot-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n";
 
 fn open_dir(path: &Path) -> OwnedFd {
@@ -489,7 +491,7 @@ fn ids_are_refused_only_when_a_chown_needs_them() {
 }
 
 fn helper(args: &[&OsStr], stdin: &[u8]) -> Output {
-    let mut child = Command::new(HELPER)
+    let mut child = Command::new(helper_binary())
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

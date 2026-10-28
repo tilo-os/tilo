@@ -42,6 +42,7 @@ pub mod app;
 pub mod canvas;
 pub mod draw;
 mod endpoint_editor;
+mod failure;
 pub mod geo;
 mod hand_laid;
 mod map_controls;
@@ -64,8 +65,38 @@ pub use model::{Category, LatLon, MapModel, Panel, Place, Route, TransitJourney,
 
 pub use resource::MapsShell;
 
-ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US", "de-DE"]);
 
 pub use workspace::Workspace;
 
 ui::dev_reload_entry!(MapsShell);
+
+#[cfg(test)]
+mod locale_tests {
+    use std::collections::BTreeSet;
+
+    fn keys(source: &str) -> BTreeSet<&str> {
+        source
+            .lines()
+            .filter(|line| !line.starts_with(['#', ' ', '\t']) && line.contains(" = "))
+            .filter_map(|line| line.split(" = ").next())
+            .collect()
+    }
+
+    #[test]
+    fn the_german_catalogue_carries_every_key() {
+        let english = include_str!("../locales/en-US.ftl");
+        let german = include_str!("../locales/de-DE.ftl");
+        let english = keys(english);
+        let german = keys(german);
+        let missing: Vec<_> = english.difference(&german).collect();
+        assert!(
+            missing.is_empty(),
+            "de-DE is missing {} key(s): {missing:?}",
+            missing.len()
+        );
+        let extra: Vec<_> = german.difference(&english).collect();
+        assert!(extra.is_empty(), "de-DE has unknown key(s): {extra:?}");
+        assert!(!english.is_empty() && !german.is_empty());
+    }
+}

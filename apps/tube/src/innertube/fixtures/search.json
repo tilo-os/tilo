@@ -1,0 +1,371 @@
+{
+  "responseContext": {
+    "visitorData": "CgtleGFtcGxlVmlzaXRvcg%3D%3D"
+  },
+  "contents": {
+    "twoColumnSearchResultsRenderer": {
+      "primaryContents": {
+        "sectionListRenderer": {
+          "contents": [
+            {
+              "itemSectionRenderer": {
+                "contents": [
+                  {
+                    "channelRenderer": {
+                      "channelId": "UCeY0bbntWzzVIaj2z3QigXg",
+                      "title": {
+                        "simpleText": "NBC News"
+                      },
+                      "thumbnail": {
+                        "thumbnails": [
+                          {
+                            "url": "//yt3.ggpht.com/PJj5jtuEOi5UmkFy4IBonj5WcabNcnJAIJe-jZMd1ArwIuVyQxFH_2zryBHwvfv6mJujwRpWDCM=s176-c-k-c0x00ffffff-no-rj-mo",
+                            "width": 176,
+                            "height": 176
+                          }
+                        ]
+                      },
+                      "subscriberCountText": {
+                        "simpleText": "@NBCNews"
+                      },
+                      "videoCountText": {
+                        "accessibility": {
+                          "accessibilityData": {
+                            "label": "12.2 million subscribers"
+                          }
+                        },
+                        "simpleText": "12.2M subscribers"
+                      },
+                      "ownerBadges": [
+                        {
+                          "metadataBadgeRenderer": {
+                            "style": "BADGE_STYLE_TYPE_VERIFIED"
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "videoRenderer": {
+                      "videoId": "i3FKvAVRtm4",
+                      "title": {
+                        "runs": [
+                          {
+                            "text": "Protest Fury Engulfs France As 800,000 Take To Streets, Violent Clashes And Arson Spread | CRUX LIVE"
+                          }
+                        ]
+                      },
+                      "longBylineText": {
+                        "runs": [
+                          {
+                            "text": "CRUX",
+                            "navigationEndpoint": {
+                              "browseEndpoint": {
+                                "browseId": "UC3prwMn9aU2z5Y158ZdGyyA"
+                              }
+                            }
+                          }
+                        ]
+                      },
+                      "viewCountText": {
+                        "runs": [
+                          {
+                            "text": "6,935"
+                          },
+                          {
+                            "text": " watching"
+                          }
+                        ]
+                      },
+                      "channelThumbnailSupportedRenderers": {
+                        "channelThumbnailWithLinkRenderer": {
+                          "thumbnail": {
+                            "thumbnails": [
+                              {
+                                "url": "https://yt3.ggpht.com/ytc/AIdro_lvuTdsdT3Di7NszY9LTOcCmUVVG8nRnPAZpe_a7Y7MR6k=s68-c-k-c0x00ffffff-no-rj",
+                                "width": 68,
+                                "height": 68
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      "badges": [
+                        {
+                          "metadataBadgeRenderer": {
+                            "style": "BADGE_STYLE_TYPE_LIVE_NOW",
+                            "label": "LIVE"
+                          }
+                        },
+                        {
+                          "metadataBadgeRenderer": {
+                            "style": "BADGE_STYLE_TYPE_SIMPLE",
+                            "label": "New"
+                          }
+                        }
+                      ],
+                      "ownerBadges": [
+                        {
+                          "metadataBadgeRenderer": {
+                            "style": "BADGE_STYLE_TYPE_VERIFIED"
+                          }
+                        }
+                      ],
+                      "detailedMetadataSnippets": [
+                        {
+                          "snippetText": {
+                            "runs": [
+                              {
+                                "text": "Protests engulf France as an estimated 800000 people take to the streets, driven by rising living costs, fuel prices and ..."
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "videoRenderer": {
+                      "videoId": "X2YAMGmZ7gw",
+                      "title": {
+                        "runs": [
+                          {
+                            "text": "LIVE: NBC News NOW - Oct. 21"
+                          }
+                        ]
+                      },
+                      "longBylineText": {
+                        "runs": [
+                          {
+                            "text": "NBC News",
+                            "navigationEndpoint": {
+                              "browseEndpoint": {
+                                "browseId": "UCeY0bbntWzzVIaj2z3QigXg"
+                              }
+                            }
+                          }
+                        ]
+                      },
+                      "viewCountText": {
+                        "runs": [
+                          {
+                            "text": "5,608"
+                          },
+                          {
+                            "text": " watching"
+                          }
+                        ]
+                      },
+                      "channelThumbnailSupportedRenderers": {
+                        "channelThumbnailWithLinkRenderer": {
+                          "thumbnail": {
+                            "thumbnails": [
+                              {
+                                "url": "https://yt3.ggpht.com/PJj5jtuEOi5UmkFy4IBonj5WcabNcnJAIJe-jZMd1ArwIuVyQxFH_2zryBHwvfv6mJujwRpWDCM=s68-c-k-c0x00ffffff-no-rj",
+                                "width": 68,
+                                "height": 68
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      "badges": [
+                        {
+                          "metadataBadgeRenderer": {
+                            "style": "BADGE_STYLE_TYPE_LIVE_NOW",
+                            "label": "LIVE"
+                          }
+                        },
+                        {
+                          "metadataBadgeRenderer": {
+                            "style": "BADGE_STYLE_TYPE_SIMPLE",
+                            "label": "New"
+                          }
+                        }
+                      ],
+                      "ownerBadges": [
+                        {
+                          "metadataBadgeRenderer": {
+                            "style": "BADGE_STYLE_TYPE_VERIFIED"
+                          }
+                        }
+                      ],
+                      "detailedMetadataSnippets": [
+                        {
+                          "snippetText": {
+                            "runs": [
+                              {
+                                "text": "NBC News",
+                                "bold": true
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "videoRenderer": {
+                      "videoId": "1129DOGIOE4",
+                      "title": {
+                        "runs": [
+                          {
+                            "text": "This Morning’s Top Headlines – Oct. 21 | Morning News NOW"
+                          }
+                        ]
+                      },
+                      "longBylineText": {
+                        "runs": [
+                          {
+                            "text": "NBC News",
+                            "navigationEndpoint": {
+                              "browseEndpoint": {
+                                "browseId": "UCeY0bbntWzzVIaj2z3QigXg"
+                              }
+                            }
+                          }
+                        ]
+                      },
+                      "viewCountText": {
+                        "simpleText": "7,192 views"
+                      },
+                      "publishedTimeText": {
+                        "simpleText": "2 hours ago"
+                      },
+                      "lengthText": {
+                        "simpleText": "13:41"
+                      },
+                      "channelThumbnailSupportedRenderers": {
+                        "channelThumbnailWithLinkRenderer": {
+                          "thumbnail": {
+                            "thumbnails": [
+                              {
+                                "url": "https://yt3.ggpht.com/PJj5jtuEOi5UmkFy4IBonj5WcabNcnJAIJe-jZMd1ArwIuVyQxFH_2zryBHwvfv6mJujwRpWDCM=s68-c-k-c0x00ffffff-no-rj",
+                                "width": 68,
+                                "height": 68
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      "badges": [
+                        {
+                          "metadataBadgeRenderer": {
+                            "style": "BADGE_STYLE_TYPE_SIMPLE",
+                            "label": "New"
+                          }
+                        },
+                        {
+                          "metadataBadgeRenderer": {
+                            "style": "BADGE_STYLE_TYPE_SIMPLE",
+                            "label": "CC"
+                          }
+                        }
+                      ],
+                      "ownerBadges": [
+                        {
+                          "metadataBadgeRenderer": {
+                            "style": "BADGE_STYLE_TYPE_VERIFIED"
+                          }
+                        }
+                      ],
+                      "detailedMetadataSnippets": [
+                        {
+                          "snippetText": {
+                            "runs": [
+                              {
+                                "text": "More than 13 million Americans have already cast their ballots with the midterm elections less than two weeks away, Russia ..."
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "videoRenderer": {
+                      "videoId": "77JLXwvj_kM",
+                      "title": {
+                        "runs": [
+                          {
+                            "text": "Texas couple charged in shooting death of Missouri high school student"
+                          }
+                        ]
+                      },
+                      "longBylineText": {
+                        "runs": [
+                          {
+                            "text": "NBC News",
+                            "navigationEndpoint": {
+                              "browseEndpoint": {
+                                "browseId": "UCeY0bbntWzzVIaj2z3QigXg"
+                              }
+                            }
+                          }
+                        ]
+                      },
+                      "viewCountText": {
+                        "simpleText": "39,823 views"
+                      },
+                      "publishedTimeText": {
+                        "simpleText": "9 hours ago"
+                      },
+                      "lengthText": {
+                        "simpleText": "2:24"
+                      },
+                      "channelThumbnailSupportedRenderers": {
+                        "channelThumbnailWithLinkRenderer": {
+                          "thumbnail": {
+                            "thumbnails": [
+                              {
+                                "url": "https://yt3.ggpht.com/PJj5jtuEOi5UmkFy4IBonj5WcabNcnJAIJe-jZMd1ArwIuVyQxFH_2zryBHwvfv6mJujwRpWDCM=s68-c-k-c0x00ffffff-no-rj",
+                                "width": 68,
+                                "height": 68
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      "badges": [
+                        {
+                          "metadataBadgeRenderer": {
+                            "style": "BADGE_STYLE_TYPE_SIMPLE",
+                            "label": "New"
+                          }
+                        },
+                        {
+                          "metadataBadgeRenderer": {
+                            "style": "BADGE_STYLE_TYPE_SIMPLE",
+                            "label": "CC"
+                          }
+                        }
+                      ],
+                      "ownerBadges": [
+                        {
+                          "metadataBadgeRenderer": {
+                            "style": "BADGE_STYLE_TYPE_VERIFIED"
+                          }
+                        }
+                      ],
+                      "detailedMetadataSnippets": [
+                        {
+                          "snippetText": {
+                            "runs": [
+                              {
+                                "text": "A couple from Texas had been charged in the deadly freeway shooting of 17-year-old Alyssa Wilson, who was driving to the St."
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

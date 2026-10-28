@@ -20,20 +20,24 @@ path = "src/main.rs"
 [features]
 thin = ["dep:runtime-dylib"]
 # The optional udisks2 transport uses zbus for privileged device operations;
-# it connects only for an explicit device action in a live window.
+# it connects only for an explicit device action in a live window. Reading
+# the machine's storage needs neither: the session describes it
+# (`tilo-system-info`).
 default = ["live"]
-# The CLI fallback and read benchmark are always available.
+# Without it the app changes no devices; the read benchmark is always
+# available.
 live = ["block-devices/udisks"]
 
 [dependencies]
 block-devices = { path = "../../crates/system/block-devices" }
-bounded-command = { path = "../../crates/system/bounded-command" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # vello / taffy / winit / automerge are reached through `ui::` — the toolkit
 # re-exports its own stack so there is exactly one copy of each in the binary,
 # and it is the one the widget tree was compiled against.
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
+# The machine's storage, described by the session's system information service.
+tilo-system-info = { path = "../../crates/platform/tilo-system-info" }
 serde.workspace = true
 serde_json.workspace = true
 workspace-hack = { version = "0.1" }

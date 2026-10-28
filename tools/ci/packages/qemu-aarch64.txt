@@ -1,0 +1,5 @@
+# QEMU and UEFI firmware for arm64 guests on a native arm64 host.
+edk2-aarch64
+qemu-system-aarch64-core
+qemu-device-display-virtio-gpu
+qemu-device-display-virtio-gpu-pci

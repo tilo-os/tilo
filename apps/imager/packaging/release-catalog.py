@@ -32,6 +32,28 @@ def select(root):
 
 INTERNAL_PURPOSE = "tilo-internal-installer"
 INTERNAL_KEYS = {"purpose", "layout", "release_id", "arch", "manifest_url", "manifest_sha256", "manifest_size"}
+TARGET_POLICY_PURPOSE = "tilo-target-policy"
+TARGET_POLICY_KEYS = {"purpose", "layout", "release_id", "arch", "generation",
+                      "target_uki_sha256", "url", "archive_sha256", "archive_size"}
+
+
+def target_policy(entry, tag):
+    """Shape of a CatalogRelease::TargetPolicy entry; it travels beside media."""
+    if (set(entry) != TARGET_POLICY_KEYS or entry["layout"] != "target-policy-bundle-v1"
+            or entry["release_id"] != tag):
+        raise ValueError("invalid target policy catalog entry")
+    if entry["arch"] not in ("x86_64", "aarch64") or type(entry["generation"]) is not int or entry["generation"] <= 0:
+        raise ValueError("invalid target policy architecture or generation")
+    if not isinstance(entry["target_uki_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", entry["target_uki_sha256"]):
+        raise ValueError("invalid target policy UKI digest")
+    if not isinstance(entry["archive_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", entry["archive_sha256"]):
+        raise ValueError("invalid target policy archive digest")
+    if type(entry["archive_size"]) is not int or entry["archive_size"] <= 0:
+        raise ValueError("invalid target policy archive size")
+    url = urlsplit(entry["url"])
+    if (url.scheme != "https" or url.hostname != "code.tilo.so" or url.port not in (None, 443)
+            or url.username or url.password or url.query or url.fragment):
+        raise ValueError("target policy URL is not the trusted package origin")
 
 
 def internal(entry, tag):
@@ -72,6 +94,10 @@ def media(catalog, root, arch=None):
             # Internal installer bundles are not media: they are published as
             # Forgejo packages, never signed or shipped as release downloads.
             internal(entry, catalog["tag"])
+            continue
+        if isinstance(entry, dict) and entry.get("purpose") == TARGET_POLICY_PURPOSE:
+            # The target policy is a small signed boot bundle, not an OS medium.
+            target_policy(entry, catalog["tag"])
             continue
         target = entry.get("arch")
         profile = entry.get("hardware_profile", "generic")

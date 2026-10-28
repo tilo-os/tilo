@@ -120,7 +120,7 @@ impl Registry {
     }
 
     fn sign(&self) -> (SignedRegistrySnapshot, CompactRegistrySnapshot) {
-        let output = Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+        let output = Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
             .arg("--data-dir")
             .arg(self.dir.path())
             .args(["sign-snapshot", "--owner-key-file"])
@@ -321,7 +321,7 @@ fn released_clients_keep_the_full_snapshot_while_new_clients_read_compact_and_in
     std::fs::write(&index_path, &index_bytes).unwrap();
 
     // Replaying the older snapshot, whose compact form names the older
-    // index, is refused by the checkpoint.
+    // index, is refused by the checkpoint as behind the one accepted.
     registry.serve_raw(&old_full, &old_compact);
     let replayed = get(&format!("{base_url}/entries?format=compact"), None)
         .json::<CompactRegistrySnapshot>()
@@ -331,7 +331,8 @@ fn released_clients_keep_the_full_snapshot_while_new_clients_read_compact_and_in
         native(&config, native_dir.path(), |config| {
             app_cli::client::fetch_all_versions(config, NOTES)
         }),
-        Err(RegistryError::Rollback)
+        Err(RegistryError::BehindAccepted { held_sequence, served_sequence })
+            if held_sequence == full.sequence && served_sequence == old_full.sequence
     ));
 
     // Without a compact form of the current snapshot, compact requests get

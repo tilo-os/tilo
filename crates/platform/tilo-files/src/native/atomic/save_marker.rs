@@ -36,8 +36,6 @@ pub fn encode(target: &[u8]) -> io::Result<[u8; SIZE]> {
     Ok(out)
 }
 /// Rejects unknown versions, extensions, padding and escaped components.
-/// # Errors
-/// Returns `InvalidData` or `InvalidInput` for any noncanonical marker.
 pub fn decode(bytes: &[u8]) -> io::Result<&[u8]> {
     if bytes.len() != SIZE
         || bytes.get(..4) != Some(MAGIC.as_slice())

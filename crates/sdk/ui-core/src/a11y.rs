@@ -45,6 +45,10 @@ pub enum Role {
     TreeItem,
     Menu,
     MenuItem,
+    /// The options a [`Role::ComboBox`] offers while it is open.
+    ListBox,
+    /// One option of a [`Role::ListBox`]; use [`AccessState::selected`].
+    ListBoxOption,
 
     Button,
     /// Persistent pressed/unpressed state (use [`AccessState::checked`]).
@@ -106,6 +110,12 @@ pub enum Role {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct AccessState {
     pub focused: bool,
+    /// The item the keyboard is on inside a focused control that keeps the
+    /// focus itself: an open combo box's highlighted option. Assistive
+    /// technology announces it while focus stays on the control (AccessKit's
+    /// `active_descendant`, ARIA's `aria-activedescendant`). Unlike
+    /// [`focused`](Self::focused) it never moves the tree's focus.
+    pub active_descendant: bool,
     pub focusable: bool,
     /// The control owns a standard context menu.  The bridge exposes
     /// AccessKit/AT-SPI's `ShowContextMenu` verb only when this is true, so
@@ -141,6 +151,11 @@ impl AccessState {
 
     pub fn focused(mut self, v: bool) -> Self {
         self.focused = v;
+        self
+    }
+    /// Sets [`active_descendant`](Self::active_descendant).
+    pub fn active_descendant(mut self, v: bool) -> Self {
+        self.active_descendant = v;
         self
     }
     pub fn focusable(mut self, v: bool) -> Self {
@@ -310,6 +325,17 @@ pub struct AccessNode {
     /// The export layer emits them as this node's subtree, nested as deeply
     /// as needed (rows containing cells).
     pub children: Vec<AccessNode>,
+    /// Whether [`name`](Self::name) is the app's own fixed, localized copy (a
+    /// button's label, a heading), the same for everyone, rather than
+    /// something a person or a resource put there. Unset means content: a
+    /// feedback report hides it until the reporter shows it.
+    #[serde(skip)]
+    pub interface_name: bool,
+    /// What kind of thing this is in the app's own words, where its role
+    /// says too little ("Message" for a chat row that is a list item), in
+    /// the reader's language. Always the app's own copy, never content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_description: Option<String>,
 }
 
 /// A widget's [`AccessNode`] with its synthetic children shared rather than
@@ -358,7 +384,23 @@ impl AccessNode {
             key: None,
             bounds: None,
             children: Vec::new(),
+            interface_name: false,
+            role_description: None,
         }
+    }
+
+    /// Mark the name as the app's own fixed, localized copy
+    /// ([`Self::interface_name`]).
+    pub fn with_interface_name(mut self, interface: bool) -> Self {
+        self.interface_name = interface;
+        self
+    }
+
+    /// Say what kind of thing this is in the app's own words
+    /// ([`Self::role_description`]).
+    pub fn with_role_description(mut self, kind: impl Into<String>) -> Self {
+        self.role_description = Some(kind.into()).filter(|kind| !kind.trim().is_empty());
+        self
     }
 
     pub fn with_semantic_key(mut self, key: impl Into<String>) -> Self {
@@ -368,8 +410,13 @@ impl AccessNode {
 
     /// Attach an opaque, widget-local target for actions on this synthetic
     /// node. Prefer stable model keys over visible indices.
-    pub fn with_action_target(mut self, target: impl Into<String>) -> Self {
-        let target = target.into();
+    pub fn with_action_target(self, target: impl Into<String>) -> Self {
+        self.with_owned_action_target(target.into())
+    }
+
+    /// [`Self::with_action_target`] once the target is owned: one copy in the
+    /// toolkit rather than one in every app that names a target.
+    fn with_owned_action_target(mut self, target: String) -> Self {
         // An actionable synthetic node necessarily needs stable identity for
         // agents and AT to hold across frames. Derive the existing compact key
         // from the same opaque target so authors cannot accidentally provide
@@ -399,6 +446,7 @@ impl AccessNode {
                     | Role::SpinButton
                     | Role::TextInput
                     | Role::MultilineTextInput
+                    | Role::ListBoxOption
             )
         }
 
@@ -588,6 +636,42 @@ impl From<Rect> for AccessBounds {
     }
 }
 
+/// Where a synthetic node (one of `owner`'s accessibility children, at
+/// `path` below its node) is drawn: its own bounds, else the rect the owner
+/// reports for it. A node with neither has no geometry of its own.
+pub(crate) fn synthetic_bounds(
+    access: &AccessNode,
+    owner: &dyn crate::widget::Widget,
+    path: &[usize],
+) -> Option<AccessBounds> {
+    access.bounds.or_else(|| {
+        owner
+            .synthetic_accessibility_rect(path)
+            .filter(|rect| rect.width() > 0.0 || rect.height() > 0.0)
+            .map(Into::into)
+    })
+}
+
+/// `owner`'s accessibility node with every synthetic descendant's
+/// geometry filled in by [`synthetic_bounds`], as the native accessibility
+/// tree reads it: a node exported without bounds would otherwise be placed
+/// over its owner's whole rect, and a pointer sent to its centre would miss.
+pub(crate) fn with_synthetic_bounds(
+    mut access: AccessNode,
+    owner: &dyn crate::widget::Widget,
+) -> AccessNode {
+    fn fill(node: &mut AccessNode, owner: &dyn crate::widget::Widget, path: &mut Vec<usize>) {
+        for (index, child) in node.children.iter_mut().enumerate() {
+            path.push(index);
+            child.bounds = synthetic_bounds(child, owner, path);
+            fill(child, owner, path);
+            path.pop();
+        }
+    }
+    fill(&mut access, owner, &mut Vec::new());
+    access
+}
+
 /// Editable-text selection in the widget's native UTF-8 document space.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct AccessibleTextSelection {
@@ -658,7 +742,6 @@ mod tests {
         );
         assert_eq!(AccessState::new().expanded(false).expanded, Some(false));
 
-        // Settings default to all off and round-trip through JSON.
         let s = A11ySettings::default();
         assert!(!s.high_contrast);
         assert!(!s.reduce_motion);
@@ -706,7 +789,6 @@ mod tests {
         let row = AccessNode::new(Role::TreeItem).with_level(3);
         assert_eq!(row.level, Some(3));
 
-        // Optional helpers.
         let named = AccessNode::new(Role::StaticText).with_optional_name(Some("Hi".into()));
         assert_eq!(named.name.as_deref(), Some("Hi"));
         let anon = AccessNode::new(Role::Image).with_optional_name(None);
@@ -714,7 +796,6 @@ mod tests {
         let masked = AccessNode::new(Role::TextInput).with_optional_value(None);
         assert_eq!(masked.value, None);
 
-        // The heading role carries its level.
         let h2 = Role::Heading { level: 2 };
         assert_eq!(h2, Role::Heading { level: 2 });
         assert_ne!(h2, Role::Heading { level: 3 });

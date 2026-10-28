@@ -26,7 +26,6 @@ use crate::icons::Icon;
 use crate::theme::Theme;
 use crate::widget::{ButtonInteract, ButtonRole, ControlSize, face_colors};
 
-/// One control of a media transport.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransportControl {
     Previous,

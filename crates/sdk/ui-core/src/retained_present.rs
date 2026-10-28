@@ -68,6 +68,20 @@ pub enum PanFrame {
     /// The frame only moved laid-out content: a window at rest may show its
     /// last drawing moved to where the window is now.
     Replayed,
+    /// The frame only moved laid-out content, and its host does not draw
+    /// again before input: a window at rest may show its last drawing only
+    /// where it stays where it was drawn (a strip drawn in canvas
+    /// coordinates while the presenter pans it), so what its widgets noted
+    /// while drawing still holds.
+    Moved,
+}
+
+impl PanFrame {
+    /// Nothing but laid-out positions changed since the frame before.
+    #[must_use]
+    pub fn only_moved(self) -> bool {
+        self != Self::Drawn
+    }
 }
 
 /// A frame that only moved laid-out content: nothing reached a widget, the

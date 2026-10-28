@@ -19,6 +19,32 @@ pub fn config() -> MprisConfig {
     config
 }
 
+/// What the platform player's system controls are told plays, from what
+/// MPRIS publishes.
+pub(crate) fn now_playing_of(snap: &PlayerSnapshot) -> media::NowPlaying {
+    media::NowPlaying {
+        title: snap.title.clone(),
+        artist: snap.artist.clone(),
+        album: snap.album.clone(),
+        artwork_url: Some(snap.art_url.clone()).filter(|url| !url.is_empty()),
+    }
+}
+
+/// A press on the platform player's system controls, as the MPRIS command
+/// that asks the same.
+pub(crate) fn command_for(action: media::NowPlayingAction) -> MprisCommand {
+    match action {
+        media::NowPlayingAction::Play => MprisCommand::Play,
+        media::NowPlayingAction::Pause => MprisCommand::Pause,
+        media::NowPlayingAction::Stop => MprisCommand::Stop,
+        media::NowPlayingAction::Next => MprisCommand::Next,
+        media::NowPlayingAction::Previous => MprisCommand::Previous,
+        media::NowPlayingAction::SeekTo(at) => {
+            MprisCommand::SetPosition(i64::try_from(at.as_micros()).unwrap_or(i64::MAX))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -33,6 +59,39 @@ mod tests {
         assert_eq!(
             config.supported_mime_types,
             ["audio/mpeg", "audio/mp4", "audio/ogg"]
+        );
+    }
+
+    #[test]
+    fn the_platform_players_controls_hear_the_track_and_ask_as_mpris_does() {
+        let snap = PlayerSnapshot {
+            title: "Harbour".into(),
+            artist: "Ada".into(),
+            album: "Quays".into(),
+            ..PlayerSnapshot::default()
+        };
+        assert_eq!(
+            now_playing_of(&snap),
+            media::NowPlaying {
+                title: "Harbour".into(),
+                artist: "Ada".into(),
+                album: "Quays".into(),
+                artwork_url: None,
+            }
+        );
+        assert_eq!(
+            command_for(media::NowPlayingAction::Next),
+            MprisCommand::Next
+        );
+        assert_eq!(
+            command_for(media::NowPlayingAction::Previous),
+            MprisCommand::Previous
+        );
+        assert_eq!(
+            command_for(media::NowPlayingAction::SeekTo(
+                std::time::Duration::from_secs(2)
+            )),
+            MprisCommand::SetPosition(2_000_000)
         );
     }
 }

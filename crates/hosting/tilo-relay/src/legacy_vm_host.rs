@@ -277,7 +277,6 @@ mod tests {
             env.get("XDG_RUNTIME_DIR"),
             Some(&runtime.display().to_string())
         );
-        // The deepest socket the VM makes there still fits a Unix address.
         let deepest = runtime.join("tilo-legacy/linux/vsock.sock_65535");
         assert!(deepest.as_os_str().len() < 100, "{}", deepest.display());
         assert!(

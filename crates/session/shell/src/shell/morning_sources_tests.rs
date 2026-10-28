@@ -1,4 +1,3 @@
-//! Synthetic provider behind the production native catalogue/command adapter.
 use super::*;
 use std::sync::{Arc, Mutex};
 use tilo_actions::remote::*;
@@ -87,8 +86,12 @@ impl ActionHost for Host {
     fn observe(&self, _: &Caller, _: &tilo_actions::InvocationId) -> Option<InvocationState> {
         None
     }
-    fn cancel(&self, _: &Caller, _: &tilo_actions::InvocationId) -> Result<(), ActionHostError> {
-        Err(ActionHostError::UnknownInvocation)
+    fn cancel(
+        &self,
+        _: &Caller,
+        _: &tilo_actions::InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionHostError::UnknownInvocation))
     }
 }
 fn row() -> CatalogueRow {
@@ -462,6 +465,10 @@ fn morning_scheduled_refresh_updates_the_same_chosen_payload_through_production_
             trigger: tilo_automation::RunTrigger::Fired(fired[0].trigger.clone()),
             inputs: fired[0].inputs.clone(),
             caused_by: None,
+            parent: None,
+            chain: Vec::new(),
+            resume: None,
+            from: None,
         },
     ));
     assert_eq!(report.outcome, tilo_automation::RunOutcome::Completed);

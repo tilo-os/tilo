@@ -20,8 +20,11 @@
 //!   capability shares with the saver ([`watched_folders`]).
 //! - [`FocusModeTriggers`] fires when Do Not Disturb or the focus schedule
 //!   switches on or off.
+//! - [`AppEventTriggers`] fires on the events applications declare next to
+//!   their actions, read as the record changes they publish.
 //! - [`RecordChangedTriggers`] fires on a committed change to a record of a
-//!   watched kind in the saver's room.
+//!   watched kind in the saver's room, unless a shortcut's run made the
+//!   change: see [`record_firings`].
 //! - [`IncomingMessageTriggers`] fires on a message someone else received in
 //!   the saver's rooms (a change its app marks as one).
 //!
@@ -66,7 +69,8 @@ use serde_json::{Map, Value};
 use settings_store::hardware::KeyChord;
 use sha2::{Digest as _, Sha256};
 use tilo_actions::params::ParamType;
-use tilo_automation::dispatch::RecordEvent;
+use tilo_automation::EVENT_INPUT;
+use tilo_automation::dispatch::{AppEvent, RecordEvent, app_event_object};
 use tilo_automation::{
     CatchUp, FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE, FocusTransition, RunId, Schedule, ScheduleClaim,
     Shortcut, TriggerSpec, Weekday,
@@ -213,7 +217,7 @@ pub fn armed(
         .iter()
         .flat_map(|workspace| {
             let person = local_person(workspace);
-            let room = workspace.room.to_string();
+            let room = workspace.room().to_string();
             let claims = workspace.schedule_claims.as_slice();
             workspace
                 .shortcuts
@@ -251,7 +255,6 @@ pub enum TriggerEvent<'a> {
     Records(&'a [RecordEvent]),
 }
 
-/// Whether each focus mode is on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FocusState {
     pub do_not_disturb: bool,
@@ -271,7 +274,7 @@ impl FocusState {
 }
 
 /// How a file in a watched folder changed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FileChange {
     Created,
     Modified,
@@ -299,7 +302,7 @@ pub struct WatchedFolder {
 }
 
 /// One file that changed inside a watched folder.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FolderChange {
     pub room: String,
     pub capability: String,
@@ -308,8 +311,28 @@ pub struct FolderChange {
     pub change: FileChange,
 }
 
+/// Which file of which workspace a [`FolderChange`] is about: its room, its
+/// capability and the file's path. `Ord` puts files in the order a person
+/// sees them, so one poll reports them the same way twice.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ChangedFile {
+    pub room: String,
+    pub capability: String,
+    pub file: String,
+}
+
 impl FolderChange {
-    /// The change to `path` inside `folder`, when it is inside it.
+    /// What identifies the file this reports on, so one file settling is one
+    /// change however many kinds of change it made.
+    #[must_use]
+    pub fn same_file(&self) -> ChangedFile {
+        ChangedFile {
+            room: self.room.clone(),
+            capability: self.capability.clone(),
+            file: self.file.clone(),
+        }
+    }
+
     #[must_use]
     pub fn inside(folder: &WatchedFolder, path: &Path, change: FileChange) -> Option<Self> {
         let file = path.strip_prefix(&folder.path).ok()?;
@@ -615,7 +638,7 @@ pub fn watched_folders(
     for armed in armed {
         let Some(workspace) = workspaces
             .iter()
-            .find(|workspace| workspace.room.to_string() == armed.room)
+            .find(|workspace| workspace.room().to_string() == armed.room)
         else {
             continue;
         };
@@ -945,7 +968,6 @@ pub fn next_fire_time(
     }
 }
 
-/// `date` at `time` on the local wall clock, as an instant.
 fn local_instant(date: NaiveDate, time: NaiveTime, clock: &dyn Clock) -> Option<DateTime<Utc>> {
     let naive = date.and_time(time);
     // Read the offset at a first guess of the instant, so a change of
@@ -1073,6 +1095,12 @@ impl RecordElection {
 
 /// What `event` fires among `armed` in its room, through the dispatcher a
 /// bot's host uses too, so both fire on a change the same way.
+///
+/// A change a shortcut's run made fires nothing here, in any room: a
+/// pair of shortcuts that watch each other's kind and write it would
+/// otherwise run each other for as long as the session lasts. The
+/// dispatcher says why ([`Skipped::Loop`]), and the change is passed on
+/// to nobody else on this device.
 fn record_firings(
     armed: &[Armed<'_>],
     event: &RecordEvent,
@@ -1136,6 +1164,44 @@ impl TriggerSource for RecordChangedTriggers {
     }
 }
 
+/// Fires a shortcut's app-event triggers on the events applications declared,
+/// whatever the application is: an event is a change to a record of its own
+/// kind ([`AppEvent::of_change`]), so nothing here names an app.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AppEventTriggers;
+
+impl TriggerSource for AppEventTriggers {
+    fn observe(
+        &mut self,
+        event: TriggerEvent<'_>,
+        armed: &[Armed<'_>],
+        _context: TriggerContext<'_>,
+    ) -> Vec<Firing> {
+        let TriggerEvent::Records(changes) = event else {
+            return Vec::new();
+        };
+        changes
+            .iter()
+            .filter_map(AppEvent::of_change)
+            .flat_map(|declared| {
+                fire_matching(armed, |armed, trigger| match trigger {
+                    TriggerSpec::AppEvent { app_id, kind }
+                        if *app_id == declared.app_id
+                            && *kind == declared.kind
+                            && armed.room == declared.room =>
+                    {
+                        Some(vec![(
+                            EVENT_INPUT,
+                            Value::Object(app_event_object(&declared)),
+                        )])
+                    }
+                    _ => None,
+                })
+            })
+            .collect()
+    }
+}
+
 /// Fires a shortcut's incoming-message triggers on a message someone else
 /// received in the saver's rooms, on one of the saver's devices.
 #[derive(Debug, Default)]
@@ -1183,6 +1249,7 @@ impl TriggerHost {
                 Box::new(WorkspaceJoinedTriggers::default()),
                 Box::new(FileChangedTriggers),
                 Box::new(FocusModeTriggers::default()),
+                Box::new(AppEventTriggers),
                 Box::new(RecordChangedTriggers::default()),
                 Box::new(IncomingMessageTriggers::default()),
             ],
@@ -1264,6 +1331,10 @@ impl std::fmt::Debug for TriggerHost {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
+    use serde_json::json;
+
     use super::*;
     use tilo_automation::TimeOfDay;
 
@@ -1382,7 +1453,7 @@ mod tests {
         fn new(name: &str, online: &[&str], clock: &Arc<ManualClock>) -> Self {
             let mut tree = crate::shell::state::WorkspaceTree::default();
             let workspace = tree.append_empty_workspace("Personal");
-            assert!(tree.set_room(workspace, personal_room()));
+            assert!(tree.stand_in_room(workspace, personal_room()));
             let mut triggers = TriggerHost::new(Arc::clone(clock) as Arc<dyn Clock>, None);
             triggers.set_devices(Arc::new(FixedDevices::new(PersonalDevices {
                 local: Some(name.to_string()),
@@ -1535,7 +1606,6 @@ mod tests {
         }
         assert_eq!(awake.ran.len(), 1, "and runs it once");
 
-        // The elected device wakes and learns the fire time was taken.
         sync(awake, asleep);
         asleep.tick();
         assert!(
@@ -1817,6 +1887,150 @@ mod tests {
         );
     }
 
+    /// What the shortcuts watching `watch`'s folders fire with, for a file
+    /// that has settled since the last look.
+    fn folder_runs(
+        triggers: &mut TriggerHost,
+        armed: &[Armed<'_>],
+        watch: &mut crate::shell::automation_folders::FolderWatch,
+    ) -> Vec<serde_json::Value> {
+        let changes = watch.changes();
+        if changes.is_empty() {
+            return Vec::new();
+        }
+        triggers
+            .observe(TriggerEvent::Files(&changes), armed)
+            .into_iter()
+            .map(|firing| {
+                json!({
+                    "file": firing.inputs.get("file"),
+                    "change": firing.inputs.get("change"),
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_file_dropped_into_a_watched_folder_fires_once_with_that_file() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let inbox = dir.path().join("inbox");
+        std::fs::create_dir(&inbox).expect("the watched folder");
+        let mut watch = crate::shell::automation_folders::FolderWatch::default();
+        watch.watch(vec![WatchedFolder {
+            room: "room".into(),
+            capability: "inbox-read".into(),
+            path: inbox.clone(),
+        }]);
+        let mut triggers = TriggerHost::new(
+            std::sync::Arc::new(ManualClock::new(
+                at("2026-09-25T08:00:00Z"),
+                FixedOffset::east_opt(0).expect("offset"),
+            )),
+            None,
+        );
+        let saved = event_shortcut(
+            &TriggerSpec::FileChanged {
+                capability: "inbox-read".into(),
+            },
+            &[("file", "text"), ("change", "text")],
+        );
+        let armed = [Armed {
+            room: "room".into(),
+            shortcut: &saved,
+            claims: &[],
+        }];
+        let deadline = tilo_test_env::hang_deadline();
+        // A file arrives the way a copy does: written, and written again
+        // before the folder is looked at.
+        std::fs::write(inbox.join("scan.pdf"), b"%PDF-1.4").expect("the file arrives");
+        std::fs::write(inbox.join("scan.pdf"), b"%PDF-1.4 and the rest")
+            .expect("the rest of the file arrives");
+        let mut files = Vec::new();
+        while files.is_empty() {
+            assert!(
+                Instant::now() < deadline,
+                "the drop was never reported: {files:?}"
+            );
+            files.extend(folder_runs(&mut triggers, &armed, &mut watch));
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        // Whatever follows the drop, for as long as the wait a settling file
+        // gets, is not a second run.
+        let quiet_until = Instant::now() + crate::shell::automation_folders::SETTLE;
+        while Instant::now() < quiet_until {
+            files.extend(folder_runs(&mut triggers, &armed, &mut watch));
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(
+            files,
+            [json!({ "file": "scan.pdf", "change": "created" })],
+            "one drop, one run, naming the file that arrived"
+        );
+    }
+
+    #[test]
+    fn an_app_declared_event_fires_the_trigger_watching_it() {
+        let saved = event_shortcut(
+            &TriggerSpec::AppEvent {
+                app_id: "so.tilo.mail".into(),
+                kind: "mail.message".into(),
+            },
+            &[("event", "object")],
+        );
+        let mut announced = a_post("a1", "person:bob");
+        announced.kind = "so.tilo.mail.mail.message.event".into();
+        announced.did = tilo_actions::entry::Did::verb(
+            tilo_actions::ActionKey::new(
+                "so.tilo.mail",
+                "so.tilo.mail.mail.message.event",
+                "announce",
+            ),
+            [],
+        );
+        announced.arguments = serde_json::json!({ "subject": "Invoice" })
+            .as_object()
+            .cloned()
+            .expect("an object");
+        // Another app's change of the same kind is no declaration: the event
+        // is the one the app whose action ran declares.
+        let mut other_app = announced.clone();
+        other_app.did = tilo_actions::entry::Did::verb(
+            tilo_actions::ActionKey::new(
+                "so.tilo.chat",
+                "so.tilo.mail.mail.message.event",
+                "announce",
+            ),
+            [],
+        );
+        let changes = [other_app, announced];
+        assert!(
+            observe_once(
+                &mut AppEventTriggers,
+                TriggerEvent::Records(&changes),
+                &saved,
+                "another-room"
+            )
+            .is_empty(),
+            "an event is announced in its own room"
+        );
+        let fired = observe_once(
+            &mut AppEventTriggers,
+            TriggerEvent::Records(&changes),
+            &saved,
+            "room",
+        );
+        assert_eq!(fired.len(), 1, "{fired:?}");
+        assert_eq!(
+            fired[0].inputs["event"],
+            serde_json::json!({
+                "app_id": "so.tilo.mail",
+                "kind": "mail.message",
+                "subject": "Invoice",
+            }),
+            "what the app announced is bound beside the event it named"
+        );
+    }
+
     #[test]
     fn a_focus_mode_fires_on_the_transition_it_names() {
         let entering_dnd = event_shortcut(
@@ -1896,8 +2110,7 @@ mod tests {
         use collab_types::{Access, CapOverride, Scope, Subject};
 
         let owner = "person:owner".to_string();
-        let mut workspace = Workspace::new(WorkspaceId(1), "Scans");
-        workspace.set_room(personal_room());
+        let mut workspace = Workspace::in_room(WorkspaceId(1), personal_room(), "Scans");
         workspace.set_owner(owner.clone());
         workspace
             .govern_as_at(
@@ -2008,6 +2221,7 @@ mod tests {
             after: None,
             caused_by: None,
             incoming_message: true,
+            housekeeping: false,
             shortcut: None,
             run: None,
         }

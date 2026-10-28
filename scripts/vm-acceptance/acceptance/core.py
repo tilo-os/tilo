@@ -8,7 +8,9 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import session_unit
+import shlex
+
+from . import guest_wait, session_unit
 from .vm import VmError, wait_until
 
 # Who fixes what: each area's failures are routed to its owner.
@@ -22,6 +24,7 @@ AREAS = {
     "basics": "Basics: hardware controls, keyboard, displays",
     "agent": "Agent door: the in-session MCP path",
     "input": "Input fidelity: real device descriptors, layouts, touchpad",
+    "secrets": "Security and identity: secret custody",
 }
 
 
@@ -33,6 +36,12 @@ class Unobservable(CheckFailed):
     """The check could not observe its subject. Reported as a failure, never a skip."""
 
 
+class Skipped(Exception):
+    """The run lacks what the check needs (a GPU for a GPU check on a software-rendered VM),
+    named in the reason. Reported as `skip`: never a pass, listed in the summary and with
+    the failures, and it does not fail the run, since nothing about the subject was seen."""
+
+
 class ExpectedFailure(CheckFailed):
     """The subject is known to be broken or missing in this image, and the reason is named.
 
@@ -40,6 +49,16 @@ class ExpectedFailure(CheckFailed):
     starts passing the moment the product does. Raise it only for a *named, checkable*
     precondition (a socket the image should serve and does not), never for an observation
     that merely went wrong: that stays a failure."""
+
+
+class BudgetExceeded(CheckFailed):
+    """The subject worked, and a measurement of it went over its budget: time, CPU, frames,
+    memory. A run that gates on budgets (`--budgets gate`, the default) fails it like any
+    other failure; one that reports them (`--budgets report`) records it as `over-budget`,
+    which does not fail the run. Release candidates are verified on t's shared, GPU-less
+    workers, whose timings say more about the worker than about the commit: there the
+    budgets are reported until they run on dedicated or GPU runners. Raise it through
+    `judge`, never for a subject that did not work."""
 
 
 @dataclass
@@ -97,10 +116,46 @@ def _calibrated(func, why: str):
     return run
 
 
+# The session locks after 5 minutes without a person's input (Settings' default), and the
+# harness drives most checks through the control socket, which is no person's input: R01 to
+# R03 alone run that long, and the idle lock then fired inside R03 (its compositor memory
+# taken over the lock overlay, the session left locked). A lone Shift press, real input that
+# no binding takes, restarts the person's idle period before a check once the last one is
+# this old; the settle keeps its handling out of the check's own idle windows.
+AWAKE_EVERY_S = 120
+AWAKE_SETTLE_S = 2.0
+
+
+def keep_awake(ctx) -> None:
+    """Press Shift on the slot's seat when the last press is `AWAKE_EVERY_S` old (or there was
+    none), so no check meets the idle dim, blank or lock it is not about. run.py calls it
+    before each check."""
+    now = time.monotonic()
+    last = ctx.facts.get("awake_at")
+    if last is not None and now - last < AWAKE_EVERY_S:
+        return
+    try:
+        ctx.vm.key("shift")
+    except VmError as exc:
+        ctx.facts["awake_failed"] = exc.reason()
+        return
+    ctx.facts["awake_at"] = now
+    time.sleep(AWAKE_SETTLE_S)
+
+
 def run_check(ctx, chk: Check) -> Result:
     res = Result(chk.id, chk.area, chk.title)
     started = time.monotonic()
     ctx.current = res
+    lost = getattr(ctx.vm, "restart_failed", None)
+    if isinstance(lost, str) and lost:
+        # The session stopped answering and the harness could not bring it back: this check
+        # cannot observe anything, and waiting out its bounds would only delay the report.
+        res.status, res.unobservable = "fail", True
+        res.detail = f"not run: the slot session was lost after {ctx.facts.get('session_lost_after', 'an earlier check')} ({lost})"
+        res.seconds = 0.0
+        ctx.current = None
+        return res
     if "session_unit" not in ctx.facts:
         ctx.facts["session_unit"] = session_unit.show(ctx)
         ctx.facts["session_requested"] = getattr(ctx.vm, "requested_restarts", 0)
@@ -113,8 +168,13 @@ def run_check(ctx, chk: Check) -> Result:
         res.status = "pass"
     except ExpectedFailure as exc:
         res.status, res.detail = "xfail", _join(res.detail, f"expected failure: {exc}")
+    except Skipped as exc:
+        res.status, res.detail = "skip", _join(res.detail, f"skipped: {exc}")
     except Unobservable as exc:
         res.status, res.unobservable, res.detail = "fail", True, _join(res.detail, str(exc))
+    except BudgetExceeded as exc:
+        reported = ctx.config.get("budget_mode") == "report"
+        res.status, res.detail = ("over-budget" if reported else "fail"), _join(res.detail, str(exc))
     except CheckFailed as exc:
         res.status, res.detail = "fail", _join(res.detail, str(exc))
     except Exception as exc:  # noqa: BLE001 - any error is a failed check, with its trace
@@ -123,15 +183,149 @@ def run_check(ctx, chk: Check) -> Result:
         res.detail = _join(res.detail, f"{type(exc).__name__}: {exc}")
         (ctx.out / "errors").mkdir(exist_ok=True)
         (ctx.out / "errors" / f"{chk.id}.txt").write_text(traceback.format_exc())
+        res.evidence.append(f"errors/{chk.id}.txt")
+    leave_running(ctx, chk, res)
     leave_unlocked(ctx, chk, res)
+    leave_no_stuck_windows(ctx, chk, res)
     leave_no_dialog(ctx, chk, res)
     restarted = session_restart(ctx, chk.id)
     if restarted:
         res.status = "fail"
         res.detail = _join(res.detail, restarted)
+    if isinstance(getattr(ctx.vm, "restart_failed", None), str):
+        ctx.facts.setdefault("session_lost_after", chk.id)
     res.seconds = round(time.monotonic() - started, 2)
     ctx.current = None
     return res
+
+
+LEFT_STOPPED = "left no slot session answering"
+# How long a session that is not answering after a check is given to come back by itself
+# (systemd's Restart= after a crash, a session still starting) before the harness restarts it.
+SESSION_RETURN_S = 60
+
+
+def leave_running(ctx, chk: Check, res: Result) -> None:
+    """No check may hand the next one a slot whose session does not answer: every later
+    check would fail on a missing control socket instead of its subject (after A17 ended
+    the session on purpose and the next one died too, R04 and W01-W07 all failed so). A
+    session that does not answer is waited for until its control socket answers again,
+    as long as systemd may still be bringing it back; one still silent after that is
+    restarted by the harness and the check fails, however it ended."""
+    def answering():
+        try:
+            return ctx.state()
+        except VmError:
+            return None
+
+    if answering() is not None:
+        return
+    if wait_until(answering, SESSION_RETURN_S, 2.0) is not None:
+        return
+    res.status = "fail"
+    ctx.facts.setdefault("session_recovered_after", []).append(chk.id)
+    try:
+        ctx.vm.restart_session()
+    except VmError as exc:
+        res.detail = _join(res.detail, f"{LEFT_STOPPED} within {SESSION_RETURN_S} s, and restarting "
+                                       f"the slot session failed: {exc.reason()}")
+        return
+    res.detail = _join(res.detail, f"{LEFT_STOPPED} within {SESSION_RETURN_S} s; the harness "
+                                   "restarted the slot session")
+
+
+LEFT_STUCK = "left a window that does not close"
+# The facts key under which a check names the window groups it hands on to later checks.
+KEPT_WINDOWS = "kept_windows"
+# How long the windows of an app the harness ended are given to go.
+STUCK_GONE_S = 15
+
+
+# Per thread of each pid: its name, the kernel function it sleeps in and the top of its
+# kernel stack, so a window that would not close says what its app was waiting for.
+_STUCK_THREADS = r'''for pid in __PIDS__; do for t in /proc/$pid/task/*; do
+  printf '%s/%s %s %s %s\n' "$pid" "${t##*/}" "$(cat $t/comm 2>/dev/null)" "$(cat $t/wchan 2>/dev/null)" \
+    "$(head -n 2 $t/stack 2>/dev/null | sed 's/^\[<[0-9a-f]*>\] //' | tr '\n' ' ')"
+done; done'''
+
+
+def stuck_threads(ctx, pids: list[int]) -> str | None:
+    """What the threads of `pids` sleep in, grouped by name and kernel function: e.g.
+    "store×3 futex_wait_queue; store-net poll_schedule_timeout". None when unreadable."""
+    try:
+        text = ctx.vm.root_exec(_STUCK_THREADS.replace("__PIDS__", " ".join(map(str, pids))), timeout=60)
+    except VmError:
+        return None
+    seen: dict[str, int] = {}
+    for line in text.splitlines():
+        parts = line.split(maxsplit=3)
+        if len(parts) < 3:
+            continue
+        key = f"{parts[1]} {parts[2]}" + (f" ({parts[3].strip()[:80]})" if len(parts) > 3 and parts[3].strip() else "")
+        seen[key] = seen.get(key, 0) + 1
+    return "; ".join(f"{k}×{n}" if n > 1 else k for k, n in list(seen.items())[:8]) or None
+
+
+def leave_no_stuck_windows(ctx, chk: Check, res: Result) -> None:
+    """No check may hand the next one a window that does not close: every later check
+    begins by closing every window, and one that survives fails all of them (after A05 left
+    the Store open, about 30 checks failed with "windows still open after closing every
+    group"). Windows a check leaves open are closed here, the way the next check would;
+    the app of one that survives its close has its processes ended, and the slot session
+    is restarted if its window still stays. The check that left it fails, however it ended."""
+    try:
+        left = {g.get("id") for g in all_groups(ctx.state())}
+    except (VmError, KeyError, TypeError):
+        return  # no state to read: leave_running owns that
+    # Windows a check hands on to the checks after it (W01's two for W02-W07) are not
+    # this check's leftovers: closing them broke every check that needs them.
+    if not left - set(ctx.facts.get(KEPT_WINDOWS, ())):
+        return
+    try:
+        ctx.close_all_windows()
+        return
+    except CheckFailed:
+        pass
+    except VmError:
+        return
+    res.status = "fail"
+    try:
+        stuck = sorted({tab_app(t) for g in all_groups(ctx.state()) for t in g.get("tabs", [])} - {None})
+    except (VmError, KeyError, TypeError):
+        stuck = []
+    ended = []
+    try:
+        procs = processes(ctx)["procs"]
+        pids = sorted(p["pid"] for p in procs.values() if p.get("app") in stuck)
+        if pids:
+            waiting = stuck_threads(ctx, pids)
+            if waiting:
+                res.detail = _join(res.detail, f"its processes were waiting in: {waiting}")
+            ctx.vm.root_exec("kill -KILL " + " ".join(map(str, pids)) + " 2>/dev/null; true")
+            ended = sorted({procs[pid]["app"] for pid in pids})
+    except VmError:
+        pass
+
+    def gone():
+        try:
+            return not all_groups(ctx.state()) or None
+        except (VmError, KeyError, TypeError):
+            return None
+
+    how = (f"the harness ended {', '.join(ended)}" if ended
+           else "no process of it was found to end")
+    if ended and wait_until(gone, STUCK_GONE_S, 1.0):
+        res.detail = _join(res.detail, f"{LEFT_STUCK} ({', '.join(stuck) or 'unknown app'}); {how}")
+        return
+    ctx.facts.setdefault("session_recovered_after", []).append(chk.id)
+    try:
+        ctx.vm.restart_session()
+    except VmError as exc:
+        res.detail = _join(res.detail, f"{LEFT_STUCK} ({', '.join(stuck) or 'unknown app'}); {how}, "
+                                       f"and restarting the slot session failed: {exc.reason()}")
+        return
+    res.detail = _join(res.detail, f"{LEFT_STUCK} ({', '.join(stuck) or 'unknown app'}); {how}, "
+                                   "and the harness restarted the slot session")
 
 
 LEFT_LOCKED = "left the session locked"
@@ -261,9 +455,14 @@ def dismiss_surfaces(ctx) -> str:
     with none of them. Returns how it went; never raises."""
     for _ in range(DISMISS_ESCAPES):
         try:
+            before = open_surfaces(ctx.state())
+            if not before:
+                return "the harness closed it with Escape"
             ctx.vm.key("Escape")
-            time.sleep(0.6)
-            if not open_surfaces(ctx.state()):
+            # Escape closes the top surface; the next press is for what is still open.
+            now = wait_until(lambda: (left,) if (left := open_surfaces(ctx.state())) != before else None,
+                             3, 0.2)
+            if now is not None and not now[0]:
                 return "the harness closed it with Escape"
         except (VmError, KeyError, TypeError):
             break
@@ -309,6 +508,15 @@ def _join(a: str, b: str) -> str:
 def expect(cond, message: str):
     if not cond:
         raise CheckFailed(message)
+
+
+def judge(problems: list[str], over: list[str], suffix: str = "") -> None:
+    """End a check that measures against budgets: `problems` (what did not work) fail it,
+    naming what went `over` budget beside them; budgets alone raise `BudgetExceeded`."""
+    if problems:
+        raise CheckFailed("; ".join(problems + over) + suffix)
+    if over:
+        raise BudgetExceeded("; ".join(over) + suffix)
 
 
 # -- facts off a state dump ----------------------------------------------------
@@ -430,6 +638,83 @@ def session_log_mark(ctx) -> int:
     return int(digits[0]) if digits else 0
 
 
+# The compositor warns with this line, its phase timings attached, whenever the work
+# it does before a paint holds input up.
+PUMP_STALL = "pre-paint pump"
+
+
+def parse_cpu_ticks(stat: str) -> tuple[int, int] | None:
+    """(total, steal) jiffies of all CPUs from `/proc/stat`'s first line."""
+    for line in stat.splitlines():
+        parts = line.split()
+        if parts and parts[0] == "cpu":
+            values = [int(v) for v in parts[1:9] if v.isdigit()]
+            if len(values) < 8:
+                return None
+            return sum(values), values[7]
+    return None
+
+
+def cpu_ticks(ctx) -> tuple[int, int] | None:
+    """The guest's (total, steal) CPU jiffies now; `steal_percent` compares two."""
+    return parse_cpu_ticks(ctx.vm.exec("head -n 1 /proc/stat", check=False) or "")
+
+
+def steal_percent(before: tuple[int, int] | None, after: tuple[int, int] | None) -> float | None:
+    """The share of the guest's CPU time the host took (steal) between two readings."""
+    if not before or not after:
+        return None
+    total = after[0] - before[0]
+    if total <= 0:
+        return None
+    return round(100.0 * (after[1] - before[1]) / total, 1)
+
+
+def pump_lines_after(ctx, mark: int) -> list[str]:
+    """The compositor's pre-paint pump stall lines since session-log line `mark`."""
+    out = ctx.vm.exec(f'tail -n +{mark + 1} "{SESSION_LOG}" 2>/dev/null '
+                      f'| grep -a "{PUMP_STALL}"; true', check=False) or ""
+    return [line.strip() for line in out.splitlines() if PUMP_STALL in line]
+
+
+SLOW_SCENE = re.compile(r"SLOW-SCENE total=([0-9.]+)(ms|µs|us|s) (.*)")
+
+
+def slowest_scenes(lines: list[str], n: int = 2) -> list[str]:
+    """The `n` slowest `SLOW-SCENE` lines (a retained scene build over 16 ms, split by phase
+    and by desktop section), slowest first, each as `total: phase=… section=…`."""
+    def ms(value: str, unit: str) -> float:
+        return float(value) * {"ms": 1.0, "µs": 1e-3, "us": 1e-3, "s": 1e3}[unit]
+
+    found = [(ms(m[1], m[2]), m[3]) for m in (SLOW_SCENE.search(line) for line in lines) if m]
+    return [f"{total:.1f} ms: {split[:400]}" for total, split in sorted(found, reverse=True)[:n]]
+
+
+def frame_pacing_evidence(ctx, check_id: str, log_mark: int, cpu_before) -> str:
+    """What a failed frame-pacing scenario leaves to tell its stalls apart: the
+    compositor's per-phase pump breakdown for every pump that held input up since
+    `log_mark` (all of them in `<check_id>-pump.log`) and the share of the guest's CPU
+    the host took meanwhile. A sentence fragment for the failure message."""
+    steal = steal_percent(cpu_before, cpu_ticks(ctx))
+    lines = pump_lines_after(ctx, log_mark)
+    ctx.write(f"{check_id}-pump.log", "\n".join(lines) + "\n")
+    steal_text = "unreadable" if steal is None else f"{steal}%"
+    if not lines:
+        pumps = "no pre-paint pump stall line in the session log"
+    else:
+        shown = "; ".join(line[-320:] for line in lines[-3:])
+        pumps = f"{len(lines)} pre-paint pump stall line(s), the last: {shown}"
+    # The compositor names where a slow scene build went (`SLOW-SCENE`: its phases and the
+    # desktop sections drawn); a failed check keeps no files, so the slowest go here.
+    scenes = slowest_scenes((ctx.vm.exec(
+        f'tail -n +{log_mark + 1} "{SESSION_LOG}" 2>/dev/null | grep -a "SLOW-SCENE"; true',
+        check=False) or "").splitlines())
+    scene_text = (f"; slowest scene builds: {' | '.join(scenes)}" if scenes
+                  else "; no SLOW-SCENE line in the session log")
+    return (f" [guest CPU steal over the scenario {steal_text}; {pumps}{scene_text}; "
+            f"{check_id}-pump.log has them all]")
+
+
 def switch_lines_after(ctx, mark: int) -> list[dict]:
     return parse_switch_lines(ctx.vm.exec(
         f'tail -n +{mark + 1} "{SESSION_LOG}" 2>/dev/null | grep -a "WORKSPACE-SWITCH"; true', check=False))
@@ -543,6 +828,18 @@ def has_cpu(rows: list[dict]) -> bool:
     return any(isinstance(r.get("cpu_us"), int) for r in rows)
 
 
+def own_cpu_us(r: dict):
+    """The loop thread's CPU on tick `r` less what it spent answering this harness on
+    the test-control socket (`testctl_cpu_us`): a request lands in whichever tick runs
+    when it arrives, and a state dump is the harness's cost, not the session's. `None`
+    where the trace has no `cpu_us`."""
+    cpu = r.get("cpu_us")
+    if not isinstance(cpu, int):
+        return None
+    harness = r.get("testctl_cpu_us")
+    return max(0, cpu - harness) if isinstance(harness, int) else cpu
+
+
 def _tick_walls(rows: list[dict]):
     """(tick, wall time outside its park) for each tick with a successor: a row's
     `period_us` runs from the previous tick's start, so it holds the previous tick's
@@ -560,7 +857,7 @@ def frame_stats(rows: list[dict]) -> dict:
     descheduled or blocked."""
     painted = [r for r in rows if r.get("painted") == 1]
     work = [wall for r, wall in _tick_walls(rows) if r.get("painted") == 1]
-    cpu = [r["cpu_us"] for r in painted if isinstance(r.get("cpu_us"), int)]
+    cpu = [c for c in (own_cpu_us(r) for r in painted) if c is not None]
     periods = [r["period_us"] for r in painted if r["period_us"] > 0]
     latency = [r["input_latency_us"] for r in rows if isinstance(r.get("input_latency_us"), int)]
     blocked = [r for r in rows if r.get("backpressured") == 1]
@@ -601,9 +898,9 @@ def tick_phases(r):
     if r is None:
         return None
     phases = {k[:-3] + "_ms": _ms(r[k]) for k in ("input_us", "pump_us", "layout_us", "scene_us",
-                                                  "submit_us", "clients_us")
+                                                  "submit_us", "clients_us", "testctl_us")
               if isinstance(r.get(k), int)}
-    cpu = _ms(r["cpu_us"]) if isinstance(r.get("cpu_us"), int) else None
+    cpu = _ms(own_cpu_us(r))
     return {"seq": r.get("seq"), "cpu_ms": cpu, **phases, "input_step": r.get("input_step") or "",
             "paint_reasons": r.get("paint_reasons") or ""}
 
@@ -655,13 +952,13 @@ def transition_stats(rows: list[dict]) -> dict:
             if prev_submit is not None:
                 value = max(0, min(x["deadline_late_us"], submit - max(prev_submit, ready or 0)))
                 late.append(value)
-                if isinstance(x.get("cpu_us"), int):
-                    late_cpu.append(min(value, x["cpu_us"]))
+                if own_cpu_us(x) is not None:
+                    late_cpu.append(min(value, own_cpu_us(x)))
             prev_submit, ready = submit, None
         elif x.get("backpressured") == 1 and nxt is not None:
             ready = nxt["start_us"]
-    cpu = [r["cpu_us"] for r in rows if isinstance(r.get("cpu_us"), int)]
-    worst = max((r for r in rows if isinstance(r.get("cpu_us"), int)), key=lambda r: r["cpu_us"],
+    cpu = [c for c in (own_cpu_us(r) for r in rows) if c is not None]
+    worst = max((r for r in rows if own_cpu_us(r) is not None), key=own_cpu_us,
                 default=None)
     # The longest tick by wall time outside its park, and how much of that was CPU.
     longest = max(((wall, r) for r, wall in walls), key=lambda t: t[0], default=(None, {}))
@@ -696,7 +993,7 @@ def transition_stats(rows: list[dict]) -> dict:
         "cpu_ms_p95": _ms(percentile(cpu, 95)),
         "cpu_ms_max": _ms(max(cpu) if cpu else None),
         "longest_tick_ms": _ms(longest[0]),
-        "longest_tick_cpu_ms": _ms(longest[1].get("cpu_us") if isinstance(longest[1].get("cpu_us"), int) else None),
+        "longest_tick_cpu_ms": _ms(own_cpu_us(longest[1])),
         "input_to_first_frame_ms": input_ms,
         "input_to_first_frame_compositor_ms": input_compositor_ms,
         "present_interval_ms_p50": _ms(percentile(gaps, 50)),
@@ -726,6 +1023,26 @@ def region_stats(img, rect) -> dict:
     crop = img.crop((x, y, min(img.width, x + max(1, w)), min(img.height, y + max(1, h)))).convert("L")
     st = ImageStat.Stat(crop)
     return {"mean": round(st.mean[0] / 255, 3), "stddev": round(st.stddev[0] / 255, 3)}
+
+
+def region_ink(img, rect, inset: int = 2, spread: float = 0.08) -> int:
+    """Pixels of `rect` (x, y, w, h), `inset` px in from its edges, whose luminance is more
+    than `spread` (0-1) away from the region's most common one: what a client drew on its
+    background. A flat fill has none; a terminal's one-line prompt has a few hundred."""
+    x, y, w, h = (int(round(v)) for v in rect)
+    box = (max(0, x + inset), max(0, y + inset),
+           min(img.width, x + w - inset), min(img.height, y + h - inset))
+    if box[2] <= box[0] or box[3] <= box[1]:
+        return 0
+    return histogram_ink(img.crop(box).convert("L").histogram(), spread)
+
+
+def histogram_ink(hist, spread: float = 0.08) -> int:
+    """Of a 256-bin luminance histogram, the pixels more than `spread` (0-1) away from
+    its most common value."""
+    mode = max(range(len(hist)), key=hist.__getitem__)
+    reach = spread * 255
+    return sum(count for value, count in enumerate(hist) if abs(value - mode) > reach)
 
 
 def region_diff(a, b, rect) -> float:
@@ -812,12 +1129,29 @@ def _mb(kib_or_bytes: str, unit: int) -> float | None:
     return None if kib_or_bytes == "-" else round(int(kib_or_bytes) * unit / 2**20, 1)
 
 
+# An app's unit below the launcher's scope: `.../app-<id>-<n>/...`, the id escaped the way
+# systemd escapes a unit name (`-` is `\x2d`).
+_APP_UNIT = re.compile(r"/tilo-apps-\d+\.scope/app-((?:[^/-]|\\x2d)+)-\d+(?:/|$)")
+
+
+def app_of_cgroup(path: str) -> str | None:
+    """The app a cgroup belongs to, from its unit name below the launcher's scope
+    (`.../tilo-apps-N.scope/app-so.tilo.file\x2dexplorer-5/main` is so.tilo.file-explorer),
+    or None for a cgroup that is no app's."""
+    found = _APP_UNIT.search(path or "")
+    if not found:
+        return None
+    return re.sub(r"\\x([0-9a-fA-F]{2})", lambda m: chr(int(m[1], 16)), found[1])
+
+
 def parse_processes(text: str) -> dict:
     """`PROCESSES` output -> {"procs": {pid: ...}, "cgroups": {path: ...}, "meminfo_mb",
     "meminfo_kib", "zones", "page_size", "greeter_uid", "tmpfs"}.
 
     Each process carries `app`: the `--app-id` of the nearest `tilo-launcher` at or above it,
-    so an app is its launcher's whole process tree, whatever its processes are called. Each
+    so an app is its launcher's whole process tree, whatever its processes are called; or,
+    for an app the session's shared spawner started (no launcher of its own above it), the
+    app its cgroup's unit names (`app_of_cgroup`). Each
     cgroup carries `charged_at`: itself, or the nearest ancestor with a memory controller,
     where its memory is charged (None: nowhere the dump could read)."""
     procs, cgroups, kib, zones, tmpfs, greeter, page = {}, {}, {}, {}, [], None, None
@@ -849,7 +1183,7 @@ def parse_processes(text: str) -> dict:
         while cur and cur["launches"] is None and cur["pid"] not in seen:
             seen.add(cur["pid"])
             cur = procs.get(cur["ppid"])
-        p["app"] = cur["launches"] if cur else None
+        p["app"] = (cur["launches"] if cur else None) or app_of_cgroup(p["cgroup"])
     return {"procs": procs, "cgroups": cgroups, "meminfo_kib": kib,
             "meminfo_mb": {k: v // 1024 for k, v in kib.items()}, "zones": zones, "page_size": page,
             "greeter_uid": greeter, "tmpfs": sorted(tmpfs, key=lambda t: -t["used_mib"])}
@@ -857,6 +1191,26 @@ def parse_processes(text: str) -> dict:
 
 def processes(ctx) -> dict:
     return parse_processes(ctx.vm.root_exec(PROCESSES))
+
+
+def _guest_wait(run, args: list, seconds: float) -> bool:
+    out = run(f"python3 - {shlex.join(args)} <<'EOF'\n{guest_wait.script()}\nEOF\necho \"wait-status=$?\"",
+              timeout=seconds + 60, check=False)
+    return "wait-status=0" in (out or "")
+
+
+def wait_app_exit(ctx, app: str, seconds: float) -> bool:
+    """Block until no process of `app` is left (pidfds in the guest), at most `seconds`:
+    one round trip that returns when its last process exits. True when none is left."""
+    return _guest_wait(ctx.vm.root_exec, ["exit", app, str(seconds)], seconds)
+
+
+def wait_log_line(ctx, path: str, first_line: int, seconds: float, *patterns: str) -> bool:
+    """Block until a line of the slot user's file `path` (sh-expanded) from line
+    `first_line` on matches one of the regexes `patterns` (inotify in the guest), at most
+    `seconds`."""
+    return _guest_wait(lambda script, **kw: ctx.vm.exec(script.replace("__PATH__", f'"{path}"', 1), **kw),
+                       ["line", "__PATH__", str(first_line), str(seconds), *patterns], seconds)
 
 
 # Read as root, for one process (the compositor): what its anonymous memory is. Its
@@ -1008,10 +1362,14 @@ def assert_terminal_shell_performance(seconds: float | None) -> None:
 
 # Terminal's shells are not the app's processes: each runs in a guest the
 # `tilo-ush` user service starts, so they are found in its cgroup.
-_USH_SHELLS = ('cg=$(systemctl --user show -p ControlGroup --value tilo-ush.service 2>/dev/null); '
-               '[ -n "$cg" ] || exit 0; '
-               'for p in $(cat $(find "/sys/fs/cgroup$cg" -name cgroup.procs 2>/dev/null) 2>/dev/null); do '
-               '[ "$(cat /proc/$p/comm 2>/dev/null)" = bash ] && echo "$p"; done; true')
+# A guest's shell is a bash whose ancestors include the `tilo-ush run` that built its guest.
+# It runs as a job of the app that asked for it (the Terminal's cgroup), not in
+# tilo-ush.service's, so it is found by ancestry, not by cgroup.
+_USH_SHELLS = ('for p in $(pgrep -u "$(id -u)" -x bash); do q=$p; '
+               'for _ in 1 2 3 4 5 6; do q=$(awk \'/^PPid:/ {print $2}\' /proc/$q/status 2>/dev/null); '
+               '[ -n "$q" ] && [ "$q" -gt 1 ] || break; '
+               'case "$(tr \'\\0\' \' \' < /proc/$q/cmdline 2>/dev/null)" in *"tilo-ush run"*) echo "$p"; break;; esac; '
+               'done; done; true')
 
 
 def terminal_shells(ctx) -> set[int]:
@@ -1054,6 +1412,57 @@ echo "== session logs mentioning ush or terminal"
 grep -rIh -i -E "tilo-ush|ush\.sock|so\.tilo\.terminal" "$HOME/.local/state/tilo/session-logs" 2>/dev/null \
   | grep -v APP-STARTUP | tail -80 | cut -c1-400
 '''
+
+
+# What the shell runtime logs when it refuses to start an environment: an
+# image that ships no env-runtime, a store it cannot open (crates/runtime/ush).
+_UNBUILDABLE = "the environment cannot be built"
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def environment_refusal(journal: str) -> str | None:
+    """Why the shell runtime last refused an environment, from its journal, or None.
+
+    A run's report data is not published when the check fails, so a Terminal
+    with no shell has to say in its detail what stopped it."""
+    lines = [_ANSI.sub("", line) for line in journal.splitlines() if _UNBUILDABLE in _ANSI.sub("", line)]
+    if not lines:
+        return None
+    last = lines[-1]
+    reason = last.split("reason=", 1)[1] if "reason=" in last else last.split(_UNBUILDABLE, 1)[1]
+    return reason.strip().strip('"') or None
+
+
+def ush_environment_refusal(ctx) -> str | None:
+    """`environment_refusal` of the slot's `tilo-ush` journal."""
+    try:
+        journal = ctx.vm.exec("journalctl --user -u tilo-ush.service --no-pager -o cat -n 400 2>&1",
+                              timeout=60, check=False)
+    except VmError:
+        return None
+    return environment_refusal(journal)
+
+
+_USH_EVIDENCE = r'''set +e
+echo "journal: $(journalctl --user -u tilo-ush.service --no-pager -o cat -n 200 2>&1 | grep -v '^$' | tail -n 4 | tr '\n' '|' | cut -c1-900)"
+echo "session log: $(grep -rIh -i -E "tilo-ush|ush\.sock|so\.tilo\.terminal" "$HOME/.local/state/tilo/session-logs" 2>/dev/null | grep -v APP-STARTUP | tail -n 3 | tr '\n' '|' | cut -c1-900)"
+echo "guests: $(ps -u "$(id -u)" -o pid=,etimes=,time=,args= 2>/dev/null | grep -E 'tilo-ush (run|guest-init)' | grep -v grep | cut -c1-160 | tr '\n' '|')"
+echo "guest threads waiting in: $(for p in $(pgrep -u "$(id -u)" -f 'tilo-ush (run|guest-init)'); do ps -L -o comm=,wchan:32= -p "$p" 2>/dev/null; done | sort | uniq -c | sort -rn | head -n 8 | awk '{$1=$1; print}' | tr '\n' '|')"
+'''
+
+
+def ush_evidence(ctx) -> str | None:
+    """What a Terminal with no shell can say in its detail, since a failed run publishes no
+    report data: the shell runtime's last journal lines (its runtime import's start and
+    duration among them), the session log's last lines about it or Terminal, and the guest
+    processes still running with their age and CPU time. None when nothing could be read."""
+    try:
+        text = ctx.vm.exec(_USH_EVIDENCE, timeout=60, check=False)
+    except VmError:
+        return None
+    lines = [_ANSI.sub("", line).strip() for line in text.splitlines()
+             if line.strip() and not line.rstrip().endswith(":")]
+    return "; ".join(lines) or None
 
 
 def ush_diagnostics(ctx) -> str:

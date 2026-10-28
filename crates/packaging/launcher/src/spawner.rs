@@ -76,7 +76,6 @@ const MAX_REPLY: usize = 8 << 10;
 /// `CLONE_INTO_CGROUP` (Linux 5.7).
 const CLONE_INTO_CGROUP: u64 = 0x2_0000_0000;
 
-/// `CLONE_PARENT`.
 const CLONE_PARENT: u64 = 0x8000;
 
 /// `struct clone_args`, version 2 (with `cgroup`).
@@ -110,8 +109,6 @@ fn send(socket: &OwnedFd, fields: &[&[u8]], fds: &[BorrowedFd<'_>]) -> io::Resul
 fn receive(socket: &OwnedFd, buffer: &mut [u8]) -> io::Result<Option<(usize, Vec<OwnedFd>)>> {
     jobs::receive(socket.as_fd(), buffer)
 }
-
-// --- the spawner -----------------------------------------------------------
 
 /// The most job connections served at once.
 const MAX_JOB_CLIENTS: usize = 64;
@@ -600,8 +597,6 @@ impl Server {
         }
     }
 
-    // --- jobs ------------------------------------------------------------
-
     fn accept_job_clients(&mut self) {
         let Some(jobs) = self.jobs.as_ref() else {
             return;
@@ -948,8 +943,6 @@ unsafe fn fail_child(report: RawFd) -> ! {
     }
 }
 
-// --- the compositor's side ---------------------------------------------------
-
 /// A launch for the spawner, as `Command` would have run it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Request {
@@ -1086,10 +1079,6 @@ impl DelegatedChild {
     }
 
     /// Wait for the launcher to exit and reap it, as `Child::wait` does.
-    ///
-    /// # Errors
-    ///
-    /// The kernel's error other than an interruption.
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
         if let Some(status) = self.status {
             return Ok(status);
@@ -1178,10 +1167,6 @@ impl Spawner {
     /// Start `launcher_bin app-spawner` and wait for its answer: the tree
     /// it serves, or why there is none. `tree` hands it a cgroupfs directory
     /// instead of the user manager's.
-    ///
-    /// # Errors
-    ///
-    /// The reason there is no spawner, for the log.
     pub fn start(launcher_bin: &Path, tree: Option<&Path>) -> Result<Self, String> {
         use rustix::net::{AddressFamily, SocketFlags, SocketType, socketpair};
         let (ours, theirs) = socketpair(
@@ -1446,12 +1431,6 @@ pub fn spawn_gated(
     }
 }
 
-/// The tree this compositor's spawner serves, once it runs.
-#[must_use]
-pub fn session_tree() -> Option<&'static Path> {
-    SESSION.get().map(Spawner::tree)
-}
-
 /// Why the app whose cgroup is `app` ended, if memory ended it, from this
 /// compositor's spawner. Ask once, after its launcher was reaped.
 #[must_use]
@@ -1469,9 +1448,9 @@ mod tests {
         let request = Request {
             app_id: "so.tilo.notes".into(),
             kind: AppKind::Tilo,
-            program: "/usr/bin/tilo-launcher".into(),
+            program: "/usr/libexec/tilo/tilo-launcher".into(),
             args: vec![
-                "/usr/bin/tilo-launcher".into(),
+                "/usr/libexec/tilo/tilo-launcher".into(),
                 "run".into(),
                 String::new().into(),
             ],
@@ -1485,7 +1464,10 @@ mod tests {
         let launch = Launch::parse(&decoded).expect("parses");
         assert_eq!(launch.app_id, "so.tilo.notes");
         assert_eq!(launch.kind, AppKind::Tilo);
-        assert_eq!(launch.program.as_bytes(), b"/usr/bin/tilo-launcher");
+        assert_eq!(
+            launch.program.as_bytes(),
+            b"/usr/libexec/tilo/tilo-launcher"
+        );
         assert_eq!(launch.cwd.as_bytes(), b"/");
         // An empty argument survives; it is not an empty environment entry.
         assert_eq!(
@@ -1494,7 +1476,7 @@ mod tests {
                 .iter()
                 .map(CString::as_bytes)
                 .collect::<Vec<_>>(),
-            [b"/usr/bin/tilo-launcher".as_slice(), b"run", b""]
+            [b"/usr/libexec/tilo/tilo-launcher".as_slice(), b"run", b""]
         );
         assert_eq!(
             launch.env.iter().map(CString::as_bytes).collect::<Vec<_>>(),
@@ -1502,7 +1484,6 @@ mod tests {
         );
         // A NUL cannot be smuggled in to shift the fields.
         assert!(encode(&[b"spawn", b"a\0b"]).is_err());
-        // Relative programs, short and wrong requests are refused.
         let mut relative = fields.clone();
         relative[3] = b"tilo-launcher".to_vec();
         let refs: Vec<&[u8]> = relative.iter().map(Vec::as_slice).collect();
@@ -1533,7 +1514,7 @@ mod tests {
 
     #[test]
     fn a_request_is_what_the_command_would_have_run() {
-        let mut command = Command::new("/usr/bin/tilo-launcher");
+        let mut command = Command::new("/usr/libexec/tilo/tilo-launcher");
         command
             .args(["run", "--app-id", "so.tilo.notes"])
             .env("TILO_SPAWNER_TEST_SET", "1")
@@ -1542,9 +1523,14 @@ mod tests {
         let request = Request::from_command(&command, "so.tilo.notes", AppKind::Tilo).unwrap();
         assert_eq!(
             request.args,
-            ["/usr/bin/tilo-launcher", "run", "--app-id", "so.tilo.notes"]
-                .map(OsString::from)
-                .to_vec()
+            [
+                "/usr/libexec/tilo/tilo-launcher",
+                "run",
+                "--app-id",
+                "so.tilo.notes"
+            ]
+            .map(OsString::from)
+            .to_vec()
         );
         let has = |key: &str| request.env.iter().any(|(k, _)| k == key);
         assert!(has("TILO_SPAWNER_TEST_SET"));

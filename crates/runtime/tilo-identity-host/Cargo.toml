@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "The host side of the app identity service: the identity broker apps sign through, the identity registry, device fleet and collaboration identity provisioning."
+description = "The host side of the app identity service: the identity broker apps sign through, the identity registry, device fleet and collaboration identity provisioning, and the tilo-identity command."
 
 # No compositor: the desktop session and the standalone runtime both host it,
 # each supplying its workspaces and channel service through the broker's traits.
@@ -13,6 +13,10 @@ description = "The host side of the app identity service: the identity broker ap
 name = "tilo_identity_host"
 path = "src/lib.rs"
 
+[[bin]]
+name = "tilo-identity"
+path = "src/bin/tilo-identity.rs"
+
 [features]
 # Compiles the throwaway test identity into a release build (dev images only).
 throwaway-test-identity = []
@@ -20,12 +24,19 @@ throwaway-test-identity = []
 native-current-device-qualification = []
 
 [dependencies]
+# `tilo-identity`, this account's identity from a shell.
+anyhow.workspace = true
+clap.workspace = true
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-paths.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
-tilo-files = { path = "../../platform/tilo-files", features = ["json"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["json", "watch"] }
 collab-types = { path = "../../collab/collab-types" }
 tilo-action-policy = { path = "../../collab/action-policy" }
+# The answers the identity steps give every door (`device_admin`).
+tilo-actions = { path = "../../collab/actions" }
+# The pairing code every screen of a pairing shows (`certification_ceremony`).
+blake3.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 getrandom.workspace = true
 hex.workspace = true
@@ -47,6 +58,9 @@ tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
 tilo-seal = { path = "../../system/tilo-seal" }
 tracing.workspace = true
+# `tilo-identity approve` on a device without the identity's key asks the
+# session, which reaches the devices that hold it.
+tilo-control = { path = "../../session/control-cli" }
 # The identity record encoder shared with the interactive identity ceremony.
 tilo-identity-ceremony = { version = "0.1.0", path = "../../collab/tilo-identity-ceremony" }
 wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
@@ -56,12 +70,10 @@ workspace-hack = { version = "0.1" }
 tempfile.workspace = true
 # A commenter's comment, as the change a notes window makes.
 automerge.workspace = true
-blake3.workspace = true
-tilo-actions = { path = "../../collab/actions" }
 tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true
 
 [target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["process", "termios"] }

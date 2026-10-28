@@ -28,7 +28,6 @@ use std::path::Path;
 pub struct FloorAttestation {
     /// `TPMS_ATTEST` structure, marshalled.
     pub attestation: Vec<u8>,
-    /// Signature over it.
     pub signature: Vec<u8>,
     /// Attestation key's public area, so a verifier can check the signature and see that the
     /// key is restricted.

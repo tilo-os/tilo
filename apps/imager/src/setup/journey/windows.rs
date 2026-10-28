@@ -479,7 +479,7 @@ impl InstallerPreview {
             )
             .with_enabled(self.journey.destination == Some(Destination::Computer)),
         ));
-        page::Frame::new(content).build()
+        page::Frame::new(content).with_cursor(self.cursor).build()
     }
 
     pub(super) fn windows_view(&self) -> Box<dyn Widget> {
@@ -736,33 +736,23 @@ impl InstallerPreview {
                     )));
                 }
             }
-            let commands = self.commands.clone();
             content = content.push(Box::new(Field::new(
                 t("installer-windows-exclusion-reason"),
-                TextInput::from_state(&self.windows.exclusion_reason)
-                    .with_id("windows.exclusion-reason")
-                    .on_change(move |value| {
-                        commands.borrow_mut().push(
-                            InstallerPreviewEffect::SetWindowsExclusionReason {
-                                value: value.to_string(),
-                            },
-                        )
-                    }),
+                self.bound(
+                    TextInput::from_state(&self.windows.exclusion_reason)
+                        .with_id("windows.exclusion-reason"),
+                    InstallerPreviewEffect::SET_WINDOWS_EXCLUSION_REASON,
+                ),
             )));
-            let commands = self.commands.clone();
             content = content.push(Box::new(Field::new(
                 t("installer-windows-password"),
-                TextInput::from_state(&self.windows.password)
-                    .with_kind(TextInputKind::Password)
-                    .with_secret(true)
-                    .with_id("windows.password")
-                    .on_change(move |value| {
-                        commands.borrow_mut().push(
-                            InstallerPreviewEffect::SetWindowsPreparationPassword {
-                                value: value.to_string(),
-                            },
-                        )
-                    }),
+                self.bound(
+                    TextInput::from_state(&self.windows.password)
+                        .with_kind(TextInputKind::Password)
+                        .with_secret(true)
+                        .with_id("windows.password"),
+                    InstallerPreviewEffect::SET_WINDOWS_PREPARATION_PASSWORD,
+                ),
             )));
             content = content.push(Box::new(self.button(
                 "windows.export",
@@ -796,7 +786,7 @@ impl InstallerPreview {
             InstallerPreviewEffect::PrepareUsb,
         )));
         content = content.push(Box::new(self.recovery_content()));
-        page::Frame::new(content).build()
+        page::Frame::new(content).with_cursor(self.cursor).build()
     }
 }
 
@@ -1091,7 +1081,7 @@ mod tests {
                 role: "outlook".into(),
             })
             .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let deadline = tilo_test_env::hang_deadline();
         while preview.windows.source_worker.is_some() && std::time::Instant::now() < deadline {
             preview.poll_windows();
             std::thread::yield_now();
@@ -1164,7 +1154,7 @@ mod tests {
                 destination: backup.to_str().unwrap().into(),
             })
             .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let deadline = tilo_test_env::hang_deadline();
         while preview.windows.worker.is_some() && std::time::Instant::now() < deadline {
             preview.poll_windows();
             std::thread::yield_now();

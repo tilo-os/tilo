@@ -31,21 +31,24 @@ use crate::{InputPurpose, OskWidget};
 /// French layout, the emoji panel and a word being composed.
 pub(crate) const SCENARIOS: &[&str] = &[
     "terminal",
+    "terminal-ctrl",
+    "terminal-locked",
     "number",
     "phone",
     "email",
     "url",
     "pin",
     "french",
+    "compact",
+    "large",
     "emoji",
     "composing",
+    "parked",
 ];
 
 /// The on-screen keyboard over its preferences.
 pub struct OskSurface {
     keyboard: OskWidget,
-    /// The person's keyboard preferences, and the revision of them the
-    /// keyboard was last presented.
     preferences: Option<(Setting<OskPreferences>, Option<OskPreferences>)>,
     /// What the keyboard learned from this person, and the revision of it
     /// the keyboard was last presented.
@@ -65,11 +68,22 @@ impl Default for OskSurface {
 }
 
 impl OskSurface {
+    /// Tap the toolbar item `id`, as a scenario's finger would.
+    fn tap_tool(&mut self, id: &str) {
+        if let Some(index) = self
+            .keyboard
+            .toolbar_items()
+            .iter()
+            .position(|item| item.id == id)
+        {
+            self.keyboard.activate_tool(index);
+        }
+    }
+
     pub fn new() -> Self {
         Self::with_keyboard(OskWidget::new())
     }
 
-    /// The surface over `keyboard`.
     pub fn with_keyboard(keyboard: OskWidget) -> Self {
         Self {
             keyboard: keyboard.with_surface_height(),
@@ -305,6 +319,8 @@ impl ResourceSurface<Osk, OskEffect> for OskSurface {
     fn stage(&mut self, scenario: Option<&str>) {
         let staged = match scenario {
             Some("french") => Some(SetPreference::Layout("azerty".into())),
+            Some("compact") => Some(SetPreference::Size("compact".into())),
+            Some("large") => Some(SetPreference::Size("large".into())),
             Some("emoji") => Some(SetPreference::EmojiRecents(
                 [
                     "thumbs up",
@@ -331,6 +347,19 @@ impl ResourceSurface<Osk, OskEffect> for OskSurface {
         }
         match scenario {
             Some("emoji") => self.keyboard.open_emoji_panel(),
+            // A parked keyboard: the strip that brings the keys back, and the
+            // screen under it already the app's again.
+            Some("parked") => self.keyboard.set_parked(true),
+            Some("terminal-ctrl") => {
+                self.keyboard.set_purpose(InputPurpose::Terminal);
+                self.tap_tool("ctrl");
+            }
+            Some("terminal-locked") => {
+                self.keyboard.set_purpose(InputPurpose::Terminal);
+                self.tap_tool("ctrl");
+                self.tap_tool("ctrl");
+                self.tap_tool("alt");
+            }
             Some("composing") => {
                 for letter in ["h", "e", "l"] {
                     self.keyboard.activate_label(letter);

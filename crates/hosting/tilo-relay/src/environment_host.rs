@@ -116,7 +116,6 @@ impl EnvironmentHostConfig {
 }
 
 impl MemberQuota {
-    /// The quota a relay's configuration sets.
     #[must_use]
     pub fn from_config(config: &tilo_relay_protocol::config::EnvironmentsConfig) -> Self {
         Self {
@@ -253,7 +252,6 @@ impl MemberArea {
         }
     }
 
-    /// The area's root.
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
@@ -352,7 +350,6 @@ impl MemberArea {
 pub struct MemberContext {
     /// The certified member.
     pub identity: MemberIdentity,
-    /// Their area.
     pub area: MemberArea,
     /// Their limits.
     pub quota: MemberQuota,
@@ -361,7 +358,6 @@ pub struct MemberContext {
 /// What a launcher needs to start one guest.
 #[derive(Clone, Debug)]
 pub struct GuestRequest {
-    /// The session the guest belongs to.
     pub session: SessionId,
     /// The record it was opened from.
     pub record: EnvironmentRecordRef,
@@ -369,13 +365,11 @@ pub struct GuestRequest {
     pub spec: EnvironmentSpec,
     /// Initial size.
     pub size: PtySize,
-    /// `TERM`.
     pub term: String,
 }
 
 /// A running guest's terminal, as the host drives it.
 pub struct Guest {
-    /// The pty's output.
     pub output: Pin<Box<dyn AsyncRead + Send>>,
     /// The pty's input.
     pub input: Pin<Box<dyn AsyncWrite + Send>>,
@@ -386,10 +380,6 @@ pub struct Guest {
 /// Out-of-band control of a running guest.
 pub trait GuestControl: Send + Sync {
     /// Resize the guest's terminal.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the pty refuses the size.
     fn resize(&self, size: PtySize) -> io::Result<()>;
     /// End the guest. Its output then reaches end of file.
     fn terminate(&self);
@@ -439,14 +429,12 @@ pub enum MeterEvent {
     SessionOpened {
         /// Whose.
         member: MemberIdentity,
-        /// Which.
         session: SessionId,
     },
     /// A session ended after running this long.
     SessionClosed {
         /// Whose.
         member: MemberIdentity,
-        /// Which.
         session: SessionId,
         /// Wall time it ran, milliseconds.
         wall_ms: u64,
@@ -455,7 +443,6 @@ pub enum MeterEvent {
     QuotaRefused {
         /// Whose.
         member: MemberIdentity,
-        /// Which quota.
         quota: QuotaKind,
     },
     /// Legacy VM usage reported by a KVM worker.
@@ -469,7 +456,6 @@ pub enum MeterEvent {
 
 /// Receives metered events; a deployment bills or limits from them.
 pub trait Metering: Send + Sync + 'static {
-    /// Record one event.
     fn record(&self, event: MeterEvent);
 }
 
@@ -619,7 +605,6 @@ impl Slot {
     }
 }
 
-/// Failure on one environment stream.
 #[derive(Debug, Error)]
 pub enum EnvironmentStreamError {
     /// Framing or stream I/O.
@@ -659,7 +644,6 @@ impl Refused {
 }
 
 impl EnvironmentHost {
-    /// A host starting guests with `launcher`.
     #[must_use]
     pub fn new(
         config: EnvironmentHostConfig,
@@ -905,11 +889,6 @@ impl EnvironmentHost {
     /// Serve one environment stream for `member`: open or re-attach, then
     /// carry the terminal until it detaches, is superseded, or the guest
     /// ends.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stream fails or a frame is malformed. A
-    /// refused request is answered on the stream and is not an error.
     pub async fn serve<S, R>(
         &self,
         member: MemberIdentity,
@@ -997,6 +976,7 @@ where
     S: AsyncWrite + Unpin + Send,
     R: AsyncRead + Unpin + Send,
 {
+    let mut receive = MessageReader::new(receive);
     loop {
         tokio::select! {
             frame = frames.recv() => {
@@ -1007,7 +987,7 @@ where
                     return Ok(());
                 }
             }
-            incoming = read_message::<_, ClientFrame>(receive) => {
+            incoming = receive.next::<ClientFrame>() => {
                 match incoming? {
                     None | Some(ClientFrame::Detach) => return Ok(()),
                     Some(ClientFrame::Input(bytes)) => {
@@ -1035,11 +1015,6 @@ where
 }
 
 /// Write one postcard frame within the environment frame bound.
-///
-/// # Errors
-///
-/// Returns an error when encoding fails, the frame is too large, or the
-/// write fails.
 pub async fn write_message<W, T>(writer: &mut W, message: &T) -> Result<(), EnvironmentStreamError>
 where
     W: AsyncWrite + Unpin + Send,
@@ -1053,12 +1028,33 @@ where
     Ok(())
 }
 
+/// The postcard frames of one stream, within the environment frame bound,
+/// for a loop that waits on other things beside them. A `select!` that
+/// drops [`Self::next`] for another branch loses nothing: the bytes of a
+/// partly read frame stay here and the next call resumes it, where
+/// [`read_message`] would drop them and misread the rest of the stream.
+pub(crate) struct MessageReader<R>(wire_frame::FrameReader<R>);
+
+impl<R: AsyncRead + Unpin + Send> MessageReader<R> {
+    pub(crate) const fn new(reader: R) -> Self {
+        Self(wire_frame::FrameReader::new(
+            reader,
+            wire_frame::Framing::little_endian(MAX_ENVIRONMENT_FRAME_BYTES).reject_empty(),
+        ))
+    }
+
+    /// The next message, or `None` at a clean end of stream.
+    pub(crate) async fn next<T: DeserializeOwned>(
+        &mut self,
+    ) -> Result<Option<T>, EnvironmentStreamError> {
+        let Some(bytes) = self.0.read_frame_async().await? else {
+            return Ok(None);
+        };
+        Ok(Some(postcard::from_bytes(bytes)?))
+    }
+}
+
 /// Read one postcard frame, or `None` at a clean end of stream.
-///
-/// # Errors
-///
-/// Returns an error when the stream fails mid-frame, the frame is too
-/// large, or it does not decode.
 pub async fn read_message<R, T>(reader: &mut R) -> Result<Option<T>, EnvironmentStreamError>
 where
     R: AsyncRead + Unpin + Send,

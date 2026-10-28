@@ -369,6 +369,13 @@ pub struct AvailabilityRegistry {
     /// Announces each bump of `hydration_generation`, so the pinned
     /// hydration worker waits for one instead of polling.
     hydration_watch: tokio::sync::watch::Sender<u64>,
+    /// Records whose committed state changed since
+    /// [`Self::take_changed_records`] last took them, kept only while
+    /// someone subscribes through [`Self::subscribe_changes`].
+    changed: BTreeSet<FileRecordId>,
+    /// Announces that `changed` grew, so the mount can tell the folders
+    /// those files are in (`crate::change_signal`).
+    changes_watch: tokio::sync::watch::Sender<()>,
     #[cfg(test)]
     persists: std::sync::atomic::AtomicU64,
 }
@@ -411,6 +418,8 @@ impl AvailabilityRegistry {
                 deferred: false,
                 hydration_generation: 0,
                 hydration_watch: tokio::sync::watch::Sender::new(0),
+                changed: BTreeSet::new(),
+                changes_watch: tokio::sync::watch::Sender::new(()),
                 #[cfg(test)]
                 persists: std::sync::atomic::AtomicU64::new(0),
             });
@@ -436,6 +445,8 @@ impl AvailabilityRegistry {
             deferred: false,
             hydration_generation: 0,
             hydration_watch: tokio::sync::watch::Sender::new(0),
+            changed: BTreeSet::new(),
+            changes_watch: tokio::sync::watch::Sender::new(()),
             #[cfg(test)]
             persists: std::sync::atomic::AtomicU64::new(0),
         })
@@ -465,6 +476,31 @@ impl AvailabilityRegistry {
     #[must_use]
     pub fn subscribe_hydration(&self) -> tokio::sync::watch::Receiver<u64> {
         self.hydration_watch.subscribe()
+    }
+
+    /// A receiver told of each committed change to any record, from any
+    /// writer of this registry; [`Self::take_changed_records`] says which.
+    #[must_use]
+    pub fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.changes_watch.subscribe()
+    }
+
+    /// The records whose committed state changed since this was last asked,
+    /// while anyone subscribed through [`Self::subscribe_changes`].
+    pub fn take_changed_records(&mut self) -> BTreeSet<FileRecordId> {
+        std::mem::take(&mut self.changed)
+    }
+
+    /// Note that `ids` were committed changed, for whoever subscribes.
+    fn note_changed(&mut self, ids: impl IntoIterator<Item = FileRecordId>) {
+        if self.changes_watch.receiver_count() == 0 {
+            return;
+        }
+        let before = self.changed.len();
+        self.changed.extend(ids);
+        if self.changed.len() != before {
+            self.changes_watch.send_replace(());
+        }
     }
 
     fn bump_hydration_generation(&mut self) {
@@ -553,8 +589,8 @@ impl AvailabilityRegistry {
             return Ok(false);
         }
         let previous = self.records.clone();
-        for id in ids {
-            if let Some(record) = self.records.get_mut(&id) {
+        for id in &ids {
+            if let Some(record) = self.records.get_mut(id) {
                 record.transfer = TransferState::default();
             }
         }
@@ -562,6 +598,7 @@ impl AvailabilityRegistry {
             self.records = previous;
             return Err(error);
         }
+        self.note_changed(ids);
         Ok(true)
     }
 
@@ -679,16 +716,18 @@ impl AvailabilityRegistry {
         if hydration_changed {
             self.bump_hydration_generation();
         }
+        let changed: Vec<FileRecordId> = self
+            .records
+            .iter()
+            .filter(|(id, record)| before.get(id) != Some(*record))
+            .map(|(id, _)| *id)
+            .collect();
+        self.note_changed(changed);
         Ok(value)
     }
 
     /// Insert or replace a record and durably commit the complete registry.
     /// Invalid ancestry leaves both memory and disk unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the candidate registry is invalid or its atomic
-    /// persistence fails.
     pub fn put(&mut self, record: RecordAvailability) -> Result<(), AvailabilityError> {
         let id = record.record_id;
         let previous = self.records.insert(id, record);
@@ -714,17 +753,15 @@ impl AvailabilityRegistry {
         if previous.as_ref().map(hydration_view) != self.records.get(&id).map(hydration_view) {
             self.bump_hydration_generation();
         }
+        if previous.as_ref() != self.records.get(&id) {
+            self.note_changed([id]);
+        }
         Ok(())
     }
 
     /// Persist a freshly verified remote receipt and rebuild the aggregate UI
     /// projection from distinct, unexpired devices. Exact replay and an older
     /// receipt from the same device fail closed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for unknown records, self/stale/replayed receipts,
-    /// version mismatches, observation overflow, or persistence failure.
     pub fn observe_replica(
         &mut self,
         record_id: FileRecordId,
@@ -765,11 +802,6 @@ impl AvailabilityRegistry {
     }
 
     /// Effective policy, including any pinned stable directory ancestor.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when ancestry contains a cycle or names a missing
-    /// parent record.
     pub fn effective_policy(
         &self,
         record_id: FileRecordId,
@@ -1054,6 +1086,46 @@ mod tests {
         record
     }
 
+    /// Whoever subscribes learns which records changed, by any writer: a
+    /// put, a batch, an unpin clearing transfers. Nothing is kept for
+    /// nobody, and a write that changes nothing is no change.
+    #[test]
+    fn a_subscriber_learns_which_records_changed() {
+        let dir = TempDir::new().unwrap();
+        let mut registry = AvailabilityRegistry::open(dir.path().join("a.json")).unwrap();
+        let (first, second) = (FileRecordId::new(), FileRecordId::new());
+        registry.put(file(first, FileVersionId::new())).unwrap();
+        assert!(
+            registry.take_changed_records().is_empty(),
+            "nothing is kept while nobody subscribes"
+        );
+
+        let mut changes = registry.subscribe_changes();
+        let mut record = registry.get(first).unwrap().clone();
+        registry.put(record.clone()).unwrap();
+        assert!(!changes.has_changed().unwrap(), "an identical write");
+        record.transfer.last_error = Some(TransferError {
+            message: fs_protocol::NO_PEER_DELIVERED_ERROR.into(),
+            occurred_at_ms: 3,
+        });
+        registry.put(record).unwrap();
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+        assert_eq!(registry.take_changed_records(), BTreeSet::from([first]));
+
+        registry
+            .batch(|registry| {
+                let _ = registry.put(file(second, FileVersionId::new()));
+            })
+            .unwrap();
+        assert!(changes.has_changed().unwrap());
+        assert_eq!(registry.take_changed_records(), BTreeSet::from([second]));
+
+        assert!(registry.clear_automatic_transfer_subtree(first).unwrap());
+        assert_eq!(registry.take_changed_records(), BTreeSet::from([first]));
+        assert!(registry.take_changed_records().is_empty());
+    }
+
     fn safe_evidence(record: &mut RecordAvailability, version: FileVersionId, now_ms: u64) {
         super::test_receipts::acknowledge(record, version, ContentHash([4; 32]), now_ms);
     }
@@ -1087,7 +1159,6 @@ mod tests {
 
     #[test]
     fn availability_registry_persists_by_stable_record_id_and_rejects_tampering() {
-        // Phase `registry_survives_restart_and_is_keyed_by_stable_record_id`.
         {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("availability/state.json");
@@ -1105,7 +1176,6 @@ mod tests {
             assert_eq!(reopened.get(id), Some(&record));
             assert_eq!(reopened.records().count(), 1);
         }
-        // Phase `other_schema_versions_fail_registry_open`.
         {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("availability.json");
@@ -1123,7 +1193,6 @@ mod tests {
                 Err(AvailabilityError::UnsupportedVersion(1))
             ));
         }
-        // Phase `tampered_persisted_receipt_fails_registry_open`.
         {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("availability.json");
@@ -1143,7 +1212,6 @@ mod tests {
                 Err(AvailabilityError::StaleReplicaObservation)
             ));
         }
-        // Phase `a_rename_cannot_change_availability_identity`.
         {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("availability.json");
@@ -1166,7 +1234,6 @@ mod tests {
             );
             assert_eq!(registry.records().count(), 1);
         }
-        // Phase `malformed_ancestry_and_progress_are_rejected_without_mutation`.
         {
             let temp = TempDir::new().unwrap();
             let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
@@ -1194,7 +1261,6 @@ mod tests {
 
     #[test]
     fn pins_follow_descendants_moves_and_namespace_reconciliation() {
-        // Phase `directory_pin_applies_to_future_descendants_and_survives_move`.
         {
             let temp = TempDir::new().unwrap();
             let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
@@ -1226,7 +1292,6 @@ mod tests {
                 Some(AvailabilityPolicy::Automatic)
             );
         }
-        // Phase `explicit_pin_presence_drives_periodic_namespace_reconciliation`.
         {
             let temp = TempDir::new().unwrap();
             let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
@@ -1289,7 +1354,6 @@ mod tests {
                 EvictionDecision::Allowed
             );
         }
-        // Phase `every_local_retention_reason_blocks_normal_eviction`.
         {
             let temp = TempDir::new().unwrap();
             let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
@@ -1323,7 +1387,6 @@ mod tests {
                 EvictionDecision::Denied(EvictionBlocker::RetainedVersions)
             );
         }
-        // Phase `normal_eviction_fails_closed_without_an_acceptable_replica_ack`.
         {
             let temp = TempDir::new().unwrap();
             let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
@@ -1372,7 +1435,6 @@ mod tests {
 
     #[test]
     fn projection_round_trips_every_ui_dimension() {
-        // Phase `availability_projection_round_trips_every_ui_dimension`.
         {
             let record = rich_record();
             let projection = record.projection_with_policy(AvailabilityPolicy::Pinned);
@@ -1397,7 +1459,6 @@ mod tests {
             );
             assert_eq!(projection.freshness.replicas_observed_at_ms, Some(7_900));
         }
-        // Phase `replica_counts_are_unknown_without_current_version_evidence`.
         {
             let mut record = rich_record();
             let old_version = FileVersionId::new();
@@ -1410,7 +1471,6 @@ mod tests {
             let projection = record.projection();
             assert_eq!(projection.replicas, ProjectedReplicaEvidence::Unknown);
 
-            // Unknown is distinct from a valid observation that found zero peers.
             record.freshness.replicas_observed_at_ms = Some(9_000);
             record.replicas.reachable = 0;
             record.replicas.durable = 0;
@@ -1478,7 +1538,6 @@ mod tests {
             assert!(projection.transfer.error_truncated);
             assert!(projection.to_xattr_bytes().unwrap().len() <= MAX_AVAILABILITY_XATTR_BYTES);
         }
-        // Phase `parser_rejects_oversize_future_and_inconsistent_values`.
         {
             assert!(matches!(
                 AvailabilityProjectionV1::parse_xattr(&vec![

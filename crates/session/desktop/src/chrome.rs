@@ -105,7 +105,6 @@ pub struct ActivityGlance {
 /// chrome, search and agents all resolve through the same shape.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ActivityFocus {
-    pub task_id: Option<String>,
     pub author: Option<String>,
     pub group_id: Option<String>,
     pub entry_id: Option<[u8; 16]>,
@@ -175,13 +174,14 @@ pub struct DesktopChromeSnapshot {
     /// Fresh banners are being held (Do Not Disturb, presenting, a focus
     /// schedule): the bar's status cluster shows a silenced bell.
     pub notifications_quiet: bool,
+    /// The host has no quick settings: the status cluster is the bell that
+    /// opens the notification centre, named and drawn as one, not a
+    /// settings glyph promising settings that are not there.
+    pub notifications_only: bool,
     pub activity_glance: ActivityGlance,
     pub viewport_size: Option<(f64, f64)>,
     pub clock_activity: Option<ClockActivity>,
     pub active_exposures: Vec<ActiveExposure>,
-    /// The active workspace's strips as named places with who is in each;
-    /// `None` keeps the bar from showing a strip switcher.
-    pub strip_places: Option<StripPlaces>,
     /// People following the room without taking part (spectators). The bar
     /// counts them beside the avatars so an audience is never invisible.
     pub watching: u32,
@@ -190,6 +190,88 @@ pub struct DesktopChromeSnapshot {
     /// The person at this desktop as everyone here sees them, for the
     /// bar's own avatar; `None` paints none.
     pub own: Option<OwnChip>,
+    /// Whether the person may invite others here: the bar keeps its invite
+    /// button beside the faces, however many people are present.
+    pub invite: Invite,
+    /// The last wave at this person: the bar says who waved, for a moment
+    /// after it came.
+    pub waved: Option<WaveNotice>,
+    /// The person arrived where others are: their faces pulse in the bar
+    /// and a short name slides out of them, for a moment.
+    pub arrived: Option<ArrivalNotice>,
+}
+
+/// Whether the host lets the person at this desktop invite others here.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Invite {
+    #[default]
+    Unavailable,
+    Offered,
+}
+
+impl Invite {
+    /// [`Self::Offered`] when `offered`.
+    #[must_use]
+    pub fn when(offered: bool) -> Self {
+        if offered {
+            Self::Offered
+        } else {
+            Self::Unavailable
+        }
+    }
+}
+
+/// Someone waved at the person at this desktop.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WaveNotice {
+    /// Who waved, by their name here.
+    pub from: String,
+    /// When the wave came.
+    pub at: ui::time::Instant,
+}
+
+/// The person at this desktop arrived where others are (joined the
+/// workspace, or came back to it with someone new there). The bar says so
+/// on the faces it already shows, never over the windows: those faces pulse
+/// and a short name slides out of them, then goes on its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArrivalNotice {
+    /// Who is here, by roster id: the faces that pulse.
+    pub people: Vec<String>,
+    /// Their names, in the roster's order.
+    pub names: Vec<String>,
+    /// The first time in a public workspace: what its people see of the
+    /// person, in a few words. Pressing the status opens the person's own
+    /// menu, where they choose otherwise.
+    pub seen: Option<String>,
+    /// When the person arrived.
+    pub at: ui::time::Instant,
+}
+
+impl ArrivalNotice {
+    /// What slides out of the faces: the first person's short name, and
+    /// how many others ("Ada", "Ada and 2 others"), or what the people
+    /// here see of the person when that is told.
+    #[must_use]
+    pub fn text(&self) -> String {
+        if let Some(seen) = &self.seen {
+            return seen.clone();
+        }
+        let Some(first) = self.names.first() else {
+            return String::new();
+        };
+        // A short name: the first word of the name everyone here sees.
+        let short = first.split_whitespace().next().unwrap_or(first);
+        let others = self.names.len().saturating_sub(1);
+        if others == 0 {
+            crate::i18n::t_args("topbar-arrived-one", &[("name", short.into())])
+        } else {
+            crate::i18n::t_args(
+                "topbar-arrived-more",
+                &[("name", short.into()), ("count", others.into())],
+            )
+        }
+    }
 }
 
 /// The person at this desktop, as their own avatar in the bar shows them.
@@ -199,65 +281,24 @@ pub struct OwnChip {
     pub name: String,
     /// Their colour.
     pub rgb: (u8, u8, u8),
+    /// Who they are (their root key, hex), for the picture they chose;
+    /// empty where the host names none.
+    pub identity: String,
 }
 
-/// Which people are on which strip of the active workspace.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct StripPlaces {
-    /// People whose focus is on each strip, counting this person; strips
-    /// nobody is on may be left out.
-    pub present: Vec<(tilo_desktop_model::StripId, usize)>,
-    /// Whether the bar offers adding a named strip.
-    pub can_add: bool,
-}
-
-impl StripPlaces {
-    /// Who is on which strip of `tree`'s active workspace: the room's other
-    /// people at the strips their presence names (`others`), and this
-    /// person on the strip shown. No counts while nobody else is here;
-    /// adding is offered.
-    pub fn in_active_workspace(tree: &DesktopTree, others: &[tilo_desktop_model::StripId]) -> Self {
-        let mut present: Vec<(tilo_desktop_model::StripId, usize)> = Vec::new();
-        if let Some(workspace) = tree.active_workspace()
-            && !others.is_empty()
-        {
-            let mine = tree
-                .active_strip
-                .get(&workspace.id)
-                .copied()
-                .filter(|id| workspace.strips.iter().any(|strip| strip.id == *id))
-                .or_else(|| workspace.strips.first().map(|strip| strip.id));
-            for place in others.iter().copied().chain(mine) {
-                if !workspace.strips.iter().any(|strip| strip.id == place) {
-                    continue;
-                }
-                match present.iter_mut().find(|(id, _)| *id == place) {
-                    Some((_, count)) => *count = count.saturating_add(1),
-                    None => present.push((place, 1)),
-                }
-            }
-        }
-        Self {
-            present,
-            can_add: true,
-        }
-    }
-
-    pub fn people_on(&self, strip: tilo_desktop_model::StripId) -> usize {
-        self.present
-            .iter()
-            .find(|(id, _)| *id == strip)
-            .map_or(0, |(_, count)| *count)
-    }
-}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChromeIntent {
     ToggleOverview,
     SwitchWorkspace(i32),
-    ToggleWorkspaceSettings,
     ToggleQuickSettings,
     ShowQuickSettings,
     ToggleCollaborators,
+    /// Invite someone to this workspace, straight from the bar's invite
+    /// button: the host's own invite flow, in one step.
+    Invite,
+    /// Open who is here at this person (their roster id): their row, with
+    /// what they are doing and the wave.
+    ShowPerson(String),
     /// Open History, at `focus` when the bar names one.
     ShowActivity(Option<ActivityFocus>),
     HideClock,
@@ -269,15 +310,17 @@ pub enum ChromeIntent {
     AcceptContinuity,
     /// Hide the continuity offer until that device's focus moves again.
     DismissContinuity,
-    /// Move to another strip of the active workspace.
-    SwitchStrip(tilo_desktop_model::StripId),
-    /// Show the active workspace's strips to choose from: a click on the
-    /// strip's name in the workspace pill.
+    /// Show the ask waiting as a dot on the person's own avatar
+    /// ([`DesktopChromeSource::avatar_ask`]).
+    OpenAvatarAsk,
+    /// Fold the open ask into the avatar's dot: a click elsewhere, Escape.
+    CollapseAvatarAsk,
+    AnswerAvatarAsk,
+    /// The person put the ask off ("Not now"): it goes.
+    PutOffAvatarAsk,
+    /// Show the active workspace's strips to choose from, in the strip
+    /// switcher: a click on the strip's name after the workspace's.
     ShowStrips,
-    /// Add a strip with this name to the active workspace and move to it.
-    AddStrip {
-        name: String,
-    },
     /// Give the active workspace this name.
     RenameWorkspace {
         name: String,
@@ -324,8 +367,14 @@ pub enum AppTrayIcon {
 pub struct AppTrayItem {
     /// Stable key the host addresses the item by.
     pub key: String,
-    /// The application's own id for the item.
     pub id: String,
+    /// The application whose connection registered the item, proven from
+    /// its process. `None` when it could not be proven; an item's own id is
+    /// never trusted for this.
+    pub owner_app: Option<String>,
+    /// What to call the item: the application's own title for it, else its
+    /// id. Named to the person and to assistive technology, never empty.
+    pub title: String,
     pub status: AppTrayStatus,
     pub icon: AppTrayIcon,
     /// The item has no primary action; activating it opens its menu.
@@ -339,6 +388,24 @@ pub enum AppTrayRequest {
     SecondaryActivate { x: i32, y: i32 },
     ContextMenu { x: i32, y: i32 },
 }
+/// An ask about the person themselves (keeping who they are here), put to
+/// them from their own avatar in the top bar. Open, it is a small popover
+/// in the bar's band beside the avatar, so it never covers a window or
+/// takes a click meant for one; clicked away it waits as a dot on the
+/// avatar, which opens it again.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AvatarAsk {
+    /// The question ("Keep your name and work?").
+    pub question: String,
+    /// What answering brings, said where there is room and to assistive
+    /// technology.
+    pub detail: String,
+    /// The answer's label ("Keep with passkey").
+    pub answer: String,
+    /// Shown as the popover; `false` while it waits as the avatar's dot.
+    pub open: bool,
+}
+
 pub trait DesktopChromeSource {
     fn snapshot(&self) -> DesktopChromeSnapshot;
     fn tree(&self) -> DesktopTree;
@@ -350,6 +417,10 @@ pub trait DesktopChromeSource {
     fn continuity_offer(&self) -> Option<String> {
         None
     }
+    /// The ask waiting on the person's own avatar, open or as its dot.
+    fn avatar_ask(&self) -> Option<AvatarAsk> {
+        None
+    }
     /// Changes whenever the running applications' tray items change.
     fn app_tray_revision(&self) -> u64 {
         0
@@ -358,46 +429,11 @@ pub trait DesktopChromeSource {
     fn app_tray(&self) -> Vec<AppTrayItem> {
         Vec::new()
     }
+    /// How many unread notifications the application with this verified id
+    /// owns, as its icon says on the bar. Zero when it owns none, or when
+    /// this person turned app badges off.
+    fn app_notification_badge(&self, _app_id: &str) -> u32 {
+        0
+    }
 }
 pub type Chrome = std::rc::Rc<dyn DesktopChromeSource>;
-
-#[cfg(test)]
-mod strip_places_tests {
-    use super::StripPlaces;
-    use tilo_desktop_model::{DesktopTree, Strip, StripId, Workspace, WorkspaceId};
-
-    fn tree() -> DesktopTree {
-        let mut workspace = Workspace::new(WorkspaceId(1), "Room");
-        workspace.strips = vec![
-            Strip::new(StripId(10), "Main"),
-            Strip::new(StripId(11), "Games"),
-        ];
-        let mut tree = DesktopTree {
-            active: workspace.id,
-            workspaces: vec![workspace],
-            ..DesktopTree::default()
-        };
-        tree.active_strip.insert(WorkspaceId(1), StripId(11));
-        tree
-    }
-
-    #[test]
-    fn counts_everyone_present_where_they_are_including_this_person() {
-        let places =
-            StripPlaces::in_active_workspace(&tree(), &[StripId(11), StripId(10), StripId(11)]);
-        assert_eq!(places.people_on(StripId(11)), 3);
-        assert_eq!(places.people_on(StripId(10)), 1);
-        assert!(places.can_add);
-    }
-
-    #[test]
-    fn alone_shows_no_counts_and_unknown_places_are_ignored() {
-        assert!(
-            StripPlaces::in_active_workspace(&tree(), &[])
-                .present
-                .is_empty()
-        );
-        let places = StripPlaces::in_active_workspace(&tree(), &[StripId(99)]);
-        assert_eq!(places.present, [(StripId(11), 1)]);
-    }
-}

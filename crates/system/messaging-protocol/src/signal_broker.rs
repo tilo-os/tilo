@@ -455,7 +455,12 @@ impl HistoryHost for SignalBroker {
     ) -> Option<Box<dyn std::any::Any + Send + Sync>> {
         self.observers.observe(changed)
     }
-    fn read(&self, route: Route, limit: usize) -> HistoryFuture {
+    fn read(
+        &self,
+        route: Route,
+        cursor: Option<tilo_messaging::HistoryCursor>,
+        limit: usize,
+    ) -> HistoryFuture {
         let broker = self.clone();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
@@ -472,10 +477,11 @@ impl HistoryHost for SignalBroker {
                 broker
                     .project_pending(&mut worker)
                     .map_err(|_| HistoryError::Unavailable)?;
-                worker
-                    .history
-                    .page(route, limit.min(tilo_messaging::MAX_HISTORY_MESSAGES))
-                    .map_err(|_| HistoryError::Unavailable)
+                worker.history.page_before(
+                    route,
+                    cursor.as_ref(),
+                    limit.min(tilo_messaging::MAX_HISTORY_MESSAGES),
+                )
             })
             .await
             .map_err(|_| HistoryError::Unavailable)?
