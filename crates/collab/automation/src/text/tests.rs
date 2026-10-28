@@ -104,7 +104,7 @@ fn program() -> Shortcut {
             Step::new(
                 "each",
                 StepKind::ForEach {
-                    items: Binding::step("listed", "/titles"),
+                    items: Binding::step(LISTED, "/titles"),
                     item: "title".into(),
                     body: vec![step(
                         "filed",
@@ -333,6 +333,10 @@ fn a_problem_the_checker_reports_lands_on_the_line_that_states_the_step() {
     assert!(outline.line_of(&StepPath::output()).is_none());
 }
 
+/// The name the text gives a step, which is also the identity a program's
+/// own values refer to its result by.
+const LISTED: &str = "file on any Notes.note in notes";
+
 /// Every kind of value the language writes, so a rendering of this program
 /// covers each of them.
 fn every_binding(folder: &Binding) -> Vec<Binding> {
@@ -343,8 +347,8 @@ fn every_binding(folder: &Binding) -> Vec<Binding> {
         Binding::Literal(Value::Null),
         folder.clone(),
         Binding::Var("title".into()),
-        Binding::step("listed", ""),
-        Binding::step("listed", "/titles"),
+        Binding::step(LISTED, ""),
+        Binding::step(LISTED, "/titles"),
         Binding::Template("hello {folded}".into()),
         Binding::List(vec![folder.clone(), Binding::Literal(Value::from(1))]),
         Binding::Object(BTreeMap::from([("to".to_owned(), folder.clone())])),
@@ -361,7 +365,7 @@ fn every_kind_of_value_prints_the_same_program_back() {
     let folder = Binding::Input("folder".into());
     let values = every_binding(&folder);
     let mut steps = vec![step(
-        "listed",
+        LISTED,
         "file",
         Selector::FirstOfKind("notes.note".into()),
         BTreeMap::from([("folder".to_owned(), folder.clone())]),
@@ -428,13 +432,15 @@ fn every_kind_of_step_prints_the_same_program_back() {
         ],
         steps: vec![
             step(
-                "listed",
+                LISTED,
                 "file",
                 Selector::FirstOfKind("notes.note".into()),
                 BTreeMap::from([("folder".to_owned(), folder.clone())]),
             ),
+            // Both steps read alike, so the second's name carries the number
+            // that keeps one name per step.
             step(
-                "chosen",
+                "file on any Notes.note in notes 2",
                 "file",
                 Selector::FromBinding(folder.clone()),
                 BTreeMap::from([("folder".to_owned(), folder.clone())]),
@@ -490,7 +496,7 @@ fn every_kind_of_step_prints_the_same_program_back() {
                 StepKind::Ai {
                     prompt: "Summarise the notes".into(),
                     output: None,
-                    input: Some(Binding::step("listed", "/titles")),
+                    input: Some(Binding::step(LISTED, "/titles")),
                 },
             ),
             Step::new(
@@ -503,7 +509,8 @@ fn every_kind_of_step_prints_the_same_program_back() {
             ),
         ],
         step_timeout_secs: Some(45),
-        output: Some(Binding::step("kept", "")),
+        // A name a step set is referred to by the name, not by a result id.
+        output: Some(Binding::Var("kept".into())),
         grant: Vec::new(),
         triggers: Vec::new(),
         saved_by: None,
