@@ -334,16 +334,18 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   pools, profile, import dispatch and the wording of every `CallError` sit above it, once, so a
   call gives the same result on every engine. wasmtime (Cranelift or Winch) is a second
   implementation behind the `wasmtime` feature, off by default, for comparing engines
-  (docs/tilolang-engines.md); `TILOLANG_ENGINE` runs the suites on it.
+  (`tilolang bench --engine`, docs/tilolang-engines.md); `TILOLANG_ENGINE` runs the suites on it.
 - **Finding a node.** `ViewInstance::edit`/`press`/`fire` find a node in its boundary when its
   key carries one; any other node (the root view's own, an anchored one) by walking the tree
   once, after which where it was is kept and checked before use. Typing into an input of a view
   that also shows 10k rows went from 0.4 ms of lookup per keystroke to none.
 - **Bench and budgets.** `tilolang bench <package> [--sizes] [--samples] [--idle SECONDS]
-  [--translation lazy|eager] [--profile]` prints one JSON record per scenario and size: open,
+  [--translation lazy|eager] [--engine wasmi|cranelift|winch] [--compute] [--library PATH]
+  [--profile]` prints one JSON record per scenario and size: open,
   keystroke, peer edit, scroll (packages with a virtual list), idle wakeups and patches, and the
   cost of re-indexing and re-publishing everything for comparison, and how long compiling the
-  package's source takes. Records are `tools/perf/record.py`'s JSON.
+  package's source takes; with `--engine`, compiling and a cold start as well, and the compute
+  and library workloads when asked for. Records are `tools/perf/record.py`'s JSON.
   Seeding follows the package's root: its collection, or the roots of the packages it refers to
   (a board); a root with neither has one size, of no items. `keystroke` types into an item's
   title in the item's window, or, when items have no window, into the main window's first text
