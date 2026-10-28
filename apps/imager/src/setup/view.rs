@@ -4952,8 +4952,12 @@ mod tests {
                 .find(|resource| resource.kind == "imager.import.folder")
                 .unwrap()
                 .clone();
-            app.call_on(folder.id.as_str(), "set-folder-copy", serde_json::json!({}))
-                .unwrap();
+            app.call_on(
+                folder.id.as_str(),
+                "set-folder-mode",
+                serde_json::json!({"mode": "copy"}),
+            )
+            .unwrap();
 
             let updated = app.harness().resources();
             let folder = find_row(&updated, folder.id.as_str()).unwrap();
