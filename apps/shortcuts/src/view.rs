@@ -1072,6 +1072,7 @@ fn editor_pane(ui: &Ui, follow: Rc<RefCell<Box<dyn FnMut()>>>) -> Element {
     let builder = ui.clone();
     let editor = ui.editor.clone();
     let as_text = ui.as_text.clone();
+    let folded = ui.folded.clone();
     let body = Keyed::new(
         move || {
             // Derive before keying, so a frame that only synchronizes (a
@@ -1079,9 +1080,14 @@ fn editor_pane(ui: &Ui, follow: Rc<RefCell<Box<dyn FnMut()>>>) -> Element {
             if let Ok(mut follow) = follow.try_borrow_mut() {
                 follow();
             }
-            // Reading the program as text is a different page, so it is
-            // part of what the pane is keyed on.
-            format!("{}|{}", editor.with(EditorInput::structure), as_text.get())
+            // Reading the program as text, and which steps are folded, are
+            // part of how the page is built, so they key the pane too.
+            format!(
+                "{}|{}|{:?}",
+                editor.with(EditorInput::structure),
+                as_text.get(),
+                folded.get()
+            )
         },
         move || {
             let content = builder.editor.with(|input| build_page(&builder, input));

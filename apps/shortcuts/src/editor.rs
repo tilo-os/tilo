@@ -688,7 +688,7 @@ pub fn program_text(program: &crate::model::Program, catalog: &ActionCatalog) ->
 
 /// The steps of one block, indented by `indent`.
 fn text_steps(steps: &[Step], indent: &str, catalog: &ActionCatalog, out: &mut String) {
-    for step in steps {
+    for (position, step) in steps.iter().enumerate() {
         let line = match &step.kind {
             StepKind::Invoke { resource, args, .. } => {
                 let values: Vec<String> = args
@@ -709,7 +709,7 @@ fn text_steps(steps: &[Step], indent: &str, catalog: &ActionCatalog, out: &mut S
             }
             other => title(step, catalog, steps) + &substance_text(other, steps),
         };
-        let _ = writeln!(out, "{indent}{line}");
+        let _ = writeln!(out, "{indent}{}. {line}", position + 1);
         match &step.kind {
             StepKind::If {
                 then, otherwise, ..
