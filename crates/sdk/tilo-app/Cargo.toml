@@ -47,8 +47,6 @@ gpu-video = ["tilo-runner-native?/gpu-video"]
 # that shows a call's pictures turns it on.
 realtime-video = ["ui-core/realtime-video"]
 mpris = ["tilo-runner-native?/mpris"]
-# The session's priority contacts over the desktop bus.
-priority-contacts = ["tilo-runner-native?/priority-contacts"]
 # Optional native presentation diagnostics shared by app entrypoints.
 presentation-feedback = ["tilo-runner-native?/presentation-feedback"]
 # The Windows DX12 shader cache; see `tilo-ui`. Like `presentation-feedback`,

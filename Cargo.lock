@@ -21162,7 +21162,6 @@ dependencies = [
  "windows-sys 0.61.2",
  "wire-frame",
  "workspace-hack",
- "zbus",
  "zeroize",
 ]
 
