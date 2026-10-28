@@ -289,13 +289,7 @@ impl Store {
         attempt: &str,
     ) -> io::Result<(File, Vec<u8>)> {
         self.check_original_output_operation(&self.operation)?;
-        if digest == [0; 32]
-            || uuid::Uuid::parse_str(attempt)
-                .ok()
-                .map(|id| id.to_string())
-                .as_deref()
-                != Some(attempt)
-        {
+        if digest == [0; 32] || !crate::is_operation_id(attempt) {
             return Err(failure("Original output intent binding is invalid"));
         }
         let mut bytes = b"TILOOUTPUT1\0".to_vec();

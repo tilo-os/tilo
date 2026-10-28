@@ -39,9 +39,10 @@ impl InventoryScratch {
             ));
         }
         parent.validate_destination()?;
-        if !name.strip_prefix("inventory-").is_some_and(|suffix| {
-            uuid::Uuid::parse_str(suffix).is_ok_and(|id| !id.is_nil() && id.to_string() == suffix)
-        }) {
+        if !name
+            .strip_prefix("inventory-")
+            .is_some_and(crate::is_operation_id)
+        {
             return Err(refused("Inventory attempt name is not canonical"));
         }
         if reserve_bytes == 0 {

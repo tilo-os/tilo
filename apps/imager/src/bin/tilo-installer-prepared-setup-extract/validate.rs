@@ -65,9 +65,9 @@ fn hex_digest(value: &Value) -> bool {
     })
 }
 
-fn canonical_uuid(value: &str, nonzero: bool) -> bool {
+fn canonical_identity(value: &str) -> bool {
     uuid::Uuid::parse_str(value)
-        .is_ok_and(|id| (!nonzero || !id.is_nil()) && id.hyphenated().to_string() == value)
+        .is_ok_and(|id| !id.is_nil() && id.hyphenated().to_string() == value)
 }
 
 /// Validate a portable payload receipt, including its closed limits envelope.
@@ -155,7 +155,7 @@ pub fn expectation(value: &Value, kind: &str) -> Result<()> {
     )?;
     if kind != "home" {
         require(
-            canonical_uuid(operation, false),
+            imager_backend::is_operation_id(operation),
             "portable application operation is invalid",
         )?;
         require(
@@ -233,7 +233,7 @@ fn scope_fields<'a>(authenticated: &Value, scope: &'a Value) -> Result<&'a str> 
         "staging_operation",
     ] {
         require(
-            canonical_uuid(text(scope, key)?, true),
+            imager_backend::is_operation_id(text(scope, key)?),
             "Computer applications operation is not canonical",
         )?;
     }
@@ -360,7 +360,7 @@ fn reported_resize(value: &Value) -> Result<()> {
     }
     for key in ["filesystem_uuid", "partition_guid"] {
         require(
-            canonical_uuid(text(resize, key)?, true),
+            canonical_identity(text(resize, key)?),
             "reported resize identity is not canonical",
         )?;
     }

@@ -241,9 +241,6 @@ struct Record {
     #[serde(default)]
     metadata_quarantined: bool,
 }
-fn canonical_uuid(value: &str) -> bool {
-    uuid::Uuid::parse_str(value).is_ok_and(|id| !id.is_nil() && id.to_string() == value)
-}
 fn record_name(operation: &str) -> String {
     format!("{operation}.installed-copy-attempt")
 }
@@ -254,7 +251,7 @@ impl Record {
     fn validate(&self) -> io::Result<()> {
         operation(&self.binding.operation)?;
         if self.schema != 1
-            || !canonical_uuid(&self.attempt)
+            || !crate::is_operation_id(&self.attempt)
             || self.binding.declaration == [0; 32]
             || self.binding.person == [0; 32]
             || self.binding.setup_binding.is_empty()

@@ -36,9 +36,8 @@ impl Expectation {
     /// # Errors
     /// Refuses malformed declarations or payloads beyond the fixed browser bounds.
     pub fn validate(&self) -> io::Result<()> {
-        let operation = uuid::Uuid::parse_str(&self.operation).map_err(io::Error::other)?;
         if self.schema != 1
-            || operation.to_string() != self.operation
+            || !crate::is_operation_id(&self.operation)
             || self.purpose != Purpose::BrowserProfiles
             || self.filename != format!("browser-{}.sealed", self.operation)
             || self.setup_binding.is_empty()
@@ -100,8 +99,7 @@ pub fn export(
             "Browser sources differ from their reviewed selection",
         ));
     }
-    let operation = uuid::Uuid::parse_str(request.operation).map_err(io::Error::other)?;
-    if operation.to_string() != request.operation
+    if !crate::is_operation_id(request.operation)
         || request.package.file_name().and_then(|name| name.to_str())
             != Some(format!("browser-{}.sealed", request.operation).as_str())
     {

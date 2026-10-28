@@ -32,7 +32,7 @@ impl PendingArea {
             || record.inode == 0
             || record.plans_sha256 == [0; 32]
             || !record.setup.valid()
-            || uuid::Uuid::parse_str(&record.operation).is_err()
+            || !crate::is_operation_id(&record.operation)
             || record.name != format!(".tilo-pending-{}", record.operation)
         {
             return Err(denied("Protected pending area receipt invalid"));
@@ -69,8 +69,7 @@ fn operation(layout: &crate::setup::OfflineLayout, caller: u32) -> io::Result<St
         || plan.home_policy != HomePolicy::Copy
         || plan.flatpak_inventory.is_some()
         || plan.home_uid() != caller
-        || !uuid::Uuid::parse_str(&plan.operation_id)
-            .is_ok_and(|id| !id.is_nil() && id.to_string() == plan.operation_id)
+        || !crate::is_operation_id(&plan.operation_id)
     {
         return Err(denied(
             "Protected pending area source differs from authenticated Home caller",

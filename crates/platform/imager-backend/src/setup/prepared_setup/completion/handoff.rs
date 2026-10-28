@@ -552,8 +552,7 @@ impl RunCustody {
                 .applications
                 .as_ref()
                 .is_some_and(|apps| apps.setup_binding != declaration.setup_binding())
-            || !uuid::Uuid::parse_str(&self.record.selection.attempt)
-                .is_ok_and(|id| !id.is_nil() && id.to_string() == self.record.selection.attempt)
+            || !crate::is_operation_id(&self.record.selection.attempt)
         {
             return Err(invalid());
         }

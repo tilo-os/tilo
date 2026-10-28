@@ -69,10 +69,7 @@ impl InstalledCopyReceiveSession {
         if effective_uid != grant.target_uid()
             || real_uid != grant.target_uid()
             || grant.target_uid() == 0
-            || uuid::Uuid::parse_str(grant.operation())
-                .map_err(io::Error::other)?
-                .to_string()
-                != grant.operation()
+            || !crate::is_operation_id(grant.operation())
         {
             return Err(changed("Installed copy target owner changed"));
         }

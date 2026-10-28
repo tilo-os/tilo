@@ -70,7 +70,7 @@ impl Expectation {
         if self.schema != 1
             || !matches!(self.consumer_protocol, 1 | 2)
             || self.purpose != Purpose::FlatpakApplications
-            || uuid::Uuid::parse_str(&self.operation).is_err()
+            || !crate::is_operation_id(&self.operation)
             || self.filename != format!("applications-{}.sealed", self.operation)
             || self.setup_binding.is_empty()
             || self.setup_binding.len() > 256
@@ -359,7 +359,7 @@ impl StagedApplications {
         observer: &mut crate::setup::portable_transfer::Observer<'_>,
     ) -> io::Result<Expectation> {
         self.validate()?;
-        if uuid::Uuid::parse_str(operation).is_err()
+        if !crate::is_operation_id(operation)
             || package.file_name().and_then(|n| n.to_str())
                 != Some(format!("applications-{operation}.sealed").as_str())
         {

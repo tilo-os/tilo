@@ -5,7 +5,7 @@ fn receipt() -> ScratchReceipt {
         parent: PathBuf::from("/var/lib/tilo/capture"),
         parent_device: 1,
         parent_inode: 2,
-        name: format!("inventory-{}", uuid::Uuid::nil()),
+        name: format!("inventory-{}", uuid::Uuid::new_v4()),
         device: 1,
         inode: 3,
         caller: 1000,
@@ -23,7 +23,12 @@ fn receipt_wire_round_trip_preserves_exact_custody_facts() {
 #[test]
 fn receipt_wire_rejects_noncanonical_names_and_unbounded_parents() {
     let original = serde_json::to_value(receipt()).unwrap();
-    for name in ["inventory-not-a-uuid", "inventory-../escape", "other"] {
+    for name in [
+        "inventory-not-a-uuid",
+        "inventory-../escape",
+        "inventory-00000000-0000-0000-0000-000000000000",
+        "other",
+    ] {
         let mut wire = original.clone();
         wire["name"] = name.into();
         assert!(serde_json::from_value::<ScratchReceipt>(wire).is_err());

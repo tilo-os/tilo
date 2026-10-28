@@ -25,8 +25,7 @@ pub struct ComputerApplicationsScope {
     identity_public_key: [u8; 32],
 }
 fn operation(value: &str) -> io::Result<()> {
-    let id = uuid::Uuid::parse_str(value).map_err(|_| invalid())?;
-    if id.is_nil() || id.to_string() != value {
+    if !crate::is_operation_id(value) {
         return Err(invalid());
     }
     Ok(())

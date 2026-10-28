@@ -42,8 +42,7 @@ pub fn selected() -> Result<String> {
     Ok(path.to_owned())
 }
 fn completed(attempt: &str) -> Result<String> {
-    let id = uuid::Uuid::parse_str(attempt).map_err(|_| invalid())?;
-    if id.to_string() != attempt {
+    if !imager_backend::is_operation_id(attempt) {
         return Err(invalid());
     }
     Ok(format!("{ROOT}/.completed-setup-{attempt}"))

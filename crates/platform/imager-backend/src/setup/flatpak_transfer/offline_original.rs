@@ -447,8 +447,7 @@ impl OriginalFlatpakClaim {
     }
 
     pub fn validate_shape(&self, operation: &str) -> io::Result<()> {
-        let canonical = uuid::Uuid::parse_str(operation).map_err(io::Error::other)?;
-        if canonical.to_string() != operation {
+        if !crate::is_operation_id(operation) {
             return Err(refused("Original application operation is not canonical"));
         }
         if self.schema != 1

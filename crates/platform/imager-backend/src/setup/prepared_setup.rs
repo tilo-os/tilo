@@ -302,7 +302,7 @@ impl OfflineHomePlan {
             || !self.source.categories.home
             || (self.source.categories.flatpak && self.source.flatpak_inventory.is_none())
             || self.source.operation_id != self.export_operation
-            || !uuid(&self.export_operation)
+            || !crate::is_operation_id(&self.export_operation)
             || self.setup_binding.is_empty()
             || self.setup_binding.len() > 256
             || self.setup_binding.chars().any(char::is_control)

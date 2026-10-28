@@ -78,7 +78,7 @@ fn load(store: &Store) -> io::Result<Option<Attempt>> {
         || record.binding.declaration == [0; 32]
         || record.binding.filesystem == [0; 16]
         || record.binding.uid == 0
-        || uuid::Uuid::parse_str(&record.attempt).is_err()
+        || !crate::is_operation_id(&record.attempt)
     {
         return Err(failure("Original output attempt invalid"));
     }
@@ -1083,7 +1083,7 @@ pub fn review_committed_original_selection(
     completed: &Arc<PinnedDirectory>,
 ) -> io::Result<CommittedOriginalSelection> {
     use sha2::Digest;
-    if rustix::process::geteuid().as_raw() != 0 || uuid::Uuid::parse_str(attempt).is_err() {
+    if rustix::process::geteuid().as_raw() != 0 || !crate::is_operation_id(attempt) {
         return Err(failure(
             "Readonly committed review requires root and exact attempt",
         ));
@@ -1450,7 +1450,7 @@ pub fn review_committed_original_applications_selection(
     completed: &Arc<PinnedDirectory>,
 ) -> io::Result<CommittedOriginalApplicationsSelection> {
     use sha2::Digest;
-    if rustix::process::geteuid().as_raw() != 0 || uuid::Uuid::parse_str(attempt).is_err() {
+    if rustix::process::geteuid().as_raw() != 0 || !crate::is_operation_id(attempt) {
         return Err(failure(
             "Readonly committed review requires root and exact attempt",
         ));

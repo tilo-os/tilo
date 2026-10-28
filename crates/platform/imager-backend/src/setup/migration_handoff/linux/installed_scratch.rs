@@ -229,7 +229,7 @@ fn target_volume(facts: &Facts, directory: &File, mount_id: u64) -> io::Result<S
         &volume.partition_guid,
         &volume.filesystem_uuid,
     ] {
-        if !uuid::Uuid::parse_str(id).is_ok_and(|id| !id.is_nil()) {
+        if !crate::is_operation_id(id) {
             return Err(refusal("Scratch native storage UUID is invalid"));
         }
     }

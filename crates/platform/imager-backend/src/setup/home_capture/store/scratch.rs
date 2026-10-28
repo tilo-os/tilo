@@ -43,11 +43,7 @@ impl TryFrom<ScratchReceiptWire> for ScratchReceipt {
             .name
             .strip_prefix("inventory-")
             .ok_or(io::ErrorKind::InvalidData)?;
-        if uuid::Uuid::parse_str(suffix)
-            .ok()
-            .map(|id| id.to_string())
-            .as_deref()
-            != Some(suffix)
+        if !crate::is_operation_id(suffix)
             || !wire.parent.is_absolute()
             || wire.parent.components().any(|component| {
                 !matches!(
@@ -82,11 +78,7 @@ impl ScratchReceipt {
             .name
             .strip_prefix("inventory-")
             .ok_or(io::ErrorKind::PermissionDenied)?;
-        if uuid::Uuid::parse_str(suffix)
-            .ok()
-            .map(|id| id.to_string())
-            .as_deref()
-            != Some(suffix)
+        if !crate::is_operation_id(suffix)
             || rustix::process::geteuid().as_raw() != 0
             || !self.parent.is_absolute()
         {

@@ -24,8 +24,7 @@ struct Segment {
     sha256: [u8; 32],
 }
 fn directory_name(nonce: &str) -> io::Result<String> {
-    let uuid = uuid::Uuid::parse_str(nonce).map_err(io::Error::other)?;
-    if uuid.to_string() != nonce {
+    if !crate::is_operation_id(nonce) {
         return Err(changed("Adoption segment namespace is not canonical"));
     }
     Ok(format!(".tilo-adoption-plan-{nonce}"))

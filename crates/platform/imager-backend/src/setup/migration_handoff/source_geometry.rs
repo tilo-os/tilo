@@ -25,10 +25,7 @@ impl SourceGeometry {
         }
         let mounted: MountedGeometry = serde_json::from_slice(bytes)?;
         mounted.mounted_entry.validate()?;
-        if mounted.schema != 1
-            || !uuid::Uuid::parse_str(&mounted.operation)
-                .is_ok_and(|id| !id.is_nil() && id.to_string() == mounted.operation)
-        {
+        if mounted.schema != 1 || !crate::is_operation_id(&mounted.operation) {
             return Err(refusal("Mounted source geometry operation differs"));
         }
         Ok(Self::Mounted {

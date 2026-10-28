@@ -32,11 +32,7 @@ impl Capture {
             return Err(error);
         }
         let attached = (|| {
-            if uuid::Uuid::parse_str(operation)
-                .map_err(io::Error::other)?
-                .to_string()
-                != operation
-            {
+            if !crate::is_operation_id(operation) {
                 return Err(failure("capture operation must be a canonical UUID"));
             }
             let input = child
