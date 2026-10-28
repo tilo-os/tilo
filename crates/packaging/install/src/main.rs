@@ -1758,8 +1758,7 @@ fn update_one(
             None,
         )
     } else {
-        let offered =
-            offered::fetch_from_registries(&entry.id, request.version_req, request.trust)?;
+        let offered = offered::fetch_from_registries(entry, request.version_req, request.trust)?;
         (
             Candidate::Fetched(offered.staged),
             offered.source,

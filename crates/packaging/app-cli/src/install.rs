@@ -668,27 +668,18 @@ pub fn install_runtime_from_enabled(
     if crate::runtime_installed(runtime) {
         return Ok(());
     }
-    let registries = crate::config::load_registries();
-    let mut last_error = None;
-    for registry in registries.enabled() {
-        match crate::runtime_offer(runtime, &registry.name) {
-            Ok(Some(offer)) => {
-                install_or_update_app_reporting(&offer, on_progress, Change::Install)?;
-                return if crate::runtime_installed(runtime) {
-                    Ok(())
-                } else {
-                    Err(InstallError::NotOffered {
-                        package_id: runtime.to_owned(),
-                    })
-                };
-            }
-            Ok(None) => {}
-            Err(detail) => last_error = Some(InstallError::Download { detail }),
-        }
-    }
-    Err(last_error.unwrap_or_else(|| InstallError::NotOffered {
+    let not_offered = || InstallError::NotOffered {
         package_id: runtime.to_owned(),
-    }))
+    };
+    let offer = crate::runtime_offer_from_enabled(runtime)
+        .map_err(|detail| InstallError::Download { detail })?
+        .ok_or_else(not_offered)?;
+    install_or_update_app_reporting(&offer, on_progress, Change::Install)?;
+    if crate::runtime_installed(runtime) {
+        Ok(())
+    } else {
+        Err(not_offered())
+    }
 }
 
 /// Install the language pack for `locale` (`de-DE`) from the first enabled
