@@ -55,6 +55,9 @@ case "${1:-}" in
     rm -f "$list"
     dnf clean all
     if [ -x /usr/libexec/tilo/finalize-rpmdb ]; then /usr/libexec/tilo/finalize-rpmdb; fi
+    # The OS image drops finalize-rpmdb; DNF's history and ldconfig's aux-cache differ in every
+    # build, so without this each build ships the whole layer anew.
+    sh "$dev/os/scripts/clean-dnf-layer-state.sh"
     rm -rf /var/log/dnf5.log* /var/cache/libdnf5 /var/lib/dnf/system-repo.lock /run/dnf /etc/ld.so.cache
     rustc --version && cargo --version && sccache --version
     ;;

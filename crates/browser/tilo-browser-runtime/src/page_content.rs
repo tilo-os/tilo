@@ -7,7 +7,6 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::ops::Range;
 use std::rc::Rc;
 
 use tilo_content::{ContentLimits, ContentStore, MemoryBackend};
@@ -30,25 +29,47 @@ pub(crate) fn page_content() -> ContentStore {
     PAGE_CONTENT.with(Clone::clone)
 }
 
+/// The content store a window reads its record's content from, once the
+/// window is built and says which it is.
+pub(crate) type WindowContent = Rc<RefCell<Option<ContentStore>>>;
+
 /// The window each image loader of a mount draws for, by the loader's place
 /// in the mount's list: the content store the window reads its record's
 /// content from.
-pub(crate) type ImageOwners = Rc<RefCell<HashMap<usize, ContentStore>>>;
+pub(crate) type ImageOwners = Rc<RefCell<HashMap<usize, WindowContent>>>;
 
-/// The loaders at `loaders` draw for the window whose record content is
-/// `content`.
-pub(crate) fn own_loaders(owners: &ImageOwners, loaders: Range<usize>, content: &ContentStore) {
-    let mut owners = owners.borrow_mut();
-    for loader in loaders {
-        owners.insert(loader, content.clone());
-    }
+/// Serve the image stores of the window whose wake scope `window` is from
+/// the page: each store the window builds, as it is constructed or later,
+/// gets a loader the page drives, in `loaders`, drawing for the window's
+/// content. The window's content is the returned cell's, set once the
+/// window is built.
+pub(crate) fn serve_window(
+    window: &ui::wake::WakeHandle,
+    loaders: &Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
+    owners: &ImageOwners,
+) -> WindowContent {
+    let content = WindowContent::default();
+    let (loaders, owners, drawn_for) = (Rc::clone(loaders), Rc::clone(owners), Rc::clone(&content));
+    ui::ImageStore::serve_window(
+        window,
+        Rc::new(move |max_dimension| {
+            let (image, loader) = ui::ImageStore::host_driven_with_max_dimension(max_dimension);
+            let mut loaders = loaders.borrow_mut();
+            owners
+                .borrow_mut()
+                .insert(loaders.len(), Rc::clone(&drawn_for));
+            loaders.push(loader);
+            image
+        }),
+    );
+    content
 }
 
 /// The content store of the window `loader` draws for, and the content
 /// address `url` names; `None` for any other image.
 fn blob(owners: &ImageOwners, loader: usize, url: &str) -> Option<(ContentStore, String)> {
     let hash = url.strip_prefix(BLOB_SCHEME)?;
-    let store = owners.borrow().get(&loader)?.clone();
+    let store = owners.borrow().get(&loader)?.borrow().clone()?;
     Some((store, hash.to_owned()))
 }
 

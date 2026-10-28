@@ -212,7 +212,8 @@ fn without_a_runtime_the_open_is_refused_in_words_and_the_connection_stays_usabl
 pub fn fixture_images(root: &Path) {
     let runtime = root.join(PackageId::from_bytes(RUNTIME).to_hex());
     std::fs::create_dir_all(runtime.join("etc")).unwrap();
-    for program in ["bash", "id", "touch", "cat"] {
+    // base64 and tr: the run marks encode a command line and its directory.
+    for program in ["bash", "id", "touch", "cat", "base64", "tr"] {
         let source = PathBuf::from("/usr/bin").join(program);
         fixture_file(&runtime, &source);
         if let Some(closure) = ush::helper_runtime::HelperRuntime::resolve(&source).unwrap() {
@@ -385,7 +386,7 @@ fn a_guest_shell_is_a_login_shell_that_marks_runs_and_tab_completes() {
         seen.contains(expected),
         "the profile was not read or Tab did not complete:\n{seen}"
     );
-    let mark = format!("\x1b]133;D;0;k={key}\x07");
+    let mark = format!("\x1b]133;D;0;k={key};t=1\x07");
     let seen = format!(
         "{seen}{}",
         read_until(fd, &mark, tilo_test_env::hang_bound())

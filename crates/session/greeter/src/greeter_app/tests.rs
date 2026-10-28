@@ -1982,3 +1982,206 @@ fn switching_between_the_pad_and_the_letters_keeps_the_card_in_place() {
     );
     assert_eq!(field_and_keys(&app), placed);
 }
+
+/// What the screen reader said, through the toolkit's recording speaker.
+#[derive(Clone, Default)]
+struct Heard(Arc<Mutex<tts::NullSpeaker>>);
+
+impl Heard {
+    fn spoken(&self) -> Vec<String> {
+        self.0.lock_recover().spoken().to_vec()
+    }
+}
+
+impl tts::Speaker for Heard {
+    fn speak_utterance(&mut self, utterance: tts::Utterance) {
+        self.0.lock_recover().speak_utterance(utterance);
+    }
+    fn stop(&mut self) {
+        self.0.lock_recover().stop();
+    }
+    fn set_rate(&mut self, rate: f32) {
+        self.0.lock_recover().set_rate(rate);
+    }
+    fn set_voice(&mut self, voice: &str) {
+        self.0.lock_recover().set_voice(voice);
+    }
+    fn is_speaking(&self) -> bool {
+        self.0.lock_recover().is_speaking()
+    }
+    fn backend_name(&self) -> &'static str {
+        "heard"
+    }
+}
+
+/// A tablet's touchscreen with no keyboard, as the KMS host shows the
+/// login screen on it.
+#[derive(Default)]
+struct Touchscreen {
+    emulator: std::cell::RefCell<ui::TouchPointerEmulator>,
+}
+
+impl ui::app::AppSurface for Touchscreen {
+    fn scale_factor(&self) -> f64 {
+        1.0
+    }
+    fn inner_size(&self) -> winit::dpi::PhysicalSize<u32> {
+        winit::dpi::PhysicalSize::new(1280, 800)
+    }
+    fn request_redraw(&self) {}
+    fn set_cursor(&self, _cursor: winit::window::CursorIcon) {}
+}
+
+impl Touchscreen {
+    fn frame(&self, app: &mut ui::App) {
+        let mut scene = vello::Scene::new();
+        for _ in 0..3 {
+            scene.reset();
+            app.surface_frame(self, &mut scene);
+        }
+    }
+
+    /// A finger at `at`, `t` ms after `zero`, through the host's touch path.
+    fn finger(
+        &self,
+        app: &mut ui::App,
+        zero: ui::time::Instant,
+        (id, phase): (u64, winit::event::TouchPhase),
+        at: vello::kurbo::Point,
+        t: u64,
+    ) {
+        let touch = winit::event::Touch {
+            device_id: winit::event::DeviceId::dummy(),
+            phase,
+            location: winit::dpi::PhysicalPosition::new(at.x, at.y),
+            force: None,
+            id,
+        };
+        let now = after(zero, t);
+        ui::time::testing::with_monotonic_time(now, || {
+            app.surface_touch(self, touch, &mut self.emulator.borrow_mut())
+        });
+    }
+}
+
+/// `t` ms after `zero`.
+fn after(zero: ui::time::Instant, t: u64) -> ui::time::Instant {
+    zero.checked_add(std::time::Duration::from_millis(t))
+        .expect("a test's instant")
+}
+
+/// Where the screen reader finds the node called `name` with `role`.
+fn semantic_centre(app: &mut ui::App, role: ui::a11y::Role, name: &str) -> vello::kurbo::Point {
+    app.refresh_semantic_tree();
+    app.semantic_tree()
+        .iter()
+        .find(|node| node.role == role && node.name.as_deref() == Some(name))
+        .and_then(|node| node.bounds)
+        .unwrap_or_else(|| panic!("{role:?} {name} is on the screen"))
+        .center()
+}
+
+#[test]
+fn with_the_screen_reader_on_a_pin_is_entered_by_touch_and_never_spoken() {
+    use winit::event::TouchPhase::{Ended, Started};
+    let mut greeter = GreeterApp::for_shot(AuthScenario::PersonalPin);
+    greeter.keyboards = Some(false);
+    let typed = Arc::clone(&greeter.password_buffer);
+    let mut app = ui::App::new(ui::State::new(), Box::new(greeter));
+    app.autofocus_first = true;
+    app.autofocus_on_structure_change = true;
+    let heard = Heard::default();
+    app.set_screen_reader(Some(ui::screen_reader::ScreenReader::with_speaker(
+        Box::new(heard.clone()),
+    )));
+    let screen = Touchscreen::default();
+    screen.frame(&mut app);
+    let zero = ui::time::now();
+    let anywhere = vello::kurbo::Point::new(640.0, 120.0);
+
+    for (index, digit) in ["2", "5", "8", "0"].into_iter().enumerate() {
+        let key = semantic_centre(&mut app, ui::a11y::Role::Button, digit);
+        let base = u64::try_from(index).unwrap().saturating_mul(2_000);
+        let before = heard.spoken().len();
+        // Rest a finger on the key: it is read, and nothing is typed.
+        screen.finger(&mut app, zero, (1, Started), key, base);
+        assert!(app.tick_screen_reader(after(zero, base.saturating_add(200))));
+        screen.finger(&mut app, zero, (1, Ended), key, base.saturating_add(250));
+        screen.frame(&mut app);
+        assert_eq!(
+            heard.spoken().get(before..),
+            Some(&[format!("{digit}, button")][..]),
+            "the key under the finger is read"
+        );
+        assert_eq!(typed.lock_recover().len(), index, "exploring types nothing");
+        // A double tap away from the keyboard presses the key read.
+        screen.finger(
+            &mut app,
+            zero,
+            (2, Started),
+            anywhere,
+            base.saturating_add(600),
+        );
+        screen.finger(
+            &mut app,
+            zero,
+            (2, Ended),
+            anywhere,
+            base.saturating_add(650),
+        );
+        screen.finger(
+            &mut app,
+            zero,
+            (3, Started),
+            anywhere,
+            base.saturating_add(750),
+        );
+        screen.finger(
+            &mut app,
+            zero,
+            (3, Ended),
+            anywhere,
+            base.saturating_add(800),
+        );
+        screen.frame(&mut app);
+    }
+    assert_eq!(*typed.lock_recover(), "2580");
+
+    // The field is read as protected, with nothing of what it holds.
+    let field = semantic_centre(&mut app, ui::a11y::Role::TextInput, "PIN");
+    screen.finger(&mut app, zero, (4, Started), field, 10_000);
+    app.tick_screen_reader(after(zero, 10_200));
+    let said = heard.spoken();
+    let last = said.last().expect("the field is read");
+    assert!(
+        last.starts_with("PIN") && last.contains("protected"),
+        "{last}"
+    );
+
+    // Each digit was said only as the key's name, never echoed from the
+    // field, and the PIN itself, or any run of it, never.
+    for utterance in &said {
+        assert!(
+            !["2", "5", "8", "0"].contains(&utterance.as_str()),
+            "a typed digit was echoed: {said:?}"
+        );
+        for run in ["25", "58", "80", "258", "2580"] {
+            assert!(!utterance.contains(run), "{utterance} in {said:?}");
+        }
+    }
+}
+
+#[test]
+fn keys_from_the_on_screen_keyboard_reach_the_passcode_a_delete_too() {
+    use ui::passcode_keyboard::PasscodeInput;
+    let mut app = GreeterApp::for_shot(AuthScenario::PersonalPin);
+    shown_keyboard(&mut app);
+    app.touch_keyboard.typed.borrow_mut().extend([
+        PasscodeInput::Text("1".into()),
+        PasscodeInput::Text("2".into()),
+        PasscodeInput::Backspace,
+        PasscodeInput::Text("3".into()),
+    ]);
+    app.take_touch_keys();
+    assert_eq!(*app.password_buffer.lock_recover(), "13");
+}

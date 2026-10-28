@@ -10,7 +10,10 @@
 //!
 //! A reading cursor can also walk the flattened accessible tree (DFS,
 //! presentational nodes collapsed) via [`ScreenReader::read_all`] /
-//! `read_next` / `read_prev`.
+//! `read_next` / `read_prev`, synthetic children (a keyboard's keys)
+//! included. The `App` hands it the retained tree's order
+//! ([`ReadingItem`]) through the `_in` variants, and a finger explores it
+//! through [`ScreenReader::explore_in`] ([`crate::screen_reader_touch`]).
 //!
 //! Narration vocabulary resolves through [`i18n!`](macro@crate::i18n) bundles;
 //! with none loaded it falls back to English so headless builds narrate
@@ -18,7 +21,10 @@
 
 use tts::{NullSpeaker, Priority, Speaker, SpeechQueue, Utterance};
 
+use vello::kurbo::Point;
+
 use crate::a11y::{AccessNode, Role};
+use crate::a11y_tree::SemanticId;
 use crate::widget::Widget;
 
 /// Centralized narration vocabulary: every word has a stable FTL key plus a
@@ -349,13 +355,29 @@ fn is_editable_role(role: Role) -> bool {
     )
 }
 
+/// One stop of the reading cursor: an accessible node, and the id the
+/// retained tree ([`crate::a11y_tree::SemanticTree`]) gives it, when the
+/// order was read from that tree. The id keeps the cursor on its item while
+/// the order around it changes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReadingItem {
+    pub id: Option<SemanticId>,
+    pub node: AccessNode,
+}
+
+/// Where the reading cursor is: an index into the order it was last placed
+/// in, and that item's id, which finds it again in a changed order.
+#[derive(Clone, Debug, PartialEq)]
+struct Cursor {
+    index: usize,
+    id: Option<SemanticId>,
+}
+
 pub struct ScreenReader {
     speaker: Box<dyn Speaker>,
     queue: SpeechQueue,
-    /// `None` until the first `read_next/read_prev/read_all`.
-    cursor: Option<usize>,
-    /// The flattened reading order captured by the most recent reading command.
-    reading_order: Vec<AccessNode>,
+    /// `None` until the first reading command, and after focus moves.
+    cursor: Option<Cursor>,
 }
 
 impl Default for ScreenReader {
@@ -377,7 +399,6 @@ impl ScreenReader {
             speaker,
             queue: SpeechQueue::new(),
             cursor: None,
-            reading_order: Vec::new(),
         }
     }
 
@@ -498,27 +519,77 @@ impl ScreenReader {
         self.speaker.is_speaking()
     }
 
+    /// Speak `node`, interrupting what is being said.
+    fn speak_item(&mut self, node: &AccessNode) {
+        let text = describe(node);
+        if !text.is_empty() {
+            self.enqueue(Utterance::new(text));
+        }
+    }
+
+    /// Put the cursor on `order[index]`, speak it and return it.
+    fn land(&mut self, order: &[ReadingItem], index: usize) -> Option<AccessNode> {
+        let item = order.get(index)?;
+        self.cursor = Some(Cursor {
+            index,
+            id: item.id.clone(),
+        });
+        self.speak_item(&item.node);
+        Some(item.node.clone())
+    }
+
+    /// Where the cursor is in `order`: on the item it was on, found by its
+    /// id when the order changed around it, else at the same place while
+    /// that is still in the order.
+    fn anchor(&mut self, order: &[ReadingItem]) -> Option<usize> {
+        let cursor = self.cursor.as_ref()?;
+        let found = match &cursor.id {
+            Some(id) if order.get(cursor.index).and_then(|item| item.id.as_ref()) == Some(id) => {
+                Some(cursor.index)
+            }
+            Some(id) => order
+                .iter()
+                .position(|item| item.id.as_ref() == Some(id))
+                .or_else(|| (cursor.index < order.len()).then_some(cursor.index)),
+            None => (cursor.index < order.len()).then_some(cursor.index),
+        };
+        match found {
+            Some(index) => {
+                let id = order.get(index).and_then(|item| item.id.clone());
+                self.cursor = Some(Cursor { index, id });
+            }
+            None => self.cursor = None,
+        }
+        found
+    }
+
+    /// The item the cursor is on in `order`, which a double tap activates.
+    pub fn cursor_item<'a>(&mut self, order: &'a [ReadingItem]) -> Option<&'a ReadingItem> {
+        let index = self.anchor(order)?;
+        order.get(index)
+    }
+
     /// A "say all": speaks every node's [`describe`] as bulk
     /// [`Priority::Text`](tts::Priority) (so a later focus change
     /// interrupts it). Seeds the reading cursor at the start.
     pub fn read_all(&mut self, root: &dyn Widget) {
-        self.reading_order = flatten_reading_order(root);
-        self.cursor = if self.reading_order.is_empty() {
-            None
-        } else {
-            Some(0)
-        };
+        self.read_all_in(&widget_reading_order(root));
+    }
+
+    /// [`Self::read_all`] over `order`.
+    pub fn read_all_in(&mut self, order: &[ReadingItem]) {
+        self.cursor = order.first().map(|item| Cursor {
+            index: 0,
+            id: item.id.clone(),
+        });
         // First utterance interrupts (clears focus chatter); the rest are
         // non-interrupting continuations so they don't cancel each other.
         let mut first = true;
-        // Collected first to avoid borrowing `self` across the speaker call.
-        let phrases: Vec<String> = self
-            .reading_order
+        for p in order
             .iter()
-            .map(describe)
+            .map(|item| describe(&item.node))
             .filter(|p| !p.is_empty())
-            .collect();
-        for p in phrases {
+        {
             self.enqueue(
                 Utterance::new(p)
                     .with_priority(Priority::Text)
@@ -530,73 +601,71 @@ impl ScreenReader {
 
     /// Refreshes the reading order without moving the cursor.
     pub fn seed_reading_order(&mut self, root: &dyn Widget) -> usize {
-        self.reading_order = flatten_reading_order(root);
-        if self.reading_order.is_empty() {
-            self.cursor = None;
-        }
-        self.reading_order.len()
+        let order = widget_reading_order(root);
+        self.anchor(&order);
+        order.len()
     }
 
     /// Returns `None` (speaking nothing) at the end of the document.
     pub fn read_next(&mut self, root: &dyn Widget) -> Option<AccessNode> {
-        self.reading_order = flatten_reading_order(root);
-        if self.reading_order.is_empty() {
-            self.cursor = None;
+        self.read_next_in(&widget_reading_order(root))
+    }
+
+    /// [`Self::read_next`] over `order`.
+    pub fn read_next_in(&mut self, order: &[ReadingItem]) -> Option<AccessNode> {
+        let next = match self.anchor(order) {
+            None => 0,
+            Some(i) => i.saturating_add(1),
+        };
+        if next >= order.len() {
+            if order.is_empty() {
+                self.cursor = None;
+            }
             return None;
         }
-        let next = match self.cursor {
-            None => 0,
-            Some(i) => {
-                if i.saturating_add(1) >= self.reading_order.len() {
-                    return None;
-                }
-                i.saturating_add(1)
-            }
-        };
-        self.cursor = Some(next);
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "next is freshly bounds-checked against self.reading_order.len() \
-                      immediately above"
-        )]
-        let node = self.reading_order[next].clone();
-        let text = describe(&node);
-        if !text.is_empty() {
-            self.enqueue(Utterance::new(text));
-        }
-        Some(node)
+        self.land(order, next)
     }
 
     /// Returns `None` at the start of the document.
     pub fn read_prev(&mut self, root: &dyn Widget) -> Option<AccessNode> {
-        self.reading_order = flatten_reading_order(root);
-        if self.reading_order.is_empty() {
+        self.read_prev_in(&widget_reading_order(root))
+    }
+
+    /// [`Self::read_prev`] over `order`.
+    pub fn read_prev_in(&mut self, order: &[ReadingItem]) -> Option<AccessNode> {
+        if order.is_empty() {
             self.cursor = None;
             return None;
         }
-        let prev = match self.cursor {
-            // `self.reading_order` is non-empty here (checked above), so len() >= 1.
-            None => self.reading_order.len().saturating_sub(1),
+        let prev = match self.anchor(order) {
+            None => order.len().saturating_sub(1),
             Some(0) => return None,
-            // The `Some(0)` arm above already took the i == 0 case.
             Some(i) => i.saturating_sub(1),
         };
-        self.cursor = Some(prev);
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "prev is freshly bounds-checked against self.reading_order.len() \
-                      immediately above"
-        )]
-        let node = self.reading_order[prev].clone();
-        let text = describe(&node);
-        if !text.is_empty() {
-            self.enqueue(Utterance::new(text));
+        self.land(order, prev)
+    }
+
+    /// Explore by touch: speak the item of `order` under `point` and put the
+    /// cursor on it, pressing nothing. Of nested items the innermost wins (a
+    /// key, not the keyboard around it). The item the cursor is already on is
+    /// not spoken again, so a finger dragged across one key says it once.
+    /// Returns the item when the cursor moved to it.
+    pub fn explore_in(&mut self, order: &[ReadingItem], point: Point) -> Option<AccessNode> {
+        let under = order.iter().rposition(|item| {
+            !item.node.state.hidden
+                && item
+                    .node
+                    .bounds
+                    .is_some_and(|bounds| bounds.to_rect().contains(point))
+        })?;
+        if self.anchor(order) == Some(under) {
+            return None;
         }
-        Some(node)
+        self.land(order, under)
     }
 
     pub fn cursor(&self) -> Option<usize> {
-        self.cursor
+        self.cursor.as_ref().map(|cursor| cursor.index)
     }
 
     /// Speaks a short "no more" cue and returns `None` when nothing ahead
@@ -606,30 +675,28 @@ impl ScreenReader {
         root: &dyn Widget,
         pred: impl Fn(&AccessNode) -> bool,
     ) -> Option<AccessNode> {
-        self.reading_order = flatten_reading_order(root);
-        if self.reading_order.is_empty() {
+        self.read_next_matching_in(&widget_reading_order(root), pred)
+    }
+
+    /// [`Self::read_next_matching`] over `order`.
+    pub fn read_next_matching_in(
+        &mut self,
+        order: &[ReadingItem],
+        pred: impl Fn(&AccessNode) -> bool,
+    ) -> Option<AccessNode> {
+        if order.is_empty() {
             self.cursor = None;
             return None;
         }
-        let start = self.cursor.map_or(0, |i| i.saturating_add(1));
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "i is drawn from the start..len() range, so it always indexes \
-                      within self.reading_order"
-        )]
-        let found = (start..self.reading_order.len()).find(|&i| pred(&self.reading_order[i]));
+        let start = self.anchor(order).map_or(0, |i| i.saturating_add(1));
+        let found = order
+            .iter()
+            .enumerate()
+            .skip(start)
+            .find(|(_, item)| pred(&item.node))
+            .map(|(i, _)| i);
         if let Some(i) = found {
-            self.cursor = Some(i);
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "i is the index `find` just matched inside self.reading_order"
-            )]
-            let node = self.reading_order[i].clone();
-            let text = describe(&node);
-            if !text.is_empty() {
-                self.enqueue(Utterance::new(text));
-            }
-            Some(node)
+            self.land(order, i)
         } else {
             self.enqueue(Utterance::new(phrase::no_next()));
             None
@@ -641,32 +708,25 @@ impl ScreenReader {
         root: &dyn Widget,
         pred: impl Fn(&AccessNode) -> bool,
     ) -> Option<AccessNode> {
-        self.reading_order = flatten_reading_order(root);
-        if self.reading_order.is_empty() {
+        self.read_prev_matching_in(&widget_reading_order(root), pred)
+    }
+
+    /// [`Self::read_prev_matching`] over `order`.
+    pub fn read_prev_matching_in(
+        &mut self,
+        order: &[ReadingItem],
+        pred: impl Fn(&AccessNode) -> bool,
+    ) -> Option<AccessNode> {
+        if order.is_empty() {
             self.cursor = None;
             return None;
         }
         // Search strictly before the cursor; from an unset cursor, scan from the
         // end so the first jump lands on the last matching element.
-        let end = self.cursor.unwrap_or(self.reading_order.len());
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "i is drawn from the 0..end range, so it always indexes within \
-                      self.reading_order"
-        )]
-        let found = (0..end).rev().find(|&i| pred(&self.reading_order[i]));
+        let end = self.anchor(order).unwrap_or(order.len());
+        let found = order.iter().take(end).rposition(|item| pred(&item.node));
         if let Some(i) = found {
-            self.cursor = Some(i);
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "i is the index `find` just matched inside self.reading_order"
-            )]
-            let node = self.reading_order[i].clone();
-            let text = describe(&node);
-            if !text.is_empty() {
-                self.enqueue(Utterance::new(text));
-            }
-            Some(node)
+            self.land(order, i)
         } else {
             self.enqueue(Utterance::new(phrase::no_prev()));
             None
@@ -722,19 +782,48 @@ pub fn is_form_field(node: &AccessNode) -> bool {
 }
 
 /// DFS, collapsing presentational widgets (`accessibility() == None`)
-/// exactly as [`crate::accesskit_bridge::build_tree_update`] does.
+/// exactly as [`crate::accesskit_bridge::build_tree_update`] does. A widget's
+/// synthetic children (a table's rows, a keyboard's keys) follow its widget
+/// children, as in the retained tree, each placed where the widget draws it
+/// ([`crate::a11y::with_synthetic_bounds`]).
 pub fn flatten_reading_order(root: &dyn Widget) -> Vec<AccessNode> {
-    fn visit(w: &dyn Widget, out: &mut Vec<AccessNode>) {
-        if let Some(node) = w.accessibility() {
-            out.push(node);
+    fn synthetic(mut node: AccessNode, out: &mut Vec<AccessNode>) {
+        let children = std::mem::take(&mut node.children);
+        out.push(node);
+        for child in children {
+            synthetic(child, out);
         }
+    }
+    fn visit(w: &dyn Widget, out: &mut Vec<AccessNode>) {
+        let Some(mut node) = w.accessibility() else {
+            for child in w.children() {
+                visit(child, out);
+            }
+            return;
+        };
+        node = crate::a11y::with_synthetic_bounds(node, w);
+        // The node keeps its children for what reads them (the item the
+        // keyboard is on inside it); the order lists them after it.
+        let children = node.children.clone();
+        out.push(node);
         for child in w.children() {
             visit(child, out);
+        }
+        for child in children {
+            synthetic(child, out);
         }
     }
     let mut out = Vec::new();
     visit(root, &mut out);
     out
+}
+
+/// [`flatten_reading_order`] as the cursor walks it.
+fn widget_reading_order(root: &dyn Widget) -> Vec<ReadingItem> {
+    flatten_reading_order(root)
+        .into_iter()
+        .map(|node| ReadingItem { id: None, node })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1273,6 +1362,35 @@ mod tests {
             let mut r = recording_reader().0;
             assert_eq!(r.seed_reading_order(&root), 5);
         }
+    }
+
+    #[test]
+    fn the_reading_order_lists_a_widgets_synthetic_children_after_it() {
+        let keys = vec![
+            n(Role::Button).with_name("1"),
+            n(Role::Button).with_name("2"),
+        ];
+        let keyboard = TW::new(Some(n(Role::Group).with_name("Keys").with_children(keys)));
+        let root = TW::new(None)
+            .child(Box::new(keyboard))
+            .child(Box::new(TW::new(Some(n(Role::Button).with_name("Done")))));
+        let names: Vec<_> = flatten_reading_order(&root)
+            .into_iter()
+            .map(|node| node.name.unwrap_or_default())
+            .collect();
+        assert_eq!(names, ["Keys", "1", "2", "Done"]);
+        let (mut r, rec) = recording_reader();
+        r.read_next(&root);
+        r.read_next(&root);
+        r.read_next(&root);
+        assert_eq!(
+            r.read_prev(&root).map(|node| node.name),
+            Some(Some("1".into()))
+        );
+        assert_eq!(
+            rec.0.borrow().spoken(),
+            ["Keys, group", "1, button", "2, button", "1, button"]
+        );
     }
 
     /// root(None) -> [ H1 "Top", para "intro", H2 "Body", button "Go",

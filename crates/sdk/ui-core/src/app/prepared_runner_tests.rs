@@ -1257,3 +1257,35 @@ fn a_running_app_takes_contrast_text_size_and_preset_on_the_tick_they_change() {
     assert!((app.theme.text_scale - 1.0).abs() < 1e-3);
     assert!(app.layout.layout_dirty);
 }
+
+/// A window opened in a served window's place (the window a record opens in
+/// once it is had, another record opened here) shows in the same host: the
+/// image stores it builds come from that host too, never the toolkit's own.
+#[test]
+fn a_window_opened_in_a_served_windows_place_is_served_by_its_host() {
+    let host = ProbeHost::new();
+    let component = editable_component(&host, 37);
+    let served = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+    let counted = std::rc::Rc::clone(&served);
+    crate::ImageStore::serve_window(
+        &component.callback_binding().lifetime,
+        std::rc::Rc::new(move |max_dimension| {
+            counted.set(counted.get() + 1);
+            crate::ImageStore::host_driven_with_max_dimension(max_dimension).0
+        }),
+    );
+    let (context, _) = component
+        .reopener()
+        .prepare(runner_probe_definition(), crate::record::RecordId::minted())
+        .unwrap();
+    let successor = context.wake_handle();
+    let unused: crate::image_store::Fetcher =
+        std::sync::Arc::new(|_| panic!("a served window never fetches its pictures itself"));
+    {
+        let _entry = successor.enter_if_open().unwrap();
+        drop(crate::ImageStore::new(&unused));
+    }
+    assert_eq!(served.get(), 1, "the window in its place is served too");
+    drop(context);
+    drop(component);
+}

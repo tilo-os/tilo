@@ -6093,6 +6093,7 @@ dependencies = [
  "tilo-power-mgmt",
  "tilo-startup-metrics",
  "tilo-test-env",
+ "tilo-tts",
  "tilo-ui",
  "tilo-ui-kms",
  "tilo-vello",

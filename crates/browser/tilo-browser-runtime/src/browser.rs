@@ -1285,21 +1285,14 @@ fn present_component(
     config.lend_provider_admin(&mut context)?;
     crate::app_loans::lend(&mut context);
     let loaders = Rc::new(RefCell::new(Vec::new()));
-    let destination = Rc::clone(&loaders);
-    let component = ui::ImageStore::with_host_factory_with_max_dimension(
-        Rc::new(move |max_dimension| {
-            let (image, loader) = ui::ImageStore::host_driven_with_max_dimension(max_dimension);
-            destination.borrow_mut().push(loader);
-            image
-        }),
-        || definition.instantiate(context, target, restore),
-    )
-    .map_err(error)?;
-    let checkout = component.record().clone();
     let image_owners = crate::page_content::ImageOwners::default();
-    if let Some(content) = component.content() {
-        crate::page_content::own_loaders(&image_owners, 0..loaders.borrow().len(), &content);
-    }
+    let window_content =
+        crate::page_content::serve_window(&context.wake_handle(), &loaders, &image_owners);
+    let component = definition
+        .instantiate(context, target, restore)
+        .map_err(error)?;
+    let checkout = component.record().clone();
+    *window_content.borrow_mut() = component.content();
     Ok(Presentation {
         root: Root::Component(Box::new(component)),
         stores,

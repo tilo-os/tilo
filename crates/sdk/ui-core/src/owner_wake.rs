@@ -17,6 +17,10 @@ use uuid::Uuid;
 #[derive(Debug)]
 pub struct OwnerModelServiceReport {
     pub attempted: bool,
+    /// A save-status-only service changed what an owner shows (its window
+    /// bar's notice or unsaved mark): the next frame draws it. A save that
+    /// landed in time shows nothing and asks for no frame.
+    pub presented: bool,
     pub completed: usize,
     pub result: Result<(), BoundDispatchError>,
 }
@@ -319,6 +323,18 @@ impl OwnerWakeQueue {
     /// Queue presence only, not current-owner custody or model purity.
     pub fn has_pending(&self) -> bool {
         !self.pending.0.lock_recover().entries.is_empty()
+    }
+    /// Whether a queued wake asks for an owner's model, not only for its
+    /// save status: what a frame may have to show. A save that moved on
+    /// is serviced without asking for a frame; its service asks for one
+    /// only when the owner shows something new.
+    pub fn has_pending_model_work(&self) -> bool {
+        self.pending
+            .0
+            .lock_recover()
+            .entries
+            .values()
+            .any(|packet| !packet.save_progress_only)
     }
     /// Park the calling thread, as an idle host's event loop does, until a
     /// wake is queued or `deadline` passes. Whether one is queued.

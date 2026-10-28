@@ -3471,11 +3471,11 @@ pub(crate) fn service_retained_owner_model(
 /// sync), nothing is offered, and the window's layout stands: the status
 /// is shown by what the owner presents of it (the window's bar), as when a
 /// sync delivers it. A save still in flight wakes the owner again when it
-/// moves on.
+/// moves on. Whether the owner shows something new, which a frame draws.
 pub(crate) fn service_owner_save_progress(
     root: &mut dyn Widget,
     work: &crate::owner_wake::OwnerWakeRequest,
-) -> Result<(), BoundDispatchError> {
+) -> Result<bool, BoundDispatchError> {
     let captured = work.binding();
     let _entry = captured.enter()?;
     let mut result = None;
@@ -3495,8 +3495,12 @@ pub(crate) fn service_owner_save_progress(
                         std::sync::Arc::new(move || wake.wake_save_progress()),
                     );
                 }
+                // What the owner shows of it: its window's bar (read by
+                // the host's next frame, the window current here), or
+                // anything else it asks to redraw.
+                let bar = crate::window_toolbar::revision();
                 owner.record_save_status(status);
-                Ok(())
+                Ok(crate::window_toolbar::revision() != bar || owner.needs_redraw())
             }));
         }
         None

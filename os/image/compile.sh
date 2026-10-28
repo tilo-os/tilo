@@ -366,8 +366,8 @@ case "$TILO_RUST_LTO" in \
           $target/release/tilo-net-answers \
           $target/release/tilo-identity \
           "$out"/ \
-    && ln -s app "$out"/store \
-    && ln -s tilo "$out"/system \
+    && ln -sfn app "$out"/store \
+    && ln -sfn tilo "$out"/system \
     && mkdir -p "$out"/completions/bash "$out"/completions/fish "$out"/completions/zsh \
     && $target/release/tilo completions bash > "$out"/completions/bash/tilo \
     && $target/release/app completions bash > "$out"/completions/bash/app \
