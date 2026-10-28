@@ -3828,6 +3828,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge-fork",
  "tilo-files",
+ "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",
