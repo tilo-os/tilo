@@ -10481,3 +10481,46 @@ timeout_secs = 5400
 on = ["idle"]
 default = false
 cache = false
+
+# Preserve a successful optimized build independently of benchmark assertions.
+[[check]]
+name = "editor-typing-iai-tools"
+default = false
+on = ["dispatch"]
+requires = ["arch=x86_64"]
+requirement = { cores = 4, memory = "4GiB" }
+timeout_secs = 3600
+inputs = ["tools/perf/build-typing-tools.sh", "tools/perf/typing-valgrind-accounting.patch", "rust-toolchain.toml", ".cargo/config.toml"]
+outputs = ["/target/iai-runner/**", "/target/iai-valgrind-fixed/install/**", "/target/iai-valgrind-fixed/build-inputs.txt", "/target/iai-valgrind-fixed/install.sha256"]
+run = "bash tools/perf/build-typing-tools.sh"
+
+[[check]]
+name = "editor-typing-iai-build"
+needs = ["editor-typing-iai-tools"]
+default = false
+on = ["dispatch"]
+requires = ["arch=x86_64"]
+# The optimized non-LTO build peaked at 6.6 GiB.
+requirement = { cores = 4, memory = "8GiB" }
+timeout_secs = 3600
+cargo_packages = ["code-editor"]
+cargo_dev_dependencies = true
+inputs = ["tools/perf/typing-iai.sh", "tools/font-catalog.py", "crates/sdk/ui-core/assets/fonts/**", "apps/code-editor/benches/typing.rs", "rust-toolchain.toml"]
+outputs = ["/target/iai-built/**", "/target/iai/benchmark-executable*", "/target/iai/*source.sha256", "/target/iai/build-inputs.sha256", "/target/iai/compiler.txt", "/target/iai/instrumenter*", "/target/iai/build.jsonl", "/target/cargo-timings/**"]
+run = "bash tools/perf/typing-iai.sh --build-only"
+
+[[check]]
+name = "editor-typing-iai"
+needs = ["editor-typing-iai-build", "editor-typing-iai-tools"]
+default = false
+on = ["dispatch"]
+cache = false
+requires = ["arch=x86_64"]
+# Compilation is separate; both fixtures also passed under a 3 GiB execution cap.
+requirement = { cores = 2, memory = "4GiB" }
+timeout_secs = 3600
+cargo_packages = ["code-editor"]
+cargo_dev_dependencies = true
+inputs = ["tools/perf/typing-iai.sh", "tools/perf/typing-iai-check.py", "tools/perf/typing-iai-check-test.py", "tools/font-catalog.py", "crates/sdk/ui-core/assets/fonts/**", "apps/code-editor/benches/typing.rs", "rust-toolchain.toml"]
+outputs = ["/target/iai/**"]
+run = "bash tools/perf/typing-iai.sh"

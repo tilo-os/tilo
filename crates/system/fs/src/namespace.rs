@@ -51,6 +51,8 @@ const MAX_PEER_SYNC_STATE_BYTES: usize = 64 * 1024;
 
 mod changes;
 mod changesets;
+#[cfg(test)]
+mod index_walk_tests;
 mod kernel_changes;
 mod leases;
 mod posix;
@@ -222,6 +224,24 @@ pub struct IndexedRecord {
     pub parent_id: String,
     pub path: String,
     pub is_dir: bool,
+}
+
+/// One node's row of the record index, read from its document once by
+/// [`Namespace::read_nodes_once`].
+#[derive(Clone)]
+struct NodeRow {
+    record_id: Option<FileRecordId>,
+    parent_id: String,
+    name: FileNameV1,
+    is_dir: bool,
+}
+
+/// Everything one walk over the document's nodes yields: the structural index,
+/// each node's index row, and how many nodes carry each record id.
+struct NodeWalk {
+    tree: TreeIndex,
+    rows: HashMap<String, NodeRow>,
+    occurrences: HashMap<FileRecordId, usize>,
 }
 
 /// Structural index over every node in the document: where each node sits
@@ -1098,65 +1118,16 @@ impl Namespace {
         self.node_lookups.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// The structural index of every node, read from the document.
-    fn scan_tree_index(&self) -> TreeIndex {
-        let mut tree = TreeIndex::default();
-        for id in self.doc.keys(&self.nodes) {
-            let Some(node) = self.node(&id) else {
-                continue;
-            };
-            if let Some(parent) = str_at(&self.doc, &node, "parent") {
-                let name = read_name(&self.doc, &node, "name").unwrap_or_default();
-                tree.place(&id, parent, name);
-            }
-            if let Some(record_id) = str_at(&self.doc, &node, RECORD_ID_KEY)
-                .and_then(|value| Uuid::parse_str(&value).ok())
-            {
-                tree.bind_record(&id, FileRecordId(record_id));
-            }
-        }
-        tree
-    }
-
     /// Reconstruct the index once while loading or after an opaque remote
     /// Automerge merge.  Serving a record-index page never calls this: page
     /// work is a slice of `record_index`, not a document traversal.
     fn rebuild_record_index(&mut self) {
-        #[derive(Clone)]
-        struct Raw {
-            record_id: Option<FileRecordId>,
-            parent_id: String,
-            name: FileNameV1,
-            is_dir: bool,
-        }
-
-        let mut raw = HashMap::<String, Raw>::new();
-        let mut occurrences = HashMap::<FileRecordId, usize>::new();
-        self.tree = self.scan_tree_index();
-        for id in self.doc.keys(&self.nodes) {
-            let Some(node) = self.node(&id) else {
-                continue;
-            };
-            let record_id = self.record_id_for_id(&id);
-            if let Some(record_id) = record_id {
-                let count = occurrences
-                    .get(&record_id)
-                    .copied()
-                    .unwrap_or_default()
-                    .saturating_add(1);
-                occurrences.insert(record_id, count);
-            }
-            let is_dir = self.kind_of(&id) == NodeKind::Dir;
-            raw.insert(
-                id,
-                Raw {
-                    record_id,
-                    parent_id: str_at(&self.doc, &node, "parent").unwrap_or_default(),
-                    name: read_name(&self.doc, &node, "name").unwrap_or_default(),
-                    is_dir,
-                },
-            );
-        }
+        let NodeWalk {
+            tree,
+            rows: raw,
+            occurrences,
+        } = self.read_nodes_once();
+        self.tree = tree;
         let mut children = HashMap::<String, BTreeSet<String>>::new();
         for (id, item) in &raw {
             children
@@ -1218,6 +1189,64 @@ impl Namespace {
         #[cfg(test)]
         {
             self.record_index_rebuilds = self.record_index_rebuilds.saturating_add(1);
+        }
+    }
+
+    /// The structural index of every node, read from the document once per
+    /// node: its placement, name, kind and record id come from the same
+    /// object. Opening a namespace and every received peer delta rebuild
+    /// through here, so this is the per-node cost of both
+    /// (`Self::node_lookup_count` is the work the performance gate bounds).
+    fn read_nodes_once(&self) -> NodeWalk {
+        let parse_record_id = |value: String| Uuid::parse_str(&value).ok().map(FileRecordId);
+        let mut rows = HashMap::new();
+        let mut occurrences = HashMap::<FileRecordId, usize>::new();
+        let mut tree = TreeIndex::default();
+        for id in self.doc.keys(&self.nodes) {
+            let Some(node) = self.node(&id) else {
+                continue;
+            };
+            let node_record_id = str_at(&self.doc, &node, RECORD_ID_KEY).and_then(parse_record_id);
+            // `record_id_for_id` answers the reserved root id from the
+            // document root and every other node from its own object; the
+            // structural index bound the node's own key.
+            let record_id = if id == ROOT_ID {
+                str_at(&self.doc, &ROOT, ROOT_RECORD_ID_KEY).and_then(parse_record_id)
+            } else {
+                node_record_id
+            };
+            let parent = str_at(&self.doc, &node, "parent");
+            let name = read_name(&self.doc, &node, "name").unwrap_or_default();
+            let is_dir = NodeKind::from_str(&str_at(&self.doc, &node, "kind").unwrap_or_default())
+                == NodeKind::Dir;
+            if let Some(node_record_id) = node_record_id {
+                tree.bind_record(&id, node_record_id);
+            }
+            if let Some(record_id) = record_id {
+                let count = occurrences
+                    .get(&record_id)
+                    .copied()
+                    .unwrap_or_default()
+                    .saturating_add(1);
+                occurrences.insert(record_id, count);
+            }
+            if let Some(parent) = &parent {
+                tree.place(&id, parent.clone(), name.clone());
+            }
+            rows.insert(
+                id,
+                NodeRow {
+                    record_id,
+                    parent_id: parent.unwrap_or_default(),
+                    name,
+                    is_dir,
+                },
+            );
+        }
+        NodeWalk {
+            tree,
+            rows,
+            occurrences,
         }
     }
 
