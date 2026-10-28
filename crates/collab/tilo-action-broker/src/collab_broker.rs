@@ -783,6 +783,33 @@ impl AppActionBroker {
             .start_interactive_shortcut_run(caller, room, shortcut, inputs)
     }
 
+    /// [`Self::start_interactive_shortcut_run`], going on from where an
+    /// earlier run got to: the steps before `from` are taken from that run's
+    /// record as they happened, and `from` and everything after it run again
+    /// from the shortcut as it is now. Fixing a step and running it again
+    /// does not repeat the steps before it.
+    ///
+    /// # Errors
+    ///
+    /// Why the shortcut cannot run for `caller`, or why the run it says to go
+    /// on from cannot be continued.
+    pub fn continue_interactive_shortcut_run(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        room: &str,
+        shortcut: &str,
+        inputs: serde_json::Map<String, serde_json::Value>,
+        from: tilo_automation::Continuation,
+    ) -> Result<u64, tilo_actions::remote::ActionHostError> {
+        self.state.start_interactive_shortcut_run_continuing(
+            caller,
+            room,
+            shortcut,
+            inputs,
+            Some(from),
+        )
+    }
+
     /// The oldest step of an interactive shortcut run waiting for its
     /// person.
     #[must_use]

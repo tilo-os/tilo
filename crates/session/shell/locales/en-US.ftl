@@ -1480,6 +1480,8 @@ search-session-not-offered = This session shares the computer with another deskt
 
 # Search: shortcuts
 search-shortcut-run-on = Run on { $resource }
+search-shortcut-continue-needs-step = Runs again from a step: name it as the last run reported it
+search-shortcut-continue-needs-run = Runs again from a step: name the run that reported it
 
 # Search: tray items
 search-tray-open = Open { $item }

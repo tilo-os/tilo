@@ -19,6 +19,12 @@ impl StepPath {
         Self::default()
     }
 
+    /// The path a report spells, read back: `2`, `1.each[0].0`, `2.then.1`.
+    #[must_use]
+    pub fn parse(spelled: &str) -> Self {
+        Self(spelled.to_string())
+    }
+
     /// The `index`th step of this block.
     #[must_use]
     pub fn child(&self, index: usize) -> Self {
@@ -55,6 +61,16 @@ impl StepPath {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Whether this step sits in a block `ancestor` also sits in, below it.
+    /// A loop's iterations of one body are all below the loop step, so they
+    /// hold together. A step is never below itself.
+    #[must_use]
+    pub fn is_inside(&self, ancestor: &Self) -> bool {
+        self.0
+            .strip_prefix(ancestor.0.as_str())
+            .is_some_and(|rest| rest.starts_with('.'))
     }
 
     fn join(&self, segment: &str) -> Self {
