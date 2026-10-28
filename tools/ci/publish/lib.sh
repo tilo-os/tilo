@@ -90,8 +90,14 @@ registry_login() {
         || die 'code.tilo.so does not accept REGISTRY_TOKEN'
       [[ -n $user ]] || die 'code.tilo.so names no owner of REGISTRY_TOKEN' ;;
     *)
-      user=oidc
-      password=$(id_token "$registry") ;;
+      # A Forgejo Actions run logs in with its job token, as its docker/login steps do.
+      if [[ -n ${REGISTRY_PASSWORD:-} ]]; then
+        user=${REGISTRY_USER:?REGISTRY_PASSWORD needs REGISTRY_USER}
+        password=$REGISTRY_PASSWORD
+      else
+        user=oidc
+        password=$(id_token "$registry")
+      fi ;;
   esac
   printf '%s' "$password" | skopeo login --authfile "$auth" -u "$user" --password-stdin "$registry" >/dev/null
 }

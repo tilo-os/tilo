@@ -1,0 +1,114 @@
+name: Publish / room service and web entry
+
+# The images tilo.coffee runs: the room service and the web entry, built from
+# one commit of main, tested and pushed as dev-<commit>. The site is released
+# by hand and independently of stable: whoever releases it dispatches this on
+# main and pins both receipts' digests in the infra repository.
+#
+# The same scripts as the t checks of the same names (t.toml:
+# room-service-binaries, web-desktop-wasm, web-desktop-bundle,
+# image-*-context, image-*, publish-*), in one job of the CI builder:
+# privileged only inside the disposable guest, where buildah builds and tests
+# each image chrooted, without a daemon.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: publish-site-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  builder:
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Resolve the CI builder
+        id: resolve
+        run: python3 tools/ci/resolve_builder.py
+
+  publish:
+    needs: builder
+    # Main only publishes development tags; a branch's build is not the site's.
+    if: github.ref == 'refs/heads/main'
+    runs-on: runner
+    timeout-minutes: 180
+    container:
+      image: ${{ needs.builder.outputs.image }}
+      options: --privileged
+    env:
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+      T_REF: main
+      T_COMMIT: ${{ github.sha }}
+      OUT: ${{ github.workspace }}/out
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Prepare Rust build
+        uses: ./.forgejo/actions/prepare-rust-build
+      - name: Prepare font assets
+        uses: ./.forgejo/actions/prepare-font-assets
+      - name: Install buildah and skopeo
+        run: |
+          set -euo pipefail
+          missing=()
+          for tool in buildah skopeo; do
+            command -v "$tool" >/dev/null || missing+=("$tool")
+          done
+          if ((${#missing[@]})); then
+            dnf install -y --setopt=install_weak_deps=False "${missing[@]}"
+          fi
+
+      - name: Build the room service's programs
+        run: bash tools/ci/publish/room-service-binaries.sh "$OUT/room-service/bin"
+      - name: Build the web desktop
+        run: |
+          set -euo pipefail
+          bash tools/ci/publish/web-desktop-bundle.sh wasm "$OUT/web-desktop/wasm"
+          bash tools/ci/publish/web-desktop-bundle.sh bundle "$OUT/web-desktop/bundle" "$OUT/web-desktop/wasm"
+
+      - name: Build and test the room service image
+        run: |
+          set -euo pipefail
+          dir=$OUT/room-service
+          bash tools/ci/publish/room-service-context.sh "$dir/context" "$dir/bin" "$OUT/web-desktop/bundle"
+          revision=$(cat "$dir/context/source-revision")
+          bash tools/ci/publish/oci-build.sh "$dir/context" "$dir/context/Containerfile" "$dir" --build-arg "SOURCE_REVISION=$revision"
+          bash crates/hosting/tilo-room-service/container/test-image.sh "$dir/image.oci.tar" "$revision"
+      - name: Build and test the web entry image
+        run: |
+          set -euo pipefail
+          dir=$OUT/web-entry
+          bash tools/ci/publish/web-entry-context.sh "$dir/context" "$OUT/web-desktop/bundle"
+          revision=$(cat "$dir/context/source-revision")
+          bash tools/ci/publish/oci-build.sh "$dir/context" "$dir/context/Containerfile" "$dir" --build-arg "SOURCE_REVISION=$revision"
+          bash crates/browser/tilo-browser-runtime/container/test-image.sh "$dir/image.oci.tar"
+
+      - name: Publish both
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for image in room-service web-entry; do
+            bash tools/ci/publish/oci-publish.sh dev "registry.tilo.so/tilo/$image" "$OUT/$image" 'dev-{commit}'
+            echo "::notice::$image: $(cat "$OUT/$image/receipt.json")"
+          done
+      - name: Keep the receipts
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: receipts
+          path: |
+            out/room-service/receipt.json
+            out/web-entry/receipt.json
