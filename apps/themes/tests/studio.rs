@@ -237,7 +237,7 @@ fn the_editor_measures_contrast_as_the_theme_changes_and_gates_apply() {
         )
         .expect("a preset copy is legible");
     assert_eq!(
-        bar_enabled(&mut app, "theme-apply"),
+        bar_enabled(&mut app, "Apply"),
         Some(true),
         "a legible theme can be applied"
     );
@@ -249,12 +249,12 @@ fn the_editor_measures_contrast_as_the_theme_changes_and_gates_apply() {
         .expect(&SemanticExpectation::named("contrast-findings").name_contains("text_tertiary"))
         .expect("the failing pair is named");
     assert_eq!(
-        bar_enabled(&mut app, "theme-apply"),
+        bar_enabled(&mut app, "Apply"),
         Some(false),
         "an illegible theme cannot be applied"
     );
     assert_eq!(
-        bar_enabled(&mut app, "theme-export"),
+        bar_enabled(&mut app, "Copy as file"),
         Some(false),
         "nor exported"
     );
@@ -331,13 +331,13 @@ fn history_reads_each_role_that_changed() {
     );
 }
 
-/// Whether the window bar's action `id` acts, if the bar holds it.
-fn bar_enabled(app: &mut TestApp<App>, id: &str) -> Option<bool> {
+/// Whether the window bar's action `name` acts, if the bar holds it.
+fn bar_enabled(app: &mut TestApp<App>, name: &str) -> Option<bool> {
     app.settle();
     ui::window_toolbar::declared()?
         .actions
         .into_iter()
-        .find(|action| action.id == id)
+        .find(|action| action.name == name)
         .map(|action| action.enabled)
 }
 
@@ -402,6 +402,45 @@ fn customizing_writes_the_theme_on_its_first_edit() {
     );
     leave_for_presets(&mut app);
     assert_eq!(app.state().themes.len(), 1, "a written theme stays");
+}
+
+/// The bar's Duplicate opens a copy that its first edit writes beside the
+/// theme, and its Delete theme deletes the theme the editor shows.
+#[test]
+fn the_bars_theme_commands_duplicate_and_delete() {
+    let id = Id::from_raw(SCENARIO_THEME);
+    let mut app = TestApp::<App>::capture(Some("editor")).expect("the scenario stages");
+    let themes = app.state().themes.len();
+    app.harness()
+        .press_window_action("Duplicate")
+        .expect("the bar offers Duplicate");
+    app.settle();
+    assert_eq!(app.state().themes.len(), themes, "the copy writes nothing");
+    app.harness()
+        .click_named("theme-name")
+        .expect("the name field is drawn");
+    app.harness().type_text("X");
+    app.harness().relayout();
+    let state = app.state();
+    assert_eq!(state.themes.len(), themes + 1, "its first edit writes it");
+    assert!(
+        state
+            .themes
+            .get(&id)
+            .is_some_and(|theme| !theme.name.contains('X')),
+        "beside the theme, which keeps its name"
+    );
+    drop(app);
+
+    let mut app = TestApp::<App>::capture(Some("editor")).expect("the scenario stages");
+    app.harness()
+        .press_window_action("Delete theme")
+        .expect("the bar offers Delete theme");
+    app.settle();
+    assert!(
+        app.state().themes.get(&id).is_none(),
+        "Delete theme deletes the theme shown"
+    );
 }
 
 /// The window bar's sidebar button flips the sidebar on every click, in a
