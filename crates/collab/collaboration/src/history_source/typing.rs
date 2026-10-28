@@ -9,7 +9,7 @@
 //! made within [`TYPING_PAUSE_MS`] of it. Any other change by the author (an
 //! edit elsewhere, a verb, a version they named) ends the typing; another
 //! person's changes in between do not. Every input is in the change itself,
-//! so every peer, and every reader of the log ([`super::HistorySource`]'s
+//! so every peer, and every reader of the log (the toolkit's `HistorySource`
 //! rows, restoring one row's changes), finds the same runs.
 
 use std::collections::HashMap;
@@ -24,7 +24,8 @@ pub const TYPING_PAUSE_MS: i64 = 30_000;
 
 /// The field a change typed into, when it is a person's typing.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct TypedField {
+#[doc(hidden)]
+pub struct TypedField {
     ty: String,
     field: String,
     path: Vec<PathStep>,
@@ -34,7 +35,7 @@ impl TypedField {
     /// The field `context`'s change typed into: a text replacement or
     /// splice made as part of a gesture by a person. A change that is a step
     /// of its own (an agent's edit, a paste through a verb) types nothing.
-    pub(crate) fn of(context: &ActionContext) -> Option<Self> {
+    pub fn of(context: &ActionContext) -> Option<Self> {
         context.gesture?;
         if context
             .invoker
@@ -57,7 +58,8 @@ impl TypedField {
 /// Each author's typing as a log is read in order: where their current run
 /// is (`T`, a row or its changes), which field it types in and when its last
 /// change was.
-pub(crate) struct TypingRuns<T> {
+#[doc(hidden)]
+pub struct TypingRuns<T> {
     open: HashMap<String, Run<T>>,
 }
 
@@ -81,7 +83,7 @@ impl<T> TypingRuns<T> {
     /// with its time moved on, or `None` when it starts a run of its own or
     /// types nothing; the caller then [`Self::start`]s one for a typing
     /// change.
-    pub(crate) fn continues(
+    pub fn continues(
         &mut self,
         actor: &str,
         field: Option<&TypedField>,
@@ -104,13 +106,13 @@ impl<T> TypingRuns<T> {
         Some(&mut run.at)
     }
 
-    pub(crate) fn start(&mut self, actor: &str, field: TypedField, time_ms: i64, at: T) {
+    pub fn start(&mut self, actor: &str, field: TypedField, time_ms: i64, at: T) {
         self.open
             .insert(actor.to_owned(), Run { field, time_ms, at });
     }
 
     /// Every open run's place, to adjust when the places move.
-    pub(crate) fn places_mut(&mut self) -> impl Iterator<Item = &mut T> {
+    pub fn places_mut(&mut self) -> impl Iterator<Item = &mut T> {
         self.open.values_mut().map(|run| &mut run.at)
     }
 }

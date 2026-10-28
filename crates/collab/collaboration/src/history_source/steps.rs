@@ -26,8 +26,8 @@ use tilo_actions::ActionContext;
 pub use tilo_doc::model::is_schema_genesis;
 use tilo_resource::history::Version;
 
-use crate::history_source::authors::AuthorDirectory;
 use crate::history_source::revert::revert_changes;
+use crate::history_source::words::HistoryWords;
 
 /// Prefix of the root keys naming each undone change, by its full hash.
 pub use tilo_actions::UNDONE_KEY;
@@ -887,12 +887,12 @@ pub fn brought_back(doc: &AutoCommit, version: &Version) -> Vec<String> {
     }
 }
 
-/// A one-line name of a step for a sentence.
-pub fn step_label(version: &Version) -> String {
+/// A one-line name of a step for a sentence, in `words`.
+pub fn step_label(version: &Version, words: &dyn HistoryWords) -> String {
     let change = short(&version.hash);
     match version.context.as_ref() {
         Some(context) if context.what.is_some() => {
-            format!("{} ({change})", super::sentence::sentence(context))
+            format!("{} ({change})", words.sentence(context))
         }
         _ => change,
     }
@@ -903,12 +903,17 @@ pub fn short(hash: &ChangeHash) -> String {
     hash.to_string().chars().take(12).collect()
 }
 
-fn revert(doc: &mut AutoCommit, targets: &[Version], verb: &str) -> Result<(), String> {
+fn revert(
+    doc: &mut AutoCommit,
+    targets: &[Version],
+    verb: &str,
+    words: &dyn HistoryWords,
+) -> Result<(), String> {
     let changes: Vec<(ChangeHash, String)> = targets
         .iter()
         .map(|version| (version.hash, version.actor.clone()))
         .collect();
-    let outcomes = revert_changes(doc, &changes, &AuthorDirectory::default())
+    let outcomes = revert_changes(doc, &changes, words)
         .map_err(|error| format!("could not {verb}: {error:?}"))?;
     let kept: Vec<String> = targets
         .iter()
@@ -922,7 +927,7 @@ fn revert(doc: &mut AutoCommit, targets: &[Version], verb: &str) -> Result<(), S
                 .collect();
             format!(
                 "{} (changed since by {})",
-                step_label(version),
+                step_label(version, words),
                 by.join(", ")
             )
         })
@@ -949,17 +954,18 @@ pub type Inverse = Box<dyn tilo_actions::Action>;
 /// action.
 ///
 /// # Errors
-/// Says why nothing was undone: there is nothing of the scope's to undo,
-/// somebody else has since changed what a step touched, or an inverse
-/// cannot be applied.
+/// Says why nothing was undone, in `words`: there is nothing of the scope's
+/// to undo, somebody else has since changed what a step touched, or an
+/// inverse cannot be applied.
 pub fn undo(
     doc: &mut AutoCommit,
     scope: &Scope,
     limit: usize,
     compensate: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
+    words: &dyn HistoryWords,
 ) -> Result<Vec<Version>, String> {
     let targets = undo_targets(doc, scope, limit);
-    take_back(doc, scope, targets, compensate)
+    take_back(doc, scope, targets, compensate, words)
 }
 
 /// Take back every step of `scope`'s in effect made after the version
@@ -973,6 +979,7 @@ pub fn undo_since(
     scope: &Scope,
     heads: &[ChangeHash],
     compensate: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
+    words: &dyn HistoryWords,
 ) -> Result<Vec<Version>, String> {
     let since: HashSet<ChangeHash> = doc
         .get_changes(heads)
@@ -983,7 +990,7 @@ pub fn undo_since(
         .into_iter()
         .filter(|version| since.contains(&version.hash))
         .collect();
-    take_back(doc, scope, targets, compensate)
+    take_back(doc, scope, targets, compensate, words)
 }
 
 fn take_back(
@@ -991,6 +998,7 @@ fn take_back(
     scope: &Scope,
     targets: Vec<Version>,
     mut compensate: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
+    words: &dyn HistoryWords,
 ) -> Result<Vec<Version>, String> {
     if targets.is_empty() {
         return Err(nothing_to_undo(doc, scope));
@@ -1007,7 +1015,7 @@ fn take_back(
         }
     }
     if !patches.is_empty() {
-        revert(doc, &patches, "undo")?;
+        revert(doc, &patches, "undo", words)?;
     }
     let pending = apply_awaiting(doc, actions)?;
     for target in &targets {
@@ -1060,6 +1068,7 @@ pub fn redo(
     scope: &Scope,
     limit: usize,
     mut restore: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
+    words: &dyn HistoryWords,
 ) -> Result<Vec<Version>, String> {
     let targets = redo_targets(doc, scope, limit);
     if targets.is_empty() {
@@ -1101,7 +1110,7 @@ pub fn redo(
         }
     }
     if !patches.is_empty() {
-        revert(doc, &patches, "redo")?;
+        revert(doc, &patches, "redo", words)?;
     }
     let awaited = apply_awaiting(doc, actions)?;
     for hash in originals {

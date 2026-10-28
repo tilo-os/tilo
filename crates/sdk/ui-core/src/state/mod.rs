@@ -5,7 +5,6 @@ use tilo_automerge::ApplyIncoming;
 
 pub(crate) mod owned_restore;
 mod undo_log;
-pub(crate) use collaboration::state::write_selected_patches;
 /// The primitive undo, redo and restore write through, below the toolkit.
 pub use collaboration::state::{write_patches, write_revert_patches, write_revert_patches_where};
 pub(crate) use undo_log::HistoryMoment;
