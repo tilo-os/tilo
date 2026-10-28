@@ -209,10 +209,13 @@ pub(super) struct AvailabilityWalk {
     /// (`ActionRuntime::last_control_availability`) as the walk left it:
     /// anything that drops it asks for the walk again.
     pub(super) controls: Option<(super::ResourceCacheKey, u64)>,
-    /// A bound component's permissions sample an outside authority at each
-    /// decision (`PermissionContext::samples_outside`), which changes with
-    /// nothing put in force: their controls are refreshed every frame.
-    pub(super) sampled: bool,
+    /// The bound components' resources could not be read: their controls
+    /// are refreshed again on the next frame.
+    pub(super) unread: bool,
+    /// When a bound component's permissions next change with time alone
+    /// (`PermissionContext::next_change_in`): the walk is taken again then,
+    /// and the loop wakes for it.
+    pub(super) changes_at: Option<crate::time::Instant>,
 }
 
 /// Every input of reconciling the document routes with the tree.
