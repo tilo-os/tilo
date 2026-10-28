@@ -412,3 +412,60 @@ pub fn stage(
         picker.set((scenario == Some("picker")).then(String::new));
     });
 }
+
+#[cfg(test)]
+mod roundtrip_tests {
+    use std::collections::BTreeMap;
+
+    use tilo_automation::text::{self, Shared};
+
+    use super::*;
+
+    /// Every sample program the app ships: the ones its scenarios stage.
+    fn programs() -> Vec<(&'static str, Value)> {
+        vec![
+            ("morning digest", morning_digest()),
+            ("weekly summary", weekly_summary()),
+            ("quick note", quick_note()),
+            ("mail me my notes", mail_me_my_notes()),
+            ("tidy notes", tidy_notes()),
+        ]
+    }
+
+    /// A sample reads back as the program it states, and its text is the text
+    /// that program writes: the two views agree on the whole corpus, not only
+    /// on the shapes a generated program covers.
+    #[test]
+    fn every_sample_shortcut_reads_back_as_itself() {
+        let catalog = catalog();
+        let shared = Shared {
+            catalog: &catalog,
+            app_label: &|app_id: &str| app_id.rsplit('.').next().unwrap_or(app_id).to_owned(),
+        };
+        for (label, value) in programs() {
+            let shortcut: Shortcut =
+                serde_json::from_value(value).unwrap_or_else(|error| panic!("{label}: {error}"));
+            let (written, _) = text::render(&shared, &shortcut, &BTreeMap::new())
+                .unwrap_or_else(|error| panic!("{label}: {error}\n{shortcut:?}"));
+            let edit = text::edit(&shared, &shortcut, &written)
+                .unwrap_or_else(|error| panic!("{label}: line {}: {error}\n{written}", error.line));
+            assert_eq!(
+                edit.shortcut.steps, shortcut.steps,
+                "{label}: the steps the text reads back to\n{written}"
+            );
+            assert_eq!(
+                edit.shortcut.inputs, shortcut.inputs,
+                "{label}: the inputs the text reads back to\n{written}"
+            );
+            assert_eq!(
+                edit.shortcut.output, shortcut.output,
+                "{label}: what the text gives back\n{written}"
+            );
+            // A program that has not changed has text that has not changed, so
+            // the second person to open it reads the words the first one left.
+            let (again, _) = text::render(&shared, &edit.shortcut, &BTreeMap::new())
+                .unwrap_or_else(|error| panic!("{label}: {error}"));
+            assert_eq!(again, written, "{label}: the text reads back to itself");
+        }
+    }
+}
