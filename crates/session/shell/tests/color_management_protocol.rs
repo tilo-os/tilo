@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use shell::collab::colorimetry::{ColorPrimaries, TransferCharacteristics};
 use shell::compositor::state::{ClientState, State};
-use shell::wayland::color_management::{ColorManagementSurfaceData, surface_current_colorimetry};
+use tilo_wayland_ext::color_management::{ColorManagementSurfaceData, surface_current_colorimetry};
 
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;

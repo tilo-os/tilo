@@ -758,7 +758,7 @@ pub struct LiveEntry {
     /// Adaptive sync was last asked for on this output's CRTC.
     pub adaptive_sync_engaged: bool,
     /// The sink's HDR description, when its EDID advertises PQ.
-    pub hdr_display: Option<crate::wayland::edid::HdrDisplayInfo>,
+    pub hdr_display: Option<tilo_wayland_ext::edid::HdrDisplayInfo>,
     /// The connector has every property HDR signalling needs.
     pub hdr_driver_ready: bool,
     /// HDR as the user configured it: SDR white in cd/m² when on.
@@ -774,7 +774,7 @@ pub struct LiveEntry {
 /// with the HDR properties, when the user turned it on and no earlier attempt
 /// failed on this output.
 pub(crate) fn hdr_request_for(
-    display: Option<&crate::wayland::edid::HdrDisplayInfo>,
+    display: Option<&tilo_wayland_ext::edid::HdrDisplayInfo>,
     driver_ready: bool,
     setting: Option<f32>,
     failed: bool,
@@ -7045,11 +7045,11 @@ pub(super) mod tests {
 
     #[test]
     fn hdr_is_requested_only_where_sink_driver_and_setting_agree() {
-        let hdr_sink = crate::wayland::edid::HdrDisplayInfo {
+        let hdr_sink = tilo_wayland_ext::edid::HdrDisplayInfo {
             supported_transfers: vec![
                 crate::collab::colorimetry::TransferCharacteristics::SmpteSt2084,
             ],
-            ..crate::wayland::edid::HdrDisplayInfo::default_sdr()
+            ..tilo_wayland_ext::edid::HdrDisplayInfo::default_sdr()
         };
         // Phase `each_missing_piece_withholds_the_request`.
         assert!(hdr_request_for(None, true, Some(203.0), false).is_none());

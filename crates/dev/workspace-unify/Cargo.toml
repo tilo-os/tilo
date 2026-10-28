@@ -1252,6 +1252,7 @@ doc = false
 "tilo-typst-fonts" = { path = "../../../crates/platform/tilo-typst-fonts", default-features = false, features = [] }
 "tilo-ui" = { path = "../../../crates/sdk/ui-core", default-features = false, features = ["broker-transport", "default", "dmabuf-import", "gpu-video", "local-daemons", "mpris", "native", "portal", "priority-contacts", "realtime-video", "syntax-definitions", "test-support", "ux-bench", "webview-adblock"] }
 "tilo-ui-graph" = { path = "../../../crates/dev/ui-graph", default-features = false, features = [] }
+"tilo-ui-host" = { path = "../../../crates/platform/tilo-ui-host", default-features = false, features = [] }
 "tilo-ui-paint" = { path = "../../../crates/sdk/ui-paint", default-features = false, features = [] }
 "tilo-unicode-emoji" = { path = "../../../crates/platform/tilo-unicode-emoji", default-features = false, features = [] }
 "tilo-unlock-protocol" = { path = "../../../crates/collab/tilo-unlock-protocol", default-features = false, features = [] }
@@ -1266,6 +1267,7 @@ doc = false
 "tilo-vmd" = { path = "../../../crates/dev/tilo-vmd", default-features = false, features = [] }
 "tilo-wake" = { path = "../../../crates/platform/tilo-wake", default-features = false, features = [] }
 "tilo-wallpapers" = { path = "../../../crates/platform/tilo-wallpapers", default-features = false, features = [] }
+"tilo-wayland-ext" = { path = "../../../crates/session/wayland-ext", default-features = false, features = [] }
 "tilo-web-desktop" = { path = "../../../crates/browser/tilo-web-desktop", default-features = false, features = [] }
 "tilo-web-search" = { path = "../../../crates/platform/tilo-web-search", default-features = false, features = [] }
 "tilo-wet-media" = { path = "../../../crates/media/wet-media", default-features = false, features = [] }
@@ -2012,7 +2014,7 @@ doc = false
 "proc-macro-crate-3_4_0" = { package = "proc-macro-crate", version = "^3.4.0", default-features = false, features = [] }
 "proc-macro-hack-0_5_20_deprecated" = { package = "proc-macro-hack", version = "^0.5.20+deprecated", default-features = false, features = [] }
 "proc-macro2-1_0_106" = { package = "proc-macro2", version = "^1.0.106", default-features = false, features = ["default", "proc-macro", "span-locations"] }
-"profiling-1_0_17" = { package = "profiling", version = "^1.0.17", default-features = false, features = ["default", "procmacros", "profiling-procmacros"] }
+"profiling-1_0_17" = { package = "profiling", version = "^1.0.17", default-features = false, features = [] }
 "profiling-procmacros-1_0_17" = { package = "profiling-procmacros", version = "^1.0.17", default-features = false, features = [] }
 "prost-derive-0_14_4" = { package = "prost-derive", version = "^0.14.4", default-features = false, features = [] }
 "protobuf-3_7_2" = { package = "protobuf", version = "^3.7.2", default-features = false, features = ["default"] }
@@ -3633,6 +3635,7 @@ doc = false
 "tilo-vmd" = { path = "../../../crates/dev/tilo-vmd", default-features = false, features = [] }
 "tilo-wake" = { path = "../../../crates/platform/tilo-wake", default-features = false, features = [] }
 "tilo-wallpapers" = { path = "../../../crates/platform/tilo-wallpapers", default-features = false, features = [] }
+"tilo-wayland-ext" = { path = "../../../crates/session/wayland-ext", default-features = false, features = [] }
 "tilo-web-desktop" = { path = "../../../crates/browser/tilo-web-desktop", default-features = false, features = [] }
 "tilo-web-search" = { path = "../../../crates/platform/tilo-web-search", default-features = false, features = [] }
 "tilo-wet-media" = { path = "../../../crates/media/wet-media", default-features = false, features = [] }
@@ -4378,7 +4381,7 @@ doc = false
 "proc-macro-crate-3_4_0" = { package = "proc-macro-crate", version = "^3.4.0", default-features = false, features = [] }
 "proc-macro-hack-0_5_20_deprecated" = { package = "proc-macro-hack", version = "^0.5.20+deprecated", default-features = false, features = [] }
 "proc-macro2-1_0_106" = { package = "proc-macro2", version = "^1.0.106", default-features = false, features = ["default", "proc-macro", "span-locations"] }
-"profiling-1_0_17" = { package = "profiling", version = "^1.0.17", default-features = false, features = ["default", "procmacros", "profiling-procmacros"] }
+"profiling-1_0_17" = { package = "profiling", version = "^1.0.17", default-features = false, features = [] }
 "profiling-procmacros-1_0_17" = { package = "profiling-procmacros", version = "^1.0.17", default-features = false, features = [] }
 "prost-derive-0_14_4" = { package = "prost-derive", version = "^0.14.4", default-features = false, features = [] }
 "protobuf-3_7_2" = { package = "protobuf", version = "^3.7.2", default-features = false, features = ["default"] }
@@ -4445,7 +4448,7 @@ doc = false
 "rustc_version-0_4_1" = { package = "rustc_version", version = "^0.4.1", default-features = false, features = [] }
 "rusticata-macros-4_1_0" = { package = "rusticata-macros", version = "^4.1.0", default-features = false, features = [] }
 "rustix-0_38_44" = { package = "rustix", version = "^0.38.44", default-features = false, features = ["alloc", "default", "event", "fs", "libc-extra-traits", "mm", "pipe", "process", "std", "system", "thread", "use-libc-auxv"] }
-"rustix-1_1_4" = { package = "rustix", version = "^1.1.4", default-features = false, features = ["alloc", "default", "event", "fs", "mm", "net", "pipe", "process", "shm", "std", "stdio", "system", "termios", "time"] }
+"rustix-1_1_4" = { package = "rustix", version = "^1.1.4", default-features = false, features = ["alloc", "default", "event", "fs", "mm", "net", "pipe", "process", "std", "stdio", "system", "termios", "time"] }
 "rustix-linux-procfs-0_1_1" = { package = "rustix-linux-procfs", version = "^0.1.1", default-features = false, features = ["default", "std"] }
 "rustls-0_23_46" = { package = "rustls", version = "^0.23.46", default-features = false, features = ["log", "logging", "ring", "std", "tls12"] }
 "rustls-cert-file-reader-0_4_2" = { package = "rustls-cert-file-reader", version = "^0.4.2", default-features = false, features = [] }

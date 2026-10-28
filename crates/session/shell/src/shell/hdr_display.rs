@@ -1,7 +1,7 @@
 //! Display capabilities for the receive-side `PeerView` and the output colour
 //! pipeline: can this output show PQ pixels natively, and how bright?
 //!
-//! Built from the sink's EDID ([`crate::wayland::edid::HdrDisplayInfo`]) and
+//! Built from the sink's EDID ([`tilo_wayland_ext::edid::HdrDisplayInfo`]) and
 //! from whether the compositor is actually driving the output in HDR. A
 //! presentation-surface probe cannot answer this: on DRM the compositor owns
 //! the scanout buffers, and a format being renderable says nothing about the
@@ -12,7 +12,7 @@
 //! [`DisplayCapabilities::sdr_default`].
 
 use crate::collab::colorimetry::{ColorPrimaries, TransferCharacteristics};
-use crate::wayland::edid::HdrDisplayInfo;
+use tilo_wayland_ext::edid::HdrDisplayInfo;
 
 /// What the compositor can deliver to one output. Consumed by
 /// [`crate::shell::peer_view::PeerView::new_for_stream`] to pick between
