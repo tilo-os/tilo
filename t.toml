@@ -6129,7 +6129,7 @@ needs = ["os-dev-disk-x86_64"]
 git = true
 requires = ["arch=x86_64", "/dev/kvm"]
 isolation = "vm"
-requirement = { cores = 6, memory = "10GiB" }
+requirement = { cores = 6, memory = "14GiB" }
 timeout_secs = 14400
 cache = false
 cost = "heavy"
@@ -10531,6 +10531,26 @@ isolation = "vm"
 timeout_secs = 1800
 on = ["idle"]
 default = false
+
+[[check]]
+name = "lounge-switch-local"
+# Devices switching between workspaces they host themselves and the Lounge
+# of a local site run the way eu1 runs it, with every app the nested session
+# ships, three devices, presence and a cold join (dist/dev/lounge-switch-local.py).
+run = "bash tools/test-env.sh python3 -I dist/dev/lounge-switch-local.py t2024"
+# No NTFS images: nothing here mounts one.
+env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_ASSET_SEED = "/target/test-assets", TILO_TEST_NTFS_FIXTURES = "0" }
+needs = ["nested-session", "test-assets"]
+inputs = ["dist/dev/lounge-switch-local.py", "dist/dev/lounge-invite-local.py", "dist/dev/site-door-acceptance.py", "dist/dev/nested-pair-check.py", "dist/dev/nested-session.sh", "crates/hosting/tilo-room-service/dev/run.py", "tools/apps/**", "tools/test-env.sh", "tools/with-test-environment.sh", "os/scripts/install-env-runtime.sh", "os/usr/lib/systemd/user/tilo-ush.service", "os/usr/lib/systemd/user/tilo-ush.socket"]
+outputs = ["/target/lounge-switch-local/**"]
+requires = ["arch=x86_64"]
+requirement = { cores = 8, memory = "24GiB" }
+git = true
+isolation = "vm"
+timeout_secs = 5400
+on = ["idle"]
+default = false
+cache = false
 
 [[check]]
 name = "lounge-invite-local"

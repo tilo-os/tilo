@@ -2,7 +2,7 @@ use super::promotion::PromotionEvent;
 use std::{os::unix::fs::PermissionsExt, path::Path};
 
 fn fixture() -> tempfile::TempDir {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::setup::test_support::qualified_tempdir();
     for path in [
         "original",
         "quarantine-parent",
