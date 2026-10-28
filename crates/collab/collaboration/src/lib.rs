@@ -37,6 +37,70 @@
 //! The default transport (feature `broker-transport`) delegates to the
 //! `runtime-collab` Cap'n Proto broker on a worker thread it owns.
 
+// The broker client brought its lint debt from ui-core, scoped as it was there.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::collapsible_if,
+    clippy::default_trait_access,
+    clippy::doc_markdown,
+    clippy::empty_line_after_doc_comments,
+    clippy::format_collect,
+    clippy::format_push_string,
+    clippy::indexing_slicing,
+    clippy::items_after_statements,
+    clippy::items_after_test_module,
+    clippy::large_enum_variant,
+    clippy::large_stack_arrays,
+    clippy::manual_assert_eq,
+    clippy::manual_find,
+    clippy::manual_midpoint,
+    clippy::many_single_char_names,
+    clippy::map_unwrap_or,
+    clippy::match_wildcard_for_single_variants,
+    clippy::missing_errors_doc,
+    clippy::needless_collect,
+    clippy::needless_pass_by_value,
+    clippy::needless_range_loop,
+    clippy::needless_raw_string_hashes,
+    clippy::or_fun_call,
+    clippy::panic_in_result_fn,
+    clippy::redundant_clone,
+    clippy::redundant_closure,
+    clippy::redundant_closure_for_method_calls,
+    clippy::ref_as_ptr,
+    clippy::result_large_err,
+    clippy::semicolon_if_nothing_returned,
+    clippy::significant_drop_in_scrutinee,
+    clippy::significant_drop_tightening,
+    clippy::similar_names,
+    clippy::struct_excessive_bools,
+    clippy::too_many_lines,
+    clippy::type_complexity,
+    clippy::unchecked_time_subtraction,
+    clippy::unicode_not_nfc,
+    clippy::uninlined_format_args,
+    clippy::unnecessary_literal_bound,
+    clippy::unnecessary_wraps,
+    clippy::unreadable_literal,
+    clippy::unused_self,
+    clippy::used_underscore_binding,
+    clippy::useless_conversion,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::disallowed_methods,
+        clippy::string_slice,
+        clippy::unreachable,
+        clippy::float_cmp,
+        reason = "unit tests may drive real threads and wait on the real clock; in a test these are the assertion, not a hazard"
+    )
+)]
+
 pub mod app_surface;
 pub mod invocation_scope;
 pub mod local_document_action;
@@ -57,7 +121,9 @@ pub(crate) mod time {
     pub use tilo_clock::SystemTime;
     pub use tilo_clock::{Duration, Instant, now, wall};
 }
-pub(crate) use tilo_rt::{background, wake};
+#[cfg(feature = "broker-transport")]
+pub(crate) use tilo_rt::background;
+pub(crate) use tilo_rt::wake;
 pub(crate) use wake::WakeHandle;
 #[cfg(test)]
 pub(crate) use wake::WakeScope;
@@ -1008,10 +1074,6 @@ impl CollaborationManager {
     /// Without the broker transport there is no native document route to
     /// switch; callers keep their current record.
     #[cfg(not(feature = "broker-transport"))]
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "keeps the broker-transport signature, which switches the live route"
-    )]
     pub fn switch_native_record(
         &mut self,
         _checkout: &crate::record::RecordCheckout,
@@ -1860,6 +1922,7 @@ impl CollaborationManager {
     /// opens on its local replica, and `hello` is announced again until the
     /// route answers (see [`Self::rejoin_late_primary_route`]).
     #[cfg(feature = "broker-transport")]
+    #[must_use]
     pub fn joining_late(mut self, hello: CollabRequest) -> Self {
         self.rejoin_hello = Some(hello);
         self.rejoin_late_primary_route();

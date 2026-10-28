@@ -10,9 +10,12 @@ pub mod owner_view;
 pub mod participants;
 pub mod record_content;
 
-#[cfg(all(test, feature = "broker-transport"))]
+#[cfg(test)]
+#[cfg(feature = "broker-transport")]
 mod approved_checks_tests;
-#[cfg(all(test, unix, feature = "broker-transport"))]
+#[cfg(test)]
+#[cfg(all(unix, feature = "broker-transport"))]
 mod broker_app_tests;
-#[cfg(all(test, feature = "broker-transport"))]
+#[cfg(test)]
+#[cfg(feature = "broker-transport")]
 mod external_moderation_tests;

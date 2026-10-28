@@ -3955,7 +3955,8 @@ mod identity_tests;
 mod arrival;
 mod opening;
 pub use opening::RecordOpening;
-#[cfg(all(test, feature = "broker-transport"))]
+#[cfg(test)]
+#[cfg(feature = "broker-transport")]
 mod named_creation_tests;
 #[cfg(test)]
 mod replica_merge_tests;

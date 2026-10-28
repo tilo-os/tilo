@@ -1,0 +1,62 @@
+# Clippy reads the nearest clippy.toml and does not merge it with the one at the
+# repository root, so every root key is repeated here.
+# tools/policy/check_ui_clock_contract.py fails if they drift apart.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+
+# Clippy rejects a function with more parameters than this.
+too-many-arguments-threshold = 8
+
+# reqwest is built without a bundled crypto provider; these constructors panic
+# unless one is installed. `tilo_net::http` installs it and returns builders.
+# The environment is process-global, so tests use tilo-test-env instead of
+# mutating it directly. (Both repeated from the root file.)
+#
+# The collab client keeps the toolkit's clock rules: it reads the clock only
+# through `crate::time` and runs background work and timers only through
+# `crate::background` (`ui::time` and `ui::background` in the toolkit), so a
+# host can supply both.
+disallowed-methods = [
+    { path = "reqwest::Client::new", reason = "use tilo_net::http::client()" },
+    { path = "reqwest::Client::builder", reason = "use tilo_net::http::client()" },
+    { path = "reqwest::ClientBuilder::new", reason = "use tilo_net::http::client()" },
+    { path = "reqwest::get", reason = "use tilo_net::http::client()" },
+    # `reqwest::blocking` exists only when the `blocking` feature is compiled
+    # in. A package whose dependency graph lacks it has nothing to ban, so an
+    # unresolved path there is expected rather than a stale entry.
+    { path = "reqwest::blocking::Client::new", reason = "use tilo_net::http::blocking_client()", allow-invalid = true },
+    { path = "reqwest::blocking::Client::builder", reason = "use tilo_net::http::blocking_client()", allow-invalid = true },
+    { path = "reqwest::blocking::ClientBuilder::new", reason = "use tilo_net::http::blocking_client()", allow-invalid = true },
+    { path = "reqwest::blocking::get", reason = "use tilo_net::http::blocking_client()", allow-invalid = true },
+    { path = "std::env::set_var", reason = "inject the path, or use tilo_test_env::ScopedEnv/TestHome in tests (see DEVELOPMENT.md)" },
+    { path = "std::env::remove_var", reason = "inject the path, or use tilo_test_env::ScopedEnv/TestHome in tests (see DEVELOPMENT.md)" },
+    # A lock that merely closes stays held while a spawned child still shares
+    # the descriptor. `advisory_lock::FileLock` unlocks explicitly on drop.
+    { path = "std::fs::File::lock", reason = "use advisory_lock::FileLock" },
+    { path = "std::fs::File::lock_shared", reason = "use advisory_lock::FileLock" },
+    { path = "std::fs::File::try_lock", reason = "use advisory_lock::FileLock" },
+    { path = "std::fs::File::try_lock_shared", reason = "use advisory_lock::FileLock" },
+    { path = "std::fs::File::unlock", reason = "use advisory_lock::FileLock" },
+    { path = "libc::flock", reason = "use advisory_lock::FileLock", allow-invalid = true },
+    { path = "rustix::fs::flock", reason = "use advisory_lock::FileLock" },
+    # An AutoCommit logs a patch event per applied op even when nothing will
+    # read it, and never drops them. Take changes in through tilo_automerge.
+    { path = "libc::geteuid", reason = "use rustix::process::geteuid().as_raw()", allow-invalid = true },
+    { path = "libc::getuid", reason = "use rustix::process::getuid().as_raw()", allow-invalid = true },
+    { path = "libc::getegid", reason = "use rustix::process::getegid().as_raw()", allow-invalid = true },
+    { path = "libc::getgid", reason = "use rustix::process::getgid().as_raw()", allow-invalid = true },
+    { path = "automerge::AutoCommit::apply_changes", reason = "use tilo_automerge::ApplyIncoming::apply_incoming" },
+    { path = "automerge::AutoCommit::apply_changes_batch", reason = "use tilo_automerge::ApplyIncoming::apply_incoming_batch" },
+    { path = "automerge::AutoCommit::load_incremental", reason = "use tilo_automerge::ApplyIncoming::load_incoming" },
+    { path = "automerge::AutoCommit::merge", reason = "use tilo_automerge::ApplyIncoming::merge_incoming" },
+    { path = "automerge::AutoCommit::isolate", reason = "use tilo_automerge::ApplyIncoming::isolate_at" },
+    { path = "automerge::AutoCommit::integrate", reason = "use tilo_automerge::ApplyIncoming::integrate_all" },
+    { path = "automerge::sync::SyncDoc::receive_sync_message", reason = "use tilo_automerge::ApplyIncoming::receive_incoming_sync" },
+    { path = "std::time::Instant::now", reason = "read the clock through `crate::time::now()`" },
+    { path = "std::time::SystemTime::now", reason = "read the clock through `crate::time::wall()`" },
+    { path = "std::thread::spawn", reason = "run background work through `crate::background::Background::spawn`" },
+    { path = "std::thread::Builder::spawn", reason = "run background work through `crate::background::Background::spawn`" },
+    { path = "std::thread::sleep", reason = "schedule a wake with `crate::background::Background::wake_at` instead of blocking" },
+]
