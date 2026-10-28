@@ -127,7 +127,7 @@ mod tests {
         assert!(ns.put_posix_attrs(link_record, &PosixAttrs::of_local(0, false, true)));
         let saved = ns.save();
 
-        for ns in [ns, Namespace::from_bytes("reloaded", &saved).unwrap()] {
+        for mut ns in [ns, Namespace::from_bytes("reloaded", &saved).unwrap()] {
             assert_eq!(
                 ns.getattr(script).map(|attr| attr.perm),
                 Some(0o755),
