@@ -1,8 +1,9 @@
 //! Publisher keys. A machine keeps its key in the secret store, where
 //! `tilo-app` and the App Publisher app both find it through [`stored`],
-//! [`create`] and [`discover`]. CI passes the key in [`KEY_ENV`]; a command
-//! may also name a key file, `{"secret_key_hex": "<64 hex digits>"}` or the
-//! bare hex (the `--identity` file format).
+//! [`create`] and [`discover`]. Anywhere else — a file a command names, the
+//! CI secret in [`KEY_ENV`], a backup — a key is the one key file format,
+//! `{"secret_key_hex": "<64 hex digits>"}`, which [`encode`] writes and
+//! [`parse`] reads.
 
 use std::path::Path;
 
@@ -47,21 +48,26 @@ fn secret(store: &SecretStore) -> ItemSecret {
     store.item(PURPOSE, ITEM)
 }
 
-/// A key from a key file's contents or from its bare hex seed.
+/// A key from a key file's contents.
+///
+/// # Errors
+///
+/// When `text` is not a key file holding a 32-byte seed.
 pub fn parse(text: &str) -> Result<SigningKey> {
-    let text = text.trim();
-    let hex_seed = if text.starts_with('{') {
-        serde_json::from_str::<KeyFile>(text)
-            .context("parse publisher key JSON")?
-            .secret_key_hex
-    } else {
-        text.to_owned()
-    };
+    let hex_seed = serde_json::from_str::<KeyFile>(text)
+        .context("a publisher key file is {\"secret_key_hex\": \"<64 hex digits>\"}")?
+        .secret_key_hex;
     let seed: [u8; 32] = hex::decode(hex_seed.trim())
         .ok()
         .and_then(|bytes| bytes.try_into().ok())
         .ok_or_else(|| anyhow!("a publisher key is 32 bytes of hex"))?;
     Ok(SigningKey::from_bytes(&seed))
+}
+
+/// `key` as a key file's contents, what [`parse`] reads back.
+#[must_use]
+pub fn encode(key: &SigningKey) -> String {
+    serde_json::json!({ "secret_key_hex": hex::encode(key.to_bytes()) }).to_string() + "\n"
 }
 
 /// The key in the file at `path`.
@@ -168,9 +174,10 @@ mod tests {
         assert_eq!(stored(&store).unwrap().unwrap().to_bytes(), key.to_bytes());
         assert!(create(&store).is_err());
         assert_eq!(stored(&store).unwrap().unwrap().to_bytes(), key.to_bytes());
-        assert_eq!(
-            parse(&hex::encode(key.to_bytes())).unwrap().to_bytes(),
-            key.to_bytes()
+        assert_eq!(parse(&encode(&key)).unwrap().to_bytes(), key.to_bytes());
+        assert!(
+            parse(&hex::encode(key.to_bytes())).is_err(),
+            "bare hex is no key file"
         );
         assert!(parse("not a key").is_err());
     }

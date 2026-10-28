@@ -204,7 +204,7 @@ def install(candidate, user_profile, private_log, deadline):
     with tempfile.TemporaryDirectory(prefix='tilo-native-packages-', dir=user_profile) as temporary:
         work = Path(temporary)
         signer = work / 'operator-signing-key.json'
-        bounded_command(['/usr/libexec/tilo/tilo-app-package', 'keygen', '--out', str(signer)], deadline, private_log)
+        bounded_command(['/usr/libexec/tilo/tilo-runtime-bundle', 'key', 'generate', '--out', str(signer)], deadline, private_log)
         signer.chmod(0o600)
         publisher = bounded_command(['/usr/libexec/tilo/tilo-runtime-bundle', 'key', 'pubkey', '--identity', str(signer)],
                                     deadline, private_log).decode().strip()

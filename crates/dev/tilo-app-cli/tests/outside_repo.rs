@@ -30,10 +30,11 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::process::Command;
 
-/// A throwaway publisher key: the hex seed `tilo-app` reads from
+/// A throwaway publisher key file, which `tilo-app` reads from
 /// `$TILO_PUBLISHER_KEY`, so no machine secret store is touched.
 #[cfg(test)]
-const PUBLISHER_SEED: &str = "0909090909090909090909090909090909090909090909090909090909090909";
+const PUBLISHER_KEY: &str =
+    r#"{"secret_key_hex":"0909090909090909090909090909090909090909090909090909090909090909"}"#;
 
 #[cfg(test)]
 const APP_ID: &str = "com.example.hello";
@@ -297,7 +298,7 @@ fn tilo_app(dir: &Path) -> Command {
         .current_dir(dir)
         .env_remove("CARGO_TARGET_DIR")
         .env_remove("TILO_REGISTRY")
-        .env("TILO_PUBLISHER_KEY", PUBLISHER_SEED);
+        .env("TILO_PUBLISHER_KEY", PUBLISHER_KEY);
     command
 }
 

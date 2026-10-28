@@ -35,9 +35,9 @@ esac
 say() { printf '\033[1m[apps-live]\033[0m %s\n' "$*"; }
 die() { echo "FATAL: $*" >&2; exit 1; }
 
-say "building word-processor, tilo-app-package, tilo-install (profile: $PROFILE)"
-(cd "$REPO" && cargo build $PROFILE_FLAG -p word-processor -p tilo-app-package-cli -p install)
-for b in word-processor tilo-app-package tilo-install; do
+say "building word-processor, tilo-app-package, tilo-runtime-bundle, tilo-install (profile: $PROFILE)"
+(cd "$REPO" && cargo build $PROFILE_FLAG -p word-processor -p tilo-app-package-cli -p runtime-bundle -p install)
+for b in word-processor tilo-app-package tilo-runtime-bundle tilo-install; do
     [ -x "$BIN/$b" ] || die "$BIN/$b missing after build"
 done
 
@@ -50,7 +50,7 @@ newer="$(find "$REPO/apps/word-processor/src" "$REPO/crates/sdk/ui-core/src" -na
 mkdir -p "$OUT"
 if [ ! -f "$IDENTITY" ]; then
     say "minting publisher identity at $IDENTITY"
-    "$BIN/tilo-app-package" keygen --out "$IDENTITY" >/dev/null
+    "$BIN/tilo-runtime-bundle" key generate --out "$IDENTITY" >/dev/null
 fi
 
 # Copy the binary so a later `cargo build` cannot change an existing payload.

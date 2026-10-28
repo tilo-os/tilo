@@ -246,7 +246,7 @@ fn local(effect: &KeyEffect, secrets: &SecretStore) -> Result<Notice, String> {
 fn copy_secret(secrets: &SecretStore) -> Result<ui::clipboard::ClipboardCopy, String> {
     let key = key::resolve(None, secrets).map_err(|error| format!("{error:#}"))?;
     Ok(ui::try_clipboard_copy_secret(
-        &hex::encode(key.to_bytes()),
+        key::encode(&key).trim_end(),
         KEY_ON_CLIPBOARD_FOR,
     ))
 }
@@ -458,11 +458,7 @@ fn handle_key_effect(
     }
     if matches!(effect, KeyEffect::ExportKey) {
         let key = key::resolve(None, secrets).map_err(|error| format!("{error:#}"))?;
-        let bytes = format!(
-            "{{\"secret_key_hex\":\"{}\"}}\n",
-            hex::encode(key.to_bytes())
-        )
-        .into_bytes();
+        let bytes = key::encode(&key).into_bytes();
         let request =
             ui::portal::PickRequest::save("Back up publisher key", "Save", "publisher-key.json");
         let pane = pane_state.clone();

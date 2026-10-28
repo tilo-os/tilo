@@ -26,7 +26,7 @@ enum KeysCommand {
         #[arg(long)]
         key: Option<PathBuf>,
     },
-    /// Print the key's secret hex seed, for a CI secret.
+    /// Print the key as a key file, for a CI secret or a backup.
     Export {
         /// A key file; defaults to `$TILO_PUBLISHER_KEY`, then the secret store.
         #[arg(long)]
@@ -90,7 +90,7 @@ pub fn run_keys(args: KeysArgs) -> Result<Value> {
         KeysCommand::Show { key: path } => key::resolve(path.as_deref(), &store)?,
         KeysCommand::Export { key: path } => {
             let key = key::resolve(path.as_deref(), &store)?;
-            println!("{}", hex::encode(key.to_bytes()));
+            print!("{}", key::encode(&key));
             eprintln!("[tilo-app] this is your secret key: put it only in a CI secret or a backup");
             return Ok(json!({"public_key": key::public_hex(&key)}));
         }

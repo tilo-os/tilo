@@ -20,7 +20,7 @@ pub fn device_identity() -> anyhow::Result<SigningIdentity> {
 }
 
 /// A publisher identity file, `{"secret_key_hex": "…"}` — the format
-/// `tilo-app-package keygen` writes and CI keeps in a secret.
+/// `tilo-runtime-bundle key generate` writes and CI keeps in a secret.
 ///
 /// # Errors
 ///
