@@ -301,6 +301,103 @@ impl BlockEditor {
     }
 }
 
+impl BlockEditor {
+    /// A document read from Markdown, as a reader shows it: the blocks
+    /// [`Self::from_markdown`] makes, with every inline span its delimiters
+    /// close (`**bold**`, `*italic*`, `` `code` ``, `~~struck~~`) formatted
+    /// and its delimiters gone, by the same rules as typing them
+    /// ([`markdown_input::detect_inline`]). An answer an agent writes in
+    /// Markdown reads as text, never as its source.
+    #[must_use]
+    pub fn reading_markdown(markdown: &str) -> Self {
+        let mut editor = Self::from_markdown(markdown);
+        for block in &mut editor.blocks {
+            if matches!(block.kind, BlockKind::CodeBlock { .. }) {
+                continue;
+            }
+            let (text, marks) = formatted_spans(&block.line.value());
+            show(
+                &mut block.line,
+                &LineState {
+                    text,
+                    marks,
+                    caret: 0,
+                },
+            );
+        }
+        editor
+    }
+}
+
+/// `text` with every inline span its delimiters close formatted: the text
+/// without those delimiters, and the marks on it. Code spans are taken
+/// first, and what is inside one stays as written.
+fn formatted_spans(text: &str) -> (String, Vec<MarkSpan>) {
+    let mut out = String::with_capacity(text.len());
+    let mut spans: Vec<MarkSpan> = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        let code = rest.find('`').and_then(|open| {
+            let after = rest.get(open + 1..)?;
+            let close = after.find('`')?;
+            (close > 0).then_some((open, open + 1 + close))
+        });
+        let (plain, code) = match code {
+            Some((open, close)) => (
+                rest.get(..open).unwrap_or_default(),
+                rest.get(open + 1..close).map(|inside| (inside, close + 1)),
+            ),
+            None => (rest, None),
+        };
+        let (formatted, marks) = formatted_prose(plain);
+        let offset = out.len();
+        out.push_str(&formatted);
+        spans.extend(marks.into_iter().map(|mut span| {
+            span.range = span.range.start + offset..span.range.end + offset;
+            span
+        }));
+        match code {
+            Some((inside, next)) => {
+                let start = out.len();
+                out.push_str(inside);
+                marks::add_mark_to_range(&mut spans, start..out.len(), Mark::Code);
+                rest = rest.get(next..).unwrap_or_default();
+            }
+            None => rest = "",
+        }
+    }
+    (out, spans)
+}
+
+/// Prose with no code in it, its bold, italic and struck spans formatted.
+fn formatted_prose(text: &str) -> (String, Vec<MarkSpan>) {
+    let mut out = String::with_capacity(text.len());
+    let mut spans: Vec<MarkSpan> = Vec::new();
+    for ch in text.chars() {
+        out.push(ch);
+        let Some(found) = markdown_input::detect_inline(&out) else {
+            continue;
+        };
+        let (Some(head), Some(content)) =
+            (out.get(..found.open.start), out.get(found.content.clone()))
+        else {
+            continue;
+        };
+        let start = found.open.start;
+        let formatted = format!("{head}{content}");
+        let length = content.len();
+        marks::shift_after_edit(&mut spans, found.close.start, 0, found.close.len());
+        marks::shift_after_edit(&mut spans, found.open.start, 0, found.open.len());
+        marks::add_mark_to_range(
+            &mut spans,
+            start..start.saturating_add(length),
+            mark_for(found.kind),
+        );
+        out = formatted;
+    }
+    (out, spans)
+}
+
 fn show(line: &mut crate::widget::RichTextLine, state: &LineState) {
     line.set_text(&state.text);
     line.set_marks(state.marks.clone());
@@ -358,6 +455,29 @@ mod tests {
     fn shown(editor: &BlockEditor) -> (String, Vec<MarkSpan>) {
         let block = &editor.blocks()[0];
         (block.text().to_owned(), block.line.marks().to_vec())
+    }
+
+    #[test]
+    fn markdown_read_shows_its_spans_as_formatting_and_its_code_as_written() {
+        let editor = BlockEditor::reading_markdown(
+            "It is **a note**, not *an address*: use `a**b**c`.\n\n- the ~~old~~ text",
+        );
+        let first = &editor.blocks[0].line;
+        assert_eq!(first.value(), "It is a note, not an address: use a**b**c.");
+        let marks: Vec<(Mark, &str)> = first
+            .marks()
+            .iter()
+            .map(|span| (span.mark.clone(), &first.value()[span.range.clone()]))
+            .collect();
+        assert_eq!(
+            marks,
+            [
+                (Mark::Bold, "a note"),
+                (Mark::Italic, "an address"),
+                (Mark::Code, "a**b**c")
+            ]
+        );
+        assert_eq!(editor.blocks[1].line.value(), "the old text");
     }
 
     #[test]

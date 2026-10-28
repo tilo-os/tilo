@@ -3008,10 +3008,20 @@ agent-quick-about-selection = About your selection in { $app }: “{ $selection 
 agent-quick-about-resource = About { $resource } in { $app }
 agent-quick-about-window = About { $app }; nothing is selected
 agent-quick-accessible-name = Agent composer
-agent-quick-shots-context = About your selection in Notes: “[tilo OS](search for the tilo homepage)”
+agent-quick-shots-selection = [tilo OS](search for the tilo homepage)
+agent-quick-shots-note = Launch notes
+agent-quick-shots-streamed = The tilo homepage is **https://tilo.so**. I'm replacing the note in parentheses with it, so the link reads
+agent-quick-shots-step-1 = Started on Link the tilo homepage
+agent-quick-shots-step-2 = Found the homepage address: https://tilo.so
 agent-quick-shots-draft = What does this link point to?
 agent-quick-shots-question = Does this link point anywhere yet?
-agent-quick-shots-answer = Not yet. It's written as a link, but the part in parentheses is a note to look up the address rather than an address itself.
+agent-quick-shots-answer =
+    Not yet. It's written as a link, but the part in parentheses is **a note**, not an address:
+
+    - the text reads *tilo OS*
+    - the target says to look up the homepage
+
+    Replace it with `https://tilo.so` and it will open the site.
 agent-quick-shots-request = Replace the parenthesis with the real link
 agent-quick-shots-task = Link the tilo homepage
 agent-quick-shots-steer = Use the https address
@@ -3019,6 +3029,8 @@ agent-quick-placeholder-idle = Ask { $agent }, or say what to do
 agent-quick-placeholder-running = Tell { $agent } how to continue
 agent-quick-editor-name = Your message to the agent
 agent-quick-send = Send
+agent-quick-excerpt = “{ $text }”
+agent-quick-open-run = Open in Tasks
 agent-quick-stop = Stop
 agent-quick-close = Close
 agent-quick-insert = Insert

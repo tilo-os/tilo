@@ -246,8 +246,8 @@ impl ShellOverlayHost {
     }
 
     /// A right-click on something the desktop draws (a strip, a
-    /// notification, a search result): its menu offers to tell an agent
-    /// about `seed`, at `at`. Whether it opened.
+    /// notification, a search result): its menu takes a sentence for an
+    /// agent about `seed`, at `at`. Whether it opened.
     pub(crate) fn open_thing_menu(
         &mut self,
         seed: crate::shell::selection_agent::SelectionSeed,
@@ -260,7 +260,7 @@ impl ShellOverlayHost {
         let display = self.surface_area(Some(at));
         self.layers.tab_menu.open(
             MenuSubject::Thing(Box::new(seed)),
-            vec![crate::shell::window_menu::tell_agent_row()],
+            Vec::new(),
             at,
             title,
             display,
@@ -439,9 +439,9 @@ impl ShellOverlayHost {
         changed
     }
 
-    /// Tell an agent about the menu's window, whatever app it shows: done
-    /// either way, so the menu has nothing more to offer.
-    fn tell_agent_from_menu(&mut self, target: TabMenuTarget) -> bool {
+    /// Ask an agent `text` about the menu's window, whatever app it shows:
+    /// done either way, so the menu has nothing more to offer.
+    fn ask_from_menu(&mut self, target: TabMenuTarget, text: String) -> bool {
         let app_id = self
             .chrome
             .as_ref()
@@ -455,7 +455,7 @@ impl ShellOverlayHost {
         // Done either way: without an agent to tell, the desktop
         // says so, and the menu has nothing more to offer.
         let at = self.layers.tab_menu.anchor_point();
-        self.tell_agent_about_app(&app_id, at);
+        self.tell_agent_about_app(&app_id, at, Some(text));
         true
     }
 
@@ -481,7 +481,6 @@ impl ShellOverlayHost {
             // and document first, then the widget's close animation.
             WindowMenuAction::CloseTab => self.close_tab_in_group(target.group, Some(target.tab)),
             WindowMenuAction::CloseWindow => self.close_window_from_menu(target),
-            WindowMenuAction::TellAgent => self.tell_agent_from_menu(target),
             WindowMenuAction::FullScreen => self.toggle_full_screen_from_menu(target),
             WindowMenuAction::Maximize => self.toggle_maximize_from_menu(target),
             WindowMenuAction::MoveToStrip(destination) => {
@@ -656,16 +655,22 @@ impl ShellOverlayHost {
                 self.bump_chrome();
                 true
             }
-            LayerIntent::TellAgent => {
-                let at = self.layers.tab_menu.anchor_point();
-                let Some(seed) = self.layers.tab_menu.take_thing() else {
-                    return false;
-                };
-                // Done either way: without an agent to tell, the desktop
-                // says so.
-                self.open_ask_agent(seed.drawn_at(Some(Rect::from_center_size(at, (1.0, 1.0)))));
-                true
-            }
+            LayerIntent::Ask => match self.layers.tab_menu.take_asked() {
+                None => false,
+                Some((subject, text)) => match subject {
+                    MenuSubject::Window(target) => self.ask_from_menu(target, text),
+                    MenuSubject::Thing(seed) => {
+                        let at = self.layers.tab_menu.anchor_point();
+                        // Done either way: without an agent to tell, the
+                        // desktop says so.
+                        self.open_ask_agent(
+                            seed.drawn_at(Some(Rect::from_center_size(at, (1.0, 1.0))))
+                                .asking(text),
+                        );
+                        true
+                    }
+                },
+            },
         }
     }
 

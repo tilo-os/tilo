@@ -436,7 +436,22 @@ impl super::ShellOverlayHost {
             viewport.x0 + viewport.width() * 0.58,
             viewport.y0 + viewport.height() * 0.34 + 44.0,
         );
-        self.agent_quick_composer.open(
+        // A link selected in a note, as Notes hands it over: its Markdown.
+        let seed = crate::shell::selection_agent::SelectionSeed::new(
+            "so.tilo.notes",
+            "Notes",
+            Some(
+                ui::shared_selection::SharedSelection::of_text(&t("agent-quick-shots-selection"))
+                    .at(tilo_actions::SelectionPlace::range("block-3", 0, 38))
+                    .in_resource(tilo_actions::ActionResource {
+                        id: "note:launch".into(),
+                        kind: "rich-text".into(),
+                        label: t("agent-quick-shots-note"),
+                    }),
+            ),
+        )
+        .drawn_at(Some(selection));
+        self.agent_quick_composer.open_about(
             ComposerOwner {
                 room: "shots-room".into(),
                 agent: "scribe".into(),
@@ -444,14 +459,14 @@ impl super::ShellOverlayHost {
                 identity_revision: 0,
             },
             "scribe",
-            AgentQuickComposerOrigin {
+            &AgentQuickComposerOrigin {
                 marker: selection,
                 protected: selection,
-                context: t("agent-quick-shots-context"),
+                context: String::new(),
             },
             viewport,
+            seed,
         );
-        self.agent_quick_composer.set_about_selection(true);
         let asked = |key: &str| ComposerTurn {
             agent: false,
             text: t(key),
@@ -464,6 +479,10 @@ impl super::ShellOverlayHost {
                 label: t("agent-quick-shots-task"),
             },
             phase,
+            progress: crate::shell::agent_quick_composer::RunProgress {
+                streamed: t("agent-quick-shots-streamed"),
+                steps: vec![t("agent-quick-shots-step-1"), t("agent-quick-shots-step-2")],
+            },
         };
         let (draft, conversation, followed) = match phase {
             "agent-composer" => (String::new(), Vec::new(), None),

@@ -22,7 +22,7 @@ use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 
 use crate::shell::agent_quick_composer::{
     AgentQuickComposer, AnswerUse, ComposerIntent, ComposerOutcome, ComposerOwner, ComposerReceipt,
-    ComposerRequest, ComposerRun, ComposerTask, ComposerTurn, RunPhase,
+    ComposerRequest, ComposerRun, ComposerTask, ComposerTurn, RunPhase, RunProgress,
 };
 use crate::shell::broker_services::FollowedRun;
 use crate::shell::certified_action_session::{ActionSessionSource, DesktopActionSession};
@@ -51,9 +51,18 @@ const AGENT_START: Duration = Duration::from_secs(60);
 pub(crate) trait RunSource {
     /// Every issue's latest run in `room`.
     fn runs(&self, room: &str) -> Vec<FollowedRun>;
+    /// The text run `epoch` of `issue` in `room` streams now, while its
+    /// current model turn goes.
+    fn streamed(&self, room: &str, issue: &str, epoch: u64) -> Option<String>;
 }
 
 impl RunSource for crate::shell::broker_services::NativeTrackerRuns {
+    fn streamed(&self, room: &str, issue: &str, epoch: u64) -> Option<String> {
+        self.live(room, issue, epoch)
+            .map(|presentation| presentation.text)
+            .filter(|text| !text.trim().is_empty())
+    }
+
     fn runs(&self, room: &str) -> Vec<FollowedRun> {
         match self.tracker(room) {
             Ok(tracker) => tracker
@@ -126,6 +135,8 @@ struct Followed {
     title: String,
     /// The run as the tracker last held it; none until it is read.
     run: Option<FollowedRun>,
+    /// What its current model turn streams, as last read.
+    streamed: String,
 }
 
 impl Followed {
@@ -156,6 +167,14 @@ impl Followed {
                 label: self.title.clone(),
             },
             phase,
+            progress: RunProgress {
+                streamed: self.streamed.clone(),
+                steps: self
+                    .run
+                    .as_ref()
+                    .map(|run| run.steps.clone())
+                    .unwrap_or_default(),
+            },
         }
     }
 }
@@ -289,6 +308,7 @@ impl AgentActions {
                     issue: run.issue.clone(),
                     title: run.title.clone(),
                     run: None,
+                    streamed: String::new(),
                 });
             }
         }
@@ -361,6 +381,13 @@ impl AgentActions {
             return changed;
         }
         self.read_runs(&owner, runs, composer);
+        // What the run streams is read every pump: a new snapshot wakes it.
+        if let (Some(followed), Some(runs)) = (self.followed.as_mut(), runs) {
+            let epoch = followed.run.as_ref().map_or(0, |run| run.epoch);
+            followed.streamed = runs
+                .streamed(&owner.room, &followed.issue, epoch)
+                .unwrap_or_default();
+        }
         let run = self.followed.as_ref().map(Followed::run);
         if run.as_ref().is_some_and(|run| !run.phase.running()) {
             // Told now; following ends with it.
@@ -375,6 +402,10 @@ impl AgentActions {
         composer.project(&owner, run);
         if let Some(request) = composer.take_request() {
             self.submit(request);
+            changed = true;
+        }
+        if let Some(issue) = composer.take_open_run() {
+            self.begin(show_operation(&issue));
             changed = true;
         }
         if let Some(choice) = composer.take_answer_use() {
@@ -536,6 +567,7 @@ impl AgentActions {
                         issue: issue.clone(),
                         title: title.clone(),
                         run: None,
+                        streamed: String::new(),
                     });
                     self.fresh.mark();
                 }
@@ -1558,11 +1590,23 @@ mod tests {
 
     /// The room's tracker, holding the runs the test says.
     #[derive(Default)]
-    struct Tracker(Mutex<Vec<FollowedRun>>);
+    struct Tracker(
+        Mutex<Vec<FollowedRun>>,
+        Mutex<Option<(String, u64, String)>>,
+    );
 
     impl RunSource for Tracker {
         fn runs(&self, _: &str) -> Vec<FollowedRun> {
             self.0.lock().unwrap().clone()
+        }
+
+        fn streamed(&self, _: &str, issue: &str, epoch: u64) -> Option<String> {
+            self.1
+                .lock()
+                .unwrap()
+                .as_ref()
+                .filter(|(of, at, _)| of == issue && *at == epoch)
+                .map(|(_, _, text)| text.clone())
         }
     }
 
@@ -1585,6 +1629,7 @@ mod tests {
             messages: 0,
             incorporated: 0,
             said: None,
+            steps: Vec::new(),
         }
     }
 
@@ -1670,6 +1715,50 @@ mod tests {
     }
 
     #[test]
+    fn what_the_run_streams_reaches_the_composer_while_it_works() {
+        let room = Room::new(Some(serde_json::json!({"work": "Fix the link"})));
+        let (mut actions, mut composer, _) = composer_in(&room);
+        let tracker = Tracker::default();
+        send(&mut composer, "Replace the parenthesis with the real link");
+        settle(&mut actions, &mut composer, &tracker);
+        let issue = format!(
+            "tasks.tracker/issues/{}",
+            room.arguments("ask-agent")["id"].as_str().unwrap()
+        );
+        tracker.holds(
+            &actions,
+            FollowedRun {
+                steps: vec!["Started on Fix the link".into()],
+                ..run_of(&issue, IssueRunPhase::Executing)
+            },
+        );
+        *tracker.1.lock().unwrap() = Some((issue.clone(), 1, "Looking up the tilo".into()));
+        settle(&mut actions, &mut composer, &tracker);
+        let run = composer.followed().cloned().expect("the run is followed");
+        assert_eq!(run.progress.streamed, "Looking up the tilo");
+        assert_eq!(
+            run.progress.steps,
+            vec!["Started on Fix the link".to_owned()]
+        );
+        assert_eq!(composer.shown_answer(), "Looking up the tilo");
+        // The next snapshot replaces it, without the tracker changing.
+        *tracker.1.lock().unwrap() = Some((
+            issue.clone(),
+            1,
+            "Looking up the tilo homepage: https://tilo.so".into(),
+        ));
+        settle(&mut actions, &mut composer, &tracker);
+        assert_eq!(
+            composer.shown_answer(),
+            "Looking up the tilo homepage: https://tilo.so"
+        );
+        // A stale epoch's text is not this run's.
+        *tracker.1.lock().unwrap() = Some((issue.clone(), 0, "Old words".into()));
+        settle(&mut actions, &mut composer, &tracker);
+        assert_eq!(composer.shown_answer(), "");
+    }
+
+    #[test]
     fn the_composer_follows_the_issues_run_until_the_tracker_says_it_ended() {
         let room = Room::new(Some(serde_json::json!({"work": "Fix the link"})));
         let (mut actions, mut composer, _) = composer_in(&room);
@@ -1722,6 +1811,7 @@ mod tests {
                     said: said.map(str::to_owned),
                     ..run_of("tasks.tracker/issues/one", phase)
                 }),
+                streamed: String::new(),
             }
             .run()
             .phase

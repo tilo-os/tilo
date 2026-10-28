@@ -452,7 +452,7 @@ pub enum FloatingSurfaceClientMessage {
     /// says so is never asked.
     SelectionCapable,
     /// The person asked an agent about what they selected in this app's
-    /// window (an "Tell an agent…" entry, or the shell's chord answered through
+    /// window (a sentence typed into its context menu, or the shell's chord answered through
     /// [`FloatingSurfaceHostMessage::ShareSelection`]); `None` when nothing
     /// is selected. The shell opens its agent composer seeded with it. The
     /// app's identity is the launcher's, never the message's.
@@ -463,6 +463,16 @@ pub enum FloatingSurfaceClientMessage {
         /// rather than over it. Absent when the app does not know.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bounds: Option<[f64; 4]>,
+        /// What the person typed into a context menu that none of its
+        /// entries answered: the composer opens asking it, at most
+        /// [`crate::shared_selection::MAX_ASK_CHARS`] characters. Absent for
+        /// the chord, which opens the composer to be typed in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ask: Option<String>,
+        /// What the person began typing over the selection in a window that
+        /// takes no text itself: the composer opens with it in its field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        draft: Option<String>,
     },
     /// The resource this window shows (the first it publishes), sent when it
     /// changes: the desktop's own menus for the window (its window menu)

@@ -53,9 +53,6 @@ pub enum WindowMenuAction {
     CloseTab,
     /// Close the window and every tab in it, as one close a reopen undoes.
     CloseWindow,
-    /// Tell an agent to do something with this window: the agent composer
-    /// opens at the pointer about the window's app.
-    TellAgent,
     /// Stop the tab controlling the desktop beyond its workspace: the one
     /// row of the bar's "Controls your desktop" chip menu
     /// ([`desktop_control_menu_rows`]).
@@ -96,7 +93,6 @@ impl WindowMenuAction {
             Self::MoveToNewGroup => "tabmenu:new-group".into(),
             Self::CloseTab => "tabmenu:close".into(),
             Self::CloseWindow => "tabmenu:close-window".into(),
-            Self::TellAgent => "tabmenu:tell-agent".into(),
             Self::StopDesktopControl => "tabmenu:stop-desktop-control".into(),
         }
     }
@@ -150,7 +146,6 @@ impl WindowMenuAction {
             Self::MoveToNewGroup,
             Self::CloseTab,
             Self::CloseWindow,
-            Self::TellAgent,
             Self::StopDesktopControl,
         ]
         .into_iter()
@@ -387,8 +382,10 @@ fn width_row() -> WindowMenuRow {
 ///    sharing) for a window this device can share there;
 /// 3. New tab, Rename tab for a host window's tab, and for a tabbed window
 ///    Split right and Move to new group;
-/// 4. Close tab, for a tabbed window, then Close window;
-/// 5. Tell an agent…, as every context menu ends.
+/// 4. Close tab, for a tabbed window, then Close window.
+///
+/// Typing into the menu narrows these, and a sentence none of them answers
+/// asks an agent about the window, as every context menu does.
 ///
 /// A window of one tab is offered Close window only: its tab is the window.
 pub fn window_menu_rows(facts: &WindowMenuFacts, config: &ShortcutConfig) -> Vec<WindowMenuRow> {
@@ -480,8 +477,6 @@ pub fn window_menu_rows(facts: &WindowMenuFacts, config: &ShortcutConfig) -> Vec
             close,
         ));
     }
-    rows.push(WindowMenuRow::Separator);
-    rows.push(tell_agent_row());
     rows
 }
 
@@ -530,16 +525,6 @@ fn extent_rows(extent: WindowExtent, config: &ShortcutConfig) -> [WindowMenuRow;
         ),
         WindowMenuRow::Separator,
     ]
-}
-
-/// "Tell an agent…": the row every menu the desktop opens ends with.
-pub fn tell_agent_row() -> WindowMenuRow {
-    WindowMenuRow::Entry(WindowMenuEntry {
-        action: WindowMenuAction::TellAgent,
-        label: t("shell-window-menu-tell-agent"),
-        icon: Some(Icon::Sparkles),
-        shortcut: None,
-    })
 }
 
 fn menu_item(entry: &WindowMenuEntry) -> MenuItem {
@@ -752,7 +737,6 @@ mod tests {
                 "Move to new group",
                 "Close tab",
                 "Close window",
-                "Tell an agent…",
             ]
         );
         let shortcut = |label: &str| {
@@ -847,10 +831,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(!single.iter().any(|label| label == "Close tab"));
         assert!(!single.iter().any(|label| label == "Split right"));
-        assert_eq!(
-            single[single.len() - 2..],
-            ["Close window", "Tell an agent…"]
-        );
+        assert_eq!(single.last().map(String::as_str), Some("Close window"));
 
         let state = WindowMenuFacts {
             extent: WindowExtent {

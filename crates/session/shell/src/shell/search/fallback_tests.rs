@@ -164,7 +164,7 @@ fn a_direct_match_leads_and_enter_runs_it_with_asking_and_the_web_after() {
     );
     enter(&found, &chrome);
     assert!(
-        chrome.borrow_mut().take_agent_asks().is_empty(),
+        chrome.borrow_mut().take_agent_asks_in_place().is_empty(),
         "Enter opened the note and asked no agent"
     );
 }
@@ -188,19 +188,14 @@ fn with_only_a_weak_match_enter_hands_the_query_to_the_agent() {
         Some(t_args("search-ask-agent-subtitle", &[("agent", "tide".into())]).as_str())
     );
     enter(&found, &chrome);
-    let room = chrome.borrow().tree().desktop.workspaces[0].room();
-    let asks = chrome.borrow_mut().take_agent_asks();
     assert_eq!(
-        asks,
-        [crate::shell::chrome_state::AgentAsk {
-            room,
-            agent: "tide".into(),
-            title: query.into(),
-            body: query.into(),
-            show: true,
-            quick: true,
-        }],
-        "the workspace's agent is asked for a task carrying the query, whose page opens"
+        chrome.borrow_mut().take_agent_asks_in_place(),
+        [query.to_owned()],
+        "the agent is asked the query about what is focused, in the composer there"
+    );
+    assert!(
+        chrome.borrow_mut().take_agent_asks().is_empty(),
+        "no page opens: the answer shows in place"
     );
 }
 
@@ -216,7 +211,7 @@ fn with_no_match_asking_the_agent_leads_and_the_web_follows() {
         ]
     );
     enter(&found, &chrome);
-    assert_eq!(chrome.borrow_mut().take_agent_asks().len(), 1);
+    assert_eq!(chrome.borrow_mut().take_agent_asks_in_place().len(), 1);
 }
 
 #[test]

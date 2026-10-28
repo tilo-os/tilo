@@ -2234,6 +2234,8 @@ impl ShellDriver {
             "desktop-control-menu" => self.scene_desktop_control_menu(),
             "workspace-menu" => self.scene_workspace_menu(),
             "window-menu" => self.scene_window_menu(),
+            "window-menu-typed" => self.scene_window_menu_typed(),
+            "window-menu-ask" => self.scene_window_menu_ask(),
             "tab-rename" => self.scene_tab_rename(),
             "window-share-menu" => self.scene_window_share_menu(),
             "window-shared" => self.scene_window_shared(),
@@ -2258,6 +2260,9 @@ impl ShellDriver {
                 self.host_mut()
                     .seed_agent_composer_for_shots(name)
                     .map_err(str::to_owned)?;
+                // Past the composer's entrance and what it shows arriving.
+                #[cfg(debug_assertions)]
+                self.step_frames(30);
                 #[cfg(not(debug_assertions))]
                 return Err("agent composer shots require a debug build".into());
             }

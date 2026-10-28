@@ -1,7 +1,8 @@
 //! The window menu (a right-click or long press on a window's bar, or the
 //! window-menu shortcut) as a shell layer, and the menu a right-click on
 //! anything else the desktop draws opens (a strip, a notification, a search
-//! result): "Tell an agent…" about that thing.
+//! result). Both take typing: it narrows the rows, and a sentence none of
+//! them answers asks an agent about the window or the thing.
 //!
 //! It lives in the overlay stack rather than the tab bar because it paints
 //! above every window (the bar is clipped to its group), and because its
@@ -57,6 +58,9 @@ pub(crate) struct TabMenuLayer {
     /// The pointer position the menu opened at, so a refused row can
     /// re-open the menu exactly where it was.
     anchor: Point,
+    /// A sentence typed into the menu that none of its rows answered, and
+    /// what the menu was on, until the host asks an agent it.
+    asked: Option<(MenuSubject, String)>,
 }
 
 impl TabMenuLayer {
@@ -76,7 +80,9 @@ impl TabMenuLayer {
         title: String,
         viewport: Rect,
     ) {
-        let menu = build_window_menu(&rows);
+        let mut menu = build_window_menu(&rows);
+        // The desktop answers a typed sentence with its own composer.
+        menu.set_owner_asks(true);
         let items = rows;
         *self = Self {
             menu,
@@ -85,6 +91,7 @@ impl TabMenuLayer {
             title,
             name: None,
             anchor: at,
+            asked: None,
         };
         // Anchored to the pointer as a zero-size rect: `open_anchored`
         // hangs the menu below-right of it and flips above / clamps inside
@@ -114,6 +121,7 @@ impl TabMenuLayer {
             title: String::new(),
             name: Some(name),
             anchor: Point::new(chip.x0, chip.y1),
+            asked: None,
         };
         self.menu.open_anchored(chip, viewport);
     }
@@ -160,14 +168,21 @@ impl TabMenuLayer {
         self.menu.is_open() && matches!(self.target, Some(MenuSubject::Thing(_)))
     }
 
-    /// The thing the menu was opened on, for the agent to be told of: the
-    /// menu closes.
-    pub(crate) fn take_thing(&mut self) -> Option<crate::shell::selection_agent::SelectionSeed> {
-        let MenuSubject::Thing(seed) = self.target.take()? else {
-            return None;
-        };
-        self.menu.close();
-        Some(*seed)
+    /// The sentence asked and what the menu was on, exactly once.
+    pub(crate) fn take_asked(&mut self) -> Option<(MenuSubject, String)> {
+        self.asked.take()
+    }
+
+    /// What is typed into the open menu.
+    #[cfg(test)]
+    pub(crate) fn query(&self) -> &str {
+        self.menu.query()
+    }
+
+    /// Type `text` into the open menu, as the person would.
+    #[cfg(test)]
+    pub(crate) fn set_query(&mut self, text: &str) {
+        self.menu.set_query(text);
     }
 
     /// The host's answer to a [`LayerIntent::TabMenu`]. Only a performed
@@ -235,9 +250,8 @@ impl TabMenuLayer {
                 target: *target,
                 action,
             }),
-            MenuSubject::Thing(_) => {
-                (action == WindowMenuAction::TellAgent).then_some(LayerIntent::TellAgent)
-            }
+            // A thing's menu has no rows: typing is all it takes.
+            MenuSubject::Thing(_) => None,
         }
     }
 }
@@ -331,6 +345,10 @@ impl ShellLayer for TabMenuLayer {
         );
         if let Some(intent) = self.take_selected_intent() {
             cx.request(intent);
+        }
+        if let (Some(text), Some(subject)) = (self.menu.take_ask(), self.target.clone()) {
+            self.asked = Some((subject, text));
+            cx.request(LayerIntent::Ask);
         }
         if !self.menu.is_open() {
             self.target = None;

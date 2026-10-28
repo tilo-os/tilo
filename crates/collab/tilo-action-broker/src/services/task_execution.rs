@@ -373,4 +373,17 @@ pub trait TrackerRuns: Send + Sync {
         run: &TrackerRun,
         requirement: &NativeTaskActionRequirement,
     ) -> Result<(), String>;
+    /// What run `epoch` of issue `issue` in `room` shows of its current
+    /// model turn as it streams, a bounded snapshot replacing the last one;
+    /// `None` once the run ended. Private to whoever follows the run on this
+    /// device, never written to the tracker: the run's findings reach the
+    /// issue through the tracker's own actions.
+    fn presented(
+        &self,
+        _room: &str,
+        _issue: &str,
+        _epoch: u64,
+        _presentation: Option<&runtime_collab::TaskPresentation>,
+    ) {
+    }
 }

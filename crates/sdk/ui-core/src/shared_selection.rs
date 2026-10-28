@@ -8,14 +8,16 @@
 //! excerpt. A widget that knows its selection better (a multi-block editor)
 //! says so through [`PublishesPresence::shared_selection`].
 //!
-//! Every context menu ends with "Tell an agent…" ([`crate::widget::ContextMenu`]),
-//! about what the menu acts on: a row's item, the selection, else the window.
-//! Asking goes through the desktop: [`ask_agent`] and [`tell_agent_at`] queue
+//! Every context menu takes typing ([`crate::widget::ContextMenu`]): a
+//! sentence none of its entries answers is asked of an agent about what the
+//! menu acts on: a row's item, the selection, else the window.
+//! Asking goes through the desktop: [`ask_agent`] and [`ask_agent_at`] queue
 //! the request, and the app runner hands it to the session shell with a typed
 //! reference ([`AgentRequest::resolve`]), which opens its agent composer
 //! there. The reference names a place; it grants nothing, so an agent reaches
-//! it only through the app's published actions, as every task does. Outside a Tilo session nothing can answer, so
-//! [`agent_host_available`] is false and no "Tell an agent…" entry is offered.
+//! it only through the app's published actions, as every task does. Outside a
+//! Tilo session nothing can answer, so [`agent_host_available`] is false and
+//! a menu's typing only filters it.
 //!
 //! [`PublishesPresence::shared_selection`]: crate::presence::capability::PublishesPresence::shared_selection
 
@@ -244,6 +246,23 @@ pub fn subtree_selection(root: &dyn Widget) -> Option<SharedSelection> {
     found
 }
 
+/// The one subject rule for what pointing at `at` is about, given the
+/// `focused` selection: the selection when the person pointed inside it (or
+/// did not point at all, with the keyboard); `None` otherwise, for the
+/// caller to name the item under the pointer, else the window. A selection
+/// that does not say where it is drawn is not pointed inside.
+#[must_use]
+pub fn pointed_selection(
+    focused: Option<SharedSelection>,
+    at: Option<vello::kurbo::Point>,
+) -> Option<SharedSelection> {
+    focused.filter(|selection| match (at, selection.bounds) {
+        (Some(at), Some(bounds)) => bounds.contains(at),
+        (Some(_), None) => false,
+        (None, _) => true,
+    })
+}
+
 /// Upper bound on undelivered requests: a repeated chord or menu choice
 /// faster than frames are drawn must not queue unbounded composers.
 const MAX_PENDING: usize = 4;
@@ -257,6 +276,12 @@ pub struct AgentRequest {
     /// Where the person pointed, in window coordinates, when a context menu
     /// asked: the composer opens there.
     pub at: Option<vello::kurbo::Point>,
+    /// What the person typed into a context menu that none of its entries
+    /// answered: the composer opens asking it.
+    pub ask: Option<String>,
+    /// What the person began typing over a selection in a window that takes
+    /// no text itself: the composer opens with it in its field, to go on.
+    pub draft: Option<String>,
 }
 
 impl AgentRequest {
@@ -275,11 +300,7 @@ impl AgentRequest {
         published: &[tilo_actions::ResourceSpec],
     ) -> (Option<SharedSelection>, Option<[f64; 4]>) {
         let at = self.at;
-        let focused = focused.filter(|selection| match (at, selection.bounds) {
-            (Some(at), Some(bounds)) => bounds.contains(at),
-            (Some(_), None) => false,
-            (None, _) => true,
-        });
+        let focused = pointed_selection(focused, at);
         let mut about = self
             .about
             .filter(|about| !about.is_empty())
@@ -333,16 +354,41 @@ pub fn ask_agent(selection: Option<SharedSelection>) {
     queue(AgentRequest {
         about: selection.filter(|selection| !selection.is_empty()),
         at: None,
+        ask: None,
+        draft: None,
     });
 }
 
-/// Tell an agent about `about`, pointed at `at` (window coordinates): what
-/// a context menu's "Tell an agent…" entry asks. With nothing named, the
-/// app runner attaches what is under the pointer, else the window.
-pub fn tell_agent_at(about: Option<SharedSelection>, at: vello::kurbo::Point) {
+/// The person began typing `typed` with `selection` in focus, in a window
+/// that takes no text itself: the composer opens on the selection with what
+/// they typed in its field, and their typing goes on there.
+pub fn ask_agent_typing(selection: SharedSelection, typed: &str) {
+    if selection.is_empty() || typed.is_empty() {
+        return;
+    }
+    queue(AgentRequest {
+        about: Some(selection),
+        at: None,
+        ask: None,
+        draft: Some(typed.chars().take(MAX_ASK_CHARS).collect()),
+    });
+}
+
+/// The longest sentence a menu asks, in characters: what one message to an
+/// agent holds, well inside a protocol frame.
+pub const MAX_ASK_CHARS: usize = 4000;
+
+/// Ask an agent `ask` about `about`, pointed at `at` (window coordinates):
+/// what a context menu does with a sentence none of its entries answers.
+/// With nothing named, the app runner attaches what is under the pointer,
+/// else the window.
+pub fn ask_agent_at(about: Option<SharedSelection>, at: vello::kurbo::Point, ask: &str) {
+    let ask: String = ask.trim().chars().take(MAX_ASK_CHARS).collect();
     queue(AgentRequest {
         about: about.filter(|about| !about.is_empty()),
         at: Some(at),
+        ask: (!ask.is_empty()).then_some(ask),
+        draft: None,
     });
 }
 
@@ -352,7 +398,7 @@ pub fn take_agent_requests() -> Vec<AgentRequest> {
 }
 
 /// Whether a desktop is connected that can hand a request to an agent, so
-/// "Tell an agent…" is worth offering.
+/// a sentence typed into a context menu can be asked.
 pub fn agent_host_available() -> bool {
     HOSTED.with(Cell::get)
 }
@@ -524,12 +570,14 @@ mod tests {
         )
     }
 
-    fn tell_agent() -> String {
-        crate::i18n::I18nManager::lookup_plain("tell-agent")
+    fn type_into(menu: &mut dyn crate::widget::Widget, text: &str) {
+        for ch in text.chars() {
+            crate::testing::dispatch(menu, &crate::synthetic_input::char_key(&ch.to_string()));
+        }
     }
 
     #[test]
-    fn a_context_menu_offers_to_tell_an_agent_only_while_one_can_be_told() {
+    fn a_sentence_typed_into_a_context_menu_asks_about_the_selection_it_was_opened_in() {
         let editor = || Editor {
             text: "late results",
             selected: (0, 4),
@@ -541,28 +589,43 @@ mod tests {
         });
         set_agent_host_available(false);
         crate::widget::context_menu::note_input(&right_press());
-        assert!(area.open_at(vec2_point(), true));
-        assert_eq!(area.menu().items().len(), 1, "no desktop agent: no entry");
-        set_agent_host_available(true);
-        crate::widget::context_menu::note_input(&left_press());
-        assert!(area.open_at(vec2_point(), true));
+        assert!(area.open_at(vec2_point(), false));
         assert_eq!(
             area.menu().items().len(),
             1,
+            "no desktop agent: no row to ask"
+        );
+        assert!(area.menu().takes_typing(), "typing still filters");
+        set_agent_host_available(true);
+        crate::widget::context_menu::note_input(&left_press());
+        assert!(area.open_at(vec2_point(), false));
+        assert!(
+            !area.menu().takes_typing(),
             "a menu a button opened is no context menu"
         );
         crate::widget::context_menu::note_input(&right_press());
-        assert!(area.open_at(vec2_point(), true));
-        let last = area.menu().items().len() - 1;
+        assert!(area.open_at(vec2_point(), false));
         assert_eq!(
-            area.menu().items()[last].label(),
-            Some(tell_agent().as_str())
+            area.menu().shown_rows(),
+            &[0],
+            "nothing typed: the menu's own rows, and no row to ask"
         );
-        area.choose(last);
+        type_into(&mut area, "make this a heading");
+        assert_eq!(
+            area.menu().shown_rows(),
+            &[1],
+            "no entry answers it: only asking"
+        );
+        crate::testing::dispatch(
+            &mut area,
+            &crate::synthetic_input::named_key(winit::keyboard::NamedKey::Enter),
+        );
         set_agent_host_available(false);
+        assert!(!area.menu().is_open());
         let asked = take_agent_requests();
         assert_eq!(asked.len(), 1);
         assert_eq!(asked[0].at, Some(vec2_point()));
+        assert_eq!(asked[0].ask.as_deref(), Some("make this a heading"));
         let about = asked[0].about.clone().expect("the selection");
         assert_eq!(about.anchor.excerpt.as_deref(), Some("late"));
         assert_eq!(
@@ -572,7 +635,33 @@ mod tests {
     }
 
     #[test]
-    fn a_menu_with_nothing_else_to_offer_still_tells_an_agent_and_reports_no_choice() {
+    fn a_right_click_outside_the_selection_is_not_about_it() {
+        let inside = vello::kurbo::Point::new(20.0, 10.0);
+        let outside = vello::kurbo::Point::new(400.0, 300.0);
+        let selected =
+            SharedSelection::of_text("late").within(vello::kurbo::Rect::new(0.0, 0.0, 100.0, 20.0));
+        assert_eq!(
+            pointed_selection(Some(selected.clone()), Some(inside)),
+            Some(selected.clone())
+        );
+        assert_eq!(
+            pointed_selection(Some(selected.clone()), Some(outside)),
+            None
+        );
+        assert_eq!(
+            pointed_selection(Some(selected.clone()), None),
+            Some(selected),
+            "the Menu key is about the selection"
+        );
+        assert_eq!(
+            pointed_selection(Some(SharedSelection::of_text("nowhere")), Some(inside)),
+            None,
+            "a selection that says not where it is is not pointed inside"
+        );
+    }
+
+    #[test]
+    fn a_menu_with_nothing_else_to_offer_still_asks_and_reports_no_choice() {
         let _ = take_agent_requests();
         set_agent_host_available(true);
         crate::widget::context_menu::note_input(&right_press());
@@ -588,7 +677,12 @@ mod tests {
         menu.open_at([30.0, 40.0]);
         menu.open_at([30.0, 40.0]);
         set_agent_host_available(false);
-        assert_eq!(menu.items().len(), 1);
+        assert_eq!(menu.items().len(), 1, "one row to ask, added once");
+        assert!(
+            menu.shown_rows().is_empty(),
+            "shown once something is typed"
+        );
+        type_into(&mut menu, "archive it");
         menu.click_item(0);
         assert_eq!(menu.take_selection(), None, "the owner has no row 0");
         let asked = take_agent_requests();
@@ -597,6 +691,8 @@ mod tests {
             vec![AgentRequest {
                 about: Some(row),
                 at: Some(vello::kurbo::Point::new(30.0, 40.0)),
+                ask: Some("archive it".into()),
+                draft: None,
             }]
         );
     }
@@ -615,6 +711,8 @@ mod tests {
         let (about, bounds) = AgentRequest {
             about: None,
             at: Some(at),
+            ask: None,
+            draft: None,
         }
         .resolve(Some(focused.clone()), &published());
         let about = about.expect("the window");
@@ -627,6 +725,8 @@ mod tests {
         let (about, bounds) = AgentRequest {
             about: None,
             at: Some(vello::kurbo::Point::new(10.0, 10.0)),
+            ask: None,
+            draft: None,
         }
         .resolve(Some(focused), &published());
         let about = about.expect("the selection");
@@ -641,6 +741,8 @@ mod tests {
             AgentRequest {
                 about: None,
                 at: Some(at),
+                ask: None,
+                draft: None,
             }
             .resolve(None, &[]),
             (None, Some([199.5, 299.5, 200.5, 300.5]))

@@ -1,7 +1,7 @@
 //! Opening a reference from any app.
 //!
 //! A [`ResourceRef`] names something another app keeps: a chat message's
-//! page, an issue's link, what "Tell an agent" was asked about. Opening it
+//! page, an issue's link, what an agent was asked about. Opening it
 //! is one action, the resource's `open` in its own app
 //! ([`ResourceRef::open_target`]), sent through the session's action door
 //! as the person who asked: the host launches the app on the record when no
