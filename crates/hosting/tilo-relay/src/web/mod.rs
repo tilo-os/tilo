@@ -1333,7 +1333,7 @@ async fn route(
             let finish: SessionFinish = decode(&bytes)?;
             let grant = web
                 .sessions
-                .finish(&finish.handshake, &finish.ack2)
+                .finish(&finish.handshake, &finish.ack2, finish.background)
                 .map_err(|error| session_status(&error))?;
             Ok(match protocol::encode_grant(&grant, web.features) {
                 Ok(bytes) => reply(StatusCode::OK, bytes),

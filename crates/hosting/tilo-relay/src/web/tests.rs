@@ -91,6 +91,16 @@ async fn post(
 }
 
 async fn browser(addr: SocketAddr, key: &SigningKey, cert: &DeviceCert) -> [u8; 32] {
+    browser_as(addr, key, cert, false).await
+}
+
+/// A browser session, in the background when `background`.
+async fn browser_as(
+    addr: SocketAddr,
+    key: &SigningKey,
+    cert: &DeviceCert,
+    background: bool,
+) -> [u8; 32] {
     let (status, body) = post(
         addr,
         "/session",
@@ -109,6 +119,7 @@ async fn browser(addr: SocketAddr, key: &SigningKey, cert: &DeviceCert) -> [u8; 
                 ))
                 .to_bytes(),
         },
+        background,
     };
     let (status, body) = post(
         addr,
@@ -255,6 +266,7 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
                     ))
                     .to_bytes(),
             },
+            false,
         )
         .unwrap();
     let grants = live::LiveGrants::new();
@@ -395,6 +407,7 @@ async fn live_grants_follow_announced_changes() {
                     ))
                     .to_bytes(),
             },
+            false,
         )
         .unwrap();
     let grants = live::LiveGrants::new();
@@ -1059,6 +1072,29 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
     let online = online_sessions.online_users();
     assert_eq!(online.len(), 1, "{online:?}");
     assert!(online.contains_key(&owner.user_public_key));
+    // A page keeps a background session here while its person is in a
+    // room elsewhere, to deliver problem reports: nobody is online by it,
+    // so it takes no seat and shows no face; the person beside it who is
+    // here counts once, as before.
+    let background = browser_as(addr, &guest_key, &guest, true).await;
+    let owner_background = browser_as(addr, &owner_key, &owner, true).await;
+    let online = online_sessions.online_users();
+    assert_eq!(online.len(), 1, "{online:?}");
+    assert_eq!(online.get(&owner.user_public_key), Some(&1));
+    assert_eq!(
+        post(addr, "/node", Some(background), Vec::new()).await.0,
+        200,
+        "a background session is a session all the same"
+    );
+    for token in [background, owner_background] {
+        post(
+            addr,
+            protocol::SESSION_END_PATH,
+            None,
+            hex::encode(token).into_bytes(),
+        )
+        .await;
+    }
     assert_eq!(
         post(addr, "/node", Some(guest_token), Vec::new()).await.0,
         401
@@ -1374,6 +1410,7 @@ async fn exercise_handshake_refusal_reasons(
             &crate::auth::HelloAck2 {
                 sig_over_server_nonce: [0; 64],
             },
+            false,
         )
         .map(|_| ())
         .unwrap_err();
