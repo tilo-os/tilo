@@ -118,6 +118,21 @@ fn close_inherited_descriptors() {
     }
 }
 
+/// A target directory copied from another checkout carries that checkout's
+/// `cmake` cache, which names its source directory, and `cmake` then
+/// refuses to configure here. Such a cache is another build's, so the
+/// build starts over.
+fn discard_foreign_cache(build: &Path, source: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(cache) = std::fs::read_to_string(build.join("CMakeCache.txt")) else {
+        return Ok(());
+    };
+    let home = format!("CMAKE_HOME_DIRECTORY:INTERNAL={}", source.display());
+    if !cache.lines().any(|line| line == home) {
+        std::fs::remove_dir_all(build)?;
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=native");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {
@@ -135,6 +150,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source = root.join("native/upstream/whisper.cpp");
     let compiler = cc::Build::new().cpp(true).get_compiler();
     let c_compiler = cc::Build::new().get_compiler();
+    discard_foreign_cache(&build, &root.join("native"))?;
     let flags = |tool: &cc::Tool| {
         tool.args()
             .iter()
