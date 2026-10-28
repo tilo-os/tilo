@@ -2438,9 +2438,10 @@ fn grant_body(_ui: &Ui, input: &EditorInput) -> Element {
     Box::new(body)
 }
 
-/// A step's own actions: move it up or down its block, nest it or lift it
-/// out, remove it, and fold it away. The buttons sit in that order, the nest
-/// pair between moving and removing.
+/// A step's own actions: fold it away, remove it, nest it or lift it out,
+/// and move it up or down its block. The fold leads the header, the moves
+/// trail it, and both nest controls are disabled where the step has nowhere
+/// to go.
 fn step_actions(
     ui: &Ui,
     draft_id: &Id,
