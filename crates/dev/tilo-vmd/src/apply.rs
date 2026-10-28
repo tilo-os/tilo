@@ -511,6 +511,11 @@ pub fn seat_dropin(record: &SlotRecord) -> Option<String> {
 /// The real account home comes from passwd; no manager `%h` expansion is used.
 /// # Errors
 /// Relative, non-UTF-8 or control-character home directories are refused.
+/// Keeps first use for this VM's person's session (the compositor's
+/// `TILO_TEST_CONTROL_FIRST_USE`, which `tilo-session` sets for a dev
+/// image's own login).
+const DEVICE_FIRST_USE_ENVIRONMENT: &str = "Environment=TILO_TEST_CONTROL_FIRST_USE=keep\n";
+
 pub fn slot_identity_environment(home: &std::path::Path) -> Result<String, DaemonError> {
     let home = home
         .to_str()
@@ -616,6 +621,14 @@ pub fn activate(
     // first login does; every other stand-in gets a private, removable one.
     if session.stand_in && !record.device_identity {
         dropin.push_str(&apply.slot_identity_environment(&session.user)?);
+    }
+    // A compositor with a control socket skips first use unless told to keep
+    // it, and the slot unit hands every session that socket, so tilo-session
+    // does not add the marker it gives a dev image's own login. This VM's
+    // person is that login: its first session goes through onboarding,
+    // which tilo-vmd then presses through.
+    if session.stand_in && record.device_identity {
+        dropin.push_str(DEVICE_FIRST_USE_ENVIRONMENT);
     }
     for unit in layered_units(&session, uid) {
         let text = if unit == session.unit
@@ -1394,6 +1407,13 @@ mod tests {
             .unwrap();
             let dropin = &apply.dropins[&(session_unit("a"), LAYERS_DROPIN.into())];
             assert_eq!(dropin.contains("TILO_IDENTITY_ROOT"), private, "{dropin}");
+            // Only the person's session keeps the onboarding a control
+            // socket would otherwise skip.
+            assert_eq!(
+                dropin.contains("Environment=TILO_TEST_CONTROL_FIRST_USE=keep\n"),
+                device_identity,
+                "{dropin}"
+            );
         }
     }
 

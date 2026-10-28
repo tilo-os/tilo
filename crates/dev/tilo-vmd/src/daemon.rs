@@ -73,10 +73,10 @@ impl IdentityRequest {
 /// backup (acknowledged), skip the optional codecs and the tour, enter.
 /// A checkbox is pressed once; a press toggles it.
 const ONBOARDING_PRESSES: [(&str, bool); 9] = [
-    ("onboarding.begin.button", false),
-    ("onboarding.understood.box", true),
+    ("onboarding.begin.card", false),
+    ("onboarding.understood.row", true),
     ("onboarding.create.button", false),
-    ("onboarding.backup.skip-acknowledged.box", true),
+    ("onboarding.backup.skip-acknowledged.row", true),
     ("onboarding.backup.continue.button", false),
     ("onboarding.codecs.skip.button", false),
     ("onboarding.tour.skip.button", false),
