@@ -9,10 +9,13 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+# The workspace wrapper as Cargo is given it: through the compiler's working directory,
+# the workspace root, so the same for every checkout.
+WRAPPER = '/proc/self/cwd/tools/ci/rustc-thin-app-wrapper.sh'
 
 
 class ThinAppCompilerCacheTests(unittest.TestCase):
-    def invocation(self, compiler=None, cargo_compiler=None, extra="", config=None, cache=False):
+    def invocation(self, compiler=None, cargo_compiler=None, extra="", config=None, cache=False, no_cache=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "os/scripts").mkdir(parents=True)
@@ -52,6 +55,8 @@ class ThinAppCompilerCacheTests(unittest.TestCase):
                 backend.write_text('#!/bin/sh\nexec "$@"\n')
                 backend.chmod(0o755)
                 env['RUSTC_WRAPPER'] = str(backend)
+            if no_cache:
+                env['RUSTC_WRAPPER'] = ''
             if config is not None:
                 (root / '.cargo').mkdir()
                 (root / '.cargo/config.toml').write_text(config)
@@ -64,9 +69,54 @@ class ThinAppCompilerCacheTests(unittest.TestCase):
         seen = self.invocation()
         self.assertIsNone(seen['compiler'])
         self.assertNotIn('build.rustc="rustc"', seen['args'])
-        self.assertIn('build.rustc-workspace-wrapper=', ' '.join(seen['args']))
+        # Cargo hashes the workspace wrapper's path into workspace crates' identities:
+        # one path for every checkout keeps the runtime the same wherever it is built.
+        self.assertIn(f'build.rustc-workspace-wrapper="{WRAPPER}"', seen['args'])
         self.assertIn('-p', seen['args'])
         self.assertIn('--locked', seen['args'])
+
+    def test_unseen_front_end_cache_runs_behind_workspace_flags(self):
+        # A front end that runs cargo elsewhere gives it a cache this script cannot see:
+        # the build's own rustc-wrapper setting puts the dispatcher in front of it.
+        seen = self.invocation()
+        self.assertIn('build.rustc-wrapper="tools/ci/thin-app/sccache"', seen['args'])
+        self.assertIsNone(seen['wrapper'])
+
+    def test_no_cache_still_runs_the_dispatcher(self):
+        # An empty RUSTC_WRAPPER asks for no cache; the dispatcher still maps the paths.
+        seen = self.invocation(no_cache=True)
+        self.assertIsNone(seen['wrapper'])
+        self.assertIn('build.rustc-wrapper="tools/ci/thin-app/sccache"', seen['args'])
+        self.assertIn('env.TILO_THIN_SCCACHE.value=""', seen['args'])
+
+    def test_dispatcher_maps_the_tree_and_build_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            router = root / 'tools/ci/thin-app/sccache'
+            router.parent.mkdir(parents=True)
+            shutil.copy(ROOT / 'tools/ci/thin-app/sccache', router)
+            compiler = root / 'compiler'
+            observed = root / 'observed.json'
+            compiler.write_text(f'#!{sys.executable}\nimport json, pathlib, sys\n'
+                                f'pathlib.Path({str(observed)!r}).write_text(json.dumps(sys.argv[1:]))\n')
+            compiler.chmod(0o755)
+            target = root / 'build-dir'
+            args = ['--crate-name', 'serde', '--out-dir', str(target / 'thin-app/deps')]
+            cases = (
+                ('crate in the tree, with a build script',
+                 dict(CARGO_MANIFEST_DIR=str(root / 'crates/x'), OUT_DIR=str(target / 'thin-app/build/x/out')),
+                 [f'--remap-path-prefix={root}=.', f'--remap-path-prefix={target}=target']),
+                ('registry crate, no build script', dict(CARGO_MANIFEST_DIR=str(root)), []),
+                ('not a crate', dict(), []),
+            )
+            for name, extra, expected in cases:
+                with self.subTest(name):
+                    env = {key: value for key, value in os.environ.items()
+                           if key not in ('OUT_DIR', 'CARGO_MANIFEST_DIR', 'TILO_THIN_SCCACHE', 'CARGO_BUILD_RUSTC_WRAPPER')}
+                    env.update(extra, PWD=str(root))
+                    given = args if name != 'not a crate' else ['-vV']
+                    subprocess.run([str(router), str(compiler), *given], env=env, cwd=root, check=True)
+                    self.assertEqual(json.loads(observed.read_text()), [*given, *expected])
 
     def test_explicit_compiler_is_preserved(self):
         self.assertEqual(self.invocation('/fixture/custom/rustc')['compiler'], '/fixture/custom/rustc')
@@ -143,14 +193,20 @@ class ThinAppCompilerCacheTests(unittest.TestCase):
                     cache_call = root / 'cache-call.json'
                     env = dict(os.environ, TILO_THIN_BIN_CRATES='settings', OBSERVED_COMPILER=str(baseline))
                     env.pop('TILO_THIN_SCCACHE', None)
-                    uncached = ([str(wrapper), str(compiler)] if workspace else [str(compiler)]) + args
-                    subprocess.run(uncached, env=env, check=True, capture_output=True)
-                    env.update(TILO_THIN_SCCACHE=str(cache), OBSERVED_COMPILER=str(actual), OBSERVED_CACHE=str(cache_call))
-                    cached = [str(router)] + ([str(wrapper)] if workspace else []) + [str(compiler)] + args
-                    subprocess.run(cached, env=env, check=True, capture_output=True)
+                    uncached = ([WRAPPER, str(compiler)] if workspace else [str(compiler)]) + args
+                    subprocess.run(uncached, env=env, cwd=root, check=True, capture_output=True)
                     expected = json.loads(baseline.read_text())
-                    self.assertEqual(json.loads(actual.read_text()), expected)
-                    self.assertEqual(json.loads(cache_call.read_text()), [str(compiler), *expected])
+                    # The cache build-thin-apps.sh saw, or one a front end gave cargo as configuration.
+                    for given in ('TILO_THIN_SCCACHE', 'CARGO_BUILD_RUSTC_WRAPPER'):
+                        for stale in (actual, cache_call):
+                            stale.unlink(missing_ok=True)
+                        given_env = dict(env, OBSERVED_COMPILER=str(actual), OBSERVED_CACHE=str(cache_call))
+                        given_env.pop('CARGO_BUILD_RUSTC_WRAPPER', None)
+                        given_env[given] = str(cache)
+                        cached = [str(router)] + ([WRAPPER] if workspace else []) + [str(compiler)] + args
+                        subprocess.run(cached, env=given_env, cwd=root, check=True, capture_output=True)
+                        self.assertEqual(json.loads(actual.read_text()), expected, given)
+                        self.assertEqual(json.loads(cache_call.read_text()), [str(compiler), *expected], given)
 
 
 if __name__ == '__main__':
