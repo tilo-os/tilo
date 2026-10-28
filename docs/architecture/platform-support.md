@@ -29,6 +29,54 @@ remain architecture-aware.
   identical across supported architectures. Architecture differences select
   the correct ABI, firmware or device model; they do not relax those boundaries.
 
+## Architectures Tilo cannot run on
+
+Three of these are properties of the system, not gaps waiting for a builder.
+The Imager states the reason on its destination page before a drive is spent,
+and refuses a catalog entry or hardware report naming any of them
+(`unqualified_architecture` in `apps/imager/src/release.rs`).
+
+- **32-bit x86 and ARM** (`i686`, `i386`, `armv7hl`, `armv7l`). Tilo requires
+  a 64-bit CPU and 4 GiB or more of memory. Automerge documents, the file store
+  and their indexes are unbounded in size, so a process that cannot map more
+  than 4 GiB cannot open a large workspace; the browser runtime and the image
+  model are built for 64-bit only.
+- **Big-endian** (`s390x`, `ppc64`). Every format Tilo stores, hashes and
+  exchanges — Automerge documents and their sync messages, Iroh content
+  hashes, blob envelopes, registry manifests — is little-endian or
+  byte-as-written. A big-endian host is a different serialization contract, not
+  a different target triple.
+- **SPARC** (`sparc64`). No current Vulkan compute driver exists, so neither
+  the compositor nor the toolkit can draw.
+
+Any other architecture the [install contract](../install-contract.json) does
+not carry has no medium to offer either, for want of releases rather than
+capability; `riscv64` and `ppc64le` sit there today. No release lane exists for
+an architecture that contract does not name, and adding one is a product
+decision recorded in that contract.
+
+### 64-bit little-endian architectures Tilo has not built
+
+`riscv64` (RV64GC) and `ppc64le` (POWER9/POWER10) are physically capable: 64-bit
+and little-endian, with no boundary above. They are unsupported only for want
+of releases, so the Imager's catalog offers no medium for them and says exactly
+that; adding one requires the platform-support work above, not a new boundary
+in the Imager. Two facts bound that work if it is taken up:
+
+- Boards with a PCIe slot (Milk-V Pioneer, SiFive HiFive Premier P550) run
+  AMD Radeon cards through mainline `amdgpu` and Mesa RADV Vulkan, which is
+  the driver class `crates/packaging/launcher/src/gpu.rs` already selects by
+  asking each installed ICD. SoC graphics (StarFive, the SpacemiT K1's
+  Imagination BXE-4-32) need Mesa's `pvr` Vulkan driver to mature first, so
+  those boards have no GPU the compositor can use today.
+- The workspace's own code paths are 64-bit little-endian throughout; the
+  remaining risk is in dependencies' portable SIMD paths, which only a native
+  build and test run on such a machine can settle.
+
+A board profile does not stand in for either: profiles describe firmware and a
+device tree, and an image must exist for the architecture first
+([hardware profiles](../../os/hardware/README.md)).
+
 ## Validation and remaining work
 
 The following tracks distinguish source support from released and boot-tested
