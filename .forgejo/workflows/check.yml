@@ -108,8 +108,6 @@ jobs:
       workspace_count: ${{ steps.plan.outputs.workspace_count }}
       estimated_cost: ${{ steps.plan.outputs.estimated_cost }}
       shard_count: ${{ steps.plan.outputs.shard_count }}
-      tapp_required: ${{ steps.plan.outputs.tapp_required }}
-      tapp_apps: ${{ steps.plan.outputs.tapp_apps }}
     steps:
       - name: Checkout head for change selection
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -150,7 +148,6 @@ jobs:
           STABLE_REF: origin/stable
           RUN_ATTEMPT: ${{ github.run_attempt }}
           HEAD_SHA: ${{ github.sha }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash tools/ci/select.sh
 
   # Shell, image-configuration, and workflow policy cannot be selected through
