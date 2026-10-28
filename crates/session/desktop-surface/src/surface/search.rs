@@ -209,7 +209,7 @@ impl DesktopHandle {
     }
 }
 
-/// The search chord [`is_search_chord`] answers to, as the keyboard spells
+/// The search chord `is_search_chord` answers to, as the keyboard spells
 /// it on `platform`: ⌘K on a Mac, where Ctrl+K does not open search, and
 /// Ctrl K elsewhere.
 pub fn search_chord_keys(platform: ui::platform::PlatformConventions) -> Vec<String> {

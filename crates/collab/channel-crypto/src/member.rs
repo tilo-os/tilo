@@ -285,6 +285,28 @@ impl ChannelMember {
             .map_err(|error| Error::Serialization(error.to_string()))
     }
 
+    /// This member's group as a steward's records, for a device of the
+    /// person who governs the channel that takes over stewarding it while
+    /// its steward is away: the [`crate::ChannelSteward`] opening them goes
+    /// on with the same group, its whole key history included, with this
+    /// device left alone in it at the next epoch, and announces itself with
+    /// a genesis at that epoch. The others ask again. `None` while
+    /// this device is not a member.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the group cannot be sealed.
+    pub fn steward_records(&self, vault: &VaultKey) -> Result<Option<crate::MemoryStewardStore>> {
+        let MemberRecord::Joined(group) = &self.record else {
+            return Ok(None);
+        };
+        let mut group = crate::ChannelGroup::open_sealed(&group.seal(vault)?, vault)?;
+        group.remove_others()?;
+        let mut store = crate::MemoryStewardStore::new();
+        crate::StewardStore::write(&mut store, crate::StewardRecord::Group, &group.seal(vault)?)?;
+        Ok(Some(store))
+    }
+
     /// The cumulative acknowledgement for everything applied so far, or
     /// `None` before the first frame.
     pub fn acknowledgement(&self, device_key: &SigningKey) -> Result<Option<MlsGovernanceAckV1>> {

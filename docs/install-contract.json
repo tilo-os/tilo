@@ -6,19 +6,30 @@
       {
         "os": "Linux",
         "architectures": ["x86_64", "aarch64"],
-        "downloads": ["Flatpak bundle", "AppImage", "portable tarball"],
+        "downloads": [
+          { "name": "Flatpak bundle", "asset": "tilo-imager-linux-{arch}.flatpak", "pageKey": "linux{archKey}Flatpak" },
+          { "name": "AppImage", "asset": "tilo-imager-linux-{arch}.AppImage", "pageKey": "linux{archKey}AppImage" },
+          { "name": "portable tarball", "asset": "tilo-imager-linux-{arch}.tar.gz", "pageKey": "linux{archKey}Portable" }
+        ],
         "packageManager": "Homebrew formula"
       },
       {
         "os": "Windows 10 or 11",
         "architectures": ["x86_64", "aarch64"],
-        "downloads": ["setup EXE", "standalone EXE", "portable zip"],
+        "downloads": [
+          { "name": "setup EXE", "asset": "tilo-imager-setup-windows-{arch}.exe", "pageKey": "windows{archKey}Setup" },
+          { "name": "standalone EXE", "asset": "tilo-imager-windows-{arch}.exe", "pageKey": "windows{archKey}Standalone" },
+          { "name": "portable zip", "asset": "tilo-imager-windows-{arch}.zip", "pageKey": "windows{archKey}Portable" }
+        ],
         "packageManager": "WinGet"
       },
       {
         "os": "macOS",
         "architectures": ["x86_64", "aarch64"],
-        "downloads": ["notarized DMG", "app zip"],
+        "downloads": [
+          { "name": "notarized DMG", "asset": "tilo-imager-macos-{arch}.dmg", "pageKey": "macos{archKey}Dmg" },
+          { "name": "app zip", "asset": "tilo-imager-macos-{arch}.zip", "pageKey": "macos{archKey}Portable" }
+        ],
         "packageManager": "Homebrew cask"
       }
     ],

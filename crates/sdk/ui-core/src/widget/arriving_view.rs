@@ -15,7 +15,7 @@
 //!   naming where the data comes from after
 //!   [`NAME_SOURCE_AFTER`](crate::arriving::NAME_SOURCE_AFTER).
 //! - The answer cross-fades in ([`CrossFade::arrive`]); a failure shows the
-//!   one failure face ([`arrival_failure`](super::arrival_failure)) with a
+//!   one failure face ([`arrival_failure`](fn@super::arrival_failure)) with a
 //!   retry when the read offers one.
 //!
 //! Each step is a deadline ([`Widget::next_wake_deadline`]), never a frame

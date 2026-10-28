@@ -1353,7 +1353,7 @@ impl SurfaceDamage {
     /// scene alone, over the pixels it presented last: never more of the
     /// scene, and never the scene again later. The scene then holds only
     /// what that damage needs: a scroll draws the strip it exposed and what
-    /// changed, not every row in view ([`crate::draw_cull`]).
+    /// changed, not every row in view (`crate::draw_cull`).
     #[must_use]
     pub fn drawing_only_damage(mut self) -> Self {
         self.culls = self.copying;

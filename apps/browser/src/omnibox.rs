@@ -80,7 +80,7 @@ pub struct Row {
     pub detail: String,
     /// What choosing the row opens: the address as typed for
     /// [`RowKind::Go`], so a scheme the Browser chose for it stays its
-    /// choice ([`address_target`]); the address for [`RowKind::History`] and
+    /// choice (`address_target`); the address for [`RowKind::History`] and
     /// [`RowKind::Bookmark`], the query for the search kinds, the keyword and
     /// what it sends for [`RowKind::Extension`].
     pub url: String,

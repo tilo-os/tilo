@@ -8,7 +8,7 @@ use crate::framework::app::ResourceApp;
 /// Invoke every action `app` publishes, one after another, as a headless
 /// drive's `invoke` steps do (`FrameHarness::invoke_action`: the door's own
 /// resolution, availability, confirmation and strict binding), each with
-/// [`sample_arguments`] and confirmed. Answers the ones the door could not
+/// `sample_arguments` and confirmed. Answers the ones the door could not
 /// address, as `resource action: why`: published yet reachable only by
 /// clicking. An action an earlier one withdrew (its row was removed) is not
 /// asked; one that is unavailable now, refuses the sample as arguments (a

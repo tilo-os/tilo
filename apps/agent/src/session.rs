@@ -237,6 +237,10 @@ pub struct Session {
     /// The companions not yet seen in the catalogue, until the first run
     /// waited for them; empty afterwards.
     awaiting_companions: Vec<String>,
+    /// The model turn whose spend is held on the run's issue and not yet
+    /// settled: settled with the receipt when it answers, and at nothing
+    /// when its provider fails, so a failed call never spends the budget.
+    held_turn: Option<u64>,
     /// Bumped whenever the broker republishes its catalogue.
     broker_revision: u64,
     /// The task catalogue survey for [`Self::broker_revision`], shared by
@@ -338,6 +342,7 @@ impl Session {
             broker_surfaces: Vec::new(),
             next_broker_request: 1,
             awaiting_companions: cfg_companions,
+            held_turn: None,
             broker_revision: 0,
             catalogue_cache: None,
             turn: None,
@@ -700,6 +705,14 @@ impl Session {
     fn task_budget_expired(&self) -> bool {
         self.task_deadline
             .is_some_and(|deadline| ui::time::now() >= deadline)
+    }
+
+    /// The model this agent plans with, as its provider names it; empty when
+    /// no model plans its runs and their steps are matched to words.
+    fn model_name(&self) -> String {
+        self.chooser
+            .planned_by()
+            .map_or_else(String::new, |(_, model)| model.to_owned())
     }
 
     /// The rules-only planner: one surveyed action matched by the words of

@@ -45,6 +45,7 @@ use super::{
 };
 use crate::model::{Conversation, FirstTurn, TurnEvent};
 use crate::plan::{self, ConfirmationEvidence, Instruction};
+use crate::session::tracker::StepReceipt;
 use crate::surface;
 use crate::tools::{self, InvokeReport, Revealed};
 use tilo_actions::task_step::TaskStep;
@@ -289,6 +290,17 @@ fn turn_usage(body: &str) -> agent_provider_config::protocol::Usage {
         total_tokens: 0,
     }
 }
+
+/// What a turn is expected to spend before it starts, from the request it
+/// is asked with: four bytes of it to the token, plus the answer it may
+/// write. A hold is an estimate, so the settled receipt replaces it.
+fn estimated_turn_cost(request_bytes: usize) -> (u64, u64) {
+    let asked = u64::try_from(request_bytes).unwrap_or(u64::MAX) / 4;
+    (asked.saturating_add(MAX_ANSWER_TOKENS), 0)
+}
+
+/// The most a turn is asked to write back, as the request sets it.
+const MAX_ANSWER_TOKENS: u64 = 4096;
 
 /// The longest prefix of `text` within `max` bytes, cut on a character
 /// boundary.
@@ -1160,6 +1172,48 @@ impl Session {
             .map_or_else(|| reason.to_owned(), |turn| turn.retained_failure(reason)))
     }
 
+    /// Hold what turn `turn` is expected to cost on the run's issue before
+    /// it starts, answering the issue's refusal where the turn would take
+    /// the task past a budget.
+    fn hold_turn_spend(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        request_bytes: usize,
+        turn: usize,
+    ) -> Result<Option<String>> {
+        let held = estimated_turn_cost(request_bytes);
+        let verdict = self.hold_spend_on_tracker(run, held)?;
+        if verdict.is_none() {
+            self.held_turn = Some(u64::try_from(turn).unwrap_or(u64::MAX));
+        }
+        Ok(verdict)
+    }
+
+    /// Settle the turn held for `run` with the receipt its provider gave.
+    fn settle_turn_spend(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        usage: agent_provider_config::protocol::Usage,
+    ) -> Result<()> {
+        let Some(held) = self.held_turn.take() else {
+            return Ok(());
+        };
+        let receipt = StepReceipt {
+            step: held,
+            model: self.model_name(),
+            device: crate::device_name(),
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            priced_calls: 0,
+            cost_micros: 0,
+            currency: String::new(),
+        };
+        if let Some(reason) = self.settle_spend_on_tracker(run, receipt)? {
+            tracing::warn!(%reason, "the issue refused the turn's receipt");
+        }
+        Ok(())
+    }
+
     /// One model turn: stream it, validate its complete batch, execute and record
     /// the results. `Some` ends the loop. A turn that ends early (cancelled,
     /// out of time, a broken model turn) asks the host to stop every
@@ -1173,6 +1227,19 @@ impl Session {
         timeout: Duration,
     ) -> Result<Option<LoopEnd>> {
         let end = self.run_turn_calls(run, conversation, state, turn, timeout);
+        // A turn whose provider failed settles at nothing: the budget it
+        // held is given back rather than spent on an answer nobody got.
+        if self.held_turn.take().is_some() {
+            let zero = StepReceipt {
+                step: u64::try_from(turn).unwrap_or(u64::MAX),
+                model: self.model_name(),
+                device: crate::device_name(),
+                ..StepReceipt::default()
+            };
+            if let Some(reason) = self.settle_spend_on_tracker(run, zero)? {
+                tracing::warn!(%reason, "the issue refused the failed turn's receipt");
+            }
+        }
         state.in_flight.clear();
         state.settled.clear();
         end
@@ -1199,6 +1266,14 @@ impl Session {
         // the host and is not waited for: its answer is read while the model
         // thinks, and before any step of this turn reaches the host.
         let turn_began = ui::time::now();
+        // What the turn is given before it starts: the budget it may spend
+        // is checked here, so a task past its budget never reaches a model.
+        let request_bytes = body.to_string().len();
+        if let Some(reason) = self.hold_turn_spend(run, request_bytes, turn)? {
+            self.pause_for_budget_on_tracker(run, &reason)?;
+            self.fail_task(run, &reason)?;
+            return Ok(Some(LoopEnd::Failed(reason)));
+        }
         let (rx, stop) = self.chooser.start_turn(body, timeout, turn);
         let mut active = ActiveTurn::new(rx);
         active.stop = Some(stop);
@@ -1260,6 +1335,12 @@ impl Session {
             self.poll_cancellation_every(run, THINKING_CANCELLATION_POLL)?;
             // Streamed calls are presentation only. Dispatch the complete batch,
             // in order, only after validating every call and the terminal status.
+            let answered_usage = self
+                .turn
+                .as_ref()
+                .and_then(|turn| turn.finished.as_ref())
+                .and_then(|finished| finished.as_ref().ok())
+                .map(|body| turn_usage(body));
             if !validated && let Some(active) = &mut self.turn {
                 active.ready.clear();
                 if let Some(Ok(body)) = &active.finished {
@@ -1282,6 +1363,9 @@ impl Session {
                         Err(error) => active.finished = Some(Err(active.retained_failure(&error))),
                     }
                 }
+            }
+            if let Some(usage) = answered_usage {
+                self.settle_turn_spend(run, usage)?;
             }
             while let Some(call) = self.turn.as_mut().and_then(|turn| turn.ready.pop_front()) {
                 if self.task_budget_expired() {

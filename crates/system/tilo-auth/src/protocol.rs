@@ -51,6 +51,17 @@ pub enum Request {
     /// which is when a fingerprint may confirm them (sign-in.md §4.3).
     /// Answered in `key_held`. The peer is root, that person or the greeter.
     KeyHeld { user: String },
+    /// The device's sign-in comforts, which the login screens start with.
+    /// Answered with the comforts object or `null`; anyone may ask, as
+    /// anyone holding the disk can read them from the volume header.
+    SignInComforts,
+    /// Change the fields `comforts` names of the device's sign-in comforts
+    /// (`settings_store::sign_in_comforts`); the rest stay. The result is
+    /// mirrored into the volume header when it differs from the comforts
+    /// kept. The peer is root, the greeter or a person with a record here.
+    SetSignInComforts {
+        comforts: serde_json::Map<String, serde_json::Value>,
+    },
 }
 
 /// Why a request did not succeed.
@@ -129,6 +140,18 @@ mod tests {
         assert!(matches!(
             serde_json::from_str::<Request>(r#"{"op":"pending-sign-in"}"#).unwrap(),
             Request::PendingSignIn
+        ));
+        assert!(matches!(
+            serde_json::from_str::<Request>(r#"{"op":"sign-in-comforts"}"#).unwrap(),
+            Request::SignInComforts
+        ));
+        assert!(matches!(
+            serde_json::from_str::<Request>(
+                r#"{"op":"set-sign-in-comforts","comforts":{"screen_reader":true}}"#
+            )
+            .unwrap(),
+            Request::SetSignInComforts { ref comforts }
+                if comforts.get("screen_reader") == Some(&serde_json::Value::Bool(true))
         ));
         assert_eq!(
             serde_json::to_string(&Reply {

@@ -763,7 +763,10 @@ impl Theme {
     /// on a fresh theme.
     #[must_use]
     pub fn with_text_scale(mut self, factor: f32) -> Self {
-        let factor = factor.clamp(0.5, 4.0);
+        let factor = factor.clamp(
+            settings_store::appearance::TEXT_SCALE_MIN,
+            settings_store::appearance::TEXT_SCALE_MAX,
+        );
         self.regrow_icons(self.text_scale, factor);
         self.text_scale = factor;
         self.multiply_type_sizes(factor);

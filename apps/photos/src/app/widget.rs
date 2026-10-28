@@ -60,7 +60,7 @@ impl Widget for PhotosApp {
     );
 
     /// The system's back gesture lowers or puts away an editor's sheet
-    /// before anything navigates ([`PhotosApp::sheet_back`]).
+    /// before anything navigates (`PhotosApp::sheet_back`).
     fn on_nav_gesture(
         &mut self,
         dir: ui::gesture::NavDirection,

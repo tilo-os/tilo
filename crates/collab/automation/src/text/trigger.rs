@@ -100,6 +100,9 @@ pub(super) fn trigger_text(trigger: &TriggerSpec) -> String {
             }
             line
         }
+        TriggerSpec::AppEvent { app_id, kind } => {
+            format!("when {} announces {}", quoted(app_id), quoted(kind))
+        }
         TriggerSpec::NearbyDevice { device } => match device {
             Some(device) => format!("when {} comes near", quoted(device)),
             None => "when a device comes near".to_owned(),
@@ -305,7 +308,8 @@ fn quoted_change(rest: &str) -> Result<TriggerSpec, String> {
 }
 
 /// The lines that name their subject in quotation marks before saying what it
-/// does: `when "APP" sends "SOURCE"`, and `when "DEVICE" comes near`.
+/// does: `when "APP" sends "SOURCE"`, `when "APP" announces "KIND"`, and
+/// `when "DEVICE" comes near`.
 fn quoted_event(rest: &str) -> Result<TriggerSpec, String> {
     let opened = format!("\"{rest}");
     let (name, after) = text_at(&opened)?;
@@ -314,9 +318,14 @@ fn quoted_event(rest: &str) -> Result<TriggerSpec, String> {
         require_nothing_after(after, "the device")?;
         return Ok(TriggerSpec::NearbyDevice { device: Some(name) });
     }
+    if let Some(after) = after.strip_prefix("announces ") {
+        let (kind, rest) = text_at(after)?;
+        require_nothing_after(rest, "the event")?;
+        return Ok(TriggerSpec::AppEvent { app_id: name, kind });
+    }
     let Some(after) = after.strip_prefix("sends ") else {
         return Err(
-            "write `when APP sends SOURCE`, `when DEVICE comes near` or `when the app opens APP`"
+            "write `when APP sends SOURCE`, `when APP announces KIND`, `when DEVICE comes near` or `when the app opens APP`"
                 .to_owned(),
         );
     };

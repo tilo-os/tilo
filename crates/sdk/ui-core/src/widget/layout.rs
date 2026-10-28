@@ -239,7 +239,7 @@ pub(crate) fn at_a_place(event: &winit::event::WindowEvent) -> bool {
 }
 
 /// From [`Widget::apply_layout`]: whether `taffy` is a tree its widgets are
-/// being placed again from unchanged ([`placing_again_in`]). A widget that
+/// being placed again from unchanged (`placing_again_in`). A widget that
 /// lays out a tree of its own solves it, so its children are placed anew.
 #[must_use]
 pub fn placing_again(taffy: &TaffyTree<()>) -> bool {

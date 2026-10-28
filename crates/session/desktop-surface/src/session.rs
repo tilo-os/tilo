@@ -23,7 +23,7 @@
 //! refused, exactly as with a broker.
 //!
 //! The session also serves the workspace's activity, as a native session's
-//! broker does ([`activity`]).
+//! broker does (`activity`).
 
 mod activity;
 

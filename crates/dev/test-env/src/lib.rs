@@ -75,7 +75,7 @@
 //! ```
 //!
 //! [`scenario!`] writes the case function itself: a `#[test]` that runs every
-//! case in one pass, through the hook in [`scenario`]. `#[scenario]` is for a
+//! case in one pass, through the hook in [`scenario`](mod@scenario). `#[scenario]` is for a
 //! group that already has its test and only needs its cases collected. A case
 //! that fails is reported by phase, with the line inside it that raised, and
 //! the scenario's cases after it still run, so one pass shows every failure. A

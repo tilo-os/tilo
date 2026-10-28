@@ -3,7 +3,7 @@
 //! than writing it to files.
 //!
 //! [`drive`] runs the steps `--headless-drive` runs, on the same
-//! [`FrameHarness`] and through the same [`FrameHarness::perform_bound`] — no
+//! [`FrameHarness`] and through the same `FrameHarness::perform_bound` — no
 //! test copy — and answers the state the app is in afterwards where the CLI
 //! writes it to files. A scenario that passes here therefore passes in the
 //! app's own process, on the same frames; what changes is only who reads the

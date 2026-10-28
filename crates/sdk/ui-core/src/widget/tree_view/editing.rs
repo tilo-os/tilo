@@ -18,7 +18,7 @@ pub(super) struct RenameField {
 
 /// A structural move of one row — what a drag does, as a single step for the
 /// keyboard (`Alt` + arrows, or `Tab` / `Shift+Tab` with
-/// [`TreeView::tab_indents`]) and for assistive technology, which sees one
+/// `TreeView::tab_indents`) and for assistive technology, which sees one
 /// button per move on every row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TreeMove {
