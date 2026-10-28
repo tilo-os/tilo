@@ -324,7 +324,7 @@ impl Hosted {
         match self.record.commit(&mut self.instance) {
             Ok(committed) => changed |= !committed.is_empty(),
             Err(error) => {
-                tracing::warn!(app = self.spec.app, %error, "a change did not reach the room")
+                tracing::warn!(app = self.spec.app, %error, "a change did not reach the room");
             }
         }
         for event in events {

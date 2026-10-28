@@ -347,3 +347,127 @@ fn an_instance_ends_when_its_window_closes() {
     host.turn();
     assert!(host.is_empty(), "the instance ended with its window");
 }
+
+/// A broker that answers the join only once the test lets it: an instance whose workspace is slow
+/// to answer.
+struct SlowBroker {
+    route: RouteSpec,
+    answer: Rc<std::cell::Cell<bool>>,
+    asked: bool,
+}
+
+impl PeerTransport for SlowBroker {
+    fn is_connected(&self) -> bool {
+        true
+    }
+
+    fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+        if matches!(request, CollabRequest::Hello { .. }) {
+            self.asked = true;
+        }
+        Ok(())
+    }
+
+    fn poll(&mut self) -> Vec<CollabEvent> {
+        Vec::new()
+    }
+
+    fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
+        (self.asked && self.answer.get()).then(|| {
+            self.asked = false;
+            Ok(self.route.clone())
+        })
+    }
+}
+
+/// The value the counter's window shows, as the root's tree holds it.
+fn shown(window: &Window) -> String {
+    fn texts(node: &patch::Node, out: &mut Vec<String>) {
+        for value in node.props.values() {
+            out.push(format!("{value:?}"));
+        }
+        for child in &node.children {
+            texts(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    texts(window.root.as_ref().expect("the root is shown"), &mut out);
+    out.join(" ")
+}
+
+#[test]
+fn a_slow_open_does_not_hold_up_another_instances_frame() {
+    let (mut host, mut window, _sent, _inbox, _route) = running("ada");
+    settle(&mut host, &mut window);
+    let before = shown(&window);
+
+    // A second instance whose workspace has not answered its join yet.
+    let answer = Rc::new(std::cell::Cell::new(false));
+    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+    let mut manager = CollaborationManager::with_peer_transport(SlowBroker {
+        route: route.clone(),
+        answer: Rc::clone(&answer),
+        asked: false,
+    });
+    assert!(manager.send(CollabRequest::Hello {
+        app_id: route.app_id.clone(),
+        cluster_id: route.cluster_id,
+        record: None,
+        record_kind: None,
+        handle: Some("grace".to_owned()),
+    }));
+    let (ours, theirs) = Channel::pair().unwrap();
+    host.open(
+        Spec {
+            app: APP.to_owned(),
+            room: route.cluster_id.to_string(),
+            instance: 2,
+            person: "grace".to_owned(),
+        },
+        Arc::new(counter()),
+        manager,
+        ours,
+    );
+    let mut second = Window {
+        transport: ChannelTransport::new(theirs).unwrap(),
+        root: None,
+    };
+
+    // The first instance's window presses +: its next frame comes at once, while the second
+    // instance still waits for its workspace.
+    let (key, event) = window.increment();
+    window.send(&[ToApp::Fire {
+        lane: Lane::Root,
+        key,
+        event,
+        value: None,
+    }]);
+    let started = std::time::Instant::now();
+    while shown(&window) == before {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the first instance's frame waited for the second's open"
+        );
+        host.turn();
+        window.take();
+    }
+    assert_eq!(host.opening(), 1, "the second instance is still opening");
+    assert_eq!(host.instances().count(), 1);
+    assert!(second.root.is_none());
+
+    // Its workspace answers: it opens and shows its window.
+    answer.set(true);
+    let started = std::time::Instant::now();
+    while second.root.is_none() {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "the second instance never opened"
+        );
+        host.turn();
+        window.take();
+        second.take();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(host.opening(), 0);
+    assert_eq!(host.instances().count(), 2);
+}
