@@ -62,6 +62,10 @@ pub struct HostedTileInputs {
     /// Whether the terminals this host mounts open sessions on the
     /// session's process supervisor: only a real session's do.
     opens_sessions: bool,
+    /// Whether the packaged first-party apps run as their own processes,
+    /// their windows bound into the tabs that open them, rather than drawn
+    /// by this process: a Wayland session's are.
+    apps_as_processes: bool,
     /// A private profile for the apps of a host that keeps nobody's records,
     /// removed with the last input that uses it.
     private_profile: Option<Arc<FixtureDirectory>>,
@@ -225,6 +229,7 @@ impl HostedTileInputs {
             note_records: Rc::default(),
             in_process: Some(Rc::new(RefCell::new(apps))),
             opens_sessions: false,
+            apps_as_processes: false,
             private_profile: None,
         })
     }
@@ -235,6 +240,20 @@ impl HostedTileInputs {
     pub fn mount_apps_in_process(&mut self, apps: super::in_process::InProcessApps) {
         self.in_process = Some(Rc::new(RefCell::new(apps)));
         self.opens_sessions = true;
+    }
+
+    /// The Wayland session's inputs: its apps run as their own processes,
+    /// and `services` keeps only what the session itself serves (feedback,
+    /// the messaging accounts).
+    pub fn run_apps_as_processes(&mut self, services: super::in_process::InProcessApps) {
+        self.in_process = Some(Rc::new(RefCell::new(services)));
+        self.opens_sessions = true;
+        self.apps_as_processes = true;
+    }
+
+    /// Whether the packaged first-party apps run as their own processes.
+    pub(crate) fn apps_as_processes(&self) -> bool {
+        self.apps_as_processes
     }
 
     /// Whether the terminals this host mounts open sessions.

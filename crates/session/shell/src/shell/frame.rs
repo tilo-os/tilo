@@ -2328,6 +2328,19 @@ impl FrameBuilder {
         // launch per app per pass, so several windows at once need more than
         // one look. The tabs are walked again only once the tree may have
         // changed; while a window is owed a look, every round walks.
+        // A session that runs its apps as processes opens a tab that asks
+        // for one drawn here (saved so, or a peer's) as the app's own
+        // window, before the pending windows are counted.
+        {
+            let chrome = self.chrome.borrow();
+            if chrome.hosted_inputs.apps_as_processes() {
+                let moved = self.peer_windows_quiet_at
+                    != Some(TreeRevisions::read(&chrome, &chrome.tree()));
+                if moved {
+                    crate::shell::tab_binding::reopen_app_tabs_as_processes(&mut chrome.tree_mut());
+                }
+            }
+        }
         let (revisions, pending) = {
             let chrome = self.chrome.borrow();
             let tree = chrome.tree();

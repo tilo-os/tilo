@@ -940,6 +940,12 @@ pub fn mount_in_process(
     let ShellTile::AppPlaceholder { kind, .. } = &request.tab.tile else {
         return None;
     };
+    // The app runs as its own process here: the tab becomes its window
+    // (`tab_binding::reopen_app_tabs_as_processes`) and holds the place
+    // until then.
+    if inputs.apps_as_processes() && tab_binding::own_process_package(kind).is_some() {
+        return Some(TileResolution::Opening);
+    }
     let room = request.room.to_string();
     let tab = request.tab.id;
     let mounted = match kind {
@@ -1207,12 +1213,13 @@ pub fn build_tilo_overlay_host_with_records(
     #[cfg(not(test))]
     let inputs = {
         let mut inputs = hosted_inputs::HostedTileInputs::default();
-        // The session mounts the apps it hosts itself as their own
-        // components, on records it keeps beside its scratch tabs'.
+        // The session's apps run as their own processes, each window bound
+        // into its tab; the session serves only feedback and the messaging
+        // accounts itself.
         match in_process::InProcessApps::native(&state::local_user_id()) {
-            Ok(apps) => inputs.mount_apps_in_process(apps),
+            Ok(services) => inputs.run_apps_as_processes(services),
             Err(error) => {
-                tracing::warn!(%error, "apps hosted in the session keep no records");
+                tracing::warn!(%error, "the session's own services keep no records");
             }
         }
         inputs
