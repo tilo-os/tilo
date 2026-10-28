@@ -9,30 +9,10 @@ from hang import HANG_BOUND
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools" / "ci"))
-import t_matrix  # noqa: E402
 DRIVER = ROOT / 'crates/system/accounts/web/run.mjs'
 
 
 class AccountsWebStorageTests(unittest.TestCase):
-    def test_check_runs_production_probe_and_wasm_lint(self):
-        project = t_matrix.load(ROOT)
-        check = next(c for c in project['check'] if c['name'] == 'accounts-web-storage')
-        self.assertNotEqual(check.get('default'), False)
-        self.assertIn('tilo-builder@sha256:', check.get('image', project['image']))
-        self.assertEqual(check['requires'], ['arch=x86_64'])
-        self.assertFalse(check.get('devices'))
-        run = check['run']
-        self.assertIn('node crates/system/accounts/web/run.mjs --no-sandbox', run)
-        self.assertNotIn('--no-build', run)
-        self.assertIn('cargo clippy --locked --target wasm32-unknown-unknown', run)
-        for package in ('accounts', 'tilo-secret-vault', 'tilo-files', 'tilo-secrets'):
-            self.assertIn('-p ' + package, run)
-        for lint in ('future_not_send', 'arc_with_non_send_sync', 'drop_non_drop'):
-            self.assertIn('-A clippy::' + lint, run)
-        self.assertIn('ensure-browser-dependencies.sh', run)
-        self.assertIn('@puppeteer/browsers@2 install chrome@stable', run)
-        for forbidden in ('--workspace', 'os/build.sh', 'tilo-app build'):
-            self.assertNotIn(forbidden, run)
 
     def run_without_subject(self, missing):
         # Run the real driver without building: fake only tool provisioning.

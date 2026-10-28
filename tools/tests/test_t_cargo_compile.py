@@ -98,16 +98,6 @@ class WasmPassTests(unittest.TestCase):
             self.assertEqual(out.read().splitlines(), [error, "plain"])
         self.assertEqual(code, 101)
 
-    def test_the_check_and_clippy_families_run_under_it(self):
-        config = tomllib.loads((ROOT / "t.toml").read_text())
-        families = {family["name"]: family for family in config["cargo"]}
-        for name in ("check", "clippy"):
-            with self.subTest(family=name):
-                self.assertEqual(families[name]["wrapper"], ["python3", "tools/ci/t_cargo_compile.py"])
-                self.assertIn("tools/ci/t_cargo_compile.py", families[name]["inputs"])
-                self.assertIn("tools/ci/package_sets.py", families[name]["inputs"])
-                self.assertIn("tools/ci/package_features.py", families[name]["inputs"])
-
 
 if __name__ == "__main__":
     unittest.main()

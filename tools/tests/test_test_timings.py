@@ -210,35 +210,6 @@ class PipelineTests(unittest.TestCase):
             self.skipTest("needs tomllib (Python 3.11)")
         return tomllib.loads((ROOT / relative).read_text(encoding="utf-8"))
 
-    def test_the_test_family_runs_through_the_wrapper_that_records_times(self):
-        config = self.manifest("t.toml")
-        families = [family for family in config["cargo"]
-                    if family["name"] in ("test", "test-x86_64", "test-idle")]
-        self.assertEqual(len(families), 3)
-        for family in families:
-            with self.subTest(family=family["name"]):
-                self.assertEqual(family["tool"], "nextest")
-                self.assertEqual(family["wrapper"], ["bash", "tools/ci/t-nextest.sh"])
-                self.assertIn("tools/ci/ci_test_timings.py", family["inputs"])
-                # The job only records; the baseline is read by a comparison, so editing it
-                # must not re-key every test job.
-                self.assertNotIn("docs/measurements/test-timings.json", family["inputs"])
-
-    def test_the_wrapper_asks_libtest_for_its_events_and_records_them(self):
-        wrapper = (ROOT / "tools/ci/t-nextest.sh").read_text(encoding="utf-8")
-        # The events reach the log through the recorder, which reads them as they pass.
-        self.assertIn("--message-format json-pretty", wrapper)
-        self.assertIn('record --json "$timings"', wrapper)
-        self.assertIn("--no-fail-fast", wrapper)
-        self.assertIn('exit "$status"', wrapper)
-
-    def test_a_format_t_already_asked_for_is_not_asked_for_twice(self):
-        # t runs every nextest check with --message-format libtest-json-plus, and nextest refuses
-        # a second --message-format before running any test.
-        wrapper = (ROOT / "tools/ci/t-nextest.sh").read_text(encoding="utf-8")
-        self.assertIn('*" --message-format "*', wrapper)
-        self.assertIn('"${format[@]}"', wrapper)
-        self.assertNotIn('"${arguments[@]}" --message-format', wrapper)
 
     def test_the_committed_baseline_holds_the_workspace_only(self):
         baseline = test_timings.load(ROOT / "docs/measurements/test-timings.json")

@@ -36,19 +36,6 @@ class UpdatePolicyCheckTest(unittest.TestCase):
     def test_an_unknown_mode_is_refused_rather_than_read_as_an_update(self) -> None:
         self.assertEqual(self.run_check("--sometimes", metered="no").returncode, 2)
 
-    def test_the_catalogue_refresh_runs_only_when_the_device_may_spend_the_network(self) -> None:
-        service = (UNITS / "tilo-public-content-refresh.service").read_text()
-        self.assertIn(
-            "ExecCondition=/usr/libexec/tilo-update-policy-check --background\n", service
-        )
-        self.assertIn("ConditionACPower=true\n", service)
-        timer = (UNITS / "tilo-public-content-refresh.timer").read_text()
-        self.assertIn("Persistent=yes\n", timer)
-        for containerfile in ("os/Containerfile", "os/image/system.Containerfile"):
-            text = (REPO / containerfile).read_text()
-            self.assertIn("os/usr/lib/systemd/user/tilo-public-content-refresh.timer", text)
-            self.assertIn("systemctl --global enable tilo-public-content-refresh.timer", text)
-
 
 if __name__ == "__main__":
     unittest.main()

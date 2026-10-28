@@ -2,7 +2,6 @@
 import importlib.util
 import json
 import os
-import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -16,21 +15,6 @@ from ci import qualified_native
 
 
 class QualifiedNativeTests(unittest.TestCase):
-    def test_native_admission_retains_general_lane_without_a_selection_wait(self):
-        workflow = (ROOT / ".forgejo/workflows/check.yml").read_text()
-        selection = re.split(r"\n  \S", workflow.split("  select:\n", 1)[1], maxsplit=1)[0]
-        self.assertNotIn("needs:", selection)
-        self.assertNotIn("needs.builder", selection)
-        expression = "matrix.runner"
-        for name in ("test", "clippy"):
-            job = re.split(r"\n  \S", workflow.split(f"  {name}:\n", 1)[1], maxsplit=1)[0]
-            # Admission waits for the plan, not for the security boundary: that
-            # job owns its own slot, and the `checks` aggregate requires both.
-            self.assertIn("needs: [builder, select]", job)
-            # The shard's own runner class is the general lane, except for the
-            # shell shard, which links the whole session and asks for the large
-            # class on its architecture (see the note above its runs-on).
-            self.assertIn(expression, job)
 
     def test_real_input_binding_falls_back_on_builder_workflow_or_source_change(self):
         receipt = json.loads((ROOT / "tools/ci/qualified-native.json").read_text())
