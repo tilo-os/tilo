@@ -14,11 +14,13 @@ for source in "$app_cli" "$app_host"; do
 done
 
 # The image's binaries are compiled outside the image build, by this script.
+# The links are forced and never follow a directory: a re-run replaces what an
+# earlier build left in the output root.
 compile="$root/os/image/compile.sh"
 grep -Fq -- '-p app-cli' "$compile"
 grep -Fq -- '--bin app ' "$compile"
-grep -Fq 'ln -s app "$out"/store' "$compile"
-grep -Fq 'ln -s tilo "$out"/system' "$compile"
+grep -Fq 'ln -sfn app "$out"/store' "$compile"
+grep -Fq 'ln -sfn tilo "$out"/system' "$compile"
 grep -Fq 'target/release/tilo completions bash' "$compile"
 grep -Fq 'target/release/app completions fish' "$compile"
 components="$root/os/components.toml"
