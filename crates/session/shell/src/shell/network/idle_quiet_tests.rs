@@ -540,6 +540,14 @@ fn a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute
     }
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let dir = scratch();
+    // Both desktops watch the identity tree for this person's devices and
+    // home peers. Left at the machine's (`/var/lib/tilo`), each watch
+    // follows the nearest directory that exists and wakes for whatever else
+    // on the machine writes there; created up front, the watches follow
+    // this tree exactly.
+    let identity = dir.path().join("identity");
+    std::fs::create_dir_all(identity.join("peers")).unwrap();
+    home.env().set("TILO_IDENTITY_ROOT", &identity);
     let wakes = Arc::new(Wakes::default());
     let person = Person::new(43);
     home.env().set("TILO_USER_ID", person.id());

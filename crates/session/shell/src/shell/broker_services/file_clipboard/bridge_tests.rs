@@ -269,7 +269,11 @@ impl Fixture {
             Arc::new(FanoutState::new()),
         )
         .expect("production broker with enrolled fixture device");
-        tilo_test_env::wait_until("clipboard broker socket", || socket.exists());
+        // The broker binds under a staging name and renames the socket into
+        // place once it listens, before `spawn` returns: a connect from here
+        // on waits in the backlog until the broker's thread accepts it, so
+        // there is nothing to wait for.
+        assert!(socket.exists(), "the broker published its socket");
         Self {
             directory,
             socket,

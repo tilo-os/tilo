@@ -100,7 +100,11 @@ impl Broker {
             Arc::new(FanoutState::new()),
         )
         .expect("production broker with an enrolled fixture device");
-        tilo_test_env::wait_until("window records broker socket", || socket.exists());
+        // The broker binds under a staging name and renames the socket into
+        // place once it listens, before `spawn` returns: a connect from here
+        // on waits in the backlog until the broker's thread accepts it, so
+        // there is nothing to wait for.
+        assert!(socket.exists(), "the broker published its socket");
         Self {
             _directory: directory,
             socket,
