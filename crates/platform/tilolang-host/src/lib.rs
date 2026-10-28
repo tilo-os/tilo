@@ -164,8 +164,13 @@ impl TilolangHost {
         let package = storage.join(app);
         let documents = package.join("documents");
         std::fs::create_dir_all(&documents)?;
+        // What was made is durable up to the storage the session granted; nothing above it is
+        // the host's, and its sandbox opens nothing there.
+        for made in [&package, storage] {
+            std::fs::File::open(made)?.sync_all()?;
+        }
         Ok(Kept {
-            documents: Rc::new(app_state::FsStore::new(&documents)),
+            documents: Rc::new(app_state::FsStore::provisioned(&documents)),
             indexes: Some(package.join("indexes")),
         })
     }
