@@ -154,6 +154,8 @@ pub enum Operation {
     /// system it was staged from. Firmware already consumed the one-shot
     /// `BootNext`, so a plain restart lands there.
     ReturnToHost,
+    /// Open the medium's own live desktop, leaving the wizard installed.
+    TryDesktop,
 }
 
 impl Operation {
@@ -189,6 +191,7 @@ impl Operation {
             Self::Reboot => "reboot",
             Self::PowerOff => "power-off",
             Self::ReturnToHost => "return-to-host",
+            Self::TryDesktop => "try-desktop",
         }
     }
 

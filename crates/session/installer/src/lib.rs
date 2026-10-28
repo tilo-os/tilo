@@ -74,6 +74,7 @@ pub mod installer_network;
 pub mod internal_handoff;
 pub mod keyboard_view;
 pub mod layouts;
+pub mod live_desktop;
 pub mod media_profile;
 pub mod online_accounts;
 pub mod operation;

@@ -489,12 +489,13 @@ kind = "boot"
 scope = "vm"
 scenario = "os/dev/test-installer-cycle.sh"
 packages = ["installer"]
-bins = ["tilo-installer", "tilo-firstboot-home-seeds"]
+bins = ["tilo-installer", "tilo-firstboot-home-seeds", "tilo-live-trial-session"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-installer", to = "/usr/libexec/tilo/tilo-installer", mode = "0755" },
   { link = "tilo", to = "/usr/bin/tilo-installer" },
   { from = "tilo-firstboot-home-seeds", to = "/usr/libexec/tilo-firstboot-home-seeds", mode = "0755" },
+  { from = "tilo-live-trial-session", to = "/usr/libexec/tilo/tilo-live-trial-session", mode = "0755" },
 ]
 
 [[component]]

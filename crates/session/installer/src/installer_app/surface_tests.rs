@@ -979,3 +979,123 @@ fn the_whole_wizard_runs_through_the_console_with_its_confirmations() {
     );
     assert_eq!(*backend.power.lock().unwrap(), [PowerAction::PowerOff]);
 }
+
+/// A temporary live medium for the trial: a state directory the wizard treats
+/// as the one `tilo-installer-setup.service` creates on a real medium.
+fn medium() -> (tempfile::TempDir, crate::live_desktop::TrialMedium) {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let state = directory.path().join("trial");
+    std::fs::create_dir(&state).expect("create the medium's state directory");
+    let medium = crate::live_desktop::TrialMedium::at(state);
+    (directory, medium)
+}
+
+#[test]
+fn the_live_desktop_is_offered_beside_installing_and_never_during_it() {
+    // Phase `a_medium_that_carries_the_trial_publishes_one_way_to_ask_for_it`.
+    // The console below is exactly what a script or an agent sees, and every
+    // door reaches the same handler.
+    let (_medium_dir, medium) = medium();
+    let backend = FakeBackend::new();
+    let (mut app, mut doc) = app(&backend);
+    let described = tilo_actions::door::survey(&app.publish());
+    let trial = described
+        .iter()
+        .find(|d| d.address.action == "try-desktop")
+        .expect("a live medium offers the desktop");
+    assert_eq!(
+        trial.contract.availability,
+        tilo_actions::Availability::Available
+    );
+    assert_eq!(trial.label, "Try the desktop");
+    // Offering it never changes anything: installing is still the point.
+    assert_eq!(app.install_state, InstallState::Idle);
+    assert!(medium.offered());
+
+    // Phase `asking_for_it_writes_one_fixed_request_and_nothing_else`.
+    let reply = invoke(&mut app, &mut doc, "try-desktop@installer", &json!({}));
+    assert!(reply.get("answer").is_some(), "{reply}");
+    assert_eq!(medium.request_contents(), Some(b"live-desktop\n".to_vec()));
+    // The medium now has a trial starting, so the entry stays published and
+    // says why instead of disappearing from under the person.
+    let described = tilo_actions::door::survey(&app.publish());
+    let trial = described
+        .iter()
+        .find(|d| d.address.action == "try-desktop")
+        .expect("the entry is still published");
+    assert!(
+        matches!(
+            &trial.contract.availability,
+            tilo_actions::Availability::Unavailable { code, .. } if code == "desktop_requested"
+        ),
+        "{:?}",
+        trial.contract.availability
+    );
+    // A second press cannot queue a second session.
+    let again = invoke(&mut app, &mut doc, "try-desktop@installer", &json!({}));
+    assert_eq!(refused(&again), Some("action_failed"), "{again}");
+    assert_eq!(medium.request_contents(), Some(b"live-desktop\n".to_vec()));
+
+    // Phase `the_wizard_comes_back_to_the_same_start_once_the_trial_ends`.
+    // Leaving the desktop restarts greetd's session, so the wizard returns as a
+    // new process on its first step — and this medium offers the trial again.
+    medium
+        .consume_request()
+        .expect("the session manager consumes it");
+    assert!(medium.offered());
+    let (mut returned, mut returned_doc) = app(&backend);
+    assert_eq!(state(&mut returned, &mut returned_doc)["step"], "keyboard");
+    let again = invoke(
+        &mut returned,
+        &mut returned_doc,
+        "try-desktop@installer",
+        &json!({}),
+    );
+    assert!(again.get("answer").is_some(), "{again}");
+    medium.consume_request().expect("and again");
+
+    // Phase `while_the_install_runs_or_is_done_the_desktop_is_refused`.
+    // Starting a desktop while the install worker owns the medium would run two
+    // consumers off the same root, and after it is done the installed system is
+    // what to boot. The handler itself refuses both, so a door that is out of
+    // date cannot start a trial either.
+    for (install_state, code) in [
+        (InstallState::Running, "install_running"),
+        (InstallState::Done, "install_done"),
+    ] {
+        app.install_state = install_state;
+        let described = tilo_actions::door::survey(&app.publish());
+        let trial = described
+            .iter()
+            .find(|d| d.address.action == "try-desktop")
+            .expect("the entry is still published");
+        assert!(
+            matches!(
+                &trial.contract.availability,
+                tilo_actions::Availability::Unavailable { code: blocked, .. } if blocked == code
+            ),
+            "{install_state:?}: {:?}",
+            trial.contract.availability
+        );
+        let reply = invoke(&mut app, &mut doc, "try-desktop@installer", &json!({}));
+        assert_eq!(refused(&reply), Some("action_failed"), "{install_state:?}");
+        assert_eq!(medium.request_contents(), None, "{install_state:?}");
+    }
+
+    // Phase `a_medium_without_the_trial_publishes_nothing`.
+    let absent = tempfile::tempdir().expect("temp dir");
+    let missing = absent.path().join("missing");
+    let _absent_medium = crate::live_desktop::TrialMedium::at(missing.clone());
+    let (mut app, mut doc) = app(&backend);
+    let described = tilo_actions::door::survey(&app.publish());
+    assert!(
+        !described.iter().any(|d| d.address.action == "try-desktop"),
+        "an installed system must not offer a live desktop"
+    );
+    let reply = invoke(&mut app, &mut doc, "try-desktop@installer", &json!({}));
+    assert!(refused(&reply).is_some(), "{reply}");
+    assert!(
+        !missing.exists(),
+        "a refusal must not create the state directory"
+    );
+}

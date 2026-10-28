@@ -402,9 +402,14 @@ impl Disk {
     }
 
     /// Whether this disk holds the running installer and cannot be a target.
-    /// A verified staged installation is the one exception.
+    ///
+    /// Two exceptions: a verified staged installation, and a development
+    /// installation medium, whose root can still grow and which therefore may
+    /// be installed onto itself (see [`crate::live_desktop::may_install_to_medium`]).
     pub fn blocks_install(&self) -> bool {
-        self.is_system && self.internal_plan.is_none()
+        self.is_system
+            && self.internal_plan.is_none()
+            && !crate::live_desktop::may_install_to_medium()
     }
 
     /// Whether this is the running-system disk that holds a verified staged

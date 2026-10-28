@@ -51,6 +51,17 @@ ExecStart=/usr/bin/install -D -m 0440 /usr/share/tilo/installer-sudoers /etc/sud
 ExecStart=/usr/bin/install -d -m 0755 /run/tilo-installer
 ExecStart=/usr/bin/install -d -m 0700 /run/tilo-installer/bridge
 ExecStart=/usr/bin/bash -ec 'if /usr/sbin/selinuxenabled; then /usr/sbin/restorecon -RF /run/tilo-installer; fi'
+# The live desktop's trial account and the one place its request is left. The
+# account is unprivileged, has no password and no login shell: it exists only
+# so the desktop has a home of its own to start in, and its home directory is
+# created and removed by /usr/libexec/tilo-live-trial-session, never here.
+ExecStart=/usr/bin/install -d -m 0755 /run/tilo-live-trial
+ExecStart=/usr/bin/bash -ec 'getent passwd tilo-trial >/dev/null || /usr/sbin/useradd \
+    --system --no-create-home \
+    --home-dir /var/lib/tilo-live-trial/home \
+    --shell /usr/sbin/nologin \
+    --comment "Tilo live desktop trial" tilo-trial'
+ExecStart=/usr/bin/bash -ec 'if /usr/sbin/selinuxenabled; then /usr/sbin/restorecon -RF /run/tilo-live-trial; fi'
 
 [Install]
 WantedBy=multi-user.target

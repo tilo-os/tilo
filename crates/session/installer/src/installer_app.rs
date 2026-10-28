@@ -2566,6 +2566,24 @@ impl InstallerApp {
             Step::Install => self.compose_install_step(theme, &mut children, &mut actions),
         }
 
+        // A live medium can show what it is offering before anything is
+        // written. The button goes away once a request stands: the screen is
+        // about to be replaced by the desktop.
+        if crate::live_desktop::offered()
+            && !matches!(
+                self.install_state,
+                InstallState::Running | InstallState::Done
+            )
+        {
+            actions.push(Box::new(
+                ActionButton::new(
+                    &crate::i18n::t("installer-try-desktop"),
+                    self.control(op::SESSION, "try-desktop", Value::Null),
+                )
+                .with_test_id("try_desktop"),
+            ));
+        }
+
         // A staged install has no medium to pull: offer the way back to the
         // retained OS on every screen except while installing or once done.
         if let Some(host) = self.internal_host()

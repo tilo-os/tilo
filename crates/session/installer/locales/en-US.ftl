@@ -166,3 +166,9 @@ installer-hardware-evidence-architecture = architecture { $architecture }
 installer-hardware-evidence-virtualization = virtualization { $names }
 installer-hardware-evidence-board = board { $board }
 installer-hardware-evidence-devicetree = device tree { $devicetree }
+
+# The live desktop the installation medium offers. Secondary to installing, and
+# distinct from the supported routes: a Linux desktop session on an installed
+# system, or a complete installation onto a disk.
+installer-try-desktop = Try the desktop
+installer-live-desktop-note = Opens a full Tilo desktop from this medium without installing anything. It runs as a temporary account with its own empty home; nothing you do there is saved, no drive is used, and leaving it returns here.

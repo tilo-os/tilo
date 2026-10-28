@@ -1,0 +1,53 @@
+#!/bin/bash
+# tilo-live-trial-remove — delete a tree and everything in it.
+#
+#   tilo-live-trial-remove PATH
+#
+# Used for the live trial's throwaway home, before and after a trial. A
+# compositor and the apps it started leave directories with no write bit on
+# their parent, own files as the trial account, and can leave sockets; a plain
+# `rm -rf` on the tree as it stands fails or, worse, leaves a partial home that
+# the next trial would inherit. So the tree is only ever removed below a
+# directory this script owns: it refuses a path that is a symlink, refuses one
+# that is not inside /var/lib/tilo-live-trial, makes every directory in it
+# removable, and fails loudly if anything is left.
+set -euo pipefail
+
+readonly ROOT=/var/lib/tilo-live-trial
+
+if [ "$#" -ne 1 ]; then
+  printf '%s\n' 'usage: tilo-live-trial-remove PATH' >&2
+  exit 2
+fi
+target=$1
+case "$target" in
+  "$ROOT"/*) ;;
+  *)
+    printf 'tilo-live-trial-remove: refusing %s outside %s\n' "$target" "$ROOT" >&2
+    exit 1
+    ;;
+esac
+# Refuse the root itself and any traversal or empty component in the path.
+case "$target" in
+  *..*|*/) 
+    printf 'tilo-live-trial-remove: refusing %s\n' "$target" >&2
+    exit 1
+    ;;
+esac
+[ -L "$target" ] && { printf 'tilo-live-trial-remove: refusing linked %s\n' "$target" >&2; exit 1; }
+[ -e "$target" ] || exit 0
+
+# A directory's own mode decides whether its entries can be unlinked, so make
+# every directory writable and searchable first. Symlinks are never followed:
+# `find -P` and `chmod` without -R leave their targets alone.
+if [ -d "$target" ]; then
+  find -P "$target" -type d -exec chmod u+rwx {} +
+  # Immutable files are not removable; clear the bit where the kernel has it.
+  find -P "$target" -type f -exec chattr -i {} + 2>/dev/null || true
+fi
+rm -rf --one-file-system -- "$target"
+
+if [ -e "$target" ] || [ -L "$target" ]; then
+  printf 'tilo-live-trial-remove: %s still exists\n' "$target" >&2
+  exit 1
+fi

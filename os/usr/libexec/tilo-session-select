@@ -4,16 +4,35 @@
 # to launch THIS instead of the greeter directly, so a single image can serve
 # both roles depending on the kernel cmdline:
 #
-#   * tilo.install present  -> run the Tilo graphical installer (tilo-installer)
-#   * otherwise              -> run the normal graphical login greeter
+#   * tilo.install present  -> the Tilo graphical installer (tilo-installer)
+#   * otherwise              -> the normal graphical login greeter
 #
 # Both run inside `cage` (a single-window kiosk wlroots compositor) because
 # greetd has no display of its own; tilo-cage-session chooses cage's renderer
 # and cursor for the display hardware.
+#
+# While the installer runs, asking it for the live desktop leaves a fixed
+# request in TRIAL_REQUEST. This script is what acts on it: greetd restarts its
+# default session when the installer exits, and that restart is the trial. The
+# request is consumed before the desktop starts, so a failed trial can never
+# repeat itself on the next boot.
 set -euo pipefail
 
+TRIAL_REQUEST=/run/tilo-live-trial/request
+TRIAL_SESSION=/usr/libexec/tilo-live-trial-session
+
 if grep -qw 'tilo.install' /proc/cmdline 2>/dev/null; then
+  if [ -x "$TRIAL_SESSION" ] && [ -f "$TRIAL_REQUEST" ]; then
+    # The trial replaces this cage session. greetd keeps VT 1 for itself
+    # throughout, so nothing here needs to release or re-acquire a seat: when
+    # the desktop exits, greetd starts us again and the installer returns.
+    exec "$TRIAL_SESSION"
+  fi
+  rm -f "$TRIAL_REQUEST"
   exec /usr/libexec/tilo-cage-session /usr/libexec/tilo/tilo-installer
 else
+  # A request left behind by an aborted install must not survive into a boot
+  # that is not offering the trial at all.
+  rm -f "$TRIAL_REQUEST"
   exec /usr/libexec/tilo-cage-session /usr/libexec/tilo/tilo-greeter
 fi

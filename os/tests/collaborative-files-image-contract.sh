@@ -88,11 +88,15 @@ require_file /usr/lib/systemd/user/tilo-graphical-session.target
 require_file /usr/share/tilo/selinux/tilo-base.cil
 require_file /usr/share/wayland-sessions/shell.desktop
 # The greeter offers a session picker only when there is a real choice, so the
-# image ships exactly one session. A second entry, from Tilo or from a package
-# the base pulls in, would put a picker back in front of every login.
+# image ships exactly one *offered* session: A second entry, from Tilo or from a
+# package the base pulls in, would put a picker back in front of every login.
+# The live desktop's trial is not one of those choices — it runs on the
+# installation medium's temporary account, carries NoDisplay, and the installer
+# starts it itself — so its entry is named here and excluded from the count.
 sessions="$(cd "$(at /usr/share)" && find wayland-sessions xsessions -name '*.desktop' 2>/dev/null | sort | tr '\n' ' ')"
-[ "$sessions" = "wayland-sessions/shell.desktop " ] \
-  || die "login sessions are not exactly wayland-sessions/shell.desktop: ${sessions:-none}"
+[ "$sessions" = "wayland-sessions/shell.desktop wayland-sessions/tilo-live-trial.desktop " ] \
+  || die "login sessions are not exactly shell.desktop and the live trial: ${sessions:-none}"
+require_line /usr/share/wayland-sessions/tilo-live-trial.desktop "NoDisplay=true"
 require_file /usr/lib/tmpfiles.d/tilo.conf
 require_file /usr/share/tilo/fs-capabilities.json
 

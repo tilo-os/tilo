@@ -120,10 +120,16 @@ if [ -e "$repo/os/dev-image/usr/lib/systemd/user" ]; then
 fi
 grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm' \
   "$repo/os/usr/share/wayland-sessions/shell.desktop"
-[ "$(ls "$repo/os/usr/share/wayland-sessions")" = shell.desktop ] || {
-  echo 'the image must ship exactly one login session: shell.desktop' >&2
+# One offered login session, plus the installation medium's live desktop. The
+# trial entry is NoDisplay and names the trial wrapper, which runs only on the
+# medium's own temporary account; a greeter therefore never shows it.
+[ "$(ls "$repo/os/usr/share/wayland-sessions")" = "$(printf 'shell.desktop\ntilo-live-trial.desktop')" ] || {
+  echo 'the image ships shell.desktop and the live desktop trial, and nothing else' >&2
   exit 1
 }
+grep -Fqx 'Exec=/usr/libexec/tilo-live-trial-session' \
+  "$repo/os/usr/share/wayland-sessions/tilo-live-trial.desktop"
+grep -Fqx 'NoDisplay=true' "$repo/os/usr/share/wayland-sessions/tilo-live-trial.desktop"
 # The image build refuses a shell or X11 bridge with an unresolved library.
 grep -Fq 'missing="$(ldd /usr/bin/shell /usr/bin/xwayland-satellite | awk '\''/not found/ { print $1 }'\'')"' \
   "$repo/os/Containerfile"

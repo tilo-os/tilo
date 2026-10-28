@@ -212,6 +212,9 @@ impl InstallerApp {
         if let Some(spec) = self.return_to_host_spec() {
             root = root.with_action(spec);
         }
+        if let Some(spec) = self.try_desktop_spec() {
+            root = root.with_action(spec);
+        }
         root = root
             .with_child(self.keyboard_resource())
             .with_child(self.network_resource())
@@ -389,6 +392,48 @@ impl InstallerApp {
             )
             .with_description(
                 "Leave the installer without changing this disk and restart into the existing system.",
+            ),
+        )
+    }
+
+    /// The live desktop this installation medium offers, on every screen
+    /// except while the install runs or once it is done: those are the two
+    /// points at which the medium's own session must stop being shared with a
+    /// desktop.
+    ///
+    /// The entry is published whenever the medium carries a trial at all, so a
+    /// request that already stands is shown blocked with why instead of the
+    /// entry disappearing under the person reading it.
+    fn try_desktop_spec(&self) -> Option<ActionSpec> {
+        if !crate::live_desktop::available() {
+            return None;
+        }
+        let blocked = match self.install_state {
+            InstallState::Running => Some((
+                "install_running",
+                "The install is running; the desktop is offered before it starts".to_owned(),
+            )),
+            InstallState::Done => Some((
+                "install_done",
+                "Tilo is installed; reboot into it instead of the live desktop".to_owned(),
+            )),
+            InstallState::Idle | InstallState::Failed => None,
+        };
+        let blocked = blocked.or_else(|| {
+            (!crate::live_desktop::offered()).then(|| {
+                (
+                    "desktop_requested",
+                    "The desktop is starting; the installer returns when you leave it".to_owned(),
+                )
+            })
+        });
+        Some(
+            gate(
+                nullary("try-desktop", "Try the desktop", &Operation::TryDesktop),
+                blocked,
+            )
+            .with_description(
+                "Open a full Tilo desktop from this medium, without installing anything. Your answers here are kept, and leaving the desktop returns to this screen. Nothing on any disk is touched, and nothing you do in the desktop is saved.",
             ),
         )
     }
@@ -1641,6 +1686,36 @@ impl InstallerApp {
                     done()
                 } else {
                     Err(self.status_or("Could not restart"))
+                }
+            }
+            Operation::TryDesktop => {
+                if matches!(
+                    self.install_state,
+                    InstallState::Running | InstallState::Done
+                ) {
+                    return Err(
+                        "The live desktop is offered before the install starts or after it fails"
+                            .into(),
+                    );
+                }
+                // A standing request means the session manager is already
+                // replacing this session. Writing again would race it and
+                // could leave a request behind for the next boot.
+                if !crate::live_desktop::offered() {
+                    return Err(
+                        "The desktop is starting; the installer returns when you leave it".into(),
+                    );
+                }
+                match crate::live_desktop::request() {
+                    Ok(crate::live_desktop::TrialRequest::Requested) => done(),
+                    Ok(crate::live_desktop::TrialRequest::NotOffered) => Err(
+                        "This installer does not run from an installation medium with a live desktop"
+                            .into(),
+                    ),
+                    Err(message) => {
+                        self.set_status(&message);
+                        Err(message)
+                    }
                 }
             }
         }

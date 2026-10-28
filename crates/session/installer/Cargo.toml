@@ -9,9 +9,23 @@ license.workspace = true
 name = "installer"
 path = "src/lib.rs"
 
+[features]
+# Honour the developer environment overrides (`TILO_LIVE_TRIAL_STATE`) in a
+# release build, exactly as a debug build does. See `live_desktop`.
+#
+# NEVER SHIP THIS. It lets the process be told that the live medium's trial
+# state is somewhere else, which is how a test drives the real wizard against a
+# temporary medium. A published medium runs a release binary without this
+# feature, where the variable is inert.
+dev-overrides = []
+
 [[bin]]
 name = "tilo-installer"
 path = "src/main.rs"
+
+[[bin]]
+name = "tilo-live-trial-session"
+path = "src/bin/tilo-live-trial-session.rs"
 
 [dependencies]
 accounts = { path = "../../system/accounts" }

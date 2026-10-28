@@ -146,6 +146,14 @@ while IFS= read -r -d '' installer_program; do
     chmod 0755 "$installer_program"
   fi
 done < <(find "$INSTALLER_CONTEXT/rootfs/usr/libexec" -type f -print0)
+# The live medium's session entry lives in the checkout's `usr/` tree, which the
+# copy above brings in. Only a development medium's own disk may be installed
+# onto (the wizard grows its root); a published medium's disk is excluded from
+# the target list by the marker's absence.
+if [ "$DEV_LOGIN" = 1 ]; then
+  install -Dm0444 /dev/null \
+    "$INSTALLER_CONTEXT/rootfs/usr/share/tilo/installer-dev-login"
+fi
 # `bootc install to-filesystem` otherwise picks the first ESP on the backing
 # disk, which can be Windows' ESP rather than the ESP mounted at /target/boot/efi.
 # Build the pinned corrected bootc once per source revision and put it in the

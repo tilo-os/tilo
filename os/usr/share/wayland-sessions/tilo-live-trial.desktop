@@ -1,0 +1,15 @@
+[Desktop Entry]
+# The installation medium's own live desktop: a full Tilo session on the
+# temporary trial account, never on an installed user. The installer starts it
+# itself, through tilo-session-select; the entry exists so the session is
+# described in the one place a Tilo session is described.
+#
+# `Exec` is the wrapper, which owns the account's home for the length of the
+# session and deletes it afterwards — nothing the desktop writes outlives it.
+Name=Tilo live desktop
+GenericName=Desktop
+Comment=Try Tilo from the installation medium without installing it
+Exec=/usr/libexec/tilo-live-trial-session
+Type=Application
+DesktopNames=tilo-live-trial
+NoDisplay=true

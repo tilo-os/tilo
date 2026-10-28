@@ -41,6 +41,12 @@ COPY rootfs/ /
 RUN test -x /usr/libexec/tilo/tilo-installer \
     && test -x /usr/libexec/tilo-session-select \
     && test -x /usr/libexec/tilo-cage-session \
+    && test -x /usr/libexec/tilo-live-trial-session \
+    && test -x /usr/libexec/tilo/tilo-live-trial-session \
+    && test -x /usr/libexec/tilo-live-trial-remove \
+    # A published medium never carries the development marker that lets a
+    # medium install onto its own disk.
+    && rm -f /usr/share/tilo/installer-dev-login \
     && test -x /usr/libexec/tilo-boot-order \
     && command -v efibootmgr >/dev/null \
     && printf 'kargs = ["tilo.install"]\n' \

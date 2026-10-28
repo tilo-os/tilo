@@ -1,0 +1,55 @@
+#!/bin/bash
+# tilo-live-trial-session — run the real Tilo desktop for one live trial from
+# the installation medium.
+#
+# tilo-session-select has already confirmed that the wizard's `try-desktop`
+# action left its request behind; greetd runs this as the live medium's
+# default session. Everything about a trial's lifetime lives here:
+#
+#   * The request is consumed first. From that moment, whenever this script
+#     returns, greetd starts the session again and the selector finds the
+#     wizard — so leaving the desktop, or a desktop that dies, puts the person
+#     back in front of the installer with the answers they already gave.
+#   * The trial's throwaway home is recreated from the image and deleted on the
+#     way out, whether the desktop ended normally, crashed, or this script was
+#     asked to stop. Nothing from a trial survives on the medium.
+#   * The desktop runs as the unprivileged trial account only, in its own
+#     session and on the medium's own display, so nothing it does can reach the
+#     installer's privileged backend (which the greetd user, not this account,
+#     is allowed to run).
+#
+# Nothing here mounts, unlocks or looks at an internal disk: the trial has no
+# way to ask for one.
+set -euo pipefail
+
+readonly REQUEST=/run/tilo-live-trial/request
+readonly HOME_ROOT=/var/lib/tilo-live-trial
+readonly TRIAL_HOME=$HOME_ROOT/home
+readonly TRIAL_USER=tilo-trial
+readonly TRIAL_SESSION=/usr/bin/tilo-live-trial-session
+readonly REMOVE_TREE=/usr/libexec/tilo-live-trial-remove
+
+if [ ! -x "$TRIAL_SESSION" ]; then
+  rm -f -- "$REQUEST"
+  printf '%s\n' 'tilo-live-trial-session: the live desktop session program is missing' >&2
+  exit 1
+fi
+
+# Consume the request. The selector starts the wizard next time it runs, so a
+# trial is never restarted by greetd on its own.
+rm -f -- "$REQUEST"
+
+# Nothing in a trial may outlive it, and a home left by a previous run (a
+# power cut) is not the empty account this trial promises.
+"$REMOVE_TREE" "$TRIAL_HOME"
+
+mkdir -p -- "$HOME_ROOT"
+
+cleanup() {
+  "$REMOVE_TREE" "$TRIAL_HOME" || \
+    printf '%s\n' 'tilo-live-trial-session: the trial home could not be deleted' >&2
+}
+trap cleanup EXIT
+trap 'exit 143' TERM INT HUP
+
+"$TRIAL_SESSION"

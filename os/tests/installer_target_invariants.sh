@@ -630,6 +630,65 @@ else
   bad "an alongside install can leave a second Tilo root that makes both unbootable"
 fi
 
+# The live medium's trial desktop. Four properties have to hold together, or
+# the trial becomes something it must never be: a way to write to a disk the
+# installer did not choose, a session on a real account, or a request that
+# repeats after a restart.
+session_select="$repo_root/os/usr/libexec/tilo-session-select"
+trial_wrapper="$repo_root/os/usr/libexec/tilo-live-trial-session"
+trial_remove="$repo_root/os/usr/libexec/tilo-live-trial-remove"
+trial_session_desktop="$repo_root/os/usr/share/wayland-sessions/tilo-live-trial.desktop"
+trial_setup_unit="$repo_root/os/usr/lib/systemd/system/tilo-installer-setup.service"
+trial_module="$repo_root/crates/session/installer/src/live_desktop.rs"
+trial_session_bin="$repo_root/crates/session/installer/src/bin/tilo-live-trial-session.rs"
+if grep -Fq 'TRIAL_REQUEST=/run/tilo-live-trial/request' "$session_select" \
+   && grep -Fq 'exec "$TRIAL_SESSION"' "$session_select" \
+   && grep -Fq 'rm -f "$TRIAL_REQUEST"' "$session_select" \
+   && ! grep -Eq '(^|[^A-Za-z_])eval ' "$session_select"; then
+  ok "the live desktop starts only from a fixed request and consumes it"
+else
+  bad "the live desktop can start without a consumed fixed request"
+fi
+
+if grep -Fq 'create_new(true)' "$trial_module" \
+   && grep -Fq 'live-desktop\n' "$trial_module" \
+   && grep -Fq '"/run/tilo-live-trial"' "$trial_module" \
+   && ! grep -Fq 'Command::new' "$trial_module"; then
+  ok "asking for the live desktop writes one fixed word and runs nothing"
+else
+  bad "the live desktop request is not the fixed word it must be"
+fi
+
+if grep -Fq -- '--system --no-create-home' "$trial_setup_unit" \
+   && grep -Fq -- '--shell /usr/sbin/nologin' "$trial_setup_unit" \
+   && grep -Fq 'getent passwd tilo-trial' "$trial_setup_unit" \
+   && grep -Fq '/usr/sbin/runuser' "$trial_session_bin" \
+   && ! grep -Eq 'useradd .*(wheel|adm)' "$trial_setup_unit" \
+   && ! grep -Fq 'nologin' "$trial_remove" \
+   && grep -Fq 'rm -rf --one-file-system' "$trial_remove"; then
+  ok "the live desktop runs as its own unprivileged, homed, disposable account"
+else
+  bad "the live desktop account is privileged or its home is not disposable"
+fi
+
+# A medium that can be installed onto itself is a development medium. The
+# marker is written only by the dev build and removed by the published image.
+if grep -Fq 'installer-dev-login' "$builder" \
+   && grep -Fq 'rm -f /usr/share/tilo/installer-dev-login' "$containerfile" \
+   && grep -Fq 'may_install_to_medium' "$installer_disks" \
+   && ! grep -rFq 'installer-dev-login' "$repo_root/os/usr/libexec/tilo-install" "$repo_root/os/usr/libexec/tilo-disk-encrypt"; then
+  ok "only a development medium may install onto its own disk"
+else
+  bad "a published installation medium can install onto its own disk"
+fi
+
+if grep -Fq 'NoDisplay=true' "$trial_session_desktop" \
+   && grep -Fq 'Exec=/usr/libexec/tilo-live-trial-session' "$trial_session_desktop"; then
+  ok "the live desktop is a session entry the login greeter never offers"
+else
+  bad "the live desktop would appear as a login session choice"
+fi
+
 if bash "$repo_root/os/tests/live_installer_service_invariants.sh"; then
   ok "durable-identity services stay quiet only on disposable installer media"
 else
