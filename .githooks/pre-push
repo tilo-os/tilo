@@ -62,7 +62,11 @@ if [ -n "$change" ] && [ -f "$passed" ] && earlier=$(grep -m1 "^$change " "$pass
 fi
 gate_passed() {
   [ -n "$change" ] || return 0
-  { tail -n 199 "$passed" 2>/dev/null; echo "$change ${pushed:0:10}"; } >"$passed.new" && mv "$passed.new" "$passed"
+  # Every worktree of the clone shares the record, and two of them can push at once: each
+  # writes a file of its own and renames it into place, so neither loses the other's file.
+  local next
+  next=$(mktemp "$passed.XXXXXX") || return 0
+  { tail -n 199 "$passed" 2>/dev/null; echo "$change ${pushed:0:10}"; } >"$next" && mv "$next" "$passed"
 }
 
 if ! git config --get merge.generated.driver >/dev/null; then
