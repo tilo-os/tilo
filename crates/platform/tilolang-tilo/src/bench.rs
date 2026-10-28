@@ -13,8 +13,9 @@
 //!   `index_build`, building the package's index from the record, as a room opened for the
 //!   first time (or with an index it cannot trust) does off the frame.
 //! * `search`: a typed query (the title of the room's middle resource) found across the room's
-//!   texts and read back as hits; the first query after opening, which may take in the room's
-//!   texts, is recorded beside it as `first_ms`.
+//!   texts and read back as hits. Beside it, the first query on a room just opened, on the frame
+//!   (`first_ms`, finding `first_hits`), which starts taking in the room's texts off the frame,
+//!   and when a search after that answers it (`answered_ms`).
 //! * `first_frame`: from the saved room to the first frame, the record loading on a thread of
 //!   its own while the window opens over the index; `first_write`, the first change right
 //!   after that frame, which waits for the record.
@@ -1568,9 +1569,16 @@ fn search(sized: &Sized<'_>) -> Result<Option<Record>, String> {
     let Some(query) = titles.get(titles.len() / 2).cloned() else {
         return Ok(None);
     };
+    drop(room);
+    // A room just opened: the first query, on the frame, starts taking in its search index off
+    // the frame; a search after that ends answers it.
+    let room = sized.open()?;
     let start = Instant::now();
-    let first = crate::search::find(&room.host, &query, 20);
+    let early = crate::search::find(&room.host, &query, 20);
     let first_ms = ms(start.elapsed());
+    room.host.wait_index();
+    let first = crate::search::find(&room.host, &query, 20);
+    let answered_ms = ms(start.elapsed());
     let mut samples = Vec::new();
     for _ in 0..sized.config.samples {
         let start = Instant::now();
@@ -1581,7 +1589,13 @@ fn search(sized: &Sized<'_>) -> Result<Option<Record>, String> {
         "search",
         "ms",
         samples,
-        json!({"first_ms": first_ms, "query": query, "hits": first.len()}),
+        json!({
+            "first_ms": first_ms,
+            "first_hits": early.len(),
+            "answered_ms": answered_ms,
+            "query": query,
+            "hits": first.len(),
+        }),
     )))
 }
 

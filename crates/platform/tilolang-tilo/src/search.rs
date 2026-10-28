@@ -98,7 +98,8 @@ fn hit_at(view: &View<'_>, meta: &Meta, path: &str, ty: &str) -> Option<Hit> {
 }
 
 /// Every hit of the room, by package and path, read from the indexes now: what a catalogue
-/// that keeps its own copy takes in.
+/// that keeps its own copy takes in. A package whose search index is being taken in off the
+/// frame has none yet ([`crate::index::search`]).
 #[must_use]
 pub fn every_hit(host: &Host) -> Vec<Hit> {
     let snapshot = host.store().snapshot();
@@ -107,7 +108,7 @@ pub fn every_hit(host: &Host) -> Vec<Hit> {
         let Some(view) = snapshot.view(&package.meta.app) else {
             continue;
         };
-        let Ok(found) = view.snapshot.search().resources() else {
+        let Ok(Some(found)) = view.snapshot.search().resources() else {
             continue;
         };
         for path in found {
@@ -123,7 +124,8 @@ pub fn every_hit(host: &Host) -> Vec<Hit> {
 /// The resources whose texts hold `query`, folded as everywhere in Tilo: inside a word or at its
 /// start, its words spread over the texts, the last as typed so far. The best first: a match in
 /// what names a resource ranks above one in its other texts. The first `limit` of them, read
-/// from the indexes' search indexes.
+/// from the indexes' search indexes: none of a package whose search index is being taken in off
+/// the frame, which a search after it is answers.
 #[must_use]
 pub fn find(host: &Host, query: &str, limit: usize) -> Vec<Hit> {
     let snapshot = host.store().snapshot();
@@ -132,7 +134,7 @@ pub fn find(host: &Host, query: &str, limit: usize) -> Vec<Hit> {
         let Some(view) = snapshot.view(&package.meta.app) else {
             continue;
         };
-        let Ok(hits) = view.snapshot.search().find(query, limit) else {
+        let Ok(Some(hits)) = view.snapshot.search().find(query, limit) else {
             continue;
         };
         for Found { resource, rank } in hits {

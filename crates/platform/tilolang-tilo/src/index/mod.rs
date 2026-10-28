@@ -374,7 +374,11 @@ impl Index {
         Self {
             app: app.to_owned(),
             schema: schema.to_owned(),
-            search: Arc::new(Search::new(Arc::clone(&db), Arc::clone(&stats))),
+            search: Arc::new(Search::new(
+                Arc::clone(&db),
+                Arc::clone(&stats),
+                path.is_some(),
+            )),
             db,
             stats,
             path,
@@ -395,6 +399,12 @@ impl Index {
     #[must_use]
     pub fn stats(&self) -> &Arc<IndexStats> {
         &self.stats
+    }
+
+    /// What search finds the index's resources by (see [`Snapshot::search`]).
+    #[must_use]
+    pub(crate) fn search(&self) -> &Search {
+        &self.search
     }
 
     /// The heads the index reflects, when it is a complete index of this format and of the
@@ -697,7 +707,7 @@ impl Snapshot {
     }
 
     /// What search finds the resources of the index by: the index's search index, taken in
-    /// from the index's last commit when first read.
+    /// from the index's last commit ([`search`]).
     #[must_use]
     pub fn search(&self) -> &Search {
         &self.search
