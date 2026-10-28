@@ -308,16 +308,12 @@ fn a_room_push_never_waits_for_another_threads_hold_on_the_tree() {
     assert_eq!(net.next_deadline(), None);
 }
 
-/// Whether `tree` holds the tab `tab` in any of its workspaces.
-fn holds_tab(tree: &crate::shell::state::WorkspaceTreeHandle, tab: u64) -> bool {
-    tree.read()
-        .desktop
-        .workspaces
-        .iter()
-        .flat_map(|workspace| &workspace.strips)
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
-        .any(|held| held.id == tab)
+/// The heads of `room`'s document in `tree`.
+fn room_heads(
+    tree: &crate::shell::state::WorkspaceTreeHandle,
+    room: RoomId,
+) -> Vec<automerge::ChangeHash> {
+    tree.write().room_heads(room)
 }
 
 /// A peer's batch for a room is admitted by decoding it in a worker process
@@ -326,9 +322,7 @@ fn holds_tab(tree: &crate::shell::state::WorkspaceTreeHandle, tab: u64) -> bool 
 /// goes on, and the tree stays free for the loop while the batch waits.
 #[test]
 fn a_peers_room_batch_merges_off_the_loop() {
-    use crate::shell::state::{
-        AppKind, PeerOrigin, Strip, StripId, WindowGroup, WindowWidth, Workspace, WorkspaceId,
-    };
+    use crate::shell::state::{PeerOrigin, Workspace, WorkspaceId};
     const LAPTOP: u16 = 0x1A97;
     const BOARD: u16 = 0xB0A2;
     let identity = ed25519_dalek::SigningKey::from_bytes(&[0x41; 32])
@@ -344,29 +338,12 @@ fn a_peers_room_batch_merges_off_the_loop() {
     let id = WorkspaceId(tilo_desktop_model::compose_id(LAPTOP, 1));
     let mut workspace = Workspace::in_room(id, room, "Research");
     workspace.set_owner(person.clone());
-    let tab = tilo_desktop_model::compose_id(LAPTOP, 30);
-    let mut strip = Strip::new(StripId(tilo_desktop_model::compose_id(LAPTOP, 10)), "Main");
-    strip.window_groups.push(WindowGroup {
-        id: tilo_desktop_model::compose_id(LAPTOP, 20),
-        tabs: vec![Tab {
-            id: tab,
-            title: "Draft".into(),
-            tile: TileContent::AppPlaceholder {
-                kind: AppKind::Other("Notes".into()),
-                label: "Draft".into(),
-            },
-            app_title: None,
-        }],
-        active_tab: tab,
-        width: WindowWidth::Normal,
-        maximized: false,
-        focus_history: Vec::new(),
-    });
-    workspace.strips.push(strip);
     laptop.desktop.workspaces.push(workspace);
     laptop.desktop.active = id;
     laptop.sync_room_doc(room);
     let changes = laptop.export_room_changes_since(room, &[]).unwrap();
+    let laptop_heads = laptop.room_heads(room);
+    assert!(!laptop_heads.is_empty(), "the laptop wrote the room");
 
     let mut board = WorkspaceTree::default();
     board.set_salt_override(BOARD);
@@ -404,11 +381,11 @@ fn a_peers_room_batch_merges_off_the_loop() {
         })
         .unwrap();
     net.frame_tick();
+    let during = room_heads(&tree, room);
     assert!(
-        !holds_tab(&tree, tab),
-        "the loop hands the batch over rather than admitting it itself"
+        !laptop_heads.iter().all(|head| during.contains(head)),
+        "the loop hands the batch over rather than admitting it itself: {during:?} holds {laptop_heads:?}"
     );
-    drop(tree.write());
 
     release.send(()).unwrap();
     let (done, finished) = mpsc::channel::<()>();
@@ -418,5 +395,9 @@ fn a_peers_room_batch_merges_off_the_loop() {
     );
     finished.recv().unwrap();
     drop(net);
-    assert!(holds_tab(&tree, tab), "the batch landed from the worker");
+    let after = room_heads(&tree, room);
+    assert!(
+        laptop_heads.iter().all(|head| after.contains(head)),
+        "the batch landed from the worker: {after:?} holds {laptop_heads:?}"
+    );
 }
