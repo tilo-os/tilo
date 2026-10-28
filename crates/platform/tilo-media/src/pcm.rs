@@ -5,6 +5,8 @@
 //! a waveform reduces it to peaks as it arrives. Either way the caller picks
 //! the rate and channel count, so the samples are directly usable whatever
 //! the file held.
+//!
+//! [`Playback`] is the other direction: mixed samples out to the speakers.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -142,11 +144,11 @@ fn pull(
     on_samples: &mut impl FnMut(&[f32]),
 ) -> PcmEnd {
     let bus = pipeline.bus();
-    let deadline = std::time::Instant::now() + budget;
+    let started = std::time::Instant::now();
     let mut got_any = false;
     let mut words = Vec::new();
     loop {
-        if std::time::Instant::now() >= deadline {
+        if started.elapsed() >= budget {
             return PcmEnd::TimedOut;
         }
         if let Some(bus) = bus.as_ref()
@@ -195,6 +197,126 @@ fn pull(
     }
 }
 
+/// Mixed interleaved stereo `f32` at [`crate::audio_output::RATE`], played
+/// on the host's output as it is pushed.
+///
+/// A hosted app plays through the host's governed output route (it holds no
+/// audio device of its own); otherwise `autoaudiosink` picks whatever the
+/// machine offers. Pushing blocks while the output's queue is full, which is
+/// what paces a mixing thread without a timer of its own.
+pub struct Playback {
+    out: Out,
+}
+
+enum Out {
+    Host(Box<dyn crate::audio_output::Output>),
+    Local {
+        pipeline: gst::Pipeline,
+        src: gst_app::AppSrc,
+        pushed: u64,
+    },
+}
+
+impl Playback {
+    /// The output, or `None` on a machine with none.
+    #[must_use]
+    pub fn open() -> Option<Self> {
+        if crate::audio_output::is_governed() {
+            return match crate::audio_output::open() {
+                Ok(out) => Some(Self {
+                    out: Out::Host(out),
+                }),
+                Err(error) => {
+                    tracing::info!("pcm: no host audio output: {error}");
+                    None
+                }
+            };
+        }
+        gst::init().ok()?;
+        let pipeline = gst::Pipeline::new();
+        let src = gst_app::AppSrc::builder()
+            .caps(
+                &gst::Caps::builder("audio/x-raw")
+                    .field("format", "F32LE")
+                    .field("channels", i32::from(crate::audio_output::CHANNELS))
+                    .field("rate", i32::try_from(crate::audio_output::RATE).ok()?)
+                    .field("layout", "interleaved")
+                    .build(),
+            )
+            .is_live(true)
+            .format(gst::Format::Time)
+            .block(true)
+            .build();
+        let convert = gst::ElementFactory::make("audioconvert").build().ok()?;
+        let resample = gst::ElementFactory::make("audioresample").build().ok()?;
+        let out = gst::ElementFactory::make("autoaudiosink").build().ok()?;
+        pipeline
+            .add_many([src.upcast_ref(), &convert, &resample, &out])
+            .ok()?;
+        gst::Element::link_many([src.upcast_ref(), &convert, &resample, &out]).ok()?;
+        pipeline.set_state(gst::State::Playing).ok()?;
+        Some(Self {
+            out: Out::Local {
+                pipeline,
+                src,
+                pushed: 0,
+            },
+        })
+    }
+
+    /// Play `samples` after what was pushed before. `false` once the output
+    /// has gone away.
+    pub fn push(&mut self, samples: &[f32]) -> bool {
+        match &mut self.out {
+            Out::Host(out) => samples
+                .chunks(crate::audio_output::MAX_SAMPLES)
+                .all(|chunk| out.write(&to_s16(chunk)).is_ok()),
+            Out::Local { src, pushed, .. } => {
+                let channels = u64::from(crate::audio_output::CHANNELS);
+                let rate = u64::from(crate::audio_output::RATE);
+                let frames = (samples.len() as u64).checked_div(channels).unwrap_or(0);
+                let ns = |f: u64| {
+                    f.saturating_mul(1_000_000_000)
+                        .checked_div(rate)
+                        .unwrap_or(0)
+                };
+                let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+                let mut buffer = gst::Buffer::from_mut_slice(bytes);
+                if let Some(b) = buffer.get_mut() {
+                    b.set_pts(gst::ClockTime::from_nseconds(ns(*pushed)));
+                    b.set_duration(gst::ClockTime::from_nseconds(ns(frames)));
+                }
+                *pushed = pushed.saturating_add(frames);
+                src.push_buffer(buffer).is_ok()
+            }
+        }
+    }
+}
+
+impl Drop for Playback {
+    fn drop(&mut self) {
+        match &mut self.out {
+            Out::Host(out) => out.close(),
+            Out::Local { pipeline, .. } => {
+                let _ = pipeline.set_state(gst::State::Null);
+            }
+        }
+    }
+}
+
+/// `f32` samples as signed 16-bit, clamped. 32767 rather than 32768: scaling
+/// by the negative limit lets +1.0 overflow to -32768, a full-scale click.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "clamped to -1..1 first, so the scaled value fits i16"
+)]
+fn to_s16(samples: &[f32]) -> Vec<i16> {
+    samples
+        .iter()
+        .map(|s| (s.clamp(-1.0, 1.0) * 32767.0).round() as i16)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,7 +345,7 @@ mod tests {
             8_000,
             1,
             Duration::from_secs(600),
-            |s| samples += s.len(),
+            |s| samples = samples.saturating_add(s.len()),
         );
         assert_eq!(samples, 0, "there is no audio in junk");
         assert!(

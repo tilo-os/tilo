@@ -36,12 +36,9 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 
-# Decode/preview/export runs through GStreamer, linked only under the
-# `gst` feature so the default fleet build (and `--shots`) compiles without
-# the gstreamer-1.0 dev headers present. ffmpeg is intentionally not a dep.
-gstreamer = { workspace = true, optional = true }
+# Decode, playback and export run through tilo-media, which links GStreamer
+# under the `decode` and `gst` features. ffmpeg is intentionally not a dep.
 media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
-gstreamer-app = { version = "0.24", optional = true }
 # Bin swatches and filmstrip frames come from the shared preview pipeline.
 tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 
@@ -54,6 +51,11 @@ tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
 tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
 # The compose probe example writes rendered frames for inspection.
+
+# Tests generate their fixture media with GStreamer.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+gstreamer.workspace = true
+gstreamer-app.workspace = true
 
 # The page build has no GStreamer: the editor runs with representative
 # preview frames there (the preview's blocking frame-exact seeks need an
@@ -71,10 +73,10 @@ thin = ["dep:runtime-dylib"]
 default = ["decode", "gst"]
 # Decode and waveform support for the preview canvas through
 # `media::MediaEngine` and its appsink.
-decode = ["media/decode", "tilo-thumbnail/video", "dep:gstreamer", "dep:gstreamer-app"]
+decode = ["media/decode", "tilo-thumbnail/video"]
 # GStreamer encode and mux support. Kept separate so preview-only builds can
 # use `--no-default-features --features decode`.
-gst = ["dep:gstreamer", "dep:gstreamer-app", "media/encode", "media/decode"]
+gst = ["media/encode", "media/decode"]
 
 [lints]
 workspace = true

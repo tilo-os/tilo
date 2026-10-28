@@ -1084,32 +1084,7 @@ mod gst_pipeline {
     use super::*;
     use std::sync::atomic::Ordering;
 
-    use gstreamer as gst;
-    use gstreamer::prelude::*;
-    use gstreamer_app as gst_app;
-
-    /// All exits must stop the encoder and remove an incomplete container,
-    /// including allocation, GPU setup and push failures.
-    struct OutputGuard<'a> {
-        pipeline: gst::Pipeline,
-        output: &'a Output<'a>,
-        keep: bool,
-    }
-
-    impl Drop for OutputGuard<'_> {
-        fn drop(&mut self) {
-            let _ = self.pipeline.set_state(gst::State::Null);
-            if !self.keep {
-                self.output.discard();
-            }
-        }
-    }
-
-    /// Cumulative boundaries avoid truncating 1/30 or 1/60 second once per
-    /// frame, which otherwise shortens the file and drifts against the PCM.
-    pub(super) fn frame_time(i: u64, fps: f64) -> gst::ClockTime {
-        gst::ClockTime::from_nseconds((i as f64 * 1_000_000_000.0 / fps).round() as u64)
-    }
+    use media::encode::graph::Graph;
 
     /// How long the flush may go without progress before the export gives up.
     ///
@@ -1133,8 +1108,6 @@ mod gst_pipeline {
         destination: &std::path::Path,
         state: &super::JobState,
     ) -> Result<String, String> {
-        gst::init().map_err(|e| format!("GStreamer init failed: {e}"))?;
-
         tilo_files::file_at(destination)
             .map_err(|e| format!("Cannot write to this output path: {e}"))?;
         let (w, h) = output_dims(&settings, project);
@@ -1150,8 +1123,8 @@ mod gst_pipeline {
         let with_audio = crate::audio::has_audio(project);
         // State which encoders this machine actually resolved to, so a slow
         // export is diagnosable — "it fell back to openh264enc because no
-        // vah264enc is installed" rather than a guess. `gst::init` above has
-        // populated the registry, so this is read, not assumed.
+        // vah264enc is installed" rather than a guess. The registry is read,
+        // not assumed.
         tracing::info!(
             "export: {}",
             selected_encoders(settings.container).describe()
@@ -1168,58 +1141,37 @@ mod gst_pipeline {
         Ok(out_str)
     }
 
-    /// Push every composited frame of the timeline into the `appsrc` of
-    /// `encode`'s graph, encode and mux, and finish its output. Blocks until
-    /// the pipeline reaches EOS (or errors), then returns how many frames
-    /// were written. Any failure is surfaced verbatim and discards the
-    /// output — nothing claims success unless a real file was produced.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one export pipeline: probe, encode, mux and finish in order, sharing cleanup on every exit"
-    )]
+    /// Push every composited frame of the timeline into `encode`'s graph,
+    /// encode and mux, and finish its output. Blocks until the graph has
+    /// finished the file (or failed), then returns how many frames were
+    /// written. Any failure is surfaced verbatim and discards the output —
+    /// nothing claims success unless a real file was produced.
     pub fn encode_with(
         project: &Project,
         encode: &Encode<'_>,
         state: &super::JobState,
     ) -> Result<u64, String> {
-        gst::init().map_err(|e| format!("GStreamer init failed: {e}"))?;
+        let out = &encode.output;
+        let result = encode_frames(project, encode, state).and_then(|total| match out.len() {
+            Some(len) if len > 0 => Ok(total),
+            Some(_) => Err("export produced an empty file".to_string()),
+            None => Err("export wrote no file".to_string()),
+        });
+        if result.is_err() {
+            out.discard();
+        }
+        result
+    }
+
+    fn encode_frames(
+        project: &Project,
+        encode: &Encode<'_>,
+        state: &super::JobState,
+    ) -> Result<u64, String> {
         let (w, h, fps) = (encode.width, encode.height, encode.fps);
         let with_audio = crate::audio::has_audio(project);
         let out = &encode.output;
-        let pipeline = gst::parse::launch(&encode.desc)
-            .map_err(|e| format!("build export pipeline: {e}"))?
-            .downcast::<gst::Pipeline>()
-            .map_err(|_| "export pipeline is not a Pipeline".to_string())?;
-        let mut output = OutputGuard {
-            pipeline: pipeline.clone(),
-            output: out,
-            keep: false,
-        };
-
-        let appsrc = pipeline
-            .by_name("tilo_src")
-            .and_then(|e| e.downcast::<gst_app::AppSrc>().ok())
-            .ok_or_else(|| "export appsrc not found".to_string())?;
-        appsrc.set_format(gst::Format::Time);
-
-        let audio_src = if with_audio {
-            match pipeline
-                .by_name("tilo_audio")
-                .and_then(|e| e.downcast::<gst_app::AppSrc>().ok())
-            {
-                Some(a) => {
-                    a.set_format(gst::Format::Time);
-                    Some(a)
-                }
-                None => return Err("export audio appsrc not found".to_string()),
-            }
-        } else {
-            None
-        };
-
-        pipeline
-            .set_state(gst::State::Playing)
-            .map_err(|e| format!("start export pipeline: {e}"))?;
+        let graph = Graph::start(&encode.desc, with_audio, fps)?;
 
         // The frames come off the very same GPU compositor the preview
         // canvas draws through — layer stack, grade, effect chain,
@@ -1256,9 +1208,6 @@ mod gst_pipeline {
                 // frame is short, and stopping mid-buffer would leave the
                 // muxer holding a partial sample.
                 if state.cancel.load(Ordering::Relaxed) {
-                    let _ = pipeline.set_state(gst::State::Null);
-                    // A half-written file must not be left looking like a render.
-                    out.discard();
                     return Err(super::CANCELLED.to_string());
                 }
                 let rgba = compositor.frame(project, t, w, h, &mut sources);
@@ -1266,8 +1215,6 @@ mod gst_pipeline {
                     break rgba;
                 };
                 if ui::time::now().saturating_duration_since(asked) >= state.frame_patience {
-                    let _ = pipeline.set_state(gst::State::Null);
-                    out.discard();
                     return Err(super::no_picture_reason(
                         project,
                         media,
@@ -1276,121 +1223,39 @@ mod gst_pipeline {
                     ));
                 }
             };
-            let pts = frame_time(i, fps);
-            let frame_dur = frame_time(i + 1, fps) - pts;
             debug_assert_eq!(rgba.len(), frame_bytes);
-            let mut buffer = gst::Buffer::with_size(frame_bytes)
-                .map_err(|_| "allocate export frame buffer".to_string())?;
-            {
-                #[expect(
-                    clippy::expect_used,
-                    reason = "a buffer allocated on the line above has no other owner"
-                )]
-                let bref = buffer.get_mut().expect("fresh buffer is uniquely owned");
-                bref.set_pts(pts);
-                bref.set_duration(frame_dur);
-                let mut map = bref
-                    .map_writable()
-                    .map_err(|_| "map export frame buffer".to_string())?;
-                map.copy_from_slice(&rgba);
-            }
-            if let Err(e) = appsrc.push_buffer(buffer) {
-                let _ = pipeline.set_state(gst::State::Null);
-                return Err(format!("push export frame {i}: {e:?}"));
-            }
             // One frame's worth of mixed audio, pushed alongside the picture
             // so the two streams stay in step without a separate clock.
-            if let Some(audio) = &audio_src {
-                let frames = audio_frames_for(i, fps);
-                let block = crate::audio::mix_block(project, t, frames, &mut pcm);
-                let bytes = crate::audio::to_s16le(&block);
-                let mut buffer = gst::Buffer::with_size(bytes.len())
-                    .map_err(|_| "allocate export audio buffer".to_string())?;
-                {
-                    #[expect(
-                        clippy::expect_used,
-                        reason = "a buffer allocated on the line above has no other owner"
-                    )]
-                    let bref = buffer.get_mut().expect("fresh buffer is uniquely owned");
-                    bref.set_pts(pts);
-                    bref.set_duration(frame_dur);
-                    let mut map = bref
-                        .map_writable()
-                        .map_err(|_| "map export audio buffer".to_string())?;
-                    map.copy_from_slice(&bytes);
-                }
-                if let Err(e) = audio.push_buffer(buffer) {
-                    let _ = pipeline.set_state(gst::State::Null);
-                    return Err(format!("push export audio {i}: {e:?}"));
-                }
-            }
+            let sound = with_audio.then(|| {
+                let block = crate::audio::mix_block(project, t, audio_frames_for(i, fps), &mut pcm);
+                crate::audio::to_s16le(&block)
+            });
+            graph.push(i, &rgba, sound.as_deref())?;
             state.wrote(i + 1);
         }
-        appsrc
-            .end_of_stream()
-            .map_err(|e| format!("end export stream: {e:?}"))?;
-        if let Some(audio) = &audio_src {
-            audio
-                .end_of_stream()
-                .map_err(|e| format!("end export audio stream: {e:?}"))?;
-        }
 
-        // Wait for EOS (or an error) so the muxer flushes a complete file.
-        let bus = pipeline
-            .bus()
-            .ok_or_else(|| "export pipeline bus".to_string())?;
-        let mut result = Ok(());
+        // Wait for the muxer to flush a complete file.
         let mut watch = FlushWatch::new(out.len().unwrap_or(0), ui::time::now());
-        loop {
-            use gst::MessageView;
+        graph.finish(|activity| {
+            let now = ui::time::now();
             if state.cancel.load(Ordering::Relaxed) {
-                result = Err(super::CANCELLED.to_string());
-                break;
+                return Err(super::CANCELLED.to_string());
+            }
+            if activity {
+                watch.observe_activity(now);
             }
             if let Some(len) = out.len() {
-                watch.observe_len(len, ui::time::now());
+                watch.observe_len(len, now);
             }
-            if watch.stalled(ui::time::now(), QUIET_LIMIT) {
-                result = Err(format!(
+            if watch.stalled(now, QUIET_LIMIT) {
+                return Err(format!(
                     "the muxer stopped writing {}s ago; giving up on the export",
                     QUIET_LIMIT.as_secs(),
                 ));
-                break;
             }
-            // Short waits rather than one long one, so a cancel arriving
-            // while the muxer flushes is still noticed promptly.
-            let Some(msg) = bus.timed_pop(gst::ClockTime::from_mseconds(200)) else {
-                continue;
-            };
-            watch.observe_activity(ui::time::now());
-            match msg.view() {
-                MessageView::Eos(_) => break,
-                MessageView::Error(e) => {
-                    result = Err(format!(
-                        "export pipeline error: {} ({})",
-                        e.error(),
-                        e.debug().unwrap_or_default()
-                    ));
-                    break;
-                }
-                _ => {}
-            }
-        }
-        let _ = pipeline.set_state(gst::State::Null);
-        if result.is_err() {
-            out.discard();
-        }
-        result?;
-
-        // Never report success unless a real, non-empty file exists.
-        match out.len() {
-            Some(len) if len > 0 => {
-                output.keep = true;
-                Ok(total)
-            }
-            Some(_) => Err("export produced an empty file".to_string()),
-            None => Err("export wrote no file".to_string()),
-        }
+            Ok(())
+        })?;
+        Ok(total)
     }
 }
 
@@ -1643,17 +1508,6 @@ mod tests {
         project.set_mark_in(3600.1);
         project.set_mark_out(3600.2);
         assert_eq!(RenderPlan::new(&project, 30.0).total, 3);
-    }
-
-    #[test]
-    #[cfg(feature = "gst")]
-    fn export_frame_boundaries_do_not_accumulate_timestamp_roundoff() {
-        for fps in [24, 30, 60] {
-            assert_eq!(
-                gst_pipeline::frame_time(3600 * fps, fps as f64),
-                gstreamer::ClockTime::from_seconds(3600),
-            );
-        }
     }
 
     #[test]
