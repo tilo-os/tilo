@@ -119,6 +119,7 @@ mod tests {
             "photos-share-copied",
             "photos-share-failed",
             "photos-smaller-thumbnails",
+            "photos-state-not-kept",
             "photos-tags",
             "photos-time-and-place",
             "photos-timeline",

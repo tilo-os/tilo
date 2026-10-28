@@ -61,14 +61,17 @@ impl PeopleScanProgress {
             .unwrap_or_default()
     }
 
-    pub(super) fn save(&self) {
-        if let (Some(file), Ok(bytes)) = (Self::file(), serde_json::to_vec(self)) {
-            let _ = file.write(&bytes);
-        }
+    /// Keep the scan's progress on this device.
+    ///
+    /// # Errors
+    /// The state location cannot be opened or the file cannot be written.
+    pub(super) fn save(&self) -> Result<(), String> {
+        let file = Self::file().ok_or_else(|| "no state location".to_owned())?;
+        file.write_json(self)
     }
 
     fn file() -> Option<crate::files::StateFile> {
-        crate::files::StateFile::in_state("photos/people-scan.json")
+        crate::files::StateFile::in_state("people-scan.json")
     }
 }
 
@@ -163,6 +166,24 @@ pub(super) fn thumbnail_request(
 }
 
 impl PhotosApp {
+    /// Keep the People scan's progress on this device; a failure waits for
+    /// [`Self::report_state_save_failure`].
+    pub(super) fn save_people_scan_progress(&mut self) {
+        if let Err(error) = self.people_scan_progress.save() {
+            self.state_save_failure = Some(error);
+        }
+    }
+
+    /// Say in the window's bar when keeping this device's People state
+    /// failed. Runs after the frame's other work so its own notice cannot
+    /// hide the failure.
+    pub(super) fn report_state_save_failure(&mut self) {
+        let scan = self.state_save_failure.take();
+        let people = self.people_controller.take_save_failure();
+        if let Some(error) = scan.or(people) {
+            self.notice = Some(tr_with("photos-state-not-kept", "reason", &error));
+        }
+    }
     /// What the notice says when an analysis run finishes.
     fn analysis_finished_notice(&self) -> String {
         tr_args(
@@ -506,7 +527,7 @@ impl PhotosApp {
                     } => analysis_failure(completed.invocation, error),
                     AnalysisOutcome::People(Err(error)) => {
                         self.people_scan_progress.record_failure(error.clone());
-                        self.people_scan_progress.save();
+                        self.save_people_scan_progress();
                         analysis_failure(completed.invocation, error)
                     }
                     AnalysisOutcome::People(Ok(batch)) => {
@@ -517,7 +538,7 @@ impl PhotosApp {
                                 pending.scanned,
                                 pending.total,
                             );
-                            self.people_scan_progress.save();
+                            self.save_people_scan_progress();
                             self.notice = Some(if added == 0 {
                                 tr("photos-people-scan-none")
                             } else {
@@ -529,7 +550,7 @@ impl PhotosApp {
                                     &self.presented(),
                                 ) {
                                     self.people_scan_progress.record_failure(error.clone());
-                                    self.people_scan_progress.save();
+                                    self.save_people_scan_progress();
                                     analysis_failure(completed.invocation, error)
                                 } else {
                                     tilo_actions::InvocationUpdate::Progress {
@@ -558,7 +579,7 @@ impl PhotosApp {
                         } else {
                             self.people_scan_progress
                                 .record_failure(tr("photos-people-scan-lost"));
-                            self.people_scan_progress.save();
+                            self.save_people_scan_progress();
                             analysis_failure(completed.invocation, tr("photos-people-scan-lost"))
                         }
                     }
@@ -889,7 +910,7 @@ impl PhotosApp {
         "running".clone_into(&mut self.people_scan_progress.status);
         self.people_scan_progress.last_error = None;
         self.people_scan_progress.last_library_size = locally_available.len();
-        self.people_scan_progress.save();
+        self.save_people_scan_progress();
         self.active_analysis.insert(invocation);
         self.active_people_scans.insert(invocation);
         self.pending_people_scans.insert(

@@ -533,6 +533,9 @@ pub struct PhotosApp {
     /// Where the last export went, or why it failed. Said in the window's
     /// bar so an action is never silent.
     notice: Option<String>,
+    /// Why keeping this device's People scan progress last failed, until
+    /// the frame says it ([`Self::report_state_save_failure`]).
+    state_save_failure: Option<String>,
     /// [`Self::notice`] in the window's bar for a while once it changes.
     notice_said: ui::widget::toast::Transient<String>,
     /// The notice last said, so only a change is news.
@@ -974,6 +977,7 @@ impl PhotosApp {
             layout_theme: Theme::dark(),
             pending,
             notice: None,
+            state_save_failure: None,
             notice_said: ui::widget::toast::Transient::new(),
             notice_last: None,
             copy: ui::CopyWatch::default(),

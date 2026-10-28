@@ -568,6 +568,7 @@ impl Widget for PhotosApp {
         self.schedule_library_thumbnail(thumbnail_sources, document_changed);
         self.refresh_chrome_text(doc);
         self.refresh_empty_state(doc);
+        self.report_state_save_failure();
         self.publish_notice();
         // A narrow window shows the places on a screen of their own, where
         // the library is not drawn: they come with what the library holds,

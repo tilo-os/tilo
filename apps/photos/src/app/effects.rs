@@ -868,7 +868,7 @@ impl PhotosApp {
             if self.active_people_scans.remove(&invocation) {
                 self.pending_people_scans.remove(&invocation);
                 "cancelled".clone_into(&mut self.people_scan_progress.status);
-                self.people_scan_progress.save();
+                self.save_people_scan_progress();
             }
         }
         if self
