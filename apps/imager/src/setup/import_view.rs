@@ -4700,17 +4700,7 @@ mod tests {
                 mode: super::super::model::FolderMode::Copy,
                 mode_overridden: false,
             };
-            let mut controller =
-                super::super::controller::SetupController::new(super::super::model::Capabilities {
-                    host: super::super::model::HostOs::Linux,
-                    desktop_session: true,
-                    internal_dual_boot: false,
-                });
-            assert!(controller.choose_experience(super::super::model::Experience::Desktop));
-            controller.next().unwrap();
-            controller.add_folder_unresolved(choice.scan);
-            controller.next().unwrap();
-            let mut continuation = Continuation::capture(controller.folders()).unwrap();
+            let mut continuation = Continuation::capture(&[choice]).unwrap();
             assert!(continuation.resolve(0, &destination_parent, false).is_err());
             continuation.resolve(0, &destination_parent, true).unwrap();
             continuation.save(app.store.as_ref().unwrap()).unwrap();

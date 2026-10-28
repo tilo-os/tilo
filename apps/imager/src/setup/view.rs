@@ -3,7 +3,7 @@
 mod guided_desktop;
 mod support_report;
 
-use std::cell::{Ref, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -25,7 +25,6 @@ use ui::widget::{
 };
 
 use super::actions::{HardwareProjection, SetupEffect};
-use super::controller::{SetupController, SetupPage};
 use super::desktop_catalog::{DesktopRelease, PackageFormat, RuntimeEvidence};
 use super::desktop_flow::{DesktopFailureKind, DesktopFlow, DesktopFlowState, DesktopSelection};
 use super::internal_download_flow::InternalDownloadFlow;
@@ -104,9 +103,9 @@ enum WorkerMessage {
     reason = "independent worker, presentation, and invalidation flags do not form one state machine"
 )]
 pub struct SetupApp {
-    controller: Rc<RefCell<SetupController>>,
     capabilities: SetupCapabilities,
-    chosen_experience: Option<Experience>,
+    /// The route the guided journey handed over for review; none before it.
+    experience: Option<Experience>,
     commands: CommandSink,
     worker_tx: Sender<WorkerMessage>,
     worker_rx: Receiver<WorkerMessage>,
@@ -160,15 +159,10 @@ impl SetupApp {
         self.internal_install
             .adopt_reviewed(reviewed, has_release)?;
         self.apply_install_capability();
-        {
-            let mut controller = self.controller.borrow_mut();
-            if !controller.choose_experience(Experience::FullOs) {
-                return Err(super::strings::t("imager-setup-internal-error-unavailable"));
-            }
-            controller.next()?;
-            controller.next()?;
+        if !self.capabilities.platform.supports(Experience::FullOs) {
+            return Err(super::strings::t("imager-setup-internal-error-unavailable"));
         }
-        self.chosen_experience = Some(Experience::FullOs);
+        self.experience = Some(Experience::FullOs);
         self.starts_when_live = false;
         self.refresh_guided_navigation();
         self.status.clear();
@@ -290,8 +284,7 @@ impl SetupApp {
     }
 
     fn review_full_os(&mut self) {
-        self.controller.borrow_mut().review_full_os();
-        self.chosen_experience = Some(Experience::FullOs);
+        self.experience = Some(Experience::FullOs);
         self.refresh_guided_navigation();
         self.status.clear();
     }
@@ -302,8 +295,7 @@ impl SetupApp {
     pub fn for_desktop() -> Self {
         let mut app = Self::new();
         app.desktop_only = true;
-        app.controller.borrow_mut().review_desktop();
-        app.chosen_experience = Some(Experience::Desktop);
+        app.experience = Some(Experience::Desktop);
         app.refresh_guided_navigation();
         app.status.clear();
         app
@@ -366,9 +358,8 @@ impl SetupApp {
                 Err(error) => (None, Some(error)),
             };
         Self {
-            controller: Rc::new(RefCell::new(SetupController::new(capabilities.platform))),
             capabilities,
-            chosen_experience: None,
+            experience: None,
             commands: Rc::new(RefCell::new(Vec::new())),
             worker_tx,
             worker_rx,
@@ -402,17 +393,17 @@ impl SetupApp {
         }
     }
 
-    fn controller(&self) -> Ref<'_, SetupController> {
-        self.controller.borrow()
+    /// The reviewed route; Desktop until the journey hands one over.
+    fn reviewed(&self) -> Experience {
+        self.experience.unwrap_or(Experience::Desktop)
     }
 
     fn on_review_for(&self, experience: Experience) -> bool {
-        let controller = self.controller();
-        controller.page() == SetupPage::Review && controller.plan().experience == experience
+        self.experience == Some(experience)
     }
 
     fn setup_projection(&self) -> super::actions::SetupProjection {
-        let experience = self.controller().plan().experience;
+        let experience = self.reviewed();
         super::actions::SetupProjection {
             experience: match experience {
                 Experience::Desktop => "desktop",
@@ -468,8 +459,7 @@ impl SetupApp {
                 return Ok(self.setup_projection().value());
             }
             SetupEffect::UseMigrationIntent { directory } => {
-                if self.controller().plan().experience != Experience::FullOs
-                    || self.controller().page() != SetupPage::Review
+                if self.experience != Some(Experience::FullOs)
                     || self.internal_install.is_running()
                     || self.internal_install.pending().is_some()
                     || !matches!(self.internal_install.run_state(), RunState::Idle)
@@ -588,13 +578,10 @@ impl SetupApp {
         }
         self.status_is_error = false;
         match command {
-            SetupCommand::Next => match self.controller.borrow_mut().next() {
-                Ok(()) => self.status = "Choices saved for this review.".into(),
-                Err(error) => {
-                    self.status = error;
-                    self.status_is_error = true;
-                }
-            },
+            SetupCommand::Next => {
+                self.status = "Review is the last setup step.".into();
+                self.status_is_error = true;
+            }
             SetupCommand::InstallDesktop => self.start_desktop_install(),
             SetupCommand::CancelDesktopDownload => {
                 if self.desktop_flow.cancel_download() {
@@ -610,11 +597,7 @@ impl SetupApp {
                 }
             },
             SetupCommand::StartInternalDownload => {
-                let on_full_os_review = {
-                    let controller = self.controller.borrow();
-                    controller.page() == SetupPage::Review
-                        && controller.plan().experience == Experience::FullOs
-                };
+                let on_full_os_review = { self.experience == Some(Experience::FullOs) };
                 let result = if on_full_os_review {
                     self.internal_download_flow
                         .as_mut()
@@ -741,7 +724,6 @@ impl SetupApp {
             let mut platform = self.capabilities.platform;
             platform.desktop_session = self.desktop_flow.desktop_available();
             self.capabilities.platform = platform;
-            self.controller.borrow_mut().set_capabilities(platform);
             if self.on_review_for(Experience::Desktop) {
                 match self.desktop_flow.state() {
                     DesktopFlowState::Installed { .. } => {
@@ -1025,7 +1007,7 @@ impl SetupApp {
                     .with_enabled(self.check_ready()),
                 ));
         }
-        let experience = self.controller().plan().experience;
+        let experience = self.reviewed();
         let internal_offered =
             experience == Experience::FullOs && self.internal_install.offers_full_os();
         let mut body = page::stack();
@@ -1073,14 +1055,14 @@ impl SetupApp {
         let body = self.review_body();
         let mut nav = Row::new().no_wrap();
         nav = nav.push(Box::new(Spacer::new()));
-        let internal_nav = self.controller().plan().experience == Experience::FullOs
-            && self.internal_install.offers_full_os();
+        let internal_nav =
+            self.reviewed() == Experience::FullOs && self.internal_install.offers_full_os();
         if internal_nav {
             {
                 nav = self.internal_nav(nav);
             }
         } else {
-            let experience = self.controller().plan().experience;
+            let experience = self.reviewed();
             // The review's main action names what happens; once Desktop is
             // installed there is nothing left to do here.
             let primary = if experience == Experience::FullOs {
@@ -1273,8 +1255,7 @@ impl SetupApp {
             self.check_facts = None;
             self.support_report = None;
         }
-        let wants_report = self.full_os_check.is_some()
-            || self.controller().plan().experience == Experience::FullOs;
+        let wants_report = self.full_os_check.is_some() || self.reviewed() == Experience::FullOs;
         let Some(task) = self.internal_install.probe_task() else {
             return;
         };
@@ -1302,7 +1283,7 @@ impl SetupApp {
         self.composed.invalidate();
     }
 
-    /// Mirror the gated readiness into the capabilities the controller and
+    /// Mirror the gated readiness into the capabilities the review and the
     /// download flow check. A closed gate leaves fixture capabilities alone.
     fn apply_install_capability(&mut self) {
         if !self.internal_install.gate() {
@@ -1311,7 +1292,6 @@ impl SetupApp {
         let mut platform = self.capabilities.platform;
         platform.internal_dual_boot = self.internal_install.offers_full_os();
         self.capabilities.platform = platform;
-        self.controller.borrow_mut().set_capabilities(platform);
         if let Some(flow) = &mut self.internal_download_flow {
             flow.set_capabilities(platform);
         }
@@ -1523,13 +1503,11 @@ impl SetupApp {
 
     fn internal_projection(&self) -> super::actions::InternalProjection {
         let install = &self.internal_install;
-        let page = self.controller().page();
         let on_review = self.on_full_os_review() && self.full_os_check.is_none();
         let ready = install.offers_full_os();
         let flow = self.internal_download_flow.as_ref();
         let running = install.is_running();
         let idle_host = self.host_command_pending.is_none();
-        let resume_page = matches!(page, SetupPage::Experience | SetupPage::Review);
         let pending = install.pending();
         let plan = match install.plan() {
             Some(Ok(plan)) => Some(plan),
@@ -1606,12 +1584,11 @@ impl SetupApp {
                 restart_later: on_review && install.can_restart() && !install.restart_deferred(),
                 retry: self.full_os_check.is_none()
                     && install.gate()
-                    && resume_page
                     && pending.is_some()
                     && !running,
                 remove: self.full_os_check.is_none()
                     && install.gate()
-                    && resume_page
+                    && true
                     && pending.is_some()
                     && !running,
                 firmware_settings: self.on_full_os_review()
@@ -1620,7 +1597,7 @@ impl SetupApp {
                 disable_fast_startup: self.on_full_os_review()
                     && idle_host
                     && install.command_available(HostCommand::DisableFastStartup),
-                recheck: install.gate() && resume_page && !install.is_probing() && !running,
+                recheck: install.gate() && true && !install.is_probing() && !running,
             },
         }
     }
@@ -2184,7 +2161,7 @@ impl ResourceSurface<Imager, SetupEffect> for SetupApp {
 
     fn live_rows(&self) -> Vec<LiveRow> {
         let mut rows = vec![super::actions::row(&self.setup_projection())];
-        if self.controller().plan().experience == Experience::Desktop {
+        if self.reviewed() == Experience::Desktop {
             rows.push(super::actions::desktop_preparation_row(
                 self.guided_delivery_retry_available(),
             ));
@@ -2265,10 +2242,8 @@ mod tests {
     /// a reviewed route to setup.
     fn review(app: &mut SetupApp, experience: Experience) {
         match experience {
-            Experience::Desktop => app.controller.borrow_mut().review_desktop(),
-            Experience::FullOs => app.controller.borrow_mut().review_full_os(),
+            Experience::Desktop | Experience::FullOs => app.experience = Some(experience),
         }
-        app.chosen_experience = Some(experience);
         app.refresh_guided_navigation();
     }
 
@@ -2696,7 +2671,7 @@ mod tests {
         {
             let mut app = supported_fixture();
             review(&mut app, Experience::FullOs);
-            assert_eq!(app.controller().page(), SetupPage::Review);
+            assert_eq!(app.experience, Some(Experience::FullOs));
             app.internal_download_revision =
                 app.internal_download_flow.as_ref().unwrap().revision();
             app.desktop_flow = DesktopFlow::from_fixture_state(DesktopFlowState::Installed {
