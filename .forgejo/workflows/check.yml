@@ -1,12 +1,10 @@
 name: CI / affected packages
 
 # Main is allowed to be unstable, so a commit is never gated before it lands;
-# this workflow measures it after the fact and decides whether `stable` may
-# advance to it (the `promote` job). Selection diffs against the last promoted
-# commit, `stable`, rather than the parent, so intermediate commits are skipped:
-# the plan covers everything main gained since the last good state, which is
-# what `stable` would receive. A newer push cancels the run it supersedes, so
-# one push of a batch runs.
+# this workflow measures every push after the fact. Selection diffs each push
+# against the main commit it was pushed onto (the push's `before`), so every
+# commit main gains is planned exactly once, and no run is cancelled by a later
+# push. `stable` is moved by hand when a release is cut; nothing here writes it.
 #
 # Affected reverse dependencies are checked on native x86; changed packages,
 # their direct dependants (up to one shard's cost, REVERSE_TEST_COST_BUDGET) and
@@ -25,13 +23,10 @@ on:
         type: string
 
 concurrency:
-  # Only the newest main commit is interesting: a push that supersedes an
-  # in-flight run cancels it, so a burst of merges costs one run instead of
-  # one per commit. The cancelled run's commit is still covered, because the
-  # surviving run's plan diffs against `stable`, not against a parent.
-  # A dispatch is never cancelled: it asks for a full qualification.
-  group: check-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'push' }}
+  # One run per pushed commit: each push plans only the commits it added, so
+  # cancelling a run would leave those commits untested.
+  group: check-${{ github.event_name }}-${{ github.sha }}
+  cancel-in-progress: false
 
 env:
   CARGO_BUILD_JOBS: "4"
@@ -115,14 +110,10 @@ jobs:
           fetch-depth: 0
           filter: blob:none
 
-      # The comparison base is the last commit main promoted, not the commit
-      # before this one: commits main skipped over are covered by the same
-      # diff, so a batch of pushes is planned once.
-      - name: Fetch the promoted base
+      - name: Fetch main and tags
         shell: bash
         run: |
           git fetch origin \
-            +refs/heads/stable:refs/remotes/origin/stable \
             +refs/heads/main:refs/remotes/origin/main \
             +refs/tags/*:refs/tags/* || true
 
@@ -145,7 +136,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           PULL_REQUEST_BASE: ${{ steps.merge.outputs.main }}
-          STABLE_REF: origin/stable
+          PUSH_BEFORE: ${{ github.event.before }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           HEAD_SHA: ${{ github.sha }}
         run: bash tools/ci/select.sh
@@ -908,31 +899,3 @@ jobs:
               exit 1
               ;;
           esac
-
-  # Main is unstable by policy, so this is where a commit becomes stable: the
-  # aggregate above decides what "green" means for this commit, and this job
-  # fast-forwards the promotion ref to exactly the commit the run tested.
-  # Nothing is built or published here; the release workflows run from stable.
-  # A tooling tree that classified the commit (or one that its own change
-  # predates) cannot promote it, so the run is cancelled rather than queued
-  # behind a foreign push.
-  # Requires the STABLE_PUSH_TOKEN secret (docs/ci/stable-promotion.md).
-  promote:
-    needs: [checks]
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.checks.result == 'success' }}
-    runs-on: runner-quality
-    timeout-minutes: 10
-    concurrency:
-      group: promote-stable
-      cancel-in-progress: false
-    steps:
-      - name: Checkout the promoted commit
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          fetch-depth: 0
-          filter: blob:none
-
-      - name: Fast-forward stable to the tested commit
-        env:
-          STABLE_PUSH_TOKEN: ${{ secrets.STABLE_PUSH_TOKEN }}
-        run: python3 tools/ci/promote_stable.py --target "$GITHUB_SHA"
