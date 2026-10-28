@@ -1740,14 +1740,6 @@ suite = "os/kernel/tests/test-rpm.sh"
 reason = "needs the built kernel RPM; kernel-acceptance-<arch> runs it"
 
 [[unrequired]]
-suite = "os/test-vm-headless.sh"
-reason = "boots a built image in a VM (KVM)"
-
-[[unrequired]]
-suite = "os/test-vm.sh"
-reason = "boots a built image in a VM (KVM)"
-
-[[unrequired]]
 suite = "os/containers/tilo-relay/test_probe_sccache.py"
 reason = "timing-sensitive: a 50 ms client timeout races Python start-up and fails under CPU contention"
 

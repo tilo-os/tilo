@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 quick-xml.workspace = true
+regex.workspace = true
 base64.workspace = true
 chrono = { workspace = true, features = ["clock", "std"] }
 clap.workspace = true
@@ -33,6 +34,9 @@ tilo-vm-protocol = { path = "../tilo-vm-protocol" }
 toml.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [dev-dependencies]
 tilo-test-env = { path = "../test-env" }

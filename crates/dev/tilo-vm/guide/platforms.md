@@ -54,6 +54,19 @@ script's own conventions. It is the headless adapter for CI and scenario
 tests: its VMs do not appear in virt-manager or Boxes, so it is never the
 default, and it runs only from a Tilo worktree.
 
+Every QEMU command line, that script's included, comes from `tilo-vm qemu`:
+`qemu boot` starts a disk in the background with its monitor, serial log,
+console socket, variable store and software TPM in one run directory;
+`qemu run` boots in the foreground until the serial line matches `--ready`
+or `--fail` (with the kernel's own boot time under `--kernel-time`) and powers
+off; `qemu firmware` prints the OVMF/AAVMF build and variable store the
+settings resolve to, refusing a TPM on a firmware that cannot measure;
+`qemu args` prints the command line without starting anything. `tilo-vm qemu
+<command> --help` lists the machine options (architecture, accelerator,
+disks with serials, overlays and blank targets, display, input, TPM, Secure
+Boot keys, S3, port forwards, a second LAN NIC, audio capture, console and
+virtio-serial ports).
+
 If a builder exposes no `/dev/kvm`, explicitly request `--emulated` with
 libvirt to use TCG even for the host's own architecture. Creation still
 requires a working user-session QEMU driver advertising that architecture's

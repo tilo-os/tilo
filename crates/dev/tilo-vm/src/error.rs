@@ -316,6 +316,8 @@ pub enum CliError {
     },
     #[error("{what} runs from a Tilo worktree (it drives os/dev/vm.sh)")]
     NeedsWorktree { what: String },
+    #[error("{detail}")]
+    Qemu { detail: String, remedy: String },
 }
 
 impl CliError {
@@ -557,6 +559,7 @@ impl CliError {
             Self::NeedsWorktree { what } => format!(
                 "run {what} from a checkout of the Tilo repository, where os/dev/vm.sh lives"
             ),
+            Self::Qemu { remedy, .. } => remedy.clone(),
         }
     }
 
@@ -576,7 +579,8 @@ impl CliError {
             | Self::DiskExists { .. }
             | Self::ChecksumMismatch { .. }
             | Self::DownloadFailed { .. }
-            | Self::RootKeyRefused { .. } => "platforms",
+            | Self::RootKeyRefused { .. }
+            | Self::Qemu { .. } => "platforms",
             Self::SudoRefused { .. }
             | Self::DeviceAsleep { .. }
             | Self::WakeTimeout { .. }
@@ -993,12 +997,17 @@ mod tests {
             CliError::NeedsWorktree {
                 what: "tilo-vm scenario install".into(),
             },
+            CliError::Qemu {
+                detail: "no OVMF firmware".into(),
+                remedy: "install edk2-ovmf".into(),
+            },
         ];
         for error in &all {
             match error {
                 CliError::ScenarioMedium { .. }
                 | CliError::Scenario { .. }
                 | CliError::NeedsWorktree { .. }
+                | CliError::Qemu { .. }
                 | CliError::NoVm { .. }
                 | CliError::KernelBuild { .. }
                 | CliError::KernelNotRunning { .. }
