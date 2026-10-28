@@ -14931,6 +14931,7 @@ dependencies = [
  "accesskit_unix",
  "account-custody",
  "accounts",
+ "activity",
  "agent-provider-config",
  "app-catalogue",
  "app-cli",

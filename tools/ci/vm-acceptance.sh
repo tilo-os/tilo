@@ -219,7 +219,15 @@ spec = importlib.util.spec_from_file_location("run", "scripts/vm-acceptance/run.
 run = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(run)
 print(" ".join(run.SHARDS))')}
+unreached=""
 for shard in $shards; do
+  if [[ -n $unreached ]]; then
+    # The same disk and tilo-vm in a fresh VM fail the same way: say so, rather than wait
+    # out the same bounds once per shard.
+    echo "not run: shard $unreached could not reach a working session on this disk (its P00 above)"
+    echo "t-shard: $shard failed"
+    continue
+  fi
   if part "$reports/$shard/report" --shard "$shard"; then
     phase "shard $shard passed"
     echo "t-shard: $shard passed"
@@ -227,6 +235,9 @@ for shard in $shards; do
     status=1
     phase "shard $shard failed"
     echo "t-shard: $shard failed"
+    if jq -e '[.results[].id] == ["P00"]' "$reports/$shard/report/report.json" >/dev/null 2>&1; then
+      unreached=$shard
+    fi
   fi
 done
 exit "$status"

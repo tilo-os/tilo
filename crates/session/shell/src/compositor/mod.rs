@@ -19,7 +19,6 @@ pub(crate) mod admin_control;
 pub(crate) mod agent_door;
 #[cfg(target_os = "linux")]
 pub mod agent_seats;
-#[cfg(target_os = "linux")]
 pub mod app_liveness;
 #[cfg(target_os = "linux")]
 mod audio_capture;
@@ -52,6 +51,7 @@ pub(crate) mod diagnostic_actions;
 #[cfg(target_os = "linux")]
 pub mod dictation;
 pub mod dictation_status;
+#[cfg(target_os = "linux")]
 pub mod downloaded_programs;
 pub mod drag_feedback;
 #[cfg(target_os = "linux")]

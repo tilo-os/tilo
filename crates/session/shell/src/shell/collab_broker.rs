@@ -30,9 +30,9 @@ use crate::shell::network::{
 use tilo_action_broker::collab_inbound::validate_route as validate_document_route;
 
 mod personal_session;
-pub(crate) use personal_session::{
-    NativePersonalSession, NativePersonalSource, RetainedProofRecipient,
-};
+#[cfg(target_os = "linux")]
+pub(crate) use personal_session::RetainedProofRecipient;
+pub(crate) use personal_session::{NativePersonalSession, NativePersonalSource};
 
 pub use crate::shell::peer_presence::PeerLabels;
 
