@@ -648,6 +648,7 @@ save-status-not-saved-named = „{ $document }“ wurde nicht gespeichert
 save-status-not-saved-notice = Deine Änderungen sind noch in { $app }.
 save-status-saved = Gespeichert
 save-status-failed = Speichern fehlgeschlagen
+save-status-failed-detail = Deine letzten Änderungen sind noch nicht gespeichert.
 save-status-retry = Erneut versuchen
 
 # Suchleiste: das Band oben in einem Dokument, das darin sucht.
