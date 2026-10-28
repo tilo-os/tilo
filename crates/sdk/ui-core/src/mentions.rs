@@ -34,11 +34,10 @@ use crate::record::RecordId;
 pub const MARK: &str = "mention";
 
 /// Whether a `mention` mark's value names a resource rather than a
-/// person: a native resource link (`tilo://open#…`) or a tilolang
-/// resource's published id in the room (`tl:<app>:<id>`).
+/// person, in any form it was written in (`tilo_reference::embed`).
 #[must_use]
 pub fn names_resource(value: &str) -> bool {
-    value.starts_with("tilo://open#") || value.starts_with("tl:")
+    tilo_reference::embed::names_resource(value)
 }
 /// The mark naming who wrote a run of text (`tilo_resource::text::AUTHOR_MARK`).
 const AUTHOR_MARK: &str = "author";

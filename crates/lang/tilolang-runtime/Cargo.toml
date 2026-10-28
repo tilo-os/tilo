@@ -16,6 +16,8 @@ blake3.workspace = true
 tilolang = { path = "../tilolang" }
 # `RichText` values and fields are tilo-doc's rich text: one rich-text model for every app.
 tilo-doc = { path = "../../doc/tilo-doc" }
+# A reference inside rich text is the catalogue's resource reference, in the one form every app writes.
+tilo-reference = { path = "../../collab/reference" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -185,7 +185,11 @@ fn a_person_mentioned_in_rich_text_is_told_through_the_mention_notices() {
     asked.push_text(" look at ");
     asked.push_reference(
         "Fix the build",
-        &tilolang_runtime::rich::Reference::Resource(format!("tl:{APP}:{task}")),
+        &tilolang_runtime::rich::Reference::resource(
+            APP,
+            format!("tl.{APP}.Task"),
+            format!("tl:{APP}:{task}"),
+        ),
     );
     let encoded = tilolang_runtime::value::to_json(&tilolang_runtime::Value::Rich(asked)).unwrap();
     plan(
