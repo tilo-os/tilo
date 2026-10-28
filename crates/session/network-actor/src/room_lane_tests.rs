@@ -1,16 +1,10 @@
 use super::room_lane::{Direct, Lanes};
 use super::*;
-use iroh::endpoint::{Connection, presets};
+use iroh::endpoint::Connection;
 use std::sync::atomic::AtomicUsize;
 
 async fn endpoint() -> (Endpoint, MemoryLookup) {
-    let lookup = MemoryLookup::new();
-    let endpoint = Endpoint::builder(presets::N0)
-        .address_lookup(lookup.clone())
-        .bind()
-        .await
-        .unwrap();
-    (endpoint, lookup)
+    crate::loopback_endpoint(None).await
 }
 
 /// More than a stream may have in flight before its reader takes some: a
@@ -48,10 +42,12 @@ impl ProtocolHandler for Reads {
     }
 }
 
-fn direct(addr: EndpointAddr, bytes: Vec<u8>) -> Direct {
+/// A direct send on `connection`, already up: what the lanes do with a send
+/// is the question, not how long a dial takes on a loaded machine.
+fn direct(connection: &Connection, bytes: Vec<u8>) -> Direct {
     Direct {
-        addr,
-        cached: None,
+        addr: EndpointAddr::new(connection.remote_id()),
+        cached: Some(connection.clone()),
         msg: NeighbourMsg::RemoteAction { frame: Vec::new() },
         bytes,
         // Longer than the test: a write to a device that never reads stays
@@ -75,17 +71,25 @@ async fn a_stalled_send_in_one_room_does_not_delay_another_rooms_send() {
     let gossip = Gossip::builder().spawn(sender.clone());
     let (internal_tx, mut internal) = mpsc::channel(16);
     let mut lanes = Lanes::new(gossip, sender.clone(), internal_tx);
+    let to_stalled = sender
+        .connect(stalled.addr(), SURFACE_STREAM_ALPN)
+        .await
+        .unwrap();
+    let to_healthy = sender
+        .connect(healthy.addr(), SURFACE_STREAM_ALPN)
+        .await
+        .unwrap();
 
     for _ in 0..3 {
         assert!(
             lanes
-                .queue_direct(1, direct(stalled.addr(), vec![0; STALLING_BYTES]))
+                .queue_direct(1, direct(&to_stalled, vec![0; STALLING_BYTES]))
                 .is_ok()
         );
     }
     assert!(
         lanes
-            .queue_direct(2, direct(healthy.addr(), b"room two".to_vec()))
+            .queue_direct(2, direct(&to_healthy, b"room two".to_vec()))
             .is_ok()
     );
 

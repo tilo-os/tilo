@@ -348,7 +348,6 @@ fn verify(certificate: &Material, peer: EndpointId, root: [u8; 32]) -> Result<()
 mod tests {
     use super::*;
     use iroh::address_lookup::memory::MemoryLookup;
-    use iroh::endpoint::presets;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
@@ -391,13 +390,8 @@ mod tests {
     async fn endpoint(seed: u8) -> (Endpoint, MemoryLookup, DeviceCert) {
         let root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&[seed.checked_add(1).unwrap(); 32]);
-        let lookup = MemoryLookup::new();
-        let endpoint = Endpoint::builder(presets::N0)
-            .secret_key(iroh::SecretKey::from_bytes(&device.to_bytes()))
-            .address_lookup(lookup.clone())
-            .bind()
-            .await
-            .unwrap();
+        let (endpoint, lookup) =
+            crate::loopback_endpoint(Some(iroh::SecretKey::from_bytes(&device.to_bytes()))).await;
         let mut certificate = DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: device.verifying_key().to_bytes(),
