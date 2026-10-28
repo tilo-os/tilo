@@ -37,7 +37,9 @@ pub fn desktop_navigation_snapshot(id: u64) -> Result<Option<String>, JsValue> {
 /// Rejects a closed mount.
 #[wasm_bindgen]
 pub fn desktop_peer_windows(id: u64) -> Result<Option<String>, JsValue> {
-    with_mount(id, |m| {
+    // A read a remote legacy stream asks for every animation frame: it
+    // changes nothing a semantics tree shows.
+    with_mount_quietly(id, |m| {
         m.desktop
             .as_ref()
             .map(|d| {
@@ -281,6 +283,24 @@ pub fn desktop_run_own_ask(
     )
 }
 
+/// Whether [`desktop_take_node_app_requests`] has anything for the page,
+/// which it asks on every frame a desktop wake may have opened an
+/// application: draining an empty list every frame was a mount call per
+/// frame for nothing.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount.
+#[wasm_bindgen]
+pub fn desktop_node_app_requests_pending(id: u64) -> Result<bool, JsValue> {
+    // A read: it changes nothing a semantics tree shows.
+    with_mount_quietly(id, |m| {
+        Ok(m.desktop
+            .as_ref()
+            .is_some_and(|d| d.shared.node_app_requests_pending()))
+    })
+}
+
 /// The node applications the person asked to open since the last call (a
 /// JSON array of their ids): the page asks the node to open each, and its
 /// window arrives as a legacy window.
@@ -290,7 +310,8 @@ pub fn desktop_run_own_ask(
 /// Rejects a closed or single-application mount.
 #[wasm_bindgen]
 pub fn desktop_take_node_app_requests(id: u64) -> Result<String, JsValue> {
-    with_mount(id, |m| {
+    // Only the page reads what it takes: the tree never shows it.
+    with_mount_quietly(id, |m| {
         let requests = m
             .desktop
             .as_ref()

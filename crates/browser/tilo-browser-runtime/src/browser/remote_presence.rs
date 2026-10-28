@@ -2,11 +2,16 @@
 //! and selections, their names, and the windows they are in. All of it
 //! arrives many times a frame while people type and move; the next frame
 //! lays it out once.
+//!
+//! Carets, names and windows are painted, not names in the accessibility
+//! tree (a person's own editing surface is its own), so each of these
+//! arrives under `with_mount_quietly`: it marks the frame to redraw and
+//! leaves the tree that frame builds to the frame's own count.
 
 use ui::permissions::UserId;
 use wasm_bindgen::prelude::*;
 
-use super::{Mount, with_mount};
+use super::{Mount, with_mount_quietly};
 
 impl Mount {
     /// Who is here changed: the next frame puts them on the windows they
@@ -73,7 +78,7 @@ pub fn remote_presence(
         };
         tilo_browser_peer::transport::read_presence_anchors(&anchor, &head)
     });
-    with_mount(id, |m| {
+    with_mount_quietly(id, |m| {
         let user = UserId(publisher.to_owned());
         m.frame.update_presence(|presence| {
             presence.set_participant_kind(&user, kind == "agent");
@@ -105,7 +110,7 @@ pub fn remote_presence(
 /// Rejects a closed mount.
 #[wasm_bindgen]
 pub fn remote_presence_gone(id: u64, publisher: &str) -> Result<(), JsValue> {
-    with_mount(id, |m| {
+    with_mount_quietly(id, |m| {
         m.frame.update_presence(|presence| {
             presence.unregister_peer(publisher);
             true
@@ -133,7 +138,7 @@ pub fn set_people(id: u64, people: &str) -> Result<(), JsValue> {
     }
     let people: Vec<Person> =
         serde_json::from_str(people).map_err(|error| JsValue::from_str(&error.to_string()))?;
-    with_mount(id, |m| {
+    with_mount_quietly(id, |m| {
         m.frame.update_presence(|presence| {
             for person in people {
                 let name = person.name.trim();
