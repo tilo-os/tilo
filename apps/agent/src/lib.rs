@@ -61,13 +61,5 @@ pub use session::{Config, Session};
 /// `unknown` rather than nothing.
 #[must_use]
 pub fn device_name() -> String {
-    let host = std::env::var("HOSTNAME")
-        .ok()
-        .or_else(|| std::fs::read_to_string("/etc/hostname").ok());
-    host.as_deref()
-        .map(str::trim)
-        .and_then(|host| host.lines().next())
-        .map(str::trim)
-        .filter(|host| !host.is_empty())
-        .map_or_else(|| "unknown".to_owned(), str::to_owned)
+    tilo_paths::session::host_name().unwrap_or_else(|| "unknown".to_owned())
 }
