@@ -95,6 +95,7 @@ pub mod hang;
 pub mod idle;
 pub mod net;
 mod own_process;
+pub mod requested_allocations;
 pub mod scenario;
 pub mod swtpm;
 

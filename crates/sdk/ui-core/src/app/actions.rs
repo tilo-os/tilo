@@ -484,7 +484,7 @@ impl App {
             self.bound_broker_route(),
         ) && let Some(witness) = self.bound_broker_route()
         {
-            return witness.route.app_id.clone();
+            return witness.route().app_id.clone();
         }
         crate::collaboration::local_app_id()
     }
@@ -1011,7 +1011,7 @@ impl App {
         self.collaboration
             .manager
             .primary_route()
-            .map(|witness| witness.route.clone())
+            .map(|witness| witness.route().clone())
     }
 
     fn encode_resource_action(
@@ -4129,7 +4129,7 @@ impl crate::session_door::SessionDoor for BrokerDoor<'_> {
     fn workspace(&self) -> Option<String> {
         self.manager
             .primary_route()
-            .map(|witness| witness.route.cluster_id.to_string())
+            .map(|witness| witness.route().cluster_id.to_string())
     }
 
     fn invoke(

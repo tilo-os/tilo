@@ -83,7 +83,7 @@
 "crates/sdk/ui-core/src/app/history_tests.rs" = 8500
 "crates/sdk/ui-core/src/app/native_runner.rs" = 5500
 "crates/sdk/ui-core/src/bound_dispatch.rs" = 5500
-"crates/sdk/ui-core/src/collaboration/broker.rs" = 14000
+"crates/collab/collaboration/src/broker.rs" = 13500
 "crates/sdk/ui-core/src/headless.rs" = 15000
 "crates/sdk/ui-core/src/history_mode/integration_tests.rs" = 4000
 "crates/sdk/ui-core/src/launch.rs" = 3500
