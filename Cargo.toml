@@ -13,6 +13,8 @@ exclude = [
     "crates/doc/tilo-doc-codec-markdown-wasm",
     # A wasm32 library `tilolang bench --library` runs; built by its own build.sh.
     "crates/platform/tilolang-tilo/bench/imagefilter",
+    # The empty workspace-hack of the greeter's initramfs build (os/image/compile.sh).
+    "os/initrd/workspace-hack",
     "vendor/vello",
     "vendor/vello_encoding",
     "vendor/vello_shaders",
@@ -1223,6 +1225,13 @@ codegen-units = 16
 # alone, which has room under its budget for what parallel codegen costs.
 [profile.thin-app.package.imager-backend]
 codegen-units = 16
+
+# The greeter's initramfs build (os/image/compile.sh, phase rust-boot-greeter):
+# release code without its symbol table, since every boot unpacks the
+# initramfs and nothing there reads symbols.
+[profile.initrd]
+inherits = "release"
+strip = "symbols"
 
 # The demo profile keeps release optimisation while enabling shell's
 # debug-only test-control surface for recordings.

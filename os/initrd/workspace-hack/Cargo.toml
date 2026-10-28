@@ -1,0 +1,13 @@
+# The workspace-hack the greeter's initramfs build links in place of crates/workspace-hack
+# (os/image/compile.sh, phase rust-boot-greeter). The real one unifies every member's
+# features, which gives the greeter the media stack (GStreamer, PipeWire) other members
+# enable; built against this empty one, the greeter takes only what its own manifests ask for.
+# Its version is past the real one's so the lockfile can hold both while the patch picks it.
+[package]
+name = "workspace-hack"
+version = "0.1.1"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
