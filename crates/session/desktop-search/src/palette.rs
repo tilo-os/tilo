@@ -9,7 +9,8 @@ use ui::widget::command_palette::{CommandEntry, CommandPalette};
 
 use crate::model::{Hit, Source, Target, search};
 use crate::providers::{
-    Actions, AppEntry, Applications, CommandSpec, Commands, Content, Recents, WindowEntry, Windows,
+    Actions, Answers, AppEntry, Applications, CommandSpec, Commands, Content, Recents, WebSearch,
+    WindowEntry, Windows,
 };
 use crate::window::WindowSearch;
 use ui::search::system::ResourceKind;
@@ -29,6 +30,12 @@ pub struct SearchData {
     pub providers: Vec<Box<dyn ui::search::SearchProvider>>,
     /// Search what the resources hold, not what can be done to them.
     pub content_only: bool,
+    /// Offer what a query that is not a name answers: its sum or unit
+    /// conversion, the address it is, and searching the web for it
+    /// ([`crate::providers::Answers`], [`crate::providers::WebSearch`]).
+    /// The desktop's search over everything does; a search narrowed to the
+    /// apps or one window does not.
+    pub answers: bool,
     /// Search one window, over what it publishes (`resources` and
     /// `providers` are that window's): what it holds, then what can be done
     /// in it ([`crate::window::WindowSearch`]), as an app's own search does.
@@ -55,6 +62,7 @@ struct Sources {
     commands: Commands,
     actions: Actions,
     content: Content,
+    answers: bool,
     /// The one window searched, when the search is a window's.
     window: Option<WindowSearch>,
 }
@@ -68,6 +76,7 @@ impl Sources {
                 commands: Commands(data.commands),
                 content: Content::new(Vec::new(), Vec::new()),
                 actions: Actions(Vec::new()),
+                answers: false,
                 window: Some(WindowSearch::new(data.resources, data.providers).within(data.scope)),
             };
         }
@@ -81,6 +90,7 @@ impl Sources {
             } else {
                 data.resources
             }),
+            answers: data.answers,
             window: None,
         }
     }
@@ -236,33 +246,32 @@ impl DesktopSearch {
         let Some(sources) = &self.sources else {
             return;
         };
-        let groups = match &sources.window {
-            // A window's search is about what the window holds: its
-            // resources lead, and what can be done follows them, those
-            // acting on the selection first.
-            Some(window) => {
-                let (mut actions, mut held): (Vec<_>, Vec<_>) =
-                    search(&query, &[window as &dyn Source], 0)
-                        .into_iter()
-                        .partition(|group| group.kind == ResourceKind::Action);
-                for group in &mut actions {
-                    crate::window::selection_first(&mut group.results);
-                }
-                held.extend(actions);
-                held
+        // A window's search is about what the window holds: its resources
+        // lead, and what can be done follows them, those acting on the
+        // selection first.
+        let groups = if let Some(window) = &sources.window {
+            let (mut actions, mut held): (Vec<_>, Vec<_>) =
+                search(&query, &[window as &dyn Source], 0)
+                    .into_iter()
+                    .partition(|group| group.kind == ResourceKind::Action);
+            for group in &mut actions {
+                crate::window::selection_first(&mut group.results);
             }
-            None => search(
-                &query,
-                &[
-                    &self.recents as &dyn Source,
-                    &sources.applications,
-                    &sources.windows,
-                    &sources.content,
-                    &sources.actions,
-                    &sources.commands,
-                ],
-                0,
-            ),
+            held.extend(actions);
+            held
+        } else {
+            let mut all: Vec<&dyn Source> = vec![
+                &self.recents,
+                &sources.applications,
+                &sources.windows,
+                &sources.content,
+                &sources.actions,
+                &sources.commands,
+            ];
+            if sources.answers {
+                all.extend([&Answers as &dyn Source, &WebSearch]);
+            }
+            search(&query, &all, 0)
         };
         // Each group shares what the palette shows without scrolling; a
         // group cut short offers the rest in place.

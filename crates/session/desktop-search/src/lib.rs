@@ -11,9 +11,12 @@
 //! - [`palette`]: the toolkit's command palette over those sources.
 //! - [`window`]: one window's own search, over what it publishes.
 //! - [`lazy`]: search whose code a program may fetch on first use.
+//! - [`answers`]: what a query that is not a name answers: a sum, a unit
+//!   conversion, an address, the web searches it can be.
 //! - [`availability`]: what the manifest registry knows of each app: where
 //!   it runs, its category and the words people know it by.
 
+pub mod answers;
 pub mod availability;
 pub mod lazy;
 pub mod model;

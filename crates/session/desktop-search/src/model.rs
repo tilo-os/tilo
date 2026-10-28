@@ -21,6 +21,12 @@ pub enum Target {
     Action(Box<ActionTarget>),
     /// A host command, by id.
     Command { id: String },
+    /// Put `text` on the clipboard: a worked-out answer.
+    Copy { text: String },
+    /// Open `uri`, a web address, where the host opens addresses: the
+    /// native desktop's browser, a new tab of the browser the web desktop
+    /// runs in.
+    Open { uri: String },
 }
 
 /// An application action as the palette offers it.
@@ -88,6 +94,13 @@ pub trait Source {
     }
     /// Hits for `needle`. An empty needle asks for the source's browse set.
     fn query(&self, needle: &str) -> Vec<Hit>;
+    /// How much plainer than its title's match `hit` answers what was
+    /// typed, added to its strength at the merge: a query that names a
+    /// service and asks it something leads, a row an app serves better
+    /// gives way.
+    fn intent(&self, _hit: &Hit) -> f32 {
+        0.0
+    }
 }
 
 /// Fan `needle` out to `sources`, merge their hits on the shared ranking
@@ -108,7 +121,7 @@ pub fn search(needle: &str, sources: &[&dyn Source], row_budget: usize) -> Vec<K
                 hit.subtitle.as_deref(),
                 hit.score.min(top),
                 top,
-                0.0,
+                source.intent(&hit),
             );
             let key = (hit.provider.clone(), hit.id.clone());
             if let Some(index) = rows.get(&key).copied() {
