@@ -721,7 +721,7 @@ impl PeerHandle {
             ciphers: Ciphers::new(),
             channels,
             channel_changes: crate::channels::Changes::default(),
-            stewards: crate::stewards::Stewards::default(),
+            stewards: crate::stewards::OwnStewards::default(),
             opened: BTreeMap::new(),
             refused: (0, String::new()),
             held_inbound: BTreeMap::new(),
@@ -1256,7 +1256,7 @@ struct Task {
     /// What channel state changed since the session last acted on it.
     channel_changes: crate::channels::Changes,
     /// The channels of the person's own room this page stewards.
-    stewards: crate::stewards::Stewards,
+    stewards: crate::stewards::OwnStewards,
     /// Documents opened per route, and those refused with the last reason,
     /// for the diagnostics.
     opened: BTreeMap<(DocumentRoute, [u8; 4]), u64>,

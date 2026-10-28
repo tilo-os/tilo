@@ -9,8 +9,9 @@
 //! who is here asks for, the emoji catalogue, which the first picker,
 //! reaction name or `:name:` completion asks for, History, which the
 //! first window that registers it asks for, desktop search, which the
-//! desktop asks for as it first lays out, and the notification centre,
-//! which opening it asks for.
+//! desktop asks for as it first lays out, the notification centre,
+//! which opening it asks for, and stewarding the person's own room, which
+//! the page's first channel of it asks for.
 //!
 //! Like an app's `definition()` (`crate::split`), each export below is the
 //! only way to the code it hands over, so the splitter moves that code into
@@ -305,6 +306,13 @@ split_code! {
 }
 
 split_code! {
+    /// Stewarding the person's own room: the first channel of it the page
+    /// takes up asks for it.
+    mod stewards: tilo_browser_peer::MakeStewards = tilo_browser_peer::builtin_stewards()
+        => tilo_browser_peer::STEWARDS, module = "stewards", hash = "ddbdc90ecc24a541";
+}
+
+split_code! {
     /// History: the first window that registers it asks for it.
     mod history: tilo_ui::history_mode::MakeHistory = tilo_ui::history_mode::builtin_history()
         => tilo_ui::history_mode::HISTORY, module = "history", hash = "e1a7c5039b6d2f84";
@@ -365,4 +373,5 @@ pub(crate) fn register() {
     profile_card::register();
     desktop_search::register();
     notification_centre::register();
+    stewards::register();
 }
