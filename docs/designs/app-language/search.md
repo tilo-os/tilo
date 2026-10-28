@@ -221,7 +221,7 @@ school" are all saved searches. They are synced, collaborative and shareable lik
 
 ### 3.2 In the app
 
-The platform header's search (`native-apps.md` §3) runs the same query, scoped to the app's
+The platform header's search runs the same query, scoped to the app's
 root:
 - the list's filter strip below the header is the type's filters;
 - the list *is* the results;

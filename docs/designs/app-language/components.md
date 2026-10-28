@@ -1,13 +1,9 @@
 # Components: every Tilo component, composable from tilolang
 
 **Goal.** Every component in Tilo's toolkit is directly usable from tilolang. App authors and
-agents compose them freely into new components, and those compose further. The native look
-(`native-apps.md`) is not compiler magic. It is a standard library written in tilolang on the same
-components, which anyone can read, copy or replace.
-
-This replaces the closed vocabulary in `native-apps.md` §3. Its goals (native chrome by default,
-actions offered automatically, platform headers) stay, but the vocabulary that delivers them
-changes.
+agents compose them freely into new components, and those compose further. The native look is
+not compiler magic: it's a standard library (`std`) written in tilolang on the same components,
+which anyone can read, copy or replace.
 
 ## 1. Where we are
 

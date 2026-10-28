@@ -9,7 +9,7 @@ shell:
 - it checks its work before a person sees it.
 
 This page is about that interface. The model underneath it (types as resources, actions,
-authority following authorship, agents as tasks) is in `spec.md`. Search is in `search.md`, and
+authority following authorship, agents as tasks) is in `README.md` and `authority.md`. Search is in `search.md`, and
 answers that embed views are in `components.md`.
 
 The interface is designed from the agent's side. Each rule below removes a step that an agent
