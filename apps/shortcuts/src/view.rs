@@ -431,12 +431,20 @@ fn follow(live: Live<Workbench>, ui: &Ui) -> Box<dyn FnMut()> {
         {
             ui.picker.set(None);
         }
-        let current = (selected, draft, door, ui.picker.get(), ui.sheet.get());
+        // What the page is drawn from, so any change to it rebuilds the page.
+        let current = (
+            selected,
+            draft,
+            door,
+            ui.picker.get(),
+            ui.sheet.get(),
+            ui.as_text.get(),
+        );
         if seen.as_ref() == Some(&current) {
             return;
         }
         seen = Some(current.clone());
-        let (_, draft, door, picker, sheet) = current;
+        let (_, draft, door, picker, sheet, _) = current;
         let catalog = door.catalog();
         let saved = door.library.ready().cloned().unwrap_or_default();
         let problems = draft
