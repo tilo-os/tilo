@@ -1446,7 +1446,16 @@ impl TileSource for Tiles {
         match self.component(tab) {
             Ok(component) => {
                 self.shared.waiting.borrow_mut().remove(&tab.id);
-                TileHost::from_component(component)
+                // Built, but its first frame is not drawn yet: the window
+                // stands with what the app declared for that time (its
+                // manifest's `arrival-skeleton`) until it presents.
+                let host = TileHost::from_component(component);
+                match &tab.tile {
+                    ui::widget::TileContent::LocalApp { app_id, .. } => host.with_arrival_shape(
+                        ui::application::registry::declared_arrival_shape(app_id),
+                    ),
+                    _ => host,
+                }
             }
             // The app's code is on its way: its window reserves the place,
             // showing the shape the app declared for it (its manifest's

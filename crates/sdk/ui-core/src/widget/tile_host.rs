@@ -3813,12 +3813,16 @@ impl TileHost {
     /// The shape the content declared for its placeholder; none declared,
     /// the window's ground alone.
     fn arrival_shape(&self) -> super::SkeletonShape {
+        let declared = self.declared_arrival_shape;
         match &self.content {
-            TileContent::App(app) => app.arrival_shape(),
-            // The app's own declaration, made before its code is in.
-            TileContent::Arriving => self
-                .declared_arrival_shape
-                .unwrap_or(super::SkeletonShape::Ground),
+            // What the app's own root declares, and while it declares
+            // nothing (its first frame is not drawn yet), what its manifest
+            // declared for the window before the code was in.
+            TileContent::App(app) => match app.arrival_shape() {
+                super::SkeletonShape::Ground => declared.unwrap_or(super::SkeletonShape::Ground),
+                own => own,
+            },
+            TileContent::Arriving => declared.unwrap_or(super::SkeletonShape::Ground),
             _ => super::SkeletonShape::Ground,
         }
     }
