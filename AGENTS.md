@@ -13,6 +13,7 @@
 | Collaboration         | `docs/architecture/collaboration.md`                                 |
 | Compositor            | `docs/architecture/compositor.md`, `docs/headless-testing.md`        |
 | Apps/UI               | `crates/sdk/ui-core/HIG.md`, `docs/design-language.md`               |
+| tilolang              | `docs/designs/app-language/README.md`                                |
 | Builds/integration    | `docs/t.md`                                                          |
 | Dev VM/device         | `tilo device guide quickstart` (source: `crates/dev/tilo-vm/guide/`) |
 
