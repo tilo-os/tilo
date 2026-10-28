@@ -36,6 +36,8 @@ pub use content::{ContentKeeper, RoomContent};
 mod desktop_writes;
 #[cfg(test)]
 mod device_rejoin_tests;
+#[cfg(test)]
+mod hard_stop_tests;
 pub(crate) use desktop_writes::writes_desktop;
 mod listing;
 mod member_records;
