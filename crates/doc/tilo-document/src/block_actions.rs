@@ -648,6 +648,11 @@ const BLOCK_VARIANTS: [&str; 11] = [
     "SyncBody",
 ];
 
+/// The variants a runtime writes and agents do not: a whole value assigned to
+/// a rich-text field (a tilolang `body = ...`), which `apply` decodes and
+/// merges as splices and marks. An agent edits through the declared actions.
+const UNPUBLISHED_VARIANTS: [&str; 1] = ["SyncClips"];
+
 /// The types only those variants use.
 const BLOCK_TYPES: [&str; 4] = ["BlockShape", "NewBlock", "Placement", "BlockKind"];
 
@@ -691,8 +696,9 @@ fn names_block_variant(alternative: &serde_json::Value) -> bool {
         .and_then(serde_json::Value::as_object)
         .is_some_and(|properties| {
             !properties.is_empty()
-                && properties
-                    .keys()
-                    .all(|key| BLOCK_VARIANTS.contains(&key.as_str()))
+                && properties.keys().all(|key| {
+                    BLOCK_VARIANTS.contains(&key.as_str())
+                        || UNPUBLISHED_VARIANTS.contains(&key.as_str())
+                })
         })
 }

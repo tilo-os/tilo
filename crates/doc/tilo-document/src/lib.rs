@@ -66,6 +66,78 @@ pub struct ClipBlock {
     pub attrs: std::collections::BTreeMap<String, ClipAttr>,
 }
 
+impl ClipBlock {
+    /// The block a paragraph read from a document carries: its kind, text,
+    /// marks and attributes (a float attribute has no clip form and is left
+    /// out).
+    #[must_use]
+    pub fn from_view(view: &BlockView) -> Self {
+        let attrs = view
+            .attrs
+            .iter()
+            .filter(|(key, _)| !matches!(key.as_str(), "level" | "ordered" | "align"))
+            .filter_map(|(key, value)| {
+                let value = match value {
+                    AttrVal::Bool(value) => ClipAttr::Bool(*value),
+                    AttrVal::Int(value) => ClipAttr::Int(*value),
+                    AttrVal::Str(value) => ClipAttr::Str(value.clone()),
+                    AttrVal::Float(_) => return None,
+                };
+                Some((key.clone(), value))
+            })
+            .collect();
+        Self {
+            kind: view.kind.clone(),
+            text: view.text.clone(),
+            marks: view
+                .marks
+                .iter()
+                .filter(|mark| mark.start < mark.end)
+                .cloned()
+                .collect(),
+            level: view.int_attr("level"),
+            ordered: view.bool_attr("ordered"),
+            align: view.str_attr("align").map(str::to_owned),
+            attrs,
+        }
+    }
+
+    /// The paragraph this block reads as, with no id: what a document
+    /// holding it shows ([`ClipBlock::from_view`] the other way).
+    #[must_use]
+    pub fn to_view(&self) -> BlockView {
+        let mut attrs: BTreeMap<String, AttrVal> = self
+            .attrs
+            .iter()
+            .map(|(key, value)| {
+                let value = match value {
+                    ClipAttr::Bool(value) => AttrVal::Bool(*value),
+                    ClipAttr::Int(value) => AttrVal::Int(*value),
+                    ClipAttr::Str(value) => AttrVal::Str(value.clone()),
+                };
+                (key.clone(), value)
+            })
+            .collect();
+        if let Some(level) = self.level {
+            attrs.insert("level".into(), AttrVal::Int(level));
+        }
+        if let Some(ordered) = self.ordered {
+            attrs.insert("ordered".into(), AttrVal::Bool(ordered));
+        }
+        if let Some(align) = &self.align {
+            attrs.insert("align".into(), AttrVal::Str(align.clone()));
+        }
+        BlockView {
+            id: String::new(),
+            kind: self.kind.clone(),
+            text: self.text.clone(),
+            marks: self.marks.clone(),
+            attrs,
+            children: Vec::new(),
+        }
+    }
+}
+
 /// One block attribute a [`ClipBlock`] carries.
 #[derive(
     Clone,
