@@ -1,10 +1,45 @@
 #!/usr/bin/env bash
-# Cargo's outer compiler dispatcher. Keeping the sccache basename also lets
-# cc-rs use the same native compiler cache, without changing its flags.
+# Cargo's outer compiler dispatcher for os/scripts/build-thin-apps.sh. Keeping the
+# sccache basename also lets cc-rs use the same native compiler cache, without
+# changing its flags.
 set -euo pipefail
 
-workspace_wrapper="${BASH_SOURCE[0]%/thin-app/sccache}/rustc-thin-app-wrapper.sh"
-if [[ ${1:-} == "$workspace_wrapper" ]]; then
+# The workspace wrapper as os/scripts/build-thin-apps.sh names it (THIN_APP_WRAPPER).
+workspace_wrapper=/proc/self/cwd/tools/ci/rustc-thin-app-wrapper.sh
+# The compiler cache: the one build-thin-apps.sh moved here (empty: none), else the one a
+# Cargo front end gives this machine's cargo as configuration (CARGO_BUILD_RUSTC_WRAPPER),
+# which the build's own rustc-wrapper setting replaces.
+cache=${TILO_THIN_SCCACHE-${CARGO_BUILD_RUSTC_WRAPPER:-}}
+case $cache in */thin-app/*) cache= ;; esac
+export TILO_THIN_SCCACHE=$cache
+
+# Where the tree and its build directory sit is no input of what it builds. Cargo runs a
+# crate inside the tree in the tree's root and names its sources from there; the compiler
+# writes that directory too, so it is mapped to `.`, as the image build maps /build. A crate
+# with a build script may include its OUT_DIR (serde, typenum), whose path would otherwise be
+# part of its crate hash and of every crate built on it: the build directory, named from
+# --out-dir (<build directory>/<profile>/deps), is mapped to `target`, last so it wins inside
+# the tree. Registry crates keep their paths, which no checkout changes.
+crate=false
+out_dir=""
+previous=""
+for argument in "$@"; do
+    case "$previous" in
+        --crate-name) crate=true ;;
+        --out-dir) out_dir=$argument ;;
+    esac
+    previous=$argument
+done
+if $crate; then
+    if [[ ${CARGO_MANIFEST_DIR:-$PWD} != "$PWD" ]]; then
+        set -- "$@" "--remap-path-prefix=$PWD=."
+    fi
+    if [[ -n ${OUT_DIR:-} && $out_dir == */deps ]]; then
+        set -- "$@" "--remap-path-prefix=${out_dir%/*/deps}=target"
+    fi
+fi
+
+if [[ ${1:-} == "$workspace_wrapper" || -z $cache ]]; then
     exec "$@"
 fi
-exec "${TILO_THIN_SCCACHE:?thin-app compiler cache is not configured}" "$@"
+exec "$cache" "$@"
