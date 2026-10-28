@@ -5822,7 +5822,10 @@ relay_cpus = ""
 [[check]]
 name = "vm-acceptance"
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
-requirement = { cores = 8, memory = "16GiB" }
+# Sized to what a shard uses (a run measured 0.4–1.4 cores and 6.4 GiB): the guest's 6 vCPUs and
+# 4.5 GiB with room beside it, so more shards fit beside each other on a busy node, where t
+# otherwise runs them one after another in one job.
+requirement = { cores = 6, memory = "10GiB" }
 isolation = "vm"
 git = true
 writable_sources = true

@@ -244,9 +244,14 @@ def keep_slot_logs(vm: TiloVm, out: Path) -> Path | None:
     """What the slot's compositor and tilo-vmd said, for a run that could not set up its
     session: `tilo-vm logs <slot>`, which the throwaway VM takes with it when it goes."""
     try:
-        text = vm.run("logs", vm.slot, timeout=120, check=False, slot=False)
+        text = vm.run("logs", vm.slot, "-n", "20000", timeout=120, check=False, slot=False)
     except VmError as exc:
         text = f"tilo-vm logs {vm.slot} failed: {exc}"
+    # The compositor's per-frame and per-second statistics drown what it said at start-up
+    # (its identity, onboarding, the services it waited for): the journal since the boot,
+    # without them.
+    noise = ("FRAME-LIFECYCLE", "paint-stats:", "HEAP-MILESTONE", "DEVICE-MEMORY", "frames=")
+    text = "\n".join(line for line in text.splitlines() if not any(n in line for n in noise))
     if not text.strip():
         return None
     path = out / "data" / f"P00-{vm.slot}-logs.txt"
