@@ -1094,7 +1094,7 @@ async fn fuse_keeps_a_link_and_a_files_permission_bits() {
         let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
         let mut config = Config::default();
         config.mount_options = vec![MountOption::FSName("quickfs_posix".into())];
-        let session = fuser::spawn_mount(fs, &first_mount.path(), &config).unwrap();
+        let session = fuser::spawn_mount(fs, first_mount.path(), &config).unwrap();
         wait_for_mount(first_mount.path()).await;
 
         let root = first_mount.path();
@@ -1174,7 +1174,7 @@ async fn fuse_keeps_a_link_and_a_files_permission_bits() {
         let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let fs = QuickFS::new(reopened, hydrator, heuristics);
-        let session = fuser::spawn_mount(fs, &second_mount.path(), &config).unwrap();
+        let session = fuser::spawn_mount(fs, second_mount.path(), &config).unwrap();
         wait_for_mount(second_mount.path()).await;
         let root = second_mount.path();
         assert_eq!(
