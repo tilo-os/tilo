@@ -485,6 +485,10 @@ pub struct TileHost {
     /// app's slots in the window's bar ([`Self::set_hosted_window`]).
     hosted_window: Option<crate::hosted_window::HostedWindow>,
     rect: Rect,
+    /// The shape the app whose code is on its way declared for its window
+    /// ([`Self::with_arrival_shape`]); `None` for a tile that was told
+    /// nothing, which shows its ground.
+    declared_arrival_shape: Option<super::SkeletonShape>,
     /// How far [`Self::offset_layout`] moved the tile from where layout put
     /// it. The content keeps its own layout rect, so it is drawn this much
     /// further right instead.
@@ -871,6 +875,7 @@ impl TileHost {
             panic_scope: std::cell::Cell::new(None),
             hosted_window: None,
             rect: Rect::ZERO,
+            declared_arrival_shape: None,
             content_shift: 0.0,
             content_damage: ContentDamage::new(),
             focused: false,
@@ -892,6 +897,17 @@ impl TileHost {
         }
         tile.arrival = tile.begin_arrival(None);
         tile
+    }
+
+    /// What the app whose code is on its way declared its window shows
+    /// meanwhile ([`crate::widget::SkeletonShape`]): the shape the app's
+    /// manifest declares, read from the registry before its code is in. A
+    /// tile told nothing shows its ground alone, as a window that declared
+    /// no shape does.
+    #[must_use]
+    pub fn with_arrival_shape(mut self, shape: super::SkeletonShape) -> Self {
+        self.declared_arrival_shape = Some(shape);
+        self
     }
 
     /// Content whose first frame comes from `from`: an [`TileContent::Arriving`]
@@ -3799,6 +3815,10 @@ impl TileHost {
     fn arrival_shape(&self) -> super::SkeletonShape {
         match &self.content {
             TileContent::App(app) => app.arrival_shape(),
+            // The app's own declaration, made before its code is in.
+            TileContent::Arriving => self
+                .declared_arrival_shape
+                .unwrap_or(super::SkeletonShape::Ground),
             _ => super::SkeletonShape::Ground,
         }
     }

@@ -53,6 +53,7 @@ mod activity_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -78,7 +79,7 @@ mod activity_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Activity", open);
+        registry::defer_arriving(APP, "Activity", SkeletonShape::Ground, open);
     }
 }
 
@@ -87,6 +88,7 @@ mod api_tester_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -112,7 +114,7 @@ mod api_tester_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "API Tester", open);
+        registry::defer_arriving(APP, "API Tester", SkeletonShape::Ground, open);
     }
 }
 
@@ -121,6 +123,7 @@ mod calculator_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -146,7 +149,7 @@ mod calculator_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Calculator", open);
+        registry::defer_arriving(APP, "Calculator", SkeletonShape::Ground, open);
     }
 }
 
@@ -155,6 +158,7 @@ mod calendar_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -180,7 +184,7 @@ mod calendar_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Calendar", open);
+        registry::defer_arriving(APP, "Calendar", SkeletonShape::Ground, open);
     }
 }
 
@@ -189,6 +193,7 @@ mod camera_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -214,7 +219,7 @@ mod camera_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Camera", open);
+        registry::defer_arriving(APP, "Camera", SkeletonShape::Ground, open);
     }
 }
 
@@ -223,6 +228,7 @@ mod canvas_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -248,7 +254,7 @@ mod canvas_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Canvas", open);
+        registry::defer_arriving(APP, "Canvas", SkeletonShape::Ground, open);
     }
 }
 
@@ -257,6 +263,7 @@ mod chat_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -282,7 +289,7 @@ mod chat_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Chat", open);
+        registry::defer_arriving(APP, "Chat", SkeletonShape::Page, open);
     }
 }
 
@@ -291,6 +298,7 @@ mod chip_design_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -316,7 +324,7 @@ mod chip_design_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Chip Design", open);
+        registry::defer_arriving(APP, "Chip Design", SkeletonShape::Ground, open);
     }
 }
 
@@ -325,6 +333,7 @@ mod clocks_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -350,7 +359,7 @@ mod clocks_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Clocks", open);
+        registry::defer_arriving(APP, "Clocks", SkeletonShape::Ground, open);
     }
 }
 
@@ -359,6 +368,7 @@ mod contacts_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -384,7 +394,7 @@ mod contacts_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Contacts", open);
+        registry::defer_arriving(APP, "Contacts", SkeletonShape::Ground, open);
     }
 }
 
@@ -393,6 +403,7 @@ mod diffmerge_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -418,7 +429,7 @@ mod diffmerge_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Diff & Merge", open);
+        registry::defer_arriving(APP, "Diff & Merge", SkeletonShape::Ground, open);
     }
 }
 
@@ -427,6 +438,7 @@ mod ebook_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -452,7 +464,7 @@ mod ebook_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "E-Book Reader", open);
+        registry::defer_arriving(APP, "E-Book Reader", SkeletonShape::Ground, open);
     }
 }
 
@@ -461,6 +473,7 @@ mod feeds_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -486,7 +499,7 @@ mod feeds_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Feeds", open);
+        registry::defer_arriving(APP, "Feeds", SkeletonShape::Ground, open);
     }
 }
 
@@ -495,6 +508,7 @@ mod hex_editor_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -520,7 +534,7 @@ mod hex_editor_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Hex Editor", open);
+        registry::defer_arriving(APP, "Hex Editor", SkeletonShape::Ground, open);
     }
 }
 
@@ -529,6 +543,7 @@ mod maps_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -554,7 +569,7 @@ mod maps_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Maps", open);
+        registry::defer_arriving(APP, "Maps", SkeletonShape::Ground, open);
     }
 }
 
@@ -563,6 +578,7 @@ mod messages_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -588,7 +604,7 @@ mod messages_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Messages", open);
+        registry::defer_arriving(APP, "Messages", SkeletonShape::Ground, open);
     }
 }
 
@@ -597,6 +613,7 @@ mod model_providers_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -622,7 +639,7 @@ mod model_providers_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Model Providers", open);
+        registry::defer_arriving(APP, "Model Providers", SkeletonShape::Ground, open);
     }
 }
 
@@ -631,6 +648,7 @@ mod music_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -656,7 +674,7 @@ mod music_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Music", open);
+        registry::defer_arriving(APP, "Music", SkeletonShape::Ground, open);
     }
 }
 
@@ -665,6 +683,7 @@ mod notes_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -690,7 +709,7 @@ mod notes_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Notes", open);
+        registry::defer_arriving(APP, "Notes", SkeletonShape::Ground, open);
     }
 }
 
@@ -699,6 +718,7 @@ mod passwords_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -724,7 +744,7 @@ mod passwords_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Passwords", open);
+        registry::defer_arriving(APP, "Passwords", SkeletonShape::Ground, open);
     }
 }
 
@@ -733,6 +753,7 @@ mod pdf_viewer_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -758,7 +779,7 @@ mod pdf_viewer_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "PDF Viewer", open);
+        registry::defer_arriving(APP, "PDF Viewer", SkeletonShape::Ground, open);
     }
 }
 
@@ -767,6 +788,7 @@ mod photos_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -792,7 +814,7 @@ mod photos_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Photos", open);
+        registry::defer_arriving(APP, "Photos", SkeletonShape::Ground, open);
     }
 }
 
@@ -801,6 +823,7 @@ mod poker_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -826,7 +849,7 @@ mod poker_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Poker", open);
+        registry::defer_arriving(APP, "Poker", SkeletonShape::Ground, open);
     }
 }
 
@@ -835,6 +858,7 @@ mod scratchpad_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -860,7 +884,7 @@ mod scratchpad_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Scratchpad", open);
+        registry::defer_arriving(APP, "Scratchpad", SkeletonShape::Ground, open);
     }
 }
 
@@ -869,6 +893,7 @@ mod sheets_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -894,7 +919,7 @@ mod sheets_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Sheets", open);
+        registry::defer_arriving(APP, "Sheets", SkeletonShape::Ground, open);
     }
 }
 
@@ -903,6 +928,7 @@ mod shortcuts_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -928,7 +954,7 @@ mod shortcuts_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Shortcuts", open);
+        registry::defer_arriving(APP, "Shortcuts", SkeletonShape::Ground, open);
     }
 }
 
@@ -937,6 +963,7 @@ mod slides_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -962,7 +989,7 @@ mod slides_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Slides", open);
+        registry::defer_arriving(APP, "Slides", SkeletonShape::Ground, open);
     }
 }
 
@@ -971,6 +998,7 @@ mod snippets_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -996,7 +1024,7 @@ mod snippets_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Snippets", open);
+        registry::defer_arriving(APP, "Snippets", SkeletonShape::Ground, open);
     }
 }
 
@@ -1005,6 +1033,7 @@ mod speed_test_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -1030,7 +1059,7 @@ mod speed_test_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Speed Test", open);
+        registry::defer_arriving(APP, "Speed Test", SkeletonShape::Ground, open);
     }
 }
 
@@ -1039,6 +1068,7 @@ mod tasks_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -1064,7 +1094,7 @@ mod tasks_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Tasks", open);
+        registry::defer_arriving(APP, "Tasks", SkeletonShape::Ground, open);
     }
 }
 
@@ -1073,6 +1103,7 @@ mod themes_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -1098,7 +1129,7 @@ mod themes_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Theme Studio", open);
+        registry::defer_arriving(APP, "Theme Studio", SkeletonShape::Ground, open);
     }
 }
 
@@ -1107,6 +1138,7 @@ mod totp_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -1132,7 +1164,7 @@ mod totp_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Authenticator", open);
+        registry::defer_arriving(APP, "Authenticator", SkeletonShape::Ground, open);
     }
 }
 
@@ -1141,6 +1173,7 @@ mod tube_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -1166,7 +1199,7 @@ mod tube_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Tube", open);
+        registry::defer_arriving(APP, "Tube", SkeletonShape::Ground, open);
     }
 }
 
@@ -1175,6 +1208,7 @@ mod typst_editor_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -1200,7 +1234,7 @@ mod typst_editor_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Typst Editor", open);
+        registry::defer_arriving(APP, "Typst Editor", SkeletonShape::Ground, open);
     }
 }
 
@@ -1209,6 +1243,7 @@ mod video_editor_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -1234,7 +1269,7 @@ mod video_editor_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Video Editor", open);
+        registry::defer_arriving(APP, "Video Editor", SkeletonShape::Ground, open);
     }
 }
 
@@ -1243,6 +1278,7 @@ mod video_player_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -1268,7 +1304,7 @@ mod video_player_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Video Player", open);
+        registry::defer_arriving(APP, "Video Player", SkeletonShape::Ground, open);
     }
 }
 
@@ -1277,6 +1313,7 @@ mod weather_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -1302,7 +1339,7 @@ mod weather_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Weather", open);
+        registry::defer_arriving(APP, "Weather", SkeletonShape::Ground, open);
     }
 }
 
@@ -1311,6 +1348,7 @@ mod word_processor_split {
 
     use ui::application::ApplicationDefinition;
     use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
 
@@ -1336,6 +1374,6 @@ mod word_processor_split {
     }
 
     pub(super) fn register() {
-        registry::defer(APP, "Word Processor", open);
+        registry::defer_arriving(APP, "Word Processor", SkeletonShape::Ground, open);
     }
 }
