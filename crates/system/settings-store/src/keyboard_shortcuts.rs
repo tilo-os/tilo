@@ -211,6 +211,56 @@ impl ShortcutAction {
         format!("shortcut-name-{}", self.id())
     }
 
+    /// The action that does what this shortcut does, as the provider that
+    /// publishes it and its id within that provider, when the shell
+    /// publishes one.
+    ///
+    /// This is the one table a chord and an action share: the overlay host
+    /// runs a chord by running this action, so a key, a palette click and an
+    /// agent's invocation cannot drift into three behaviours, and the
+    /// shortcut guide, Settings and the palette name the action beside the
+    /// chord. A shortcut whose action the shell does not publish yet is
+    /// `None`, and its chord runs the shell's own implementation.
+    #[must_use]
+    pub const fn action(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Self::WorkspaceOverview => Some(("actions", "overview.toggle")),
+            Self::Lock => Some(("session", "lock")),
+            Self::QuickSettings => Some(("actions", "quick-settings.open")),
+            Self::ShortcutHelp => Some(("actions", "shortcut-help.toggle")),
+            Self::PreviousTab => Some(("actions", "tab.previous")),
+            Self::NextTab => Some(("actions", "tab.next")),
+            Self::TabMenu => Some(("actions", "tab.menu")),
+            Self::ReopenClosedTab => Some(("actions", "tab.reopen")),
+            Self::PreviousStrip => Some(("actions", "strip.focus-previous")),
+            Self::NextStrip => Some(("actions", "strip.focus-next")),
+            Self::PreviousWorkspace => Some(("actions", "workspace.previous")),
+            Self::NextWorkspace => Some(("actions", "workspace.next")),
+            Self::ToggleMaximize => Some(("actions", "group.toggle-maximize")),
+            Self::MaximizeWindow => Some(("actions", "group.maximize")),
+            Self::RestoreWindow => Some(("actions", "group.restore")),
+            Self::MoveGroupLeft => Some(("actions", "group.move-left")),
+            Self::MoveGroupRight => Some(("actions", "group.move-right")),
+            Self::MoveGroupToPreviousStrip => Some(("actions", "group.move-to-strip-previous")),
+            Self::MoveGroupToNextStrip => Some(("actions", "group.move-to-strip-next")),
+            Self::MoveGroupToPreviousDisplay => Some(("actions", "group.move-to-display-previous")),
+            Self::MoveGroupToNextDisplay => Some(("actions", "group.move-to-display-next")),
+            Self::ResizeNarrower => Some(("actions", "group.narrower")),
+            Self::ResizeWider => Some(("actions", "group.wider")),
+            Self::OpenTerminal => Some(("actions", "window.new.terminal")),
+            Self::ClipboardHistory => Some(("actions", "quick-settings.clipboard")),
+            Self::Notifications => Some(("actions", "notifications.open")),
+            Self::ToggleFullscreen => Some(("actions", "group.fullscreen")),
+            Self::ToggleMagnifier => Some(("actions", "magnifier.toggle")),
+            Self::MagnifierZoomIn => Some(("actions", "magnifier.zoom-in")),
+            Self::MagnifierZoomOut => Some(("actions", "magnifier.zoom-out")),
+            Self::EmojiPicker => Some(("actions", "emoji.picker")),
+            Self::NextInputSource => Some(("actions", "input.source.next")),
+            Self::ReportProblem => Some(("actions", "feedback.point")),
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub const fn category(self) -> ShortcutCategory {
         match self {

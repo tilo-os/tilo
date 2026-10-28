@@ -324,7 +324,7 @@ mod tests {
         );
         // A cursor no host minted cannot carry a page's worth of text.
         for refused in [
-            "".to_owned(),
+            String::new(),
             " ".to_owned(),
             "\u{7}".to_owned(),
             "x".repeat(513),

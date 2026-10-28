@@ -43,7 +43,7 @@ pub(crate) fn facts_spec() -> tilo_actions::ActionSpec {
     .with_description(
         "What this holds as a compact summary of plain values (names, times, counts, text), to check it against a request or compare two versions. With version, the facts as of that version.",
     );
-    spec.contract.result = tilo_actions::ResultSpec::Json {
+    spec.type_mut().contract.result = tilo_actions::ResultSpec::Json {
         schema: serde_json::json!({"type": "object"}),
     };
     spec.reads_document()

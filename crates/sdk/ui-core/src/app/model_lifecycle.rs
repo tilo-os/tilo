@@ -43,6 +43,13 @@ pub(super) struct PublicationStamp {
     revision: String,
 }
 
+impl PublicationStamp {
+    /// The action directory's revision the surface was published at.
+    pub(super) fn revision(&self) -> &str {
+        &self.revision
+    }
+}
+
 #[derive(Default)]
 pub(super) struct HostedPumpState {
     #[cfg(test)]
@@ -231,6 +238,10 @@ impl super::App {
         let _publish_probe = crate::profiling::frame_probe::span("pump.publish");
         if always_refresh || !self.publication_current() {
             report.published = true;
+            if always_refresh {
+                // Built again whatever the stamp says.
+                self.actions.published_stamp = None;
+            }
             self.publish_action_surface();
         } else if self.collaboration.manager.is_connected() {
             // Keep the idempotent directory-capability registration that the
@@ -332,6 +343,7 @@ impl super::App {
     }
 
     pub(super) fn update_model(&mut self) -> bool {
+        let _phase = tilo_resource::profiling::Phase::start("ui.frame_update");
         // The room's presence is state of the frame, lent under the window's
         // authority, as the draw sees it.
         let (root, state, presence) = (&mut self.root_widget, &self.state, &self.presence_ctx);
@@ -405,6 +417,7 @@ impl super::App {
         self.invalidate_widget_resource_cache();
         self.needs_sync = false;
         self.forget_replaced_widgets();
+        self.answer_held_invocations();
         true
     }
 

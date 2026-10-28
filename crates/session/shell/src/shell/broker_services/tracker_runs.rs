@@ -5,7 +5,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use tasks::model::{ConfirmationState, Issue, MessageKind, RunPhase, Tracker, issue_resource};
+use tasks::model::{
+    ConfirmationState, Issue, MessageKind, ModelChoice, RunPhase, Tracker, issue_resource,
+};
 use tilo_action_broker::services::{
     NativeTaskActionRequirement, TRACKER_APP, TrackerAnswer, TrackerDirection, TrackerQuestion,
     TrackerRun, TrackerRuns,
@@ -19,6 +21,9 @@ use super::NativeOwnerCommitService;
 const TRACKER_RECORD: &str = "";
 /// The largest tracker the broker reads.
 const MAX_TRACKER_BYTES: usize = 16 * 1024 * 1024;
+/// How far up a chain of parents a run's model is looked for. A tracker
+/// cannot hold a cycle, so this only bounds a walk that never ends.
+const MAX_PARENT_DEPTH: usize = 64;
 
 /// A room's tracker as read at one revision.
 type Read = ([u8; 32], Arc<TrackerView>);
@@ -194,11 +199,30 @@ pub(crate) fn runs_of(tracker: &Tracker) -> Vec<TrackerRun> {
     tracker
         .issues
         .iter()
-        .filter_map(|(id, issue)| run_of(id, issue))
+        .filter_map(|(id, issue)| run_of(tracker, id, issue))
         .collect()
 }
 
-fn run_of(id: &Id, issue: &Issue) -> Option<TrackerRun> {
+/// The model a sub-issue's run plans with: its own, else its parent's, so a
+/// part of a task works on the model the task was set to and not on
+/// whichever model its own agent happens to plan with.
+fn inherited_model(tracker: &Tracker, issue: &Issue) -> Option<ModelChoice> {
+    let mut seen = 0;
+    let mut node = issue;
+    loop {
+        if let Some(model) = node.run.as_ref().and_then(|run| run.model.clone()) {
+            return Some(model);
+        }
+        seen += 1;
+        let parent = tracker.issues.get(node.parent.as_ref()?)?;
+        if seen > MAX_PARENT_DEPTH {
+            return None;
+        }
+        node = parent;
+    }
+}
+
+fn run_of(tracker: &Tracker, id: &Id, issue: &Issue) -> Option<TrackerRun> {
     let run = issue.run.as_ref()?;
     let agent = run.agent.0.strip_prefix("agent:").unwrap_or(&run.agent.0);
     let directions = issue
@@ -250,13 +274,10 @@ fn run_of(id: &Id, issue: &Issue) -> Option<TrackerRun> {
             .subject
             .as_ref()
             .and_then(|subject| serde_json::from_value(subject.clone()).ok()),
-        model: run
-            .model
-            .as_ref()
-            .map(|model| runtime_collab::TaskRunModel {
-                profile: model.profile.clone(),
-                model: model.model.clone(),
-            }),
+        model: inherited_model(tracker, issue).map(|model| runtime_collab::TaskRunModel {
+            profile: model.profile.clone(),
+            model: model.model.clone(),
+        }),
         directions,
         question,
     })
@@ -311,10 +332,10 @@ mod tests {
         reason = "in a test these are the assertion"
     )]
 
-    use tasks::model::{Tracker, tracker};
+    use tasks::model::{ModelChoice, Tracker, tracker};
     use tilo_resource::Replica;
 
-    use super::runs_of;
+    use super::{inherited_model, runs_of};
 
     #[test]
     fn an_issue_assigned_to_an_agent_is_a_run_once_a_person_approves_it() {
@@ -368,5 +389,63 @@ mod tests {
         assert!(run.instruction.contains("Keep the headings"));
         assert_eq!(run.directions.len(), 1);
         assert_eq!((run.applied_revision(), run.latest_revision()), (0, 1));
+    }
+
+    /// A part of a task works on the model the task was set to, so every step
+    /// of one job records the same provider and model.
+    #[test]
+    fn a_subtask_of_a_task_runs_on_the_model_its_task_chose() {
+        let mut person = Replica::<Tracker>::new().as_author("ada");
+        person
+            .apply(Tracker::CREATE.with(tracker::Create {
+                title: "Ship the release".into(),
+                parent: None,
+                body: None,
+                status: None,
+                assignee: None,
+            }))
+            .unwrap();
+        let task = person
+            .state()
+            .unwrap()
+            .issues
+            .ids()
+            .next()
+            .cloned()
+            .unwrap();
+        person
+            .apply(Tracker::CHOOSE_MODEL.with(tracker::ChooseModel {
+                issue: task.clone(),
+                model: Some(ModelChoice {
+                    profile: "work".into(),
+                    model: "large".into(),
+                }),
+            }))
+            .unwrap();
+        person
+            .apply(Tracker::CREATE.with(tracker::Create {
+                title: "Write the notes".into(),
+                parent: Some(task),
+                body: None,
+                status: None,
+                assignee: None,
+            }))
+            .unwrap();
+        let state = person.state().unwrap();
+        let subtask = state
+            .issues
+            .iter()
+            .map(|(_, issue)| issue)
+            .find(|issue| issue.parent.is_some())
+            .unwrap();
+        assert!(
+            subtask.run.is_none() && subtask.model.is_none(),
+            "the part chose nothing of its own"
+        );
+        let chosen = inherited_model(&state, subtask).expect("the task's model is inherited");
+        assert_eq!(
+            (chosen.profile.as_str(), chosen.model.as_str()),
+            ("work", "large")
+        );
     }
 }

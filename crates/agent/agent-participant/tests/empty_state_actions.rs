@@ -90,7 +90,7 @@ fn every_apps_empty_state_action_is_a_button_in_the_tree() {
     let mut gaps = String::new();
     let mut drawn = 0;
     for definition in catalogue().iter() {
-        let app = definition.app_id;
+        let app = definition.app_id.as_ref();
         let (mut harness, _directory) = open(app);
         record_painted_actions();
         harness.relayout();

@@ -38,6 +38,8 @@ pub use content::{ContentKeeper, RoomContent};
 mod desktop_writes;
 #[cfg(test)]
 mod device_rejoin_tests;
+#[cfg(test)]
+mod hard_stop_tests;
 pub(crate) use desktop_writes::writes_desktop;
 mod listing;
 mod member_records;
@@ -794,9 +796,11 @@ pub struct Rooms {
 
 /// [`Rooms`] for whoever must not keep them alive: the browser plane, which
 /// hands sessions the calls of the rooms this relay carries.
+#[cfg(feature = "web")]
 #[derive(Clone)]
 pub struct WeakRooms(std::sync::Weak<RoomsInner>);
 
+#[cfg(feature = "web")]
 impl WeakRooms {
     /// The rooms, while the relay still has them.
     #[must_use]
@@ -939,6 +943,7 @@ impl std::fmt::Debug for Rooms {
 
 impl Rooms {
     /// These rooms, held without keeping them alive.
+    #[cfg(feature = "web")]
     #[must_use]
     pub fn downgrade(&self) -> WeakRooms {
         WeakRooms(Arc::downgrade(&self.inner))

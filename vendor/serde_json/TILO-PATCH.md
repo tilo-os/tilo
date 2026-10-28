@@ -25,6 +25,14 @@ serde_json, where the runtime holds it once and every app calls it:
   are `#[inline]`. The written ones compare and clone variant by variant
   exactly as the derives did; `Eq` and `Hash` stay derived.
 
+- **Text is read as its bytes.** `from_str` reads through `SliceRead`, as
+  `from_slice` does, instead of `StrRead`. Every type read both from text and
+  from bytes compiled its whole deserializer once per reader; the browser
+  desktop's start module carried about 300 KB of such twins. Reading bytes
+  checks that string contents are UTF-8, which text already is, so what is
+  read and every error stay the same. `Deserializer::from_str` keeps
+  `StrRead`, as its type names it.
+
 Behaviour is unchanged. A crate's own generic code still compiles what it
 instantiates: a `T: Deserialize` read from a `Value` is the crate's, and so is
 a lookup by a key type the map is generic over (`get`, `remove`).

@@ -2282,6 +2282,38 @@ impl tilo_action_broker::services::OwnDeviceActions for NativeOwnDevice {
             .invoke_own_device(person, checked, request)
             .map_err(|reason| tilo_actions::remote::ActionHostError::Refused { reason })
     }
+
+    fn ask_person(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        question: &tilo_actions::remote::ConfirmationQuestion,
+    ) -> Result<
+        tilo_actions::remote::Pending<
+            Result<tilo_actions::remote::Confirmation, tilo_actions::remote::ActionHostError>,
+        >,
+        tilo_actions::remote::ActionHostError,
+    > {
+        let Some(person) = caller.user_public_key() else {
+            return Err(tilo_actions::remote::ActionHostError::NotPermitted);
+        };
+        let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(*person);
+        if caller.principal() != &tilo_actions::remote::CallerPrincipal::Person(person) {
+            return Err(tilo_actions::remote::ActionHostError::NotPermitted);
+        }
+        let Some(room) = crate::shell::state::RoomId::parse(&question.room)
+            .filter(|room| self.0.workspace_of_room(*room).is_some())
+        else {
+            return Err(tilo_actions::remote::ActionHostError::ConfirmationRequired);
+        };
+        // The token names the answer they gave; the host binds it to the one
+        // invocation it asked about.
+        let witness = hex::encode(question.id);
+        self.0.ask_person(question, room).map(|asked| {
+            asked.map(|answer| {
+                answer.map(|_| tilo_actions::remote::Confirmation::Witnessed(witness))
+            })
+        })
+    }
 }
 
 /// Where this session keeps closed apps' launchable actions. Unit tests

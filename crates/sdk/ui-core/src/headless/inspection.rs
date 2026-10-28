@@ -68,6 +68,29 @@ pub(super) fn compare_bool(
     }
 }
 
+/// The editable text's selection, as the anchor and focus the widget published
+/// for it: absent when nothing published a selection.
+pub(super) fn compare_text_selection(
+    mismatches: &mut Vec<String>,
+    field: &str,
+    expected: Option<(usize, usize)>,
+    actual: Option<crate::a11y::AccessibleTextSelection>,
+) {
+    let Some((anchor, focus)) = expected else {
+        return;
+    };
+    let actual = actual.map(|selection| (selection.anchor, selection.focus));
+    if actual != Some((anchor, focus)) {
+        mismatches.push(format!(
+            "{field} expected {anchor}..{focus}, got {}",
+            actual.map_or_else(
+                || "none".to_string(),
+                |(anchor, focus)| format!("{anchor}..{focus}")
+            )
+        ));
+    }
+}
+
 pub(super) fn compare_optional_bool(
     mismatches: &mut Vec<String>,
     field: &str,

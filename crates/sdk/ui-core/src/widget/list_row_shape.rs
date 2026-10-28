@@ -145,7 +145,7 @@ impl ListRowFace<'_> {
                     | RowLeading::Signal(_),
                 ) => RowLeadingShape::Mark,
                 Some(RowLeading::Avatar(face)) if face.is_square() => RowLeadingShape::Tile,
-                Some(RowLeading::Avatar(_)) => RowLeadingShape::Avatar,
+                Some(RowLeading::Avatar(_) | RowLeading::AvatarSpace) => RowLeadingShape::Avatar,
                 Some(RowLeading::Thumbnail(_) | RowLeading::Paint(_)) => RowLeadingShape::Tile,
                 Some(RowLeading::Media(_, aspect)) => RowLeadingShape::Media(aspect),
             },

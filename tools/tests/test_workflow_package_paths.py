@@ -169,14 +169,14 @@ jobs:
                 relay_inputs <= relay_blocks[0],
                 f"image-relay misses direct build/signing inputs: {sorted(relay_inputs - relay_blocks[0])}",
             )
-            # The kernel recipe builds tilo-crypto without default features
-            # (os/kernel/Containerfile, os/kernel/project-crate.py).
+            # The kernel recipe builds tilo-crypto without default features from
+            # the crate kernel-signer-crate projects (os/kernel/Containerfile,
+            # os/kernel/project-crate.py), so that check reads its sources.
             kernel_signer = ("--no-default-features",)
             pairs = (
                 ("tilo-relay", "image-relay", ()),
                 ("tilo-fs", "image-relay", ()),
-                ("tilo-crypto", "image-kernel-x86_64", kernel_signer),
-                ("tilo-crypto", "image-kernel-aarch64", kernel_signer),
+                ("tilo-crypto", "kernel-signer-crate", kernel_signer),
             )
             violations: list[str] = []
             for package, check, cargo_args in pairs:

@@ -165,9 +165,20 @@ fn a_shortcut_never_fires_on_a_change_its_own_run_made() {
     let out = dispatch(&as_shortcut(&shortcut), Event::Record(&event));
     assert!(out.firings.is_empty());
     assert_eq!(out.skipped[0].2, Skipped::SelfTriggered);
-    // Another Shortcut's run is somebody else's change.
+    // Another Shortcut's run is somebody else's change, but it is still a
+    // run's: firing on it would run two shortcuts into each other.
     event.shortcut = Some("tidy".into());
     let out = dispatch(&as_shortcut(&shortcut), Event::Record(&event));
+    assert!(out.firings.is_empty());
+    assert_eq!(
+        out.skipped[0].2,
+        Skipped::Loop {
+            through: "tidy".into()
+        }
+    );
+    // A person's own change still fires it, and records no cause.
+    let typed = post(person("bob"), &"e".repeat(64), None);
+    let out = dispatch(&as_shortcut(&shortcut), Event::Record(&typed));
     assert_eq!(out.firings.len(), 1);
     assert_eq!(out.firings[0].cause, None, "a Shortcut records no cause");
 }

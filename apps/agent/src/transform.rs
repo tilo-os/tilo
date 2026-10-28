@@ -32,6 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use ui::time::Duration;
 
+use agent_provider_config::Interaction;
 use serde_json::{Map, Value, json};
 use tilo_action_policy::Rule;
 use tilo_actions::contract::{
@@ -460,6 +461,19 @@ pub enum Transform {
 }
 
 impl Transform {
+    /// What kind of interaction this is, as far as choosing a model goes.
+    #[must_use]
+    pub fn kind(&self) -> Interaction {
+        match self {
+            Self::Summarise { .. }
+            | Self::Extract { .. }
+            | Self::Classify { .. }
+            | Self::Freeform { .. } => Interaction::OneShot,
+            Self::Task { .. } => Interaction::Task,
+            Self::Respond { .. } => Interaction::Request,
+        }
+    }
+
     /// The schema the answer's `result` must satisfy.
     #[must_use]
     pub fn expected(&self) -> Value {
@@ -940,7 +954,9 @@ pub fn bind_wire(
 /// Where an answer comes from. Production asks the model gateway; tests
 /// stand in for it.
 pub trait TransformModel: Send + Sync {
-    /// One single-shot answer to `instructions` about `input`.
+    /// One single-shot answer to `instructions` about `input`, for an
+    /// interaction of `kind`: the kind is what picks the default model, so a
+    /// translation may run on a model on this device while a task does not.
     ///
     /// # Errors
     ///
@@ -948,6 +964,7 @@ pub trait TransformModel: Send + Sync {
     /// deadline.
     fn answer(
         &self,
+        kind: Interaction,
         instructions: &str,
         input: &str,
         max_output_tokens: u32,
@@ -963,31 +980,37 @@ pub trait TransformModel: Send + Sync {
     /// As [`Self::answer`], and a call stopped part way.
     fn answer_until(
         &self,
+        kind: Interaction,
         (instructions, input): (&str, &str),
         max_output_tokens: u32,
         timeout: Duration,
         stop: &AtomicBool,
     ) -> Result<String, String> {
         let _ = stop;
-        self.answer(instructions, input, max_output_tokens, timeout)
+        self.answer(kind, instructions, input, max_output_tokens, timeout)
     }
 }
 
 /// The provider the agent chose when it started (a managed agent's arrives
-/// with its launch), else the Settings-selected one, reached only through
-/// the model gateway. A sandboxed agent cannot read Settings, so the one it
-/// started with is asked first.
+/// with its launch), else the one Settings chose for the kind of
+/// interaction, else the Settings default, reached only through the model
+/// gateway. A sandboxed agent cannot read Settings, so the one it started
+/// with is asked first.
 #[derive(Default)]
 pub struct GatewayModel {
     pub launched: Option<crate::providers::ProviderSelection>,
 }
 
 impl GatewayModel {
-    /// The provider to ask, once the gateway is reachable.
-    fn selection(&self) -> Result<crate::providers::ProviderSelection, String> {
+    /// The provider to ask for an interaction of `kind`, once the gateway is
+    /// reachable. A launch names one model for the whole agent, which is a
+    /// person's decision about that agent rather than about a kind; every
+    /// other call follows the kind's own default.
+    fn selection(&self, kind: Interaction) -> Result<crate::providers::ProviderSelection, String> {
         let selection = self
             .launched
             .clone()
+            .or_else(|| crate::providers::interaction_selection(kind))
             .or_else(crate::providers::default_selection)
             .ok_or_else(|| "no model provider is configured in Settings".to_string())?;
         if !tilo_model_client::available() {
@@ -1000,12 +1023,13 @@ impl GatewayModel {
 impl TransformModel for GatewayModel {
     fn answer(
         &self,
+        kind: Interaction,
         instructions: &str,
         input: &str,
         max_output_tokens: u32,
         timeout: Duration,
     ) -> Result<String, String> {
-        let selection = self.selection()?;
+        let selection = self.selection(kind)?;
         tilo_model_client::transform(
             &selection.profile_id,
             &selection.model.id,
@@ -1019,12 +1043,13 @@ impl TransformModel for GatewayModel {
 
     fn answer_until(
         &self,
+        kind: Interaction,
         asked: (&str, &str),
         max_output_tokens: u32,
         timeout: Duration,
         stop: &AtomicBool,
     ) -> Result<String, String> {
-        let selection = self.selection()?;
+        let selection = self.selection(kind)?;
         tilo_model_client::transform_until(
             (&selection.profile_id, &selection.model.id),
             asked,
@@ -1112,7 +1137,13 @@ pub fn run_until(
             ));
         }
         let answer = model
-            .answer_until((&instructions, &turn), MAX_OUTPUT_TOKENS, left, stop)
+            .answer_until(
+                call.transform.kind(),
+                (&instructions, &turn),
+                MAX_OUTPUT_TOKENS,
+                left,
+                stop,
+            )
             .map_err(|why| failure(code::MODEL_UNAVAILABLE, why, true))?;
         match answer_value(&answer).and_then(|value| {
             tilo_actions::params::validate_json_schema(&value, &expected)
@@ -1300,7 +1331,14 @@ mod tests {
     struct Fixed(&'static str);
 
     impl TransformModel for Fixed {
-        fn answer(&self, _: &str, _: &str, _: u32, _: Duration) -> Result<String, String> {
+        fn answer(
+            &self,
+            _: Interaction,
+            _: &str,
+            _: &str,
+            _: u32,
+            _: Duration,
+        ) -> Result<String, String> {
             Ok(self.0.to_string())
         }
     }
@@ -1565,7 +1603,14 @@ mod tests {
     fn a_model_that_cannot_answer_is_a_retryable_failure() {
         struct Down;
         impl TransformModel for Down {
-            fn answer(&self, _: &str, _: &str, _: u32, _: Duration) -> Result<String, String> {
+            fn answer(
+                &self,
+                _: Interaction,
+                _: &str,
+                _: &str,
+                _: u32,
+                _: Duration,
+            ) -> Result<String, String> {
                 Err("gateway unavailable".into())
             }
         }
@@ -1643,12 +1688,20 @@ mod tests {
     }
 
     impl TransformModel for Working {
-        fn answer(&self, _: &str, _: &str, _: u32, _: Duration) -> Result<String, String> {
+        fn answer(
+            &self,
+            _: Interaction,
+            _: &str,
+            _: &str,
+            _: u32,
+            _: Duration,
+        ) -> Result<String, String> {
             Err("only a stoppable call is made".into())
         }
 
         fn answer_until(
             &self,
+            _: Interaction,
             _: (&str, &str),
             _: u32,
             _: Duration,

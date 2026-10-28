@@ -654,6 +654,7 @@ impl Relay {
             web,
             compute_ready,
             rooms,
+            room_records,
         })
     }
 

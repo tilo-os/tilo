@@ -204,3 +204,52 @@ fn every_mutable_method_of_the_bar_touches_its_drawing() {
         "methods that change the bar unseen: {missing:?}"
     );
 }
+
+/// The app's slots changing on their own (a document's edited mark coming
+/// and going with each save) repaint the bar, not the window under it.
+#[test]
+fn a_slot_change_repaints_only_the_bar() {
+    let _settled = crate::motion::testing::settled();
+    let theme = Theme::dark().with_reduce_motion(true);
+    let mut tr = TextRenderer::new();
+    let mut bar = TabBar::new("g1", vec![TabDescriptor::new(1, "Notes")], 1);
+    bar.set_window_controls(true);
+    let slots = |edited| crate::window_toolbar::WindowToolbar {
+        sidebar: Some(true),
+        location: Some(crate::window_toolbar::ToolbarLocation {
+            label: "Ideas".into(),
+            edited,
+            ..crate::window_toolbar::ToolbarLocation::default()
+        }),
+        ..crate::window_toolbar::WindowToolbar::default()
+    };
+    let mut frame = |bar: &mut TabBar, edited| {
+        bar.set_toolbar(1, Some(slots(edited)));
+        super::super::tests::lay_out_at_width_with(bar, 900.0, &theme);
+        let mut scene = Scene::new();
+        let recording = crate::scene_parts::Recording::begin();
+        crate::scene_parts::track(&scene);
+        bar.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        let parts = recording.finish().of(&scene).expect("well nested parts");
+        (scene, parts)
+    };
+    let (saved, saved_parts) = frame(&mut bar, false);
+    let (edited, edited_parts) = frame(&mut bar, true);
+    assert!(!edited.encoding_eq(&saved), "the edited mark shows");
+    let damage = crate::scene_parts::damage(&saved, &saved_parts, &edited, &edited_parts)
+        .expect("the frames compare part by part");
+    assert!(!damage.is_empty());
+    let height = bar.bar_height();
+    for rect in &damage {
+        assert!(
+            rect.height() <= height + 4.0,
+            "{rect:?} is more than the bar's {height}px"
+        );
+    }
+}

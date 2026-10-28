@@ -127,6 +127,7 @@ mod tests {
                     "actions",
                     "records",
                     "authentication-prompts",
+                    "focused-window",
                     "file-picker"
                 ]
             );
@@ -277,6 +278,7 @@ mod tests {
                     "actions",
                     "records",
                     "authentication-prompts",
+                    "focused-window",
                     "file-picker"
                 ]
             );
@@ -349,6 +351,7 @@ mod tests {
                     "actions",
                     "records",
                     "authentication-prompts",
+                    "focused-window",
                     "file-picker"
                 ]
             );

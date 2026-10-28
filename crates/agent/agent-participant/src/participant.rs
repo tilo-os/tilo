@@ -1087,7 +1087,7 @@ impl AgentParticipant {
         let granted: Vec<&str> = self
             .catalogue
             .iter()
-            .map(|definition| definition.app_id)
+            .map(ui::application::ApplicationDefinition::app_id)
             .filter(|app| self.identity.delegation.permits_app(app))
             .collect();
         let fresh = named_without_documents(text, &granted, &held);
@@ -2161,7 +2161,7 @@ impl AgentParticipant {
         let title = self
             .catalogue
             .get(&route.app_id)
-            .map_or(route.app_id.as_str(), |definition| definition.title);
+            .map_or(route.app_id.as_str(), |definition| definition.title());
         let view = crate::desk::View {
             app_id: &route.app_id,
             title,

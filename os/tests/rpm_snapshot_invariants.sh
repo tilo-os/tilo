@@ -158,6 +158,8 @@ else
 fi
 kernel_sources=(
   "$repo/tools/ci/publish/kernel.sh"
+  "$repo/tools/ci/publish/kernel-env.sh"
+  "$repo/tools/ci/publish/kernel-compile-cache.sh"
   "$repo/tools/ci/publish/kernel-buildroot.sh"
   "$repo/tools/ci/publish/kernel-acceptance.sh"
   "$repo/os/kernel/Containerfile"

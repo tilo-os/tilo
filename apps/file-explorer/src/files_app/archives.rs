@@ -300,7 +300,7 @@ impl FileExplorerWidget {
             .find(|entry| crate::archive::is_supported(&entry.path))
             .map_or_else(|| self.current_path.clone(), |entry| entry.path.clone());
         // Running as a real one would, so the window follows it as it
-        // follows any: the capture's process ends with the frame.
+        // follows any, until the window closes.
         let transfer = crate::file_ops::LocalTransfer {
             done: (1_610_612_736_u64).into(),
             total: (4_617_089_843_u64).into(),
@@ -311,7 +311,7 @@ impl FileExplorerWidget {
             ..crate::file_ops::LocalTransfer::default()
         };
         self.show_transfer(&transfer);
-        crate::file_ops::run_for_capture(transfer);
+        self.staged_transfer = Some(crate::file_ops::run_for_capture(transfer));
     }
 
     /// Show the archive being browsed once its entries were read; whether

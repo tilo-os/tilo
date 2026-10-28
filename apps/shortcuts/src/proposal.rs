@@ -85,16 +85,12 @@ impl Proposal {
             .map(|step| label(step, catalog))
             .filter(|label| !label.is_empty())
             .collect();
-        let mut name = match names.as_slice() {
+        let name = match names.as_slice() {
             [] => String::from("New shortcut"),
             [only] => only.clone(),
             _ => names.join(", then "),
         };
-        if let Some(first) = name.chars().next() {
-            let upper: String = first.to_uppercase().collect();
-            name.replace_range(..first.len_utf8(), &upper);
-        }
-        name
+        ui::format::capitalize_first(&name)
     }
 
     /// What was noticed, in the person's words.

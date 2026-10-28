@@ -1,5 +1,6 @@
 //! Pure, versioned schema and structural editor for Tilo serialized UI graphs.
 
+pub mod component;
 mod edit;
 
 pub use edit::{UiGraphEdit, parse_ui_graph_edits};

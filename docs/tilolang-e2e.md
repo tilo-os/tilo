@@ -1,0 +1,89 @@
+# tilolang apps end to end
+
+One command builds the tilolang example apps, installs them into a headless
+nested Tilo session and checks them as real, independent Tilo apps:
+
+```sh
+scripts/headless-examples/tilolang-e2e.py            # builds what it needs
+scripts/headless-examples/tilolang-e2e.py --no-build # reuses target/nested-session
+```
+
+Without `--no-build` it builds the nested session on t
+(`t outputs nested-session-arm64`, through `dist/dev/nested-session.sh`) and
+the `tilolang` tool and `tilo-collab-probe` with cargo. `--no-build` needs
+`target/nested-session`, `target/debug/tilolang` and
+`target/debug/tilo-collab-probe` to exist already.
+
+The session is headless and runs with `--software`: the shell, its render
+service and every app render on lavapipe, and the shell probes no GPU. It
+never opens a window on the desktop it runs from and never captures that
+desktop. The session's state is thrown away: it lives in
+`target/tilolang-e2e/state`, and the script stops the session, its compositor
+and its runtime directory at the end. `--keep` leaves it running.
+
+## What it checks
+
+`tilolang build apps/tl/board --search apps/tl` builds Notes, Chat, Todo and
+Board. The session installs them (`--install-tapp`) beside native Notes
+(`--apps notes`), then:
+
+- **registry**: each package is an application under its own id, name and
+  category (`actions list`, provider `applications`).
+- **launch**: each opens from the applications provider, and the compositor
+  admits its window under its own app id, which a sandboxed client gets only
+  through verified launch custody. Each window presents a frame.
+- **processes**: each app is its own `tilolang-app` process from the tilolang
+  runtime bundle, in its own user, mount and pid namespaces. No process loads
+  a Vulkan driver except lavapipe.
+- **actions**: each app publishes its actions. Invoking "New note", "New
+  chat" and "New item" each adds an entry to that app's history.
+- **unsynced**: one PNG of the session per app as first opened, with that app in
+  front. The room has not synced with the workspace's host, so each app says
+  "Connecting to Shared browser workspace…" where it would say it is empty,
+  as native Notes does: the shell tells every app window whether its room has
+  synced over the window's shell-ui connection, which a tilolang app's manifest
+  asks for like a native app's.
+- **snapshots**: one PNG of the session per app, with that app in front.
+- **native**: native Notes (`so.tilo.notes`) opens beside them, presents a
+  frame and publishes its actions. Both apps are called Notes; they are told
+  apart by id. In this session native Notes shows "Connecting to Shared
+  browser workspace…" in place of its notebook: the shell dials a host for the
+  session's workspace and the room never completes a first sync with it. Its
+  actions answer meanwhile.
+- **activation**: "Show this window" answers for tilolang Notes exactly as it
+  does for native Notes.
+- **read**: the door's `read` of tilolang Notes (what `tilo_read` calls) lists
+  the room's records with their ids and kinds; a read of the notebook lists the
+  note "New note" made, by the id a read takes.
+- **idle**: each app left untouched for 10 s, native Notes among them. An app
+  that commits no frame is settled, and every thread of it sleeps: the check
+  fails on a single context switch. An app that commits frames is animating,
+  which here is only the connecting spinner of an app whose room never syncs
+  and that holds nothing to show (Board, and native Notes in this session): it
+  may commit one frame per pose of the spinner (30 a second) and no more. Its
+  context switches per frame are recorded.
+- **spinner**: Board, in front, holds nothing and its room never syncs, so it
+  says it is connecting, with a spinner. The spinner turns: Board commits at
+  least one frame over 10 s and no more than one per pose.
+- **routes**: a second start of the same session installs the collaboration
+  probe in place of Board and Todo. Board's surface declares that it reads
+  Notes' kinds; Todo's declares no read. The broker lets Board join Notes'
+  route read-only and refuses its write. Todo cannot join at all.
+
+## Output
+
+Everything goes to `target/tilolang-e2e` (`--out DIR` changes it):
+
+- `summary.json` holds every check's result and the list of failed checks. The
+  exit status is non-zero when a check fails.
+- `notes.png`, `chat.png`, `todo.png` and `board.png` are the snapshots, and
+  `native-notes.png` native Notes. Look at them: each should show only native
+  window chrome around the app. `unsynced-notes.png` and the others are the
+  apps as first opened, each saying it is connecting.
+- `session-apps.log` and `session-routes.log` are the session script's own
+  output.
+- `shell-apps.log` is the shell's log from the first start, with each app's
+  output. `state/logs/shell.log` is the shell's log from the routes start.
+
+To drive a kept session by hand, use the `drive it:` line in the session log.
+It sets `XDG_RUNTIME_DIR` and `TILO_TEST_CONTROL`.

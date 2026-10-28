@@ -105,6 +105,7 @@ inputs = [
 ]
 suites = [
   "os/dev/test-assemble-app-runtime.py",
+  "os/dev/test-runtime-font-payload.py",
   "os/dev/test-export-sdk-compiler.py",
   "os/dev/test-install-copy-scratch-cleanup.sh",
   "os/dev/test-install-copy-scratch.py",
@@ -162,6 +163,7 @@ suites = [
   "os/tests/test_authselect_unchanged.py",
   "os/tests/test_hardlink_identical.py",
   "os/tests/test_seed_env_runtime.py",
+  "os/tests/test_signed_records.py",
   "os/tests/test_boot_unit_ordering.py",
   "os/tests/podman_build_flags.sh",
   "os/tests/portal_config_validity.sh",
@@ -518,6 +520,7 @@ inputs = [
   "os/Containerfile",
   "os/external-assets/github-assets.tsv",
   "apps/browser/tilo-app.toml",
+  "apps/browser/src/browser_widget/engine_runtime.rs",
   "crates/sdk/ui-core/src/webview/chromium/runtime.rs",
 ]
 suites = [
@@ -551,6 +554,7 @@ suites = [
   "scripts/vm-acceptance/test_runtime_backing.py",
   "scripts/vm-acceptance/test_component_replacement.py",
   "scripts/vm-acceptance/test_lock_guard.py",
+  "scripts/vm-acceptance/test_guest_wait.py",
   "scripts/vm-acceptance/test_dialog_guard.py",
   "scripts/vm-acceptance/test_device_fidelity.py",
   "scripts/vm-acceptance/test_session_restart.py",
@@ -868,12 +872,53 @@ scope = { inputs = [
 [[cargo]]
 package = "tilo-app-package"
 # Every app's search taglines are checked in each shipped language.
-inputs = ["apps/*/Cargo.toml", "apps/*/tilo-app.toml", "apps/*/search/*.ftl"]
+inputs = ["apps/*/Cargo.toml", "apps/*/tilo-app.toml", "apps/*/tilo-runtime.toml", "apps/*/search/*.ftl"]
 readers = [
   "crates/packaging/tilo-app-package/tests/app_manifests.rs",
   "crates/packaging/tilo-app-package/src/search_keywords.rs",
   "crates/packaging/tilo-app-package/src/validate.rs",
   "crates/packaging/tilo-app-package/src/view.rs",
+]
+
+[[cargo]]
+package = "tilolang-app"
+# The window's tests compile the built-in tilolang packages (source and ids lock).
+inputs = ["apps/tl/"]
+readers = ["apps/tilolang/tests/opening.rs", "apps/tilolang/tests/support.rs"]
+
+[[cargo]]
+package = "tilolang"
+# The multi-package tests resolve and compile the built-in packages.
+inputs = ["apps/tl/"]
+readers = ["crates/lang/tilolang/tests/it/multifile.rs"]
+
+[[cargo]]
+package = "tilolang-cli"
+# The build tests build and sign copies of the built-in packages.
+inputs = ["apps/tl/"]
+readers = ["crates/lang/tilolang-cli/tests/build.rs"]
+
+[[cargo]]
+package = "tilolang-runtime"
+# The end-to-end tests compile the built-in packages from their sources.
+inputs = ["apps/tl/", "crates/lang/tilolang/tests/fixtures/"]
+readers = [
+  "crates/lang/tilolang-runtime/tests/e2e_blocks.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_cleanup.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_counter.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_notes.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_todo.rs",
+]
+
+[[cargo]]
+package = "tilolang-tilo"
+# The collaboration tests compile the built-in packages from their sources.
+inputs = ["apps/tl/"]
+readers = [
+  "crates/platform/tilolang-tilo/tests/budgets.rs",
+  "crates/platform/tilolang-tilo/tests/fixtures.rs",
+  "crates/platform/tilolang-tilo/tests/outbox.rs",
+  "crates/platform/tilolang-tilo/tests/outcomes.rs",
 ]
 
 [[cargo]]
@@ -2169,3 +2214,7 @@ package = "tilo-cli"
 # image's component manifest.
 inputs = ["os/components.toml"]
 readers = ["crates/system/tilo-cli/src/aliases.rs"]
+
+[[cargo-exempt]]
+file = "crates/dev/codebase-qualification/tests/qualification.rs"
+reason = "behind --features benchmark: measures this repository's whole working set on request, so no single changed file selects it"

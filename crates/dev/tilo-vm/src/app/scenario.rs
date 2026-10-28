@@ -1831,7 +1831,7 @@ mod tests {
         let defaults = serde_json::json!({"hostname":"scenario-tilo", "keyboard_layout":null, "timezone":null, "locale":null});
         super::check_retained_preferences(&legacy, &defaults).unwrap();
         let mut configured = plan(Layout::Erase);
-        configured.hostname = "tilo-yoga".into();
+        configured.hostname = "tilo-desktop".into();
         configured.keyboard_layout = Some("German (QWERTZ)".into());
         configured.timezone = Some("Europe/Berlin".into());
         let requested = configured.describe();

@@ -27,8 +27,8 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use crate::environment_host::{
-    EnvironmentStreamError, LaunchError, MemberArea, MemberContext, MemberQuota, read_message,
-    write_message,
+    EnvironmentStreamError, LaunchError, MemberArea, MemberContext, MemberQuota, MessageReader,
+    read_message, write_message,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -220,6 +220,7 @@ where
         })
     };
     let mut receiving = true;
+    let mut receive = MessageReader::new(receive);
     loop {
         tokio::select! {
             frame = frames.recv() => {
@@ -240,7 +241,7 @@ where
             _ = report.tick() => {
                 write_message(send, &usage(Instant::now(), &mut reported)).await?;
             }
-            incoming = read_message::<_, WindowInput>(receive), if receiving => {
+            incoming = receive.next::<WindowInput>(), if receiving => {
                 match incoming? {
                     // The relay stopped forwarding input; windows still flow.
                     None => receiving = false,

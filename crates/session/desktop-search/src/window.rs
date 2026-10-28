@@ -300,7 +300,7 @@ mod tests {
                 .with_action(action("rename", "Rename note"))
                 .with_action({
                     let mut open = action("open-note", "Open note");
-                    open.kind = OperationKind::View;
+                    open.type_mut().kind = OperationKind::View;
                     open
                 })
         };
@@ -402,7 +402,7 @@ mod tests {
     }
 
     fn unavailable(mut spec: ActionSpec, code: &str) -> ActionSpec {
-        spec.contract.availability = tilo_actions::Availability::Unavailable {
+        spec.type_mut().contract.availability = tilo_actions::Availability::Unavailable {
             code: code.into(),
             reason: code.into(),
         };

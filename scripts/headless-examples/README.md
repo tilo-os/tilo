@@ -78,6 +78,15 @@ frame trace. It does not measure a physical display or bypass ordinary OS
 enrollment. See [native first-frame measurements](../../docs/benchmarks/native-first-frame-2026-10-06.md)
 for the remote wrapper, build inputs, raw samples and cache limitations.
 
+`typing-latency.py` types into tilolang Todo and native Notes in a headless,
+lavapipe-only nested session on a simulated 60 Hz display, one key at a time,
+and reports each stage of a key per app: the compositor's `KEY-LATENCY`
+(key to app commit, commit to submit, submit to present) and the app's own
+`INPUT-FRAME` records (`RUST_LOG=tilo::input_frame=debug`): handling, the wait
+for the frame, the frame and every named scope it ran, the present, and whether
+the frame repainted its whole window and why. Key to commit is the app's
+share; software rendering inflates the compositor's.
+
 ## `tilo-control` CLI
 
 Use `tilo-control` from the command line:

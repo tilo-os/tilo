@@ -317,7 +317,8 @@ impl Button {
                 .expect("a control id is always JSON serializable")
                 .for_audience(tilo_actions::Audience::Agents);
         if own_device {
-            spec.contract
+            spec.type_mut()
+                .contract
                 .tags
                 .push(tilo_actions::OWN_DEVICE_SCOPE.to_owned());
         }
@@ -469,6 +470,12 @@ impl Button {
         self.role = role;
         self.dirty = true;
         self
+    }
+
+    /// What the button does, which decides its whole look.
+    #[must_use]
+    pub const fn role_of(&self) -> ButtonRole {
+        self.role
     }
 
     pub fn set_role(&mut self, role: ButtonRole) {
@@ -2137,7 +2144,7 @@ impl crate::resources::PublishesResources for Button {
             let stale = std::mem::replace(&mut resource.label, name.clone());
             for action in &mut resource.actions {
                 if action.label.trim().is_empty() || action.label == stale {
-                    action.label.clone_from(name);
+                    action.type_mut().label.clone_from(name);
                 }
             }
         }
@@ -3954,3 +3961,6 @@ mod tests {
         enabled_follows_its_state_and_bounds_are_spoken();
     }
 }
+
+mod component;
+pub use component::ButtonProps;

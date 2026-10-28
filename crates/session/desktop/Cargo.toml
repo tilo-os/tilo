@@ -5,6 +5,13 @@ edition = "2024"
 license.workspace = true
 publish.workspace = true
 
+[features]
+# The profile card is not linked into the desktop that holds it: the program
+# fetches its code the first time a card opens and hands it over
+# (`profile_card::PROFILE_CARD`); a quiet panel stands under the avatar until
+# then. The browser desktop uses this to keep it out of its start module.
+lazy-profile-card = []
+
 [dependencies]
 # Sorts without a copy of std's sort per call site, which kept the web
 # desktop's start module large.

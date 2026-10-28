@@ -93,7 +93,10 @@ impl Selection {
         self.authority.adopt(&previous.authority);
     }
     /// Both domains remain independent of Documents/Files and replacement logins.
-    pub(super) fn view(&self, bindings: impl Fn(Domain, bool) + 'static + Clone) -> Element {
+    pub(super) fn view(
+        &self,
+        actions: Option<&ui::framework::Actions<crate::resource::Imager>>,
+    ) -> Element {
         let labels = self
             .authority
             .profiles()
@@ -127,15 +130,18 @@ impl Selection {
                 continue;
             }
             let checked = ui::LocalState::new(self.chosen(domain));
-            body = body.push(Box::new(
+            let category = match domain {
+                Domain::Bookmarks => "bookmarks",
+                Domain::History => "history",
+            };
+            body = body.push(Box::new(super::bound(
+                actions,
                 Checkbox::from_state(&checked)
                     .with_id(id)
-                    .with_label(super::t(key))
-                    .on_change({
-                        let changed = bindings.clone();
-                        move |included| changed(domain, included)
-                    }),
-            ));
+                    .with_label(super::t(key)),
+                super::InstallerPreviewEffect::SET_PREVIEW_CATEGORY
+                    .map(move |included: bool| (category.to_owned(), included)),
+            )));
         }
         Box::new(body)
     }

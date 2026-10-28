@@ -15,29 +15,43 @@ impl ShellOverlayHost {
     /// Step the magnifier through the person's accessibility section, as
     /// their change they undo there, and show the resulting zoom.
     pub(super) fn step_magnifier(&mut self, step: MagnifierStep) {
+        let invoking = settings_store::InvokingAction::action(format!("magnifier.{}", step.id()));
+        if let Err(error) = self.step_magnifier_as(step, &invoking) {
+            tracing::warn!(?error, "magnifier change could not be saved");
+        }
+    }
+
+    /// [`Self::step_magnifier`], recorded as the change the action
+    /// `invoked_by` names, so an invocation and the chord that runs the
+    /// same action are one entry in the person's history.
+    ///
+    /// # Errors
+    ///
+    /// Why the accessibility section refused the step.
+    pub(super) fn step_magnifier_as(
+        &mut self,
+        step: MagnifierStep,
+        invoked_by: &settings_store::InvokingAction,
+    ) -> Result<(), crate::shell::search::action_api::ActionError> {
         let mut arguments = serde_json::Map::new();
         arguments.insert("step".into(), step.id().into());
-        let stepped = crate::shell::settings_records::change(
+        crate::shell::settings_records::change(
             &crate::shell::settings_records::address("settings.accessibility", "step-magnifier"),
             &arguments,
             true,
-            &settings_store::InvokingAction::action(format!("magnifier.{}", step.id())),
-        );
-        match stepped {
-            Ok(()) => {
-                let zoom = settings_store::magnifier::MagnifierState::from_section(
-                    &settings_store::load_section(settings_store::magnifier::SECTION),
-                )
-                .zoom;
-                self.magnifier_changed = true;
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome
-                        .borrow_mut()
-                        .show_osd(crate::shell::osd::Osd::magnifier(zoom));
-                }
-            }
-            Err(error) => tracing::warn!(?error, "magnifier change could not be saved"),
+            invoked_by,
+        )?;
+        let zoom = settings_store::magnifier::MagnifierState::from_section(
+            &settings_store::load_section(settings_store::magnifier::SECTION),
+        )
+        .zoom;
+        self.magnifier_changed = true;
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome
+                .borrow_mut()
+                .show_osd(crate::shell::osd::Osd::magnifier(zoom));
         }
+        Ok(())
     }
 
     /// Drained by the compositor after it has built a clean scene (the picker

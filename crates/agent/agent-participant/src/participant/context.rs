@@ -57,7 +57,7 @@ impl AgentParticipant {
         let apps: Vec<String> = self
             .catalogue
             .iter()
-            .map(|definition| definition.app_id.to_owned())
+            .map(|definition| definition.app_id.to_string())
             .filter(|app| self.identity.delegation.permits_app(app))
             .collect();
         let mut known = self.known_titled(&apps);
@@ -191,7 +191,7 @@ impl AgentParticipant {
     /// What each of `apps` is called, by app id ([`PlanContext::app_names`]).
     fn app_names(&self, apps: &[String]) -> Vec<(String, String)> {
         apps.iter()
-            .filter_map(|app| Some((app.clone(), self.catalogue.get(app)?.title.to_owned())))
+            .filter_map(|app| Some((app.clone(), self.catalogue.get(app)?.title.to_string())))
             .collect()
     }
 

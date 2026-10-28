@@ -88,7 +88,7 @@ impl OrdinaryConfirmation {
         // A deferred spec retains a creation draft when its provider offers
         // one; without one (a verb with no parameters) it is built like any
         // other action, so a destructive one can still be confirmed.
-        let retains_draft = matches!(spec.input, tilo_actions::ActionInput::Deferred { .. })
+        let retains_draft = matches!(spec.input(), tilo_actions::ActionInput::Deferred { .. })
             && spec
                 .continuation_identity(tilo_actions::ContinuationQuery::Draft)
                 .is_some();

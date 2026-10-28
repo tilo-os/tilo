@@ -71,6 +71,20 @@ impl<M: ListModel> VirtualList<M> {
         start..end.max(start)
     }
 
+    /// What the mounted rows near the box repaint, inside it: the rows away
+    /// from the box are clipped away.
+    pub(super) fn collect_row_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
+        let first = regions.len();
+        for row in self.mounted.get(self.placed_near()).unwrap_or_default() {
+            row.widget.collect_damage(regions);
+        }
+        if let Some(changed) = regions.get_mut(first..) {
+            for rect in changed {
+                *rect = rect.intersect(self.rect);
+            }
+        }
+    }
+
     /// The mounted rows standing where the list stands now, near its box.
     pub(super) fn placed_near(&self) -> Range<usize> {
         let near = self.mounted_near();
@@ -84,18 +98,14 @@ impl<M: ListModel> VirtualList<M> {
 
 impl<M: ListModel + 'static> VirtualList<M> {
     /// Stand each mounted row one bleed in from the list's edges (so its
-    /// lift fills the list; beside the bar it leaves the bar's gutter), at
+    /// lift fills the list; beside the bar it leaves the bar's gutter, see
+    /// [`Self::trailing_inset`]), at
     /// its top in the list less [`Self::layout_offset`]. Only a row whose
     /// place changed is touched, so taffy keeps every other row's layout.
     pub(super) fn place_rows(&mut self, taffy: &mut TaffyTree<()>) {
         self.rows_beside_bar = self.scroll_metrics().overflows();
         let left = length(px(self.bleed));
-        let right = length(px(self.bleed
-            + if self.rows_beside_bar {
-                self.gutter
-            } else {
-                0.0
-            }));
+        let right = length(px(self.trailing_inset()));
         for row in &self.mounted {
             let Some(child) = row.node else {
                 continue;

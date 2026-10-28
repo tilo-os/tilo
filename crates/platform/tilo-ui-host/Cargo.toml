@@ -1,0 +1,25 @@
+[package]
+name = "tilo-ui-host"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The UI host's half of a tilolang app's window: the generic adapter, the shell composition and the toolkit's widgets, built from the component patches an app instance sends and reporting what the person did."
+
+[dependencies]
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+tilo-render-protocol = { version = "0.1.0", path = "../tilo-render-protocol" }
+chrono = { workspace = true, features = ["std"] }
+tracing.workspace = true
+
+[dev-dependencies]
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

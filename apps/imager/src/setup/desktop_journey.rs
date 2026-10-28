@@ -104,7 +104,7 @@ pub fn row(d: &DesktopProjection, m: &MethodProjection) -> LiveRow {
         let effect = SetupEffect::decode(id, &serde_json::Map::new())
             .expect("declared parameter-free effect");
         let mut spec = effect.bound();
-        spec.label = super::strings::t(label);
+        spec.type_mut().label = super::strings::t(label);
         if !enabled {
             spec = spec.unavailable(
                 "desktop_command_unavailable",

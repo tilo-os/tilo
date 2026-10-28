@@ -3,7 +3,7 @@
 [[resources]]
 kind = "shortcuts.workbench"
 label = "Shortcuts"
-version = 2
+version = 3
 fields = [
   { path = "drafts", type = "Collection<Draft>", stored = "collection" },
   { path = "drafts.*.name", type = "String", label = true },
@@ -15,9 +15,33 @@ fields = [
   { path = "drafts.*.steps.*.id", type = "Atom" },
   { path = "drafts.*.steps.*.head", type = "Option<Head>" },
   { path = "drafts.*.steps.*.args", type = "BTreeMap<String, Binding>" },
+  { path = "drafts.*.steps.*.on_error", type = "StepPolicy" },
   { path = "drafts.*.output", type = "Option<Binding>" },
   { path = "drafts.*.triggers", type = "Vec<TriggerSpec>" },
+  { path = "drafts.*.step_timeout_secs", type = "Option<u64>" },
   { path = "drafts.*.replaces_saved", type = "bool" },
+  { path = "ignored", type = "Vec<String>" },
+]
+
+[[resources.verbs]]
+id = "draft-proposal"
+kind = "undoable"
+params = [
+  { name = "shortcut", required = true, schema = {} },
+]
+
+[[resources.verbs]]
+id = "ignore-proposal"
+kind = "undoable"
+params = [
+  { name = "key", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "allow-proposal"
+kind = "undoable"
+params = [
+  { name = "key", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -25,6 +49,13 @@ id = "new-draft"
 kind = "undoable"
 params = [
   { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "duplicate-draft"
+kind = "undoable"
+params = [
+  { name = "draft", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -36,6 +67,13 @@ params = [
 
 [[resources.verbs]]
 id = "open-shortcut"
+kind = "undoable"
+params = [
+  { name = "shortcut", required = true, schema = {} },
+]
+
+[[resources.verbs]]
+id = "duplicate-shortcut"
 kind = "undoable"
 params = [
   { name = "shortcut", required = true, schema = {} },
@@ -101,6 +139,15 @@ params = [
   { name = "draft", required = true, schema = { type = "string" } },
   { name = "path", required = true, schema = { type = "string" } },
   { name = "earlier", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "set-step-policy"
+kind = "undoable"
+params = [
+  { name = "draft", required = true, schema = { type = "string" } },
+  { name = "path", required = true, schema = { type = "string" } },
+  { name = "policy", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]

@@ -309,6 +309,7 @@ impl App {
     /// busy transport leaves it for the next wakeup and an over-limit delta
     /// is reported through [`Self::document_sync_status`].
     pub(super) fn broadcast_doc_delta(&mut self) {
+        let _phase = tilo_resource::profiling::Phase::start("ui.broadcast_doc_delta");
         self.restore_failed_document_publications();
         if self.collaboration.manager.is_connected() {
             match self.pending_primary_document_delta() {

@@ -280,8 +280,9 @@ mod capture;
 mod inspection;
 use inspection::{
     audit_inspection_node, collect_inspection, collect_named_targets, collect_targets,
-    compare_bool, compare_contains, compare_optional_bool, compare_text, effect_control_ids,
-    effect_control_ids_where, find_semantic_target, inspection_has_semantics, role_name,
+    compare_bool, compare_contains, compare_optional_bool, compare_text, compare_text_selection,
+    effect_control_ids, effect_control_ids_where, find_semantic_target, inspection_has_semantics,
+    role_name,
 };
 mod inspection_patch;
 pub use inspection_patch::{InspectionPatchStats, write_inspection_patch};
@@ -340,6 +341,9 @@ pub struct FrameHarness {
     root_wake: root_wake::RootWake,
     owner_wake_queue: Option<crate::owner_wake::OwnerWakeQueue>,
     owner_service_layout_retired: bool,
+    /// The maps the last completed model service set aside, unread until
+    /// its readmission checks them against the live tree.
+    serviced_layout: Option<retained_layout::ServicedLayout>,
     /// A replaced composition seen by a focus capture before the next
     /// layout took it up: the next [`Self::take_composition_dirty`] still
     /// reports it.
@@ -351,7 +355,9 @@ pub struct FrameHarness {
     layout_requested: bool,
     state: State,
     root: Box<dyn Widget>,
-    history: Option<Box<crate::history_mode::host::HistoryHost>>,
+    history: Option<crate::history_mode::host::HistoryChrome>,
+    /// A History registered before its code was in, installed once it is.
+    pending_history: Option<crate::history_mode::HistoryRegistration>,
     action_palette: Option<Box<crate::action_palette::ActionPalette>>,
     ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
     /// The window the open palette was asked for from, when the root lays
@@ -972,6 +978,7 @@ impl FrameHarness {
         self.control_domain = control_domain;
         self.component_wake = Some(wake);
         self.history = None;
+        self.pending_history = None;
         self.discard_layout_tree();
         self.focused = None;
         self.focus_before_trap = None;
@@ -1106,11 +1113,13 @@ impl FrameHarness {
             return Ok(());
         };
         let mut batch = queue.take_batch();
+        let mut aside = None;
         if batch.front().is_some() {
             // An unknown visitor can replace descendants before it locates the
-            // target. Retire physical maps BEFORE the first arbitrary callback.
+            // target. Retire physical maps BEFORE the first arbitrary callback;
+            // they stay aside, unread, for readmission to check.
             *attempted = true;
-            self.discard_layout_tree();
+            aside = self.set_layout_aside();
             self.last_layout_viewport = None;
             self.owner_service_layout_retired = true;
         }
@@ -1124,6 +1133,9 @@ impl FrameHarness {
             batch.complete_front();
             *completed += 1;
         }
+        // Only a service whose every callback returned keeps them; an error
+        // or an unwind drops them with this frame.
+        self.serviced_layout = aside;
         Ok(())
     }
 
@@ -1181,6 +1193,7 @@ impl FrameHarness {
     /// Drop the raw layout maps so no later frame re-solves a composition
     /// whose widgets may have been replaced; the next frame rebuilds.
     fn discard_layout_tree(&mut self) {
+        self.serviced_layout = None;
         self.bindings.clear();
         self.node_map.clear();
         self.layout_maps.clear();
@@ -1524,9 +1537,17 @@ impl FrameHarness {
         self.invalidate_local();
         registration.validate_root(self.root.as_ref())?;
         let mut history =
-            crate::history_mode::host::HistoryHost::new(registration, &self.state.doc)?;
+            match crate::history_mode::host::make_history(registration, &self.state.doc)? {
+                crate::history_mode::host::MadeHistory::Ready(history) => history,
+                crate::history_mode::host::MadeHistory::Loading(registration) => {
+                    // The window shows without History until its code is
+                    // in; the next layout takes it up.
+                    self.pending_history = Some(registration);
+                    return Ok(());
+                }
+            };
         history.set_control_domain(&self.control_domain);
-        self.history = Some(Box::new(history));
+        self.history = Some(history);
         self.invalidate_layout_tree();
         self.relayout();
         self.validate_history_registration()
@@ -1777,6 +1798,7 @@ impl FrameHarness {
             root_wake: root_wake::RootWake::new(),
             owner_wake_queue: None,
             owner_service_layout_retired: false,
+            serviced_layout: None,
             composition_replaced: false,
             remount: false,
             layout_requested: false,
@@ -1787,6 +1809,7 @@ impl FrameHarness {
             layout_maps: crate::retained_widgets::Adopted::default(),
             bindings: crate::bound_dispatch::BoundNodeMap::new(),
             history: None,
+            pending_history: None,
             action_palette: None,
             ordinary_palette_return_focus: None,
             palette_window: None,
@@ -3511,7 +3534,29 @@ impl FrameHarness {
     /// composition: the live host draws the next frame for that input, and
     /// the activation completes there. Bounded as composition is
     /// ([`crate::widget::layout::settle_widget_composition`]).
+    /// Install the History registered before its code was in, once it is.
+    fn adopt_loaded_history(&mut self) {
+        if self.pending_history.is_none() || !crate::history_mode::host::history_code_ready() {
+            return;
+        }
+        let Some(registration) = self.pending_history.take() else {
+            return;
+        };
+        match crate::history_mode::host::make_history(registration, &self.state.doc) {
+            Ok(crate::history_mode::host::MadeHistory::Ready(mut history)) => {
+                history.set_control_domain(&self.control_domain);
+                self.history = Some(history);
+                self.invalidate_layout_tree();
+            }
+            Ok(crate::history_mode::host::MadeHistory::Loading(registration)) => {
+                self.pending_history = Some(registration);
+            }
+            Err(error) => tracing::warn!(%error, "the window shows without its history"),
+        }
+    }
+
     fn try_relayout(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
+        self.adopt_loaded_history();
         // The whole frame runs in the root's wake scope, as the live window's
         // redraw runs in the App's: a read its layout starts wakes it.
         let _wake = self.enter_wake();
@@ -3647,6 +3692,8 @@ impl FrameHarness {
         let resting_geometry = (self.pointer_replay.is_resting() && self.layout_built)
             .then(|| crate::pointer_replay::widget_geometry(self.root.as_ref()));
         self.swap_requested_component();
+        // Checked against the live tree below before anything reads them.
+        self.readmit_serviced_layout();
         let viewport_changed = self.last_layout_viewport != Some(self.viewport);
         self.presence_redraw = false;
         // A failed attempt mutates the tree as well as the requested viewport.
@@ -6141,6 +6188,12 @@ impl FrameHarness {
             expected.value_contains.as_deref(),
             node.value.as_deref(),
         );
+        compare_text_selection(
+            &mut mismatches,
+            "text selection",
+            expected.text_selection,
+            node.text_selection,
+        );
         compare_bool(
             &mut mismatches,
             "focused",
@@ -7329,6 +7382,9 @@ impl FrameHarness {
             );
             tracing::error!("{message}");
             self.discard_layout_tree();
+            // What stays pending is answered, as failed: no action waits
+            // forever on a view that never settles, nor does closing it.
+            self.fail_pending_controls(&message);
             // A test fails on it; a release host skips the frame.
             debug_assert!(false, "{message}");
             return;
@@ -7353,6 +7409,30 @@ impl FrameHarness {
             self.focused =
                 unsafe { focus.restore(&self.node_map, &self.bindings, None) }.or(self.focused);
         }
+    }
+
+    /// Answer every control invocation still queued in the tree as failed
+    /// with `reason`, without running it: its caller, an effect waiting on
+    /// its edit, learns it did not happen.
+    fn fail_pending_controls(&mut self, reason: &str) {
+        let drained = crate::bound_dispatch::drain_control_invocations(self.root.as_mut());
+        for (target, intent, on_behalf_of, _) in drained.pending {
+            let result = Err(tilo_actions::DoorError::Failed(reason.to_owned()));
+            self.note_continuation(on_behalf_of, &result);
+            if let Err(error) = crate::bound_dispatch::notify_control_invocation_result(
+                self.root.as_mut(),
+                &target,
+                &result,
+                on_behalf_of,
+            ) {
+                tracing::warn!(?error, "headless: a failed control could not be told");
+            }
+            self.control_failures
+                .push(format!("{}: {reason}", intent.address.action));
+        }
+        while crate::widget::controls::take_attributed_control_invocation(self.root.as_mut())
+            .is_some()
+        {}
     }
 
     fn host_tick(&mut self) {
@@ -7536,7 +7616,8 @@ impl FrameHarness {
         } else {
             self.invoke_bound_action(&address, &arguments)
         }?;
-        self.relayout();
+        // It answers once what it caused off the UI thread has landed.
+        self.settle_owed();
         Ok(started)
     }
 
@@ -9937,7 +10018,8 @@ impl FrameHarness {
             self.invoke_address(address, arguments, confirmed)
         };
         self.host_tick();
-        self.relayout();
+        // It answers once what it caused off the UI thread has landed.
+        self.settle_owed();
         result
     }
 

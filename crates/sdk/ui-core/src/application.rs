@@ -12,6 +12,7 @@ use crate::view::{ThawError, View};
 use crate::wake::{WakeEvent, WakeHandle, WakeScope};
 use crate::widget::{AppWidget, IconDescriptor};
 use automerge::AutoCommit;
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -20,14 +21,20 @@ mod host;
 mod open_file;
 pub mod registry;
 pub use host::{ApplicationHost, NativeProcessHost, NativeProfile};
+#[cfg(test)]
+pub(crate) use host::{follow_host_authority, manual_authority_watch};
 pub use open_file::{MAX_OPEN_FILE_BYTES, OpenFile, OpenFileReceipt};
 
 pub type InstanceId = u64;
 pub type ComponentFactory =
     fn(HostContext, LaunchTarget, RestoreInput) -> Result<AppComponent, LaunchError>;
 pub struct ApplicationDefinition {
-    pub app_id: &'static str,
-    pub title: &'static str,
+    /// The app's package id. Owned: a runtime that runs installed packages
+    /// (tilolang) learns it from the launch (`TILO_PACKAGE_ID`), not from its
+    /// source. [`Self::app_id`] borrows it for as long as the definition lives.
+    pub app_id: Cow<'static, str>,
+    /// The app's name, as the definition's runtime learns it.
+    pub title: Cow<'static, str>,
     pub icon: IconDescriptor,
     pub record_kind: RecordKind,
     pub required: Vec<PermissionScope>,
@@ -40,12 +47,32 @@ pub struct ApplicationDefinition {
     /// everyone in the room shares), rather than a record per window: every
     /// window of the app in the room opens it, and the first creates it.
     pub room_record: bool,
+    /// The app's window shows before the room's record is read: a record this device holds
+    /// opens off the frame, and the component takes it in when it is decoded
+    /// ([`HostContext::record_opening`]). Only for an app that
+    /// [keeps one record per room](Self::room_record).
+    pub opens_before_record: bool,
     pub create: ComponentFactory,
 }
 
 /// The entry of [`ApplicationDefinition::opens`] that opens files of every
 /// type.
 pub const ANY_MEDIA_TYPE: &str = "*/*";
+
+impl ApplicationDefinition {
+    /// The app's package id, borrowed from the definition: `'static` for the
+    /// definitions every host keeps for the life of the process.
+    #[must_use]
+    pub fn app_id(&self) -> &str {
+        &self.app_id
+    }
+
+    /// The app's name, borrowed from the definition.
+    #[must_use]
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+}
 #[non_exhaustive]
 pub enum LaunchTarget {
     New,
@@ -534,14 +561,14 @@ impl HostContext {
             author,
             action_context,
         } = inputs;
-        validate_identity(definition.app_id).map_err(LaunchError::Restore)?;
+        validate_identity(definition.app_id()).map_err(LaunchError::Restore)?;
         validate_identity(definition.record_kind.as_str()).map_err(LaunchError::Restore)?;
         validate_identity(&device_id).map_err(LaunchError::Restore)?;
         validate_identity(&author.0).map_err(LaunchError::Restore)?;
         let (profile, package, workspace) = records
             .canonical_namespace()
             .ok_or(LaunchError::BindingMismatch)?;
-        if package != definition.app_id
+        if package != definition.app_id()
             || !views.matches_namespace(&profile, &device_id, &workspace)
         {
             return Err(LaunchError::BindingMismatch);
@@ -585,9 +612,13 @@ impl HostContext {
                 {
                     return Err(LaunchError::BindingMismatch);
                 }
-                records
-                    .try_open_record(checkout)
-                    .map_err(LaunchError::Record)?;
+                // A record opening off the frame is taken in by the component that shows
+                // before it ([`HostContext::record_opening`]), not here.
+                if !records.is_opening(&checkout.id) {
+                    records
+                        .try_open_record(checkout)
+                        .map_err(LaunchError::Record)?;
+                }
                 (checkout.clone(), None)
             }
         };
@@ -727,6 +758,18 @@ impl HostContext {
     /// that lends nothing leaves the app on its own services.
     pub fn lend<T: std::any::Any>(&mut self, service: T) {
         self.lent.push(Box::new(service));
+    }
+    /// Lend the component a service already boxed: what a component that showed before its
+    /// record hands the one that shows it (`T` stays the service's own type).
+    pub fn lend_boxed(&mut self, service: Box<dyn std::any::Any>) {
+        self.lent.push(service);
+    }
+    /// The record this context opened, while it is still opening off the frame
+    /// ([`RecordStore::begin_opening`]): the component shows before it, and takes it in.
+    pub fn record_opening(&self) -> Option<crate::record::RecordOpening> {
+        self.records
+            .is_opening(&self.record.id)
+            .then(|| self.records.opening(&self.record))
     }
     /// The services the host lent, once.
     pub fn take_lent(&mut self) -> Vec<Box<dyn std::any::Any>> {
@@ -1171,11 +1214,13 @@ impl ApplicationDefinition {
         let entry = context.wake_scope.enter();
         let result = (self.create)(context, target, restore).and_then(|mut component| {
             if !Rc::ptr_eq(&construction, &component.context.construction)
-                || !records.is_ready(&record.id)
+                || !(records.is_ready(&record.id) || records.is_opening(&record.id))
             {
                 return Err(LaunchError::BindingMismatch);
             }
-            if let Some(saved) = local {
+            // A component shown before its record restores nothing of it: the component built
+            // once the record is had restores the saved view.
+            if let Some(saved) = local.filter(|_| !records.is_opening(&record.id)) {
                 component
                     .restore_local_pair_owned(&saved)
                     .map_err(LaunchError::Restore)?;
@@ -1278,8 +1323,12 @@ impl AppComponent {
     /// The component the app built to show another record in this one's
     /// place, once: the host closes this component and mounts that one.
     pub fn take_replacement(&mut self) -> Option<ComponentReplacement> {
-        let pending = self.context.replacement.borrow_mut().take()?;
-        pending.take()
+        let pending = self.context.replacement.borrow_mut().take();
+        if let Some(pending) = pending {
+            return pending.take();
+        }
+        let _entry = self.context.wake_scope.enter();
+        self.root.as_deref_mut()?.take_component_replacement()
     }
     /// What this component's app would open another record with.
     #[cfg(test)]
@@ -2011,21 +2060,25 @@ impl AppComponent {
                 .collect::<Vec<_>>(),
         );
         let result = if let Some(root) = owned.0.as_deref_mut() {
-            let result = self
-                .context
-                .records
-                .with_checked(&self.context.record.id, |doc| {
-                    for invocation in &owned.2 {
-                        crate::widget::poll_resource_operation(
-                            &mut *root,
-                            *invocation,
-                            true,
-                            doc,
-                            &automerge::ROOT,
-                        );
-                    }
-                })
-                .map_err(|error| error.to_string());
+            // A component shown before its record ran no operation on it, and has none to end.
+            let result = if self.context.records.is_opening(&self.context.record.id) {
+                Ok(())
+            } else {
+                self.context
+                    .records
+                    .with_checked(&self.context.record.id, |doc| {
+                        for invocation in &owned.2 {
+                            crate::widget::poll_resource_operation(
+                                &mut *root,
+                                *invocation,
+                                true,
+                                doc,
+                                &automerge::ROOT,
+                            );
+                        }
+                    })
+                    .map_err(|error| error.to_string())
+            };
             crate::widget::unmount_native_views(root);
             result
         } else {
@@ -2220,10 +2273,12 @@ impl ApplicationCatalog {
         &mut self,
         definition: &'static ApplicationDefinition,
     ) -> Result<(), LaunchError> {
-        if self.definitions.contains_key(definition.app_id) {
-            return Err(LaunchError::DuplicateApplication(definition.app_id.into()));
+        if self.definitions.contains_key(definition.app_id()) {
+            return Err(LaunchError::DuplicateApplication(
+                definition.app_id().into(),
+            ));
         }
-        self.definitions.insert(definition.app_id, definition);
+        self.definitions.insert(definition.app_id(), definition);
         Ok(())
     }
     /// # Errors
@@ -2395,14 +2450,15 @@ mod bound_lifetime_tests {
         let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
         let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
         let definition = ApplicationDefinition {
-            app_id: "dev.tilo.mount-probe",
-            title: "Mount probe",
+            app_id: "dev.tilo.mount-probe".into(),
+            title: "Mount probe".into(),
             icon: IconDescriptor::Glyph("P"),
             record_kind: RecordKind::new("probe"),
             required: vec![],
             optional: vec![],
             opens: &[],
             room_record: false,
+            opens_before_record: false,
             create: factory,
         };
         let supplied = RecordId::for_tab(55);
@@ -2444,14 +2500,15 @@ mod bound_lifetime_tests {
         let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
         let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
         let definition = ApplicationDefinition {
-            app_id: "dev.tilo.mount-probe",
-            title: "Mount probe",
+            app_id: "dev.tilo.mount-probe".into(),
+            title: "Mount probe".into(),
             icon: IconDescriptor::Glyph("P"),
             record_kind: RecordKind::new("probe"),
             required: vec![],
             optional: vec![],
             opens: &[],
             room_record: false,
+            opens_before_record: false,
             create: factory,
         };
         let prepare = |checkout| {
@@ -2506,14 +2563,15 @@ mod bound_lifetime_tests {
             let views =
                 Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
             let definition = ApplicationDefinition {
-                app_id: "so.tilo.mount-probe",
-                title: "Mount probe",
+                app_id: "so.tilo.mount-probe".into(),
+                title: "Mount probe".into(),
                 icon: IconDescriptor::Glyph("P"),
                 record_kind: RecordKind::new("probe"),
                 required: vec![],
                 optional: vec![],
                 opens: &[],
                 room_record: false,
+                opens_before_record: false,
                 create: factory,
             };
             let prepare = |target: &LaunchTarget| {
@@ -2596,14 +2654,15 @@ mod bound_lifetime_tests {
             let views =
                 Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
             let definition = ApplicationDefinition {
-                app_id: "so.tilo.mount-probe",
-                title: "Mount probe",
+                app_id: "so.tilo.mount-probe".into(),
+                title: "Mount probe".into(),
                 icon: IconDescriptor::Glyph("P"),
                 record_kind: RecordKind::new("probe"),
                 required: vec![],
                 optional: vec![],
                 opens: &[],
                 room_record: false,
+                opens_before_record: false,
                 create: factory,
             };
             let context = HostContext::prepare(

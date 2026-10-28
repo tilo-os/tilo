@@ -187,21 +187,27 @@ pub fn find_proxy_binary() -> Option<PathBuf> {
     None
 }
 
+/// The session's runtime directory, where a launcher's host-side sockets
+/// live: the one the session that launches it runs in (`XDG_RUNTIME_DIR`),
+/// so a nested session's proxies stay in its own directory and never in the
+/// host desktop's, whose launchers number their sockets by pid too.
+#[must_use]
+pub fn session_runtime_dir() -> PathBuf {
+    tilo_paths::xdg::runtime_dir_or_default()
+}
+
 /// Host-side path where the per-launcher proxy listens:
-/// `/run/user/<uid>/tilo/dbus-proxy/<pid>.sock`. The `<pid>`
-/// disambiguates concurrent launches.
-pub fn proxy_socket_path(uid: u32, launcher_pid: u32) -> PathBuf {
-    PathBuf::from(format!(
-        "/run/user/{uid}/tilo/dbus-proxy/{launcher_pid}.sock"
-    ))
+/// `<runtime>/tilo/dbus-proxy/<pid>.sock`, in the session's runtime
+/// directory ([`session_runtime_dir`]). The `<pid>` disambiguates
+/// concurrent launches.
+pub fn proxy_socket_path(runtime: &Path, launcher_pid: u32) -> PathBuf {
+    runtime.join(format!("tilo/dbus-proxy/{launcher_pid}.sock"))
 }
 
 /// Host-side path of the per-launcher system-bus proxy socket, for the
 /// packages [`crate::system_authority`] grants it.
-pub fn system_proxy_socket_path(uid: u32, launcher_pid: u32) -> PathBuf {
-    PathBuf::from(format!(
-        "/run/user/{uid}/tilo/dbus-proxy/{launcher_pid}-system.sock"
-    ))
+pub fn system_proxy_socket_path(runtime: &Path, launcher_pid: u32) -> PathBuf {
+    runtime.join(format!("tilo/dbus-proxy/{launcher_pid}-system.sock"))
 }
 
 /// In-sandbox bus path, matching Flatpak's convention: the app looks
@@ -216,10 +222,8 @@ pub fn sandbox_bus_env(uid: u32) -> String {
 }
 
 /// Host-side path of the per-launcher AT-SPI proxy socket.
-pub fn atspi_proxy_socket_path(uid: u32, launcher_pid: u32) -> PathBuf {
-    PathBuf::from(format!(
-        "/run/user/{uid}/tilo/dbus-proxy/{launcher_pid}-atspi.sock"
-    ))
+pub fn atspi_proxy_socket_path(runtime: &Path, launcher_pid: u32) -> PathBuf {
+    runtime.join(format!("tilo/dbus-proxy/{launcher_pid}-atspi.sock"))
 }
 
 /// In-sandbox AT-SPI bus path, where at-spi2's own launcher puts it.
@@ -525,7 +529,7 @@ mod tests {
             assert!(!rule.contains(".*@"), "no wildcard method: {rule}");
         }
         assert_eq!(
-            atspi_proxy_socket_path(1000, 7),
+            atspi_proxy_socket_path(Path::new("/run/user/1000"), 7),
             PathBuf::from("/run/user/1000/tilo/dbus-proxy/7-atspi.sock")
         );
         assert_eq!(
@@ -541,8 +545,23 @@ mod tests {
     #[test]
     fn proxy_paths_env_and_binary_lookup() {
         {
-            let p = proxy_socket_path(1000, 4242);
+            let p = proxy_socket_path(Path::new("/run/user/1000"), 4242);
             assert_eq!(p, PathBuf::from("/run/user/1000/tilo/dbus-proxy/4242.sock"));
+        }
+        // A nested session's proxies stay in its own runtime directory.
+        {
+            let nested = tempfile::tempdir().unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_RUNTIME_DIR", nested.path());
+            let runtime = session_runtime_dir();
+            assert_eq!(runtime, nested.path());
+            for socket in [
+                proxy_socket_path(&runtime, 4242),
+                atspi_proxy_socket_path(&runtime, 4242),
+                system_proxy_socket_path(&runtime, 4242),
+            ] {
+                assert!(socket.starts_with(nested.path()), "{socket:?}");
+            }
         }
         {
             assert_eq!(sandbox_bus_env(1000), "unix:path=/run/user/1000/bus");

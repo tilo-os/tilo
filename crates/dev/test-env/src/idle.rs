@@ -74,14 +74,24 @@ pub fn context_switches(tid: &str) -> u64 {
 /// thread found by name may be another test's. Where that can happen, have
 /// the code under test record its thread's [`current_thread_id`] instead.
 ///
+/// A thread the found one starts carries its name too until it names
+/// itself (Linux copies the parent's name to a new thread), so two
+/// matches for a moment are a parent and its child; only one that stays
+/// is another test's.
+///
 /// # Panics
-/// `/proc/self/task` cannot be listed, no new thread of that name appears
-/// within the hang bound, or more than one does.
+/// `/proc/self/task` cannot be listed, or no single new thread of that name
+/// is there within the hang bound.
 pub fn spawned_thread<T>(comm: &str, start: impl FnOnce() -> T) -> (T, String) {
     let before = own_thread_ids();
     let started = start();
-    // A thread names itself once it runs, so it may not be named yet.
-    let tid = crate::wait_for(format_args!("a new thread named {comm}"), || {
+    // A thread names itself once it runs, so it may not be named yet; nor
+    // may a thread it started, which goes by its name until then.
+    let what = format_args!(
+        "exactly one new thread named {comm} (a second one that stays was started by another \
+         test of this process, so which is this test's is unknown)"
+    );
+    let tid = crate::wait_for(what, || {
         let named: Vec<String> = own_thread_ids()
             .difference(&before)
             .filter(|tid| {
@@ -90,16 +100,7 @@ pub fn spawned_thread<T>(comm: &str, start: impl FnOnce() -> T) -> (T, String) {
             })
             .cloned()
             .collect();
-        match <[String; 1]>::try_from(named) {
-            Ok([tid]) => Some(tid),
-            Err(named) if named.is_empty() => None,
-            Err(named) => panic!(
-                "{} new threads named {comm} ({}): another test of this process started one \
-                 too, so which is this test's is unknown",
-                named.len(),
-                named.join(", ")
-            ),
-        }
+        <[String; 1]>::try_from(named).ok().map(|[tid]| tid)
     });
     (started, tid)
 }

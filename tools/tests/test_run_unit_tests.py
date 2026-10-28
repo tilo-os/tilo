@@ -70,6 +70,31 @@ class RunUnitTests(unittest.TestCase):
         self.assertFalse(any(line.startswith("---") for line in section), section)
         self.assertIn("test result: FAILED. 1 passed; 3 failed", done.stdout)
 
+    def test_a_sharded_file_runs_every_test_once_and_is_reported_as_one_file(self):
+        # test_ci_run.py is in SHARDS: its tests run in several processes.
+        four = FAILING + "".join(f"\n    def test_holds_{n}(self):\n        pass\n" for n in range(3))
+        done = self.run_on({"test_ci_run.py": four, "test_a.py": PASSING, "helper.py": "VALUE = 1\n"})
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn("Ran 5 tests in 2 files", done.stdout)
+        reported = [line.split("/tests/", 1)[1] for line in done.stdout.splitlines()
+                    if line.startswith("test ") and " ... " in line]
+        self.assertEqual(reported, ["test_a.py ... ok", "test_ci_run.py::test_ci_run.Failing.test_fails ... FAILED"])
+        passing = FAILING.replace("self.assertEqual(1, 2, \"the failing file's own message\")", "pass")
+        done = self.run_on({"test_ci_run.py": passing})
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("test_ci_run.py ... ok", done.stdout)
+        self.assertIn("Ran 1 tests in 1 files", done.stdout)
+
+    def test_a_sharded_file_without_tests_is_an_error(self):
+        done = self.run_on({"test_ci_run.py": "import unittest\n"})
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+
+    def test_every_sharded_file_exists(self):
+        sys.path.insert(0, str(RUNNER.parent))
+        import run_unit_tests
+        tests = RUNNER.parents[1] / "tests"
+        self.assertEqual([name for name in run_unit_tests.SHARDS if not (tests / name).is_file()], [])
+
     def test_a_directory_without_tests_is_an_error(self):
         done = self.run_on({"helper.py": "VALUE = 1\n"})
         self.assertEqual(done.returncode, 1)

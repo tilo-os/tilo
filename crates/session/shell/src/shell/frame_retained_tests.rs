@@ -498,6 +498,7 @@ fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
             "actions",
             "records",
             "authentication-prompts",
+            "focused-window",
             "file-picker"
         ]
     );
@@ -1543,7 +1544,7 @@ fn acknowledge_notes_saves_of(frame: &mut PopulatedShellFixture, surfaces: usize
     };
     assert_eq!(
         apps.borrow_mut()
-            .flush_fixture_records(notes::definition().app_id, &room)
+            .flush_fixture_records(notes::definition().app_id(), &room)
             .expect("actual Notes startup writes acknowledged"),
         surfaces
     );
@@ -3698,7 +3699,7 @@ fn settle_notes(frame: &mut FrameBuilder) {
     };
     let flushed = apps
         .borrow_mut()
-        .flush_fixture_records(notes::definition().app_id, &room)
+        .flush_fixture_records(notes::definition().app_id(), &room)
         .expect("Notes startup writes acknowledged");
     assert!(flushed > 0, "the desktop mounted Notes");
     for _ in 0..3 {

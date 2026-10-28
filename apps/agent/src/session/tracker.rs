@@ -162,6 +162,27 @@ impl Session {
         )
     }
 
+    /// Record on the run's issue that it read `resource`: a resource the run
+    /// looked up in system search and took in after the one the request
+    /// named. The issue lists it as the link it is, so its person follows it
+    /// where the run went and the person who keeps that resource sees a run
+    /// reach it.
+    pub(super) fn record_read(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        resource: &ui::tilo_reference::ResourceAt,
+    ) -> Result<()> {
+        let Some(issue) = issue_of(run) else {
+            return Ok(());
+        };
+        let arguments = json!({ "issue": issue, "resource": resource });
+        self.tracker_step(
+            run,
+            "record-read",
+            &arguments.as_object().cloned().unwrap_or_default(),
+        )
+    }
+
     /// Invoke the tracker's `action` as a child of `run`. The issue is told
     /// even when the run's time is up: how it ended is part of the run.
     /// A refusal is logged; the run itself goes on.

@@ -1,0 +1,669 @@
+//! The `Store` trait (implementation design 4.7): where resources live.
+//!
+//! The runtime knows field ids and merge kinds, never the representation. A store maps the
+//! operations below onto its own documents. Two departures from the design's sketch, both so
+//! the host can keep the store while guest code runs: a transaction is an owned token
+//! ([`Txn`]) and the operations are methods of the store, and the store speaks in
+//! mutations and field values, not documents.
+
+use std::rc::Rc;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value as Json;
+
+use crate::flow::Journal;
+use crate::ids::{AppId, DocId, FieldId, ItemId, RunId, TypeId};
+use crate::meta::FieldKind;
+use crate::value::ResourceRef;
+
+#[derive(Debug, thiserror::Error)]
+pub enum StoreError {
+    #[error("not found: {0}")]
+    NotFound(String),
+    #[error("invalid operation: {0}")]
+    Invalid(String),
+    #[error("store failure: {0}")]
+    Backend(String),
+}
+
+/// The content of a register field. Composite runtime values travel as `Json`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Scalar {
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Text(String),
+    Json(Json),
+}
+
+/// A field of a record type: its id and how it merges.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FieldSpec {
+    pub id: FieldId,
+    pub kind: FieldKind,
+}
+
+/// A predicate over the items of a collection, which [`Store::listing_where`] answers (see
+/// [`tilolang::pred`]).
+pub type Pred = tilolang::pred::Pred<FieldRead>;
+
+pub use tilolang::pred::Lit;
+
+/// A field a [`Pred`] reads: a register, a counter or a text of the item, and what it holds
+/// when nobody wrote it (the declared default).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FieldRead {
+    pub spec: FieldSpec,
+    pub absent: Lit,
+}
+
+impl FieldRead {
+    /// What the field holds, `value` being what the store holds of it.
+    ///
+    /// # Errors
+    ///
+    /// `Invalid` for a stored value a predicate does not compare.
+    pub fn lit(&self, value: FieldValue) -> Result<Lit, StoreError> {
+        lit_of(&self.spec.id, value, &self.absent)
+    }
+}
+
+/// What the field `id` holds, `value` being what the store holds of it and `absent` what an
+/// unwritten one reads as, as a predicate compares it: a set as its members, a collection as
+/// how many items it has.
+///
+/// # Errors
+///
+/// `Invalid` for a stored value a predicate does not compare.
+pub fn lit_of(id: &str, value: FieldValue, absent: &Lit) -> Result<Lit, StoreError> {
+    let invalid = |what: &dyn std::fmt::Debug| {
+        StoreError::Invalid(format!(
+            "field {id} holds {what:?}, which a filter does not compare"
+        ))
+    };
+    match value {
+        FieldValue::Absent => Ok(absent.clone()),
+        FieldValue::Scalar(Scalar::Bool(b)) => Ok(Lit::Bool(b)),
+        FieldValue::Scalar(Scalar::Int(i)) | FieldValue::Counter(i) => Ok(Lit::Int(i)),
+        FieldValue::Scalar(Scalar::Float(f)) => Ok(Lit::Float(tilolang::pred::Float(f))),
+        FieldValue::Scalar(Scalar::Text(t)) | FieldValue::Text(t) => Ok(Lit::Text(t)),
+        FieldValue::Scalar(Scalar::Json(j)) => Lit::of_json(&j).ok_or_else(|| invalid(&j)),
+        FieldValue::Keys(keys) => Ok(Lit::Set(keys.into_iter().map(Lit::Text).collect())),
+        FieldValue::Items(items) => Ok(Lit::Int(i64::try_from(items.len()).unwrap_or(i64::MAX))),
+        FieldValue::Entries(entries) => Err(invalid(&entries)),
+    }
+}
+
+/// How two values of the field a query orders by compare: an absent value first, text
+/// without regard to case.
+#[must_use]
+pub fn order_cmp(a: &Lit, b: &Lit) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (Lit::Absent, Lit::Absent) => Ordering::Equal,
+        (Lit::Absent, _) => Ordering::Less,
+        (_, Lit::Absent) => Ordering::Greater,
+        (Lit::Text(x), Lit::Text(y)) => x.to_lowercase().cmp(&y.to_lowercase()),
+        _ => {
+            if a.compare(tilolang::pred::CmpOp::Lt, b) == Some(true) {
+                Ordering::Less
+            } else if a.compare(tilolang::pred::CmpOp::Gt, b) == Some(true) {
+                Ordering::Greater
+            } else {
+                a.cmp(b)
+            }
+        }
+    }
+}
+
+impl FieldRead {
+    /// The field read as a filter reads it, with what an unwritten one of type `ty` (declared
+    /// default `default`) holds: `None` for a field no filter reads (a map).
+    #[must_use]
+    pub fn of(
+        id: &str,
+        kind: FieldKind,
+        ty: &crate::meta::Ty,
+        default: Option<&Json>,
+    ) -> Option<Self> {
+        use crate::meta::Ty;
+        let absent = match kind {
+            FieldKind::Counter | FieldKind::Collection => Lit::Int(0),
+            FieldKind::Text => Lit::Text(String::new()),
+            FieldKind::Set => Lit::Set(Vec::new()),
+            FieldKind::Map => return None,
+            FieldKind::Register => match default {
+                Some(json) => Lit::of_json(json)?,
+                None => match ty {
+                    Ty::Bool => Lit::Bool(false),
+                    Ty::Int => Lit::Int(0),
+                    Ty::Float => Lit::Float(tilolang::pred::Float(0.0)),
+                    Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => Lit::Text(String::new()),
+                    _ => Lit::Absent,
+                },
+            },
+        };
+        Some(Self {
+            spec: FieldSpec {
+                id: id.to_owned(),
+                kind,
+            },
+            absent,
+        })
+    }
+}
+
+impl From<String> for StoreError {
+    fn from(message: String) -> Self {
+        Self::Invalid(message)
+    }
+}
+
+/// What a new document or item needs to start out with: every structural field exists
+/// from the first change, so concurrent first writes merge instead of conflicting.
+#[derive(Clone, Debug)]
+pub struct NewRecord {
+    pub ty: TypeId,
+    pub app: AppId,
+    pub fields: Vec<FieldSpec>,
+}
+
+/// An open transaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Txn(pub u64);
+
+/// One mutation, addressed to a resource.
+#[derive(Clone, Debug)]
+pub enum Mutation {
+    SetRegister {
+        field: FieldId,
+        value: Scalar,
+    },
+    /// Add to a counter (integer units).
+    AddCounter {
+        field: FieldId,
+        delta: i64,
+    },
+    /// Replace the text; the store diffs and splices.
+    SetText {
+        field: FieldId,
+        text: String,
+    },
+    /// Insert a new item with a fresh id; `index` of `None` appends.
+    CollInsert {
+        field: FieldId,
+        item: NewRecord,
+        index: Option<usize>,
+    },
+    CollRemove {
+        field: FieldId,
+        item: ItemId,
+    },
+    CollMove {
+        field: FieldId,
+        item: ItemId,
+        index: usize,
+    },
+    SetAdd {
+        field: FieldId,
+        key: String,
+    },
+    SetRemove {
+        field: FieldId,
+        key: String,
+    },
+    MapPut {
+        field: FieldId,
+        key: String,
+        value: Scalar,
+    },
+    MapRemove {
+        field: FieldId,
+        key: String,
+    },
+    /// Queue an outside effect in the change, on the document of this resource.
+    OutboxPush {
+        capability: String,
+        payload: Json,
+        /// What the entry is known by: queued twice under one key it is one entry. `None` gives
+        /// each push an entry of its own.
+        key: Option<String>,
+    },
+}
+
+/// What a mutation produced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Applied {
+    Done,
+    Item(ItemId),
+}
+
+/// A field as stored.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FieldValue {
+    /// A register nobody has written.
+    Absent,
+    Scalar(Scalar),
+    Counter(i64),
+    Text(String),
+    /// Collection items in order.
+    Items(Vec<ItemId>),
+    /// Set elements, sorted.
+    Keys(Vec<String>),
+    /// Map entries, sorted by key.
+    Entries(Vec<(String, Scalar)>),
+}
+
+/// What a change records about its cause (spec 3.2 and 4.3, point 10).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ChangeNote {
+    pub action: String,
+    pub args: Json,
+    pub invoker: String,
+    /// The authorship chain, outermost first.
+    pub chain: Vec<String>,
+    pub module: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_by: Option<String>,
+}
+
+/// One field of one resource: the resource as [`ResourceRef::id_string`] writes it (its
+/// document, then a step per nested item), and the field id, or [`ANY_FIELD`] for every field
+/// of that resource. Views record what they read as these, and stores report changes as them.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FieldKey {
+    pub resource: String,
+    pub field: FieldId,
+}
+
+/// The field of a [`FieldKey`] that stands for every field of its resource: the resource was
+/// created, replaced or removed as a whole.
+pub const ANY_FIELD: &str = "*";
+
+impl FieldKey {
+    pub fn new(at: &ResourceRef, field: impl Into<FieldId>) -> Self {
+        Self {
+            resource: at.id_string(),
+            field: field.into(),
+        }
+    }
+
+    /// The document the resource lives in.
+    pub fn doc(&self) -> &str {
+        doc_of(&self.resource)
+    }
+}
+
+/// The document of a resource written as [`ResourceRef::id_string`].
+pub fn doc_of(resource: &str) -> &str {
+    resource.split_once('/').map_or(resource, |(doc, _)| doc)
+}
+
+/// The items of a collection, in order: what [`Store::listing`] hands out, shared, so a view
+/// reads a collection's length or one item without copying its items.
+///
+/// Item ids are shared too: what a view read of a listing (the item at an index) is kept to
+/// compare with the listing after a change, which costs a count, not a copy.
+///
+/// A store may hand out the items it holds ([`Listing::from_items`]) or a listing it reads
+/// page by page as items are asked for ([`Listing::paged`]): a view that shows the first rows
+/// of 100,000 items then reads those rows' page, not the 100,000.
+#[derive(Clone, Debug, Default)]
+pub struct Listing {
+    /// The items, when held.
+    held: Vec<Rc<str>>,
+    /// Where the items are read from instead, when paged.
+    paged: Option<Rc<dyn PagedItems>>,
+}
+
+/// Items a store reads as they are asked for: a listing as it was when handed out, which a
+/// later change does not alter.
+pub trait PagedItems: std::fmt::Debug {
+    fn len(&self) -> usize;
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The item at `index`, `None` past the end.
+    fn get(&self, index: usize) -> Option<Rc<str>>;
+}
+
+impl PartialEq for Listing {
+    fn eq(&self, other: &Self) -> bool {
+        self.len() == other.len() && self.iter().eq(other.iter())
+    }
+}
+
+impl Eq for Listing {}
+
+impl Listing {
+    pub fn from_ids(ids: impl IntoIterator<Item = ItemId>) -> Self {
+        Self::from_items(ids.into_iter().map(Rc::from).collect())
+    }
+
+    /// A listing of the items `items`, held.
+    pub fn from_items(items: Vec<Rc<str>>) -> Self {
+        Self {
+            held: items,
+            paged: None,
+        }
+    }
+
+    /// A listing read page by page from `items`.
+    pub fn paged(items: Rc<dyn PagedItems>) -> Self {
+        Self {
+            held: Vec::new(),
+            paged: Some(items),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.paged
+            .as_ref()
+            .map_or(self.held.len(), |paged| paged.len())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn get(&self, index: usize) -> Option<Rc<str>> {
+        match &self.paged {
+            Some(paged) => paged.get(index),
+            None => self.held.get(index).cloned(),
+        }
+    }
+
+    pub fn first(&self) -> Option<Rc<str>> {
+        self.get(0)
+    }
+
+    pub fn last(&self) -> Option<Rc<str>> {
+        self.len().checked_sub(1).and_then(|last| self.get(last))
+    }
+
+    /// The items in order, each read as it is reached.
+    pub fn iter(&self) -> impl Iterator<Item = Rc<str>> + '_ {
+        (0..self.len()).map_while(|index| self.get(index))
+    }
+
+    /// The items, held: read whole when paged.
+    pub fn items(&self) -> Vec<Rc<str>> {
+        match &self.paged {
+            Some(_) => self.iter().collect(),
+            None => self.held.clone(),
+        }
+    }
+
+    /// The items to change in place: read whole, and held from then on, when paged.
+    pub fn items_mut(&mut self) -> &mut Vec<Rc<str>> {
+        if self.paged.is_some() {
+            self.held = self.iter().collect();
+            self.paged = None;
+        }
+        &mut self.held
+    }
+
+    /// The item ids, as owned text.
+    pub fn ids(&self) -> Vec<ItemId> {
+        self.iter().map(|id| id.to_string()).collect()
+    }
+}
+
+/// One step of a change to a collection's items, at an index of the listing as the steps
+/// before it left it. A move is a removal and an insertion.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Splice {
+    Insert {
+        at: usize,
+        item: ItemId,
+    },
+    /// `item` is the one that was at `at`: a reader checks it before applying the step.
+    Remove {
+        at: usize,
+        item: ItemId,
+    },
+}
+
+/// How a collection's listing changed: the steps, in order, from the listing as the store held
+/// it before the change to the listing after it.
+///
+/// A reader that keeps something per item (the rows of a list, the published children of a
+/// resource) applies the steps instead of comparing every item. It checks them as it goes (a
+/// removal names the item it removes, an insertion must not find its item already there) and
+/// its length against the listing's at the end, and rebuilds from the listing when they do not
+/// fit: what it holds was not the listing the steps start from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListingChange {
+    /// The collection: its resource and field.
+    pub key: FieldKey,
+    pub splices: Vec<Splice>,
+}
+
+/// Which fields of which document changed. An empty field list means "unknown: every field of
+/// every resource of the document may have changed".
+///
+/// A collection whose items changed is named in `fields` like any field; when the store could
+/// say how, `listings` holds the steps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChangeSummary {
+    pub doc: DocId,
+    pub fields: Vec<FieldKey>,
+    pub listings: Vec<ListingChange>,
+}
+
+impl ChangeSummary {
+    /// Every field of `doc` may have changed.
+    pub fn whole(doc: impl Into<DocId>) -> Self {
+        Self {
+            doc: doc.into(),
+            fields: Vec::new(),
+            listings: Vec::new(),
+        }
+    }
+
+    /// The steps that changed the collection `key`, when the store could say.
+    pub fn listing(&self, key: &FieldKey) -> Option<&[Splice]> {
+        self.listings
+            .iter()
+            .find(|change| change.key == *key)
+            .map(|change| change.splices.as_slice())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SubId(pub u64);
+
+/// An outside effect waiting to be settled.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutboxEntry {
+    pub doc: DocId,
+    pub id: String,
+    pub capability: String,
+    pub payload: Json,
+}
+
+pub trait Store {
+    /// A fresh id, unique across replicas and restarts.
+    fn fresh_id(&mut self, prefix: &str) -> String;
+
+    /// Create a document and commit it as one change.
+    ///
+    /// # Errors
+    ///
+    /// A [`StoreError`] when the document cannot be created.
+    fn create(&mut self, record: &NewRecord) -> Result<ResourceRef, StoreError>;
+
+    /// The type id stored at this resource.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` when the document or item does not exist.
+    fn type_of(&self, at: &ResourceRef) -> Result<TypeId, StoreError>;
+
+    /// Open a transaction. Documents join it when first mutated.
+    ///
+    /// # Errors
+    ///
+    /// A [`StoreError`] when none can be opened.
+    fn begin(&mut self) -> Result<Txn, StoreError>;
+
+    /// Apply one mutation inside `txn`.
+    ///
+    /// # Errors
+    ///
+    /// `Invalid` for a mutation the field cannot take; `NotFound` for a missing target.
+    fn apply(&mut self, txn: Txn, at: &ResourceRef, m: &Mutation) -> Result<Applied, StoreError>;
+
+    /// Commit one change per touched document, each carrying `note`.
+    ///
+    /// # Errors
+    ///
+    /// A [`StoreError`] when a document cannot take the change.
+    fn commit(&mut self, txn: Txn, note: &ChangeNote) -> Result<(), StoreError>;
+
+    /// Discard everything the transaction did.
+    fn rollback(&mut self, txn: Txn);
+
+    /// Read a field. Sees the transaction's own uncommitted changes.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` for a missing target; `Invalid` when the stored shape does not fit the kind.
+    fn read(&self, at: &ResourceRef, field: &FieldSpec) -> Result<FieldValue, StoreError>;
+
+    /// The items of the collection `field` of `at`, in order, shared: a view reads the length
+    /// or one item of a large collection through this without copying the others. A store that
+    /// keeps what it read hands out what it keeps.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::read`], and `Invalid` for a field that is not a collection.
+    fn listing(&self, at: &ResourceRef, field: &FieldSpec) -> Result<Rc<Listing>, StoreError> {
+        match self.read(at, field)? {
+            FieldValue::Items(items) => Ok(Rc::new(Listing::from_ids(items))),
+            other => Err(StoreError::Invalid(format!(
+                "field {} is not a collection: {other:?}",
+                field.id
+            ))),
+        }
+    }
+
+    /// The items of the collection `field` of `at` (whose items are of the type `item`) that
+    /// `pred` holds of, in order, shared. A store that keeps what it read keeps this too, and
+    /// brings it up to date as the items change rather than evaluating every item again.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::listing`], and as reading a field `pred` reads.
+    fn listing_where(
+        &self,
+        at: &ResourceRef,
+        field: &FieldSpec,
+        item: &TypeId,
+        pred: &Pred,
+    ) -> Result<Rc<Listing>, StoreError> {
+        let all = self.listing(at, field)?;
+        let mut items = Vec::new();
+        for id in all.iter() {
+            let target = at.item(&field.id, &id, item.clone());
+            let holds =
+                pred.eval(&mut |read: &FieldRead| read.lit(self.read(&target, &read.spec)?))?;
+            if holds {
+                items.push(id);
+            }
+        }
+        Ok(Rc::new(Listing::from_items(items)))
+    }
+
+    /// The items of the collection `field` of `at` (of the type `item`) that `pred` holds of,
+    /// all of them when it is `None`, in the order `order` (the collection's when `None`),
+    /// shared. A store with an index answers both from it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::listing_where`], and as reading the field `order` is by.
+    fn listing_query(
+        &self,
+        at: &ResourceRef,
+        field: &FieldSpec,
+        item: &TypeId,
+        pred: Option<&Pred>,
+        order: Option<&crate::query::Order>,
+    ) -> Result<Rc<Listing>, StoreError> {
+        let base = match pred {
+            Some(pred) => self.listing_where(at, field, item, pred)?,
+            None => self.listing(at, field)?,
+        };
+        let Some(order) = order else {
+            return Ok(base);
+        };
+        let spec = FieldSpec {
+            id: order.field.clone(),
+            kind: order.kind,
+        };
+        let mut keyed = Vec::with_capacity(base.len());
+        for id in base.iter() {
+            let target = at.item(&field.id, &id, item.clone());
+            let value = lit_of(&spec.id, self.read(&target, &spec)?, &Lit::Absent)?;
+            keyed.push((value, id));
+        }
+        keyed.sort_by(|(a, _), (b, _)| order_cmp(a, b));
+        if order.descending {
+            keyed.reverse();
+        }
+        Ok(Rc::new(Listing::from_items(
+            keyed.into_iter().map(|(_, id)| id).collect(),
+        )))
+    }
+
+    /// The resources of the type `ty` anywhere in the store that `pred` holds of, in the order
+    /// `order`: a query that looks inside no one resource (search.md section 2.1). A store
+    /// with an index answers it from the index's columns of the type; this one has none.
+    ///
+    /// # Errors
+    ///
+    /// A store that cannot answer it.
+    fn select(
+        &self,
+        ty: &TypeId,
+        pred: &Pred,
+        order: Option<&crate::query::Order>,
+    ) -> Result<Vec<ResourceRef>, StoreError> {
+        let _ = (pred, order);
+        Err(StoreError::Invalid(format!(
+            "this store answers no query of every {ty}; look inside a resource (`in:`)"
+        )))
+    }
+
+    /// The notes of a document's changes, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` for a missing document.
+    fn history(&self, doc: &DocId) -> Result<Vec<ChangeNote>, StoreError>;
+
+    fn subscribe(&mut self, doc: &DocId, f: Box<dyn FnMut(&ChangeSummary)>) -> SubId;
+    fn unsubscribe(&mut self, sub: SubId);
+
+    /// Outside effects queued and not yet settled.
+    fn outbox_pending(&self) -> Vec<OutboxEntry>;
+
+    /// Mark an entry settled, as one change.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` when the entry is gone.
+    fn outbox_settle(&mut self, entry: &OutboxEntry, note: &ChangeNote) -> Result<(), StoreError>;
+
+    /// # Errors
+    ///
+    /// A [`StoreError`] when the journal cannot be saved.
+    fn save_journal(&mut self, run: &RunId, journal: &Journal) -> Result<(), StoreError>;
+
+    /// # Errors
+    ///
+    /// A [`StoreError`] when the journal cannot be read.
+    fn load_journal(&mut self, run: &RunId) -> Result<Option<Journal>, StoreError>;
+}

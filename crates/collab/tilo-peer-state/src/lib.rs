@@ -44,8 +44,6 @@ pub mod outbox;
 
 pub mod durability;
 
-pub mod topology;
-
 pub mod caller_authority;
 pub mod document_import;
 pub mod legacy_policy;

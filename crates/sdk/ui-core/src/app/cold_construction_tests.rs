@@ -44,14 +44,15 @@ fn absent_existing_record_cannot_reach_a_default_new_factory() {
     use crate::record::{RecordCheckout, RecordId, RecordKind};
     let directory = tempfile::tempdir().unwrap();
     let definition = ApplicationDefinition {
-        app_id: "dev.tilo.cold-construction",
-        title: "Cold construction probe",
+        app_id: "dev.tilo.cold-construction".into(),
+        title: "Cold construction probe".into(),
         icon: crate::widget::IconDescriptor::Glyph("C"),
         record_kind: RecordKind::new("cold.probe"),
         required: vec![],
         optional: vec![],
         opens: &[],
         room_record: false,
+        opens_before_record: false,
         create: |_, _, _| {
             Err(crate::launch::LaunchError::Operation(
                 "definition factory ran".into(),

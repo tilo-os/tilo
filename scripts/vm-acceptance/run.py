@@ -413,6 +413,9 @@ def main() -> int:
                     help="run one part of the suite (SHARDS) in a session of its own: only its areas' "
                     "checks run, and the checks that judge the whole session (SESSION_JUDGES) judge "
                     "this one; with none of its checks selected, nothing boots")
+    ap.add_argument("--budgets", choices=("gate", "report"), default="gate",
+                    help="gate: a measurement over its budget fails its check; report: it is recorded as "
+                         "over-budget and the run still passes (core.BudgetExceeded)")
     ap.add_argument("--idle-seconds", type=int, default=30)
     ap.add_argument("--memory-mb", type=int, default=4608)
     ap.add_argument("--cpus", type=int, default=6)
@@ -440,6 +443,12 @@ def main() -> int:
     ap.add_argument("--runner", default="local", help="the runner class the records name")
     ap.add_argument("--out", type=Path)
     args = ap.parse_args()
+    if args.only:
+        known = {c.id for c in core.REGISTRY} | {c.area for c in core.REGISTRY}
+        unknown = sorted({w.strip() for w in args.only.split(",")} - known - {""})
+        if unknown:
+            # A name that matches nothing would run nothing and pass.
+            ap.error(f"--only names no check or area: {', '.join(unknown)}")
     selected = select(args.only, SHARDS[args.shard] if args.shard else None)
     if args.shard and not selected - FRAME:
         # A part of the suite with nothing selected in it: no VM, no records, and a pass.
@@ -510,7 +519,7 @@ def main() -> int:
         "commit": want_commit, "commit_short": (want_commit or "unknown")[:9],
         "commit_subject": git("log", "-1", "--format=%s", want_commit) if want_commit else None,
         "vm": vm_name, "vm_memory_mb": args.memory_mb, "vm_cpus": args.cpus, "gl": args.gl,
-        "slot": args.slot, "outputs": outputs, "budgets": BUDGETS,
+        "slot": args.slot, "outputs": outputs, "budgets": BUDGETS, "budget_mode": args.budgets,
         "host_mem_available_mb_at_start": mem_available_mb(),
     }
     results: list[core.Result] = []
@@ -569,7 +578,8 @@ def main() -> int:
         # A VM this run created without --gl renders in software: no GPU for R05 to judge.
         facts["software_rendering"] = created and not args.gl
         meta["renderer"], meta["display"] = facts["renderer"], facts["display"]
-        config = {"budgets": BUDGETS, "outputs": outputs, "idle_seconds": args.idle_seconds, "locale": "en"}
+        config = {"budgets": BUDGETS, "budget_mode": args.budgets, "outputs": outputs,
+                  "idle_seconds": args.idle_seconds, "locale": "en"}
         ctx = Context(vm, out, config)
         ctx.facts.update(facts)
         de = "de" in args.locales.split(",")
@@ -631,23 +641,32 @@ def main() -> int:
                 print(f"records: none written: {exc}", file=sys.stderr)
     expected = sum(r.status == "xfail" for r in results)
     skipped = sum(r.status == "skip" for r in results)
+    over = [r.id for r in results if r.status == "over-budget"]
     print(f"\n{doc['overall'].upper()}: {sum(r.status == 'pass' for r in results)}/{len(results)} checks pass"
           + (f", {expected} expected failure(s)" if expected else "")
-          + (f", {skipped} skipped" if skipped else ""))
+          + (f", {skipped} skipped" if skipped else "")
+          + (f", over budget (reported): {', '.join(over)}" if over else ""))
     print(f"report: {out / 'report.md'}")
     return 0 if doc["overall"] == "pass" else 1
 
 
 PROVIDERS = {"two_windows": "W01", "workspaces": "W10"}
 # The parts of the suite t runs apart (t.toml's `shards` of vm-acceptance), each in a VM of its
-# own, by the areas whose checks they run. Every area is in exactly one; the checks that depend
-# on another's order or facts (ORDER, PROVIDERS, DE_PASS) share their part with them.
+# own, by the areas whose checks they run, or by check id where an area alone would make one
+# part far longer than the others: a check named by id runs in that part only, and its area's
+# part runs the rest. Every check is in exactly one; the checks that depend on another's order
+# or facts (ORDER, PROVIDERS, DE_PASS) share their part with them.
 SHARDS = {
     "session": "provenance,resources,secrets,agent,basics",
     "apps": "apps",
+    # The non-Tilo apps (Chromium on Wayland and X11, GTK, Qt, alacritty, glxgears), each a
+    # minute or more: with the Tilo apps they made the longest part twice the next.
+    "foreign-apps": "A08,A09,A10,A11,A12,A13",
     "window": "window,input",
     "shell": "ui,search",
 }
+# The checks a part names by id, which their areas' parts leave out.
+_BY_ID = {w for part in SHARDS.values() for w in part.split(",") if w[:1].isupper()}
 # What every run states: the image it runs, and that its slot is up.
 FRAME = {"P01", "P02"}
 # The checks that judge everything a session did rather than one area: no failed or looping
@@ -666,7 +685,8 @@ def select(only: str | None, areas: str | None = None) -> set[str]:
     if areas:
         part = {a.strip() for a in areas.split(",")}
         chosen = {c.id for c in core.REGISTRY
-                  if c.id in chosen and (c.area in part or c.id in SESSION_JUDGES)}
+                  if c.id in chosen and (c.id in part or c.id in SESSION_JUDGES
+                                         or (c.area in part and c.id not in _BY_ID))}
         if not chosen - SESSION_JUDGES:
             chosen = set()
     # A check that needs a fact runs after the check that establishes it.

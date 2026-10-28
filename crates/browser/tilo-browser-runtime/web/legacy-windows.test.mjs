@@ -8,7 +8,7 @@ import {
 
 const unhex = value => Uint8Array.from(value.match(/../g), byte => parseInt(byte, 16));
 const utf8 = new TextEncoder();
-const STREAM = {surface: '0000000000000007', app: 'org.chromium.Chromium', codec: 'h264', width: 1280, height: 720, record: '@tilo:legacy-window:0000000000000007'};
+const STREAM = {surface: '0000000000000007', app: 'org.chromium.Chromium', codec: 'h264', width: 1280, height: 720, record: '@tilo:legacy-window:0000000000000007', tab: ''};
 const SHELL = 'ab'.repeat(32);
 const KEY = `${SHELL}:${STREAM.surface}`;
 const json = (kind, value) => Uint8Array.from([0xf1, kind, ...utf8.encode(JSON.stringify(value))]);
@@ -158,7 +158,7 @@ test('a listed stream opens a desktop window, is decoded and drawn over it until
   const m = mount();
   assert.deepEqual(m.live.watches.map(w => w.record), [INDEX_RECORD]);
   m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [STREAM]));
-  assert.deepEqual(m.shown.at(-1), [{key: KEY, app: STREAM.app, title: 'Chromium', codec: 'h264'}], 'the desktop opens a window for it');
+  assert.deepEqual(m.shown.at(-1), [{key: KEY, app: STREAM.app, title: 'Chromium', codec: 'h264', tab: ''}], 'the desktop opens a window for it');
   assert.deepEqual(m.live.watches[1], {...m.live.watches[1], publisher: SHELL, record: {app: LEGACY_APP, record: STREAM.record}});
   m.live.deliver(STREAM.record, 'cd'.repeat(32), chunk(CHUNK_KEY | CHUNK_FIRST | CHUNK_LAST, 0, SPS_IDR));
   assert.equal(m.codecs.decoders.length, 0, 'another namespace cannot feed the stream');
@@ -202,6 +202,14 @@ test('a listed stream opens a desktop window, is decoded and drawn over it until
   m.layer.close();
   assert.equal(m.surface.children.length, 0);
   await tick();
+});
+
+test('a stream naming its layout tab asks to be shown there, and a malformed tab is refused', () => {
+  const m = mount();
+  const placed = {...STREAM, tab: '00000000000000ab'};
+  assert.equal(decodeFrame(json(1, [{...STREAM, tab: 'AB'}])), null);
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [placed]));
+  assert.deepEqual(m.shown.at(-1), [{key: KEY, app: STREAM.app, title: 'Chromium', codec: 'h264', tab: '00000000000000ab'}]);
 });
 
 test('keys map to evdev codes, points to window pixels through the letterbox, wheels to pixels', () => {
@@ -619,7 +627,7 @@ test('a stream in a codec the page does not know is left out, and the publisher\
   assert.deepEqual(decodeFrame(json(1, [other, STREAM])), {kind: 'index', streams: [STREAM]});
   const m = mount();
   m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [other, STREAM]));
-  assert.deepEqual(m.shown.at(-1), [{key: KEY, app: STREAM.app, title: 'Chromium', codec: 'h264'}]);
+  assert.deepEqual(m.shown.at(-1), [{key: KEY, app: STREAM.app, title: 'Chromium', codec: 'h264', tab: ''}]);
   m.layer.close();
 });
 
@@ -630,7 +638,7 @@ test('VP9 and AV1 streams decode with their codec\'s configuration, and a sessio
   const vp9Key = [0x82, 0x49, 0x83, 0x42, 0x00, 0x00, 0xf0, 0x00];
   const vp9Inter = [0x86, 0x00, 0x40, 0x92, 0x9c, 0x28, 0x49, 0x40];
   m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [vp9]));
-  assert.deepEqual(m.shown.at(-1), [{key: KEY, app: STREAM.app, title: 'Chromium', codec: 'vp9'}]);
+  assert.deepEqual(m.shown.at(-1), [{key: KEY, app: STREAM.app, title: 'Chromium', codec: 'vp9', tab: ''}]);
   m.live.deliver(STREAM.record, SHELL, json(2, vp9));
   m.live.deliver(STREAM.record, SHELL, chunk(CHUNK_KEY | CHUNK_FIRST | CHUNK_LAST, 0, vp9Key));
   m.live.deliver(STREAM.record, SHELL, chunk(CHUNK_FIRST | CHUNK_LAST, 1, vp9Inter));
@@ -718,7 +726,7 @@ test('a painted page is handed to the runtime to draw, not decoded as video', as
   const painted = [];
   const m = mount({paintFrame: (key, bytes) => { painted.push({key, bytes: [...bytes]}); return true; }});
   m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [PAINT]));
-  assert.deepEqual(m.shown.at(-1), [{key: PAINT_KEY, app: PAINT.app, title: 'Browser', codec: 'tilo-paint'}],
+  assert.deepEqual(m.shown.at(-1), [{key: PAINT_KEY, app: PAINT.app, title: 'Browser', codec: 'tilo-paint', tab: ''}],
     'the desktop opens a window it draws itself');
   assert.equal(m.layer.layer.children.length, 0, 'no canvas over the desktop');
   m.live.deliver(PAINT.record, SHELL, json(2, PAINT));
