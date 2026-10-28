@@ -94,9 +94,8 @@ The pieces are strong. What is missing is one model and the performance path.
   written into Automerge change messages (`docs/history-experience.md:101-121`),
   and author-scoped undo that survives concurrent remote edits
   (`crates/sdk/ui-core/src/state/mod.rs:161-178`).
-- **The rooms concept.** Records with a home room, rooms hold references, and
-  content is separate from person/device settings
-  (`docs/architecture/rooms.md`).
+- **Records and references.** A record exists once and workspaces reference it
+  (`docs/architecture/workspace.md`).
 - **The substrate.** iroh 1.0 with iroh-blobs 0.103 already provides BAO range
   requests, `HashSeq`, `GetManyRequest`, a `Downloader` with a connection pool
   and `SplitStrategy`, and a store interface that can have a custom backend
@@ -158,7 +157,7 @@ metadata persistence and transfer engine underneath it.
 - **A kernel module.** It is out of tree, needs Secure Boot signing and adds
   attack surface ([§21](#21-alternatives-considered)).
 - **Un-sharing bytes.** Revocation stops future flow. It cannot erase what a
-  peer already has (`docs/architecture/rooms.md`, "Rooms hold references").
+  peer already has (`docs/architecture/workspace.md`, "State").
 - **Replacing Automerge now.** The CRDT engine is hidden behind a typed
   transaction API so that it can change later
   ([§21](#21-alternatives-considered)).
@@ -170,8 +169,8 @@ metadata persistence and transfer engine underneath it.
 | Concept                         | Definition                                                                                                                                                                                                                                                                                                                                                                                                                                   | Change from today                                                                                              |
 | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
 | **Person, device**              | A certified human root and its certified device keys. The device key is the iroh `EndpointId` (`docs/architecture/collaboration.md`, "Identity").                                                                                                                                                                                                                                                                                            | Unchanged.                                                                                                     |
-| **Workspace = room**            | A workspace's durable collaboration identity is its room, 1:1. It has members, roles, a host, a **catalog** of record references and a **file tree root**. The personal room is a real `RoomId` with one member.                                                                                                                                                                                                                             | Removes the `"personal"` slug / nil UUID split (`launcher/src/appdir.rs:37`, `ui-core/src/record.rs:692-703`). |
-| **Record**                      | The unit of identity, sharing, ACL, history and sync. It has a minted `RecordId` (never a path), a kind, a home room, a body and references.                                                                                                                                                                                                                                                                                                 | One id type. `ui::RecordId::for_file(path)` and `FileRecordId` merge.                                          |
+| **Workspace**                   | The one unit of collaboration: members, a **catalog** of record references and a **file tree root**. Every device holds it as a participant or as a store ([`workspace.md`](workspace.md)). | Replaces rooms and the `"personal"` slug / nil UUID split (`launcher/src/appdir.rs:37`, `ui-core/src/record.rs:692-703`). |
+| **Record**                      | The unit of identity, sharing, ACL, history and sync. It has a minted `RecordId` (never a path), a kind, a home workspace, a body and references.                                                                                                                                                                                                                                                                                                 | One id type. `ui::RecordId::for_file(path)` and `FileRecordId` merge.                                          |
 | **Record kinds**                | **CRDT document**: Automerge body (a note, a spreadsheet, a room catalog). **Collection**: a record whose items are sharded into shard documents with an index (a photo library, chat channel, playlist set). **File**: a byte body plus POSIX metadata and a placement in a tree (files, directories, symlinks). A file may also carry a CRDT side-body when a format provider understands it ([§13.5](#135-files-and-format-aware-files)). | Collections are new. CRDT records move from app sandboxes into the record plane.                               |
 | **Content store**               | One per device. It holds content-addressed bytes (BLAKE3) with one index, one GC and one authorisation rule. Physically, bytes live either as ranges of native files and their snapshots or as loose blobs.                                                                                                                                                                                                                                  | Replaces three stores ([§7](#7-content-format)).                                                               |
 | **Content id**                  | For a body ≤ 64 KiB, the BLAKE3 hash of the bytes. For larger bodies, the hash of a file manifest `HashSeq` ([§7.2](#72-manifests)).                                                                                                                                                                                                                                                                                                         | Replaces postcard manifests and the separate whole-file hash.                                                  |
@@ -179,15 +178,7 @@ metadata persistence and transfer engine underneath it.
 | **Version**                     | An immutable node in a record's history DAG: a changeset entry for files, Automerge heads for CRDT records.                                                                                                                                                                                                                                                                                                                                  | One history source ([§15](#15-history)).                                                                       |
 | **Residency**                   | Per file: `Placeholder`, `Partial`, `Resident`, `Pinned`, `Dirty`, `LocalOnly`.                                                                                                                                                                                                                                                                                                                                                              | Replaces explicit-only eviction ([§12](#12-caching-residency-and-prefetch)).                                   |
 | **Lease**                       | A time-bounded, fenced single-writer grant on one record, issued by a lease authority.                                                                                                                                                                                                                                                                                                                                                       | New ([§11.2](#112-leases)).                                                                                    |
-| **Settings**                    | Person-, device- or person-in-room-scoped typed values (`Settings<T>`). They follow the person or the device, never the room's members.                                                                                                                                                                                                                                                                                                      | Formalises the split in `rooms.md`, "Not all app state is a record".                                           |
-| **Person room, person records** | The person's own room: its id is derived from their root key, its members are by that derivation exactly the devices the root certified, and it has no roster to invite anyone into. A person record is an app's record in it — data of the person's own (watch history, learned words) that follows them across their devices and never reaches a collaborator ([§13.9](#139-person-records)).                                              | New. Replaces app state squeezed into personal settings sections.                                              |
-
-**Content versus settings.** Content records are room-scoped, empty in a new
-room, shared with room members and versioned in full. Settings are
-person/device-scoped, synced only between a person's own devices (or not at all,
-for device scope), versioned lightly and never visible to collaborators. Ebook
-font scale, weather's selected city and chat drafts are settings, not content
-(the current placements are the defects listed in `docs/architecture/rooms.md`).
+| **Settings**                    | Records like any other, in a workspace, synced to the devices that hold it.                                                                                                                                                                                                                                                                                                                                                                  | Replaces `Settings<T>` scopes and `settings.json`.                                                             |
 
 ---
 
@@ -1672,74 +1663,9 @@ channel (`runtime-collab`):
 
 ### 13.6 Settings
 
-`Settings<T>` has three scopes, all stored as CRDT records in the same Record
-Store:
-
-- **Person:** a record in the personal room, synced to the person's devices.
-- **Device:** a local record, never synced.
-- **PersonInRoom:** a record in the personal room, keyed by room.
-
-They are versioned lightly and never visible to collaborators. `Settings<T>` is
-the typed accessor that `docs/architecture/distribution.md` §6 calls for ("An
-application declares its settings schema … and gets a typed accessor"). How the
-existing `settings-store` desktop file and the Profile layers fold in is Q12.
-
-**What exists today.** `ui::storage::Settings<T>` is that accessor over the
-desktop settings document. A `SettingsSchema` type declares its `Scope`:
-
-- `Personal` lives in the `app_personal` section under the app id. The
-  continuity registry (`settings_store::continuity`) classifies that entry as
-  personal, so the device fabric carries the whole app object to the person's
-  other devices (most recent write wins, at most 64 KiB serialized).
-- `DeviceLocal` lives in `app_device_local` under the app id and never leaves
-  the device.
-- `Shared(name)` reads and writes a per-user section another owner declares
-  (`locale`, `text_assistance`); each of its keys keeps the scope the registry
-  reviewed for it.
-
-Framework views and surfaces get settings from their context
-(`cx.settings::<T>()`), kept current when another window or device writes them,
-and the app's files and secrets from the same place. A secret that belongs to a
-document item (a profile's password, a connection's passphrase) is
-`SecretStore::item(purpose, id)`: the document names the item, the secret stays
-in the device's store. PersonInRoom has no implementation yet. State of the
-person's own that is data rather than a preference — it grows, has history, is
-undone — is not a setting but a person record ([§13.9](#139-person-records)).
-
-**The records are the source.** Every reader — the compositor, the shell, apps —
-reads one document through `settings_store::load`, which a host can back with a
-`SettingsSource`. At startup the shell installs
-`settings_store::SessionSettings`: the person's record (the leaves the
-continuity registry classifies as personal) laid over the device's record (every
-other leaf), stored beside the settings file in `records/`. A write lands in the
-record its leaf's scope names. The device fabric publishes the person's leaves
-and writes the winners it receives back through the same source. `settings.json`
-is a copy the shell rewrites after every change, for the processes that read the
-document without the source: the compositor's boot path, apps, the Settings app
-and anything that runs before the session. Those processes still merge sections
-into the copy; every writer holds the copy's lock across its read, merge and
-replace, and the session takes in each leaf that differs from the copy it last
-wrote. A copy written while no session ran (first boot) is taken in when the
-session opens. Replacing the fabric's settings channel with the person record's
-own sync is still to come.
-
-**Sandboxed apps reach the records through their channel.** A sandboxed app has
-no settings document: its sandbox holds neither the records nor the copy (only
-Settings, which owns the document, is given the copy). The collaboration channel
-the launcher hands every app carries an `AppSettings` capability instead
-(`ChannelHandle.settings`), bound to the channel's certified app. At launch the
-toolkit installs it as the app process's `SettingsSource`, so `Settings<T>`,
-`cx.settings::<T>()` and the toolkit's own readers go through it. The shell
-answers from its records with the app's view (`settings_store::app_scope`): the
-app's own `app_personal` and `app_device_local` entries, and the shared sections
-every app's toolkit reads (`locale`, `text_assistance`, `accessibility`,
-`appearance`). The app writes only its own two entries; a write naming another
-app's entry or any other section is refused, in the app and again in the shell.
-A write shows in the app at once, lands in the record its scope names (so a
-personal one roams), and is copied to `settings.json`; a change to the app's
-view, from another window or another of the person's devices, reaches the app
-within a fraction of a second and wakes it, so a view following a `Setting<T>`
-repaints.
+Settings are CRDT records in a workspace like any other state, and sync to the
+devices that hold it. There is no separate settings store, scope system or
+settings file ([`workspace.md`](workspace.md), "State").
 
 ### 13.7 Foreign apps
 
@@ -1770,117 +1696,8 @@ single-writer. Whether an app can opt into sharing is Q13. [R8]
 
 ---
 
-### 13.9 Person records
+### 13.9 Workspace records
 
-Some of an app's state is the person's own and is still data, not a preference:
-what they watched, the pages they visited, the words they taught the keyboard,
-where they stopped reading, their signature. It grows without a useful bound, it
-has history, and an edit to it is undone like any other. Settings are the wrong
-home for it — a personal section roams as one value of at most 64 KiB, last
-writer wins, with no history — and a shared room is the wrong home too: a
-collaborator must never see what someone watched. It is a record, in the
-**person's own room**.
-
-**The person's own room is a room with no roster.** Its id is derived from the
-person's root public key (`collab_types::person_room`, a version-8 uuid of a
-domain-separated SHA-256). Every device of the person derives the same id
-without asking anyone, and the room's members are, by that derivation, exactly
-the devices the root certified. Nobody can be invited into it, because there is
-no list to add them to. This is the "your own room is not special" of `rooms.md`
-taken literally: the same kind of room, whose one member is the person — with
-membership by derivation instead of by list, so that sharing it is not an
-operation that exists.
-
-**Each point that admits room traffic enforces it.**
-
-- _Broker._ A join naming the person room is admitted, as owner — a foreign
-  device, on an operating system Tilo does not control, with the foreign-device
-  cap's role, as in any room — only from a device certified by the root the room
-  is derived from (`admit_verified_join_at`); a join naming anyone else's person
-  room fails like a join to a room the session does not host.
-- _Network._ A document of the local person's room is never published on a room
-  topic, to a shared room's workspace host or to a collaborator. It travels over
-  the personal fabric to the person's other devices on their authenticated
-  same-root routes (`PersonalFabricPayload::Document`), and to the person's own
-  hosts on their continuity topic (host sessions only, never gossip). An
-  incoming one is accepted only from such a route, or kept by such a host,
-  signed by a device of the same root. A person-room document arriving any other
-  way is dropped, presence on it is never sent, and the room can never become a
-  workspace: an invite, an enrollment or a continuation naming it is refused
-  (`is_local_person_room`).
-- _History._ An artifact's scrollback is bound to the room its ops were
-  validated in, durably beside its log, and answered only on that room's own
-  topic — never for the person room, also for history stored by an earlier
-  session.
-
-**A person record is an ordinary record, opened beside the one a window shows.**
-One record per app and resource kind (`RecordId::derived(kind, room_default)`),
-the same on every device, created with the resource's genesis
-(`Resource::initialize`), so two devices that create it before they meet
-converge on one record. Its storage is one directory per app on the device,
-`<data home>/tilo-person/<package>`, which the launcher binds into the app's
-launches in every room at `/run/tilo/person` (`TILO_PERSON_DIR`): the same app
-open in two rooms reads one record. When another window of the app already holds
-the stored record, a window opens a replica that stores nothing on the very same
-route: it converges with that window, and what the person's other devices or
-host send there reaches it as well. A record larger than one frame travels as
-the 1 MiB segments its app signs, which receivers reassemble. Without a root
-identity there is no person room; the records are kept on the device in a scope
-no route can name.
-
-**A device acting for several people routes each one's room to that person.**
-Besides the root that certified it, a device can carry workspace identities —
-other roots that certified the same device key for a workspace of theirs. Each
-has its own person room: the device joins each root's continuity topic
-presenting that root's certificate, sends a record of a root's room only to that
-root's other devices (and hosts) on that topic, and takes in a record only into
-the person room of the root that certified its sender. A workspace identity's
-route carries its person records and nothing else of the device fabric.
-
-**The framework opens it.** A view or surface asks for the person's record of a
-resource type — `cx.person::<WatchHistory>()` — and gets a `PersonRecord<P>`:
-its state, kept current when another window or device changes it, and `apply` /
-`invoke` of the resource's own actions through the replayable executor,
-attributed to the person, written into the record's history, an undo step of
-theirs for content (`undo` / `redo`), none for housekeeping or content from
-outside. The runtime syncs it as it syncs every record a window keeps: the root
-reports it from `Widget::record_owners`, and the record's route —
-`(app, person room, record)` — is joined, published to and merged from like any
-other, in whatever room the window is.
-
-**Devices that were apart catch up.** Each device publishes the record whole
-when it first opens it. A device that receives a whole record and is still ahead
-of it answers with its own, so two devices that meet converge in one round trip.
-When one of the person's devices reappears on an authenticated route, its peers
-ask their local windows holding person records to publish them whole, so what it
-missed while away reaches it. The person's always-on hosts (their home server or
-hosted relay) keep every person-record change too: a device hands it to its host
-sessions on the person's continuity topic — a workspace whose only member on the
-host is the person — and never to gossip; a device that comes online when none
-of the others is gets what the host kept, and takes it in only from a device the
-same root certified.
-
-**A person record's content follows the record.** What a person record
-references — the poster of something they watched — lives under the person's
-room, whichever room the window that stored it shows. The record names its own
-content store (`PersonRecord::content`), kept by the host under the scope
-`(person room, app)` and holding the bytes in the app only while it runs; the
-window sends its requests on the person record's route, never its own. Between
-devices the request and its pieces travel on the personal fabric
-(`PersonalFabricPayload::RecordContentWant` / `RecordContentPiece`) to the
-person's other devices on their authenticated same-root routes: never on a room
-topic, never through a workspace host.
-
-**Known limits.**
-
-- Only the person's own hosts keep person records: a workspace host of a shared
-  room never sees them, so a person without an always-on host of their own still
-  needs two of their devices online at once to catch up.
-- A person record larger than the collaboration transport's limit (64 MiB in one
-  mutation) is refused like any record's; one that grows toward it should become
-  a collection.
-
-#### Workspace records
 
 A few records belong to the workspace rather than to one app's window: its
 custom emoji, which any app draws for `:name:`. Each is listed in
@@ -2044,7 +1861,7 @@ One `HistorySource` over every record kind. [R5, R6]
 
 - **Timeline.** The room timeline shows roll-ups ("Ada changed 140 files in
   `src/`", "Maren made 12 changes to Chapter 3") that expand into record
-  history. That is the nesting in `rooms.md`, "History nests", and it feeds the
+  history. That is the nesting in `workspace.md`, "History", and it feeds the
   existing Glance / Catch up / Investigate surfaces
   (`docs/history-experience.md`).
 - **One store.** History moves from the global JSON file (`history.rs:615-634`,
@@ -2464,7 +2281,6 @@ directory of the same filesystem and device, with the daemon stopped.
     fs-verity (run-time integrity, O(1) mount) as the default?
 15. **Record type ownership (Q15).** Should the system own record kinds, so one
     library view can show books, playlists and documents together, or the apps?
-    This carries forward `rooms.md`, "Still open".
 16. **Offline placeholder read (Q16).** Today `EIO` once the bytes have not
     arrived within the blocked-read bound (§12.3). Should interactive apps get a
     UI prompt instead?

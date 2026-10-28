@@ -538,7 +538,7 @@ the reviewed bot decides when it is used.
   stored with `tilo-secrets`, scoped to the connector's package
   (`SecretStore::for_app(package)`). Each one is keyed by the item it belongs to
   (`SecretStore::item(purpose, id)`). A record names the item and the secret
-  stays in the host's store. This is the pattern storage.md §13.6 prescribes,
+  stays in the host's store. This is the pattern the architecture README prescribes ("Settings, files and secrets"),
   and the one the AI settings hub uses for provider keys (a non-secret
   reference in the profile, resolved by the process that owns the store). A
   headless host keeps that store in `TILO_SECRETS_DIR` on an encrypted volume.

@@ -5,7 +5,7 @@ Some of it has no interface yet or comes later. The model must still allow
 it without a rewrite, so every change to workspaces, hosts, devices or identity is
 checked against this page. The workspace itself, holding layout,
 people, and state with its history, is defined in
-[`workspace.md`](workspace.md). Rooms and records are in [`rooms.md`](rooms.md),
+[`workspace.md`](workspace.md), which is also where records live,
 and transport and governance in [`collaboration.md`](collaboration.md).
 
 ## One workspace, reached many ways
