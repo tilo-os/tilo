@@ -186,6 +186,9 @@ pub struct PeopleController {
     capability: FaceCapability,
     clusters: BTreeMap<String, LocalPersonCluster>,
     storage_path: Option<crate::files::StateFile>,
+    /// Why the last write of [`Self::storage_path`] failed, until the app
+    /// takes it to tell the person ([`Self::take_save_failure`]).
+    save_failure: Option<String>,
 }
 
 #[derive(Debug, Default, serde::Deserialize, serde::Serialize)]
@@ -205,9 +208,7 @@ impl PeopleController {
     /// embeddings, face geometry, crops, and confidence are never persisted.
     #[must_use]
     pub fn persistent() -> Self {
-        Self::load_from(crate::files::StateFile::in_state(
-            "photos/people-review.json",
-        ))
+        Self::load_from(crate::files::StateFile::in_state("people-review.json"))
     }
 
     fn load_from(storage_path: Option<crate::files::StateFile>) -> Self {
@@ -226,10 +227,11 @@ impl PeopleController {
             capability,
             clusters: persisted.clusters,
             storage_path,
+            save_failure: None,
         }
     }
 
-    fn save(&self) {
+    fn save(&mut self) {
         let Some(file) = &self.storage_path else {
             return;
         };
@@ -237,9 +239,15 @@ impl PeopleController {
             privacy: self.privacy,
             clusters: self.clusters.clone(),
         };
-        if let Ok(bytes) = serde_json::to_vec(&state) {
-            let _ = file.write(&bytes);
+        if let Err(error) = file.write_json(&state) {
+            self.save_failure = Some(error);
         }
+    }
+
+    /// Why keeping this device's People state failed since the last call,
+    /// if it did: the change holds for this session but is not on disk.
+    pub fn take_save_failure(&mut self) -> Option<String> {
+        self.save_failure.take()
     }
 
     #[must_use]
@@ -733,6 +741,21 @@ mod tests {
             let cluster = restored.cluster("local-cluster").unwrap();
             assert_eq!(cluster.display_name.as_deref(), Some("Sam"));
             assert_eq!(cluster.visible_photo_ids(), [A]);
+            assert_eq!(people.take_save_failure(), None);
+        }
+
+        {
+            // A write that fails is reported once, not dropped.
+            let dir = tempfile::tempdir().unwrap();
+            let taken = dir.path().join("people-review.json");
+            std::fs::create_dir(&taken).unwrap();
+            std::fs::write(taken.join("held"), b"").unwrap();
+            let file = crate::files::StateFile::at(&taken);
+            let mut people = PeopleController::load_from(file);
+            people.set_recognition_enabled(true);
+            assert!(people.take_save_failure().is_some());
+            assert_eq!(people.take_save_failure(), None);
+            assert!(people.privacy().recognition_enabled);
         }
     }
 

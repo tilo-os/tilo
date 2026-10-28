@@ -410,7 +410,7 @@ impl PhotosApp {
                     self.pending_people_scans.remove(&invocation);
                 }
                 "cancelled".clone_into(&mut self.people_scan_progress.status);
-                self.people_scan_progress.save();
+                self.save_people_scan_progress();
                 self.notice = Some(tr("photos-people-scan-paused"));
             }
             PeopleIntent::OpenApproved(name) => {

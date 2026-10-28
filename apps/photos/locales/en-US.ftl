@@ -421,6 +421,7 @@ photos-import-stale = The library changed while you were choosing, so nothing wa
 photos-details-conflict = Someone else changed this photo, so your unsaved details were discarded
 photos-album-changed-elsewhere = Someone else changed this album, so your unsaved changes were discarded
 photos-search-stale = Search shows earlier results: { $reason }
+photos-state-not-kept = People changes are not kept on this device: { $reason }
 photos-error-day-gone = That day is no longer in the library
 photos-error-place-gone = That place is no longer in the library
 photos-error-selected-gone = A chosen photo is no longer in the library
