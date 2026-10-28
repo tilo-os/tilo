@@ -73,7 +73,7 @@ impl Budget {
     /// The bytes held now, by every reservation.
     #[cfg(test)]
     pub(in crate::collab_broker_capnp) fn used(&self) -> usize {
-        self.total - self.permits.available_permits()
+        self.total.saturating_sub(self.permits.available_permits())
     }
 }
 impl Reservation {
