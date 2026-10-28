@@ -312,6 +312,37 @@ pub(super) fn session_threads(driver: Option<u32>) -> Vec<tilo_test_env::idle::T
     session_threads_but(&[driver])
 }
 
+/// The files under `roots` modified at `since` or later, with how long
+/// after it, so a wakeup gate that fails names what the idle desktop wrote.
+pub(super) fn written_since<'a>(
+    roots: impl Iterator<Item = &'a std::path::Path>,
+    since: std::time::SystemTime,
+) -> Vec<(std::path::PathBuf, Duration)> {
+    let mut written = Vec::new();
+    let mut pending: Vec<std::path::PathBuf> = roots.map(std::path::Path::to_path_buf).collect();
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.is_dir() {
+                pending.push(entry.path());
+            }
+            // A directory's time moves when a file in it is created,
+            // renamed or removed, which a watcher also hears.
+            if let Ok(after) = meta.modified().and_then(|at| {
+                at.duration_since(since)
+                    .map_err(|_| std::io::Error::other("before"))
+            }) {
+                written.push((entry.path(), after));
+            }
+        }
+    }
+    written.sort_by_key(|(_, after)| *after);
+    written
+}
+
 /// This process's threads but the ones named in `left_out`.
 fn session_threads_but(left_out: &[Option<u32>]) -> Vec<tilo_test_env::idle::ThreadSample> {
     let mut threads = tilo_test_env::idle::sample_process(std::process::id())
@@ -664,6 +695,14 @@ fn a_lone_idle_desktop_keeps_its_network_runtime_asleep() {
     });
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let dir = tempfile::tempdir().unwrap();
+    // The desktop watches its identity tree for this person's devices and
+    // home peers. Left at the machine's (`/var/lib/tilo`), which a test
+    // machine may not have, each watch follows the nearest directory that
+    // exists, and wakes for whatever else on the machine (the other tests
+    // of a full run) writes there.
+    let identity = dir.path().join("identity");
+    std::fs::create_dir_all(identity.join("peers")).unwrap();
+    home.env().set("TILO_IDENTITY_ROOT", &identity);
     let root = SigningKey::from_bytes(&[44; 32]);
     let person = match collab_types::caps::Principal::person_from_key(
         collab_types::crypto::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
@@ -723,10 +762,18 @@ fn a_lone_idle_desktop_keeps_its_network_runtime_asleep() {
     let left_out = [driver, measurer];
     let before = session_threads_but(&left_out);
     let started = Instant::now();
+    let started_at = std::time::SystemTime::now();
     std::thread::sleep(LONE_IDLE);
     let measured = started.elapsed();
     let wakeups =
         tilo_test_env::idle::Wakeups::between(before, session_threads_but(&left_out), measured);
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from);
+    let written = written_since(
+        [Some(home.root()), Some(dir.path()), runtime.as_deref()]
+            .into_iter()
+            .flatten(),
+        started_at,
+    );
     stop.store(true, std::sync::atomic::Ordering::Release);
     if let Some((_, thread)) = refresher {
         let refreshes = thread.join().unwrap();
@@ -734,13 +781,15 @@ fn a_lone_idle_desktop_keeps_its_network_runtime_asleep() {
         assert!(refreshes >= 50, "the router simulation ran: {refreshes}");
     }
     eprintln!("a lone idle desktop's threads, {wakeups}");
+    eprintln!("files written while idle: {written:?}");
     eprintln!(
         "a lone idle desktop's threads blocked {:.2} times a second",
         wakeups.blocking_per_second()
     );
     assert!(
         wakeups.blocking_per_second() <= LONE_WAKEUP_BUDGET,
-        "a lone idle desktop woke {:.2} times a second, over {LONE_WAKEUP_BUDGET}/s:\n{wakeups}",
+        "a lone idle desktop woke {:.2} times a second, over {LONE_WAKEUP_BUDGET}/s:\n{wakeups}\
+         files written while idle: {written:?}",
         wakeups.blocking_per_second(),
     );
     assert!(
