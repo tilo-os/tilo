@@ -9816,6 +9816,7 @@ inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "dist
 needs = ["test-assets"]
 env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "apart", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 outputs = ["/target/os/x86_64/compiled/**"]
+writable_sources = true
 requires = ["arch=x86_64"]
 cost = "heavy"
 requirement = { cores = 16, memory = "32GiB" }
@@ -9830,6 +9831,7 @@ inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "dist
 needs = ["test-assets", "os-chromium-x86_64"]
 env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/x86_64/chromium", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 outputs = ["/target/os/x86_64/compiled-release/**"]
+writable_sources = true
 requires = ["arch=x86_64"]
 cost = "heavy"
 requirement = { cores = 16, memory = "64GiB" }
@@ -10078,6 +10080,7 @@ inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "dist
 needs = ["test-assets"]
 env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "apart", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 outputs = ["/target/os/aarch64/compiled/**"]
+writable_sources = true
 requires = ["arch=arm64"]
 cost = "heavy"
 requirement = { cores = 16, memory = "32GiB" }
@@ -10092,6 +10095,7 @@ inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "dist
 needs = ["test-assets", "os-chromium-aarch64"]
 env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/aarch64/chromium", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 outputs = ["/target/os/aarch64/compiled-release/**"]
+writable_sources = true
 requires = ["arch=arm64"]
 cost = "heavy"
 requirement = { cores = 16, memory = "64GiB" }
