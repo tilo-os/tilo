@@ -26,6 +26,8 @@ pub mod accounts;
 #[cfg(feature = "service")]
 pub mod boot;
 #[cfg(feature = "service")]
+pub mod comforts;
+#[cfg(feature = "service")]
 pub mod daemon;
 #[cfg(feature = "service")]
 pub mod guard;

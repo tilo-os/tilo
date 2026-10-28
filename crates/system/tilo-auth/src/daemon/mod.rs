@@ -8,6 +8,7 @@ pub mod server;
 pub mod volume;
 
 use crate::accounts::{Account, Accounts, Legacy};
+use crate::comforts;
 use crate::guard::Guard;
 use crate::handoff;
 use crate::keyring;
@@ -23,6 +24,7 @@ use crate::tpm::{self, Tries};
 use crate::userkey::UserKey;
 use crate::wrapper::{self, Kind, Outcome, Tpm, Wrapper};
 use anyhow::{Context as _, Result, bail};
+use settings_store::sign_in_comforts::SignInComforts;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
@@ -61,6 +63,8 @@ pub struct Config {
     pub sessions: PathBuf,
     /// What decides when a migrated person's old password hash may go.
     pub rollback_set: RollbackSet,
+    /// The device's sign-in comforts.
+    pub comforts: PathBuf,
 }
 
 impl Default for Config {
@@ -82,6 +86,7 @@ impl Default for Config {
             volume_key: Some(volume::LINKED_VOLUME_KEY.into()),
             sessions: PathBuf::from("/run/systemd/users"),
             rollback_set: RollbackSet::default(),
+            comforts: PathBuf::from(comforts::PATH),
         }
     }
 }
@@ -96,6 +101,7 @@ pub struct Peer {
 pub enum Answer {
     Reply(Reply),
     Pending(Option<PendingSignIn>),
+    Comforts(Option<SignInComforts>),
 }
 
 struct BootSignIn {
@@ -129,6 +135,7 @@ pub struct Daemon {
     store: Store,
     accounts: Accounts,
     lockout: LockoutStore,
+    comforts: comforts::Store,
     state: Mutex<State>,
     /// Signalled after every request, which may have remembered a wrong entry.
     requests: Condvar,
@@ -226,6 +233,7 @@ impl Daemon {
             store: Store::new(&cfg.records),
             accounts: Accounts::new(&cfg.accounts_root),
             lockout: LockoutStore::new(&cfg.lockout, &cfg.lockout_legacy),
+            comforts: comforts::Store::new(&cfg.comforts),
             state: Mutex::new(State {
                 guard: Guard::new()?,
                 boot: None,
@@ -377,6 +385,13 @@ impl Daemon {
     fn answer(&self, peer: Peer, request: Request) -> Answer {
         let result = match request {
             Request::PendingSignIn => return Answer::Pending(self.pending_sign_in(peer)),
+            Request::SignInComforts => {
+                return Answer::Comforts(self.comforts.load().unwrap_or_else(|e| {
+                    eprintln!("tilo-authd: {e:#}");
+                    None
+                }));
+            }
+            Request::SetSignInComforts { comforts } => self.set_sign_in_comforts(peer, &comforts),
             Request::Verify { user, secret } => self.verify(peer, &user, &secret),
             Request::Status { user } => self.status(peer, &user),
             Request::Enroll { user, secret } => self.enroll_request(peer, &user, &secret),
@@ -531,6 +546,41 @@ impl Daemon {
             key_held: Some(held),
             ..Reply::success()
         })
+    }
+
+    /// Change the fields `changes` names in the device's sign-in comforts and
+    /// mirror the result into the volume header, only when it differs from
+    /// the comforts kept. The header goes first, so a failed write is tried
+    /// again by the next request rather than hidden behind a record that
+    /// says it is done.
+    fn set_sign_in_comforts(
+        &self,
+        peer: Peer,
+        changes: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Reply> {
+        let greeter = self
+            .accounts
+            .by_name(&self.cfg.greeter_user)?
+            .map(|a| a.uid);
+        if !self.privileged(peer)
+            && greeter != Some(peer.uid)
+            && self.store.load(peer.uid)?.is_none()
+        {
+            return Ok(Reply::refused(Refusal::NotPermitted));
+        }
+        let _state = self.lock();
+        let kept = self.comforts.load()?;
+        let comforts = kept.clone().unwrap_or_default().with_changes(changes);
+        if kept.as_ref() == Some(&comforts) {
+            return Ok(Reply::success());
+        }
+        let work = self.work()?;
+        if let Some(volume) = self.cfg.volume.find(&work.runner) {
+            luks::write_comforts(&work.runner, &work.ws, &volume.device, &comforts)?;
+        }
+        self.comforts.save(&comforts)?;
+        eprintln!("tilo-authd: uid {} changed the sign-in comforts", peer.uid);
+        Ok(Reply::success())
     }
 
     fn status(&self, peer: Peer, user: &str) -> Result<Reply> {
