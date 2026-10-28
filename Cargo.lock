@@ -9924,7 +9924,6 @@ dependencies = [
  "tilo-clock",
  "tilo-files",
  "tilo-innertube",
- "tilo-invidious",
  "tilo-media",
  "tilo-net",
  "tilo-oauth",
@@ -19113,18 +19112,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-invidious"
-version = "0.1.0"
-dependencies = [
- "tilo-clock",
- "tilo-net",
- "tilo-test-env",
- "tokio",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-joined-room"
 version = "0.1.0"
 dependencies = [
@@ -27110,7 +27097,6 @@ dependencies = [
  "tilo-input-context",
  "tilo-install-helpers",
  "tilo-installed-apps",
- "tilo-invidious",
  "tilo-joined-room",
  "tilo-keyboard-map",
  "tilo-lan-discovery",

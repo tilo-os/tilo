@@ -1183,7 +1183,6 @@ doc = false
 "tilo-input-context" = { path = "../../../crates/platform/tilo-input-context", default-features = false, features = ["client"] }
 "tilo-install-helpers" = { path = "../../../crates/system/install-helpers", default-features = false, features = [] }
 "tilo-installed-apps" = { path = "../../../crates/packaging/installed-apps", default-features = false, features = [] }
-"tilo-invidious" = { path = "../../../crates/platform/tilo-invidious", default-features = false, features = [] }
 "tilo-joined-room" = { path = "../../../crates/collab/tilo-joined-room", default-features = false, features = ["test-support"] }
 "tilo-keyboard-map" = { path = "../../../crates/platform/tilo-keyboard-map", default-features = false, features = [] }
 "tilo-lan-discovery" = { path = "../../../crates/collab/tilo-lan-discovery", default-features = false, features = [] }
@@ -3568,7 +3567,6 @@ doc = false
 "tilo-input-context" = { path = "../../../crates/platform/tilo-input-context", default-features = false, features = ["client"] }
 "tilo-install-helpers" = { path = "../../../crates/system/install-helpers", default-features = false, features = [] }
 "tilo-installed-apps" = { path = "../../../crates/packaging/installed-apps", default-features = false, features = [] }
-"tilo-invidious" = { path = "../../../crates/platform/tilo-invidious", default-features = false, features = [] }
 "tilo-joined-room" = { path = "../../../crates/collab/tilo-joined-room", default-features = false, features = ["test-support"] }
 "tilo-keyboard-map" = { path = "../../../crates/platform/tilo-keyboard-map", default-features = false, features = [] }
 "tilo-lan-discovery" = { path = "../../../crates/collab/tilo-lan-discovery", default-features = false, features = [] }
