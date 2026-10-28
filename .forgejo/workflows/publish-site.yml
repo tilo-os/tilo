@@ -48,6 +48,9 @@ jobs:
       T_REF: main
       T_COMMIT: ${{ github.sha }}
       OUT: ${{ github.workspace }}/out
+      # The scripts fetch and verify the fonts they ship, as on t; the builder
+      # defaults to offline fonts for hermetic test suites.
+      TILO_FONT_ASSETS_OFFLINE: "0"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -57,8 +60,6 @@ jobs:
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Prepare Rust build
         uses: ./.forgejo/actions/prepare-rust-build
-      - name: Prepare font assets
-        uses: ./.forgejo/actions/prepare-font-assets
       - name: Install buildah and skopeo
         run: |
           set -euo pipefail
