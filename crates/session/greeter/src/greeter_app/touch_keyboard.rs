@@ -110,6 +110,12 @@ fn metrics(theme: &Theme) -> (f64, f64) {
     )
 }
 
+/// The height the keyboard takes, its gap above included.
+pub(super) fn height(theme: &Theme) -> f64 {
+    let (key, gap) = metrics(theme);
+    PasscodeKeyboard::height(key, gap) + f64::from(theme.tokens.spacing.s2)
+}
+
 /// Never wider than a wide sheet, so keys stay a thumb's reach apart.
 fn max_width(theme: &Theme) -> f32 {
     theme.tokens.metrics.panel_width_sheet * 1.25

@@ -711,6 +711,8 @@ pub struct GreeterApp {
     viewport_offset: Rc<Cell<(f32, f32)>>,
     /// The text scale the current composition was built for.
     layout_text_scale: f32,
+    /// The height the on-screen keyboard takes from the screen, when shown.
+    layout_keyboard_height: f64,
     /// Queued console requests (see [`console`]); `None` in shots and tests
     /// that do not exercise the console.
     console: Option<console_control::ConsoleServer>,
@@ -955,6 +957,7 @@ impl GreeterApp {
             proxy: Arc::new(OnceLock::new()),
             viewport_offset: Rc::new(Cell::new((0.0, 0.0))),
             layout_text_scale: 1.0,
+            layout_keyboard_height: 0.0,
             console: None,
             next_sign_in_diagnostics: None,
             keyboard_focus: false,
@@ -1147,7 +1150,8 @@ impl GreeterApp {
     /// Tight space or large text: a smaller avatar and closer spacing keep
     /// the whole form above the footer.
     fn compact(&self, text_scale: f32) -> bool {
-        (self.content.height() > 0.0 && self.content.height() < COMPACT_VIEWPORT_HEIGHT)
+        let height = self.content.height() - self.layout_keyboard_height;
+        (self.content.height() > 0.0 && height < COMPACT_VIEWPORT_HEIGHT)
             || text_scale >= COMPACT_TEXT_SCALE
     }
 
@@ -2284,6 +2288,11 @@ impl Widget for GreeterApp {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_text_scale = theme.text_scale;
+        self.layout_keyboard_height = if self.shows_touch_keyboard() {
+            touch_keyboard::height(theme)
+        } else {
+            0.0
+        };
         (self.layout_area, self.layout_outputs) = self.output_layout();
         let mut composition = self.build_composition(theme);
         if let Some(area) = self.layout_area {
