@@ -264,6 +264,21 @@ fn made_by_ada(
 /// A room another host governs: the record is the broker's committed read, the window's edit is a
 /// step of its own that the person's Undo takes back (and Redo brings back), each sent on the
 /// room's route, and the record's on-disk copy keeps up with it.
+/// How many versions the record's History lists as `person`'s.
+fn steps_of(record: &RoomRecord, person: &str) -> usize {
+    let listed = record
+        .view_history(br#"{"op":"history","last":null}"#)
+        .unwrap()
+        .value
+        .unwrap();
+    listed["versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|version| version["actor"]["id"] == person)
+        .count()
+}
+
 #[test]
 fn a_tilolang_edit_in_a_room_another_host_governs_is_undone() {
     let room_id = uuid::Uuid::new_v4();
@@ -336,14 +351,21 @@ fn a_tilolang_edit_in_a_room_another_host_governs_is_undone() {
     assert_eq!(value_at(&instance, &root), 1);
     assert_eq!(record.can_undo(), (true, false), "her edit is a step");
 
-    // Undo takes it back as a change of its own, and redo brings it back.
-    assert!(record.undo(&mut instance).unwrap());
+    // Undo takes it back as a change of its own, and redo brings it back: the history verbs
+    // every app's record answers, on the app's resource.
+    let resource = tilolang_tilo::publish::package_resource_id(APP);
+    assert!(record.undo(&mut instance, &resource, APP).unwrap());
     instance.update();
     assert_eq!(value_at(&instance, &root), 0, "undo took the edit back");
     assert_eq!(record.can_undo(), (false, true));
-    assert!(record.redo(&mut instance).unwrap());
+    assert!(record.redo(&mut instance, &resource, APP).unwrap());
     instance.update();
     assert_eq!(value_at(&instance, &root), 1, "redo brought it back");
+    assert_eq!(
+        steps_of(&record, "grace"),
+        3,
+        "history lists her edit, its undo and the redo"
+    );
 
     // The on-disk copy holds the record with the edit, the undo and the redo.
     record.flush();

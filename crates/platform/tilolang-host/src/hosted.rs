@@ -11,18 +11,23 @@
 //!   the toolkit publishes an app's ([`tilo_actions::door::survey`], deltas through
 //!   [`SurfacePublication`]), and runs what the broker delivers: an action the broker admitted for
 //!   its invoker is built through the published spec and applied as that invoker's step.
+//! - **History:** the instance publishes the history verbs every app publishes (Undo, Redo,
+//!   History, ...: `collaboration::history_source::verbs`) on its app's resource and answers them
+//!   on its record, as a native app does. The person's Undo on a notice in the window is the
+//!   same `undo`, as theirs: there is one undo.
 //! - **The window:** the instance sends it patches and hears what the person did over the patch
-//!   connection. The person's Undo on a notice takes their last step back.
+//!   connection.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use collaboration::history_source::verbs::{self, EDIT_TYPE, HistoryEdit, VIEW_TYPE};
 use collaboration::{CollabEvent, CollabRequest, SurfacePublication};
 use tilo_actions::{
     ActionAddress, ActionContext, ActionDescriptor, ActionInvoker, ActionRegistry, ActorKind,
-    EncodedAction, InvocationId, InvocationUpdate,
+    EncodedAction, InvocationId, InvocationUpdate, ResourceSpec,
 };
 use tilo_render_protocol::patch::Transport;
 use tilolang_tilo::action::{ACTION_TYPE, DynAction};
@@ -31,7 +36,9 @@ use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::room::{RoomError, RoomRecord};
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform, Publication};
+use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::HOST_RESOURCE;
+use tilolang_tilo::publish::package_resource_id;
 use tilolang_tilo::publish::{
     Caller, Committer, Planner, Publications, host_resource, publish_package,
 };
@@ -70,6 +77,8 @@ pub struct Spec {
 /// What the instance publishes on its connection: the room's records with their actions, kept up
 /// to date change by change.
 struct Surface {
+    /// The instance's app: its resource carries the history verbs.
+    app: String,
     host: Host,
     planner: Arc<dyn Planner>,
     committer: Arc<dyn Committer>,
@@ -77,7 +86,7 @@ struct Surface {
 }
 
 impl Surface {
-    fn new(host: &Host, wake: Waker) -> Self {
+    fn new(app: &str, host: &Host, wake: Waker) -> Self {
         let handle = Arc::new(
             host.handle()
                 .with_caller(|| CALLER.with(|caller| caller.borrow().clone())),
@@ -86,6 +95,7 @@ impl Surface {
         publications.set_waker(wake);
         let planner: Arc<dyn Planner> = handle.clone();
         let surface = Self {
+            app: app.to_owned(),
             host: host.clone(),
             planner,
             committer: handle,
@@ -102,13 +112,17 @@ impl Surface {
     }
 
     /// Every resource the room's packages hold, each with its actions; the host's own resource;
-    /// and each package's actions that take no record. Built now, so an invocation resolves
-    /// against what the record holds now.
-    fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+    /// and each package's actions that take no record, the instance's own app's with the history
+    /// verbs of its record. Built now, so an invocation resolves against what the record holds
+    /// now.
+    fn resources(&self) -> Vec<ResourceSpec> {
         let mut out = vec![host_resource(&self.committer)];
         out.extend(self.publications.borrow().trees().values().cloned());
         for package in self.host.packages() {
-            let resource = publish_package(&package.meta, &self.planner);
+            let mut resource = publish_package(&package.meta, &self.planner);
+            if package.meta.app == self.app {
+                resource = with_history(resource);
+            }
             if !resource.actions.is_empty() {
                 out.push(resource);
             }
@@ -128,6 +142,20 @@ impl Publication for Held {
     fn pending(&self) -> bool {
         self.0.publications.borrow().is_building()
     }
+}
+
+/// `resource` with the history verbs every app's record answers, those it does not offer itself.
+fn with_history(mut resource: ResourceSpec) -> ResourceSpec {
+    for spec in verbs::specs() {
+        if !resource
+            .actions
+            .iter()
+            .any(|existing| existing.id == spec.id)
+        {
+            resource = resource.with_action(spec);
+        }
+    }
+    resource
 }
 
 type SurfaceSlot = Rc<RefCell<Option<Rc<Surface>>>>;
@@ -162,7 +190,7 @@ impl Platform for HostPlatform {
     }
 
     fn publish(&self, host: &Host, wake: Waker) -> Option<Box<dyn Publication>> {
-        let surface = Rc::new(Surface::new(host, wake));
+        let surface = Rc::new(Surface::new(&self.bundle.meta.app, host, wake));
         *self.surface.borrow_mut() = Some(Rc::clone(&surface));
         Some(Box::new(Held(surface)))
     }
@@ -187,6 +215,8 @@ pub struct Kept {
 /// One app instance. See the module docs.
 pub struct Hosted {
     spec: Spec,
+    /// The app's resource, by its id and kind: where its history verbs are published.
+    resource: (String, String),
     instance: Instance,
     record: RoomRecord,
     surface: SurfaceSlot,
@@ -235,6 +265,11 @@ impl Hosted {
         wake: Waker,
     ) -> Self {
         let surface: SurfaceSlot = Rc::default();
+        let resource = (
+            package_resource_id(&bundle.meta.app),
+            bundle.meta.package_kind(),
+        );
+        let record = record.speaking(phrases.locale());
         let platform = HostPlatform {
             bundle,
             phrases,
@@ -258,10 +293,10 @@ impl Hosted {
             Rc::new(ById),
             window,
         );
-        let mut registry = ActionRegistry::new();
-        tilolang_tilo::action::register_actions(&mut registry);
+        let registry = ActionRegistry::with(tilolang_tilo::instance::room::register);
         Self {
             spec,
+            resource,
             instance,
             record,
             surface,
@@ -316,7 +351,8 @@ impl Hosted {
         self.instance.sync(Some(self.record.doc()));
         changed |= self.instance.update();
         if self.instance.take_undo() {
-            match self.record.undo(&mut self.instance) {
+            let (resource, kind) = &self.resource;
+            match self.record.undo(&mut self.instance, resource, kind) {
                 Ok(undone) => changed |= undone,
                 Err(error) => tracing::warn!(%error, "the undo did not reach the room"),
             }
@@ -392,6 +428,32 @@ impl Hosted {
             .instance
             .host()
             .ok_or_else(|| Refused::new("action_unavailable", "the app has not started yet"))?;
+        if encoded.type_id == EDIT_TYPE {
+            // A history verb, on the record as the invoker's own step.
+            let edit: HistoryEdit = serde_json::from_slice(&encoded.payload)
+                .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
+            let value = self
+                .record
+                .history(
+                    &mut self.instance,
+                    &edit,
+                    &address.resource,
+                    &self.resource.1,
+                    invoker,
+                    ambient,
+                )
+                .map_err(|error| Refused::new("action_failed", error.to_string()))?;
+            return Ok(tilo_actions::ActionOutput {
+                value,
+                resources: Vec::new(),
+            });
+        }
+        if encoded.type_id == VIEW_TYPE {
+            return self
+                .record
+                .view_history(&encoded.payload)
+                .map_err(|error| Refused::new("action_failed", error));
+        }
         if encoded.type_id == ACTION_TYPE {
             let action: DynAction = serde_json::from_slice(&encoded.payload)
                 .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
@@ -444,6 +506,7 @@ impl Hosted {
         let handlers: HashSet<String> = HashSet::from([
             <HostEffect as tilo_resource::Effect>::OPERATION.to_owned(),
             <OpenEffect as tilo_resource::Effect>::OPERATION.to_owned(),
+            VIEW_TYPE.to_owned(),
         ]);
         let violations = tilo_actions::validate_surface(&resources, &self.registry, &handlers);
         if !violations.is_empty() {
