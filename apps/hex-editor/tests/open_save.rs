@@ -166,6 +166,15 @@ fn agents_edit_the_bytes_through_the_published_actions() {
         std::fs::read(&target).unwrap(),
         [0x7F, 0x00, 0xFF, 0xEE, 0x33]
     );
+
+    // A relative path is refused: it would land wherever the app runs.
+    assert!(
+        app.effect_confirmed(&HexEffect::SaveAs {
+            path: "relative-copy.bin".to_owned(),
+        })
+        .is_err()
+    );
+    assert!(!std::path::Path::new("relative-copy.bin").exists());
 }
 
 #[test]

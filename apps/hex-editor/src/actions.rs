@@ -43,7 +43,7 @@ pub enum HexEffect {
     /// Save the buffer to another file, replacing what is there.
     #[effect(destructive, label = "Save as")]
     SaveAs {
-        #[param("save destination")]
+        #[param("absolute path of the save destination")]
         path: String,
     },
     /// Find in the bytes, in the window's search.
