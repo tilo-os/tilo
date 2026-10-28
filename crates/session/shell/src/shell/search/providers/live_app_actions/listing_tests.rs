@@ -114,24 +114,29 @@ fn assert_listings_survive_searches() {
     };
     let listing_label = |peer: u64| format!("Listed by {peer}");
 
+    // A listing asks for connections' pages a few at a time: answer them
+    // as they are asked for, until it is whole.
+    let settle = |needle: &str, label: &dyn Fn(u64) -> String| {
+        for _ in 0..=CONNECTIONS {
+            let catalog = query(needle);
+            if catalog.completion().complete {
+                return catalog;
+            }
+            answer_all(label);
+        }
+        panic!("the {needle:?} listing never became whole");
+    };
     let cold = query("");
     assert!(
         !cold.completion().complete,
         "the listing's pages are on their way"
     );
-    answer_all(&listing_label);
-    let whole = query("");
-    assert!(
-        whole.completion().complete,
-        "every connection's listing arrived"
-    );
+    let whole = settle("", &listing_label);
     assert_eq!(listed(&whole), CONNECTIONS as usize);
 
     for search in 0..SEARCHES {
         let needle = format!("needle{search}");
-        let _ = query(&needle);
-        answer_all(&|peer| format!("Found {needle} at {peer}"));
-        let _ = query(&needle);
+        let _ = settle(&needle, &|peer| format!("Found {needle} at {peer}"));
         let again = query("");
         assert!(
             again.completion().complete,
