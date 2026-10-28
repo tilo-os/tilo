@@ -27,6 +27,13 @@ optional = ["open-uri", "clipboard", "files.open", "files.save", "files.paths", 
 [resources]
 kinds = ["chat.drafts", "chat.messages", "chat.workspace", "tilo.moderation", "tilo.rich-text", "tilo.workspace.emoji"]
 
+# What the app's window shows while its code is on its way to a browser
+# (ui::widget::SkeletonShape): "page" fills the window with the lines a page
+# of body text takes, the shape of the columns Chat opens on. The host never
+# guesses this: no entry leaves the window's own ground alone.
+[appearance]
+arrival-skeleton = "page"
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""
