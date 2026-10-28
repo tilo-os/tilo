@@ -30,10 +30,10 @@ path = "junit.xml"
 # Nextest starts tests in order and a test that needs every thread waits for
 # all running tests to finish, idling the rest of the pool. Tests that take the
 # whole pool therefore have the highest priority: they run back to back while
-# the pool is still empty. The two-wide compositor group and the longest tests
+# the pool is still empty. The four-wide compositor group and the longest tests
 # follow, so a run ends on short tests.
 [test-groups]
-compositor = { max-threads = 2 }
+compositor = { max-threads = 4 }
 mounted-code = { max-threads = 1 }
 desktop-smoke = { max-threads = 1 }
 gpu-golden = { max-threads = 1 }
