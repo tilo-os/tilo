@@ -1898,7 +1898,7 @@ mod tests {
         assert_eq!(selection.with(Clone::clone), "eDP-1", "and stays chosen");
 
         // A screen reader: each display's tile is a choice it can activate.
-        let canvas = host.root_mut::<DisplayArrangement>();
+        let mut canvas = host.root_mut::<DisplayArrangement>();
         let tiles = canvas.accessibility().unwrap().children;
         assert_eq!(tiles.len(), 2);
         for tile in &tiles {

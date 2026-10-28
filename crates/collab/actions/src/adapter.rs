@@ -44,7 +44,7 @@
 //!
 //! Every implementation declares at least one [`Check`] — what must be true
 //! once it has run — because a layer that cannot say whether it worked
-//! cannot be trusted ahead of the layer below it. [`ActionAdapter::plan`]
+//! cannot be trusted ahead of the layer below it. `ActionAdapter::plan`
 //! walks the layers in order and returns the first one that both matches what
 //! the caller asked for and can be reached here and now; a layer whose check
 //! failed after running is what pushes the retry to the next one. When no

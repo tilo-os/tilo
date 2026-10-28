@@ -285,6 +285,10 @@ fn every_mutable_entry_point_invalidates_local_state() {
     const JUDGE_THEMSELVES: &[(&str, &str)] = &[
         ("poll_frame", "the frame itself"),
         (
+            "embedded_targets",
+            "reads the embedded app's widget rects; borrows it mutably only to reach its tree",
+        ),
+        (
             "take_skip_report",
             "hands over a log line; nothing a frame reads",
         ),
@@ -342,6 +346,10 @@ fn every_mutable_entry_point_invalidates_local_state() {
             "reads the last frame's pointers; measures name tags through the text renderer's shaping cache",
         ),
         ("take_profile_samples", "drains the profiler"),
+        (
+            "embedded_targets",
+            "reaches the app through `root_mut`, which invalidates",
+        ),
         (
             "take_collaboration_requests",
             "drains what the widgets asked of the transport, which no frame reads",

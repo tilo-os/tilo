@@ -134,6 +134,12 @@ impl EmbeddedApp {
                 })
                 .map_err(|error| crate::launch::LaunchError::Operation(error.to_string()))?;
         }
+        if app.wake_scope.is_some() {
+            // As in a window of its own: a change of an outside authority
+            // the app's permissions follow wakes it to show it.
+            let _entry = app.enter_wake_scope();
+            crate::permissions::wake_on_outside_change(crate::wake::WakeHandle::new());
+        }
         Ok(Self {
             app,
             rect: KurboRect::ZERO,
@@ -244,7 +250,15 @@ impl EmbeddedApp {
         if self.deadline_known.get() {
             return self.deadline.get();
         }
-        let deadline = self.app.root_widget.next_wake_deadline();
+        // A bound component's permissions changing with time is a deadline
+        // too, as in a window of its own.
+        let deadline = self
+            .app
+            .root_widget
+            .next_wake_deadline()
+            .into_iter()
+            .chain(self.app.permissions_change_at())
+            .min();
         self.deadline.set(deadline);
         self.deadline_known.set(true);
         deadline
@@ -575,6 +589,7 @@ impl Widget for EmbeddedApp {
             || self.app.unsettled()
             || (woken && self.app.root_widget.needs_redraw())
             || self.app.root_widget.needs_animation_frame()
+            || self.app.permissions_walk_due(crate::time::now())
             || crate::motion::frames_wanted(crate::time::now());
         if visible {
             self.wants_frame.set(true);

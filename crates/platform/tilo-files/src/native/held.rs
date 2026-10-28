@@ -54,16 +54,18 @@ pub fn publish(path: &Path, bytes: &[u8], mode: u32) -> io::Result<Held> {
             #[cfg(not(unix))]
             let _ = mode;
             let file = options.open(tmp)?;
-            match file
+            let locked = file
                 .try_clone()
                 .and_then(|lock| FileLock::lock(lock, LockMode::Exclusive))
-            {
-                Ok(lock) => {
+                // On failure the file closes with this unused closure,
+                // before the temporary is removed.
+                .map(move |lock| (file, lock));
+            match locked {
+                Ok((file, lock)) => {
                     held = Some(Held { _lock: lock });
                     Ok(file)
                 }
                 Err(error) => {
-                    drop(file);
                     let _ = std::fs::remove_file(tmp);
                     Err(error)
                 }

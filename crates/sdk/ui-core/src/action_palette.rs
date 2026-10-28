@@ -68,7 +68,10 @@ const SCOPE_PREFIX: &str = "\u{1}scope\u{1f}";
 /// The group "Search in" rows are listed under.
 const SCOPES_KIND: &str = "Search in";
 
+mod api;
 mod window_place;
+pub use api::{ACTION_PALETTE, MakeActionPalette, builtin_action_palette};
+pub(crate) use api::{ActionPaletteBox, make_action_palette};
 pub use window_place::placement;
 
 /// The window a palette was asked for from, when a host lays several app

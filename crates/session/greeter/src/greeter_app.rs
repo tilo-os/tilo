@@ -64,6 +64,7 @@ use ui::widget::{
 };
 
 mod console;
+mod sign_in_comforts;
 
 pub use console::{CONSOLE_WAKE, PROVIDER as CONSOLE_PROVIDER};
 
@@ -673,6 +674,9 @@ pub struct GreeterApp {
     requests: Rc<Requests>,
     /// Whether this screen turned the screen reader on.
     screen_reader: bool,
+    /// Where a comfort turned on or off here is kept for the login screens;
+    /// `None` in shots and tests.
+    sign_in_comforts: Option<crate::comforts::Changes>,
     /// The time and date the current composition shows. Shots pin it.
     clock: ClockFace,
     clock_pinned: bool,
@@ -908,6 +912,7 @@ impl GreeterApp {
             last_power_action: None,
             requests: Rc::new(Requests::default()),
             screen_reader: false,
+            sign_in_comforts: None,
             clock: ClockFace::now(),
             clock_pinned: false,
             device: DeviceStatus::default(),
@@ -2432,11 +2437,7 @@ impl Widget for GreeterApp {
 
     fn take_accessibility_request(&mut self) -> Option<AccessibilityRequest> {
         let request = self.requests.accessibility.take()?;
-        if let AccessibilityRequest::ScreenReader(on) = request {
-            self.screen_reader = on;
-        }
-        // The toggles show their new state; the App's theme change rebuilds.
-        self.dirty_structure = true;
+        self.keep_accessibility_change(request);
         Some(request)
     }
 
@@ -2449,6 +2450,9 @@ impl Widget for GreeterApp {
         let (state, _root) = ui::doc::document_ref(state.doc(), root);
         if payload == CONSOLE_WAKE {
             self.serve_console(state);
+            return;
+        }
+        if self.keep_screen_reader_chord(payload) {
             return;
         }
         if payload == crate::output_scale::OUTPUTS_WAKE {
@@ -2617,7 +2621,7 @@ mod tests {
         ]
     }
 
-    fn one_session() -> Vec<Session> {
+    pub(super) fn one_session() -> Vec<Session> {
         vec![test_sessions().remove(0)]
     }
 

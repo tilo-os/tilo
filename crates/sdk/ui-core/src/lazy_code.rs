@@ -5,7 +5,7 @@
 //! as History, the palettes or Feedback out of the code it starts with.
 //! Three parts make a surface lazy, and each has one shape:
 //!
-//! - **The code**, declared with [`lazy_code!`]: a [`LazyCode`] that holds a
+//! - **The code**, declared with `lazy_code!`: a [`LazyCode`] that holds a
 //!   *maker*, a plain function that builds the surface as a trait object.
 //!   A build without the surface's lazy feature links the maker; a build
 //!   with it asks the program for it the first time it is wanted
@@ -20,7 +20,10 @@
 //!   surface will stand, so a person who asked for it never sees nothing.
 //!
 //! The browser desktop declares each split point with its `split_code!`
-//! macro (`crates/browser/tilo-web-desktop/src/lazy.rs`).
+//! macro (`crates/browser/tilo-web-desktop/src/lazy.rs`). A surface the
+//! desktop does not draw in its first frame starts out lazy: when the start
+//! module outgrows its budget, `tools/web/wasm_size_ratchet.py` names the
+//! parts of the program that grew.
 
 use crate::deferred::Deferred;
 

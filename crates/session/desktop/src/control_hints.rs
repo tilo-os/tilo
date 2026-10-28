@@ -96,10 +96,6 @@ const SEARCH_DROP: f64 = 24.0;
 /// How far inside the desktop's edge the edge the view moves toward lights.
 const EDGE_INSET: f64 = 3.0;
 
-/// How often a host reads the record again for what the person's other
-/// devices learned meanwhile.
-const REREAD_EVERY: Duration = Duration::from_secs(60);
-
 /// What a host's frame shows the hints, in the coordinates it draws in.
 #[derive(Clone, Debug, Default)]
 pub struct HintFrame {
@@ -135,9 +131,6 @@ pub struct ControlHints {
     motion: EffectiveMotion,
     /// The person typed until then: no hint begins meanwhile.
     typing_until: Option<Instant>,
-    /// When the host next reads the record again for what the person's
-    /// other devices learned.
-    reread_at: Option<Instant>,
 }
 
 impl ControlHints {
@@ -149,7 +142,6 @@ impl ControlHints {
             said: Rc::default(),
             motion: EffectiveMotion::default(),
             typing_until: None,
-            reread_at: None,
         }
     }
 
@@ -164,20 +156,11 @@ impl ControlHints {
         self.layer.coach_mut().set_enabled(enabled, now);
     }
 
-    /// Fold in the record as another of the person's devices left it.
+    /// Fold in the record as the person's settings now hold it: what their
+    /// other devices learned, or the switch turned in Settings. Hosts call
+    /// this when the record's settings change, never on a schedule.
     pub fn merge(&mut self, other: &Learned, now: Instant) {
         self.layer.coach_mut().merge(other, now);
-    }
-
-    /// Whether the host should read the person's kept record again now and
-    /// [`Self::merge`] it, for what their other devices learned: once a
-    /// minute.
-    pub fn reread_due(&mut self, now: Instant) -> bool {
-        if self.reread_at.is_some_and(|at| now < at) {
-            return false;
-        }
-        self.reread_at = now.checked_add(REREAD_EVERY);
-        true
     }
 
     /// The record, when it changed: the host keeps it.

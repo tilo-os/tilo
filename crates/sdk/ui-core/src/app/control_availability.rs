@@ -52,6 +52,10 @@ impl App {
         let history_door = inputs.history_door.clone();
         let bound = self.refresh_bound_control_availability(&history_door);
         self.refresh_emitter_availability(history_door);
+        // What each control may run is what assistive technology is offered:
+        // a walk for permissions that changed (with time, or announced from
+        // outside) changes it with nothing in the tree marking it.
+        self.mark_semantic_tree_stale();
         self.layout.walks.availability = Some(runtime::AvailabilityWalk {
             inputs,
             controls: self.actions.last_control_availability.clone(),
@@ -68,6 +72,19 @@ impl App {
             .availability
             .as_ref()
             .and_then(|walk| walk.changes_at)
+    }
+
+    /// Whether what the last walk pushed into the controls is out of date
+    /// by `now` with nothing in the tree changed: a bound component's
+    /// permissions changed with time ([`Self::permissions_change_at`]), or
+    /// an outside authority they follow announced a change. A frame walks
+    /// the tree again.
+    #[cfg(feature = "native")]
+    pub(crate) fn permissions_walk_due(&self, now: crate::time::Instant) -> bool {
+        self.layout.walks.availability.as_ref().is_some_and(|walk| {
+            walk.changes_at.is_some_and(|at| at <= now)
+                || walk.inputs.tree.shared_permissions != crate::permissions::shared_revision()
+        })
     }
 
     /// Push what the bound components' controls may run into them.

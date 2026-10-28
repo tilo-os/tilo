@@ -17,6 +17,11 @@ pub const DBUS_PROXY_BIN_ENV: &str = "TILO_LAUNCHER_DBUS_PROXY_BIN";
 /// Every variable the launcher (and the app host beside it) treats as a
 /// developer-only override. The compositor removes these from a launcher's
 /// environment when its own gate is closed.
+/// Turns live modules on for the launches of this launcher (`1`). A developer override: a
+/// shipped launcher ignores it. Declared here, on every platform, because the list of
+/// overrides below names it everywhere; only Linux launches read it (`live_module`).
+pub const LIVE_MODULES_ENV: &str = "TILO_LAUNCHER_LIVE_MODULES";
+
 pub const DEV_OVERRIDE_VARS: &[&str] = &[
     package_store::layout::SYSTEM_DIR_ENV,
     package_store::layout::SYSTEM_PAYLOAD_DIR_ENV,
@@ -27,7 +32,7 @@ pub const DEV_OVERRIDE_VARS: &[&str] = &[
     crate::hardening::POLICY_PATH_ENV,
     NET_GATE_ENV,
     DBUS_PROXY_BIN_ENV,
-    crate::live_module::LIVE_MODULES_ENV,
+    LIVE_MODULES_ENV,
 ];
 
 #[cfg(test)]

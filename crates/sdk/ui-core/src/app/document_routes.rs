@@ -322,7 +322,7 @@ impl App {
             .document_routes
             .witness
             .iter()
-            .map(|witness| witness.route.clone())
+            .map(|witness| witness.route().clone())
             .chain(
                 self.document_routes
                     .owners
@@ -361,7 +361,7 @@ impl App {
             .document_routes
             .witness
             .as_ref()
-            .map(|witness| &witness.route);
+            .map(|witness| witness.route());
         let live = LiveOwners::of(self.root_widget.as_ref());
         live.all.iter().all(|owner| {
             self.document_routes.owners.iter().any(|entry| {
@@ -392,7 +392,7 @@ impl App {
     ) -> tilo_startup_metrics::NativeAdmissionSnapshot {
         let manager = &self.collaboration.manager;
         let witness = self.document_routes.witness.as_ref();
-        let route = witness.map(|witness| &witness.route);
+        let route = witness.map(|witness| witness.route());
         let (enqueued, counts) = manager.action_directory_observation();
         let installed = self
             .document_routes
@@ -625,7 +625,7 @@ impl App {
                 .collaboration
                 .manager
                 .primary_route()
-                .map(|witness| witness.route.clone())
+                .map(|witness| witness.route().clone())
             {
                 let _ =
                     self.apply_room_index_document_envelope(&route, envelope, decrypted_payload);
@@ -652,10 +652,10 @@ impl App {
         let Some(witness) = self.document_routes.witness.as_ref() else {
             return;
         };
-        let primary = validated_route_payload_with(&witness.route, envelope, decrypted_payload)
+        let primary = validated_route_payload_with(witness.route(), envelope, decrypted_payload)
             .and_then(|payload| {
-                let active = !self.document_routes.retired_route(&witness.route)
-                    && match witness.route.record.as_deref() {
+                let active = !self.document_routes.retired_route(witness.route())
+                    && match witness.route().record.as_deref() {
                         Some(record) => self
                             .persistence
                             .records
@@ -668,7 +668,7 @@ impl App {
                             .as_ref()
                             .is_none_or(|set| set.active().is_none()),
                     };
-                active.then(|| (witness.route.clone(), payload))
+                active.then(|| (witness.route().clone(), payload))
             });
         let Some((route, payload)) = primary else {
             return;
@@ -756,7 +756,10 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
             };
             let request = CollabRequest::Document {
                 mutation,
-                authorization,
+                authorization: authorization.map(|authorization| {
+                    std::sync::Arc::new(authorization)
+                        as std::sync::Arc<dyn crate::collaboration::DocumentCustody>
+                }),
             };
             sends.push((entry.route.clone(), request, heads));
         }

@@ -85,6 +85,9 @@ pub enum OsdKind {
     PointerHeld { held: bool },
     /// Mouse keys after its Shift+Alt+Num Lock chord.
     MouseKeys { enabled: bool },
+    /// The screen reader after its chord (Ctrl+Super+Enter, or both volume
+    /// keys held).
+    ScreenReader { enabled: bool },
     /// The magnifier after a magnifier shortcut; `zoom` is the factor, `1` meaning off.
     Magnifier { zoom: u8 },
     /// The keyboard input source just switched to.
@@ -286,6 +289,10 @@ impl Osd {
         Self::at(OsdKind::MouseKeys { enabled }, 0.0)
     }
 
+    pub fn screen_reader(enabled: bool) -> Self {
+        Self::at(OsdKind::ScreenReader { enabled }, 0.0)
+    }
+
     /// The magnifier at `zoom`; the bar fills from off to the strongest zoom.
     pub fn magnifier(zoom: u8) -> Self {
         use settings_store::magnifier::{MAX_ZOOM, OFF};
@@ -380,6 +387,8 @@ impl Osd {
             OsdKind::PointerHeld { held: false } => t("osd-pointer-released"),
             OsdKind::MouseKeys { enabled: true } => t("osd-mouse-keys-on"),
             OsdKind::MouseKeys { enabled: false } => t("osd-mouse-keys-off"),
+            OsdKind::ScreenReader { enabled: true } => t("osd-screen-reader-on"),
+            OsdKind::ScreenReader { enabled: false } => t("osd-screen-reader-off"),
             OsdKind::InputSource(name) => name.as_str().to_string(),
             OsdKind::KeysCaptured { captured: true } => t_args(
                 "osd-keys-captured",
@@ -734,6 +743,14 @@ fn draw_glyph(
                 colors.text_dim
             },
         ),
+        OsdKind::ScreenReader { enabled } => (
+            ui::icons::Icon::Volume2,
+            if enabled {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            },
+        ),
         OsdKind::PointerHeld { .. } => (ui::icons::Icon::MousePointer2, colors.text_primary),
         OsdKind::PadMode { .. } => (ui::icons::Icon::PenTool, colors.text_primary),
         OsdKind::Magnifier { zoom } => (
@@ -910,6 +927,8 @@ mod tests {
             assert_eq!(Osd::touchpad(true).caption(), "Touchpad on");
             assert_eq!(Osd::mouse_keys(true).caption(), "Mouse keys on");
             assert_eq!(Osd::mouse_keys(false).caption(), "Mouse keys off");
+            assert_eq!(Osd::screen_reader(true).caption(), "Screen reader on");
+            assert_eq!(Osd::screen_reader(false).caption(), "Screen reader off");
             assert_eq!(Osd::no_backlight().caption(), "No adjustable display");
             assert_eq!(Osd::transport(Transport::Stop).caption(), "Stop");
             for toggle in [

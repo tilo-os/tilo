@@ -27,9 +27,11 @@ use crate::widget::{
 use super::{ListModel, ListModelChange, VirtualList};
 
 /// The height a row is reckoned at before it is laid out: a row with a secondary line.
+// ratchet-allow(pixel_const): a height reckoned before layout measures it, not spacing
 const ROW_ESTIMATE: f32 = 56.0;
 
 /// The height a message of a transcript is reckoned at before it is measured.
+// ratchet-allow(pixel_const): a height reckoned before layout measures it, not spacing
 const MESSAGE_ESTIMATE: f32 = 64.0;
 
 /// One item of a virtual list: the resource its row shows, the row, and what the row offers on
@@ -657,5 +659,11 @@ impl Decorator for DescribedList {
 
     fn name(&self) -> &'static str {
         "DescribedList"
+    }
+
+    /// The list's change is the described list's: it adds no structure of its own, so rows
+    /// the list builds anew stay mounted in place and the window keeps its tree.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        self.inner_mut().take_structure_change()
     }
 }

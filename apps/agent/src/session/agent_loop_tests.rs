@@ -1353,6 +1353,7 @@ fn execution_fixture(
         broker_surfaces: surfaces,
         next_broker_request: 1,
         awaiting_companions: Vec::new(),
+        held_turn: None,
         broker_revision: 0,
         catalogue_cache: None,
         turn: None,

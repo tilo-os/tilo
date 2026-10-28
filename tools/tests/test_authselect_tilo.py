@@ -54,6 +54,12 @@ class AuthselectTiloTests(unittest.TestCase):
             self.assertIn("pam_tilo.so", password[0], "nothing in the password phase runs first")
             self.assertIn(authselect_tilo.CONTROL, password[0])
 
+    def test_only_someone_the_daemon_does_not_know_reaches_the_old_password_check(self):
+        # A migrated person's old hash may be kept for an older image; the daemon not
+        # answering must end the stack rather than hand the secret to pam_unix.
+        actions = dict(a.split("=") for a in authselect_tilo.CONTROL.strip("[]").split())
+        self.assertEqual(actions, {"success": "done", "ignore": "ignore", "default": "die"})
+
     def test_running_twice_changes_nothing(self):
         root = self.profile(SYSTEM_AUTH)
         authselect_tilo.main(["authselect-tilo.py", str(root)])

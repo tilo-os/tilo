@@ -1585,6 +1585,22 @@ impl Widget for LazyProfileCard {
         self.opening.is_some() || self.card.as_ref().is_some_and(|card| card.needs_redraw())
     }
 
+    // Before its code is in, the card is an empty leaf whose size never
+    // changes. A widget without children reads as layout-dirty by default,
+    // which had every frame of the page re-solve its layout for a card
+    // nobody opened.
+    fn is_layout_dirty(&self) -> bool {
+        self.card
+            .as_ref()
+            .is_some_and(|card| card.is_layout_dirty())
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        self.card
+            .as_ref()
+            .is_some_and(|card| card.layout_needs_measure())
+    }
+
     fn name(&self) -> &'static str {
         "ProfileCard"
     }
@@ -1698,6 +1714,17 @@ mod tests {
         assert_eq!(card.children().len(), 1);
         card.close();
         assert!(!card.is_open());
+    }
+
+    /// A card nobody opened is an empty leaf of a fixed size: it asks no
+    /// frame of the page to re-solve the layout, as it did by reading as
+    /// layout-dirty, which made every frame (each keystroke's, each of an
+    /// animation's) measure the whole desktop.
+    #[test]
+    fn an_unopened_lazy_card_asks_no_frame_to_measure() {
+        let card = LazyProfileCard::new();
+        assert!(!card.is_layout_dirty());
+        assert!(!card.layout_needs_measure());
     }
 
     /// Tab (or a click) enters the name field.

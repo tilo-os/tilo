@@ -33,6 +33,10 @@ pub struct ShellNarrator {
     /// False until the first snapshot after enabling: live regions already
     /// on screen are recorded, not replayed.
     primed: bool,
+    /// The reader the chord turned off, kept until it is turned on again:
+    /// a speech backend cuts an utterance off when dropped, and it is still
+    /// saying that the screen reader is off.
+    parting: Option<ScreenReader>,
 }
 
 impl std::fmt::Debug for ShellNarrator {
@@ -63,6 +67,7 @@ impl ShellNarrator {
     pub fn set_enabled(&mut self, enabled: bool) {
         match (enabled, self.reader.is_some()) {
             (true, false) => {
+                self.parting = None;
                 // Rate and voice follow the same `accessibility` settings the
                 // apps read, so the desktop speaks with one voice.
                 let mut reader = ScreenReader::new();
@@ -76,6 +81,24 @@ impl ShellNarrator {
                 *self = Self::default();
             }
             _ => {}
+        }
+    }
+
+    /// Follow the screen reader chord to `on`, saying so in words. Turning
+    /// it off is heard too: the reader says it and is kept, not stopped.
+    pub fn turned_by_chord(&mut self, on: bool) {
+        let words = ui::screen_reader_chord::state_words(on);
+        if on {
+            self.set_enabled(true);
+            if let Some(reader) = self.reader.as_mut() {
+                reader.announce(words, tts::Priority::Important, true);
+            }
+        } else if let Some(mut reader) = self.reader.take() {
+            reader.announce(words, tts::Priority::Important, true);
+            *self = Self {
+                parting: Some(reader),
+                ..Self::default()
+            };
         }
     }
 
@@ -226,6 +249,26 @@ mod tests {
             "the typed length is never spoken: {spoken:?}"
         );
         assert_eq!(spoken.len(), 2, "field, then the failure: {spoken:?}");
+    }
+
+    #[test]
+    fn the_chord_turning_the_reader_off_is_still_heard() {
+        let recorder = Recorder::default();
+        let mut narrator =
+            ShellNarrator::with_reader(ScreenReader::with_speaker(Box::new(recorder.clone())));
+        narrator.turned_by_chord(false);
+        assert!(!narrator.enabled());
+        assert_eq!(*recorder.0.lock().unwrap(), ["Screen reader off"]);
+        assert!(narrator.parting.is_some(), "not dropped mid-sentence");
+        // The settings poll that follows changes nothing.
+        narrator.set_enabled(false);
+        assert!(narrator.parting.is_some());
+        let prompt = LockPrompt::new();
+        narrator.observe(&narration_tree(&view(&prompt, "", None)));
+        assert_eq!(recorder.0.lock().unwrap().len(), 1, "silent while off");
+        narrator.turned_by_chord(true);
+        assert!(narrator.enabled());
+        assert!(narrator.parting.is_none());
     }
 
     #[test]

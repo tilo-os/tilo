@@ -564,7 +564,7 @@ fn the_main_loop_walks_no_path_after_startup() {
     let new: Vec<_> = walks
         .iter()
         .filter(|walk| {
-            let known = if walk.syscall == shell::compositor::liveness::STORAGE_WAIT {
+            let known = if walk.syscall == tilo_liveness::STORAGE_WAIT {
                 &known_waits
             } else {
                 &known_walks

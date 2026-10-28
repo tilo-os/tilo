@@ -250,22 +250,31 @@ struct Config {
 }
 
 impl Config {
+    /// The host's administration grant, else the page's own model service's,
+    /// which only Model Providers is ever lent.
     fn provider_admin(&self) -> Result<ui::models::ProviderAdministration, JsValue> {
-        self.provider_management
-            .as_ref()
-            .map(crate::host_services::ProviderManagementConfig::connect)
-            .transpose()
-            .map(Option::unwrap_or_default)
-            .map_err(error)
+        match &self.provider_management {
+            Some(granted) => granted.connect().map_err(error),
+            None => Ok(crate::host_services::page_provider_admin()),
+        }
     }
 
+    /// Lend Model Providers the administration; any other application
+    /// gets none.
+    fn lend_provider_admin(&self, context: &mut HostContext) -> Result<(), JsValue> {
+        if crate::host_services::provider_admin_app(context.app_id()) {
+            crate::host_services::provide_provider_admin(context, self.provider_admin()?)
+                .map_err(error)?;
+        }
+        Ok(())
+    }
+
+    /// The host's model service, else the page's own.
     fn models(&self) -> Result<ui::models::Models, JsValue> {
-        self.models
-            .as_ref()
-            .map(crate::host_services::ModelConfig::connect)
-            .transpose()
-            .map(Option::unwrap_or_default)
-            .map_err(error)
+        match &self.models {
+            Some(lent) => lent.connect().map_err(error),
+            None => Ok(crate::host_services::page_models()),
+        }
     }
     fn author(&self) -> String {
         self.author
@@ -371,6 +380,7 @@ fn release_gpu(id: u64, gpu: Gpu) {
         SHARED_GPU.with_borrow_mut(|shared| {
             if shared.as_ref().is_some_and(|s| Rc::ptr_eq(s, &gpu.shared)) {
                 *shared = None;
+                ui::offscreen::provide_page_gpu(None);
             }
         });
     }
@@ -1272,8 +1282,7 @@ fn present_component(
     context.provide_content(crate::page_content());
     context.provide_workspace_records(in_page(&owners, &stores, &config.room, config.author()));
     crate::person_records::provide(&mut context, dyn_store).map_err(error)?;
-    crate::host_services::provide_provider_admin(&mut context, config.provider_admin()?)
-        .map_err(error)?;
+    config.lend_provider_admin(&mut context)?;
     let loaders = Rc::new(RefCell::new(Vec::new()));
     let destination = Rc::clone(&loaders);
     let component = ui::ImageStore::with_host_factory_with_max_dimension(
@@ -1792,6 +1801,10 @@ async fn shared_gpu(
         *uncaptured.lock_recover() = Some(format!("WebGPU error: {e}; call recover"));
         wake(&p, &error_mounts);
     }));
+    let page_gpu = ui::offscreen::SharedGpu {
+        device: handle.device.clone(),
+        queue: handle.queue.clone(),
+    };
     let shared = Rc::new(RefCell::new(SharedGpu {
         cx,
         renderer,
@@ -1802,6 +1815,9 @@ async fn shared_gpu(
         overflows: ui::render_bump_recovery::Overflows::default(),
     }));
     SHARED_GPU.with_borrow_mut(|s| *s = Some(Rc::clone(&shared)));
+    // Apps that composite on the GPU themselves (the video editor) borrow
+    // this device: the page cannot wait for one of their own.
+    ui::offscreen::provide_page_gpu(Some(page_gpu));
     // A renderer made anew (after a lost device) compiles its own.
     DEFERRED_PIPELINES_ASKED.set(false);
     Ok((shared, surface))
@@ -2004,7 +2020,15 @@ impl Mount {
                 reasons.push("viewport".into());
             }
             if frame.queued_work {
-                reasons.push("queued work".into());
+                let sources = self.frame.queued_work_sources();
+                if sources.is_empty() {
+                    reasons.push("queued work".into());
+                }
+                reasons.extend(
+                    sources
+                        .into_iter()
+                        .map(|source| format!("queued: {source}")),
+                );
             }
             if frame.needs_animation_frame || due {
                 reasons.extend(
@@ -2277,11 +2301,6 @@ impl Mount {
             return self.keep_last_frame(output);
         }
         self.oversized_scene = false;
-        let mut physical = vello::Scene::new();
-        physical.append(
-            frame.scene,
-            Some(ui::scale::composite_transform(viewport.dpr)),
-        );
         self.metric_end("scene", stage);
         let stage = self.metric_start();
         let gpu = self.gpu.as_mut().ok_or("WebGPU renderer missing")?;
@@ -2307,6 +2326,10 @@ impl Mount {
             ui::retained_raster::Repaint::Full(_) => (&[][..], true),
             ui::retained_raster::Repaint::Regions(regions) => (regions.as_slice(), false),
         };
+        // A small damage renders only the parts that can reach it.
+        let culled = ui::retained_raster::culled_for_damage(frame.scene, parts, key, damage);
+        let mut physical = vello::Scene::new();
+        physical.append(culled.as_ref().unwrap_or(frame.scene), Some(key.to_device));
         let target = ui::retained_raster::RetainedTarget {
             texture: &gpu.surface.target_texture,
             view: &gpu.surface.target_view,
@@ -2372,12 +2395,18 @@ impl Mount {
         }
         gpu.retained.frames.presented(frame.scene, parts, key);
         #[cfg(debug_assertions)]
+        let whole = culled.is_some().then(|| {
+            let mut whole = vello::Scene::new();
+            whole.append(frame.scene, Some(key.to_device));
+            whole
+        });
+        #[cfg(debug_assertions)]
         check_retained(
             &mut gpu.retained,
             &gpu.surface,
             &mut shared.renderer,
             handle,
-            &physical,
+            whole.as_ref().unwrap_or(&physical),
             key,
             full_redraw,
         );

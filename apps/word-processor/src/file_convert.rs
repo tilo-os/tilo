@@ -82,7 +82,7 @@ pub fn read_file(file: &str, from: Option<usize>) -> Result<serde_json::Value, S
 
 /// What the document kept as `content` in `store` says, read as
 /// [`read_file`] reads a file named `name`. Content that is a picture,
-/// whatever its name, answers as one ([`picture`]).
+/// whatever its name, answers as one (`picture`).
 pub fn read_content(
     store: &tilo_content::ContentStore,
     (content, name): (&str, &str),

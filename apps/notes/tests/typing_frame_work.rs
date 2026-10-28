@@ -175,3 +175,65 @@ fn keystrokes_rebuild_nothing(open: Option<fn(&NotebookFixture) -> notes::PageId
         }
     });
 }
+
+/// Typing into a note's heading changes the note and the outline beside
+/// it, and nothing else: the frames a keystroke draws repaint those, not
+/// the windows they are in. The outline draws into the same damage part as
+/// the page tree; while its damage went unsaid, the part could not say where
+/// it changed and every key repainted each window whole.
+#[test]
+fn a_keystroke_in_a_heading_repaints_where_it_changed_not_the_windows() {
+    use ui::retained_raster::{Repaint, RetainedFrames, TargetKey};
+    const SCREEN: f64 = 1800.0 * 900.0;
+    ui::time::testing::with_monotonic_time(ui::time::now(), || {
+        ui::i18n::I18nManager::init("en-US");
+        let f = NotebookFixture::rich();
+        let checkout = component_support::notebook(&f);
+        let mut harness = notes_windows(&f, &checkout, 2);
+        harness.track_scene_parts(true);
+        let editor = harness
+            .targets()
+            .into_iter()
+            .find(|(key, _)| key == "block_editor")
+            .map(|(_, rect)| rect)
+            .expect("a note's editor");
+        // The note's first block is a heading, which the outline lists.
+        harness.click_at(editor.x0 + 20.0, editor.y0 + 10.0);
+        harness.key("x");
+        settle(&mut harness, 4);
+        let target = TargetKey {
+            width: 1800,
+            height: 900,
+            to_device: ui::kurbo::Affine::IDENTITY,
+            base_color: ui::vello::peniko::Color::BLACK,
+            generation: 0,
+        };
+        let mut shown = RetainedFrames::default();
+        shown.presented(harness.scene(), harness.scene_parts(), target);
+        for key in "typing".chars() {
+            harness.key(&key.to_string());
+            let mut repainted = 0.0;
+            for _ in 0..6 {
+                // As the browser does when a component's model wakes.
+                if harness.has_pending_owner_models() {
+                    harness.service_pending_owner_models().unwrap();
+                }
+                if !harness.poll_frame().unwrap() {
+                    break;
+                }
+                match shown.repaint(harness.scene(), harness.scene_parts(), target) {
+                    Repaint::Full(why) => panic!("typing {key:?} repainted the screen: {why:?}"),
+                    Repaint::Regions(regions) => {
+                        repainted += regions.iter().map(ui::kurbo::Rect::area).sum::<f64>();
+                    }
+                }
+                shown.presented(harness.scene(), harness.scene_parts(), target);
+            }
+            assert!(
+                repainted > 0.0 && repainted < SCREEN * 0.15,
+                "typing {key:?} repainted {:.0}% of the screen",
+                100.0 * repainted / SCREEN
+            );
+        }
+    });
+}

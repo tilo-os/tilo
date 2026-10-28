@@ -453,14 +453,15 @@ impl Capture for PageContent {
     }
 }
 
-/// Records the window a report is about from the record peer `id`'s room
-/// committed, through the one recorder every desktop uses; the recording's
+/// Records the window a report is about from the record committed in the
+/// room of the desktop whose reports peer `id` carries, through the one recorder every desktop uses; the recording's
 /// bytes are kept in the page's content store beside the report's picture,
 /// and reach the room's host the same way.
 fn page_recorder(id: u32) -> tilo_desktop::feedback::recorder::WindowRecorder {
     tilo_desktop::feedback::recorder::WindowRecorder {
         documents: Box::new(move |workspace, app, record| {
-            crate::replication::committed_record(id, workspace, app, record)
+            let desktop = crate::feedback_route::desktop_of(id);
+            crate::replication::committed_record(desktop, workspace, app, record)
         }),
         protected: Box::new(crate::capture_declarations::declared),
         keep: Box::new(|bytes| {

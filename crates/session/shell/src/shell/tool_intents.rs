@@ -272,7 +272,7 @@ fn decide_open(
         Some(caller),
         &open.request,
         &target,
-        |package| crate::compositor::activation::person_initiated(&chrome.borrow().tree(), package),
+        |package| person_initiated(&chrome.borrow().tree(), package),
         |caller, invocation, target| {
             broker
                 .ok_or_else(|| "no action broker".to_string())?
@@ -604,6 +604,19 @@ fn open_drive(drive: &str, caller: Option<&str>) -> Result<(), String> {
 #[cfg(not(target_os = "linux"))]
 fn open_drive(_drive: &str, _caller: Option<&str>) -> Result<(), String> {
     Err("drives are not available here".into())
+}
+
+/// Whether the person's own input just went to `package`'s window. It reaches
+/// an app through the Linux compositor's windows; elsewhere no window of the
+/// app took it.
+#[cfg(target_os = "linux")]
+fn person_initiated(tree: &crate::shell::state::WorkspaceTree, package: &str) -> bool {
+    crate::compositor::activation::person_initiated(tree, package)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn person_initiated(_tree: &crate::shell::state::WorkspaceTree, _package: &str) -> bool {
+    false
 }
 
 #[cfg(test)]

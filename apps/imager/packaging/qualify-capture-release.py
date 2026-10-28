@@ -17,6 +17,7 @@ import selectors
 import shutil
 import signal
 import stat
+import sys
 import subprocess
 import tempfile
 import time
@@ -530,10 +531,10 @@ def prepare_source(candidate):
             bound_file(path, inputs[relative])
     consumer = fixed_module(candidate / 'os/scripts/installer-receive-fixture/service_contract.py',
                             'fixed_service_graph')
-    selected = consumer.selected(Path('/'))
+    selected = consumer.selected(time.monotonic() + 60, sys.stderr)
     require(selected is not None, 'current receiving Browser/CEF graph is absent')
     subjects = document(candidate / 'subjects.json')
-    bound_file(selected[2], subjects['browser']['sha256'])
+    bound_file(Path(selected['browser']), subjects['browser']['sha256'])
     helper = fixed_module(candidate / 'apps/imager/packaging/service-source-assets.py', 'fixed_public_assets')
     helper.stage(document(candidate / 'source-assets.json'), candidate)
 

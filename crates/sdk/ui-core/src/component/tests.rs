@@ -325,6 +325,8 @@ struct Rendered {
     items: Vec<Item>,
     asked: Vec<std::ops::Range<usize>>,
     queue: crate::Intents<Fired>,
+    /// Rows the host renders anew, reported at the list's next poll.
+    changed: Vec<String>,
 }
 
 impl RowSource for Rendered {
@@ -367,11 +369,16 @@ impl RowSource for Rendered {
     }
 
     fn take_changes(&mut self) -> Vec<crate::widget::virtual_list::ListModelChange<String>> {
-        Vec::new()
+        if self.changed.is_empty() {
+            return Vec::new();
+        }
+        vec![crate::widget::virtual_list::ListModelChange::RowsChanged {
+            keys: std::mem::take(&mut self.changed),
+        }]
     }
 
     fn has_changes(&self) -> bool {
-        false
+        !self.changed.is_empty()
     }
 }
 
@@ -419,12 +426,26 @@ impl Source for ListSource {
 }
 
 fn rendered_list(items: Vec<Item>) -> (crate::widget::DescribedList, crate::Intents<Fired>) {
+    let (list, queue, _) = rendered_list_and_rows(items);
+    (list, queue)
+}
+
+/// [`rendered_list`], with the rows its host renders, to change.
+fn rendered_list_and_rows(
+    items: Vec<Item>,
+) -> (
+    crate::widget::DescribedList,
+    crate::Intents<Fired>,
+    std::rc::Rc<std::cell::RefCell<Rendered>>,
+) {
     let queue = crate::Intents::default();
-    let rows: SharedRows = std::rc::Rc::new(std::cell::RefCell::new(Rendered {
+    let rendered = std::rc::Rc::new(std::cell::RefCell::new(Rendered {
         items,
         asked: Vec::new(),
         queue: queue.clone(),
+        changed: Vec::new(),
     }));
+    let rows: SharedRows = rendered.clone();
     let mut source = ListSource {
         rows,
         queue: queue.clone(),
@@ -433,6 +454,7 @@ fn rendered_list(items: Vec<Item>) -> (crate::widget::DescribedList, crate::Inte
     (
         <crate::widget::DescribedList as Described>::from_props("list", props),
         queue,
+        rendered,
     )
 }
 
@@ -490,6 +512,52 @@ fn a_list_of_rendered_rows_reads_them_from_its_host_and_its_menu_from_the_row() 
         .collect();
     assert_eq!(selected, ["a".to_owned()]);
     assert!(!list.select_presenting(Some("doc/notes:a")), "already so");
+}
+
+/// A row its host renders anew (an item's title as it is typed) is mounted again where it
+/// stood: the described list says what its list says, and the window keeps its tree.
+#[test]
+fn a_rendered_row_that_changes_keeps_the_windows_tree() {
+    let (list, _queue, rows) = rendered_list_and_rows(vec![
+        item("a", "Q3 plan", false),
+        item("b", "Groceries", false),
+    ]);
+    let mut harness = crate::headless::FrameHarness::for_root(
+        crate::State::new(),
+        list,
+        (400, 300),
+        crate::theme::Theme::dark(),
+    );
+    harness.relayout();
+    let (rebuilt, nodes) = (harness.rebuilt_frames(), harness.layout_node_ids());
+
+    for title in ["Q3 plan!", "Q3 plan!!", "Q3 plan!!!"] {
+        {
+            let mut rows = rows.borrow_mut();
+            rows.items[0].title = title.into();
+            rows.changed.push("a".into());
+        }
+        harness.relayout();
+        assert!(
+            harness.last_relayout().remounted,
+            "the row is mounted in place"
+        );
+    }
+    assert_eq!(
+        harness.rebuilt_frames() - rebuilt,
+        0,
+        "three changed rows rebuilt nothing"
+    );
+    assert_eq!(
+        harness.layout_node_ids().len(),
+        nodes.len(),
+        "the window's tree keeps its shape"
+    );
+    let shown = harness.inspection_json().expect("inspects");
+    assert!(
+        shown.contains("Q3 plan!!!"),
+        "the row shows what it says now"
+    );
 }
 
 #[test]

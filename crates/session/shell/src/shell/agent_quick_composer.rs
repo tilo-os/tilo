@@ -632,10 +632,12 @@ impl AgentQuickComposer {
     fn offer_models(&mut self, models: Vec<(String, Option<runtime_collab::TaskRunModel>)>) {
         self.view.picks_model.set(models.len() > 1);
         self.model_picker = PickerListing::for_choices(models.len());
-        let start = short_answer_label()
-            .or_else(|| models.first().map(|(own, _)| own.clone()))
-            .unwrap_or_default();
-        self.view.model.set(start);
+        // A composer that already has a model keeps it when no list arrives.
+        if let Some(start) =
+            short_answer_label().or_else(|| models.first().map(|(own, _)| own.clone()))
+        {
+            self.view.model.set(start);
+        }
         self.models = models;
         self.list_agents();
     }
@@ -1549,7 +1551,7 @@ mod tests {
         // The composer waits for the agent's receipt of a request before it
         // sends another.
         composer.observe_receipt(ComposerReceipt {
-            owner: tide.clone(),
+            owner: tide,
             submission: ruled.submission,
             outcome: ComposerOutcome::Answered("Done.".into()),
         });

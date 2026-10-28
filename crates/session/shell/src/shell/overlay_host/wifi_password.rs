@@ -23,7 +23,7 @@ impl ShellOverlayHost {
         {
             let mut st = chrome.borrow_mut();
             st.quick_settings.wifi_password =
-                Some(crate::shell::quick_settings::WifiPasswordPrompt::new(ssid));
+                Some(tilo_quick_settings::WifiPasswordPrompt::new(ssid));
             st.bump();
         }
         self.sync_wifi_password_input();

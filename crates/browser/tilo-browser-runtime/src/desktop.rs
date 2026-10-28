@@ -143,7 +143,8 @@ pub(crate) struct Inputs {
     pub author: String,
     pub permissions: SharedPermissions,
     pub models: ui::models::Models,
-    /// What a report's review calls [`Self::models`].
+    /// What a report's review calls [`Self::models`]; empty when they are
+    /// the page's own model service rather than its host's.
     pub model_name: String,
     pub provider_admin: ui::models::ProviderAdministration,
     /// The peer whose room this desktop shows, when it has one.
@@ -253,10 +254,16 @@ impl LateFeedback {
         let custody = crate::feedback_code::install(startup, Rc::clone(&self.store))?;
         *shared.feedback.borrow_mut() = Some(custody);
         // The model this page may use also looks over reports before they
-        // are sent; without one, the model the room's host lends its
-        // reporters does, asked through the room.
-        let lent = if self.models.is_available() {
+        // are sent: its host's, or a provider the person set up here.
+        // Without one, the model the room's host lends its reporters does,
+        // asked through the room.
+        let lent = if !self.model_name.is_empty() {
             Some((self.models.clone(), self.model_name.clone()))
+        } else if self.models.is_available() && crate::host_services::page_models_set_up() {
+            Some((
+                self.models.clone(),
+                "the model provider you set up".to_owned(),
+            ))
         } else {
             crate::feedback_code::owner_model(self.peer)
         };

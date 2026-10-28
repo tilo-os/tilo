@@ -47,6 +47,10 @@ fields = [
   { path = "issues.*.budget", type = "Option<Budget>", readonly = true, stored = "record" },
   { path = "issues.*.budget.turn_ms", type = "u64" },
   { path = "issues.*.budget.total_ms", type = "u64" },
+  { path = "issues.*.budget.max_tokens", type = "Option<u64>" },
+  { path = "issues.*.budget.max_priced_calls", type = "Option<u64>" },
+  { path = "issues.*.budget.max_cost_micros", type = "Option<u64>" },
+  { path = "issues.*.budget.currency", type = "String" },
   { path = "issues.*.run", type = "Option<Run>", readonly = true, stored = "record" },
   { path = "issues.*.run.epoch", type = "u64" },
   { path = "issues.*.run.agent", type = "Atom" },
@@ -55,6 +59,7 @@ fields = [
   { path = "issues.*.run.paused.held", type = "Counter" },
   { path = "issues.*.run.paused.through", type = "u64" },
   { path = "issues.*.run.paused.at_ms", type = "i64" },
+  { path = "issues.*.run.paused.reason", type = "String" },
   { path = "issues.*.run.phase", type = "RunPhase" },
   { path = "issues.*.run.model", type = "Option<ModelChoice>", stored = "record" },
   { path = "issues.*.run.model.profile", type = "String" },
@@ -62,6 +67,16 @@ fields = [
   { path = "issues.*.run.device", type = "Option<String>" },
   { path = "issues.*.run.started_ms", type = "i64" },
   { path = "issues.*.run.updated_ms", type = "i64" },
+  { path = "issues.*.run.spend", type = "Option<Spend>", stored = "record" },
+  { path = "issues.*.run.spend.steps", type = "Vec<StepSpend>" },
+  { path = "issues.*.run.spend.steps_taken", type = "u64" },
+  { path = "issues.*.run.spend.input_tokens", type = "u64" },
+  { path = "issues.*.run.spend.output_tokens", type = "u64" },
+  { path = "issues.*.run.spend.priced_calls", type = "u64" },
+  { path = "issues.*.run.spend.cost_micros", type = "u64" },
+  { path = "issues.*.run.spend.currency", type = "String" },
+  { path = "issues.*.run.spend.held_tokens", type = "u64" },
+  { path = "issues.*.run.spend.held_cost_micros", type = "u64" },
   { path = "issues.*.run.confirmation", type = "Option<Confirmation>", stored = "record" },
   { path = "issues.*.run.confirmation.id", type = "String" },
   { path = "issues.*.run.confirmation.app", type = "String" },
@@ -261,6 +276,15 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "pause-run-for-budget"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "reason", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
 id = "resume-run"
 kind = "undoable"
 writes = ["record", "issues.*"]
@@ -293,6 +317,7 @@ params = [
   { name = "issue", required = true, schema = { type = "string" } },
   { name = "turn_ms", required = false, schema = { type = ["integer", "null"], minimum = 0 } },
   { name = "total_ms", required = false, schema = { type = ["integer", "null"], minimum = 0 } },
+  { name = "limits", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { currency = { type = "string" }, max_cost_micros = { type = ["integer", "null"], minimum = 0 }, max_priced_calls = { type = ["integer", "null"], minimum = 0 }, max_tokens = { type = ["integer", "null"], minimum = 0 } }, required = ["currency"] } },
 ]
 
 [[resources.verbs]]
@@ -385,12 +410,22 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "record-spend"
+id = "hold-spend"
 kind = "undoable"
 writes = ["record", "issues.*"]
 params = [
   { name = "issue", required = true, schema = { type = "string" } },
-  { name = "spent", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "tokens", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "cost_micros", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "settle-spend"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "step", required = true, schema = { type = "object", additionalProperties = false, properties = { cost_micros = { type = "integer", minimum = 0 }, currency = { type = "string" }, device = { type = "string" }, input_tokens = { type = "integer", minimum = 0 }, model = { type = "string" }, output_tokens = { type = "integer", minimum = 0 }, priced_calls = { type = "integer", minimum = 0 }, step = { type = "integer", minimum = 0 } }, required = ["step", "model", "device", "input_tokens", "output_tokens", "priced_calls", "cost_micros", "currency"] } },
 ]
 
 [[resources.verbs]]

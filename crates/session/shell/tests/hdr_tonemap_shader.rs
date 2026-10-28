@@ -3,10 +3,10 @@
 //! since fetching an adapter costs the `OffscreenRenderer` bring-up. Both
 //! paths use the same PQ math.
 
-use shell::collab::colorimetry::{
+use neighbour_wire::colorimetry::{
     ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,
 };
-use shell::shell::hdr_tonemap::{HdrTonemapConfig, SHADER_SOURCE, tonemap_p010_to_rgba8};
+use tilo_color_pipeline::hdr_tonemap::{HdrTonemapConfig, SHADER_SOURCE, tonemap_p010_to_rgba8};
 
 /// Encode a `code_value` (0..1023) as the top-10-bit P010 sample.
 fn p010(code: u16) -> u16 {

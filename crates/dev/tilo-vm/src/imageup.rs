@@ -118,7 +118,7 @@ pub fn parse_from(
 /// them: the dev images published for it (built on the unsigned integration
 /// image, then on a signed release), which the VM pulls itself; then the
 /// production images a dev image can be built FROM here: the integration image
-/// of a main build (t's publish-os-dev-<arch>), then the signed release.
+/// of a main build (t's `publish-os-dev-<arch>`), then the signed release.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CiCandidates {
     pub dev_images: Vec<String>,
@@ -160,7 +160,7 @@ pub fn ci_commit(tag: &str) -> Option<&str> {
 }
 
 /// A branch's own build is tagged `ref-<branch>-<sha7>-<target>` in the
-/// branches' repository `tilo-vm-ref` (t's publish-os-ref-<target>, which
+/// branches' repository `tilo-vm-ref` (t's `publish-os-ref-<target>`, which
 /// `vm upgrade --ref` dispatches), so a commit that is not on main is found by
 /// listing the repositories' tags: `tilo-vm-ref:ref-<branch>-<sha7>-<arch or
 /// board>` is the published, signed dev image, `tilo-ci:<ref>-<sha7>-<arch>` an

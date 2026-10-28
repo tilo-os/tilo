@@ -373,7 +373,9 @@ impl HeadlessBackend {
         // Going through the `Result` is what lets
         // the headless backend honour the rest of the `Backend::new`
         // contract — return an error, don't take `main` down with us.
-        let renderer = OffscreenRenderer::try_new(width, height).map_err(|e| {
+        // Its frames are shown and replaced; a capture (`snapshot`, the
+        // capture service) renders the scene again in a fixed segment order.
+        let renderer = OffscreenRenderer::try_new_live(width, height).map_err(|e| {
             format!("HeadlessBackend::new: OffscreenRenderer init failed at {width}x{height}: {e}")
         })?;
         #[cfg(target_os = "linux")]
@@ -840,7 +842,7 @@ impl SimulatedVblankPresenter {
                 .checked_add(SIMULATED_FRAME_DEADLINE)
                 .unwrap_or(started),
             OutputSignal {
-                sdr_white_nits: crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
+                sdr_white_nits: tilo_color_pipeline::color_pipeline::SDR_REFERENCE_WHITE_NITS,
                 hdr_layers: &frame.hdr_layers,
                 color_lut: None,
                 // Headless has no physical display brightness to control.
@@ -920,7 +922,7 @@ impl SimulatedVblankPresenter {
         });
         let client = candidate
             .and_then(|candidate| crate::shell::gpu_frames::client_frame(&candidate.image))
-            .filter(|client| client.dmabuf().is_some() && client.opaque());
+            .filter(|client| client_buffer(client) && client.opaque());
         let Some((candidate, _client)) = candidate.zip(client) else {
             self.scanned_out = None;
             return None;
@@ -1263,3 +1265,15 @@ mod tests {
 #[cfg(test)]
 #[path = "headless/retained_tests.rs"]
 mod retained_tests;
+
+/// Whether `client`'s frame came from a client buffer the display could scan
+/// out. Client buffers are Linux dma-bufs; elsewhere no frame is one.
+#[cfg(target_os = "linux")]
+fn client_buffer(client: &crate::shell::gpu_frames::GpuFrame) -> bool {
+    client.dmabuf().is_some()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn client_buffer(_client: &crate::shell::gpu_frames::GpuFrame) -> bool {
+    false
+}

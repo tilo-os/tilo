@@ -1222,6 +1222,15 @@ async function connect({
       }, 30_000, 'Feedback owner admission timed out');
     },
     feedbackStatus: () => peer?.feedbackStatus?.() ?? 'unconfigured',
+    /** Send this room's reports through `carrier`, the page's peer in the
+     * room whose channel takes them (a web host's home workspace): reports
+     * reach it from whichever room the page is in. */
+    sendFeedbackThrough(carrier) {
+      const id = carrier?.runtimeId;
+      if (disposed || typeof id !== 'number') throw new Error('Feedback needs a connected peer to send through');
+      if (typeof peer?.sendFeedbackThrough !== 'function') throw new Error('Feedback delivery is unavailable in this runtime');
+      peer.sendFeedbackThrough(id);
+    },
 
     /** Public address of this admitted session; it conveys no authority. */
     get resourceScope() {

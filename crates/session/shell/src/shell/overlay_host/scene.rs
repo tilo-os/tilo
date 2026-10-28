@@ -899,7 +899,7 @@ impl ShellOverlayHost {
 fn scene_phase(name: &'static str, since: std::time::Instant) -> std::time::Instant {
     let now = std::time::Instant::now();
     let took = now.duration_since(since);
-    crate::compositor::metrics::profile::record_phase(name, took, None);
+    tilo_frame_metrics::profile::record_phase(name, took, None);
     SECTION_SPANS.with(|spans| {
         let mut spans = spans.borrow_mut();
         // Bounded: a paint whose scene is not reported never drains them.

@@ -15,15 +15,15 @@
 //! Headless, deterministic maths — no GPU or HDR panel. A DRM
 //! connector scanning out `Rgba16Float` is the documented hardware-only gap.
 
-use shell::diagnostics::PeerSurfaceMetrics;
-use shell::shell::color_pipeline::{
+use shell::shell::peer_view::PeerView;
+use tilo_color_pipeline::color_pipeline::{
     OutputColorSpace, OutputColorState, SDR_REFERENCE_WHITE_NITS, SurfaceColorOp,
     map_sdr_pixel_to_pq_bt2020, plan_surface_op, pq_eotf,
 };
-use shell::shell::hdr_display::DisplayCapabilities;
-use shell::shell::peer_view::PeerView;
+use tilo_color_pipeline::hdr_display::DisplayCapabilities;
+use tilo_window_share::diagnostics::PeerSurfaceMetrics;
 
-use shell::collab::colorimetry::Colorimetry;
+use neighbour_wire::colorimetry::Colorimetry;
 
 #[test]
 #[allow(

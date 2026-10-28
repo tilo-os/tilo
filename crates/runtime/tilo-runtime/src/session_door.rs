@@ -668,34 +668,44 @@ mod tests {
         assert!(!host.0.lock().unwrap().is_empty());
     }
 
+    const PROBE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"server/discover"}"#;
+
     #[test]
     fn probes_alone_never_admit_and_cannot_keep_the_door_reading() {
-        const PROBE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"server/discover"}"#;
-        let flood = format!("{PROBE}\n").repeat(MAX_HELLO / PROBE.len() + 1);
-        let (near, served, host, asked) = door(
+        // Few enough probes to fit in a socket unread, so writing them never
+        // waits on a door that is answering them, and a client that answers
+        // none of it is what the budget is for: the door reads them out,
+        // answers each, and stops rather than going on to wait for the
+        // fallback that never comes.
+        let probes = 8;
+        let flood = format!("{PROBE}\n").repeat(probes);
+        let (mut near, served, host, asked) = door(
             &flood,
             Consent::Admit {
                 room: "room".into(),
                 agent: "claude-code".into(),
             },
         );
-        // Read the door's answers as a client would, so only the budget
-        // ends the connection. The door closes with probes still unread,
-        // so the end may read as a reset.
         let reader = std::thread::spawn(move || {
             use std::io::BufRead;
-            std::io::BufReader::new(near)
-                .lines()
-                .map_while(Result::ok)
-                .count()
+            let replies: Vec<serde_json::Value> =
+                std::io::BufReader::new(near.try_clone().unwrap())
+                    .lines()
+                    .map_while(Result::ok)
+                    .take(probes)
+                    .map_while(|line| serde_json::from_str::<serde_json::Value>(&line).ok())
+                    .collect();
+            let _ = near.shutdown(std::net::Shutdown::Both);
+            replies
         });
-        let ended = served.join().unwrap();
-        assert_eq!(
-            ended.unwrap_err().kind(),
-            io::ErrorKind::InvalidData,
-            "past the hello budget the door stops reading"
-        );
-        assert!(reader.join().unwrap() > 0, "each probe was answered");
+        let replies = reader.join().unwrap();
+        // The door goes on to wait for the `initialize` a client falls back
+        // to, which this one never sends.
+        assert!(served.join().unwrap().is_err());
+        assert!(!replies.is_empty(), "each probe was answered");
+        for reply in &replies {
+            assert_eq!(reply["error"]["code"], -32601);
+        }
         assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(host.0.lock().unwrap().is_empty());
     }

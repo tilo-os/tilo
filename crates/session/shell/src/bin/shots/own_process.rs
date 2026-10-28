@@ -55,7 +55,10 @@ impl OwnProcessApp {
         let mut frame = ui::headless::FrameHarness::for_root(ui::State::new(), app, size, theme);
         let client =
             FloatingSurfaceServiceClient::from_test_stream(app_side).map_err(|e| e.to_string())?;
-        app_runtime(&mut frame).test_floating_service_connection(client);
+        frame
+            .root_mut::<ui::app::EmbeddedApp>()
+            .app_mut()
+            .test_floating_service_connection(client);
         Ok(Self {
             app_id,
             connection,
@@ -95,6 +98,24 @@ impl OwnProcessApp {
             }
         }
         self.present();
+    }
+
+    /// The size the app lays out at, in its window's own pixels.
+    pub fn window_size(&self) -> (u32, u32) {
+        self.size
+    }
+
+    /// The rects the app's own widgets answer to, by name, in the window's
+    /// own pixels.
+    pub fn targets(&mut self) -> std::collections::HashMap<String, vello::kurbo::Rect> {
+        self.frame.embedded_targets()
+    }
+
+    /// Hand the app one window event, as its own window would, then lay it
+    /// out again.
+    pub fn send(&mut self, event: &winit::event::WindowEvent) {
+        self.frame.dispatch_to_root(event);
+        self.frame.relayout();
     }
 
     /// Lay the app out at its window's size and publish its frame as the
@@ -160,9 +181,4 @@ impl OwnProcessApp {
         }
         messages
     }
-}
-
-/// The app's own runtime inside the frame that draws it.
-fn app_runtime(frame: &mut ui::headless::FrameHarness) -> &mut ui::App {
-    frame.root_mut::<ui::app::EmbeddedApp>().app_mut()
 }

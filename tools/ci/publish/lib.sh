@@ -77,10 +77,15 @@ aws_role() {
 
 # Log in to the registry $1 into the auth file $2. registry.tilo.so takes an identity token from t
 # (`id_token = ["registry.tilo.so"]`) as the password of the user `oidc`; it lasts minutes, so a
-# long push logs in again. The forge's registry, code.tilo.so, takes no identity token: there a
-# Forgejo token that may write packages (`secrets = ["REGISTRY_TOKEN"]`), as its owner.
+# long push logs in again. Where there is no identity token (tools/ci/run-checks.py off t), it
+# takes REGISTRY_TOKEN, a Forgejo token that may push to this repository, as its owner. The
+# forge's registry, code.tilo.so, takes no identity token: there REGISTRY_TOKEN
+# (`secrets = ["REGISTRY_TOKEN"]`), as its owner.
 registry_login() {
   local registry=$1 auth=$2 user password
+  if [[ $registry != code.tilo.so && -z ${ACTIONS_ID_TOKEN_REQUEST_URL:-} && -n ${REGISTRY_TOKEN:-} ]]; then
+    registry=code.tilo.so
+  fi
   case $registry in
     code.tilo.so)
       password=${REGISTRY_TOKEN:-}
@@ -90,10 +95,49 @@ registry_login() {
         || die 'code.tilo.so does not accept REGISTRY_TOKEN'
       [[ -n $user ]] || die 'code.tilo.so names no owner of REGISTRY_TOKEN' ;;
     *)
-      user=oidc
-      password=$(id_token "$registry") ;;
+      # A Forgejo Actions run logs in with its job token, as its docker/login steps do.
+      if [[ -n ${REGISTRY_PASSWORD:-} ]]; then
+        user=${REGISTRY_USER:?REGISTRY_PASSWORD needs REGISTRY_USER}
+        password=$REGISTRY_PASSWORD
+      else
+        user=oidc
+        password=$(id_token "$registry")
+      fi ;;
   esac
-  printf '%s' "$password" | skopeo login --authfile "$auth" -u "$user" --password-stdin "$registry" >/dev/null
+  printf '%s' "$password" | skopeo login --authfile "$auth" -u "$user" --password-stdin "$1" >/dev/null
+}
+
+# What a copy of the OCI layout SRC (oci:DIR[:REF]) to DST (docker://REGISTRY/REPO:TAG) sends: each
+# blob its manifests name with its size, and whether DST's repository has it already (an
+# anonymous HEAD), so a push log says how many bytes were new. Other sources are not measured.
+push_plan() {
+  local src=$1 dst=$2 dir repo url digest size have new=0 new_bytes=0 old=0 old_bytes=0
+  [[ $src == oci:* ]] || return 0
+  dir=${src#oci:}
+  dir=${dir%%:*}
+  repo=${dst#docker://}
+  repo=${repo%[:@]*}
+  url="https://${repo%%/*}/v2/${repo#*/}/blobs"
+  while read -r digest size; do
+    if curl -fsSI -o /dev/null "$url/$digest" 2>/dev/null; then have=present; old=$((old + 1)); old_bytes=$((old_bytes + size))
+    else have=new; new=$((new + 1)); new_bytes=$((new_bytes + size)); fi
+    printf 'push: blob %s %12s %s\n' "$digest" "$size" "$have"
+  done < <(layout_blobs "$dir" "$dir/index.json" | sort -u)
+  printf 'push: %s: %s new blobs (%s MB), %s present (%s MB)\n' "$dst" "$new" "$((new_bytes / 1000000))" \
+    "$old" "$((old_bytes / 1000000))"
+}
+
+# The blobs (digest and size) the manifests and indexes below the index or manifest FILE of the
+# layout DIR name, recursively; read with grep, since the skopeo image has no jq.
+layout_blobs() {
+  local dir=$1 file=$2 type digest size
+  while read -r type digest size; do
+    case $type in
+      *manifest* | *index*) layout_blobs "$dir" "$dir/blobs/${digest/://}" ;;
+      *) printf '%s %s\n' "$digest" "$size" ;;
+    esac
+  done < <(tr -d ' \n' < "$file" | grep -oE '"mediaType":"[^"]*","digest":"sha256:[0-9a-f]{64}","size":[0-9]+' \
+    | sed -E 's/"mediaType":"([^"]*)","digest":"([^"]*)","size":([0-9]+)/\1 \2 \3/')
 }
 
 # skopeo copy SRC DST (docker://REGISTRY/...), with the auth file AUTH and further skopeo flags,
@@ -104,14 +148,19 @@ registry_login() {
 # registry takes in); the next attempt logs in again and sends only the blobs not yet there.
 # DOCKER_CONFIG, when set, gets the same login.
 registry_copy() {
-  local auth=$1 src=$2 dst=$3 registry attempt
+  local auth=$1 src=$2 dst=$3 registry attempt started
   shift 3
   registry=${dst#docker://}
   registry=${registry%%/*}
+  push_plan "$src" "$dst"
+  started=$SECONDS
   for attempt in 1 2 3 4 5; do
     registry_login "$registry" "$auth"
     [[ -z ${DOCKER_CONFIG:-} ]] || cp "$auth" "$DOCKER_CONFIG/config.json"
-    skopeo copy --preserve-digests --retry-times 3 --authfile "$auth" "$@" "$src" "$dst" && return
+    if skopeo copy --preserve-digests --retry-times 3 --authfile "$auth" "$@" "$src" "$dst"; then
+      printf 'push: %s copied in %s s\n' "$dst" "$((SECONDS - started))"
+      return
+    fi
     printf 'publish: copy attempt %s to %s failed; logging in again\n' "$attempt" "$dst" >&2
   done
   die "could not copy $src to $dst"

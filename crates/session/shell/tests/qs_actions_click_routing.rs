@@ -16,13 +16,13 @@ use std::collections::HashMap;
 
 use settings_store::hardware::QuickSettingsConfig;
 use shell::shell::build_tilo_overlay_host_with_chrome;
-use shell::shell::quick_settings::WifiNetwork;
-use shell::shell::quick_settings::actions::{PowerProfile, QsActions};
 use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId, WorkspaceTree,
 };
 use taffy::{NodeId, TaffyTree};
+use tilo_quick_settings::WifiNetwork;
+use tilo_quick_settings::actions::{PowerProfile, QsActions};
 use vello::kurbo::Point;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -589,8 +589,8 @@ fn quick_settings_toggles_chips_and_wifi_rows_route_to_their_actions() {
             st.overlays.quick_settings = true;
             st.quick_settings.brightness_available = true;
             st.quick_settings.power_profiles = vec![
-                shell::shell::quick_settings::PowerProfile::Saver,
-                shell::shell::quick_settings::PowerProfile::Balanced,
+                tilo_quick_settings::PowerProfile::Saver,
+                tilo_quick_settings::PowerProfile::Balanced,
             ];
             st.bump();
         }
@@ -639,7 +639,7 @@ fn quick_settings_toggles_chips_and_wifi_rows_route_to_their_actions() {
             st.overlays.quick_settings = true;
             st.quick_settings.wifi = true;
             st.quick_settings.radios.wifi_available = true;
-            st.quick_settings.section = Some(shell::shell::quick_settings::QsSection::Wifi);
+            st.quick_settings.section = Some(tilo_quick_settings::QsSection::Wifi);
             st.quick_settings.wifi_networks = scanned.clone();
             st.bump();
         }
@@ -668,7 +668,7 @@ fn quick_settings_toggles_chips_and_wifi_rows_route_to_their_actions() {
             );
             assert_eq!(
                 st.quick_settings.section,
-                Some(shell::shell::quick_settings::QsSection::Wifi),
+                Some(tilo_quick_settings::QsSection::Wifi),
                 "in place, in the Wi-Fi section"
             );
         }
@@ -815,7 +815,7 @@ fn quick_settings_target(
 /// surface its label names instead of doing nothing.
 #[test]
 fn every_quick_settings_destination_click_lands_on_its_surface() {
-    use shell::shell::quick_settings::{QsLevel, QsSection};
+    use tilo_quick_settings::{QsLevel, QsSection};
 
     // Notifications is a page; Devices and the Clipboard open in place.
     for (target, level, section) in [

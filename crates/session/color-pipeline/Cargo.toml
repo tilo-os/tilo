@@ -1,0 +1,24 @@
+[package]
+name = "tilo-color-pipeline"
+description = "The compositor's colour maths: SDR to HDR output encoding, HDR tone mapping, the HDR surface composite and its shaders, display capabilities and software dimming."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# Colorimetry and HDR10 metadata are the neighbour protocol's vocabulary.
+neighbour-wire = { path = "../../collab/neighbour-wire" }
+# The SDR white the person may choose is the settings' range.
+settings-store = { path = "../../system/settings-store" }
+# What a display reports in its EDID.
+tilo-wayland-ext = { path = "../wayland-ext" }
+vello.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+os-actions = { path = "../../system/os-actions" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+
+[lints]
+workspace = true

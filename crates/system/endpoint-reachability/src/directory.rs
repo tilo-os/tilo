@@ -84,7 +84,7 @@ impl AddressLookupBuilder for Watchonly {
 /// record the endpoint last handed over published as soon as one arrives.
 ///
 /// Opening is the endpoint's own report of its home relay: it turns true when
-/// [`tilo_endpoint_reachability::Reachability`] adds a relay, and false when
+/// `tilo_endpoint_reachability::Reachability` adds a relay, and false when
 /// it takes the last one back. The gate task ends with the endpoint, so a
 /// desktop whose endpoint is closed keeps no timer.
 #[derive(Clone, Debug, Default)]

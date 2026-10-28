@@ -3727,6 +3727,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let Some(window) = self.window.clone() else {
             return;
         };
+        // Both volume keys have been held long enough.
+        if self.app.tick_screen_reader_chord(crate::time::now()) {
+            window.request_redraw();
+        }
         if std::mem::take(&mut self.primary_preedit_clear_pending) {
             self.primary_preedit_active = false;
             self.app.floating.pending_ime_ids.clear();
@@ -4237,6 +4241,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     .then(|| crate::time::now() + Duration::from_millis(50)),
             )
             .chain(self.occluded_tick_at)
+            .chain(self.app.screen_reader_chord_deadline())
             .min();
         if frame_demand::enabled() {
             let mut askers = Vec::new();

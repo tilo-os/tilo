@@ -16,7 +16,6 @@ use ui::record::RecordStore;
 
 use crate::notifications::{CloseReason, NotificationBridge};
 use crate::shell::notification::{remote_action_command, remote_dismiss_command};
-use crate::shell::quick_settings::{BtDevice, PowerProfile, QsLevel, WifiNetwork};
 use crate::shell::state::{
     Capability, GroupId, StripId, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
 };
@@ -24,6 +23,7 @@ use tilo_desktop::notifications::{
     HistoryActivation, Notification, NotificationIconKind, NotificationLog, NotificationSeverity,
 };
 pub use tilo_desktop::workspace_settings::{GrantDraft, WsTab};
+use tilo_quick_settings::{PasteOrigin, QuickSettingsState};
 
 /// An action-owned request to initialize only this freshly minted scratch tab.
 /// It is intentionally session-local; reopening a saved tab never recreates it.
@@ -339,146 +339,6 @@ pub struct SearchContextState {
     pub dictating: bool,
 }
 
-/// Where clipboard history was summoned to paste: the focused field's caret
-/// and the focused window, in desktop coordinates, either unknown.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct PasteOrigin {
-    pub caret: Option<vello::kurbo::Rect>,
-    pub window: Option<vello::kurbo::Rect>,
-}
-
-/// One monitor's brightness control in Quick Settings.
-#[derive(Clone, Debug, PartialEq)]
-pub struct DisplayBrightness {
-    /// DRM connector, e.g. `DP-2` — what the brightness service keys on.
-    pub connector: String,
-    /// The monitor's EDID name, e.g. `Dell U2720Q`, else its connector.
-    pub name: String,
-    /// 0.0..=1.0.
-    pub level: f32,
-}
-
-/// Put the display the person works on (`focused`, its connector) first,
-/// keeping the others in their order: Quick Settings shows that display's
-/// slider at the top.
-pub fn focused_display_first(displays: &mut Vec<DisplayBrightness>, focused: Option<&str>) {
-    if let Some(index) =
-        focused.and_then(|focused| displays.iter().position(|d| d.connector == focused))
-    {
-        let display = displays.remove(index);
-        displays.insert(0, display);
-    }
-}
-
-/// Local UI state; does not sync to peers — device settings like
-/// brightness, volume, and radio toggles are always per-device.
-#[derive(Clone, Debug, PartialEq)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each device-local quick-settings flag maps to a distinct hardware truth or user control and must remain independently renderable"
-)]
-pub struct QuickSettingsState {
-    /// 0.0..=1.0.
-    pub brightness: f32,
-    /// False after the device probe confirms there is no controllable
-    /// backlight. The slider remains visible but honestly disabled.
-    pub brightness_available: bool,
-    /// Every monitor whose brightness can be set (the laptop panel's
-    /// backlight, external monitors over DDC/CI), built-in first. Each gets
-    /// its own slider once there is more than one; empty falls back to the
-    /// single `brightness` control.
-    pub displays: Vec<DisplayBrightness>,
-    /// The connector of the display the person works on, when the desktop
-    /// spans several: what "brighter" and "dimmer" adjust. The overlay host
-    /// keeps it current whenever search refreshes.
-    pub focused_display: Option<String>,
-    /// False after the audio service cannot provide a sink reading.
-    pub volume_available: bool,
-    pub wifi: bool,
-    pub bluetooth: bool,
-    /// `true` only when `BlueZ` reported a physical adapter. Keeping this
-    /// separate from `bluetooth` prevents an unavailable controller from
-    /// looking like a permanently-off switch.
-    pub bluetooth_available: bool,
-    /// Primary `NetworkManager` Ethernet interface. `None` means no adapter.
-    pub wired: Option<os_actions::WiredInfo>,
-    /// Battery, link and volume: the one copy the top bar draws too, taken
-    /// each frame from [`crate::shell::status::StatusBridge`] with no lock
-    /// held across a draw; `None` fields until a reading lands.
-    pub status: crate::shell::status::SystemStatus,
-    /// `None` when fwupd is unavailable, otherwise the offered update count.
-    pub firmware_updates: Option<usize>,
-    pub radios: os_actions::RadioState,
-    pub vpns: Vec<os_actions::VpnConnectionInfo>,
-    pub privacy: os_actions::PrivacyStatus,
-    pub night_light: bool,
-    /// The machine has an accelerometer, so its screen can follow the device
-    /// and the rotation-lock tile is offered.
-    pub rotation_available: bool,
-    /// `display.rotation_lock`: the screen stays put when the device turns.
-    pub rotation_lock: bool,
-    /// The renderer dispatches on `nav_stack.last()` (always at least
-    /// `Root`) — pushing `Wifi`/`Bluetooth` flips the popover to the
-    /// drill-in list.
-    pub nav_stack: Vec<QsLevel>,
-    /// The section open in place on the root page (Wi-Fi's networks,
-    /// Bluetooth's devices, a VPN's profiles, the battery); at most one.
-    pub section: Option<crate::shell::quick_settings::QsSection>,
-    /// Set while clipboard history is open to paste (Super+V): where it was
-    /// summoned from, so it opens there instead of under the tray and a
-    /// choice is pasted into that field. `None` when history is browsed from
-    /// Quick Settings. Cleared whenever Quick Settings opens another way.
-    pub paste_origin: Option<PasteOrigin>,
-    pub wifi_networks: Vec<WifiNetwork>,
-    /// True only while `NetworkManager` discovery is outstanding.
-    pub wifi_scanning: bool,
-    /// A typed radio mutation is admitted but has not completed.
-    pub radio_change_pending: bool,
-    /// The radio change under way, so its tile says "Turning on…" or
-    /// "Turning off…" until the machine answers.
-    pub radio_change: Option<os_actions::RadioChange>,
-    /// Why Wi-Fi is not in the state last asked for, until the next change.
-    pub wifi_problem: Option<crate::shell::quick_settings::radio::WifiProblem>,
-    /// Last discovery failure, kept separate from an honest empty result.
-    pub wifi_scan_error: Option<String>,
-    /// SSID currently being joined off-thread. Kept separate from the
-    /// password prompt so open networks can show progress without presenting
-    /// an irrelevant secret field.
-    pub wifi_joining: Option<String>,
-    pub bt_devices: Vec<BtDevice>,
-    /// The passphrase prompt for a protected network; `None` except
-    /// while the user is typing into it.
-    pub wifi_password: Option<crate::shell::quick_settings::WifiPasswordPrompt>,
-    /// Mirrored from `powerprofilesctl` when the panel opens and
-    /// pushed back via `set_power_profile` on cycle. Defaults to
-    /// `Balanced` so a host without `power-profiles-daemon` still
-    /// renders a sensible label.
-    pub power_profile: PowerProfile,
-    /// The profiles the power daemon offers on this machine; empty until
-    /// read. The power row cycles only through these.
-    pub power_profiles: Vec<PowerProfile>,
-    /// Apps currently keeping the screen awake (an idle inhibitor held
-    /// through Wayland, the portal or `org.freedesktop.ScreenSaver`), named
-    /// as they asked. Shown on the power row so a screen that never locks
-    /// has a visible reason.
-    pub awake_holders: Vec<String>,
-    /// Certified personal devices known to the device fabric, read when the
-    /// popover opens. `None` when this session has no device fabric.
-    pub personal_devices: Option<usize>,
-    /// Mirror of the persisted Do Not Disturb switch for the tile.
-    pub do_not_disturb: bool,
-    /// The clipboard history the Clipboard row counts and its section
-    /// lists, from one snapshot.
-    pub clipboard: crate::shell::quick_settings::ClipboardView,
-    /// Notifications in the history, read when the popover opens.
-    pub notification_count: usize,
-    /// This machine's sound outputs, read when the popover opens.
-    pub sound_outputs: Vec<crate::shell::quick_settings::SoundOutput>,
-    /// The Devices section's rows, in order. The overlay host reads the
-    /// device fabric for them; the root page lays them out and paints them.
-    pub device_rows: Vec<crate::shell::quick_settings::hosted::HostedRow>,
-}
-
 /// Session-local drill-down into one app-published resource directory.
 /// Route identity is retained with the resource so a similarly named object
 /// in another room or app can never receive the child query.
@@ -515,155 +375,6 @@ pub enum PresenceRequest {
     /// Join this call of the workspace in front, as the people panel's Join
     /// does.
     JoinCall(tilo_desktop::collaborators::VoiceChannel),
-}
-
-impl Default for QuickSettingsState {
-    fn default() -> Self {
-        #[cfg(test)]
-        crate::shell::test_support::ambient_start("Quick Settings production defaults");
-        Self {
-            brightness: 0.6,
-            brightness_available: false,
-            displays: Vec::new(),
-            focused_display: None,
-            volume_available: true,
-            wifi: true,
-            bluetooth: false,
-            bluetooth_available: false,
-            wired: None,
-            status: crate::shell::status::SystemStatus::default(),
-            firmware_updates: None,
-            radios: os_actions::RadioState::default(),
-            vpns: Vec::new(),
-            privacy: os_actions::get_privacy_status(),
-            night_light: settings_store::hardware::NIGHT_LIGHT.get(),
-            rotation_available: os_actions::has_accelerometer(),
-            rotation_lock: settings_store::hardware::ROTATION_LOCK.get(),
-            nav_stack: vec![QsLevel::Root],
-            section: None,
-            paste_origin: None,
-            // Populated by nmcli/bluetoothctl on the popover's rising
-            // edge — no fake content.
-            wifi_networks: Vec::new(),
-            wifi_scanning: false,
-            radio_change_pending: false,
-            radio_change: None,
-            wifi_problem: None,
-            wifi_scan_error: None,
-            wifi_joining: None,
-            bt_devices: Vec::new(),
-            wifi_password: None,
-            power_profile: PowerProfile::Balanced,
-            power_profiles: Vec::new(),
-            awake_holders: Vec::new(),
-            personal_devices: None,
-            do_not_disturb: false,
-            clipboard: crate::shell::quick_settings::ClipboardView::default(),
-            notification_count: 0,
-            sound_outputs: Vec::new(),
-            device_rows: Vec::new(),
-        }
-    }
-}
-
-impl QuickSettingsState {
-    pub(crate) fn fixture() -> Self {
-        Self {
-            brightness: 0.6,
-            brightness_available: true,
-            displays: Vec::new(),
-            focused_display: None,
-            volume_available: true,
-            wifi: true,
-            bluetooth: false,
-            bluetooth_available: false,
-            wired: None,
-            status: crate::shell::status::SystemStatus {
-                volume: Some(os_actions::VolumeState {
-                    level: 0.4,
-                    muted: false,
-                }),
-                ..crate::shell::status::SystemStatus::default()
-            },
-            firmware_updates: None,
-            radios: os_actions::RadioState::default(),
-            vpns: Vec::new(),
-            privacy: os_actions::PrivacyStatus::default(),
-            night_light: false,
-            rotation_available: false,
-            rotation_lock: false,
-            nav_stack: vec![QsLevel::Root],
-            section: None,
-            paste_origin: None,
-            // Populated by nmcli/bluetoothctl on the popover's rising
-            // edge — no fake content.
-            wifi_networks: Vec::new(),
-            wifi_scanning: false,
-            radio_change_pending: false,
-            radio_change: None,
-            wifi_problem: None,
-            wifi_scan_error: None,
-            wifi_joining: None,
-            bt_devices: Vec::new(),
-            wifi_password: None,
-            power_profile: PowerProfile::Balanced,
-            power_profiles: Vec::new(),
-            awake_holders: Vec::new(),
-            personal_devices: None,
-            do_not_disturb: false,
-            clipboard: crate::shell::quick_settings::ClipboardView::default(),
-            notification_count: 0,
-            sound_outputs: Vec::new(),
-            device_rows: Vec::new(),
-        }
-    }
-
-    /// The renderer's dispatch key. Defaults to `Root` if the stack is
-    /// somehow empty (`new()` always seeds it).
-    pub fn current_level(&self) -> &QsLevel {
-        self.nav_stack.last().unwrap_or(&QsLevel::Root)
-    }
-
-    pub fn push_level(&mut self, level: QsLevel) {
-        self.nav_stack.push(level);
-    }
-
-    /// Replace stale drill-in history with one authoritative destination.
-    pub fn show_level(&mut self, level: QsLevel) {
-        self.paste_origin = None;
-        self.nav_stack.clear();
-        self.nav_stack.push(QsLevel::Root);
-        if level != QsLevel::Root {
-            self.nav_stack.push(level);
-        }
-    }
-
-    /// Clipboard history opened to paste (Super+V): the Clipboard section
-    /// alone, at the caret, and a choice goes into the field.
-    #[must_use]
-    pub fn pasting(&self) -> bool {
-        self.paste_origin.is_some()
-            && self.section == Some(crate::shell::quick_settings::QsSection::Clipboard)
-            && self.current_level() == &crate::shell::quick_settings::QsLevel::Root
-    }
-
-    /// Open `section` in place on the root page, closing any other: one
-    /// section is open at a time.
-    pub fn open_section(&mut self, section: crate::shell::quick_settings::QsSection) {
-        self.section = Some(section);
-    }
-
-    /// Open `section`, or close it when it is the one open.
-    pub fn toggle_section(&mut self, section: crate::shell::quick_settings::QsSection) {
-        self.section = (self.section != Some(section)).then_some(section);
-    }
-
-    /// No-op when only `Root` remains so the popover can't be emptied.
-    pub fn pop_level(&mut self) {
-        if self.nav_stack.len() > 1 {
-            self.nav_stack.pop();
-        }
-    }
 }
 
 /// The loop's wake, as [`ChromeState`] keeps it for its record store.
@@ -846,7 +557,6 @@ pub struct ChromeState {
     system_sounds: Option<crate::shell::system_sounds::SystemSounds>,
     priority_contacts: crate::priority_contacts::PriorityContactRegistry,
     notification_policy: settings_store::notification_policy::NotificationPolicy,
-    notification_policy_checked: Option<std::time::Instant>,
     /// True while this session projects to a wireless display. Notification
     /// contents must not reach a room full of people, so banners are held
     /// in history exactly as under Do Not Disturb.
@@ -1169,7 +879,6 @@ impl ChromeState {
             system_sounds: None,
             priority_contacts: crate::priority_contacts::PriorityContactRegistry::in_memory(),
             notification_policy: settings_store::notification_policy::NotificationPolicy::default(),
-            notification_policy_checked: None,
             presenting: false,
             visual_alert_until: None,
             typing_until: None,
@@ -2021,6 +1730,23 @@ impl ChromeState {
         }
     }
 
+    /// Take a radio change Quick Settings landed: tell the person about one
+    /// that did not happen, and redraw.
+    pub fn land_radio_change(&mut self, landed: tilo_quick_settings::radio::Landed) {
+        if let Some((title, body)) = landed.failure {
+            self.push_notification(title, body);
+        }
+        self.bump();
+    }
+
+    /// Land `ticket`'s radio change once its worker has finished.
+    pub fn apply_radio_ticket(chrome: &Chrome, ticket: &tilo_quick_settings::radio::RadioTicket) {
+        let mut state = chrome.borrow_mut();
+        if let Some(landed) = ticket.apply(&mut state.quick_settings) {
+            state.land_radio_change(landed);
+        }
+    }
+
     pub fn bump(&mut self) {
         self.revision = self.revision.wrapping_add(1);
     }
@@ -2286,7 +2012,7 @@ impl ChromeState {
         if self.quick_settings.paste_origin.take().is_some() {
             self.overlays.quick_settings = false;
             self.quick_settings
-                .show_level(crate::shell::quick_settings::QsLevel::Root);
+                .show_level(tilo_quick_settings::QsLevel::Root);
         } else {
             self.quick_settings.pop_level();
         }
@@ -2296,19 +2022,19 @@ impl ChromeState {
     /// Open clipboard history to paste (Super+V): at `origin` (the caret,
     /// else the focused window), and a choice goes into that field.
     pub fn open_clipboard_history_to_paste(&mut self, origin: PasteOrigin) {
-        self.open_quick_settings_section(crate::shell::quick_settings::QsSection::Clipboard);
+        self.open_quick_settings_section(tilo_quick_settings::QsSection::Clipboard);
         self.quick_settings.paste_origin = Some(origin);
     }
 
     /// Reveal Quick Settings without toggle semantics, for deep links such as
     /// media use and command search.
     pub fn open_quick_settings(&mut self) {
-        self.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Root);
+        self.open_quick_settings_level(tilo_quick_settings::QsLevel::Root);
     }
 
     /// Reveal one Quick Settings destination without retaining an unrelated
     /// prior drill-in stack.
-    pub fn open_quick_settings_level(&mut self, level: crate::shell::quick_settings::QsLevel) {
+    pub fn open_quick_settings_level(&mut self, level: tilo_quick_settings::QsLevel) {
         self.overlays.quick_settings = true;
         self.overlays.ws_settings = false;
         self.quick_settings.show_level(level);
@@ -2317,14 +2043,11 @@ impl ChromeState {
 
     /// Open Quick Settings on its root page with `section` open in place:
     /// Wi-Fi's networks, Bluetooth's devices, the battery.
-    pub fn open_quick_settings_section(
-        &mut self,
-        section: crate::shell::quick_settings::QsSection,
-    ) {
+    pub fn open_quick_settings_section(&mut self, section: tilo_quick_settings::QsSection) {
         self.overlays.quick_settings = true;
         self.overlays.ws_settings = false;
         self.quick_settings
-            .show_level(crate::shell::quick_settings::QsLevel::Root);
+            .show_level(tilo_quick_settings::QsLevel::Root);
         self.quick_settings.open_section(section);
         self.bump();
     }
@@ -4093,7 +3816,7 @@ impl ChromeState {
     }
 
     /// No-op (no revision bump) when the value is unchanged. A live session
-    /// (one with a notification bridge, which also reloads the policy) persists
+    /// (one with a notification bridge, which also follows the policy) persists
     /// the change to the shared settings document; unit tests and offscreen
     /// captures never write the developer's real settings.
     pub fn set_dnd(&mut self, on: bool) {
@@ -4270,23 +3993,6 @@ impl ChromeState {
         self.system_sounds.as_ref().is_some_and(|sounds| {
             sounds.play(event, self.notifications_auto_quiet(), delivery_allows)
         })
-    }
-
-    /// Keep notification unit tests independent of the developer account's
-    /// live policy document. Production always refreshes from the shared
-    /// settings authority in `pump_dbus_notifications`.
-    #[cfg(test)]
-    pub(crate) fn set_notification_policy_for_tests(
-        &mut self,
-        policy: settings_store::notification_policy::NotificationPolicy,
-    ) {
-        self.quick_settings.do_not_disturb = policy.do_not_disturb;
-        self.notification_policy = policy;
-        // The test's policy stands for the chrome's life: the periodic
-        // reread of the settings file never comes due, so a slow test does
-        // not take back what it set (a test `set_dnd` is not written down).
-        self.notification_policy_checked =
-            std::time::Instant::now().checked_add(std::time::Duration::from_secs(24 * 3600));
     }
 
     pub fn set_session_locked(&mut self, locked: bool) {
@@ -4517,6 +4223,20 @@ impl ChromeState {
         }
     }
 
+    /// Take `policy`, the notification policy as the settings now hold it.
+    /// The compositor hands it over when the settings change, so a frame
+    /// never reads the settings.
+    pub fn follow_notification_policy(
+        &mut self,
+        policy: settings_store::notification_policy::NotificationPolicy,
+    ) {
+        if policy != self.notification_policy {
+            self.quick_settings.do_not_disturb = policy.do_not_disturb;
+            self.notification_policy = policy;
+            self.bump();
+        }
+    }
+
     /// Called once per frame; no-op when no bridge is installed.
     pub fn pump_dbus_notifications(&mut self) {
         use chrono::{Datelike, Timelike};
@@ -4524,18 +4244,6 @@ impl ChromeState {
             return;
         };
         self.pump_alarm_action_results(&bridge);
-        let refresh_policy = self
-            .notification_policy_checked
-            .is_none_or(|checked| checked.elapsed() >= std::time::Duration::from_millis(750));
-        if refresh_policy {
-            let policy = settings_store::notification_policy::NotificationPolicy::load();
-            if policy != self.notification_policy {
-                self.quick_settings.do_not_disturb = policy.do_not_disturb;
-                self.notification_policy = policy;
-                self.bump();
-            }
-            self.notification_policy_checked = Some(std::time::Instant::now());
-        }
         for inc in bridge.drain_incoming() {
             let dbus_id = inc.dbus_id;
             let scheduled_target = bridge.take_scheduled_target(dbus_id, inc.caller.as_ref());
@@ -4647,6 +4355,7 @@ mod remote_continuity;
 #[cfg(test)]
 mod panel_exclusion_tests {
     use super::*;
+    use tilo_quick_settings::QsLevel;
 
     #[test]
     fn workspace_and_device_panels_are_exclusive_and_deep_links_reset_history() {

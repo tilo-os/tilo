@@ -444,8 +444,8 @@ fn suspend_change(
     minutes: u32,
     args: &ActionArgs,
 ) -> Result<(ActionAddress, serde_json::Map<String, Value>), ActionError> {
-    use crate::shell::quick_settings::PowerProfile;
     use crate::shell::settings_records::{address, set_field};
+    use tilo_quick_settings::PowerProfile;
     let timers = power::SuspendTimers::from_section(&settings_store::load_section(power::SECTION));
     if timers.profiles_differ() {
         let profile = match st.quick_settings.power_profile {
@@ -1085,7 +1085,7 @@ mod tests {
                 .commit_by(&settings_store::ChangeOrigin::action("test"))
                 .unwrap();
             chrome.borrow_mut().quick_settings.power_profile =
-                crate::shell::quick_settings::PowerProfile::Saver;
+                tilo_quick_settings::PowerProfile::Saver;
             suspend(15, None).unwrap();
             assert_eq!(timers().of_profile("saver"), Some(15));
             assert_eq!(

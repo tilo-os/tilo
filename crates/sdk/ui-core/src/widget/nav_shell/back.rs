@@ -9,7 +9,7 @@ use crate::widget::{AppModel, ModelPath, Widget};
 
 impl NavShell {
     /// Go back one step: lower or put away the inspector's sheet
-    /// ([`Self::sheet_back`]), else go back one screen, the app's page
+    /// (`Self::sheet_back`), else go back one screen, the app's page
     /// stack first ([`Self::with_back`]), then a narrow window's push
     /// stack. Returns whether it did.
     pub fn back(&mut self) -> bool {
