@@ -213,6 +213,24 @@ WIDGET_LATE = b'''<!doctype html><title>Connecting</title>
 '''
 
 
+# A frame the page sets up by script, reaching a document another origin
+# serves, which then moves on to its form by itself. The page may hold the
+# frame's element but never read its document, so the frame is reached the way
+# a person reaches it: through the frame, never through the page around it.
+SCRIPTED_FRAME = b'''<!doctype html><title>Scripted frame</title>
+<h1>Extension page</h1>
+<p id="status">Reading the address book</p>
+<button id="outside">Outside the frame</button>
+<script>setTimeout(() => {
+  const fr = document.createElement('iframe');
+  fr.title = 'Address finder';
+  fr.src = 'http://localhost' + location.origin.slice(location.origin.lastIndexOf(':')) + '/widget-late';
+  fr.style.cssText = 'width:600px;height:240px;border:0';
+  document.body.append(fr);
+}, 300);</script>
+'''
+
+
 WIDGET = b'''<!doctype html><title>Payment details</title>
 <form action="/done" method="get">
   <label>IBAN <input name="iban"></label>
@@ -337,6 +355,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             else GESTURES if path == '/gestures' \
             else FRAMED if path == '/framed' else WIDGET if path == '/widget' \
             else LATE if path == '/late' else WIDGET_LATE if path == '/widget-late' \
+            else SCRIPTED_FRAME if path == '/scripted-frame' \
             else NESTED if path == '/nested' else OUTER if path == '/outer' \
             else RICH if path == '/rich' \
             else SCROLL if path == '/scroll' \
@@ -523,6 +542,79 @@ class PageActions(unittest.TestCase):
         save = self.ref(inside['outline'], 'button "Save bank details"')
         self.ok('click', element=save, frame=frame)
         self.assertNotIn('Save bank details', self.ok('outline', frame=frame)['outline'])
+
+    def test_a_frame_the_page_set_up_by_script_is_reached_through_the_frame(self):
+        self.h.navigate(self.url + '/scripted-frame')
+        # The frame is made by script, and the document it reaches is served by
+        # another origin: the page holds the frame's element and never its
+        # document. It is still one line of the page, and the id it prints
+        # addresses it, so the address an action takes is never one the page
+        # can read.
+        deadline = time.monotonic() + HANG_BOUND
+        while 'iframe' not in (outline := self.outline()):
+            self.assertLess(time.monotonic(), deadline, 'the scripted frame never appeared')
+            time.sleep(0.2)
+        numbers = re.findall(r'iframe "Address finder" \[frame=([\d.]+)\]', outline)
+        self.assertEqual(len(numbers), 1, outline)
+        frame = numbers[0]
+        while 'IBAN' not in (inside := self.ok('outline', frame=frame))['outline']:
+            self.assertLess(time.monotonic(), deadline, 'the frame never reached its form')
+            time.sleep(0.1)
+        self.assertRegex(inside['outline'], r'textbox "IBAN" \[ref=d\d+e\d+\]')
+        self.assertNotIn('Extension page', inside['outline'], 'the frame reads its own document alone')
+        # The frame's own document is written in through the frame's own
+        # outline, and the page around it never runs a line of it.
+        iban = self.ref(inside['outline'], 'textbox "IBAN"')
+        self.ok('fill', element=iban, text='EX89370400440532013000', frame=frame)
+        self.assertIn('value="EX89370400440532013000"', self.ok('outline', frame=frame)['outline'])
+        self.assertNotIn('Extension page', self.ok('outline', frame=frame)['outline'])
+
+    def test_a_frame_the_page_set_up_by_script_is_a_document_that_arrived(self):
+        self.h.navigate(self.url + '/late')
+        # The frame's document is fetched after the page loaded. A caller
+        # reading the page's requests finds it as a document, never as one
+        # still on its way: a request that arrived and a request that never
+        # will must not read the same.
+        # Recording starts with the first request made of the log, so the page
+        # is reached once the log is listening: its documents, and the frame's,
+        # are then the ones this read covers.
+        self.h.navigate(self.url + '/late')
+        deadline = time.monotonic() + HANG_BOUND
+        used = 0
+        while True:
+            network = self.ok('network', since=used)
+            used = network['data']['next']
+            documents = [e for e in network['data']['entries']
+                         if e.get('type') == 'Document' and 'widget-late' in e.get('url', '')]
+            if documents and all('state' in e for e in documents) and documents[-1]['state'] != 'pending':
+                break
+            self.assertLess(time.monotonic(), deadline, f'the frame\'s document never arrived: {network}')
+            time.sleep(0.2)
+        self.assertEqual(documents[-1]['state'], 'done', documents[-1])
+        # Every document the page holds is finished: nothing is left pending
+        # once its own document has loaded.
+        every = self.ok('network', since=0)['data']['entries']
+        documents = [e for e in every if e.get('type') == 'Document']
+        self.assertTrue(documents, every)
+        self.assertEqual([e for e in documents if e.get('state') == 'pending'], [], documents)
+
+    def test_a_frame_is_named_the_way_its_outline_writes_it(self):
+        self.h.navigate(self.url + '/framed')
+        printed = re.search(r'iframe "Payment form" \[frame=(\d+)\]', self.outline()).group(1)
+        # Every form a caller copies an id in is the frame it names: the number,
+        # the number as text, and the outline's own bracketed `[frame=1]`.
+        for named in (printed, f'frame={printed}', f'[frame={printed}]', f' {printed} '):
+            with self.subTest(frame=named):
+                inside = self.page('outline', frame=named)
+                self.assertTrue(inside['ok'], inside)
+                self.assertRegex(inside['outline'], r'textbox "IBAN" \[ref=d\d+e\d+\]')
+        # A frame the outline never printed is still refused, however it is
+        # written: an id is a number, never a selector or a script.
+        for named in ('7', 'frame=7', '[frame=7]', 'iframe', '1.e', 'top'):
+            with self.subTest(frame=named):
+                refused = self.page('outline', frame=named)
+                self.assertEqual((refused['ok'], refused['code']), (False, 'no_frame'), refused)
+                self.assertIn(printed, refused['message'], 'the answer names a frame the page has')
 
     def test_a_click_inside_a_frame_is_a_click_in_the_page(self):
         self.h.navigate(self.url + '/framed')

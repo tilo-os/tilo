@@ -693,20 +693,35 @@ pub struct FrameId(String);
 
 impl FrameId {
     /// Reads a frame id the outline printed, refusing anything else so an id
-    /// can never smuggle selector or script syntax to the engine.
+    /// can never smuggle selector or script syntax to the engine. A frame is a
+    /// number, so the number alone, the number as text and the outline's own
+    /// `[frame=1]` all name the same frame: a caller that copies what it read
+    /// is understood.
     pub fn parse(value: &str) -> Option<Self> {
-        let parts: Vec<&str> = value.split('.').collect();
+        let written = value.trim();
+        // What the outline brackets is the id, and what marks it is not part
+        // of it: `frame=1`, `[frame=1.2]` and `1.2` are one id.
+        let written = written
+            .strip_prefix('[')
+            .and_then(|rest| rest.strip_suffix(']'))
+            .unwrap_or(written);
+        let written = written
+            .strip_prefix("frame=")
+            .or_else(|| written.strip_prefix("Frame="))
+            .unwrap_or(written)
+            .trim();
+        let parts: Vec<&str> = written.split('.').collect();
         let digit = |part: &str| {
             !part.is_empty()
                 && part.len() <= 3
                 && part.bytes().all(|byte| byte.is_ascii_digit())
                 && !part.starts_with('0')
         };
-        (value.len() <= MAX_FRAME_BYTES
+        (written.len() <= MAX_FRAME_BYTES
             && !parts.is_empty()
             && parts.len() <= MAX_FRAME_DEPTH
             && parts.iter().all(|part| digit(part)))
-        .then(|| Self(value.to_string()))
+        .then(|| Self(written.to_string()))
     }
 
     /// A frame id no outline printed, standing in for one the caller wrote
@@ -1636,8 +1651,27 @@ mod tests {
             for good in ["1", "2", "12", "1.2", "3.10.4"] {
                 assert_eq!(FrameId::parse(good).unwrap().as_str(), good);
             }
+            // A frame is the number the outline printed, in every form a
+            // caller copies it in: the number, its text, and the whole
+            // `[frame=1]` the outline writes.
+            for (written, named) in [
+                ("1", "1"),
+                (" 1", "1"),
+                ("1 ", "1"),
+                ("frame=1", "1"),
+                ("frame=1.2", "1.2"),
+                ("[frame=1]", "1"),
+                ("[frame=2.1]", "2.1"),
+            ] {
+                assert_eq!(
+                    FrameId::parse(written).unwrap().as_str(),
+                    named,
+                    "{written:?}"
+                );
+            }
             for bad in [
-                "", "0", "01", ".", "1.", ".1", "1..2", "a", "1e2", " 1", "1 ", "1234",
+                "", "0", "01", ".", "1.", ".1", "1..2", "a", "1e2", "1234", "frame=", "frame=a",
+                "[frame=]", "frame=01",
             ] {
                 assert!(FrameId::parse(bad).is_none(), "{bad:?}");
             }

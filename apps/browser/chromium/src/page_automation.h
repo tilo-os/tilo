@@ -24,6 +24,12 @@ namespace tilo {
 // and the hit-testing offset that turns a point in its document into a point
 // in the top one.
 struct PageFrame { std::string id,loader,address,number;double x=0,y=0; };
+// A place in a document's own framing: the frame an action answers in, which
+// is not always one the engine's frame tree names. A frame this document holds
+// the mark-up of but may not read is reached through the number its holder
+// gives it, and then through the frames of its own document. Before the whole
+// place is walked, `parent` is the world of the document that does hold it.
+struct FramePath { int parent=0;std::string named;std::vector<std::string> parts; };
 // A point in a frame's own document, hit-tested in the top one.
 struct Clicked { double x=0,y=0; };
 
@@ -192,14 +198,129 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // the two answers would arrive under each other's stage.
     ApplyAnswer(id,success,std::string(size>0?static_cast<const char*>(result):"",size>0?size:0));
   }
+  // A message a frame's own connection carries names that connection, which
+  // the answer of a page call never does: the two are told apart here, before
+  // the page's own answers are read.
+  bool OnDevToolsMessage(CefRefPtr<CefBrowser>,const void* message,size_t size) override {
+    if(!size) return false;
+    auto json=std::string(static_cast<const char*>(message),size);
+    auto parsed=CefParseJSON(json,JSON_PARSER_RFC);
+    auto body=parsed && parsed->GetType()==VTYPE_DICTIONARY?parsed->GetDictionary():nullptr;
+    if(!body || body->GetType("sessionId")!=VTYPE_STRING) return false;
+    const auto session=current_session_=body->GetString("sessionId").ToString();
+    // A connection names the frame it holds: the document it answers for is
+    // that frame's own, and it is named on the frame's first event.
+    if(body->GetType("method")==VTYPE_STRING) { NameSession(session,body);return true; }
+    AnswerOnSession(body);
+    return true;
+  }
   void OnDevToolsAgentDetached(CefRefPtr<CefBrowser>) override {
     world_=0;contexts_.clear();loader_.clear();world_loader_.clear();text_owner_.reset();text_lease_.clear();
     frame_world_.reset();world_request_.clear();main_world_=0;
+    frame_path_=FramePath{};frame_id_.clear();frame_place_={};
     tree_=nullptr;++generation_;
     if(pending_ && call_) Fail("unavailable","The page's inspector connection closed");
   }
 
  private:
+  // The frame a connection holds, named by the connection's own first report
+  // of the document it answers for.
+  void NameSession(const std::string& session,CefRefPtr<CefDictionaryValue> body) {
+    auto params=body->GetDictionary("params");
+    if(!params) return;
+    auto frame=params->GetDictionary("frame");
+    const auto id=frame && frame->GetType("id")==VTYPE_STRING?frame->GetString("id").ToString():std::string();
+    if(!id.empty()) session_of_frame_[id]=session;
+  }
+  // A frame's connection is asked to report the document it answers for, so
+  // that the frame it holds is named on that connection and not guessed.
+  void IdentifySession(const std::string& session) {
+    if(std::find(asked_sessions_.begin(),asked_sessions_.end(),session)!=asked_sessions_.end()) return;
+    asked_sessions_.push_back(session);
+    auto message=CefDictionaryValue::Create();
+    message->SetInt("id",next_message_=next_message_%2000000000+1);
+    message->SetString("method","Page.getFrameTree");
+    message->SetString("sessionId",session);
+    auto value=CefValue::Create();value->SetDictionary(message);
+    const auto wire=CefWriteJSON(value,JSON_WRITER_DEFAULT).ToString();
+    browser_->GetHost()->SendDevToolsMessage(wire.c_str(),wire.size());
+  }
+  // A connection said which frame it holds: a read waiting on that frame
+  // continues there, and one waiting on another asks what is left.
+  void SessionNamed(const std::string& session,const std::string& frame) {
+    if(frame.empty()) { SessionUnnamed(session);return; }
+    // The connections of other sites' frames name frames the page's own
+    // inspector cannot: the frame is found by the document it holds, which the
+    // page writes in the order the outline numbers its frames.
+    const auto held=session_frame_[session]=frame;
+    (void)held;
+    // The frames of other sites the page holds, in the order the inspector
+    // attached them: the session's own frame is that frame, so the CEF frame
+    // it names is the one at the same place. A frame that moved to another
+    // document holds the same place, so its place names it as it is now.
+    const auto url=frame_url_.count(session)?frame_url_[session]:std::string();
+    const auto children=ChildFrames();
+    size_t rank=0;
+    for(const auto& [frame_id,frame_url]:children) {
+      if(frame_url.rfind("http",0)!=0) continue;
+      if(frame_url!=url) continue;
+      if(rank++!=session_rank_[session]) continue;
+      session_of_frame_[frame_id]=session;place_session_[session_rank_[session]]=session;break;
+    }
+    // A frame whose document moved on no longer holds the address it was
+    // attached at: the place it holds is still the place it holds, so the
+    // frames of other sites are named by their place alone.
+    if(!session_of_frame_.count(frame)) {
+      const auto other_site=std::count_if(children.begin(),children.end(),[&](const auto& held){return held.second.rfind("http",0)==0;});
+      (void)other_site;
+      size_t place=0;
+      for(const auto& [frame_id,frame_url]:children) {
+        if(frame_url.rfind("http",0)!=0) continue;
+        if(place++!=session_rank_[session]) continue;
+        if(!session_of_frame_.count(frame_id)) session_of_frame_[frame_id]=session;
+        place_session_[session_rank_[session]]=session;
+        break;
+      }
+    }
+    if(!await_session_) return;
+    if(frame!=frame_id_) { AwaitFrameSession();return; }
+    await_session_=false;MakeFrameWorld(frame);
+  }
+  void SessionUnnamed(const std::string& session) {
+    open_sessions_.erase(std::remove(open_sessions_.begin(),open_sessions_.end(),session),open_sessions_.end());
+    if(await_session_) AwaitFrameSession();
+  }
+  // The answer of a call made on a frame's connection. A frame of another site
+  // answers as the page does, and its answer is the action's own: it is read
+  // where the action waits on it.
+  void AnswerOnSession(CefRefPtr<CefDictionaryValue> body) {
+    if(!pending_) return;
+    // An answer that names a document is the connection saying which frame it
+    // holds: the read waiting on a frame continues where it was found.
+    auto tree=body->GetDictionary("result")?body->GetDictionary("result")->GetDictionary("frameTree"):nullptr;
+    if(tree) {
+      auto frame=tree->GetDictionary("frame");
+      auto id=frame && frame->GetType("id")==VTYPE_STRING?frame->GetString("id").ToString():std::string();
+      SessionNamed(current_session_,id);
+      return;
+    }
+    const auto failure=body->GetDictionary("error");
+    if(failure) {
+      // A connection answers for the document its frame holds now: a frame
+      // that moved to another document answers with nothing for the one it
+      // held, so the connection is asked which frame it holds and the read
+      // continues there.
+      if(pending_->frame_refreshed<kFrameWaitTurns && !current_session_.empty()) {
+        ++pending_->frame_refreshed;
+        session_frame_.erase(current_session_);
+        asked_sessions_.erase(std::remove(asked_sessions_.begin(),asked_sessions_.end(),current_session_),asked_sessions_.end());
+        IdentifySession(current_session_);
+        return;
+      }
+      FrameRead(false,failure);return;
+    }
+    FrameRead(true,body->GetDictionary("result"));
+  }
   // The answer of a call is applied on a turn of its own, and the call it
   // chains is sent from there: a call is only ever sent after the previous
   // answer has been read, so two answers never arrive under each other's stage.
@@ -213,6 +334,13 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     },CefRefPtr<PageAutomation>(this),success,json));
   }
   static constexpr int64_t kTimeoutMs=30000;
+  // How long a frame the page lists is waited for to enter its frame tree, and
+  // how often the tree is read again meanwhile.
+  static constexpr double kFrameWaitMs=1500;
+  static constexpr int64_t kFrameWaitStepMs=50;
+  // Turns an action waits for a frame's own connection before reading the
+  // frame on the page's connection.
+  static constexpr int kFrameWaitTurns=30;
   // A hover's styles have run by the next frame; a release's handlers by
   // shortly after the frame that carried it.
   static constexpr int64_t kHoverFrameMs=80;
@@ -241,7 +369,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // A held file chooser waits this long for `fill_files`, then is cancelled so
   // the page is never left waiting on input that will not come.
   static constexpr int64_t kFileDialogWaitMs=60000;
-  enum class Stage { FrameTree, World, FrameOffset, TextWorld, TextFocus, TextFailureFrameTree, NativeElement, NativeDOM, NativeDocument, NativeNode, NativeEditors, NativeResolve, NativeConfigure, FileTarget, FileSet, TypeKey, FillTyped, Evaluate, Paint, Fence, GestureBegin, Path, Hover, Pointer, GestureEnd, FrameSettle, Scroll };
+  enum class Stage { FrameTree, FrameIdentified, FrameAttach, FrameRead, FrameForward, World, FrameOffset, TextWorld, TextFocus, TextFailureFrameTree, NativeElement, NativeDOM, NativeDocument, NativeNode, NativeEditors, NativeResolve, NativeConfigure, FileTarget, FileSet, TypeKey, FillTyped, Evaluate, Paint, Fence, GestureBegin, Path, Hover, Pointer, GestureEnd, FrameSettle, Scroll };
   // A gesture's own stages are numbered above every page stage, so one kind of
   // stage never stands for the other.
   enum class GestureStage { Tree, World, Locate, Place, PlaceWorld };
@@ -265,6 +393,19 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // Named, so an aggregate initializer names each field once: a member added
     // to the middle of the list cannot silently shift the ones after it.
     int request=0;uint64_t token=0;uint64_t navigations=0;bool retried=false;bool refreshed=false;
+    // A place in a frame's own framing this action is being carried through
+    // (see `FramePath`): the walk is not the action, so its own misses are
+    // not read again as the action's.
+    int frame_path=0;
+    // A frame read that answered nothing is followed once, the way the page's
+    // own frames are re-read once: a frame's document moving on is not an
+    // action that changed the page under the caller.
+    int frame_refreshed=0;
+    bool frame_from_other_site=false;
+    // Until when a frame the page lists is waited for to enter the page's own
+    // frame tree: a frame is listed from the document that holds it, which
+    // says it is there, before the engine says which document it holds.
+    double frame_deadline=0;
     CefRefPtr<CefDictionaryValue> command;std::string message="";
     // "none": the action ran no page code. "started": the page began leaving
     // the document while it handled the action's input. "possible": it had
@@ -332,6 +473,68 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     const auto child_prefix=prefix.empty()?std::to_string(ordinal):prefix+"."+std::to_string(ordinal);
     return ResolveFrame(child,path,depth+1,out,{inherited.x+offset.x,inherited.y+offset.y},child_prefix);
   }
+  // The frame a caller's id names, by the outline's numbering: `2.1` is the
+  // first frame of the second one of the page. The name is walked outside in,
+  // and the page's own tree answers for as much of it as the page's own
+  // document holds.
+  static std::vector<std::string> FrameParts(const std::string& named) {
+    std::vector<std::string> parts;
+    size_t start=0;
+    while(start<=named.size() && parts.size()<=8) {
+      const auto dot=named.find('.',start);
+      parts.push_back(named.substr(start,dot==std::string::npos?std::string::npos:dot-start));
+      if(dot==std::string::npos) break;
+      start=dot+1;
+    }
+    return parts;
+  }
+  // A part of a frame id: a frame of one document is numbered from one, and
+  // nothing else is a number the outline prints.
+  static bool FrameNumber(const std::string& part) {
+    const auto number=FramePart(part);
+    return number>0 && std::to_string(number)==part;
+  }
+  // The frames the page's own tree leads through, and how many parts it holds:
+  // a frame whose own document this page may not read is held by a frame the
+  // page's document does hold, and named from there.
+  static size_t FrameWalk(CefRefPtr<CefDictionaryValue> tree,const std::vector<std::string>& parts,std::vector<int>& path) {
+    CefRefPtr<CefDictionaryValue> node=tree;path.clear();
+    if(!node) return 0;
+    for(size_t depth=0;depth<parts.size();++depth) {
+      if(!FrameNumber(parts[depth])) return depth;
+      auto children=node->GetList("childFrames");
+      const int ordinal=FramePart(parts[depth]);
+      if(!children || ordinal<1 || static_cast<size_t>(ordinal)>children->GetSize()) return depth;
+      path.push_back(ordinal);node=children->GetDictionary(static_cast<size_t>(ordinal)-1);
+    }
+    return parts.size();
+  }
+  // What this page can say about a frame id it does not resolve: the ids the
+  // outline prints, and the read that lists them.
+  // A frame named but not on the page: the answer says how a frame is named
+  // and which frames the page has, so the id that works is one of its own.
+  std::string NoSuchFrame(const std::string& named) const {
+    std::string listed;
+    if(browser_) {
+      std::vector<CefString> ids;
+      browser_->GetFrameIdentifiers(ids);
+      auto main=browser_->GetMainFrame();
+      const auto main_id=main?main->GetIdentifier():CefString();
+      size_t number=0;
+      for(const auto& id:ids) {
+        if(id==main_id) continue;
+        auto held=browser_->GetFrameByIdentifier(id);
+        if(!held || !held->GetParent() || held->GetParent()->GetIdentifier()!=main_id) continue;
+        if(number++>0) listed+=", ";
+        listed+="[frame="+std::to_string(number)+"]";
+      }
+    }
+    const std::string named_form=named.empty()?"that id":"the id \""+named+"\"";
+    const std::string has=listed.empty()?"this page has no frame"
+      :"the frames this page has are "+listed;
+    return "No frame of this page has "+named_form+"; "+has+
+      ". A frame is named by its number, as the outline prints it in [frame=1], or as frame=1, and a frame inside a frame as 1.2";
+  }
   // The frame element's border box inside its parent, as a point in the
   // parent's document: the page script measures it from the shared DOM, never
   // from the frame's own document.
@@ -392,9 +595,14 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // A gesture the page runs itself starts from what the page shows now.
     if(Dragging() || HoverAtPoint()) { BeginPageGesture();return; }
     // A tree kept from an earlier action still speaks for this one unless the
-    // page's frames moved since it was read; the read below is then the one an
-    // action naming a frame depends on.
-    if(tree_ && tree_generation_==generation_) { AfterTree();return; }
+    // page's frames moved since it was read. A retry is not a first read: the
+    // tree it named a frame from is the one it reads again. A frame being
+    // waited for is waited for in the tree as it is now.
+    // An action that names a frame first asks the page for the frames it has:
+    // a frame of another site is a target of the page's inspector, and the
+    // page has to be asked for its targets before that frame can be named.
+    const bool needs_targets=!targets_discovered_ && !NamedFrame(pending_->command).empty();
+    if(!needs_targets && tree_ && pending_->frame_deadline==0 && (pending_->refreshed || tree_generation_==generation_)) { AfterTree();return; }
     ReadTree();
   }
   // Answer the held chooser with these paths. The page then runs exactly what
@@ -462,27 +670,60 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     auto steps=pending_ && pending_->command->GetType("steps")==VTYPE_LIST?pending_->command->GetList("steps"):nullptr;
     return steps && pointer_index_<steps->GetSize()?steps->GetDictionary(pointer_index_):CefRefPtr<CefDictionaryValue>();
   }
-  // The frame a pointer step names, which is the one frame of the page holding
-  // its element: a step never names a frame by a path.
-  static std::string NamedFrame(CefRefPtr<CefDictionaryValue> step) {
-    return step && step->GetType("frame")==VTYPE_STRING?step->GetString("frame").ToString():std::string();
-  }
-  // The frame this step names, as the page's own tree lists it: a path follows
-  // the ancestors, `1.2` being the second frame of the first.
-  bool PointerFramePlace(PageFrame& out,const std::string& named) {
-    std::vector<int> path;
+  // The frame a command names, as the outline prints it: `1`, `1.2`, or the
+  // whole of what the outline writes, `frame=1`. A frame is a number, so a
+  // number and the numbers written as text name the same frame, and a caller
+  // that copies the outline's own `[frame=1]` is understood.
+  // Whether an id is one the outline could have printed: numbers, or numbers
+  // joined by dots. A word or a selector is never a frame of this page.
+  static bool PrintedFrame(const std::string& named) {
+    std::string id=named;
+    while(!id.empty() && std::isspace(static_cast<unsigned char>(id.front()))) id.erase(id.begin());
+    while(!id.empty() && std::isspace(static_cast<unsigned char>(id.back()))) id.pop_back();
+    if(!id.empty() && id.front()=='[' && id.back()==']') id=id.substr(1,id.size()-2);
+    for(const char* prefix:{"frame=","Frame="})
+      if(id.rfind(prefix,0)==0) { id=id.substr(std::strlen(prefix));break; }
+    // Every part between the dots is a number, and no part is empty.
+    if(id.empty()) return false;
     size_t start=0;
-    while(start<=named.size() && path.size()<=8) {
-      const auto dot=named.find('.',start);
-      const auto part=named.substr(start,dot==std::string::npos?std::string::npos:dot-start);
-      const int ordinal=FramePart(part);
-      if(ordinal<0) return false;
-      path.push_back(ordinal);
-      if(dot==std::string::npos) break;
+    while(true) {
+      const auto dot=id.find('.',start);
+      const auto part=id.substr(start,dot==std::string::npos?std::string::npos:dot-start);
+      if(part.empty()) return false;
+      for(const char c:part) if(!std::isdigit(static_cast<unsigned char>(c))) return false;
+      if(dot==std::string::npos) return true;
       start=dot+1;
     }
+  }
+  static std::string NamedFrame(CefRefPtr<CefDictionaryValue> command) {
+    if(!command || !command->HasKey("frame")) return std::string();
+    const auto value=command->GetValue("frame");
+    std::string written;
+    if(command->GetType("frame")==VTYPE_STRING) written=command->GetString("frame").ToString();
+    else if(command->GetType("frame")==VTYPE_INT) written=std::to_string(command->GetInt("frame"));
+    else if(command->GetType("frame")==VTYPE_DOUBLE) {
+      const double number=command->GetDouble("frame");
+      if(number>=1 && number<1e6 && number==std::floor(number)) written=std::to_string(static_cast<int64_t>(number));
+    }
+    // What the outline brackets is the id: `frame=1` and `[frame=1.2]` both
+    // carry it, and the spaces around a copied id are not part of it.
+    const auto trimmed=[](std::string text) {
+      const auto first=text.find_first_not_of(" \t\n");
+      const auto last=text.find_last_not_of(" \t\n");
+      return first==std::string::npos?std::string():text.substr(first,last-first+1);
+    };
+    written=trimmed(trimmed(written));
+    if(written.size()>=2 && written.front()=='[' && written.back()==']') written=trimmed(written.substr(1,written.size()-2));
+    if(written.compare(0,6,"frame=")==0) written=trimmed(written.substr(6));
+    return written.size()<=16?written:std::string();
+  }
+  // The frame this names, as the page's own tree lists it: a path follows the
+  // ancestors, `1.2` being the second frame of the first.
+  bool PointerFramePlace(PageFrame& out,const std::string& named) {
+    std::vector<int> path;
+    const auto parts=FrameParts(named);
     PageFrame target;
-    const bool ok=!path.empty() && path.size()<=8 && ResolveFrame(tree_,path,0,target);
+    const bool ok=FrameWalk(tree_,parts,path)==parts.size() && ResolveFrame(tree_,path,0,target);
     if(!ok) return false;
     out=target;
     return true;
@@ -504,13 +745,13 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // A step naming a frame is placed by that frame's place in the page, read
     // from the page's own tree as a click in a frame is. The step names only
     // its own frame, so the place is the one frame's, never a nested id.
-    const auto named=step->GetType("frame")==VTYPE_STRING?step->GetString("frame").ToString():std::string();
+    const auto named=NamedFrame(step);
     if(!named.empty() && named.find('.')!=std::string::npos)
       { Fail("no_frame","A pointer step names the frame whose outline lists its element: that frame's own id, without a dot");return; }
     // A gesture runs in the page's own document, where a frame's ref is not
     // held: the place of the frame is all this world needs of it.
     if(!named.empty() && !PointerFramePlace(place_frame_,named)) {
-      Fail("no_frame","No frame of this page has that id; read the page again for the frames it lists");return;
+      Fail("no_frame",NoSuchFrame(named));return;
     }
     step_located_=false;step_box_={0,0};
     if(!step->HasKey("element")) { PointerLocated();return; }
@@ -620,7 +861,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     auto step=PointerStep();
     double x=0,y=0;
     if(step->HasKey("element")) {
-      if(!step_located_) { Fail("stale_element","That element is not on the page ("+step->GetString("element").ToString()+(step->HasKey("frame")?" frame "+step->GetString("frame").ToString():"")+")");return; }
+      if(!step_located_) { Fail("stale_element","That element is not on the page ("+step->GetString("element").ToString()+(step->HasKey("frame")?" frame "+NamedFrame(step):"")+")");return; }
       x=step_box_.x+gesture_x_+Number(step,"x");y=step_box_.y+gesture_y_+Number(step,"y");
       RememberBox(step->GetString("element").ToString());
     } else { x=Number(step,"x");y=Number(step,"y"); }
@@ -841,25 +1082,27 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // document, so a caller never reads the wrong document believing it
     // read the frame.
     PageFrame target;
-    const auto named=pending_->command->GetType("frame")==VTYPE_STRING?pending_->command->GetString("frame").ToString():std::string();
+    const auto named=NamedFrame(pending_->command);
     if(named.empty()) {
       target.id=frame->GetString("id").ToString();target.loader=frame->GetString("loaderId").ToString();
       target.address=frame->GetType("url")==VTYPE_STRING?frame->GetString("url").ToString():std::string();
     } else {
+      // The page's own tree holds the frames its own document numbers: a frame
+      // of that document is the one the tree names, and one a frame further
+      // in holds is named from that frame's outline, which the world of the
+      // frame that holds it answers.
+      const auto parts=FrameParts(named);
       std::vector<int> path;
-      size_t start=0;
-      while(start<=named.size() && path.size()<=8) {
-        const auto dot=named.find('.',start);
-        const auto part=named.substr(start,dot==std::string::npos?std::string::npos:dot-start);
-        const int ordinal=FramePart(part);
-        if(ordinal<0) { path.clear();break; }
-        path.push_back(ordinal);
-        if(dot==std::string::npos) break;
-        start=dot+1;
-      }
-      if(path.empty() || path.size()>8) { Fail("no_frame","No frame of this page has that id; read the page again for the frames it lists");return; }
-      if(named.size()>16 || !ResolveFrame(tree_,path,0,target)) {
-        Fail("no_frame","No frame of this page has that id; read the page again for the frames it lists");return;
+      const auto walk=FrameWalk(tree_,parts,path);
+      if(walk==parts.size() && ResolveFrame(tree_,path,0,target)) {
+        // The whole place is one the page's own document numbers.
+      } else {
+        // The page's tree does not name the frame, or names only part of its
+        // place: the outline that printed the id was read from the page's own
+        // document, which holds every frame it lists, so that document says
+        // where the frame is even when no session of the page's frames lists
+        // it (a frame of another site runs in a document of its own).
+        ForwardFrame(named,parts,walk,path);return;
       }
     }
     // A turn of the wheel says where it turns before the page is asked
@@ -890,7 +1133,269 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // Read the page's frames again: a page attaches, detaches and navigates its
   // frames after it loaded, and an action that names none of them still wants
   // the page's own document, which only this read tells apart from a frame's.
-  void ReadTree() { Call(Stage::FrameTree,"Page.getFrameTree",nullptr); }
+  void ReadTree() {
+    // The page's inspector names the frames of other sites as targets, and a
+    // target is where a connection to such a frame is asked for: it is asked
+    // to name them before the page's own tree is read, so a frame the tree
+    // cannot reach is still one this page can name.
+    // Only an action that names a frame asks for targets: a page that is only
+    // read has no reason to have its frames attached, and an attach is the
+    // page's inspector rearranging itself, which a plain read must not do.
+    const bool names_frame=pending_ && !NamedFrame(pending_->command).empty();
+    if(names_frame && !targets_discovered_) {
+      targets_discovered_=true;
+      const char* attach="{\"id\":7002,\"method\":\"Target.setAutoAttach\",\"params\":{\"autoAttach\":true,\"waitForDebuggerOnStart\":false,\"flatten\":true}}";
+      if(!browser_->GetHost()->SendDevToolsMessage(attach,strlen(attach))) targets_discovered_=false;
+    }
+    Call(Stage::FrameTree,"Page.getFrameTree",nullptr);
+  }
+  // The frame element a part of a place names, in the document of the world
+  // asked: a document that may not read a frame's own document still holds the
+  // element, and numbers it in document order as the outline does.
+  CefRefPtr<CefDictionaryValue> FrameElementParams(const std::string& part,int context) const {
+    auto wrapped=CefValue::Create();wrapped->SetString(part);
+    auto params=CefDictionaryValue::Create();
+    params->SetString("expression",std::string(kPageAutomation)+"\n;globalThis.__tiloPage.run({action:'frame_element',frame:"+
+      CefWriteJSON(wrapped,JSON_WRITER_DEFAULT).ToString()+"})");
+    params->SetInt("contextId",context);params->SetBool("returnByValue",true);params->SetBool("silent",true);
+    return params;
+  }
+  // An action in a frame the page's own document holds but may not read is
+  // answered by that frame, whose own document names the frames inside it: the
+  // body of the request travels to the frame's own document, which runs it as
+  // an action of its own, and the answer travels back as the action's.
+  void ForwardFrame(const std::string& named,const std::vector<std::string>& parts,size_t walk,const std::vector<int>& path) {
+    if(walk>parts.size()) { Fail("no_frame",NoSuchFrame(named));return; }
+    // Every part of the place is a frame's number: a place written with a word
+    // in it names no frame of this page at all.
+    if(std::any_of(parts.begin(),parts.end(),[](const std::string& part){return !PrintedFrame(part);})) {
+      Fail("no_frame",NoSuchFrame(named));return;
+    }
+    const auto named_id=named;
+    frame_path_=FramePath{};
+    frame_path_.named=named_id;
+    // The parts from the frame the page's own document reaches: the first of
+    // them is a frame that document holds, and is numbered where it is. A
+    // frame the page's tree does not lead to at all is still one the page's
+    // own document numbers, so the place starts at the page's own document.
+    const auto from=parts.begin()+static_cast<long>(walk==0?0:walk-1);
+    frame_path_.parts.assign(from,parts.end());
+    frame_place_={};
+    auto leaf=tree_?tree_->GetDictionary("frame"):nullptr;
+    if(leaf && main_id_.empty() && leaf->GetType("id")==VTYPE_STRING) main_id_=leaf->GetString("id").ToString();
+    if(main_world_) { frame_path_.parent=main_world_;ReadFrameElement();return; }
+    auto params=CefDictionaryValue::Create();
+    params->SetString("frameId",main_id_);params->SetString("worldName","tilo-page-actions");
+    Call(Stage::FrameRead,"Page.createIsolatedWorld",params);
+  }
+  // The engine's id for the frame a number of this host's page names: the
+  // engine names every frame it has, and the ones this document holds are the
+  // ones after the page's own, in the order the document holds them. A frame
+  // that belongs to another site still runs a document of its own, so the
+  // document holding it never says that frame's id, and this is where it is
+  // read from instead.
+  // The frames a document holds, numbered as the page numbers them: the
+  // frames the engine lists are in the order the document writes them.
+  std::vector<std::string> ChildFrameIds() const {
+    std::vector<std::string> out;
+    if(!browser_) return out;
+    std::vector<CefString> ids;
+    browser_->GetFrameIdentifiers(ids);
+    auto main=browser_->GetMainFrame();
+    const auto main_id=main?main->GetIdentifier():CefString();
+    for(const auto& id:ids) {
+      if(id==main_id) continue;
+      auto held=browser_->GetFrameByIdentifier(id);
+      // A frame this document holds is a child of the document's own frame.
+      if(!held || !held->GetParent() || held->GetParent()->GetIdentifier()!=main_id) continue;
+      out.push_back(BareFrameId(id.ToString()));
+    }
+    return out;
+  }
+  std::string FrameOfThisDocument(int number) {
+    const auto frames=ChildFrameIds();
+    if(number<1) return std::string();
+    const auto index=static_cast<size_t>(number-1);
+    return index<frames.size()?BareFrameId(frames[index]):std::string();
+  }
+  // The frames this document holds, in the order the page writes them.
+  std::vector<std::pair<std::string,std::string>> ChildFrames() const {
+    std::vector<std::pair<std::string,std::string>> out;
+    std::vector<CefString> ids;
+    browser_->GetFrameIdentifiers(ids);
+    auto main=browser_->GetMainFrame();
+    const auto main_id=main?main->GetIdentifier():CefString();
+    for(const auto& id:ids) {
+      if(id==main_id) continue;
+      auto held=browser_->GetFrameByIdentifier(id);
+      if(!held || !held->GetParent() || held->GetParent()->GetIdentifier()!=main_id) continue;
+      out.emplace_back(BareFrameId(id.ToString()),held->GetURL().ToString());
+    }
+    return out;
+  }
+
+  // A frame's own id, which the page's methods know it by, where the engine
+  // names it by its process and that id.
+  static std::string BareFrameId(const std::string& named) {
+    const auto dash=named.find('-');
+    return dash==std::string::npos?named:named.substr(dash+1);
+  }
+  // The next part of the place, asked of the document that holds it: the frame
+  // element of a part is resolved from the number its own document gives it.
+  void ReadFrameElement() {
+    if(frame_path_.parts.empty()) { Fail("no_frame","The frame's place was lost while it was read");return; }
+    Call(Stage::FrameRead,"Runtime.evaluate",FrameElementParams(frame_path_.parts.front(),frame_path_.parent));
+  }
+  // A frame element resolved and asked for its place in the document holding
+  // it: the world of the frame it holds is made next, where the rest of the
+  // place is answered.
+  void FrameElementResolved(CefRefPtr<CefDictionaryValue> value) {
+    auto data=value && value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr;
+    if(!value || value->GetType("ok")!=VTYPE_BOOL || !value->GetBool("ok") || !data) {
+      const auto part=frame_path_.parts.empty()?frame_path_.named:frame_path_.parts.front();
+      Fail("no_frame",NoSuchFrame(part));return;
+    }
+    // A frame of this page's own site answers on the page's own connection,
+    // and the document holding the frame names the frame's own document. A
+    // frame of another site runs a document of its own in a process of its own
+    // and neither name reaches it: the engine's own frames say which frame of
+    // the document it is, and a connection to that frame is asked for.
+    // The id an action names a frame by is its number in the document that
+    // holds it, never an id of the engine's own: the engine's id of that frame
+    // is read from where the frame sits, so a frame that navigated to another
+    // document is still the frame its number names.
+    auto engine=FrameOfThisDocument(FramePart(frame_path_.parts.empty()?std::string():frame_path_.parts.front()));
+    if(engine.empty()) { Fail("no_frame",NoSuchFrame(frame_path_.named));return; }
+    frame_place_={Number(data,"x"),Number(data,"y")};
+    frame_id_=engine;
+    // The frame answers on its own connection when the page's own never said
+    // where its document is: the connection is waited for, and the read of the
+    // frame's own document continues there.
+    // A frame of another site answers on a connection of its own, which is
+    // the only one that reaches its own document; a frame of this page's own
+    // site answers on the page's connection like every document of the page.
+    // A frame of another site runs its own document in a process of its own:
+    // its document is reached on that frame's own connection, which the page's
+    // inspector hands out as the frame's target is attached.
+    const bool other_site=data->GetType("same_origin")==VTYPE_BOOL && !data->GetBool("same_origin");
+    if(!SessionMissing(engine)) { await_session_=true;MakeFrameWorld(engine);return; }
+    if(other_site) { await_session_=true;AwaitFrameSession();return; }
+    MakeFrameWorld(engine);
+  }
+  // A frame of another site answers on a connection of its own, which the
+  // page's inspector hands out as a target is attached. Nothing about the
+  // frame's document is said on the page's connection, so an action that needs
+  // the frame waits for the connection and names the frame on it.
+  void AwaitFrameSession() {
+    if(!SessionMissing(frame_id_)) { await_session_=false;MakeFrameWorld(frame_id_);return; }
+    // A connection the page's inspector is holding is asked which frame it
+    // holds, one at a time; every one of them is asked before the frame is
+    // read on the page's own connection.
+    for(const auto& session:open_sessions_)
+      if(std::find(asked_sessions_.begin(),asked_sessions_.end(),session)==asked_sessions_.end()) { IdentifySession(session);return; }
+    if(awaited_>=kFrameWaitTurns) {
+      // The page holds no connection for the frame: its own document is read
+      // on the page's connection, which answers as the page does.
+      await_session_=false;
+      MakeFrameWorld(frame_id_);
+      return;
+    }
+    ++awaited_;
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self) {
+      if(!self->await_session_ || !self->pending_) return;
+      self->AwaitFrameSession();
+    },CefRefPtr<PageAutomation>(this)),kFrameWaitStepMs);
+  }
+  // Whether nothing yet says which connection a frame answers on.
+  bool SessionMissing(const std::string& frame) const {
+    return frame.empty() || !session_of_frame_.count(frame) || session_of_frame_.find(frame)->second.empty();
+  }
+  // The connection a frame answers on, or nothing when it answers on the
+  // page's own.
+  std::string SessionOf(const std::string& frame) const {
+    if(frame.empty()) return std::string();
+    const auto found=session_of_frame_.find(frame);
+    if(found!=session_of_frame_.end()) return found->second;
+    // A frame that moved to another document is the frame it was: the place it
+    // holds in the page still names the connection that answers for it. Only a
+    // page that holds frames of other sites has connections to name.
+    if(place_session_.empty()) return std::string();
+    const auto place=PlaceOfFrame(frame);
+    const auto held=place==0?place_session_.end():place_session_.find(place-1);
+    return held==place_session_.end()?std::string():held->second;
+  }
+  // Where a frame sits in the page's own document, counted from one.
+  size_t PlaceOfFrame(const std::string& frame) const {
+    const auto frames=ChildFrames();
+    for(size_t i=0;i<frames.size();++i) if(frames[i].first==frame) return i+1;
+    return 0;
+  }
+  // The target a frame is, as the page's inspector named it.
+  std::string TargetOfFrame(const std::string& frame) const {
+    for(const auto& [target,held]:frame_of_target_) if(held==frame) return target;
+    return std::string();
+  }
+  // Ask the page's inspector for a connection to the frame's own target: a
+  // frame of another site is a target of its own, and nothing about its
+  // document is said on the page's connection.
+  void AttachFrame(const std::string& frame,const std::string& target) {
+    frame_id_=frame;
+    if(target.empty()) {
+      // The inspector has not named the frame's target yet, or the frame has
+      // no target of its own and the page's own connection holds it.
+      session_of_frame_[frame]=std::string();
+      ContinueInFrame(frame,std::string());return;
+    }
+    auto params=CefDictionaryValue::Create();
+    params->SetString("targetId",target);params->SetBool("flatten",true);
+    Call(Stage::FrameAttach,"Target.attachToTarget",params);
+  }
+  // The frame's connection is known: the read of the frame's own document
+  // continues on it.
+  void ContinueInFrame(const std::string& frame,const std::string& session) {
+    frame_id_=frame;
+    session_of_frame_[frame]=session;
+    MakeFrameWorld(frame);
+  }
+  // The world an action runs in inside the frame named, on whatever connection
+  // that frame answers on.
+  void MakeFrameWorld(const std::string& frame) {
+    auto params=CefDictionaryValue::Create();
+    // A frame's own connection names the frame by the id its document was
+    // read under there, which only that connection knows.
+    const auto session=SessionOf(frame);
+    const auto id=!session.empty() && session_frame_.count(session)?session_frame_[session]:frame;
+    params->SetString("frameId",id);params->SetString("worldName","tilo-page-actions");
+    CallIn(Stage::FrameRead,session,"Page.createIsolatedWorld",params);
+  }
+  // The world of the frame element resolved: an action's own body is sent
+  // there, and a place with more parts continues in that frame's document.
+  void FrameWorldMade(int context) {
+    frame_path_.parent=context;
+    if(frame_path_.parts.size()>1) { frame_path_.parts.erase(frame_path_.parts.begin());ReadFrameElement();return; }
+    auto command=pending_?pending_->command:nullptr;
+    if(!command) { Fail("unavailable","The action left while its frame was read");return; }
+    // The frame's own document is where the action runs, so the action's body
+    // is sent there as it stands: it names no frame, which that document could
+    // not resolve, and its refs are the frame's own outline's.
+    auto body=command->Copy(true);
+    body->Remove("frame");
+    // A click is answered by where its element sits, which the frame's own
+    // document is the only one that can say.
+    if(body->GetString("action")=="click") body->SetString("action","locate");
+    // The frame's document numbers its own refs, and a ref is the document it
+    // was read in: the frame counts as one more document of the page.
+    if(!body->HasKey("doc")) body->SetInt("doc",document_);
+    auto wrapped=CefValue::Create();wrapped->SetDictionary(body);
+    auto params=CefDictionaryValue::Create();
+    params->SetString("expression",std::string(kPageAutomation)+"\n;globalThis.__tiloPage.run("+CefWriteJSON(wrapped,JSON_WRITER_DEFAULT).ToString()+")");
+    params->SetInt("contextId",context);params->SetBool("returnByValue",true);
+    params->SetBool("silent",true);params->SetBool("awaitPromise",true);
+    pending_->navigation="frame";
+    // The action's body runs in the frame's own document on whichever
+    // connection that document answers on.
+    CallIn(Stage::FrameForward,SessionOf(frame_id_),"Runtime.evaluate",params);
+  }
   // The tree read now says whether the document it leads to is the one the
   // cached tree led to: a page whose own document was replaced is read afresh
   // rather than acted on in the document that is gone.
@@ -912,6 +1417,35 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // either way the tree kept is older than the page.
   void OnDevToolsEvent(CefRefPtr<CefBrowser>,const CefString& method,const void* params,size_t size) override {
     const std::string name=method.ToString();
+    // A frame of another site is a target of its own, and the page's
+    // inspector names the frame it holds: that name is how a connection to the
+    // frame is asked for, so the frame is reached where the page lists it.
+    if(name=="Target.detachedFromTarget") {
+      auto parsed=CefParseJSON(std::string(size>0?static_cast<const char*>(params):"",size>0?size:0),JSON_PARSER_RFC);
+      auto root=parsed && parsed->GetType()==VTYPE_DICTIONARY?parsed->GetDictionary():nullptr;
+      const auto session=root && root->GetType("sessionId")==VTYPE_STRING?root->GetString("sessionId").ToString():std::string();
+      if(!session.empty())
+        for(auto it=session_of_frame_.begin();it!=session_of_frame_.end();)
+          it=it->second==session?session_of_frame_.erase(it):std::next(it);
+      return;
+    }
+    if(name=="Target.attachedToTarget") {
+      auto parsed=CefParseJSON(std::string(size>0?static_cast<const char*>(params):"",size>0?size:0),JSON_PARSER_RFC);
+      auto p2=parsed && parsed->GetType()==VTYPE_DICTIONARY?parsed->GetDictionary():nullptr;
+      auto info=p2?p2->GetDictionary("targetInfo"):nullptr;
+      if(!p2 || p2->GetType("sessionId")!=VTYPE_STRING || !info || info->GetType("targetId")!=VTYPE_STRING) return;
+      const auto target=info->GetString("targetId").ToString();
+      const auto session=p2->GetString("sessionId").ToString();
+      // A connection attached for a frame of another site: it is kept until an
+      // action asks which frame it holds.
+      if(std::find(open_sessions_.begin(),open_sessions_.end(),session)==open_sessions_.end()) {
+        open_sessions_.push_back(session);
+        frame_url_[session]=info->GetType("url")==VTYPE_STRING?info->GetString("url").ToString():std::string();
+        session_rank_[session]=session_rank_.size();
+      }
+      if(await_session_) IdentifySession(session);
+      return;
+    }
     if(name=="Page.frameAttached" || name=="Page.frameDetached") { FramesMoved();return; }
     if(name!="Page.frameNavigated") return;
     // Its own document leaving is a page navigation, which the host's fences
@@ -938,6 +1472,31 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     call_=id;stage_at_call_=stage;
     if(!call_) Fail("unavailable","The page's inspector connection is unavailable");
   }
+  // A method sent to the page's own connection, or to the one a frame of
+  // another site answers on (see AttachFrame): the frame runs a document of its
+  // own in a process of its own, and only a connection of its own reaches it.
+  // The call is sent as the wire's own message, which is where a connection is
+  // named, and its answer arrives as any other method's does.
+  void CallIn(Stage stage,const std::string& session,const char* method,CefRefPtr<CefDictionaryValue> params) {
+    if(session.empty()) { Call(stage,method,params);return; }
+    session_at_call_=session;
+    auto message=CefDictionaryValue::Create();
+    message->SetString("method",method);
+    message->SetString("sessionId",session);
+    if(params) message->SetDictionary("params",params);
+    message->SetInt("id",next_message_);
+    auto value=CefValue::Create();value->SetDictionary(message);
+    const auto wire=CefWriteJSON(value,JSON_WRITER_DEFAULT).ToString();
+    // The page's connection numbers the call it answers, and a frame's
+    // connection numbers its own: the two sets are told apart by the
+    // connection the call went out on, and this one is held as the call the
+    // action waits on as soon as its answer names the frame.
+    stage_=static_cast<int>(stage);
+    stage_at_call_=stage_;
+    session_at_call_=session;
+    if(!browser_->GetHost()->SendDevToolsMessage(wire.c_str(),wire.size()))
+      Fail("unavailable","The frame's inspector connection is unavailable");
+  }
   void AdvanceStage(bool success,const std::string& json) {
     // A frame's settle answers from the frame's own document, which the click
     // may have replaced: that is the frame leaving, not the page.
@@ -949,12 +1508,15 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // it is being read. The request is read again in a fresh context, once per
     // request; a page that moved on still fails as changed.
     const bool scripted=At(Stage::Evaluate) || At(Stage::GestureBegin) || At(Stage::Path) ||
-      At(Stage::Hover) || At(Stage::Pointer) || At(Stage::GestureEnd) || At(Stage::Scroll);
+      At(Stage::Hover) || At(Stage::Pointer) || At(Stage::GestureEnd) || At(Stage::Scroll) || At(Stage::FrameForward);
     if(scripted && world_ && (!success || !result || (result->GetType("result")!=VTYPE_DICTIONARY && result->GetType("exceptionDetails")!=VTYPE_DICTIONARY))) {
       const auto document=contexts_.count(world_)?contexts_[world_]:0;
       contexts_.erase(world_);world_=0;
       if(document!=document_ && !pending_->retried) { pending_->retried=true;Begin();return; }
     }
+    // An action answered by a frame walks the frame's own documents to it, and
+    // each step of that walk is answered before the action itself can be.
+    if(At(Stage::FrameRead) || At(Stage::FrameForward)) { FrameRead(success,result);return; }
     // The engine painted the area the page named: the picture is the answer.
     if(At(Stage::Paint)) { Painted(success,result);return; }
     // The answer is handled where CEF delivered it, never from inside this
@@ -1177,6 +1739,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
         // The document changed under a cached context. Retry once in the new
         // document; a ref from the old one then fails as stale.
         world_=0;world_id_.clear();loader_.clear();world_loader_.clear();frame_world_.reset();world_request_.clear();main_world_=0;
+        frame_path_=FramePath{};frame_id_.clear();
         if(gesture_) { Fail("page_changed","The page changed during the gesture");return; }
         if(pending_->retried) { Fail("page_changed","The page changed while it was being read");return; }
         pending_->retried=true;Begin();return;
@@ -1588,6 +2151,86 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     if(Action()=="capture") { CapturePlaced();return; }
     ClickTarget(settling_);
   }
+  // The answers of an action in a frame the page's own document holds: the
+  // element asked for, the world its own document leads to, and the action
+  // itself, which the frame answered as it would have answered the page.
+  void FrameRead(bool success,CefRefPtr<CefDictionaryValue> result) {
+    if(At(Stage::FrameForward)) { Forwarded(success,result);return; }
+    if(!success || !result) {
+      // A frame the page set up by script is a frame of the document it sits
+      // in, and the engine lists it beside the frame it replaced: a frame that
+      // answers with nothing is passed over for the next one of that number,
+      // so the action names the frame the page has once one of them answers.
+      if(!frame_path_.parts.empty()) {
+        const auto frames=ChildFrameIds();
+        const auto held=std::find(frames.begin(),frames.end(),frame_id_);
+        if(held!=frames.end() && std::next(held)!=frames.end()) { frame_id_=*std::next(held);MakeFrameWorld(frame_id_);return; }
+      }
+      // A document that answers with nothing has gone with the frame that held
+      // it: the read is answered from the page as it is now, once.
+      if(pending_->frame_refreshed>=kFrameWaitTurns) {
+        Fail("page_changed","The frame's document changed while the action was read");return; }
+      ++pending_->frame_refreshed;
+      const auto named_id=frame_path_.named;++pending_->frame_path;++generation_;frame_path_=FramePath{};frame_path_.named=named_id;
+      const int request=pending_->request;const uint64_t token=pending_->token;
+      CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,int request,uint64_t token) {
+        if(self->pending_ && self->pending_->token==token && self->pending_->request==request) { self->Begin(); }
+      },CefRefPtr<PageAutomation>(this),request,token),kFrameWaitStepMs);
+      return;
+    }
+    // A world made for the place answers with its context; a document asked
+    // for the frame element of one part answers with that element. Which is
+    // which is what came back, never which part of the walk is being read: a
+    // frame whose element was resolved is then asked for its own world, and
+    // the two answers arrive in the order the questions were sent.
+    if(result->GetType("executionContextId")==VTYPE_INT) {
+      if(frame_path_.parts.empty()) { Fail("unavailable","The frame's place was lost while it was read");return; }
+      FrameWorldMade(result->GetInt("executionContextId"));return;
+    }
+    auto remote=result->GetType("result")==VTYPE_DICTIONARY?result->GetDictionary("result"):nullptr;
+    auto value=remote && remote->GetType("value")==VTYPE_DICTIONARY?remote->GetDictionary("value"):nullptr;
+    // A forwarded action's answer is the action's own, and every document on
+    // the way there answers something else. What this read asked for is the
+    // frame element of one part, so what it is given is that answer.
+    if(!value || value->GetType("ok")!=VTYPE_BOOL) { Fail("no_frame","The document holding the frame could not say where it is");return; }
+    FrameElementResolved(value);
+  }
+  // What the frame answered, as the action asked for: an outline read inside a
+  // frame is a read of that frame, and a point in it is moved into the page by
+  // the frame's own place, which was read on the way there.
+  void Forwarded(bool success,CefRefPtr<CefDictionaryValue> result) {
+    if(!success || !result) {
+      if(pending_->retried) { Fail("page_changed","The frame's document changed while the action ran in it");return; }
+      const auto named_id=frame_path_.named;pending_->retried=true;++pending_->frame_path;frame_path_=FramePath{};frame_path_.named=named_id;Begin();return;
+    }
+    auto remote=result->GetType("result")==VTYPE_DICTIONARY?result->GetDictionary("result"):nullptr;
+    auto value=remote && remote->GetType("value")==VTYPE_DICTIONARY?remote->GetDictionary("value"):nullptr;
+    if(!value || value->GetType("ok")!=VTYPE_BOOL) { Fail("script","The page did not return a result");return; }
+    if(!value->GetBool("ok")) {
+      const auto code=value->GetType("code")==VTYPE_STRING?value->GetString("code").ToString():"script";
+      Fail(code.size()<=64?code:"script",Text(value,"message"));return;
+    }
+    // A click in the frame is a click in the page: its point in the frame's
+    // own document moves by the place the frame sits at.
+    const auto action=Action();
+    // A click names an element the frame's own outline read: the frame says
+    // where the element sits in its document, and the page's own world moves
+    // that point by the place the frame holds, exactly as for any other click
+    // inside a frame.
+    if(action=="click") {
+      clicked_={Number(value,"x"),Number(value,"y")};
+      pending_->navigation="frame";
+      MeasureFrameOffset(false);return;
+    }
+    // Every other action is answered by what the frame said it did, exactly as
+    // it would have been in the page's own document, and the answer names the
+    // frame it ran in.
+    auto data=value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr;
+    const auto message=Text(value,"message");
+    std::optional<std::string> outline;
+    if(const auto text=Text(value,"outline"); !text.empty()) outline=text;
+    Succeed(message,outline,data,CefRefPtr<CefDictionaryValue>());
+  }
   void Act(CefRefPtr<CefDictionaryValue> value) {
     const auto action=Action();
     if(action=="scroll") { ScrollTurn(value);return; }
@@ -1851,7 +2494,26 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     pending_->refreshed=true;call_=0;++generation_;place_frame_=PageFrame{};step_located_=false;Begin();
   }
   void Fail(const std::string& code,const std::string& message) {
-    if(code=="no_frame" && !pending_->refreshed && !gesture_ && Action()!="pointer") {
+    // A frame this action names is one the outline listed, so its document is
+    // the page's: the engine names it a moment after the document holding it
+    // was read, and a frame caught in between is waited for, never refused.
+    // Only an id the outline could have printed is waited for: no frame will
+    // ever answer for a word or a selector, so those are refused now.
+    const bool waiting=code=="no_frame" && !pending_->frame_path && !gesture_ && Action()!="pointer" &&
+      pending_->navigation=="none" && PrintedFrame(NamedFrame(pending_->command));
+    if(waiting) {
+      const double now=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+      if(pending_->frame_deadline==0) pending_->frame_deadline=now+kFrameWaitMs;
+      if(now<pending_->frame_deadline) {
+        ++generation_;
+        const int request=pending_->request;const uint64_t token=pending_->token;
+        CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,int request,uint64_t token) {
+          if(self->pending_ && self->pending_->token==token && self->pending_->request==request) { self->Begin(); }
+        },CefRefPtr<PageAutomation>(this),request,token),kFrameWaitStepMs);
+        return;
+      }
+    }
+    if(code=="no_frame" && waiting && !pending_->refreshed) {
       // The tree this action names a frame from may have been read before the
       // page made, dropped or moved that frame. The page's frames are read
       // again once, and the action goes on with the outline as it is now, so a
@@ -1924,6 +2586,26 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   std::string file_object_;
   CefRefPtr<CefFileDialogCallback> file_dialog_;int file_dialog_request_=0;
   std::map<int,int> contexts_;uint64_t token_=0,navigations_=0;
+  // The connection a frame of another site answers on, by the frame it holds:
+  // a frame of this page's own site answers on the page's connection.
+  std::map<std::string,std::string> session_of_frame_;
+  // The frame a target is: the page's inspector names a frame of another site
+  // as a target of its own, and a target is reached by attaching to it.
+  std::map<std::string,std::string> frame_of_target_;
+  int next_message_=0;bool targets_discovered_=false;std::string session_at_call_;bool await_session_=false;int awaited_=0;std::string current_session_;
+  // Connections the page's inspector attached for frames of other sites, and
+  // those already asked which frame each holds.
+  std::vector<std::string> open_sessions_;std::vector<std::string> asked_sessions_;
+  // The document each connection answers for, and the order the page's
+  // inspector attached it in, which is the order the page writes its frames.
+  std::map<std::string,std::string> frame_url_;std::map<std::string,std::string> session_frame_;
+  // The frames of other sites the page holds, by the place they hold: a frame
+  // that moves to another document keeps its place, so the connection that
+  // answers for it is still the one at that place.
+  std::map<size_t,std::string> place_session_;
+  std::map<std::string,size_t> session_rank_;
+  // Connections asked for and not yet told which frame each holds.
+  std::vector<std::string> pending_sessions_;
   // Where the pointer came to rest, when the gesture was mid-step and the page
   // could not be told yet.
   CefPoint rest_point_{-1,-1};bool rest_pending_=false;
@@ -1968,6 +2650,10 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // step with the place of the frame it was made for, never another frame's.
   std::string frame_place_id_;
   Clicked clicked_;bool settling_=false;
+  // An action answered by a frame the page's own document holds: the place
+  // being walked, the frame its last part resolved to, the world of that
+  // frame's own document, and where it sits in the page.
+  FramePath frame_path_;std::string frame_id_;Clicked frame_place_;
   // The widest picture a capture paints and the tallest area it covers: a
   // picture is never larger than a person could look at, whatever was asked.
   static constexpr int kMaxCaptureWidth=1600;
