@@ -320,8 +320,19 @@ start_qemu() {
 }
 
 # Run a command in the guest over SSH (password auth via sshpass, on the host
-# since that's where the forwarded port binds). Returns the command's output.
+# since that's where the forwarded port binds; with TILO_SSH_IDENTITY, that key
+# instead, as vm.sh hands the guest root's public key in TILO_VM_ROOT_KEY_FILE).
+# Returns the command's output.
 gssh() {
+  if [ -n "${TILO_SSH_IDENTITY:-}" ]; then
+    ${TILO_SSH_BOUND:+timeout -k 2 "$TILO_SSH_BOUND"} \
+      ssh -F /dev/null -p "$TILO_SSH_PORT" -i "$TILO_SSH_IDENTITY" -o IdentitiesOnly=yes \
+      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 \
+      -o LogLevel=ERROR -o BatchMode=yes -o PreferredAuthentications=publickey \
+      "$TILO_USER@127.0.0.1" "$@"
+    return
+  fi
   # VM automation must never fall through to the desktop's graphical askpass
   # helper. sshpass owns the one permitted password prompt; if it cannot
   # answer, fail the test instead of disrupting the physical session.
