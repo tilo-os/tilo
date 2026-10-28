@@ -2,7 +2,7 @@
 //!
 //! The pieces, in the order a call meets them:
 //!
-//! * [`engine`]: compiles and runs wasm; the only module that names wasmi.
+//! * [`engine`]: compiles and runs wasm; the only module that names wasmi (or wasmtime).
 //! * [`handles`] and [`abi`]: the handle table and the `"tl"` import table.
 //! * `core` and its `host_*`/`exec` parts: every import, the action transaction, the flow
 //!   journal and the view run.
@@ -50,7 +50,9 @@ pub use amstore::AmStore;
 pub use authority::{ActionInfo, Authority, Decision, SimpleAuthority};
 pub use catalogue::{Signature, SignatureKind, catalogue};
 pub use core::{ModelHost, NameHost, OutsideSink};
-pub use engine::{EngineLimits, EngineProfile, Translation, set_translation};
+pub use engine::{
+    EngineConfig, EngineKind, EngineLimits, EngineProfile, Translation, configure, configured,
+};
 pub use error::RuntimeError;
 pub use exec::InvokeOutcome;
 pub use flow::{FlowOutcome, Journal, JournalEntry, Resolution, Suggestion};
