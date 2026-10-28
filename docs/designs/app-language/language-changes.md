@@ -29,9 +29,9 @@ added only where a pattern is common, awkward otherwise, and no existing mechani
 UI code should read like a description of the screen. Views are also what agents compose, so
 terse views make agent answers cheaper and more reliable.
 
-1. **Absent renders nothing.** In a view, a `match` without an arm for a case renders nothing
-   for it; `if let` works in views; an optional passed where a view goes renders only when
-   present.
+1. **Absent renders nothing, by uniform rules.** Syntax means the same in views as anywhere
+   else: `match` is exhaustive everywhere, and `if let` works the same in actions, functions and
+   views. A slot typed `Option<View>` renders nothing for `.none`; that follows from its type.
 2. **Key paths:** `.author` where a lambda would only read a field (`author: .author`,
    `sort_by(.due)`).
 3. **Optional chaining and fallback:** `c.messages.last()?.said ?? "No messages yet"`.
