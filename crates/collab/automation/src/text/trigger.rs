@@ -322,22 +322,13 @@ fn quoted_event(rest: &str) -> Result<TriggerSpec, String> {
     };
     let (source, rest) = text_at(after)?;
     let mut filter = serde_json::Map::new();
+    // The matches are read one after another, each rewriting what is left
+    // of the line, exactly as a list's values are.
     let mut rest = rest.trim_start().to_owned();
-    loop {
-        // The matches are read one after another, each rewriting what is left
-        // of the line, exactly as a list's values are.
-        let Some(after) = rest.strip_prefix("where ").map(str::to_owned) else {
-            break;
-        };
-        let (field, after) = split_word(&after).unwrap_or((&after, ""));
-        let after = after.trim_start();
-        let after = after
-            .strip_prefix("is ")
-            .ok_or_else(|| "write a connector's match as `where FIELD is VALUE`".to_owned())?;
-        let (value, tail) = literal_and_rest(after)?;
-        filter.insert(field.to_owned(), value);
-        rest.clear();
-        rest.push_str(tail.trim_start());
+    while let Some(matched) = rest.strip_prefix("where ").map(str::to_owned) {
+        let (field, value, tail) = match_of(&matched)?;
+        filter.insert(field, value);
+        rest = tail;
     }
     require_nothing_after(&rest, "the event")?;
     Ok(TriggerSpec::Connector {
@@ -345,6 +336,18 @@ fn quoted_event(rest: &str) -> Result<TriggerSpec, String> {
         source,
         filter,
     })
+}
+
+/// A connector's one match, as the field it names, the value it holds and
+/// what is left of the line after it.
+fn match_of(text: &str) -> Result<(String, Value, String), String> {
+    let (field, rest) = split_word(text).unwrap_or((text, ""));
+    let rest = rest.trim_start();
+    let after = rest
+        .strip_prefix("is ")
+        .ok_or_else(|| "write a connector's match as `where FIELD is VALUE`".to_owned())?;
+    let (value, tail) = literal_and_rest(after)?;
+    Ok((field.to_owned(), value, tail.trim_start().to_owned()))
 }
 
 /// The rest of `when a KIND changes`.
