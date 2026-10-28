@@ -392,19 +392,9 @@ fn runtime_sockets_have_durable_omission_receipts_without_losing_adjacent_keys()
         fs::read(home.join(".gnupg/private-key")).unwrap(),
         b"private key fixture"
     );
-    let log = fs::read_to_string(journal.with_extension("home-finalization")).unwrap();
-    let mut lines = log.lines();
-    let manifest: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
-    let socket_index = manifest["entries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .position(|entry| entry["kind"]["kind"] == "RuntimeSocket")
-        .unwrap();
-    assert!(lines.any(|line| {
-        let receipt: serde_json::Value = serde_json::from_str(line).unwrap();
-        receipt["index"].as_u64() == Some(socket_index as u64) && receipt["destination"].is_null()
-    }));
+    assert!(fidelity::runtime_socket_omission_is_receipted(
+        &journal.with_extension("home-finalization")
+    ));
     let WorkerOutcome::Complete(resumed) = plan.retry().unwrap().finish() else {
         panic!("A durable socket omission must revalidate during retry");
     };

@@ -11,7 +11,7 @@ use cap_primitives::fs::{FollowSymlinks, Metadata, OpenOptions};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File},
-    io::{self, BufRead, Write},
+    io,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     sync::{
