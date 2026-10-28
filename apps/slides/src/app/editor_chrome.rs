@@ -755,7 +755,7 @@ impl SlidesApp {
         // the panel; a short panel scrolls rather than squeezing them.
         Self::push_section_label(m, labels, x0, &mut y, &tr("slides-speaker-notes"));
         let notes_min = 4.0 * m.lh_body + 2.0 * m.s3;
-        let mut notes = Rect::new(x0, y, x1, (body.y1 - m.s4).max(y + notes_min));
+        let mut notes = Rect::new(x0, y, x1, y + notes_min);
         buttons.push(UiButton {
             rect: notes,
             kind: ButtonKind::Notes,
@@ -778,6 +778,21 @@ impl SlidesApp {
             }
             font_input = font_input.map(|r| r + shift);
             notes = notes + shift;
+        }
+        // The notes stop at the body's foot. A panel too short for them
+        // scrolls (above); a field that reached past the foot was cut by the
+        // window's bottom edge instead, so its last line — "...that's the
+        // constraint everything else works around" — was never shown whole,
+        // and no scrollbar said it continued.
+        let foot = (body.y1 - m.s4).max(notes.y0 + m.control_h);
+        if notes.y1 > foot {
+            notes.y1 = foot;
+            for button in buttons
+                .iter_mut()
+                .filter(|button| matches!(button.hit, Hit::EditNotes))
+            {
+                button.rect.y1 = foot;
+            }
         }
         let inside = |y: f64| y >= body.y0 && y <= body.y1;
         let kept: Vec<UiButton> = buttons
