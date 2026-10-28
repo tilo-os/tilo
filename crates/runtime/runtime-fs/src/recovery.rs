@@ -1076,37 +1076,6 @@ impl OperationOwner {
         })
     }
     #[cfg(test)]
-    pub(super) fn merge_recovery_for_test(
-        &self,
-        into: &OperationId,
-        from: &OperationId,
-    ) -> Result<(), FsError> {
-        // Fixture-only composition of two real terminal syscall/checkpoint results.
-        // Move the receipt's recovery ownership, never manufacture staged bytes.
-        let (mut step, mut item) = {
-            let store = lock(&self.state)?;
-            let r = store.receipts.get(&from.0).ok_or(FsError::NotFound)?;
-            let pair = (r.steps[0].clone(), r.items[0].clone());
-            drop(store);
-            pair
-        };
-        self.update(from, "FixtureTransferred", |r| {
-            r.steps[0].recovery = None;
-            r.items[0].recoveries.clear();
-            Ok(())
-        })?;
-        self.update(into, "FixtureMixed", |r| {
-            let index = r.item_count;
-            r.item_count = r.item_count.checked_add(1).ok_or(FsError::LimitExceeded)?;
-            step.item = index;
-            item.item = index;
-            r.steps.push(step);
-            r.items.push(item);
-            r.state = fold(r.items.iter().map(|i| i.state));
-            Ok(())
-        })
-    }
-    #[cfg(test)]
     pub(super) fn checkpoints(&self, id: &OperationId) -> Result<Vec<String>, FsError> {
         Ok(lock(&self.state)?
             .receipts

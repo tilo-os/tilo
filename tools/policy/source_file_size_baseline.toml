@@ -69,7 +69,7 @@
 "crates/hosting/tilo-room-host/src/store/retained.rs" = 3500
 "crates/packaging/launcher/src/run.rs" = 6500
 "crates/runtime/runtime-collab/src/lib.rs" = 4500
-"crates/runtime/runtime-fs/src/operations.rs" = 7000
+"crates/runtime/runtime-fs/src/operations.rs" = 5000
 "crates/runtime/runtime-identity/src/unix.rs" = 3500
 "crates/runtime/tilo-runtime/src/mcp.rs" = 3500
 "crates/sdk/tilo-app/src/framework/root.rs" = 3466
