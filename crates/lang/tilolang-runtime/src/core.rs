@@ -239,10 +239,20 @@ impl Host for Core {
 }
 
 impl Core {
+    /// The host clock's time now, or the epoch without one.
+    pub(crate) fn clock_now(&self) -> String {
+        self.clock
+            .borrow()
+            .as_ref()
+            .map_or_else(|| EPOCH.to_owned(), |clock| clock())
+    }
+}
+
+impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
-            Abort, ActOpen, ActRef, ActSet, Actions, CollInsert, CollMove, CollRemove, CollWhere,
-            EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI,
+            Abort, ActOpen, ActRef, ActSet, ActThen, Actions, CollInsert, CollMove, CollRemove,
+            CollWhere, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI,
             EventValue, Filters, FloatToStr, IdentPart, IntToStr, Invoke, Invoker, InvokerPop,
             InvokerPush, IsError, IsSome, Lenses, ListEnd, ListGetF, ListGetH, ListGetI, ListLen,
             ListNew, ListPushF, ListPushH, ListPushI, ListSortByKey, MapGetH, MapKeys, MapPut,
@@ -252,7 +262,7 @@ impl Core {
             ResTextSet, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, StateGet, StrCmp,
             StrConcat, StrEq, StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew,
             TupleSetF, TupleSetH, TupleSetI, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn,
-            UiPropF, UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq,
+            UiPropF, UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq, Versions,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
@@ -289,8 +299,12 @@ impl Core {
                 self.effect_import(imp, a)
             }
             UiNode | UiPropH | UiPropI | UiPropF | UiChild | UiBind | UiOn | UiAnchor | SpaceI
-            | SpaceF | UiBindState | StateGet | ActSet | ActOpen => self.ui_import(imp, a),
-            EventValue | Actions | Lenses | MetaOf | Phrase => self.platform_import(imp, a),
+            | SpaceF | UiBindState | StateGet | ActSet | ActThen | ActOpen => {
+                self.ui_import(imp, a)
+            }
+            EventValue | Actions | Lenses | MetaOf | Versions | Phrase => {
+                self.platform_import(imp, a)
+            }
             Imp::Print | Imp::Find | Imp::ReadText | Imp::OfType | Imp::Keep => {
                 self.program_import(imp, a)
             }

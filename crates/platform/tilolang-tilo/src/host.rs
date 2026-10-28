@@ -403,6 +403,7 @@ impl HostInner {
                 invoker: invoker.0,
                 chain: Vec::new(),
                 module: package.id.0.clone(),
+                at: None,
             },
             edits: Vec::new(),
         };

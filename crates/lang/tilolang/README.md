@@ -115,6 +115,36 @@ fn title_of(list: TodoList) -> Text {
 }
 ```
 
+**Options without `match`.** `if let` binds an Option's value, several at once, each seeing
+the names before it; `x?.f` reads a field (or calls a method) of an Option's value, giving an
+Option; `x ?? y` is the value or the fallback. They mean the same in actions, fns and views:
+
+```
+fn last_said(c: Conversation) -> Text {
+    c.messages.last()?.text ?? "No messages yet"
+}
+
+view board(b: Board) {
+    if let todos = b.todos, nb = b.notebook {
+        button(morning_cleanup(todos, nb))
+    }
+}
+```
+
+A template's `Option<View>` parameter placed as a statement shows what it was given, and nothing
+when it was left out.
+
+**Key paths.** Where a lambda would only read a field, `.field` is that lambda:
+`items.sort_by(.due)`, `items.count(.done)`, `items.remove_where(.done)`.
+
+**Reflection.** The log records who made every change, when and by which action, so code reads
+it rather than storing its own timestamps: `created(r)` and `updated(r)` are an
+`Option<host.Version>` (`.who`, `.at`, `.what`), `history(r)` all of them, oldest first.
+
+**Collections.** `items.remove_where(pred)` removes what the predicate holds of and gives how
+many went. A move names a neighbour, `items.move(x, after: y)` or `before: y`; an index is
+refused (E107), since it is counted on what one device sees.
+
 **Flows** invoke actions by calling them. `try act(args)` gives a `Result<T, Text>` (`Result<(),
 Text>` for an action without a result) instead of failing:
 
@@ -231,11 +261,16 @@ chips show them (`host.Filter`).
 - An action's `label:` and `icon:` may be an `if` over its subject, and `on:` is a Bool over
   the subject. The `else` branch is the static fallback:
   `action pin(n: Note) (label: if n.pinned { "Unpin" } else { "Pin" }, on: n.pinned)`.
-- `Date("2026-10-24")` and `Time("2026-10-24T09:30:00Z")` are ISO text that compares with the
-  ordering operators. `date(bind: t.due)` edits one. In an action, `now` is the invocation's
-  Time.
-- A scenario names people with `let mia = person("Mia")`. Inside `as mia { post(t, "Hi") }`,
-  the actions called run with `invoker` = mia.
+- `2026-10-24` is a Date and `2026-10-24T09:30Z` a Time (UTC), held as ISO text that compares
+  with the ordering operators; `2026-10` is a month, a filter's value. `Date("2026-10-24")` and
+  `Time(...)` read the same from text. `date(bind: t.due)` edits one. In an action, `now` is the
+  invocation's Time, recorded with the change.
+- A scenario names people with `let mia = person("Mia")`. Inside
+  `as mia at 2026-06-29T07:02Z { post(t, "Hi") }`, the actions called run with `invoker` = mia
+  and `now` = that time, and the block is a change of its own, so history and reflection show
+  it as mia's at that time.
+- `root T` (or `root alias.T`) is the workspace's resource of a root type, anywhere code may
+  read it; until the host makes it, it reads as it would start.
 - `composer { ... }` is the entry bar of a frame and stands directly in `page`, `document` or
   `canvas`.
 - `xs.first()` and `xs.last()` give an `Option` of the item.

@@ -72,6 +72,7 @@ fn note(
         chain: vec![identity.0.clone()],
         module: "host".to_owned(),
         approved_by: approved_by.map(|p| p.0.clone()),
+        ..ChangeNote::default()
     }
 }
 

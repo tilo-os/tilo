@@ -454,6 +454,12 @@ impl Checker<'_> {
         if let Some(text) = self.relative(e) {
             return Some(Ex::str(&text));
         }
+        // A month (`2026-08`) is all of its days, as typed search reads it.
+        if let ExprKind::Calendar(text) = &e.kind
+            && text.len() == 7
+        {
+            return Some(Ex::str(text));
+        }
         let v = self.expr(e, Some(one));
         match &v.ty {
             Ty::Date | Ty::Time => Some(v.typed(Ty::Text)),

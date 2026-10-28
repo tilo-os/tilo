@@ -699,6 +699,15 @@ fn names_in_ui(stmts: &[UiStmt], out: &mut BTreeSet<String>) {
                 }
             }
             UiKind::Let { value, .. } => names_in(value, out),
+            UiKind::IfLet { binds, then, els } => {
+                for b in binds {
+                    names_in(&b.value, out);
+                }
+                names_in_ui(then, out);
+                if let Some(els) = els {
+                    names_in_ui(els, out);
+                }
+            }
             UiKind::Fact { label, value, .. } => {
                 names_in(label, out);
                 names_in(value, out);
@@ -720,9 +729,25 @@ fn names_in(e: &ast::Expr, out: &mut BTreeSet<String>) {
         | ExprKind::Float(_)
         | ExprKind::Length(..)
         | ExprKind::Duration(..)
+        | ExprKind::Calendar(_)
         | ExprKind::Bool(_)
         | ExprKind::Ref(_)
         | ExprKind::Root(_) => {}
+        ExprKind::IfLet { binds, then, els } => {
+            for b in binds {
+                names_in(&b.value, out);
+            }
+            names_in_block(then, out);
+            if let Some(els) = els {
+                names_in(els, out);
+            }
+        }
+        ExprKind::OptChain { base, args, .. } => {
+            names_in(base, out);
+            for arg in args.iter().flatten() {
+                names_in(&arg.value, out);
+            }
+        }
         ExprKind::Range { lo, hi } => {
             for end in [lo, hi].into_iter().flatten() {
                 names_in(end, out);
@@ -793,8 +818,11 @@ fn names_in_block(b: &ast::Block, out: &mut BTreeSet<String>) {
                 names_in(iter, out);
                 names_in_block(body, out);
             }
-            StmtKind::As { who, body } => {
+            StmtKind::As { who, at, body } => {
                 names_in(who, out);
+                if let Some(at) = at {
+                    names_in(at, out);
+                }
                 names_in_block(body, out);
             }
             StmtKind::Return(value) => {

@@ -107,7 +107,7 @@ imports! {
     PrincipalName = "principal_name" ([H] -> [H]);
     Now = "now" ([] -> [H]);
     PrincipalNamed = "principal_named" ([H] -> [H]);
-    InvokerPush = "invoker_push" ([H] -> []);
+    InvokerPush = "invoker_push" ([H, H] -> []);
     InvokerPop = "invoker_pop" ([] -> []);
 
     EnumNew = "enum_new" ([H, H] -> [H]);
@@ -143,11 +143,13 @@ imports! {
     UiBindState = "ui_bind_state" ([H, I32, H] -> []);
     StateGet = "state_get" ([I32, H, H] -> [H]);
     ActSet = "act_set" ([I32, H, H] -> [H]);
+    ActThen = "act_then" ([H, H] -> [H]);
     ActOpen = "act_open" ([H, H, I32] -> [H]);
     EventValue = "event_value" ([] -> [H]);
     Actions = "actions" ([H] -> [H]);
     Lenses = "lenses" ([H] -> [H]);
     MetaOf = "meta_of" ([H] -> [H]);
+    Versions = "versions" ([H] -> [H]);
     Query = "query" ([H, H, H, H] -> [H]);
     Filters = "filters" ([H] -> [H]);
     IdentPart = "ident_part" ([H, I32] -> [H]);

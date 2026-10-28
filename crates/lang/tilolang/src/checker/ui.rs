@@ -173,6 +173,27 @@ impl Checker<'_> {
                     let f = self.pop_sink();
                     self.emit(Stmt::If(c, t, f));
                 }
+                UiKind::IfLet { binds, then, els } => {
+                    let out = self.if_let(
+                        binds,
+                        |c| {
+                            c.push_sink();
+                            c.ui_stmts(then, parent);
+                            c.pop_sink()
+                        },
+                        |c| {
+                            c.push_sink();
+                            if let Some(e) = els {
+                                c.ui_stmts(e, parent);
+                            }
+                            c.pop_sink()
+                        },
+                    );
+                    for st in out.prelude {
+                        self.emit(st);
+                    }
+                    self.emit(Stmt::If(out.cond, out.then.unwrap_or_default(), out.els));
+                }
                 UiKind::For { var, iter, body } => {
                     if !self.unrolled_for(&var.name, iter, body, parent) {
                         self.ui_for(&var.name, iter, body, parent);

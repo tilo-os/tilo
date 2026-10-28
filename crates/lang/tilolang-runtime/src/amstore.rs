@@ -613,6 +613,8 @@ impl Store for AmStore {
                 chain: Vec::new(),
                 module: String::new(),
                 approved_by: None,
+                touched: vec![id.clone()],
+                ..ChangeNote::default()
             },
         )?;
         inner.docs.insert(id.clone(), doc);

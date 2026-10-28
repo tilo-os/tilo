@@ -657,6 +657,28 @@ impl Checker<'_> {
     ) -> Option<Macro> {
         let param_tys: Vec<Ty> = fparams.iter().map(|t| self.type_in(t, types)).collect();
         if let Some(a) = arg {
+            let lambda = super::optional::lambda_of(&a.value).filter(|_| !item_block);
+            if let Some((param, body)) = lambda {
+                if param_tys.len() != 1 {
+                    self.err(
+                        "E050",
+                        a.value.span,
+                        format!(
+                            "`{}` takes a function of {} values; a lambda takes one",
+                            p.name.name,
+                            param_tys.len()
+                        ),
+                    );
+                    return None;
+                }
+                let result = self.type_in(result, types);
+                return Some(Macro::Lambda(Rc::new(Closure {
+                    params: vec![(param.name, param_tys[0].clone())],
+                    result,
+                    body,
+                    scope: caller.clone(),
+                })));
+            }
             return match &a.value.kind {
                 ExprKind::Lambda { param, body } if !item_block => {
                     if param_tys.len() != 1 {
@@ -811,6 +833,11 @@ impl Checker<'_> {
                 self.ui_stmts(&block.body, parent);
                 self.leave(saved);
             }
+            // An optional view renders when it was given, and nothing when it was left out.
+            Macro::Some(inner) => {
+                return self.apply_ui(name, inner, c, args, Some(parent));
+            }
+            Macro::Absent => {}
             Macro::View(v) => {
                 let [a] = args else {
                     self.err("E022", span, format!("`{name}` takes one item"));

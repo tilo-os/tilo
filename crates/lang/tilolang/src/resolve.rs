@@ -2065,7 +2065,7 @@ fn collect(stmts: &[ast::UiStmt], out: &mut Vec<ast::Ident>) {
                 }
             }
             ast::UiKind::For { body, .. } | ast::UiKind::Slot { body, .. } => collect(body, out),
-            ast::UiKind::If { then, els, .. } => {
+            ast::UiKind::If { then, els, .. } | ast::UiKind::IfLet { then, els, .. } => {
                 collect(then, out);
                 if let Some(e) = els {
                     collect(e, out);

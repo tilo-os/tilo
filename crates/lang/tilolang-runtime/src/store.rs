@@ -255,7 +255,7 @@ pub enum FieldValue {
 }
 
 /// What a change records about its cause: history shows it as "you, via Alex's view".
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChangeNote {
     pub action: String,
     pub args: Json,
@@ -265,6 +265,44 @@ pub struct ChangeNote {
     pub module: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_by: Option<String>,
+    /// When it was made: the invocation's time, recorded like an argument (convergence.md,
+    /// "Actions"); a scenario's `as who at time` sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+    /// The resources it changed in the document it is a change of, as
+    /// [`ResourceRef::id_string`] writes them: what reflection (`created(r)`, `history(r)`)
+    /// reads a resource's versions from. The store fills it in when it commits.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub touched: Vec<String>,
+}
+
+/// One version of a resource, as history keeps it: who made it, when, by which action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Version {
+    pub who: String,
+    /// ISO-8601 UTC, `YYYY-MM-DDTHH:MM:SSZ`.
+    pub at: String,
+    /// The action's id (`$create` for a resource the host made).
+    pub action: String,
+}
+
+/// The versions of `at` among a document's change notes, oldest first: the changes whose
+/// resources include it.
+#[must_use]
+pub fn versions_in(notes: &[ChangeNote], at: &ResourceRef) -> Vec<Version> {
+    let id = at.id_string();
+    notes
+        .iter()
+        .filter(|note| note.touched.contains(&id))
+        .map(|note| Version {
+            who: note.invoker.clone(),
+            at: note
+                .at
+                .clone()
+                .unwrap_or_else(|| crate::core::EPOCH.to_owned()),
+            action: note.action.clone(),
+        })
+        .collect()
 }
 
 /// One field of one resource: the resource as [`ResourceRef::id_string`] writes it (its
@@ -643,6 +681,16 @@ pub trait Store {
     ///
     /// `NotFound` for a missing document.
     fn history(&self, doc: &DocId) -> Result<Vec<ChangeNote>, StoreError>;
+
+    /// The versions of the resource `at`, oldest first: each change that changed it, with who
+    /// made it, when, and which action (reflection: `created(r)`, `updated(r)`, `history(r)`).
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::history`].
+    fn versions(&self, at: &ResourceRef) -> Result<Vec<Version>, StoreError> {
+        Ok(versions_in(&self.history(&at.doc)?, at))
+    }
 
     fn subscribe(&mut self, doc: &DocId, f: Box<dyn FnMut(&ChangeSummary)>) -> SubId;
     fn unsubscribe(&mut self, sub: SubId);

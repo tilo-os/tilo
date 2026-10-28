@@ -65,6 +65,28 @@ impl Checker<'_> {
 
     /// `lenses(r)`: the lenses on `r` now, the person's own and everyone else's: the people
     /// and agents whose windows show it. Presence on any component reads it.
+    /// `created(r)`, `updated(r)` and `history(r)`: the versions of `r` the log holds (who made
+    /// each, when, by which action), read-only. `created` is the first, `updated` the last;
+    /// both are `.none` while the log of `r` is not at hand.
+    pub(super) fn builtin_versions(&mut self, which: &str, args: &[ast::Arg], span: Span) -> Ex {
+        let Some(r) = self.resource_arg(which, args, span) else {
+            return Ex::error();
+        };
+        let version = host_ty("Version");
+        let list = Ex::host(Imp::Versions, vec![r], Ty::List(Box::new(version.clone())));
+        match which {
+            "history" => list,
+            _ => {
+                let last = Ex::new(Ek::I32(i32::from(which == "updated")), Ty::Bool);
+                Ex::host(
+                    Imp::ListEnd,
+                    vec![list, last],
+                    Ty::Option(Box::new(version)),
+                )
+            }
+        }
+    }
+
     pub(super) fn builtin_lenses(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some(r) = self.resource_arg("lenses", args, span) else {
             return Ex::error();

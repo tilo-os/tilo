@@ -46,6 +46,10 @@ pub enum Tok {
     Length(f64, &'static str),
     /// A whole number of a unit of time: `7d`, `5m` (search.md, "Types, references and paths").
     Duration(i64, &'static str),
+    /// A calendar literal (search.md, "Types, references and paths"): a day `2026-06-29`, a
+    /// month `2026-08`, or an instant `2026-06-29T07:02Z`, held in its canonical ISO text
+    /// (`2026-06-29T07:02:00Z`).
+    Calendar(String),
     Str(Vec<StrPiece>),
     Ref(RefLit),
     Doc(String),
@@ -80,6 +84,10 @@ pub enum Tok {
     Slash,
     Percent,
     Hash,
+    /// `?.`: a field or method of an Option's value, when it has one.
+    QDot,
+    /// `??`: an Option's value, or a fallback.
+    QQ,
 }
 
 impl Tok {
@@ -91,6 +99,9 @@ impl Tok {
             Self::Int(_) | Self::Float(_) | Self::Length(..) | Self::Duration(..) => {
                 "a number".into()
             }
+            Self::Calendar(_) => "a date".into(),
+            Self::QDot => "`?.`".into(),
+            Self::QQ => "`??`".into(),
             Self::Str(_) => "a string".into(),
             Self::Ref(_) => "a reference".into(),
             Self::Doc(_) => "a doc comment".into(),
@@ -356,6 +367,9 @@ impl Lexer<'_> {
     }
 
     fn number(&mut self, start: usize) {
+        if self.calendar(start) {
+            return;
+        }
         while self.at(0).is_some_and(|b| b.is_ascii_digit()) {
             self.pos += 1;
         }
@@ -451,6 +465,73 @@ impl Lexer<'_> {
         }
     }
 
+    /// A calendar literal at `start`: four digits, `-` and two digits make a month; `-` and two
+    /// more a day; `T`, `HH:MM`, optional `:SS` and `Z` an instant. Anything else is a number.
+    fn calendar(&mut self, start: usize) -> bool {
+        let digits = |lx: &Self, at: usize, n: usize| {
+            (0..n).all(|i| lx.at(at + i).is_some_and(|b| b.is_ascii_digit()))
+                && !lx.at(at + n).is_some_and(|b| b.is_ascii_digit())
+        };
+        if !(digits(self, 0, 4) && self.at(4) == Some(b'-') && digits(self, 5, 2)) {
+            return false;
+        }
+        let mut len = 7;
+        if self.at(7) == Some(b'-') && digits(self, 8, 2) {
+            len = 10;
+            if self.at(10) == Some(b'T')
+                && digits(self, 11, 2)
+                && self.at(13) == Some(b':')
+                && digits(self, 14, 2)
+            {
+                len = 16;
+                if self.at(16) == Some(b':') && digits(self, 17, 2) {
+                    len = 19;
+                }
+                if self.at(len) == Some(b'Z') {
+                    len += 1;
+                } else {
+                    let end = len;
+                    self.pos += end;
+                    self.error(
+                        "E004",
+                        start,
+                        self.pos,
+                        format!(
+                            "`{}` needs its time zone: write the time in UTC with `Z`, such as `{}Z`",
+                            self.slice(start, self.pos),
+                            self.slice(start, self.pos)
+                        ),
+                    );
+                    self.push(Tok::Calendar(String::new()), start);
+                    return true;
+                }
+            }
+        }
+        if self.at(len).is_some_and(is_ident_char) {
+            return false;
+        }
+        let written = self.slice(start, start + len).to_string();
+        self.pos += len;
+        let text = match len {
+            7 => format!("{written}-01"),
+            17 => format!("{}:00Z", written.trim_end_matches('Z')),
+            _ => written.clone(),
+        };
+        let checked = if len <= 10 {
+            crate::types::check_date(&text)
+        } else {
+            crate::types::check_time(&text)
+        };
+        if let Err(e) = checked {
+            self.error("E004", start, self.pos, e);
+            self.push(Tok::Calendar(String::new()), start);
+            return true;
+        }
+        let canonical = if len == 7 { written } else { text };
+        self.push(Tok::Calendar(canonical), start);
+        true
+    }
+
     fn punct(&mut self, b: u8, start: usize) {
         let two = |lx: &Self| lx.at(1);
         let (tok, len) = match (b, two(self)) {
@@ -463,6 +544,8 @@ impl Lexer<'_> {
             (b'!', Some(b'=')) => (Tok::NotEq, 2),
             (b'<', Some(b'=')) => (Tok::Le, 2),
             (b'>', Some(b'=')) => (Tok::Ge, 2),
+            (b'?', Some(b'.')) => (Tok::QDot, 2),
+            (b'?', Some(b'?')) => (Tok::QQ, 2),
             (b'(', _) => (Tok::LParen, 1),
             (b')', _) => (Tok::RParen, 1),
             (b'{', _) => (Tok::LBrace, 1),

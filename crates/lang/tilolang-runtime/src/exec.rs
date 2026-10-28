@@ -325,6 +325,7 @@ impl Core {
             chain: ctx.chain.iter().map(|m| m.0.clone()).collect(),
             module: pkg.hash.0.clone(),
             approved_by: ctx.approved_by.as_ref().map(|p| p.0.clone()),
+            ..ChangeNote::default()
         }
     }
 
@@ -354,6 +355,7 @@ impl Core {
             Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
             _ => None,
         });
+        let note = Self::note(ctx, &pkg, aref);
         self.frames.borrow_mut().push(
             pkg.hash.clone(),
             FrameKind::Action(ActionState {
@@ -365,6 +367,8 @@ impl Core {
                 queued: Vec::new(),
                 scenario: meta.scenario,
                 acting_as: Vec::new(),
+                note: Box::new(note),
+                touched: std::collections::BTreeSet::new(),
             }),
         );
         let result = self.call_in_frame(
@@ -374,14 +378,19 @@ impl Core {
             &aref.args,
             meta.result.as_deref(),
         );
+        let at = self.invocation_time();
         let frame = self.frames.borrow_mut().pop();
-        let queued = match frame.map(|f| f.kind) {
-            Some(FrameKind::Action(a)) => a.queued,
-            _ => Vec::new(),
+        let (queued, txn, note) = match frame.map(|f| f.kind) {
+            Some(FrameKind::Action(a)) => {
+                let mut note = *a.note;
+                note.at = Some(at);
+                note.touched = a.touched.into_iter().collect();
+                (a.queued, a.txn, note)
+            }
+            _ => (Vec::new(), txn, Self::note(ctx, &pkg, aref)),
         };
         match result {
             Ok(v) => {
-                let note = Self::note(ctx, &pkg, aref);
                 self.store.borrow_mut().commit(txn, &note)?;
                 self.settle_blocks(&ctx.invoker, queued)?;
                 Ok(ActionOutcome::Done(v))
@@ -950,27 +959,75 @@ impl Core {
         ret_void()
     }
 
-    /// `now`: the invocation's time, read from the host's clock once per outermost invocation.
+    /// `now`: the invocation's time, read from the host's clock once per outermost invocation;
+    /// in a scenario's `as who at time` block, that time.
     fn now(&self) -> HResult<Option<Wasm>> {
-        let cached = {
+        {
             let frames = self.frames.borrow();
-            if !matches!(frames.top()?.kind, FrameKind::Action(_)) {
+            let FrameKind::Action(state) = &frames.top()?.kind else {
                 return trap("now is only available in actions");
+            };
+            if let Some(time) = state.acting_as.last().and_then(|(_, at)| at.clone()) {
+                drop(frames);
+                return self.ret_h(Value::Text(time));
             }
-            frames.now.clone()
-        };
-        if let Some(time) = cached {
-            return self.ret_h(Value::Text(time));
+        }
+        let time = self.invocation_time();
+        tilolang::types::check_time(&time)
+            .map_err(|e| HostFail::Trap(format!("the host's clock: {e}")))?;
+        self.ret_h(Value::Text(time))
+    }
+
+    /// The time of the outermost invocation running: read from the host's clock at its first
+    /// use and kept until it returns.
+    fn invocation_time(&self) -> String {
+        if let Some(time) = self.frames.borrow().now.clone() {
+            return time;
         }
         let time = self
             .clock
             .borrow()
             .as_ref()
             .map_or_else(|| crate::core::EPOCH.to_owned(), |clock| clock());
-        tilolang::types::check_time(&time)
-            .map_err(|e| HostFail::Trap(format!("the host's clock: {e}")))?;
         self.frames.borrow_mut().now = Some(time.clone());
-        self.ret_h(Value::Text(time))
+        time
+    }
+
+    /// In a scenario, commit what the running transaction did so far as one change, made by
+    /// whoever the scenario acts as now and at the time it acts at, and go on in a new one: each
+    /// `as who at time` block is a change of its own, which history and reflection show as
+    /// that person's at that time.
+    fn scenario_segment(&self) -> HResult<()> {
+        let at = self.invocation_time();
+        let (txn, note) = {
+            let mut frames = self.frames.borrow_mut();
+            let FrameKind::Action(state) = &mut frames.top_mut()?.kind else {
+                return trap("only a scenario names people and acts as them");
+            };
+            if !state.scenario {
+                return trap("only a scenario names people and acts as them");
+            }
+            let mut note = (*state.note).clone();
+            if let Some((who, time)) = state.acting_as.last() {
+                note.invoker.clone_from(&who.0);
+                note.at = Some(time.clone().unwrap_or(at));
+            } else {
+                note.at = Some(at);
+            }
+            note.touched = std::mem::take(&mut state.touched).into_iter().collect();
+            (state.txn, note)
+        };
+        let next = {
+            let mut store = self.store.borrow_mut();
+            store
+                .commit(txn, &note)
+                .map_err(|e| HostFail::Trap(e.to_string()))?;
+            store.begin().map_err(|e| HostFail::Trap(e.to_string()))?
+        };
+        if let FrameKind::Action(state) = &mut self.frames.borrow_mut().top_mut()?.kind {
+            state.txn = next;
+        }
+        Ok(())
     }
 
     /// Run `f` on the top frame's action state, which must be a scenario's: only seed data
@@ -1002,7 +1059,10 @@ impl Core {
                 let FrameKind::Action(state) = &frames.top()?.kind else {
                     return trap("invoker is only available in actions");
                 };
-                let who = state.acting_as.last().unwrap_or(&state.invoker);
+                let who = state
+                    .acting_as
+                    .last()
+                    .map_or(&state.invoker, |(who, _)| who);
                 let who = Value::Principal(who.clone());
                 drop(frames);
                 self.ret_h(who)
@@ -1014,10 +1074,21 @@ impl Core {
             }
             Imp::InvokerPush => {
                 let who = self.principal_arg(a.h(0)?)?;
-                self.scenario_state(|state| state.acting_as.push(who))?;
+                let at = match self.val(a.h(1)?)? {
+                    Value::Opt(Some(time)) => match *time {
+                        Value::Text(t) => Some(t),
+                        other => {
+                            return trap(format!("expected a Time, got {}", other.kind_name()));
+                        }
+                    },
+                    _ => None,
+                };
+                self.scenario_segment()?;
+                self.scenario_state(|state| state.acting_as.push((who, at)))?;
                 ret_void()
             }
             Imp::InvokerPop => {
+                self.scenario_segment()?;
                 self.scenario_state(|state| {
                     state.acting_as.pop();
                 })?;
