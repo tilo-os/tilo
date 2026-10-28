@@ -154,6 +154,19 @@ impl App {
         }
     }
 
+    /// Turn the screen reader on or off at `settings`' rate and voice, for a
+    /// host that keeps them itself: the login screen, from the device's
+    /// sign-in comforts.
+    pub fn apply_screen_reader_settings(
+        &mut self,
+        settings: &settings_store::accessibility::ScreenReaderSettings,
+    ) {
+        self.set_screen_reader_enabled(settings.enabled);
+        if let Some(reader) = self.accessibility.screen_reader.as_mut() {
+            reader.configure(settings);
+        }
+    }
+
     pub fn screen_reader_enabled(&self) -> bool {
         self.accessibility.screen_reader.is_some()
     }
