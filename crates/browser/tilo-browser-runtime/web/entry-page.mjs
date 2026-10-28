@@ -787,6 +787,12 @@ export async function startEntryPage({mode}) {
     },
   });
   let runtime;
+  // Whether this browser can draw at all, asked as the page starts: the
+  // browser's GPU process takes hundreds of milliseconds to answer on a
+  // first visit, and nothing the door needs waits on it. `entry.mjs` asks
+  // for the answer before it mounts anything, so a browser that cannot draw
+  // still opens no window.
+  const renderer = rendererUnavailable();
   /** Said while one of the person's devices decides on this one. */
   const showPairingCode = code => {
     document.documentElement.dataset.pairingCode = code;
@@ -794,6 +800,7 @@ export async function startEntryPage({mode}) {
   };
   const deps = {
     loadRuntime: async () => (runtime = await loadRuntime()),
+    rendererUnavailable: () => renderer,
     onAdmitted: peer => { admitted = peer; },
     prefetchApplication,
     // An embed always shows the workspace the embedding site names.
@@ -961,20 +968,21 @@ export async function startEntryPage({mode}) {
         runtime, requireExistingCertificate: true}));
     },
   };
-  const unavailable = await rendererUnavailable();
-  if (unavailable) {
-    // Said before admission, so a browser that cannot draw the desktop
-    // never takes a seat or leaves a person behind.
-    tell('unsupported');
-    arrive('stopped');
-    document.documentElement.dataset.entry = 'unsupported';
-    status.textContent = '';
-    rendererCard(unavailable);
-    return;
-  }
   try {
     const page = await boot({mode, surface, status, deps, diagnostics, onStep: arrive});
     if (!page) return;
+    if (page.rendererUnavailable) {
+      // A browser that cannot draw: it got in beside the answer, and stops
+      // here with what to change, having opened no window and shown nothing
+      // of the room. Its seat goes with the page.
+      tell('unsupported');
+      arrive('stopped');
+      document.documentElement.dataset.entry = 'unsupported';
+      status.textContent = '';
+      rendererCard(page.rendererUnavailable);
+      void page.peer?.dispose?.();
+      return;
+    }
     opened = page;
     if (entered) void showVisitState({entered, retryAfter, because: seatlessBecause, workspace: visitedAt, workspaceName, tell, status});
     // Only the desktop lists host actions: a single app's mount refuses them.
