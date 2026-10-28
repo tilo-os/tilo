@@ -15,7 +15,7 @@ name: Build / env-runtime image
 # only when one of the two changes; a run whose tag already resolves exits early.
 # The runtime's packages are snapshot markers in that file, so changing them
 # also changes the frozen RPM snapshot (build-rpms.yml). A run waits for a
-# build-rpms.yml main run building that snapshot; with none, it exits early
+# build-rpms.yml stable run building that snapshot; with none, it exits early
 # and the scheduled run builds the runtime once the snapshot is published.
 # A dispatch on a branch builds and seals with a throwaway key and publishes
 # nothing, to check a change before it lands.
@@ -25,7 +25,7 @@ on:
   schedule:
     - cron: "41 */4 * * *"
   push:
-    branches: [main]
+    branches: [stable]
     paths:
       - os/Containerfile.env-runtime
       - os/dev/resolve-env-runtime.sh
@@ -33,7 +33,7 @@ on:
       - .forgejo/workflows/build-env-runtime.yml
 
 concurrency:
-  group: env-runtime-${{ github.ref == 'refs/heads/main' && 'publication' || github.ref }}
+  group: env-runtime-${{ github.ref == 'refs/heads/stable' && 'publication' || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -80,7 +80,7 @@ jobs:
           else
             exists=false
           fi
-          if [[ $GITHUB_REF == refs/heads/main ]]; then
+          if [[ $GITHUB_REF == refs/heads/stable ]]; then
             build=$([[ $exists == false ]] && echo true || echo false)
             publish=$build
           else

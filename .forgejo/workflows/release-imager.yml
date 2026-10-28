@@ -1,11 +1,12 @@
 name: Release / Tilo Installer
 
-# Relevant protected-main pushes publish immutable signed native prereleases.
+# Relevant protected-branch pushes publish immutable signed native prereleases.
 # Stable tags retain media, distribution-index and website promotion gates.
-# Main never builds OS images or installer media; it consumes reviewed catalogs.
+# Main never builds OS images or installer media; it consumes reviewed catalogs,
+# and a promotion to stable is what requests a prerelease.
 on:
   push:
-    branches: ["main"]
+    branches: ["stable"]
     tags: ["imager-v*"]
     paths:
       - apps/imager/**
@@ -75,7 +76,7 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/imager-v') }}
 
 env:
-  TILO_CONTINUOUS_PUBLICATION: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && '1' || '0' }}
+  TILO_CONTINUOUS_PUBLICATION: ${{ github.event_name == 'push' && github.ref == 'refs/heads/stable' && '1' || '0' }}
   # Forgejo 16's workflow context can report false even for protected main.
   # The plan queries source metadata; brokers still validate the signed JWT.
   TILO_REF_PROTECTED: 'false'
@@ -150,7 +151,7 @@ jobs:
             *) echo '::error::installer_rootfs must be btrfs or ext4'; exit 1 ;;
           esac
           if [[ -n ${LENOVO_TARGET_IMAGE:-} || ${GENERIC_TARGET:-false} == true ]]; then
-            [[ $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
+            [[ $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/stable \
                && ${INSTALLER_ONLY:-false} == true \
                && ${PUBLISHED_OS_SOURCE_REVISION:-} =~ ^[0-9a-f]{40}$ \
                && ( -z ${LENOVO_TARGET_IMAGE:-} \
@@ -173,14 +174,14 @@ jobs:
             echo '::error::published_os_source_revision is only for offline installer-only runs'; exit 1;
           }
           if [[ "$GITHUB_REF" == refs/tags/imager-v* || ${TILO_CONTINUOUS_PUBLICATION:-0} == 1 || ${FULL_NATIVE:-false} == true ]]; then
-            echo 'linux-matrix={"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"}]}' >> "$GITHUB_OUTPUT"
+            echo 'linux-matrix={"include":[{"arch":"x86_64","runner":"runner-release"},{"arch":"aarch64","runner":"runner-large-arm64"}]}' >> "$GITHUB_OUTPUT"
           else
-            echo 'linux-matrix={"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"}]}' >> "$GITHUB_OUTPUT"
+            echo 'linux-matrix={"include":[{"arch":"x86_64","runner":"runner-release"}]}' >> "$GITHUB_OUTPUT"
           fi
           if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
-            echo 'medium-matrix={"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"}]}' >> "$GITHUB_OUTPUT"
+            echo 'medium-matrix={"include":[{"arch":"x86_64","runner":"runner-release"},{"arch":"aarch64","runner":"runner-large-arm64"}]}' >> "$GITHUB_OUTPUT"
           elif [[ ${FULL_NATIVE:-false} == true ]]; then
-            echo 'medium-matrix={"include":[{"arch":"x86_64","runner":"runner-disk-100g"},{"arch":"aarch64","runner":"runner-disk-100g-arm64"}]}' >> "$GITHUB_OUTPUT"
+            echo 'medium-matrix={"include":[{"arch":"x86_64","runner":"runner-disk-100g"},{"arch":"aarch64","runner":"runner-large-arm64"}]}' >> "$GITHUB_OUTPUT"
           else
             echo 'medium-matrix={"include":[{"arch":"x86_64","runner":"runner-disk-100g"}]}' >> "$GITHUB_OUTPUT"
           fi
@@ -303,7 +304,7 @@ jobs:
         run: rm -f -- "${REGISTRY_AUTH_FILE:?}"
 
   medium:
-    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+    if: github.event_name != 'push' || github.ref != 'refs/heads/stable'
     timeout-minutes: 180
     # Build and boot-test install media only on architecture-matched native
     # hosts. Tags use the dedicated KVM/DRI fleet; manual rehearsals may use
@@ -758,8 +759,8 @@ jobs:
     needs: medium
     # Needs the dedicated KVM release host, which installer-only rehearsals
     # deliberately do not use.
-    if: (github.event_name != 'push' || github.ref != 'refs/heads/main') && github.event.inputs.installer_only != 'true' && (vars.IMAGER_INTERNAL_BUNDLE == 'export' || vars.IMAGER_INTERNAL_BUNDLE == 'publish')
-    runs-on: imager-linux-x86_64
+    if: (github.event_name != 'push' || github.ref != 'refs/heads/stable') && github.event.inputs.installer_only != 'true' && (vars.IMAGER_INTERNAL_BUNDLE == 'export' || vars.IMAGER_INTERNAL_BUNDLE == 'publish')
+    runs-on: runner-release
     env:
       FEDORA_URL: ${{ vars.TILO_INTERNAL_CYCLE_FEDORA_URL }}
       FEDORA_SHA256: ${{ vars.TILO_INTERNAL_CYCLE_FEDORA_SHA256 }}
@@ -820,7 +821,7 @@ jobs:
 
   catalog:
     timeout-minutes: 60
-    if: always() && needs.plan.result == 'success' && (needs.medium.result == 'success' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && (needs.target_policy.result == 'success' || needs.target_policy.result == 'skipped')
+    if: always() && needs.plan.result == 'success' && (needs.medium.result == 'success' || (github.event_name == 'push' && github.ref == 'refs/heads/stable')) && (needs.target_policy.result == 'success' || needs.target_policy.result == 'skipped')
     needs: [plan, medium, target_policy]
     runs-on: runner
     outputs:
@@ -986,7 +987,7 @@ jobs:
         run: |
           set -euo pipefail
           case "${TILO_CONTINUOUS_PUBLICATION:-0}:${GITHUB_REF:-}" in
-            1:refs/heads/main|*:refs/tags/imager-v*)
+            1:refs/heads/stable|*:refs/tags/imager-v*)
               version="${TILO_VERSION#imager-v}"
               [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
                 || { printf 'native release version must be MAJOR.MINOR.PATCH\n' >&2; exit 1; }
@@ -1087,7 +1088,7 @@ jobs:
 
   windows:
     timeout-minutes: 180
-    if: always() && needs.catalog.result == 'success' && github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    if: always() && needs.catalog.result == 'success' && github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true')
     needs: catalog
     enable-openid-connect: true
     strategy:
@@ -1219,7 +1220,7 @@ jobs:
 
   macos:
     timeout-minutes: 180
-    if: always() && needs.catalog.result == 'success' && github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    if: always() && needs.catalog.result == 'success' && github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true')
     needs: catalog
     env:
       TILO_VERSION: ${{ needs.catalog.outputs.version || (startsWith(github.ref, 'refs/tags/imager-v') && github.ref_name) || '0.0.0' }}
@@ -1262,7 +1263,7 @@ jobs:
         run: |
           set -euo pipefail
           case "${TILO_CONTINUOUS_PUBLICATION:-0}:${GITHUB_REF:-}" in
-            1:refs/heads/main|*:refs/tags/imager-v*)
+            1:refs/heads/stable|*:refs/tags/imager-v*)
               version="${TILO_VERSION#imager-v}"
               [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
                 || { printf 'native release version must be MAJOR.MINOR.PATCH\n' >&2; exit 1; }
@@ -1340,9 +1341,12 @@ jobs:
             dist/tilo-imager/tilo-imager-macos-*.dmg.sha256
           if-no-files-found: error
 
+  # A branch push publishes the Linux media only: the Windows and macOS lanes
+  # need hosts this fleet does not serve, so they run on a release tag or an
+  # explicit full-native dispatch, and a skipped lane still publishes here.
   publish:
     timeout-minutes: 60
-    if: always() && needs.linux.result == 'success' && needs.windows.result == 'success' && needs.macos.result == 'success' && (startsWith(github.ref, 'refs/tags/imager-v') || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    if: always() && needs.linux.result == 'success' && (needs.windows.result == 'success' || needs.windows.result == 'skipped') && (needs.macos.result == 'success' || needs.macos.result == 'skipped') && (startsWith(github.ref, 'refs/tags/imager-v') || (github.event_name == 'push' && github.ref == 'refs/heads/stable'))
     needs: [plan, linux, windows, macos]
     runs-on: runner
     enable-openid-connect: true
@@ -1443,7 +1447,7 @@ jobs:
     timeout-minutes: 60
     if: startsWith(github.ref, 'refs/tags/imager-v')
     needs: publish
-    runs-on: imager-linux-aarch64
+    runs-on: runner-large-arm64
     env:
       TILO_IMAGER_MACOS_ENABLED: "1"
     enable-openid-connect: true
@@ -1482,9 +1486,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: imager-linux-x86_64
+          - runner: runner-release
             package_kind: formula
-          - runner: imager-linux-aarch64
+          - runner: runner-large-arm64
             package_kind: formula
     runs-on: ${{ matrix.runner }}
     steps:
