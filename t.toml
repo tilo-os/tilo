@@ -3365,7 +3365,7 @@ cost = "heavy"
 default = false
 
 # The ignored tests this kind of node supports, and the agent seats proof, on each architecture:
-# shell's compositor proofs and format-host's provider tests as checks of their own, each building
+# shell's compositor proofs as a check of its own, building
 # only the package it tests (a `--workspace` run compiled every package's tests for these few).
 [[check]]
 name = "nightly-ignored-shell-{arch}"
@@ -3382,26 +3382,6 @@ cargo build --locked -p terminal --bin terminal
 TILO_TERMINAL_BINARY=$CARGO_TARGET_DIR/debug/terminal bash tools/with-test-environment.sh \
   cargo nextest run -p shell --features agent-control --locked --profile ci --run-ignored only --test-threads 1 \
   -E 'test(headless_examples_smoke::agent_seats_proof_keeps_two_agents_apart)'
-"""
-requires = ["arch={arch}"]
-heavy = true
-on = ["stable", "dispatch"]
-env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.{arch}.json" }
-cost = "heavy"
-default = false
-
-[check.matrix]
-arch = ["x86_64", "aarch64"]
-
-[[check]]
-name = "nightly-ignored-format-host-{arch}"
-run = """
-export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source
-export TILO_TEST_NTFS_FIXTURES=0
-# The provider tests read the Markdown provider from its crate's own target/.
-CARGO_TARGET_DIR=$PWD/crates/doc/tilo-doc-codec-markdown-wasm/target crates/doc/tilo-doc-codec-markdown-wasm/build.sh
-bash tools/with-test-environment.sh cargo nextest run -p format-host --locked --profile ci --run-ignored only --test-threads 1 \
-  -E 'binary(integration)'
 """
 requires = ["arch={arch}"]
 heavy = true

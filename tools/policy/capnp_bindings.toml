@@ -4,13 +4,6 @@
 # by the regeneration, never by hand.
 
 [[crate]]
-path = "crates/doc/format-host"
-src_prefix = "."
-schemas = ["format-router.capnp"]
-schema_sha256 = "f21eb78a30308141dcedb721a698d3272b4505cdd05880f64a745691949f666e"
-bindings_sha256 = "3aa2cf112b5c4b7d2ba3ed177a03e2c875974b3de7521204968fcba0220b47d9"
-
-[[crate]]
 path = "crates/packaging/app-host"
 src_prefix = "schema"
 schemas = ["schema/app-host.capnp"]

@@ -1484,11 +1484,6 @@ inputs = ["apps/*/surface.toml"]
 readers = ["crates/collab/collab-types/src/surface.rs"]
 
 [[cargo]]
-package = "format-host"
-inputs = ["docs/app-model/formats.md"]
-readers = ["crates/doc/format-host/tests/integration.rs"]
-
-[[cargo]]
 package = "tilo-projector"
 # The CI target compiles the exact production TLS source, including its tests.
 inputs = ["vendor/fcast-sender-sdk/src/chromecast_tls.rs", "vendor/fcast-sender-sdk/src/chromecast_tls/", "vendor/fcast-sender-sdk/src/chromecast_auth.rs", "vendor/fcast-sender-sdk/src/chromecast_auth/"]

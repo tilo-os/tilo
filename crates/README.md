@@ -11,7 +11,7 @@ while `system/fs/` owns the collaborative filesystem service.
 | `agent/` | Provider configuration, model gateway, and local-model services |
 | `collab/` | Production collaboration protocols, actions, identity primitives, and reference state |
 | `dev/` | Developer tools, UI schema/graph support, generated-code checks, and collaboration probes |
-| `doc/` | Native document model, format-provider interfaces, import/export adapters, and the separately built WASM codec |
+| `doc/` | Native document model, format-provider interfaces and import/export adapters |
 | `hosting/` | Relay and home-peer services |
 | `media/` | Shared media primitives, OCR, thumbnail generation, and vision libraries |
 | `packaging/` | Package format, registry, installation, sandboxed launch, and app hosting |
@@ -25,7 +25,6 @@ while `system/fs/` owns the collaborative filesystem service.
 
 ## Developer tools and fixtures
 
-- `dev/collab-link`: standalone latency/throughput proxy for collaboration sockets.
 - `dev/frame-link`: encoded-frame network simulator and `flatpak-share-demo`.
 - `dev/click-test-client`: the minimal Wayland client the shell's sandbox and desktop tests drive.
 - `dev/ux-bench`: runs the `scripts/ux-bench` journeys against the native shell tree (macOS).

@@ -5,8 +5,7 @@
 //! Note on scope: `[providers]` is the manifest's "what file kinds this
 //! package opens" field. The declaration is correct and schema-valid today;
 //! the runtime piece that would *route* a `.vcf` open to this app (a
-//! MIME→app resolver in the launcher) is not yet built — only the WASM
-//! format-host reads `providers` today. See the crate's report for detail.
+//! MIME→app resolver in the launcher) is not yet built.
 
 #![allow(
     clippy::expect_used,

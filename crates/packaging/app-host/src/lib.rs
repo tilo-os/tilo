@@ -12,8 +12,7 @@
 //! - [`install`] — admit a `.tapp` against the catalogue identity the Store
 //!   capability approved, and install it into the package store.
 //! - [`service`] — Cap'n Proto `AppHost` server implementation.
-//! - [`transport`] — Unix-domain socket bind + accept loop (matches
-//!   the shape used by `format-host`).
+//! - [`transport`] — Unix-domain socket bind + accept loop.
 //! - [`client`] — the typed client the Store app uses.
 //!
 //! The crate exposes both a daemon binary (`tilo-app-host`) and the

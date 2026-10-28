@@ -63,7 +63,7 @@ fn main() -> anyhow::Result<()> {
     let catalog = Arc::new(Catalog::at(&root, SystemStore::from_env()));
 
     // capnp-rpc + tokio LocalSet (one task per connection, single
-    // event-loop Vat). Matches `format-host`'s shape.
+    // event-loop Vat).
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
