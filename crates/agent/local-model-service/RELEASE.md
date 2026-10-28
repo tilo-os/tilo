@@ -324,13 +324,13 @@ Dev images get the runtimes from main without a release.
 builds for that architecture and a throwaway key, and `os-dev-image-<arch>`
 puts that catalog and its key in place of the release's: the development key
 that signs the dev image vouches for both, as it does for the dev image's
-env-runtime. Before main publishes a dev image,
-`publish-model-runtimes-<arch>` uploads the runtime archives its catalog names
-to their immutable package URLs with the dev package token, so a dev device
-downloads them as it would a release's. The builds are reproducible to the
-byte (archives are written in name order without times or owners, and the
-roots keep no package database), so a dev image built from a branch names the
-same archives as main's and they download once main has published them.
+env-runtime. Main uploads each runtime's archive to its immutable package URL
+with the dev package token (`publish-model-runtime-<id>`) when t has room; a
+dev image is not held back for it, so after a runtime changes, installing it
+on a dev device fails to download until main has published it. The builds are
+reproducible to the byte (archives are written in name order without times or
+owners, and the roots keep no package database), so a dev image built from a
+branch names the same archives as main's.
 
 ## Owned runtime observations
 

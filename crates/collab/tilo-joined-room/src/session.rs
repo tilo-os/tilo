@@ -99,6 +99,20 @@ impl Connect {
                 .collect())
         })
     }
+
+    /// Whether this device is the room's host itself: the host its
+    /// enrollment pins is this very device. Such a room is never dialled.
+    /// This device holds the host's copy, so there is nothing to catch up on
+    /// and nobody else to reach.
+    #[must_use]
+    pub fn hosted_here(&self, identity: &HostIdentity) -> bool {
+        self.owner
+            .with_current(self.room, |view| {
+                let (cert, _) = identity.current_native_material(view.workspace())?;
+                Ok(view.transport_hint()?.host.device_public_key == cert.device_public_key)
+            })
+            .unwrap_or(false)
+    }
     /// The renewal of the certificate the room's record holds, when this
     /// device's custody holds one: the device proves its membership with it
     /// ([`crate::enroll::renew_membership`]) before its sessions dial again,

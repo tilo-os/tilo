@@ -1,7 +1,7 @@
 //! Provider costs in the existing owner profile and opt-in debug tracing.
 use std::time::Instant;
 
-use crate::compositor::metrics::profile;
+use tilo_frame_metrics::profile;
 
 pub(super) struct Cost<'a> {
     phase: &'static str,

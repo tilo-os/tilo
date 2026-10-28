@@ -108,7 +108,6 @@ impl Widget for ShellOverlayHost {
         // Read the person's region formats here, on the tick, so painting
         // the dates and numbers it formats never reads the settings file.
         let _ = ui::format::region::current();
-        self.reread_control_hints(Instant::now());
         let mut steps = UpdateSteps::start();
         // The roster, the display sheet's list and the quick settings page
         // glide on after a flick, repainted as a wheel's scroll is.
@@ -839,7 +838,7 @@ impl Widget for ShellOverlayHost {
         if st.overlays.quick_settings
             && matches!(
                 st.quick_settings.current_level(),
-                crate::shell::quick_settings::QsLevel::Notifications
+                tilo_quick_settings::QsLevel::Notifications
             )
         {
             self.notification_center.reading_scroll()
@@ -1671,7 +1670,7 @@ impl ShellOverlayHost {
                 st.overlays.quick_settings
                     && matches!(
                         st.quick_settings.current_level(),
-                        crate::shell::quick_settings::QsLevel::Notifications
+                        tilo_quick_settings::QsLevel::Notifications
                     )
                     && self.notification_center.is_reading()
             };

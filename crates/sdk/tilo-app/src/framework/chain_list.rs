@@ -58,7 +58,7 @@ pub enum Paged {
 type Seek<P> = Box<dyn Fn(&<P as Resource>::State) -> bool>;
 
 /// Where a view stands reading back through a chain. See the
-/// [module docs](self).
+/// module docs (`self`).
 pub struct ChainPager<P: Chained> {
     chain: Chain<P>,
     /// The reader came to the top of what is held.

@@ -48,7 +48,7 @@ pub async fn run() {
             options.next().is_none(),
             "unexpected mounted-resource argument"
         );
-        scrollback::run(&bundle).await;
+        Box::pin(scrollback::run(&bundle)).await;
         return;
     }
     let disconnect_retry = option.as_deref() == Some("--disconnect-retry");

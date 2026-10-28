@@ -570,7 +570,7 @@ mod tests {
         let chrome = crate::shell::chrome_state::ChromeState::new(
             crate::shell::state::WorkspaceTree::default(),
         );
-        chrome.borrow_mut().set_notification_policy_for_tests(
+        chrome.borrow_mut().follow_notification_policy(
             settings_store::notification_policy::NotificationPolicy::default(),
         );
         chrome.borrow_mut().set_dnd(true);
@@ -630,7 +630,7 @@ mod tests {
         let chrome = crate::shell::chrome_state::ChromeState::new(
             crate::shell::state::WorkspaceTree::default(),
         );
-        chrome.borrow_mut().set_notification_policy_for_tests(
+        chrome.borrow_mut().follow_notification_policy(
             settings_store::notification_policy::NotificationPolicy::default(),
         );
         chrome.borrow_mut().set_notification_bridge(bridge);
@@ -671,7 +671,7 @@ mod tests {
         let chrome = crate::shell::chrome_state::ChromeState::new(
             crate::shell::state::WorkspaceTree::default(),
         );
-        chrome.borrow_mut().set_notification_policy_for_tests(
+        chrome.borrow_mut().follow_notification_policy(
             settings_store::notification_policy::NotificationPolicy::default(),
         );
         chrome.borrow_mut().set_notification_bridge(bridge);
@@ -729,7 +729,7 @@ mod tests {
             tree.shared(),
             crate::shell::hosted_inputs::HostedTileInputs::default(),
         );
-        chrome.borrow_mut().set_notification_policy_for_tests(
+        chrome.borrow_mut().follow_notification_policy(
             settings_store::notification_policy::NotificationPolicy::default(),
         );
         chrome.borrow_mut().set_notification_bridge(bridge.clone());
@@ -913,7 +913,7 @@ mod tests {
             tree,
             crate::shell::hosted_inputs::HostedTileInputs::default(),
         );
-        chrome.borrow_mut().set_notification_policy_for_tests(
+        chrome.borrow_mut().follow_notification_policy(
             settings_store::notification_policy::NotificationPolicy::default(),
         );
         chrome.borrow_mut().set_notification_bridge(bridge.clone());
@@ -1026,7 +1026,7 @@ mod tests {
             fixture.chrome.borrow().tree_handle(),
             crate::shell::hosted_inputs::HostedTileInputs::default(),
         );
-        chrome.borrow_mut().set_notification_policy_for_tests(
+        chrome.borrow_mut().follow_notification_policy(
             settings_store::notification_policy::NotificationPolicy::default(),
         );
         chrome
@@ -1127,7 +1127,7 @@ mod tests {
             tree,
             crate::shell::hosted_inputs::HostedTileInputs::default(),
         );
-        chrome.borrow_mut().set_notification_policy_for_tests(
+        chrome.borrow_mut().follow_notification_policy(
             settings_store::notification_policy::NotificationPolicy::default(),
         );
         chrome.borrow_mut().set_notification_bridge(bridge.clone());

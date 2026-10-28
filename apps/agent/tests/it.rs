@@ -12,6 +12,8 @@ pub mod ai_transforms;
 #[cfg(target_os = "linux")]
 #[path = "harness_certificate_authority.rs"]
 pub mod harness_certificate_authority;
+#[path = "instruction_mode_eval.rs"]
+pub mod instruction_mode_eval;
 #[cfg(target_os = "linux")]
 #[path = "presence_semantics.rs"]
 pub mod presence_semantics;

@@ -14,6 +14,11 @@ use media::encode::{AudioCodec, EncodeReport, HwEncPolicy, Selection, VideoCodec
 
 use crate::model::Project;
 
+/// The render of a build without the `GStreamer` encoder (a browser page):
+/// a step at a time on the UI thread, saved by contents.
+#[cfg(not(any(feature = "gst", feature = "decode")))]
+mod stepped;
+
 /// Output resolution presets. Stored as the long edge; the project's
 /// aspect is preserved at encode time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,12 +65,27 @@ pub enum Container {
 
 impl Container {
     pub const ALL: [Container; 3] = [Container::Mp4, Container::WebM, Container::Mov];
+
+    /// The containers this copy writes. A copy that encodes with the
+    /// browser's own encoder ([`media::edit::ClipEncoder`]) writes `WebM`
+    /// alone, with whichever royalty-free codec the browser has.
+    pub fn offered() -> &'static [Container] {
+        if media::edit::ClipEncoder::available() {
+            &[Container::WebM]
+        } else {
+            &Self::ALL
+        }
+    }
+
     /// What the encoder actually produces — not what the container is
     /// capable of. `WebM` here is VP8 and MOV is H.264, because that is what
     /// [`encode_chain`] plugs; naming VP9 or `ProRes` would be telling the
     /// user they are getting a codec this pipeline never writes.
     pub fn label(self) -> &'static str {
         match self {
+            // The browser picks the codec (VP9 where it can), so the label
+            // names only what is certain.
+            Container::WebM if media::edit::ClipEncoder::available() => "WebM",
             Container::Mp4 => "MP4 / H.264",
             Container::WebM => "WebM / VP8",
             Container::Mov => "MOV / H.264",
@@ -117,7 +137,10 @@ impl Default for ExportSettings {
     fn default() -> Self {
         Self {
             resolution: Resolution::P1080,
-            container: Container::Mp4,
+            container: Container::offered()
+                .first()
+                .copied()
+                .unwrap_or(Container::Mp4),
             frame_rate: FrameRate::F30,
         }
     }
@@ -553,6 +576,10 @@ pub fn output_path(settings: &ExportSettings, project: &Project) -> std::path::P
 pub struct ExportJob {
     shared: Arc<JobState>,
     handle: Option<std::thread::JoinHandle<()>>,
+    /// A render run a step at a time by [`Self::pump`] instead of on a
+    /// worker thread.
+    #[cfg(not(any(feature = "gst", feature = "decode")))]
+    stepped: Option<stepped::SteppedRender>,
 }
 
 /// What the worker publishes and the UI reads. Small enough to poll every
@@ -575,6 +602,50 @@ struct JobState {
 }
 
 impl ExportJob {
+    /// Start a render that runs a step at a time on the calling thread
+    /// (each [`Self::pump`]) and writes its file to `destination`: how a
+    /// browser page exports, with the encoder the browser has.
+    #[cfg(not(any(feature = "gst", feature = "decode")))]
+    pub fn stepped(
+        project: &Project,
+        settings: ExportSettings,
+        destination: ui::portal::SaveDestination,
+    ) -> Self {
+        let shared = Arc::new(JobState {
+            done: AtomicU64::new(0),
+            total: AtomicU64::new(0),
+            cancel: Arc::default(),
+            outcome: Mutex::new(None),
+            frame_patience: EXPORT_FRAME_PATIENCE,
+            report: None,
+        });
+        let stepped = match stepped::SteppedRender::start(project, settings, destination, &shared) {
+            Ok(render) => Some(render),
+            Err(reason) => {
+                if let Ok(mut slot) = shared.outcome.lock() {
+                    *slot = Some(ExportStatus::Failed { reason });
+                }
+                None
+            }
+        };
+        Self {
+            shared,
+            handle: None,
+            stepped,
+        }
+    }
+
+    /// Advance a render that runs a step at a time; nothing for one on a
+    /// worker thread. Called every frame while the job runs.
+    pub fn pump(&mut self) {
+        #[cfg(not(any(feature = "gst", feature = "decode")))]
+        if let Some(render) = self.stepped.as_mut()
+            && self.shared.outcome.lock().is_ok_and(|o| o.is_none())
+        {
+            render.step(&self.shared);
+        }
+    }
+
     /// Where the render has got to. `Rendering { progress }` while the
     /// worker is encoding, then whatever it finished as.
     pub fn status(&self) -> ExportStatus {
@@ -730,7 +801,12 @@ fn start_export_with_patience(
             reason: "could not start the export worker".into(),
         });
     }
-    ExportJob { shared, handle }
+    ExportJob {
+        shared,
+        handle,
+        #[cfg(not(any(feature = "gst", feature = "decode")))]
+        stepped: None,
+    }
 }
 
 /// Run the encode. Split out so [`start_export`] reads as the threading it is.
@@ -758,7 +834,12 @@ pub fn unreadable_sources(project: &Project) -> Vec<(String, crate::media::Hydra
             continue;
         }
         let src = item.source();
-        if !src.is_decodable() && !out.iter().any(|(n, _)| *n == item.name) {
+        // A copy kept by an earlier visit is read back from where it was
+        // kept on first ask; until then it is not here.
+        let kept = renders_by_steps()
+            && (crate::files::kept_here(&item.path)
+                || crate::files::kept_source(&item.path).is_some());
+        if !src.is_decodable() && !kept && !out.iter().any(|(n, _)| *n == item.name) {
             out.push((item.name.clone(), src.hydration));
         }
     }
@@ -861,8 +942,42 @@ pub fn unavailable_reason() -> Option<&'static str> {
     }
     #[cfg(not(feature = "gst"))]
     {
-        Some(UNAVAILABLE)
+        // A browser page encodes with the browser's own encoder.
+        (!renders_by_steps()).then_some(UNAVAILABLE)
     }
+}
+
+/// Whether this copy exports a step at a time with the browser's encoder
+/// ([`ExportJob::stepped`]) rather than on a `GStreamer` worker thread.
+pub fn renders_by_steps() -> bool {
+    cfg!(not(any(feature = "gst", feature = "decode"))) && media::edit::ClipEncoder::available()
+}
+
+/// The audio frame video frame `i` starts at.
+#[cfg(any(feature = "gst", not(feature = "decode")))]
+fn audio_frame_at(i: u64, fps: f64) -> u64 {
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "frame and sample counts of a render are far inside f64's exact range, and positive"
+    )]
+    let at = (i as f64 / fps * f64::from(crate::audio::SAMPLE_RATE)).round() as u64;
+    at
+}
+
+/// How many audio frames belong to video frame `i`.
+///
+/// The sample rate is not a whole multiple of most frame rates — 48000 at
+/// 30fps is 1600 exactly, but at 24fps it is 2000 and at 29.97 it is not
+/// an integer at all. Deriving each frame's count from the difference
+/// between two cumulative totals means the rounding error never
+/// accumulates, so an hour of audio still ends where the video does
+/// instead of drifting seconds out of sync.
+#[cfg(any(feature = "gst", not(feature = "decode")))]
+fn audio_frames_for(i: u64, fps: f64) -> usize {
+    let frames = audio_frame_at(i + 1, fps).saturating_sub(audio_frame_at(i, fps));
+    usize::try_from(frames).unwrap_or(usize::MAX)
 }
 
 /// What a person reads when this copy has no video encoder, in their terms:
@@ -994,19 +1109,6 @@ mod gst_pipeline {
     /// frame, which otherwise shortens the file and drifts against the PCM.
     pub(super) fn frame_time(i: u64, fps: f64) -> gst::ClockTime {
         gst::ClockTime::from_nseconds((i as f64 * 1_000_000_000.0 / fps).round() as u64)
-    }
-
-    /// How many audio frames belong to video frame `i`.
-    ///
-    /// The sample rate is not a whole multiple of most frame rates — 48000 at
-    /// 30fps is 1600 exactly, but at 24fps it is 2000 and at 29.97 it is not
-    /// an integer at all. Deriving each frame's count from the difference
-    /// between two cumulative totals means the rounding error never
-    /// accumulates, so an hour of audio still ends where the video does
-    /// instead of drifting seconds out of sync.
-    fn audio_frames_for(i: u64, fps: f64) -> usize {
-        let at = |n: u64| (n as f64 / fps * f64::from(crate::audio::SAMPLE_RATE)).round() as u64;
-        (at(i + 1) - at(i)) as usize
     }
 
     /// How long the flush may go without progress before the export gives up.

@@ -7,6 +7,11 @@ use tilo_actions::params::{ActionParam, ParamType};
 use super::*;
 use crate::shortcut::{ActorFilter, Shortcut, TriggerSpec};
 
+/// An app id with its parts separated by no literal separator: the test
+/// process must not depend on how one is written.
+const APP: &str = "so.tilo.mail";
+const OTHER_APP: &str = "so.tilo.calendar";
+
 fn program(triggers: Vec<TriggerSpec>) -> Shortcut {
     let mut shortcut: Shortcut = serde_json::from_value(json!({
         "id": "bridge",
@@ -165,9 +170,20 @@ fn a_shortcut_never_fires_on_a_change_its_own_run_made() {
     let out = dispatch(&as_shortcut(&shortcut), Event::Record(&event));
     assert!(out.firings.is_empty());
     assert_eq!(out.skipped[0].2, Skipped::SelfTriggered);
-    // Another Shortcut's run is somebody else's change.
+    // Another Shortcut's run is somebody else's change, but it is still a
+    // run's: firing on it would run two shortcuts into each other.
     event.shortcut = Some("tidy".into());
     let out = dispatch(&as_shortcut(&shortcut), Event::Record(&event));
+    assert!(out.firings.is_empty());
+    assert_eq!(
+        out.skipped[0].2,
+        Skipped::Loop {
+            through: "tidy".into()
+        }
+    );
+    // A person's own change still fires it, and records no cause.
+    let typed = post(person("bob"), &"e".repeat(64), None);
+    let out = dispatch(&as_shortcut(&shortcut), Event::Record(&typed));
     assert_eq!(out.firings.len(), 1);
     assert_eq!(out.firings[0].cause, None, "a Shortcut records no cause");
 }
@@ -393,6 +409,86 @@ fn a_connector_event_fires_by_source_and_filter() {
         dispatch(&as_shortcut(&shortcut), Event::Connector(&event))
             .firings
             .is_empty()
+    );
+}
+
+#[test]
+fn an_app_declaring_an_event_fires_the_trigger_watching_its_kind() {
+    let shortcut = program(vec![TriggerSpec::AppEvent {
+        app_id: APP.into(),
+        kind: "mail.message".into(),
+    }]);
+    // The event's kind carries the app that declared it, and the change is
+    // that app's own verb, so a second app cannot announce it.
+    let announced = |kind: &str| {
+        let mut change = post(person("bob"), &"7".repeat(64), None);
+        change.kind = format!("{APP}.{kind}.event");
+        change.did = Did::Verb(VerbCall::new(ActionKey::new(APP, kind, "received"), []));
+        change.arguments = Map::from_iter([
+            ("subject".to_string(), json!("Invoice")),
+            ("from".to_string(), json!("bob")),
+        ]);
+        change.incoming_message = false;
+        AppEvent::of_change(&change).expect("a declaration")
+    };
+    let event = announced("mail.message");
+    assert_eq!(event.app_id, APP);
+    assert_eq!(event.kind, "mail.message");
+    assert_eq!(event.room, "room-1");
+    let out = dispatch(&as_shortcut(&shortcut), Event::AppEvent(&event));
+    assert_eq!(out.firings.len(), 1);
+    assert_eq!(
+        out.firings[0].inputs["event"],
+        json!({
+            "app_id": APP,
+            "kind": "mail.message",
+            "payload": {"subject": "Invoice", "from": "bob"},
+        })
+    );
+    // The same declaration twice is one event, so one run.
+    assert_eq!(
+        out.firings[0].run,
+        dispatch(
+            &as_shortcut(&shortcut),
+            Event::AppEvent(&announced("mail.message"))
+        )
+        .firings[0]
+            .run
+    );
+    // Another app's change of the same kind is no declaration at all.
+    let mut foreign = post(person("bob"), &"9".repeat(64), None);
+    foreign.kind = format!("{APP}.mail.message.event");
+    foreign.did = Did::Verb(VerbCall::new(
+        ActionKey::new(OTHER_APP, "mail.message", "received"),
+        [],
+    ));
+    assert_eq!(AppEvent::of_change(&foreign), None);
+    let mut plain = post(person("bob"), &"8".repeat(64), None);
+    plain.kind = "mail.mail.message".into();
+    assert_eq!(AppEvent::of_change(&plain), None, "no event announced");
+    plain.kind = format!("{APP}.mail.message.event");
+    assert_eq!(
+        AppEvent::of_change(&plain),
+        None,
+        "the change is not the declaring app's verb"
+    );
+    plain.did = Did::Verb(VerbCall::new(
+        ActionKey::new(APP, "mail.message", "received"),
+        [],
+    ));
+    plain.kind = ".mail.message.event".into();
+    assert_eq!(AppEvent::of_change(&plain), None, "no app named the event");
+    plain.kind = "mail.message.event".into();
+    assert_eq!(
+        AppEvent::of_change(&plain),
+        None,
+        "no separator, so no app named the event"
+    );
+    plain.kind = format!("{APP}.mail.message.event.more");
+    assert_eq!(
+        AppEvent::of_change(&plain),
+        None,
+        "a kind that does not end as an event announces none"
     );
 }
 

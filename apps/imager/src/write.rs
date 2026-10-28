@@ -7,10 +7,10 @@
 //! exact byte loop that flashes a USB stick — and three independent safety
 //! gates in front of the block device:
 //!
-//! 1. **Typed confirmation.** A job only begins after the UI has collected an
-//!    explicit, typed confirmation: the operator must type the target device
-//!    name. [`begin_job`] re-checks that token against the target before it
-//!    returns [`JobStart::Started`].
+//! 1. **Typed confirmation.** A job only begins after the host collected an
+//!    explicit, typed confirmation of the drive's published write: the
+//!    operator types the target device name. [`begin_job`] re-checks that
+//!    token against the target before it returns [`JobStart::Started`].
 //!
 //! 2. **Write-time privilege.** The wizard always runs as the signed-in user.
 //!    Only after confirmation does it ask the host to authenticate a short-

@@ -70,7 +70,7 @@ pub trait DocumentHistory {
 
 /// Framework History lifecycle traversal for owners whose History surfaces
 /// differ from their visible presentation children.
-pub trait FrameworkHistoryTopology {
+pub(crate) trait FrameworkHistoryTopology {
     fn visit_framework_history(
         &self,
         visitor: &mut dyn FnMut(&super::FrameworkHistorySurface, &dyn Widget),
@@ -126,7 +126,7 @@ pub fn document_action_applied(
     }
 }
 
-pub fn visit_framework_history(
+pub(crate) fn visit_framework_history(
     widget: &dyn Widget,
     visitor: &mut dyn FnMut(&super::FrameworkHistorySurface, &dyn Widget),
 ) {
@@ -138,7 +138,7 @@ pub fn visit_framework_history(
 }
 
 /// Mutable [`visit_framework_history`].
-pub fn visit_framework_history_mut(
+pub(crate) fn visit_framework_history_mut(
     widget: &mut dyn Widget,
     visitor: &mut dyn FnMut(&mut super::FrameworkHistorySurface, &mut dyn Widget),
 ) {

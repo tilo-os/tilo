@@ -21,7 +21,6 @@ use crate::shell::catalogue::{CatalogueApp, SharedCatalogue};
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::host_apps::HostApp;
 use crate::shell::launcher::InstalledApp;
-use crate::shell::quick_settings::actions::{QsActionAvailability, UnavailableQsActions};
 use crate::shell::search::providers::actions::SharedQsDispatcher;
 use crate::shell::search::providers::applications::ApplicationsTestSource;
 use crate::shell::search::providers::host_applications::HostAppsTestSource;
@@ -37,6 +36,7 @@ use crate::shell::search::{
     Availability, QueryArgs, ResourceKind, ResourceKindText as _, SearchRegistry, SearchResult,
 };
 use std::sync::Arc;
+use tilo_quick_settings::actions::{QsActionAvailability, UnavailableQsActions};
 
 /// Every language's words of `search/*.ftl`, as the packer joins them.
 fn tilo_app_package_keywords(dir: &Path) -> Vec<String> {

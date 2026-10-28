@@ -27,7 +27,7 @@ fn mirrored(
         .workspaces
         .iter()
         .find(|workspace| workspace.room() == room)
-        .map(|workspace| workspace.shortcuts.clone())
+        .map(|workspace| tilo_automation::decode_saved(&workspace.shortcuts))
         .unwrap_or_default()
 }
 
@@ -63,8 +63,10 @@ fn a_saved_shortcut_lives_in_the_room_through_later_commits_and_a_restart() {
     let in_room = |owner: &tilo_joined_room::NativeWorkspaceOwner| {
         owner
             .with_current(fixture.room, |view| {
-                Ok(tilo_desktop_model::projection::workspace_shortcuts_of(
-                    view.peer().admitted_room().ok_or("no room")?,
+                Ok(tilo_automation::decode_saved(
+                    &tilo_desktop_model::projection::workspace_shortcuts_of(
+                        view.peer().admitted_room().ok_or("no room")?,
+                    ),
                 ))
             })
             .unwrap()

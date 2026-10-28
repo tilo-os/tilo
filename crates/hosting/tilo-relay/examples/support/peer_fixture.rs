@@ -31,7 +31,7 @@ pub fn fixture_seed(
         ),
     ] {
         let records = owners
-            .open(definition.app_id, room)
+            .open(definition.app_id(), room)
             .map_err(|e| e.to_string())?;
         let mut reserved = records
             .reserve_record(&checkout)
@@ -50,7 +50,7 @@ pub fn fixture_seed(
             .read(&checkout.id, |doc| doc.clone().save())
             .ok_or("seed owner missing")?;
         documents.push(SeedDocument {
-            app_id: definition.app_id.into(),
+            app_id: definition.app_id().into(),
             record_id: if checkout.id.is_package_primary() {
                 String::new()
             } else {
@@ -71,7 +71,7 @@ pub fn fixture_writer_insert(
     text: &str,
     now: SystemTime,
 ) -> Result<NeighbourMsg, String> {
-    let app = word_processor::definition().app_id;
+    let app = word_processor::definition().app_id();
     let record = RecordId::for_tab(1);
     let bytes = peer
         .document(app, record.as_str())

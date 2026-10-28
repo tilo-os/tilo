@@ -265,20 +265,7 @@ impl MediaFrameSource {
     /// A cheap signature of what [`set_project`](Self::set_project) would
     /// index, so a caller can skip the re-index when nothing has changed.
     pub fn project_signature(project: &Project) -> u64 {
-        // FNV-1a over each decodable item's id and path. Order-independent
-        // (the per-item hashes are summed) because the bin's order is not
-        // part of what this source cares about.
-        let mut acc: u64 = 0;
-        for item in &project.media {
-            if !item.kind.is_visual() || item.kind.is_generated() {
-                continue;
-            }
-            let mut hasher = fnv::FnvHasher::default();
-            std::hash::Hasher::write(&mut hasher, item.id.as_bytes());
-            std::hash::Hasher::write(&mut hasher, item.path.as_bytes());
-            acc = acc.wrapping_add(std::hash::Hasher::finish(&hasher));
-        }
-        acc
+        super::media_signature(project)
     }
 
     /// How long an `Exact` fetch waits for a picture before giving up.

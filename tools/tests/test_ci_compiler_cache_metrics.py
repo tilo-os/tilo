@@ -22,7 +22,7 @@ class CompilerCacheMeasurements(unittest.TestCase):
             stats = root / "stats"
             calls = root / "calls"
             client = root / "sccache"
-            client.write_text("#!/usr/bin/env python3\nimport os,sys,pathlib\n"
+            client.write_text("#!/usr/bin/env -S python3 -S\nimport os,sys,pathlib\n"
                               "assert sys.argv[1:]==['--show-stats','--stats-format=json']\n"
                               "p=pathlib.Path(os.environ['TEST_CALLS']);p.open('a').write('read\\n')\n"
                               "print(pathlib.Path(os.environ['TEST_STATS']).read_text())\n")
@@ -72,7 +72,7 @@ class CompilerCacheMeasurements(unittest.TestCase):
             client = Path(directory) / "sccache"
             # It sleeps far past the hang bound: an answer at all proves the
             # reader stopped waiting on its own.
-            client.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(3600)\n")
+            client.write_text("#!/usr/bin/env -S python3 -S\nimport time\ntime.sleep(3600)\n")
             client.chmod(0o755)
             # The default bound, as production reads it: no override passed.
             environment = {key: value for key, value in os.environ.items() if key != metrics.TIMEOUT_ENV}
@@ -94,7 +94,7 @@ class CompilerCacheMeasurements(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             client = Path(directory) / "sccache"
             for body in ["print('secret-'*20000)", "import sys;print('secret',file=sys.stderr);sys.exit(7)"]:
-                client.write_text("#!/usr/bin/env python3\n" + body + "\n")
+                client.write_text("#!/usr/bin/env -S python3 -S\n" + body + "\n")
                 client.chmod(0o755)
                 result = subprocess.run(["python3", str(HELPER), "snapshot"], capture_output=True,
                                         text=True, timeout=HANG_BOUND, env=os.environ | {"RUSTC_WRAPPER": str(client)})

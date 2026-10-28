@@ -1,9 +1,5 @@
 [ratchets.closure_action_button]
 "apps/browser-parts/src/address_controls.rs" = 2
-"apps/browser-parts/src/extension_controller.rs" = 3
-"apps/browser-parts/src/extension_controller/side_panel.rs" = 1
-"apps/browser-parts/src/page_dialogs.rs" = 4
-"apps/browser-parts/src/page_menu.rs" = 1
 
 [ratchets.closure_control]
 "apps/browser-parts/src/address_controls.rs" = 1

@@ -10,7 +10,7 @@ use super::{
     VelloDrmBridge, WARNED_CPU_FALLBACK, XrgbCpuWriteMode, XrgbHistoryTransaction, XrgbWriteResult,
     coalesce_damage, damage_area, damage_is_profitable,
 };
-use crate::shell::render::xrgb_history::XrgbWritePlan;
+use tilo_output_passes::xrgb_history::XrgbWritePlan;
 
 impl VelloDrmBridge {
     /// Render a versioned scene into an XRGB8888 destination, retaining the GPU target and its

@@ -37,10 +37,29 @@ pub const INSTALLED_ROOT: &str = "/usr/share/fonts/tilo";
 
 /// The catalog this build prepared from the source checkout, in this crate's
 /// `OUT_DIR`: it is part of the build's output, so wherever the build is
-/// reused the catalog is too.
+/// reused the catalog is too. The build names it from its profile directory,
+/// which holds the running program (or its `deps`/`examples`), so it is found
+/// above the program; the build directory's path is not compiled in.
 #[must_use]
 pub fn checkout_root() -> PathBuf {
-    PathBuf::from(env!("TILO_CHECKOUT_FONT_ROOT"))
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let named = Path::new(env!("TILO_CHECKOUT_FONT_ROOT"));
+        if named.is_absolute() {
+            return named.to_path_buf();
+        }
+        std::env::current_exe()
+            .ok()
+            .and_then(|program| {
+                program
+                    .ancestors()
+                    .skip(1)
+                    .map(|directory| directory.join(named))
+                    .find(|root| root.join("manifest.toml").is_file())
+            })
+            .unwrap_or_else(|| named.to_path_buf())
+    })
+    .clone()
 }
 
 /// `TILO_FONT_CATALOG`: the catalog to read instead of the compiled-in

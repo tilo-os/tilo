@@ -3,14 +3,17 @@
 //! back.
 
 use super::{
-    ActionParam, ActionSpec, Arc, EDIT_PARAM, Edit, ExecutionLocus, FIELD_EDIT, ParamType,
+    ActionParam, ActionSpec, Arc, EDIT_PARAM, Edit, ExecutionLocus, FIELD_EDIT, ParamType, Target,
     Vocabulary, encoded, origin_now_ms, refused,
 };
 
-/// The field edit at paths under `prefix`, described by `schema`.
+/// The field edit at paths under the prefix its target holds (a
+/// `Vec<Segment>` [`Target`], the record's root without one), whose root is
+/// of shape `root`, described by `schema`. One type serves every item at a
+/// path: what differs between them is the target.
 pub(super) fn rooted_edit_spec(
     vocabulary: &'static Vocabulary,
-    (prefix, root): (Vec<crate::Segment>, Option<crate::Shape>),
+    root: Option<crate::Shape>,
     schema: Arc<serde_json::Value>,
     label: String,
     description: &'static str,
@@ -41,8 +44,8 @@ pub(super) fn rooted_edit_spec(
         }));
     }
     let judged = root.map(|root| (root, FieldValues::from(now)));
-    let mut spec = edit_spec(vocabulary, prefix, schema, label, description, judged);
-    spec.contract.tags.extend(tags);
+    let mut spec = edit_spec(vocabulary, schema, label, description, judged);
+    spec.type_mut().contract.tags.extend(tags);
     let takes_reactions = vocabulary
         .record_table
         .is_some_and(|table| table.holds(<crate::Reactions as crate::Model>::TABLE));
@@ -78,23 +81,26 @@ fn reacts(args: &tilo_actions::ActionArgs) -> bool {
 /// The values of fields, as JSON text by dotted path.
 type FieldValues = Arc<[(String, String)]>;
 
-/// The field edit at paths under `prefix`, described by `schema`; with
-/// `judged`, the shape at `prefix` and the values now of its fields that
-/// weaken one way, by which an edit's risk is judged.
+/// The field edit at paths under the prefix its target holds, described by
+/// `schema`; with `judged`, the shape at that prefix and the values now of
+/// its fields that weaken one way, by which an edit's risk is judged. See
+/// [`rooted_edit_spec`].
 fn edit_spec(
     vocabulary: &'static Vocabulary,
-    prefix: Vec<crate::Segment>,
     schema: Arc<serde_json::Value>,
     label: String,
     description: &'static str,
     judged: Option<(crate::Shape, FieldValues)>,
 ) -> ActionSpec {
-    let read = move |value: &serde_json::Map<String, serde_json::Value>| {
+    let read = move |target: &Target, value: &serde_json::Map<String, serde_json::Value>| {
         let mut edit = Edit::<()>::from_json(serde_json::Value::Object(value.clone()))?;
-        if prefix.is_empty() {
+        let mut path = target
+            .get::<Vec<crate::Segment>>()
+            .cloned()
+            .unwrap_or_default();
+        if path.is_empty() {
             edit = vocabulary.rooted_edit(edit)?;
         }
-        let mut path = prefix.clone();
         path.extend(edit.path().iter().cloned());
         match (vocabulary.edit)(Edit::new(path, edit.op().clone())) {
             Some(action) => Ok(action),
@@ -104,7 +110,7 @@ fn edit_spec(
     let read = std::sync::Arc::new(read);
     let risk_read = std::sync::Arc::clone(&read);
     let exposing_shape = judged.as_ref().map(|(shape, _)| *shape);
-    ActionSpec::typed(
+    ActionSpec::typed_on(
         FIELD_EDIT,
         label,
         "Field edit as JSON",
@@ -113,11 +119,11 @@ fn edit_spec(
             ActionParam::required_owned(EDIT_PARAM, ParamType::Object, description)
                 .with_shared_schema(schema),
         ],
-        move |args| {
+        move |target, args| {
             let Some(tilo_actions::ArgValue::Object(value)) = args.get(EDIT_PARAM) else {
                 return refused("missing edit");
             };
-            match read(value) {
+            match read(target, value) {
                 Ok(mut action) => {
                     action.stamp(origin_now_ms());
                     encoded(&action)
@@ -139,11 +145,11 @@ fn edit_spec(
     // Removing a collection item asks, as a delete verb does, and so does
     // any edit of a field that is not ordinary, but an edit of one that
     // weakens one way only when it makes it weaker than it is now.
-    .with_risk(move |args| {
+    .with_risk_on(move |target, args| {
         let Some(tilo_actions::ArgValue::Object(value)) = args.get(EDIT_PARAM) else {
             return tilo_actions::RiskLevel::Low;
         };
-        let Ok(action) = risk_read(value) else {
+        let Ok(action) = risk_read(target, value) else {
             return tilo_actions::RiskLevel::Low;
         };
         let Some((shape, now)) = judged.as_ref().filter(|(_, now)| !now.is_empty()) else {

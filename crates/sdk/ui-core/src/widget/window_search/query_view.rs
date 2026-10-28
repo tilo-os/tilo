@@ -7,7 +7,7 @@
 //! itself implements that on itself. An app whose view is a function — a
 //! framework `ResourceApp`'s `view`, returning the view it draws — has no
 //! widget of its own to implement it on, so it wraps the view it returns in
-//! a [`QueryView`]: the bar's search then offers "Search <app>" in place,
+//! a [`QueryView`]: the bar's search then offers "Search `<app>`" in place,
 //! hands over what is typed as it changes, and shows the count the view
 //! kept, as it shows a [`Filterable`](crate::widget::Filterable) list's.
 //!

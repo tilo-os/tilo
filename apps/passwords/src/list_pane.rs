@@ -17,6 +17,8 @@ struct Row {
     title: String,
     summary: String,
     favorite: bool,
+    /// The item's published row, which its controls are bound to.
+    published: ui::tilo_actions::Resource,
 }
 
 impl Row {
@@ -26,6 +28,7 @@ impl Row {
             title: item.title.clone(),
             summary: summary(item),
             favorite: is_favorite(item),
+            published: crate::actions::item_row(item).into_resource(),
         }
     }
 }
@@ -64,34 +67,26 @@ impl ListPane {
     }
 
     fn list(&self, rows: Rows, filter: VaultFilter) -> VirtualList<Rows> {
-        let requests = Rc::clone(&self.requests);
-        let activate = Rc::clone(&self.requests);
-        VirtualList::with_selection_delegate(rows, 64.0, move |rows, index, id, _| {
+        let open = Rc::clone(&self.requests);
+        VirtualList::with_selection_delegate(rows, 64.0, |rows, index, id, _| {
             let Some(row) = rows.item(index) else {
                 return Box::new(ListRow::new(format!("passwords.item:{id}"), ""));
             };
-            let (open, toggle) = (Rc::clone(&requests), Rc::clone(&requests));
-            let (open_id, toggle_id) = (secret(id), secret(id));
             let mut list_row = ListRow::new(format!("passwords.item:{id}"), &row.title)
                 .avatar(&row.title, id)
                 .square()
-                .secondary(&row.summary)
-                // A plain callback, not a published control: the vault window
-                // keeps item titles out of what it publishes.
-                .on_activate(move || open.borrow_mut().push(Request::Open(open_id.clone())))
-                .action(
-                    Icon::Star,
-                    if row.favorite {
-                        "Remove from favorites"
-                    } else {
-                        "Add to favorites"
-                    },
-                    move || {
-                        toggle
-                            .borrow_mut()
-                            .push(Request::ToggleFavorite(toggle_id.clone()));
-                    },
-                );
+                .secondary(&row.summary);
+            // The star is the item's published `favorite`, addressed by the
+            // item's opaque id: the vault window keeps item titles out of
+            // what it publishes.
+            if let Some(favorite) = crate::actions::item_binding(&row.published, "favorite") {
+                let label = if row.favorite {
+                    "Remove from favorites"
+                } else {
+                    "Add to favorites"
+                };
+                list_row = list_row.action_binding(Icon::Star, label, favorite);
+            }
             if row.favorite {
                 list_row = list_row.mark(Icon::Star);
             }
@@ -101,7 +96,11 @@ impl ListPane {
         .with_id("passwords.items")
         .with_accessible_name(filter.label())
         .with_semantic_key(ToString::to_string)
-        .on_activate(move |id| activate.borrow_mut().push(Request::Open(secret(&id))))
+        // Choosing a row opens its item: the list publishes the choice by
+        // the items' opaque ids alone.
+        .on_view("passwords.items", move |id| {
+            open.borrow_mut().push(Request::Open(secret(&id)));
+        })
     }
 
     fn empty(&self, core: &Core) -> EmptyState {

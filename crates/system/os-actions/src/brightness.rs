@@ -1805,13 +1805,19 @@ mod tests {
 
     #[test]
     fn writes_to_one_ddc_monitor_are_spaced_out() {
-        let applied: Applied = Arc::new(Mutex::new(Vec::new()));
+        // When each write reached the monitor, and how long the writer had
+        // slept before it: the slept time is recorded, not spent, so the
+        // gap the monitor gets is the time that really passed between the
+        // writes plus the sleep the writer asked for. However long a loaded
+        // machine takes between the two, together they cover the settle gap.
+        let applied: Arc<Mutex<Vec<(f32, Instant, u64)>>> = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::clone(&applied);
         let writer = Writer::spawn(
             "DP-1",
             Arc::new(
                 move |_: &BrightnessTarget, pct: f32, _: Option<u16>| -> Result<(), String> {
-                    log.lock().unwrap().push(("DP-1".into(), pct));
+                    let slept = SLEPT_MS.load(Ordering::SeqCst);
+                    log.lock().unwrap().push((pct, Instant::now(), slept));
                     Ok(())
                 },
             ),
@@ -1823,11 +1829,19 @@ mod tests {
         writer.wait_idle();
         writer.send(target, 20.0, Some(100));
         writer.wait_idle();
-        let pcts: Vec<f32> = applied.lock().unwrap().iter().map(|(_, p)| *p).collect();
+        let applied = applied.lock().unwrap().clone();
+        let pcts: Vec<f32> = applied.iter().map(|(pct, _, _)| *pct).collect();
         assert_eq!(pcts, vec![10.0, 20.0]);
+        let (_, first_at, slept_before_first) = applied[0];
+        let (_, second_at, slept_before_second) = applied[1];
+        let slept = Duration::from_millis(slept_before_second - slept_before_first);
+        // The recorded sleep is whole milliseconds, cut down from the asked
+        // duration: allow the one it can lose.
         assert!(
-            SLEPT_MS.load(Ordering::SeqCst) >= 100,
-            "the monitor gets its settle gap"
+            second_at.duration_since(first_at) + slept + Duration::from_millis(1)
+                >= DDC_MIN_INTERVAL,
+            "the monitor gets its settle gap: {:?} passed and {slept:?} was slept",
+            second_at.duration_since(first_at)
         );
     }
 

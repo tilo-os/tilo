@@ -11,7 +11,6 @@ notes-surface-backlink = Verlinkende Notiz öffnen: { $title }
 notes-parent-path = In { $path }
 notes-linked-from = Verlinkt von
 notes-title-placeholder = Ohne Titel
-notes-save-failed-detail = Deine letzten Änderungen sind noch nicht gespeichert.
 notes-affordance-new-note = Neue Notiz
 notes-affordance-new-child = Neue Unternotiz
 notes-affordance-note-actions = Weitere Notizaktionen

@@ -219,7 +219,7 @@ pub(crate) fn deferred_projection(home: &Path, identity: &Path) -> io::Result<Op
 
 /// Recheck the signed deferred proof and attach it to the Browser launch.
 pub(crate) fn attach_deferred_continuity() {
-    let Some(home) = crate::onboarding_prepared::session_home() else {
+    let Some(home) = crate::onboarding::session_home() else {
         return;
     };
     let Ok(store) = crate::identity_registry::IdentityRegistryStore::from_env() else {
@@ -274,7 +274,7 @@ fn valid_projection(home: &Path, operation: &str, path: &Path) -> bool {
 }
 /// Recheck current-person/device authority and the signed exact projection on every launch.
 pub(crate) fn validate_published_projection(path: &Path) -> bool {
-    let Some(home) = crate::onboarding_prepared::session_home() else {
+    let Some(home) = crate::onboarding::session_home() else {
         return false;
     };
     let Ok(store) = crate::identity_registry::IdentityRegistryStore::from_env() else {

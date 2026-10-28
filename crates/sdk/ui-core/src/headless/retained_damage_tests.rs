@@ -375,3 +375,136 @@ fn session_matches_full_renders(sparse: bool) {
         "the session repainted in part {partial} times"
     );
 }
+
+/// A note: a page that scrolls a block editor of many paragraphs, as a
+/// tile's app. The editor is as tall as its paragraphs.
+struct Note {
+    page: Scrollable,
+}
+
+impl Widget for Note {
+    crate::testing::delegate_widget_methods!(
+        page: sync,
+        build_layout,
+        apply_layout,
+        draw,
+        handle_event,
+        get_rect
+    );
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.page]
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![&mut self.page]
+    }
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        self.page.collect_damage(regions);
+    }
+    fn name(&self) -> &str {
+        "Note"
+    }
+}
+
+crate::testing::test_app_widget!(Note, "Note");
+
+/// A note of eight paragraphs in a window, drawn once with its scene parts
+/// tracked, and where its editor is.
+fn note_window() -> (FrameHarness, RetainedFrames, TargetKey, Rect) {
+    let markdown = (0..8)
+        .map(|i| format!("Paragraph number {i} of the note."))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let note = Note {
+        page: Scrollable::new(ScrollAxis::Vertical).with_child(Box::new(
+            crate::widget::BlockEditor::from_markdown(&markdown),
+        )),
+    };
+    let window = WindowGroup::new(
+        100,
+        vec![(
+            TabDescriptor::new(1, "Note"),
+            TileContent::App(Box::new(note)),
+        )],
+        1,
+        WindowWidth::Normal,
+    );
+    let mut harness = FrameHarness::for_root(
+        crate::State::new(),
+        GroupRow::new(vec![window]),
+        SIZE,
+        Theme::dark(),
+    );
+    harness.track_scene_parts(true);
+    harness.set_coalesce_input_frames(true);
+    harness.relayout();
+    let mut frames = RetainedFrames::default();
+    let key = key(&harness, SIZE, 0);
+    present(&mut harness, &mut frames, key);
+    let editor = harness
+        .targets()
+        .into_iter()
+        .find(|(key, _)| key == "block_editor")
+        .map(|(_, rect)| rect)
+        .expect("the note's editor");
+    assert!(editor.height() > 200.0, "the note is long: {editor:?}");
+    (harness, frames, key, editor)
+}
+
+/// Each region of `repaint` is a few lines high, not the editor.
+fn assert_lines(what: &str, repaint: Repaint, editor: Rect) {
+    let Repaint::Regions(regions) = repaint else {
+        panic!("{what} repaints the whole frame");
+    };
+    assert!(!regions.is_empty(), "{what} repaints nothing");
+    for region in &regions {
+        assert!(
+            region.height() < 120.0,
+            "{what} repainted {region:?}, more than a few lines of the editor {editor:?}"
+        );
+    }
+}
+
+/// A new paragraph at the end of a note grows its editor by a line: the
+/// tile repaints that line and the caret, not the whole editor, whose own
+/// damage says where its blocks were and are.
+#[test]
+fn a_new_paragraph_repaints_its_line_not_the_editor() {
+    let (mut harness, mut frames, key, editor) = note_window();
+    harness.click_at(editor.x0 + 40.0, editor.y0 + 12.0);
+    for _ in 0..8 {
+        harness.key("ArrowDown");
+    }
+    harness.key("End");
+    present(&mut harness, &mut frames, key);
+    assert!(harness.ime_window().is_some(), "the click focuses the note");
+    for (what, step) in [("Enter", "Enter"), ("a letter", "x"), ("another", "y")] {
+        harness.key(step);
+        let repaint = present(&mut harness, &mut frames, key);
+        assert_lines(what, repaint, editor);
+    }
+}
+
+/// A selection dragged down a note, within a paragraph and then across
+/// paragraphs, repaints the rows whose selection changed with each move,
+/// not the editor.
+#[test]
+fn a_dragged_selection_repaints_the_rows_it_changed() {
+    let (mut harness, mut frames, key, editor) = note_window();
+    let scale = harness.input_scale;
+    let move_to = |harness: &mut FrameHarness, x: f64, y: f64| {
+        harness.send(&crate::synthetic_input::cursor_moved(x * scale, y * scale));
+    };
+    let (x, y) = (editor.x0 + 40.0, editor.y0 + 12.0);
+    move_to(&mut harness, x, y);
+    harness.send(&crate::synthetic_input::mouse_press());
+    present(&mut harness, &mut frames, key);
+    move_to(&mut harness, x + 60.0, y);
+    let repaint = present(&mut harness, &mut frames, key);
+    assert_lines("a drag along the paragraph", repaint, editor);
+    for step in 1..5 {
+        move_to(&mut harness, x + 60.0, y + 30.0 * f64::from(step));
+        let repaint = present(&mut harness, &mut frames, key);
+        assert_lines("a drag across the paragraphs", repaint, editor);
+    }
+    harness.send(&crate::synthetic_input::mouse_release());
+}

@@ -7,7 +7,7 @@ use crate::widget::Widget;
 impl<M: ListModel> VirtualList<M> {
     /// Called with the row chosen: the list, as control `id`, publishes
     /// choosing a row as its view action `select`
-    /// ([`view_choice`](crate::widget::view_choice)), each row addressed by
+    /// (`view_choice`), each row addressed by
     /// its semantic key ([`Self::with_semantic_key`]), so a person's click,
     /// a screen reader, a script and an agent choose through the same
     /// action. What is chosen is the window's own state, never an edit.

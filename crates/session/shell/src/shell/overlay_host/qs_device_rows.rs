@@ -14,7 +14,7 @@ impl ShellOverlayHost {
             .and_then(|chrome| {
                 self.qs_root.hosted_row_rect(
                     &chrome.borrow().quick_settings,
-                    crate::shell::quick_settings::QsSection::Clipboard,
+                    tilo_quick_settings::QsSection::Clipboard,
                     index,
                 )
             })
@@ -22,7 +22,7 @@ impl ShellOverlayHost {
     }
 
     pub(super) fn qs_device_control_rect(row: Rect) -> Rect {
-        crate::shell::quick_settings::hosted::control_rect(row)
+        tilo_quick_settings::hosted::control_rect(row)
     }
 
     /// The Devices row text for a local input: whether it is the one in
@@ -42,7 +42,7 @@ impl ShellOverlayHost {
     }
 
     pub(super) fn qs_realtime_consent_actions(row: Rect) -> (Rect, Rect) {
-        crate::shell::quick_settings::hosted::pair_rects(row)
+        tilo_quick_settings::hosted::pair_rects(row)
     }
 
     pub(super) fn qs_selected_media(&self) -> Option<&String> {
@@ -162,7 +162,7 @@ impl ShellOverlayHost {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        qs: &crate::shell::chrome_state::QuickSettingsState,
+        qs: &tilo_quick_settings::QuickSettingsState,
         address: &str,
     ) {
         let accessory = qs

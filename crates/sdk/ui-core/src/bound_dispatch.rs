@@ -34,127 +34,18 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use taffy::NodeId;
 
-/// How a person's input produced a control invocation: the provenance that
-/// decides whether it joins the undo step before it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum Input {
-    /// Programmatic, assistive or one-off: a step of its own.
-    #[default]
-    Discrete,
-    /// Continues the person's gesture (typing, a drag): it joins the step
-    /// before it when the resource says it continues it.
-    Continuing,
-    /// Starts a gesture (the first value of a drag): it never joins the
-    /// step before it, and the rest of the gesture joins it.
-    Starting,
-}
+mod input_provenance;
+#[cfg(test)]
+pub(crate) use input_provenance::physical_text;
+pub(crate) use input_provenance::{
+    Input, input, note_drained_input, note_drained_origin, with_input, with_physical_text,
+};
+// The native app runtime drains attributed invocations; it is not built for wasm32.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use input_provenance::take_attributed_with_origin;
+use input_provenance::{capture_physical_drain, native_text_input, with_native_text};
 
 pub(crate) use crate::widget::controls::Origin;
-
-thread_local! {
-    static INPUT: Cell<Input> = const { Cell::new(Input::Discrete) };
-    static DRAINED_INPUT: Cell<Input> = const { Cell::new(Input::Discrete) };
-    static DRAINED_ORIGIN: Cell<Origin> = const { Cell::new(Origin::Person) };
-    static NATIVE_TEXT_EXECUTION: Cell<Input> = const { Cell::new(Input::Discrete) };
-}
-
-struct InputScope(Input);
-impl Drop for InputScope {
-    fn drop(&mut self) {
-        INPUT.with(|flag| flag.set(self.0));
-    }
-}
-
-/// Private producer provenance, copied into the exact owned queue entry.
-/// It confers no execution authority and is never decoded from a request.
-pub(crate) fn with_input<T>(input: Input, run: impl FnOnce() -> T) -> T {
-    let _scope = InputScope(INPUT.with(|flag| flag.replace(input)));
-    run()
-}
-
-/// [`with_input`] for typing: `physical` text continues the person's
-/// typing; anything else is discrete.
-pub(crate) fn with_physical_text<T>(physical: bool, run: impl FnOnce() -> T) -> T {
-    with_input(
-        if physical {
-            Input::Continuing
-        } else {
-            Input::Discrete
-        },
-        run,
-    )
-}
-
-pub(crate) fn input() -> Input {
-    INPUT.with(Cell::get)
-}
-
-#[cfg(test)]
-pub(crate) fn physical_text() -> bool {
-    input() != Input::Discrete
-}
-
-pub(crate) fn note_drained_input(input: Input) {
-    DRAINED_INPUT.with(|flag| flag.set(input));
-}
-
-struct DrainTextScope(Input);
-impl Drop for DrainTextScope {
-    fn drop(&mut self) {
-        DRAINED_INPUT.with(|flag| flag.set(self.0));
-    }
-}
-
-/// The queue that hands over the invocation being drained says who asked
-/// for it ([`Origin::App`]: the app on its own); unsaid, it is a person's.
-pub(crate) fn note_drained_origin(origin: Origin) {
-    DRAINED_ORIGIN.with(|flag| flag.set(origin));
-}
-
-struct DrainOriginScope(Origin);
-impl Drop for DrainOriginScope {
-    fn drop(&mut self) {
-        DRAINED_ORIGIN.with(|flag| flag.set(self.0));
-    }
-}
-
-/// The next invocation `widget`'s queues hand over, the effect invocation
-/// it continues, and who asked for it.
-pub(crate) fn take_attributed_with_origin(
-    widget: &mut dyn Widget,
-) -> Option<(
-    tilo_actions::ControlInvocation,
-    Option<tilo_actions::InvocationId>,
-    Origin,
-)> {
-    let (taken, _, origin) = capture_physical_drain(|| {
-        crate::widget::controls::take_attributed_control_invocation(widget)
-    });
-    taken.map(|(intent, on_behalf_of)| (intent, on_behalf_of, origin))
-}
-
-fn capture_physical_drain<T>(run: impl FnOnce() -> T) -> (T, Input, Origin) {
-    let _scope = DrainTextScope(DRAINED_INPUT.with(|flag| flag.replace(Input::Discrete)));
-    let _origin = DrainOriginScope(DRAINED_ORIGIN.with(|flag| flag.replace(Origin::Person)));
-    let result = run();
-    (
-        result,
-        DRAINED_INPUT.with(Cell::get),
-        DRAINED_ORIGIN.with(Cell::get),
-    )
-}
-
-struct NativeTextScope(Input);
-impl Drop for NativeTextScope {
-    fn drop(&mut self) {
-        NATIVE_TEXT_EXECUTION.with(|flag| flag.set(self.0));
-    }
-}
-
-fn with_native_text<T>(input: Input, run: impl FnOnce() -> T) -> T {
-    let _scope = NativeTextScope(NATIVE_TEXT_EXECUTION.with(|flag| flag.replace(input)));
-    run()
-}
 
 /// Runtime destination; the domain address remains independent of UI instances.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -2219,20 +2110,19 @@ pub(crate) struct OrdinaryConfirmation {
 }
 
 fn control_input_surface(spec: &tilo_actions::ActionSpec) -> ControlInputSurface {
-    match &spec.input {
+    match spec.input() {
         tilo_actions::ActionInput::Immediate(_) => ControlInputSurface::Immediate,
-        tilo_actions::ActionInput::Deferred { type_id, .. } => ControlInputSurface::Deferred {
-            type_id: type_id.clone(),
+        tilo_actions::ActionInput::Deferred { type_id } => ControlInputSurface::Deferred {
+            type_id: type_id.to_owned(),
         },
         tilo_actions::ActionInput::Prompted {
             prompt,
             placeholder,
             collects,
-            ..
         } => ControlInputSurface::Prompted {
-            prompt: prompt.clone(),
-            placeholder: placeholder.clone(),
-            collects: *collects,
+            prompt: prompt.to_owned(),
+            placeholder: placeholder.to_owned(),
+            collects,
         },
     }
 }
@@ -2355,25 +2245,27 @@ pub(crate) fn control_witness_with_arguments(
         ControlContinuationArguments::Text(value) => (Some(value.as_str()), None),
         ControlContinuationArguments::Json(arguments) => (None, Some(arguments)),
     };
-    let (intent, continuation) = if matches!(spec.input, tilo_actions::ActionInput::Deferred { .. })
-    {
-        validate_deferred_arguments(spec, arguments, argument)?;
-        let intent = DeferredIntent::capture(spec)?;
-        let continuation = intent.draft().clone();
-        (PreparedActionIntent::Deferred(intent), continuation)
-    } else {
-        let encoded = encode_resource_action(&resources, &invocation.address, arguments, argument)?;
-        let continuation = spec
-            .continuation_identity(tilo_actions::ContinuationQuery::Exact(
-                original_arguments.query(),
-            ))
-            .ok_or_else(|| tilo_actions::DoorError::Unavailable {
-                code: "unsupported_continuation_identity".into(),
-                reason: "The action provider cannot prove the original target and handler identity"
-                    .into(),
-            })?;
-        (PreparedActionIntent::Encoded(encoded), continuation)
-    };
+    let (intent, continuation) =
+        if matches!(spec.input(), tilo_actions::ActionInput::Deferred { .. }) {
+            validate_deferred_arguments(spec, arguments, argument)?;
+            let intent = DeferredIntent::capture(spec)?;
+            let continuation = intent.draft().clone();
+            (PreparedActionIntent::Deferred(intent), continuation)
+        } else {
+            let encoded =
+                encode_resource_action(&resources, &invocation.address, arguments, argument)?;
+            let continuation = spec
+                .continuation_identity(tilo_actions::ContinuationQuery::Exact(
+                    original_arguments.query(),
+                ))
+                .ok_or_else(|| tilo_actions::DoorError::Unavailable {
+                    code: "unsupported_continuation_identity".into(),
+                    reason:
+                        "The action provider cannot prove the original target and handler identity"
+                            .into(),
+                })?;
+            (PreparedActionIntent::Encoded(encoded), continuation)
+        };
     Ok(ControlWitness {
         identity: control_identity_from_spec(resource, spec, continuation),
         intent,
@@ -3473,6 +3365,28 @@ pub struct CallbackBinding {
     pub(crate) writes_as_author: bool,
 }
 
+impl crate::collaboration::native_initial::ComponentBinding for CallbackBinding {
+    type Entry = CallbackScopeGuard;
+    type EnterError = BoundDispatchError;
+    fn admission_route(&self) -> Option<crate::collaboration::RouteSpec> {
+        CallbackBinding::admission_route(self)
+    }
+    fn app_id(&self) -> &str {
+        &self.app_id
+    }
+    fn checkout(&self) -> &RecordCheckout {
+        &self.checkout
+    }
+    fn enter(&self) -> Result<CallbackScopeGuard, BoundDispatchError> {
+        CallbackBinding::enter(self)
+    }
+    fn merge_committed(&self, mutation: collab_types::DocumentMutation) -> Result<(), String> {
+        self.records
+            .merge_remote_document(&self.checkout, mutation)
+            .map(|_| ())
+    }
+}
+
 /// Private retained traversal request. The public Widget trait cannot expose a
 /// root/registry closure directly; only toolkit code can construct this request.
 type ComponentVisitor<'a> = dyn FnMut(
@@ -3537,6 +3451,57 @@ pub(crate) fn service_retained_owner_model(
                     .map_err(BoundDispatchError::Persistence)
             });
             result = Some(admitted.and(projected).and(offered));
+        }
+        None
+    };
+    let mut request = ComponentRequest {
+        target: Some(captured),
+        found: false,
+        visit: &mut visit,
+    };
+    root.visit_retained_components(&mut RetainedComponentRequest {
+        inner: &mut request,
+    })?;
+    result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
+}
+
+/// A record's save moved on, and nothing else woke the owner
+/// ([`crate::owner_wake::OwnerWakeRequest::save_progress_only`]): its owner
+/// is told the save status alone. No model callback runs (update, settle,
+/// sync), nothing is offered, and the window's layout stands: the status
+/// is shown by what the owner presents of it (the window's bar), as when a
+/// sync delivers it. A save still in flight wakes the owner again when it
+/// moves on. Whether the owner shows something new, which a frame draws.
+pub(crate) fn service_owner_save_progress(
+    root: &mut dyn Widget,
+    work: &crate::owner_wake::OwnerWakeRequest,
+) -> Result<bool, BoundDispatchError> {
+    let captured = work.binding();
+    let _entry = captured.enter()?;
+    let mut result = None;
+    let mut visit = |current: &CallbackBinding,
+                     owner: &mut dyn crate::widget::AppWidget,
+                     _: &tilo_actions::ActionRegistry| {
+        if current.same_component(captured) {
+            result = Some(current.enter().and_then(|_entry| {
+                let status = current
+                    .records
+                    .save_status(&current.checkout.id)
+                    .map_err(BoundDispatchError::Record)?;
+                if status == crate::record::RecordSaveStatus::Saving {
+                    let wake = current.lifetime.clone();
+                    current.records.wake_on_save_progress(
+                        &current.checkout.id,
+                        std::sync::Arc::new(move || wake.wake_save_progress()),
+                    );
+                }
+                // What the owner shows of it: its window's bar (read by
+                // the host's next frame, the window current here), or
+                // anything else it asks to redraw.
+                let bar = crate::window_toolbar::revision();
+                owner.record_save_status(status);
+                Ok(crate::window_toolbar::revision() != bar || owner.needs_redraw())
+            }));
         }
         None
     };
@@ -3785,7 +3750,7 @@ fn note_native_text_policy(
     doc: &AutoCommit,
     encoded: &tilo_actions::EncodedAction,
 ) {
-    let input = NATIVE_TEXT_EXECUTION.with(Cell::get);
+    let input = native_text_input();
     if input == Input::Discrete {
         return;
     }
@@ -4421,7 +4386,8 @@ type ActiveRecord = (
 thread_local! {
     static ACTIVE: RefCell<Option<ActiveRecord>> = const { RefCell::new(None) };
 }
-pub(crate) struct CallbackScopeGuard {
+/// What entering a component's callback scope holds until it is dropped.
+pub struct CallbackScopeGuard {
     _wake: WakeScopeGuard,
     _device: ExecutingHostDevice,
     _person: ExecutingHostPerson,
@@ -4483,7 +4449,7 @@ impl CallbackBinding {
         &self,
         witness: Option<&crate::collaboration::PrimaryRouteWitness>,
     ) -> bool {
-        witness.is_some_and(|witness| self.matches_route(&witness.route))
+        witness.is_some_and(|witness| self.matches_route(witness.route()))
     }
     /// Whether `route` is the broker route this binding names.
     pub(crate) fn matches_route(&self, route: &crate::collaboration::RouteSpec) -> bool {

@@ -15,9 +15,9 @@ use shell::compositor::backend::drm::paint::{
     swizzle_subrect_rgba_to_xrgb8888_transformed,
 };
 use shell::compositor::backend::drm::scanout::ScanoutFormat;
-use shell::shell::color_pipeline::{SdrToPqEncoder, map_sdr_pixel_to_pq_bt2020_at};
-use shell::shell::hdr_display::DisplayCapabilities;
-use shell::wayland::edid::parse_hdr_display_info;
+use tilo_color_pipeline::color_pipeline::{SdrToPqEncoder, map_sdr_pixel_to_pq_bt2020_at};
+use tilo_color_pipeline::hdr_display::DisplayCapabilities;
+use tilo_wayland_ext::edid::parse_hdr_display_info;
 
 /// A 256-byte EDID: BT.2020 chromaticities in the base block and a CTA-861
 /// extension whose HDR static metadata block advertises SDR + PQ, a ~1000
@@ -171,7 +171,7 @@ fn readback_encodes_a_rendered_scene_into_pq_words() {
     }
     // SDR white sits at the configured brightness, not at the panel peak.
     let white_code = word(&hdr, 1, 1) & 0x3FF;
-    let nits = shell::shell::color_pipeline::pq_eotf(
+    let nits = tilo_color_pipeline::color_pipeline::pq_eotf(
         f32::from(u16::try_from(white_code).unwrap()) / 1023.0,
     );
     assert!((nits - white).abs() < 6.0, "white at {nits} cd/m²");

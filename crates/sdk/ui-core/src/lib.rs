@@ -103,6 +103,7 @@
 )]
 
 pub mod a11y;
+pub(crate) mod a11y_child_route;
 pub mod a11y_tree;
 #[cfg(all(feature = "native", target_os = "android"))]
 mod accesskit_android_adapter;
@@ -130,7 +131,7 @@ pub mod control_hints;
 /// can see and which outlives the window that started it.
 pub mod jobs;
 pub mod motion;
-#[cfg(test)]
+// The derives of this crate (`#[derive(Component)]`) name it by its own name.
 extern crate self as tilo_ui;
 #[cfg(test)]
 #[allow(
@@ -142,7 +143,9 @@ pub(crate) mod application_test_support;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod app;
-pub mod app_surface;
+/// The app surface an app's changes are decided against, kept with the collab
+/// client that names it on every signed op.
+pub use ::collaboration::app_surface;
 pub mod auth_backdrop;
 pub mod backdrop;
 pub mod call_pictures;
@@ -155,6 +158,7 @@ pub mod collaboration;
 pub use runtime_collab::native_media;
 pub mod collection_transition;
 pub use tilo_ui_paint::{color, color_compat};
+pub mod component;
 pub mod component_lifecycle;
 pub mod content;
 pub mod content_layout;
@@ -242,7 +246,7 @@ pub mod pick;
 pub mod pick_wire;
 pub mod platform;
 pub mod pointer_replay;
-pub mod portable_storage;
+pub use ::collaboration::portable_storage;
 pub mod presence;
 pub mod priority_contacts;
 pub mod profiling;
@@ -268,7 +272,8 @@ pub mod desk_widgets {
 pub mod ux_bench;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
 pub mod deferred;
-pub mod person_chat;
+pub mod lazy_code;
+pub use ::collaboration::person_chat;
 pub mod personal_dictionary;
 pub mod private_draft;
 pub mod text_assistance;
@@ -313,6 +318,8 @@ pub mod save_status;
 pub mod scale;
 pub mod scene_parts;
 pub mod screen_reader;
+pub mod screen_reader_chord;
+pub mod screen_reader_touch;
 pub mod scroll_copy;
 pub mod search;
 pub mod secret_paint;
@@ -597,6 +604,7 @@ mod physical_input_trace;
 #[cfg(all(feature = "native", feature = "test-support"))]
 #[doc(hidden)]
 pub use physical_input_trace::Trace as NativePhysicalInputTrace;
+pub mod input_frame;
 pub mod semantic_document_read;
 pub mod synthetic_input;
 

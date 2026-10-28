@@ -102,7 +102,6 @@ use crate::compositor::input_environment::InputEnvironment;
 use crate::compositor::lock_auth;
 use crate::compositor::lock_controller::{LockController, LockKey, UnlockOutcome};
 use crate::compositor::lock_screen::{self, LockView, lock_outputs};
-use crate::compositor::metrics;
 use crate::compositor::output_globals;
 use crate::compositor::pacing;
 use crate::compositor::present;
@@ -110,6 +109,7 @@ use crate::compositor::screen_dim::{Backlight, ScreenDimmer};
 use crate::compositor::surface_outputs::{
     Change as SurfaceOutputChange, Memberships as SurfaceOutputMemberships,
 };
+use tilo_frame_metrics as metrics;
 
 /// The person's other devices showing each tab, by tab.
 type PersonalViewers =
@@ -812,7 +812,7 @@ fn park_wake_reason(
 ) -> &'static str {
     match (park, deadline) {
         (Some(timeout), Some(name)) if slept.saturating_add(WAKE_TIMER_SLACK) >= timeout => name,
-        _ => super::metrics::WAKE_IO,
+        _ => tilo_frame_metrics::WAKE_IO,
     }
 }
 
@@ -3377,7 +3377,7 @@ struct FrameBuilderControlState<'a> {
     doc: Option<(&'a AutoCommit, &'a ObjId)>,
     /// The compositor's actual stream/input authority. Layout-only tests have
     /// no compositor and therefore leave this absent.
-    shares: Option<&'a crate::network::streaming::ShareRegistry>,
+    shares: Option<&'a tilo_window_share::streaming::ShareRegistry>,
     /// Read-only lock authentication status. Layout-only fixtures omit this;
     /// the native transport supplies it so an acceptance client can wait for
     /// an asynchronous verifier before entering a retry.
@@ -4273,6 +4273,12 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "trims": crate::shell::heap_trim::trims_completed(),
                 }),
             );
+            // Frames drawn so far: a waiter counts repaints with it, so a
+            // slow frame cannot pass for a settled layout.
+            fields.insert(
+                "frames_drawn".into(),
+                serde_json::json!(self.fb.frames_drawn()),
+            );
         }
         dump
     }
@@ -4936,6 +4942,7 @@ fn passcode_key_name(key: ui::passcode_keyboard::PasscodeKey) -> String {
         PasscodeKey::Char(c) => c.to_string(),
         PasscodeKey::Shift => "shift".into(),
         PasscodeKey::Symbols => "symbols".into(),
+        PasscodeKey::Letters => "letters".into(),
         PasscodeKey::Space => "space".into(),
         PasscodeKey::Backspace => "backspace".into(),
         PasscodeKey::Enter => "enter".into(),
@@ -7287,38 +7294,6 @@ fn queue_personal_fabric_input(
     }
 }
 
-fn end_spatial_control(
-    network: &crate::shell::network::ShellNetwork,
-    active: &mut Option<SpatialControlSession>,
-) {
-    let Some(session) = active.take() else {
-        return;
-    };
-    let events = session
-        .pressed_keys
-        .into_iter()
-        .map(
-            |keycode| crate::shell::device_fabric::FabricInputEvent::Key {
-                keycode,
-                pressed: false,
-                modifiers: 0,
-            },
-        )
-        .chain(session.pressed_buttons.into_iter().map(|button| {
-            crate::shell::device_fabric::FabricInputEvent::PointerButton {
-                button,
-                pressed: false,
-            }
-        }))
-        .collect();
-    let _ = crate::shell::device_fabric_runtime::queue_spatial_input_cleanup_bound(
-        network,
-        &session.target,
-        session.lease_nonce,
-        events,
-    );
-}
-
 #[cfg(test)]
 pub(crate) fn teardown_spatial_control_for_test(
     network: &crate::shell::network::ShellNetwork,
@@ -8009,6 +7984,10 @@ enum PriorityRoute {
     /// Shift+Alt+Num Lock flips mouse keys; it works whichever client has
     /// focus, since the person who needs it may have no other pointer.
     ToggleMouseKeys,
+    /// Ctrl+Super+Enter, or both volume keys held, turns the screen reader
+    /// on or off, on the lock screen too: whoever needs it cannot see where
+    /// else to turn it on.
+    ToggleScreenReader,
     /// Nothing claims the event ahead of spatial forwarding, input capture
     /// and ordinary client/chrome routing.
     Continue,
@@ -8057,7 +8036,8 @@ fn priority_route(
 #[path = "native_device_fabric.rs"]
 mod device_fabric;
 use device_fabric::{
-    active_physical_gamepad_binding, install_device_fabric_bridge, start_device_fabric,
+    active_physical_gamepad_binding, end_spatial_control, end_spatial_control_or_forget,
+    install_device_fabric_bridge, start_device_fabric,
 };
 
 /// Start the authenticated peer transport and install the chrome commands
@@ -8240,6 +8220,16 @@ fn attach_collab_broker_bridges(
         action_broker.set_app_action_consent(std::sync::Arc::new(
             crate::shell::app_action_consent::SheetPrompter::session(),
         ));
+        // Native openings asked for while the broker was binding run with it.
+        // The chrome's opening is the one slot the broker is attached to
+        // (`attach_app_action_broker`, below), shared with the launch session.
+        crate::shell::launcher::attach_native_app_opening(
+            frame_builder
+                .chrome_handle()
+                .borrow()
+                .native_app_opening
+                .clone(),
+        );
         frame_builder
             .host_mut()
             .attach_app_action_broker(action_broker);
@@ -8534,7 +8524,7 @@ struct PortalBackend {
     /// Never read: retaining the registration keeps its D-Bus connection, bus
     /// name, and object server alive once registered.
     _server: crate::session_runtime::Registration<crate::portal::ServerHandle>,
-    remote_input: std::sync::mpsc::Receiver<crate::network::streaming::RemoteAction>,
+    remote_input: std::sync::mpsc::Receiver<tilo_window_share::streaming::RemoteAction>,
     input_capture: crate::portal::InputCaptureCompositorHandle,
     screencast: crate::portal::ScreenCastStreamProvisionerHandle,
     capture_requests: std::sync::mpsc::Receiver<PortalCaptureCommand>,
@@ -9465,7 +9455,7 @@ pub fn run() {
     // A valid identity does not acknowledge or consume an installed setup.
     // Keep trusted first-use until its actual prepared/import/migration owner
     // has observed the necessary completions.
-    let prepared_pending = crate::onboarding_prepared::session_home()
+    let prepared_pending = crate::onboarding::session_home()
         .is_some_and(|home| crate::onboarding_prepared::session_pending(&home));
     // `main` probes the existing schema-2 record before entering the
     // compositor. If Secret Service is locked, that probe must not terminate
@@ -10007,7 +9997,13 @@ pub fn run() {
             crate::compositor::dev_env::DEV_ENV_OVERRIDES,
             std::env::var_os(TEST_CONTROL_ENV),
         )
-        .and_then(|path| crate::compositor::liveness::serve(&path, &event_loop.handle()))
+        .and_then(|path| {
+            tilo_liveness::serve(
+                &path,
+                &event_loop.handle(),
+                crate::shell::test_control_socket::bind_private,
+            )
+        })
     });
     let agent_control_listener_wake = agent_control_listener
         .as_ref()
@@ -10079,7 +10075,7 @@ pub fn run() {
     if let Some(bridge) = frame_builder.host().status_bridge() {
         bridge.wake_on_changes(Arc::clone(&session_wake));
     }
-    let mut retained_files = crate::onboarding_prepared::session_home()
+    let mut retained_files = crate::onboarding::session_home()
         .map(|home| crate::retained_files::Session::open(home, Arc::clone(&session_wake)));
     state.output_management.set_wake(Arc::clone(&session_wake));
     state.set_share_encode_wake(Arc::clone(&session_wake));
@@ -10192,6 +10188,7 @@ pub fn run() {
     // first press on: `wpctl` must never hold up input or painting.
     let mut media_key_audio: Option<crate::shell::audio_writer::AudioWriter> = None;
     let mut super_tap = crate::shell::input_policy::SuperTap::default();
+    let mut screen_reader_chord = ui::screen_reader_chord::ScreenReaderChord::new();
 
     // Idle / DPMS-blank / session-lock state machine (pure logic, see
     // `compositor::idle`); transitions become `backend.set_dpms` calls and
@@ -10553,7 +10550,7 @@ pub fn run() {
     let mut lock_pointer: Option<vello::kurbo::Point> = None;
     // The now-playing transport Tab or the arrows reached on the lock screen;
     // `None` is its password field.
-    let mut lock_media_focus: Option<crate::shell::quick_settings::now_playing::Transport> = None;
+    let mut lock_media_focus: Option<crate::shell::now_playing_panel::Transport> = None;
     // The keyboard the lock screen draws for unlocking by touch: shown from
     // the first touch, gone at the next physical key. No input method runs
     // while locked; the passcode never leaves the lock screen.
@@ -10668,7 +10665,7 @@ pub fn run() {
         }};
     }
     // Frame-loop instrumentation (`TILO_FRAME_TRACE`/`TILO_FRAME_SUMMARY`), free
-    // when neither is set. See `compositor::metrics`.
+    // when neither is set. See `tilo_frame_metrics`.
     let mut metrics = metrics::FrameRecorder::from_env();
     metrics.set_target_period(frame_period);
     // Bench hook: shut down cleanly after N seconds so the frame trace/summary
@@ -10781,7 +10778,7 @@ pub fn run() {
     // Nor does a turn wait on storage: apps running in-process ask their
     // stores to commit, and the stores' own threads do the waiting. A store
     // still asked to wait here is reported to the main-thread audit.
-    super::liveness::audit_storage_waits();
+    tilo_liveness::audit_storage_waits();
     let no_storage_waits = durable_store::waiting::forbid_on_this_thread();
     crate::shell::heap_trim::log_milestone("services-started");
     while !close_requested {
@@ -10806,7 +10803,7 @@ pub fn run() {
         }
         state.presentation_feedback.expire(Instant::now());
 
-        let mut input_steps = crate::compositor::metrics::SlowestStep::starting_at(iter_t0);
+        let mut input_steps = tilo_frame_metrics::SlowestStep::starting_at(iter_t0);
         if !transition_hold_sleep.is_zero() {
             frame_builder
                 .host_mut()
@@ -11166,6 +11163,11 @@ pub fn run() {
             );
             session_changed = true;
         }
+        // Both volume keys held past the chord's hold, with no new event to
+        // carry it.
+        if screen_reader_chord.tick(Instant::now()) {
+            session_changed |= toggle_screen_reader_by_chord(&mut frame_builder);
+        }
         let mut event_step = "accessibility";
         // Pointer events a touch contact became, still at the front of the
         // queue: the input-route lines say a click came from a finger.
@@ -11293,21 +11295,26 @@ pub fn run() {
                     // Whether the chrome handled this event itself; for raw
                     // touch that means a shell gesture or a touch-aware widget.
                     let mut chrome_handled = false;
-                    let route = priority_route(
+                    let route = if crate::shell::input_policy::screen_reader_chord_toggles(
+                        &mut screen_reader_chord,
                         wev,
                         test_control_ctx.modifiers,
-                        locked,
-                        frame_builder.host().shortcut_config(),
-                    );
+                        Instant::now(),
+                    ) {
+                        PriorityRoute::ToggleScreenReader
+                    } else {
+                        priority_route(
+                            wev,
+                            test_control_ctx.modifiers,
+                            locked,
+                            frame_builder.host().shortcut_config(),
+                        )
+                    };
                     if let Some(steps) = key_steps.as_mut() {
                         steps.steps.mark("route");
                     }
                     if locked {
-                        if let Some(network) = peer_sync.as_ref() {
-                            end_spatial_control(network, &mut spatial_control);
-                        } else {
-                            spatial_control = None;
-                        }
+                        end_spatial_control_or_forget(peer_sync.as_deref(), &mut spatial_control);
                         if let WindowEvent::KeyboardInput { event: key_ev, .. } = wev {
                             // Keep both chord routing and Smithay's XKB state in step even
                             // while the lock owns the visible key.  Dropping a release here
@@ -11384,7 +11391,7 @@ pub fn run() {
                         // between them, Enter and Space act, Escape goes
                         // back to the field.
                         let media_available = lock_player.as_ref().is_some_and(|player| {
-                            crate::shell::quick_settings::now_playing::Transport::ALL
+                            crate::shell::now_playing_panel::Transport::ALL
                                 .into_iter()
                                 .any(|transport| transport.enabled(player))
                         });
@@ -11496,11 +11503,7 @@ pub fn run() {
                             &mut frame_builder,
                             spatial_control.is_some(),
                         );
-                        if let Some(network) = peer_sync.as_ref() {
-                            end_spatial_control(network, &mut spatial_control);
-                        } else {
-                            spatial_control = None;
-                        }
+                        end_spatial_control_or_forget(peer_sync.as_deref(), &mut spatial_control);
                         session_changed = true;
                     } else if (state.pointer_lock.is_engaged()
                         || state.shortcut_inhibit.is_active())
@@ -11529,6 +11532,8 @@ pub fn run() {
                     } else if route == PriorityRoute::LockSession {
                         // Super+L locks immediately.
                         apply_session_transitions!(session.request_lock(Instant::now()));
+                    } else if route == PriorityRoute::ToggleScreenReader {
+                        session_changed |= toggle_screen_reader_by_chord(&mut frame_builder);
                     } else if route == PriorityRoute::ToggleMouseKeys {
                         // The compositor applies the flipped preference on its
                         // next settings poll; the readout confirms it now.
@@ -11745,11 +11750,7 @@ pub fn run() {
                     time_usec,
                 } => {
                     if session.is_locked() {
-                        if let Some(network) = peer_sync.as_ref() {
-                            end_spatial_control(network, &mut spatial_control);
-                        } else {
-                            spatial_control = None;
-                        }
+                        end_spatial_control_or_forget(peer_sync.as_deref(), &mut spatial_control);
                     } else if state.pointer_lock.is_engaged() {
                         // A game holding the pointer reads every delta; the
                         // pointer must not wander onto another device.
@@ -11836,11 +11837,7 @@ pub fn run() {
                     // chrome's modifier snapshot, before accepting another
                     // physical event.
                     state.reset_client_keyboard_state();
-                    if let Some(network) = peer_sync.as_ref() {
-                        end_spatial_control(network, &mut spatial_control);
-                    } else {
-                        spatial_control = None;
-                    }
+                    end_spatial_control_or_forget(peer_sync.as_deref(), &mut spatial_control);
                     test_control_ctx.modifiers = Modifiers::default();
                 }
                 BackendEvent::OutputsChanged => {
@@ -11932,11 +11929,17 @@ pub fn run() {
                 }
                 BackendEvent::Focus(focused) => {
                     if !focused {
-                        if let Some(network) = peer_sync.as_ref() {
-                            end_spatial_control(network, &mut spatial_control);
-                        } else {
-                            spatial_control = None;
+                        // The host took the keyboard: what it held is up here.
+                        state.release_local_keyboard();
+                        if let Some(gesture) = super_tap.let_go() {
+                            frame_builder.host_mut().super_gesture(
+                                gesture,
+                                &test_control_ctx.doc,
+                                &test_control_ctx.root_obj,
+                            );
+                            session_changed = true;
                         }
+                        end_spatial_control_or_forget(peer_sync.as_deref(), &mut spatial_control);
                     }
                 }
                 BackendEvent::VisualAlert => {
@@ -12146,6 +12149,11 @@ pub fn run() {
                     settings_store::hardware::DesktopControlsConfig::load(),
                 );
             }
+            frame_builder.follow_settings_sections(
+                &live_settings.snapshot().document,
+                settings_change.control_hints(),
+                settings_change.notifications(),
+            );
             if settings_change.display_identify()
                 && frame_builder.host_mut().poll_display_identify()
                 && let Some(network) = peer_sync.as_ref()
@@ -12584,11 +12592,7 @@ pub fn run() {
             crate::portal::inhibit::publish_screensaver_state(session.is_locked());
             if session.is_locked() {
                 let _ = state.release_all_personal_fabric_input();
-                if let Some(network) = peer_sync.as_ref() {
-                    end_spatial_control(network, &mut spatial_control);
-                } else {
-                    spatial_control = None;
-                }
+                end_spatial_control_or_forget(peer_sync.as_deref(), &mut spatial_control);
             }
         }
         // Authority may disappear without another physical input event. A
@@ -13550,7 +13554,7 @@ pub fn run() {
                             surface,
                             event,
                         } => {
-                            match postcard::from_bytes::<crate::network::streaming::InputEvent>(
+                            match postcard::from_bytes::<tilo_window_share::streaming::InputEvent>(
                                 &event,
                             ) {
                                 Ok(event) => {
@@ -13669,10 +13673,7 @@ pub fn run() {
             // Quick Settings, Settings, a firmware hotkey, another program.
             let levels = os_actions::BrightnessService::global().levels();
             frame_builder.with_chrome(|st| {
-                if crate::shell::quick_settings::follow_brightness_levels(
-                    &mut st.quick_settings,
-                    &levels,
-                ) {
+                if tilo_quick_settings::follow_brightness_levels(&mut st.quick_settings, &levels) {
                     st.bump();
                 }
             });
@@ -14360,7 +14361,7 @@ pub fn run() {
             metrics::profile::record_phase("layout/accessibility", published.elapsed(), None);
             let layout_took = t_layout_start.elapsed();
             metrics.mark_layout(layout_took);
-            metrics.mark_cpu(crate::compositor::metrics::CpuPhase::Layout, paint_cpu);
+            metrics.mark_cpu(tilo_frame_metrics::CpuPhase::Layout, paint_cpu);
             let t_scene_start = Instant::now();
             let scene_cpu = metrics.cpu_snapshot();
             // When locked, paint the compositor-owned lock overlay instead of the chrome — app content is never submitted while locked.
@@ -14492,7 +14493,7 @@ pub fn run() {
                 frame_paint
             };
             metrics.mark_scene(t_scene_start.elapsed());
-            metrics.mark_cpu(crate::compositor::metrics::CpuPhase::Scene, scene_cpu);
+            metrics.mark_cpu(tilo_frame_metrics::CpuPhase::Scene, scene_cpu);
             // The selector queued semantic work and closed before this clean
             // scene was built. Execute screenshots here, before ownership of
             // the scene moves to the presentation thread; this is the only
@@ -14744,8 +14745,8 @@ pub fn run() {
                 submit_done,
                 submitted_serial,
             );
-            metrics.mark_cpu(crate::compositor::metrics::CpuPhase::Submit, submit_cpu);
-            metrics.mark_cpu(crate::compositor::metrics::CpuPhase::Paint, paint_cpu);
+            metrics.mark_cpu(tilo_frame_metrics::CpuPhase::Submit, submit_cpu);
+            metrics.mark_cpu(tilo_frame_metrics::CpuPhase::Paint, paint_cpu);
             metrics.mark_paint_wall(submit_done.saturating_duration_since(t_layout_start));
             if let Some(serial) = submitted_serial {
                 let presented = {
@@ -15207,6 +15208,7 @@ pub fn run() {
                 ("text-commit", state.text_commit_deadline()),
                 ("app-liveness", state.app_liveness_deadline()),
                 ("super-hold", super_tap.deadline()),
+                ("screen-reader-hold", screen_reader_chord.deadline()),
                 (
                     "ask-agent",
                     frame_builder.host().ask_agent_deadline(park_now),
@@ -15271,14 +15273,14 @@ pub fn run() {
         if let Some(watchdog) = &watchdog {
             watchdog.parking();
         }
-        super::liveness::trace_wake(
+        tilo_liveness::trace_wake(
             "dispatch-enter-ms",
             park.map_or(u64::MAX, |duration| {
                 u64::try_from(duration.as_millis()).unwrap_or(u64::MAX - 1)
             }),
         );
         let dispatched = event_loop.dispatch(park, &mut state);
-        super::liveness::trace_wake("dispatch-return", u64::from(dispatched.is_ok()));
+        tilo_liveness::trace_wake("dispatch-return", u64::from(dispatched.is_ok()));
         if let Some(watchdog) = &watchdog {
             watchdog.unparked();
         }
@@ -15431,6 +15433,19 @@ fn apply_pointer_constraint_change(
     }
 }
 
+/// Turn the person's screen reader on or off for its chord, say so and show
+/// it. `true` when the setting changed.
+fn toggle_screen_reader_by_chord(frame_builder: &mut FrameBuilder) -> bool {
+    let Some(on) = crate::shell::media_keys::toggle_screen_reader() else {
+        return false;
+    };
+    frame_builder.screen_reader_turned(on);
+    frame_builder.with_chrome(|chrome| {
+        publish_media_osd(chrome, crate::shell::osd::Osd::screen_reader(on));
+    });
+    true
+}
+
 fn publish_media_osd(
     chrome: &mut crate::shell::chrome_state::ChromeState,
     osd: crate::shell::osd::Osd,
@@ -15449,7 +15464,7 @@ fn publish_media_osd(
 }
 
 fn sync_quick_settings_from_osd(
-    quick_settings: &mut crate::shell::chrome_state::QuickSettingsState,
+    quick_settings: &mut tilo_quick_settings::QuickSettingsState,
     osd: crate::shell::osd::Osd,
 ) {
     match osd.kind {
@@ -15478,6 +15493,7 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::Touchpad { .. }
         | crate::shell::osd::OsdKind::PointerHeld { .. }
         | crate::shell::osd::OsdKind::MouseKeys { .. }
+        | crate::shell::osd::OsdKind::ScreenReader { .. }
         | crate::shell::osd::OsdKind::Magnifier { .. }
         | crate::shell::osd::OsdKind::InputSource(_)
         | crate::shell::osd::OsdKind::KeysCaptured { .. }
@@ -15639,7 +15655,7 @@ fn session_displays(outputs: &[crate::compositor::backend::Output]) -> os_action
 fn brightness_displays(
     levels: Vec<os_actions::MonitorLevel>,
     outputs: &[crate::compositor::backend::Output],
-) -> Vec<crate::shell::chrome_state::DisplayBrightness> {
+) -> Vec<tilo_quick_settings::DisplayBrightness> {
     levels
         .into_iter()
         .map(|level| {
@@ -15663,7 +15679,7 @@ fn brightness_displays(
                     .filter(|name| !name.is_empty())
                     .unwrap_or_else(|| level.connector.clone())
             };
-            crate::shell::chrome_state::DisplayBrightness {
+            tilo_quick_settings::DisplayBrightness {
                 connector: level.connector,
                 name,
                 level: level.level,
@@ -15991,7 +16007,7 @@ mod tests {
         );
         assert_eq!(
             park_wake_reason(park, name, Duration::from_millis(40)),
-            super::metrics::WAKE_IO,
+            tilo_frame_metrics::WAKE_IO,
             "a park cut short was ended by an fd, not the deadline"
         );
         assert_eq!(
@@ -16005,7 +16021,7 @@ mod tests {
         );
         assert_eq!(
             park_wake_reason(None, None, Duration::from_secs(5)),
-            super::metrics::WAKE_IO,
+            tilo_frame_metrics::WAKE_IO,
             "only an fd can end an unbounded park"
         );
         let mut tally = WakeTally::default();
@@ -16590,7 +16606,7 @@ mod tests {
     /// next unrelated event, a key's release a tenth of a second later.
     #[test]
     fn a_change_seen_on_a_tick_that_could_not_paint_is_still_owed() {
-        use crate::compositor::metrics::paint_reason as r;
+        use tilo_frame_metrics::paint_reason as r;
         let owed = NativeRedrawReasons {
             owed: true,
             ..NativeRedrawReasons::default()
@@ -16642,7 +16658,7 @@ mod tests {
 
     #[test]
     fn paint_reasons_name_exactly_what_content_changed_counts() {
-        use crate::compositor::metrics::paint_reason as r;
+        use tilo_frame_metrics::paint_reason as r;
         let quiet = NativeRedrawReasons::default();
         assert!(!quiet.content_changed(false));
         assert_eq!(quiet.paint_reason_bits(false, false), 0);
@@ -19382,7 +19398,7 @@ mod tests {
             "a locked session refuses the owner too"
         );
         assert!(
-            !crate::compositor::metrics::profile::active(),
+            !tilo_frame_metrics::profile::active(),
             "no refused request started a profile"
         );
     }
@@ -20690,7 +20706,7 @@ mod tests {
         // than degrading to an anonymous "sharing" boolean.
         {
             use crate::compositor::tab_binding::{self, Placement};
-            use crate::network::streaming::{ShareRegistry, StreamingShare};
+            use tilo_window_share::streaming::{ShareRegistry, StreamingShare};
 
             const AGENT_PEER: u64 = 0xA9;
             const SURFACE: u64 = 71_900;
@@ -21290,9 +21306,9 @@ fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder)
 struct PublishedOutputColors {
     described: Vec<(
         crate::compositor::backend::OutputId,
-        Option<crate::wayland::color_management::OutputDescription>,
+        Option<tilo_wayland_ext::color_management::OutputDescription>,
     )>,
-    /// [`crate::wayland::color_management::ColorManagerState::output_objects`]
+    /// [`tilo_wayland_ext::color_management::ColorManagerState::output_objects`]
     /// at that time; `None` before the first publish.
     objects: Option<u64>,
 }
@@ -21310,7 +21326,7 @@ fn publish_output_colors(
     backend: &dyn crate::compositor::backend::Backend,
     published: &mut PublishedOutputColors,
 ) {
-    use crate::wayland::color_management::OutputDescription;
+    use tilo_wayland_ext::color_management::OutputDescription;
     let outputs = backend.outputs();
     // Read before `update_outputs` takes the object list: an object created
     // after this read is counted next time and published then.

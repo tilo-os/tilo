@@ -1,0 +1,10 @@
+# tilolang ids: generated, commit it. Edit only through `tilolang ids --rename`.
+Counter = k3o4eblu
+Counter.value = 3wkdueca
+controls = 6ehvhxp4
+controls#minus = 5ujnvn62
+controls#plus = 6qj3tqm4
+counter = njld6xdx
+decrement = 6vyvuejf
+increment = b3szqso2
+scenario "a busy morning" = y62ensfc

@@ -45,11 +45,15 @@ pub mod path;
 pub mod program;
 pub mod requirements;
 pub mod run;
+mod saved;
 pub mod scenario;
 pub mod shortcut;
 mod template;
+pub mod text;
 mod types;
 
+#[cfg(test)]
+mod continuation_tests;
 #[cfg(test)]
 mod tests;
 
@@ -63,10 +67,12 @@ pub use check::{
 pub use grant::{StepGrant, action_rule, edit_reach, grant_answer, step_node, step_node_at};
 pub use path::StepPath;
 pub use run::{
-    AskRequest, ConfirmationRequest, DEFAULT_BACKOFF_MS, DEFAULT_STEP_TIMEOUT, MAX_BACKOFF_MS,
-    Recovered, RunHooks, RunId, RunMode, RunOutcome, RunReport, RunRequest, RunTrigger, STEP_FACET,
-    StepFailure, StepOutcome, StepRecord, StepStatus, StopWatch, invocation_id, run,
+    AskRequest, ConfirmationRequest, Continuation, DEFAULT_BACKOFF_MS, DEFAULT_STEP_TIMEOUT,
+    MAX_BACKOFF_MS, Recovered, RunHooks, RunId, RunMode, RunOutcome, RunReport, RunRequest,
+    RunTrigger, STEP_FACET, StepFailure, StepOutcome, StepRecord, StepStatus, StopWatch,
+    invocation_id, run,
 };
+pub use saved::{SavedShortcut, decode_saved};
 pub use scenario::{
     Assert, DOOR_CODES, FormatError, Holds, Input, Invocation, SCENARIO_FORMAT_VERSION, Scenario,
     ScenarioStep, SemanticAction, StateQuery, UnrunnableStep, is_door_code,

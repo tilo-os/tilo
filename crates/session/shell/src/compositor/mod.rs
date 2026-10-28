@@ -19,7 +19,6 @@ pub(crate) mod admin_control;
 pub(crate) mod agent_door;
 #[cfg(target_os = "linux")]
 pub mod agent_seats;
-#[cfg(target_os = "linux")]
 pub mod app_liveness;
 #[cfg(target_os = "linux")]
 mod audio_capture;
@@ -52,6 +51,7 @@ pub(crate) mod diagnostic_actions;
 #[cfg(target_os = "linux")]
 pub mod dictation;
 pub mod dictation_status;
+#[cfg(target_os = "linux")]
 pub mod downloaded_programs;
 pub mod drag_feedback;
 #[cfg(target_os = "linux")]
@@ -74,15 +74,12 @@ pub mod key_latency;
 #[cfg(target_os = "linux")]
 pub mod launch_permissions;
 pub(crate) mod listing_snapshots;
-#[cfg(target_os = "linux")]
-pub mod liveness;
 pub(crate) mod lock_actions;
 pub mod lock_auth;
 pub mod lock_controller;
 pub mod lock_screen;
 #[cfg(target_os = "macos")]
 pub mod macos;
-pub mod metrics;
 #[cfg(target_os = "linux")]
 pub mod native;
 #[cfg(target_os = "linux")]

@@ -7,7 +7,7 @@
 //! for devices that join later. This device writes its layout into its copy
 //! as it changes, offline too ([`WorkspaceTree::capture_workspace_layout`]),
 //! and folds in what others wrote once it arrives
-//! ([`WorkspaceTree::fold_workspace_layout`]). The copy is saved with the
+//! (`WorkspaceTree::fold_workspace_layout`). The copy is saved with the
 //! tree, so a change and the tree it was made in reach the disk together.
 //!
 //! What only this device decides (widths, maximization, the active tab,

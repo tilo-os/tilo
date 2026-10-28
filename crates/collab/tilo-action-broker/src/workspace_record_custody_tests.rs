@@ -46,6 +46,7 @@ mod workspace_record_custody {
             connection_id: 91,
             verified_identity: identity.clone(),
             record_kind: route_record_kind(route, None).unwrap(),
+            route_access: RouteAccess::Own,
             lease: Some(Rc::new(ConnectionLease {
                 local_media: Some(local),
                 state: room.state.clone(),

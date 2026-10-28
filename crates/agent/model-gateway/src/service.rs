@@ -823,13 +823,15 @@ async fn complete_request(
                 if !config.validation_errors().is_empty() {
                     return Err(ModelError::new(ErrorKind::InvalidRequest));
                 }
+                // Nothing set up yet is not an outage: the caller says
+                // where to set a provider up.
                 let profile = config
                     .active_profile()
-                    .ok_or_else(|| ModelError::new(ErrorKind::Unavailable))?;
+                    .ok_or_else(|| ModelError::new(ErrorKind::NoProvider))?;
                 let model = profile
                     .default_model
                     .as_ref()
-                    .ok_or_else(|| ModelError::new(ErrorKind::Unavailable))?;
+                    .ok_or_else(|| ModelError::new(ErrorKind::NoProvider))?;
                 Ok((profile.id.clone(), model.clone()))
             })
             .await?;

@@ -43,14 +43,13 @@ impl ShellNetwork {
             let Ok(mut asked) = self.on_demand_records.asked.lock() else {
                 return OnDemand::Arriving;
             };
-            match asked.get(&(ws, channel)) {
-                Some(empty) => *empty,
-                None => {
-                    asked.insert((ws, channel), false);
-                    // A host session that starts later is asked too.
-                    let _ = self.cmd_tx.try_send(NetCmd::OpenRecord { ws, channel });
-                    false
-                }
+            if let Some(empty) = asked.get(&(ws, channel)) {
+                *empty
+            } else {
+                asked.insert((ws, channel), false);
+                // A host session that starts later is asked too.
+                let _ = self.cmd_tx.try_send(NetCmd::OpenRecord { ws, channel });
+                false
             }
         };
         let hosted = self

@@ -354,7 +354,7 @@ fn open_in_fresh_profile(
             collaboration,
             || {
                 let records = owners
-                    .open(definition.app_id, &room)
+                    .open(&definition.app_id, &room)
                     .map_err(ui::launch::LaunchError::Record)?;
                 let target =
                     target(definition, &records).map_err(ui::launch::LaunchError::Record)?;

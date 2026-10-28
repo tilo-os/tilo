@@ -21,7 +21,7 @@ test-support = ["tilo-dialogs/test-support", "tilo-clock/test-support"]
 # The native desktop services (`native::services`): each platform crate's
 # system backend, speech, and the backends below. Without it the crate is the
 # host vocabulary only, and a host installs its own `host::HostServices`.
-native = ["dep:tokio", "dep:jni", "dep:ndk-context", "dep:tilo-files", "dep:tilo-model-client"]
+native = ["tilo-process/native", "dep:tokio", "dep:jni", "dep:ndk-context", "dep:tilo-files", "tilo-files/watch", "dep:tilo-model-client"]
 # Screen capture through the XDG Desktop Portal. Linux only: the native
 # runner turns it on for Linux targets, and it enables nothing elsewhere.
 # File choosers, OpenURI and location are platform crates' (`tilo-dialogs`,
@@ -44,7 +44,6 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", default-features = false }
 # Bounded reads of the host-selected read-only policy projection.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
-hex.workspace = true
 # PNG and JPEG encoding for every app (`png`, `jpeg`): written here, in the
 # shared runtime, so an app that encodes an image does not instantiate the
 # encoders' generic code into its own binary.
@@ -56,7 +55,9 @@ tokio = { workspace = true, optional = true, features = ["full"] }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tracing.workspace = true
 tilo-tts = { version = "0.1.0", path = "../../system/tts" }
-unic-langid.workspace = true
+# The host inputs (`host::environment`): who the process is and where its
+# files live, kept with the current process.
+tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
 winit.workspace = true
 # The clipboard vocabulary and each target's clipboard.
 tilo-clipboard.workspace = true

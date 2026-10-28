@@ -5,32 +5,36 @@
 //!
 //! - **Machine:** QEMU's `microvm` on x86-64 and `virt` on arm64, with virtio-mmio devices only.
 //!   The guest gets the step's cores and memory, and `/dev/kvm` of its own (nested
-//!   virtualisation) when it asks for KVM.
-//! - **Guest:** a kernel and a static busybox, which the caller pins (t builds them as the
-//!   outputs of a check: its `deploy/vm-guest`). [`prepare`] writes the initramfs per step: busybox, `init.sh` and
-//!   the job file that says what to mount and run.
+//!   virtualisation) when it asks for KVM. Guest memory is a shared memfd (`share=on`), as
+//!   vhost-user devices need: it is shmem, charged to QEMU's cgroup, and the guest's page cache
+//!   fills all of it, so whoever books the step books its whole memory.
+//! - **Guest:** a kernel and a static busybox, which the caller pins. [`prepare`] writes the
+//!   initramfs per step: busybox, `init.sh` and the job file that says what to mount and run.
+//! - **Inputs, over virtio-fs:** every input, the root included, is a directory of a read-only
+//!   share ([`VmSpec::share`]) served by a virtiofsd the caller starts ([`virtiofsd_argv`],
+//!   through [`crate::job::helper`]). Each is a layer: the root is an overlay of the layers
+//!   [`VmRoot::Share`] names, and each [`ShareMount`] one of its own, every write going to the
+//!   scratch disk. Nothing is copied or converted into an image per step: layers already on
+//!   the host are shared as they are.
+//! - **Writable share:** directories the step writes for the host to read as they are
+//!   ([`VmSpec::writable`], a build directory), from a second, writable share.
 //! - **Disks, virtio-blk only:**
-//!   - the step's image as a read-only filesystem image (ext4 or erofs), its root, with
-//!     everything written going copy-on-write to the scratch disk;
-//!   - more read-only filesystem images ([`Disk`]), mounted read-only or copy-on-write where
-//!     the step expects them (its sources, the outputs of steps before it);
-//!   - a sparse scratch disk, an empty ext4 made by [`format_scratch`]: the root's changes,
-//!     `/tmp`, `/var/tmp` and `/var/lib/containers`;
-//!   - a raw output disk: the guest writes a status line and a tar of the files matching the
-//!     step's output patterns, which [`Prepared::finish`] unpacks. The host never mounts what
-//!     a guest wrote.
+//!   - a sparse scratch disk, an empty ext4 made by [`format_scratch`]: the root's and the
+//!     inputs' changes, `/tmp`, `/var/tmp` and `/var/lib/containers`. A block device rather
+//!     than the writable share: virtio-fs breaks `SQLite`'s write-ahead log, and podman's
+//!     storage can't sit on it;
+//!   - a raw output disk: the guest writes a tar of the files matching the step's output
+//!     patterns and then, last, a status line, which [`Prepared::finish`] reads. The host never
+//!     mounts what a guest wrote. A written status line means every output and every write to
+//!     the writable share is complete ([`Prepared::done`]).
 //!
-//!   virtio-fs is avoided: it is slow and breaks `SQLite`'s write-ahead log. Disk IO is
-//!   synchronous (QEMU's thread pool): the sandbox refuses `io_uring`.
+//!   Disk IO is synchronous (QEMU's thread pool): the sandbox refuses `io_uring`.
 //! - **Output:** the command's stdout and stderr go to a virtio serial port (not a terminal, so
 //!   tools behave as with a pipe), the guest's console to the same place: both are QEMU's
 //!   stdout, the job's.
-//! - **Network:** user-mode, through a passt outside the sandbox ([`Passt`]) that QEMU reaches
-//!   on a unix socket (`-netdev stream`): outbound connections and DNS, no way to the node's
-//!   loopback, nothing forwarded inwards. QEMU's own job has no network at all.
-//!
-//! Filesystem images are made without privileges: [`make_image`] runs `mkfs.ext4 -d` in a user
-//! namespace that maps the caller to root, so the image's files belong to root.
+//! - **Network:** user-mode, through a passt outside the sandbox ([`passt_argv`]) that QEMU
+//!   reaches on a unix socket (`-netdev stream`): outbound connections and DNS, nothing
+//!   forwarded inwards. QEMU's own job has no network at all.
 
 mod cpio;
 pub mod tar;
@@ -40,8 +44,7 @@ use std::fmt::Write as _;
 use std::io::{self, Read, Seek};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Command, Stdio};
 
 use super::{ExitStatus, JobSpec, Mount, Root, SpawnError};
 
@@ -51,14 +54,17 @@ const INIT: &str = include_str!("init.sh");
 /// Where the output tar starts on the output disk; the status line is before it.
 const OUTPUTS_AT: u64 = 1 << 20;
 
+/// The status line's start: written last, so its presence says everything else is written.
+const STATUS_LINE: &[u8] = b"T-VM-STATUS ";
+
 /// Where QEMU's job sees the step's files.
 const WORK: &str = "/vm/work";
 const KERNEL: &str = "/vm/kernel";
-const ROOT: &str = "/vm/root.img";
 const NET: &str = "/vm/net.sock";
 
-fn disk_path(n: usize) -> PathBuf {
-    PathBuf::from(format!("/vm/disk{n}.img"))
+/// Where QEMU's job sees the socket of the `n`th share's virtiofsd.
+fn share_socket(n: usize) -> PathBuf {
+    PathBuf::from(format!("/vm/fs{n}.sock"))
 }
 
 /// The guest's addresses on its user-mode network (passt's view of it).
@@ -80,30 +86,45 @@ pub struct Guest {
     pub busybox: PathBuf,
 }
 
-/// A read-only filesystem image and where parts of it appear in the guest.
+/// The guest's root.
 #[derive(Debug, Clone)]
-pub struct Disk {
-    pub image: PathBuf,
-    pub mounts: Vec<DiskMount>,
+pub enum VmRoot {
+    /// Layers of the read-only share, by their names under it, top first, stacked with the
+    /// root's changes on the scratch disk.
+    Share { layers: Vec<String> },
 }
 
-/// A directory of a [`Disk`] at `dst` in the guest.
+/// A virtio-fs share: the socket of the virtiofsd serving it, and the tag the guest mounts it by.
 #[derive(Debug, Clone)]
-pub struct DiskMount {
-    /// Relative to the image's root; empty for all of it.
-    pub path: PathBuf,
+pub struct Share {
+    /// The host path of the socket; the virtiofsd listens on it when the step starts.
+    pub socket: PathBuf,
+    pub tag: String,
+}
+
+/// Layers of the read-only share stacked at `dst` in the guest, copy-on-write: what the step
+/// changes goes to the scratch disk.
+#[derive(Debug, Clone)]
+pub struct ShareMount {
+    /// Names under the share, top first.
+    pub layers: Vec<String>,
     pub dst: PathBuf,
-    /// Writable, copy-on-write: what the step changes goes to the scratch disk.
-    pub writable: bool,
 }
 
 /// One micro-VM step.
 #[derive(Debug, Clone)]
 pub struct VmSpec {
     pub guest: Guest,
-    /// The step's image as a filesystem image ([`make_image`]): the guest's root.
-    pub root: PathBuf,
-    pub disks: Vec<Disk>,
+    pub root: VmRoot,
+    /// The read-only share holding every layer the step reads.
+    pub share: Share,
+    /// Inputs besides the root: its sources, the outputs of steps before it.
+    pub inputs: Vec<ShareMount>,
+    /// The writable share, when the step has directories to write for the host.
+    pub writable_share: Option<Share>,
+    /// (name under the writable share, guest path): directories the host reads as the step
+    /// left them.
+    pub writable: Vec<(String, PathBuf)>,
     /// The scratch disk's size, bytes: an upper bound, as it is sparse.
     pub scratch: u64,
     /// The output disk's size, bytes: room for the outputs' tar.
@@ -121,10 +142,17 @@ pub struct VmSpec {
     pub memory: u64,
     /// Give the guest `/dev/kvm` of its own, for steps that boot VMs.
     pub kvm: bool,
-    /// The unix socket of a [`Passt`], for a network; none without.
+    /// The unix socket of a passt ([`passt_argv`]), for a network; none without.
     pub network: Option<PathBuf>,
     /// The QEMU binary; `qemu-system-<arch>` on the job's `PATH` by default.
     pub qemu: Option<PathBuf>,
+}
+
+impl VmSpec {
+    /// The shares, in the order QEMU gets them.
+    fn shares(&self) -> impl Iterator<Item = &Share> {
+        std::iter::once(&self.share).chain(self.writable_share.as_ref())
+    }
 }
 
 /// A step ready to start: the job that runs QEMU, and where its result will be.
@@ -144,11 +172,26 @@ pub enum VmError {
         "the VM ended without reporting how its command ended (its console output above says why)"
     )]
     NoStatus,
-    /// The guest init failed after the command ran (an output that couldn't be archived).
+    /// The guest init failed (a share or input it couldn't mount, an output that couldn't be
+    /// archived).
     #[error("the VM's init failed (its console output above says why)")]
     Guest,
     #[error("reading the VM's outputs: {0}")]
     Io(#[from] io::Error),
+}
+
+/// A name under a share as the guest's overlay options and shell take it.
+fn check_name(name: &str) -> Result<(), SpawnError> {
+    let bad = name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains(['/', ':', ',', '\\', '\n', '\0']);
+    if bad {
+        return Err(SpawnError::Invalid(format!(
+            "{name:?} can't name a directory of a share: it must be one path component without `:`, `,` or `\\`"
+        )));
+    }
+    Ok(())
 }
 
 /// Prepare a step in `dir`, an empty directory of the caller's that outlives the job: the
@@ -162,17 +205,34 @@ pub fn prepare(spec: &VmSpec, dir: &Path) -> Result<Prepared, SpawnError> {
     if spec.argv.is_empty() {
         return Err(SpawnError::Invalid("a VM step needs a command".into()));
     }
+    let VmRoot::Share { layers } = &spec.root;
+    if layers.is_empty() {
+        return Err(SpawnError::Invalid("a VM step's root needs a layer".into()));
+    }
+    let names = layers
+        .iter()
+        .chain(spec.inputs.iter().flat_map(|i| &i.layers))
+        .chain(spec.writable.iter().map(|(n, _)| n));
+    for name in names {
+        check_name(name)?;
+    }
+    if spec.inputs.iter().any(|i| i.layers.is_empty()) {
+        return Err(SpawnError::Invalid(
+            "an input of a VM step needs a layer".into(),
+        ));
+    }
+    if !spec.writable.is_empty() && spec.writable_share.is_none() {
+        return Err(SpawnError::Invalid(
+            "a VM step with writable directories needs a writable share".into(),
+        ));
+    }
     let devices = virtio_devices(spec);
     if devices > VIRTIO_TRANSPORTS {
         return Err(SpawnError::Invalid(format!(
-            "a VM step with {} disks needs {devices} virtio devices; this machine has {VIRTIO_TRANSPORTS}",
-            spec.disks.len()
+            "a VM step needs {devices} virtio devices; this machine has {VIRTIO_TRANSPORTS}"
         )));
     }
-    for p in [&spec.guest.kernel, &spec.guest.busybox, &spec.root]
-        .into_iter()
-        .chain(spec.disks.iter().map(|d| &d.image))
-    {
+    for p in [&spec.guest.kernel, &spec.guest.busybox] {
         if !p.is_absolute() || !p.exists() {
             return Err(SpawnError::Invalid(format!(
                 "{} is not an existing absolute path",
@@ -180,11 +240,13 @@ pub fn prepare(spec: &VmSpec, dir: &Path) -> Result<Prepared, SpawnError> {
             )));
         }
     }
-    if !dir.is_absolute() {
-        return Err(SpawnError::Invalid(format!(
-            "{} is not absolute",
-            dir.display()
-        )));
+    for p in spec.shares().map(|s| &s.socket).chain([&dir.to_path_buf()]) {
+        if !p.is_absolute() {
+            return Err(SpawnError::Invalid(format!(
+                "{} is not absolute",
+                p.display()
+            )));
+        }
     }
     write_initramfs(spec, &dir.join("initramfs")).map_err(|e| setup("writing the initramfs", e))?;
 
@@ -199,9 +261,8 @@ pub fn prepare(spec: &VmSpec, dir: &Path) -> Result<Prepared, SpawnError> {
     let mut job = JobSpec::new(Root::Host { extra: vec![] }, argv);
     job.mount(Mount::read_write(dir, WORK));
     job.mount(Mount::read_only(&spec.guest.kernel, KERNEL));
-    job.mount(Mount::read_only(&spec.root, ROOT));
-    for (n, disk) in spec.disks.iter().enumerate() {
-        job.mount(Mount::read_only(&disk.image, disk_path(n)));
+    for (n, share) in spec.shares().enumerate() {
+        job.mount(Mount::read_write(&share.socket, share_socket(n)));
     }
     if let Some(socket) = &spec.network {
         job.mount(Mount::read_write(socket, NET));
@@ -212,21 +273,30 @@ pub fn prepare(spec: &VmSpec, dir: &Path) -> Result<Prepared, SpawnError> {
 }
 
 impl Prepared {
-    /// How the step's command ended, once its job has: what the guest wrote on the output
-    /// disk. With `outputs`, the files it archived are unpacked there (paths relative to the
-    /// guest's root: `target/release/app` for `/target/release/app`).
+    /// Whether the guest has written its status line: everything it writes comes before it, so
+    /// the step's result is complete even while QEMU still runs (a guest that never powers
+    /// off).
+    pub fn done(&self) -> bool {
+        let mut head = [0_u8; 64];
+        let read = std::fs::File::open(&self.output).and_then(|mut d| d.read_exact(&mut head));
+        read.is_ok() && head.starts_with(STATUS_LINE) && head.contains(&b'\n')
+    }
+
+    /// How the step's command ended, once its guest wrote its status: what it wrote on the
+    /// output disk. With `outputs`, the files it archived are unpacked there (paths relative
+    /// to the guest's root: `target/release/app` for `/target/release/app`).
     ///
     /// # Errors
     /// [`VmError::NoStatus`] when the guest wrote no status, [`VmError::Guest`] when its init
-    /// failed after the command, and IO errors reading the disk.
+    /// failed, and IO errors reading the disk.
     pub fn finish(&self, outputs: Option<&Path>) -> Result<ExitStatus, VmError> {
         let mut disk = std::fs::File::open(&self.output)?;
         let mut head = [0_u8; 64];
         disk.read_exact(&mut head)?;
         let line = head.split(|&b| b == b'\n').next().unwrap_or(&[]);
-        let status = std::str::from_utf8(line)
-            .ok()
-            .and_then(|l| l.strip_prefix("T-VM-STATUS "))
+        let status = line
+            .strip_prefix(STATUS_LINE)
+            .and_then(|l| std::str::from_utf8(l).ok())
             .ok_or(VmError::NoStatus)?;
         if status == "error" {
             return Err(VmError::Guest);
@@ -248,25 +318,19 @@ impl Prepared {
 /// thirty-two.
 const VIRTIO_TRANSPORTS: usize = if cfg!(target_arch = "aarch64") { 32 } else { 8 };
 
-/// The virtio devices a step needs: the serial ports' device, the random number generator on
-/// arm64, the root, scratch and output disks, one per disk, and the network.
+/// The serial ports' device, the random number generator on arm64, and the scratch and output
+/// disks.
+const BASE_DEVICES: usize = if cfg!(target_arch = "aarch64") { 4 } else { 3 };
+
+// Both shares and a network fit any machine.
+const _: () = assert!(BASE_DEVICES.saturating_add(3) <= VIRTIO_TRANSPORTS);
+
+/// The virtio devices a step needs: the base ones, one per share, and the network.
 fn virtio_devices(spec: &VmSpec) -> usize {
     BASE_DEVICES
-        .saturating_add(spec.disks.len())
+        .saturating_add(spec.shares().count())
         .saturating_add(usize::from(spec.network.is_some()))
 }
-
-/// The serial ports' device, the random number generator on arm64, and the root, scratch and
-/// output disks.
-const BASE_DEVICES: usize = if cfg!(target_arch = "aarch64") { 5 } else { 4 };
-
-/// The most disks of its own a step with a network can have on this machine.
-pub const MAX_DISKS: usize = VIRTIO_TRANSPORTS
-    .saturating_sub(BASE_DEVICES)
-    .saturating_sub(1);
-
-// Sources, the checks' /target and a mirror's objects: what t gives a step at most.
-const _: () = assert!(MAX_DISKS >= 3);
 
 /// QEMU's command line, with the step's files at their paths in QEMU's job.
 fn qemu_argv(spec: &VmSpec) -> Vec<OsString> {
@@ -275,19 +339,21 @@ fn qemu_argv(spec: &VmSpec) -> Vec<OsString> {
             .clone()
             .map_or_else(|| qemu_binary().into(), Into::into),
     ];
+    let memory_mib = (spec.memory >> 20).max(256);
     let mut arg = |a: &str| argv.push(a.into());
     for a in machine(spec.kvm) {
         arg(&a);
     }
-    // x86's microvm has only eight virtio transports, which a step's disks and network fill;
-    // its guest seeds its random numbers from the CPU (RDRAND) instead. arm64's `virt` has
-    // room, and no such instruction to rely on.
+    // x86's microvm has only eight virtio transports; its guest seeds its random numbers from
+    // the CPU (RDRAND) instead. arm64's `virt` has room, and no such instruction to rely on.
     if cfg!(target_arch = "aarch64") {
         arg("-device");
         arg("virtio-rng-device");
     }
-    let memory_mib = (spec.memory >> 20).max(256);
+    // vhost-user devices (virtiofsd) map the guest's memory: it must be a shared file.
     for a in [
+        "-object",
+        &format!("memory-backend-memfd,id=mem,size={memory_mib}M,share=on"),
         "-nodefaults",
         "-no-user-config",
         "-nographic",
@@ -327,7 +393,7 @@ fn qemu_argv(spec: &VmSpec) -> Vec<OsString> {
         );
     }
     argv.push(cmdline.into());
-    let mut drive = |file: &Path, serial: &str, writable: bool| {
+    let mut drive = |file: &Path, serial: &str| {
         let mut d = OsString::from("file=");
         d.push(escape_option(file.as_os_str()));
         d.push(format!(",if=none,id={serial},format=raw,file.locking=off"));
@@ -335,20 +401,24 @@ fn qemu_argv(spec: &VmSpec) -> Vec<OsString> {
         // dirty host pages of a multi-GB write (an image pull) were charged to the step's
         // cgroup on top of guest RAM, which the kernel then killed QEMU for. Flushes are
         // ignored: nobody needs the writes on a platter before QEMU exits.
-        d.push(if writable {
-            ",cache.direct=on,cache.no-flush=on"
-        } else {
-            ",readonly=on"
-        });
+        d.push(",cache.direct=on,cache.no-flush=on");
         argv.extend(["-drive".into(), d, "-device".into()]);
         argv.push(format!("virtio-blk-device,drive={serial},serial={serial}").into());
     };
     // QEMU sees every file at a fixed path of its own.
-    drive(Path::new(ROOT), "root", false);
-    drive(&Path::new(WORK).join("scratch.img"), "scratch", true);
-    drive(&Path::new(WORK).join("output.img"), "output", true);
-    for n in 0..spec.disks.len() {
-        drive(&disk_path(n), &format!("disk{n}"), false);
+    drive(&Path::new(WORK).join("scratch.img"), "scratch");
+    drive(&Path::new(WORK).join("output.img"), "output");
+    for (n, share) in spec.shares().enumerate() {
+        let mut socket = OsString::from(format!("socket,id=fs{n},path="));
+        socket.push(escape_option(share_socket(n).as_os_str()));
+        argv.extend(["-chardev".into(), socket, "-device".into()]);
+        argv.push(
+            format!(
+                "vhost-user-fs-device,chardev=fs{n},tag={}",
+                share.tag.replace(',', ",,")
+            )
+            .into(),
+        );
     }
     if spec.network.is_some() {
         argv.extend([
@@ -378,7 +448,7 @@ fn machine(kvm: bool) -> Vec<String> {
     let mut args = vec!["-accel".to_string(), "kvm".to_string(), "-cpu".to_string()];
     if cfg!(target_arch = "aarch64") {
         args.push("host".into());
-        let mut m = String::from("virt,gic-version=host");
+        let mut m = String::from("virt,gic-version=host,memory-backend=mem");
         if kvm {
             m.push_str(",virtualization=on");
         }
@@ -388,7 +458,7 @@ fn machine(kvm: bool) -> Vec<String> {
         args.push(if kvm { "host" } else { "host,-vmx,-svm" }.into());
         args.extend([
             "-M".into(),
-            "microvm,acpi=off,isa-serial=off,rtc=off,pit=off,pic=off".into(),
+            "microvm,acpi=off,isa-serial=off,rtc=off,pit=off,pic=off,memory-backend=mem".into(),
         ]);
     }
     args
@@ -426,25 +496,33 @@ fn quote(s: &[u8]) -> String {
 fn job_file(spec: &VmSpec) -> String {
     let mut f = String::new();
     let q = |s: &OsStr| quote(s.as_bytes());
+    let qs = |s: &str| quote(s.as_bytes());
     let _ = writeln!(f, "T_CWD={}", q(spec.cwd.as_os_str()));
-    let _ = writeln!(f, "T_HOSTNAME={}", quote(spec.hostname.as_bytes()));
+    let _ = writeln!(f, "T_HOSTNAME={}", qs(&spec.hostname));
     let _ = writeln!(f, "T_NET={}", u8::from(spec.network.is_some()));
     let _ = writeln!(f, "T_DNS={DNS}");
     let _ = writeln!(f, "T_MEMORY_MIB={}", spec.memory >> 20);
-    f.push_str("t_setup() {\n\t:\n");
-    for (n, disk) in spec.disks.iter().enumerate() {
-        let _ = writeln!(f, "\tt_disk disk{n} {n}");
-        for m in &disk.mounts {
-            let mode = if m.writable { "cow" } else { "ro" };
-            let _ = writeln!(
-                f,
-                "\tt_mount {n} {} {} {mode}",
-                q(m.path.as_os_str()),
-                q(m.dst.as_os_str())
-            );
-        }
+    let _ = writeln!(f, "T_SHARE_TAG={}", qs(&spec.share.tag));
+    let rw = spec.writable_share.as_ref().map_or("", |s| s.tag.as_str());
+    let _ = writeln!(f, "T_RW_TAG={}", qs(rw));
+    // The root's layers, top first, for stage 1.
+    f.push_str("t_layers() {\n\t:\n");
+    let VmRoot::Share { layers } = &spec.root;
+    for l in layers {
+        let _ = writeln!(f, "\tt_layer {}", qs(l));
     }
-    // The program by its path in the image, looked up in the step's own `PATH`: a busybox
+    f.push_str("}\nt_setup() {\n\t:\n");
+    for input in &spec.inputs {
+        let _ = write!(f, "\tt_input {}", q(input.dst.as_os_str()));
+        for l in &input.layers {
+            let _ = write!(f, " {}", qs(l));
+        }
+        f.push('\n');
+    }
+    for (name, dst) in &spec.writable {
+        let _ = writeln!(f, "\tt_writable {} {}", qs(name), q(dst.as_os_str()));
+    }
+    // The program by its path in the root, looked up in the step's own `PATH`: a busybox
     // built to prefer its applets would otherwise run its own `sh` or `bash` for a bare name.
     // busybox's `env` takes its options, then `NAME=value` words, then the command.
     let path = spec
@@ -471,7 +549,7 @@ fn job_file(spec: &VmSpec) -> String {
     }
     f.push_str("\n}\nt_outputs() {\n\t:\n");
     for o in &spec.outputs {
-        let _ = writeln!(f, "\tt_output {}", quote(o.as_bytes()));
+        let _ = writeln!(f, "\tt_output {}", qs(o));
     }
     f.push_str("}\n");
     f
@@ -511,174 +589,69 @@ pub fn format_scratch(path: &Path, size: u64) -> io::Result<()> {
     }
 }
 
-/// Make `image` a read-only ext4 holding `tree`, with every file owned by root, as a guest's
-/// root or another of its disks. `mkfs.ext4 -d` runs in a user namespace of its own that maps
-/// the caller to root: the files it reads as the caller's (unreadable ones, such as an image's
-/// `/etc/shadow`, included), it records as root's. Sized to fit, with room to spare for
-/// metadata.
-///
-/// # Errors
-/// [`SpawnError::Invalid`] for relative paths, [`SpawnError::Setup`] when `mkfs.ext4` could not
-/// start or failed.
-pub fn make_image(tree: &Path, image: &Path) -> Result<(), SpawnError> {
-    use std::os::unix::process::CommandExt;
-    let setup = |what: &str, e: &dyn std::fmt::Display| SpawnError::Setup(format!("{what}: {e}"));
-    if !image.is_absolute() || !tree.is_absolute() {
-        return Err(SpawnError::Invalid(format!(
-            "{} or {} is not absolute",
-            image.display(),
-            tree.display()
-        )));
+/// virtiofsd's command line for a share of `shared_dir` on `socket`, as the caller starts it
+/// through [`crate::job::helper::spawn`] (with `nofile_max`: it holds a descriptor per inode
+/// the guest looked up). `--sandbox none`: the helper's own mount namespace already holds only
+/// what it shares. `--announce-submounts`: each layer is a mount of its own, and the guest must
+/// see each as a filesystem of its own (inode numbers repeat across them). `--xattr`: the
+/// layers' opaque directories are user extended attributes the guest's overlay reads.
+pub fn virtiofsd_argv(shared_dir: &Path, socket: &Path, readonly: bool) -> Vec<OsString> {
+    let mut argv: Vec<OsString> = vec!["virtiofsd".into(), "--socket-path".into()];
+    argv.push(socket.into());
+    argv.push("--shared-dir".into());
+    argv.push(shared_dir.into());
+    for a in [
+        "--sandbox",
+        "none",
+        "--cache",
+        "always",
+        "--announce-submounts",
+        "--xattr",
+    ] {
+        argv.push(a.into());
     }
-    let (bytes, inodes) = measure(tree);
-    // Each file takes whole blocks, which `measure` counted; metadata and slack on top.
-    let size = bytes
-        .saturating_add(bytes / 8)
-        .saturating_add(inodes.saturating_mul(256))
-        .saturating_add(64 << 20);
-    let file = std::fs::File::create(image).map_err(|e| setup("making the image", &e))?;
-    file.set_len(size)
-        .map_err(|e| setup("sizing the image", &e))?;
-    drop(file);
-    let inode_count = inodes
-        .saturating_add(inodes / 4)
-        .saturating_add(4096)
-        .to_string();
-    let mut cmd = Command::new("mkfs.ext4");
-    // 4 KiB blocks and extents whatever the size: mke2fs.conf's types for small file systems
-    // pick 1 KiB blocks without them, which caps one file at 16 GiB ("Ext2 file too big" for a
-    // multi-GB image archive).
-    cmd.args(["-q", "-F", "-T", "default", "-b", "4096"])
-        .args([
-            "-O",
-            "^has_journal,extents,huge_file,large_file,64bit",
-            "-E",
-        ])
-        .arg("root_owner=0:0,lazy_itable_init=1,nodiscard")
-        .args(["-m", "0", "-N", &inode_count, "-d"])
-        .arg(tree)
-        .arg(image)
-        .stdin(Stdio::null());
-    let uid_map = format!("0 {} 1", rustix::process::geteuid().as_raw()).into_bytes();
-    let gid_map = format!("0 {} 1", rustix::process::getegid().as_raw()).into_bytes();
-    // SAFETY: between fork and exec the child only makes system calls on memory prepared
-    // before the fork.
-    unsafe {
-        cmd.pre_exec(move || {
-            if libc::unshare(libc::CLONE_NEWUSER) != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            write_proc(c"/proc/self/setgroups", b"deny")?;
-            write_proc(c"/proc/self/uid_map", &uid_map)?;
-            write_proc(c"/proc/self/gid_map", &gid_map)
-        });
+    if readonly {
+        argv.push("--readonly".into());
     }
-    let out = cmd.output().map_err(|e| setup("starting mkfs.ext4", &e))?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        let _ = std::fs::remove_file(image);
-        Err(SpawnError::Setup(format!(
-            "mkfs.ext4 -d {} failed: {}",
-            tree.display(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        )))
-    }
+    argv
 }
 
-/// Write `data` to the proc file `path`, with nothing but system calls (after a fork).
-fn write_proc(path: &std::ffi::CStr, data: &[u8]) -> io::Result<()> {
-    // SAFETY: a plain open/write/close of a NUL-terminated path and a live buffer.
-    unsafe {
-        let fd = libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let n = libc::write(fd, data.as_ptr().cast(), data.len());
-        let err = io::Error::last_os_error();
-        libc::close(fd);
-        if usize::try_from(n).ok() == Some(data.len()) {
-            Ok(())
-        } else {
-            Err(err)
-        }
+/// passt's command line serving one step's network on `socket` (a path that does not exist
+/// yet), as the caller starts it through [`crate::job::helper::spawn`] in a network namespace
+/// of the step's own. The guest may connect out and resolve names; nothing reaches it from
+/// outside. With `gateway_to_loopback` the guest's gateway address leads to that namespace's
+/// loopback, where only what the caller put there for the step listens (a relay to its cache);
+/// without, no address leads to any loopback.
+pub fn passt_argv(socket: &Path, gateway_to_loopback: bool) -> Vec<OsString> {
+    let mut argv: Vec<OsString> = ["passt", "--foreground", "--one-off", "--quiet"]
+        .map(OsString::from)
+        .to_vec();
+    if !gateway_to_loopback {
+        argv.push("--no-map-gw".into());
     }
-}
-
-/// The bytes the files under `dir` take in whole 4 KiB blocks, and how many entries it holds.
-fn measure(dir: &Path) -> (u64, u64) {
-    let (mut bytes, mut inodes) = (0_u64, 0_u64);
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&d) else {
-            continue;
-        };
-        for e in entries.flatten() {
-            inodes = inodes.saturating_add(1);
-            let Ok(meta) = e.metadata() else { continue };
-            if meta.is_dir() {
-                stack.push(e.path());
-                bytes = bytes.saturating_add(4096);
-            } else {
-                bytes = bytes.saturating_add(meta.len().div_ceil(4096).saturating_mul(4096));
-            }
-        }
+    // Frames of up to 65520 bytes, passt's largest and its default, said here as the guest
+    // sets the same MTU itself (init.sh: it takes no DHCP that would tell it).
+    for a in [
+        "--mtu",
+        "65520",
+        "--address",
+        GUEST_ADDRESS,
+        "--netmask",
+        NETMASK,
+        "--gateway",
+        GATEWAY,
+        "--dns-forward",
+        DNS,
+        "-t",
+        "none",
+        "-u",
+        "none",
+        "--socket",
+    ] {
+        argv.push(a.into());
     }
-    (bytes, inodes)
-}
-
-/// A passt serving one step's network on a unix socket, stopped when dropped. It runs outside
-/// the job, as the caller, and confines itself (namespaces, seccomp, no capabilities). The guest
-/// may connect out and resolve names; nothing reaches it from outside, and no address leads to
-/// the node's loopback (`--no-map-gw`).
-#[derive(Debug)]
-pub struct Passt {
-    child: Child,
-}
-
-impl Passt {
-    /// Start passt on `socket` (a path that does not exist yet) and wait for it to listen.
-    pub fn start(socket: &Path) -> io::Result<Self> {
-        let child = Command::new("passt")
-            .args(["--foreground", "--one-off", "--quiet", "--no-map-gw"])
-            // Frames of up to 65520 bytes, passt's largest and its default, said here as the
-            // guest sets the same MTU itself (init.sh: it takes no DHCP that would tell it).
-            .args(["--mtu", "65520"])
-            .args([
-                "--address",
-                GUEST_ADDRESS,
-                "--netmask",
-                NETMASK,
-                "--gateway",
-                GATEWAY,
-            ])
-            .args(["--dns-forward", DNS])
-            .args(["-t", "none", "-u", "none"])
-            .arg("--socket")
-            .arg(socket)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .spawn()?;
-        let mut passt = Self { child };
-        let t0 = Instant::now();
-        while !socket.exists() {
-            if let Some(status) = passt.child.try_wait()? {
-                return Err(io::Error::other(format!("passt ended at once ({status})")));
-            }
-            if t0.elapsed() > Duration::from_secs(5) {
-                return Err(io::Error::other("passt did not listen within 5 s"));
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        Ok(passt)
-    }
-}
-
-impl Drop for Passt {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
+    argv.push(socket.into());
+    argv
 }
 
 #[cfg(test)]
@@ -707,22 +680,28 @@ mod tests {
                 kernel: "/k".into(),
                 busybox: "/b".into(),
             },
-            root: "/root.img".into(),
-            disks: vec![Disk {
-                image: "/in.img".into(),
-                mounts: vec![
-                    DiskMount {
-                        path: "src".into(),
-                        dst: "/src".into(),
-                        writable: true,
-                    },
-                    DiskMount {
-                        path: "it's".into(),
-                        dst: "/a b".into(),
-                        writable: false,
-                    },
-                ],
-            }],
+            root: VmRoot::Share {
+                layers: vec!["i-top".into(), "i-base".into()],
+            },
+            share: Share {
+                socket: "/w/ro.sock".into(),
+                tag: "inputs".into(),
+            },
+            inputs: vec![
+                ShareMount {
+                    layers: vec!["s-1".into()],
+                    dst: "/src".into(),
+                },
+                ShareMount {
+                    layers: vec!["it's".into()],
+                    dst: "/a b".into(),
+                },
+            ],
+            writable_share: Some(Share {
+                socket: "/w/rw.sock".into(),
+                tag: "writes".into(),
+            }),
+            writable: vec![("target".into(), "/target".into())],
             scratch: 1 << 30,
             output: 1 << 24,
             argv: vec!["bash".into(), "-c".into(), "echo 'hi' $X".into()],
@@ -745,9 +724,14 @@ mod tests {
     fn the_job_file_quotes_every_word() {
         let f = job_file(&spec());
         assert!(f.contains("T_CWD='/src'\n"), "{f}");
-        assert!(f.contains("\tt_disk disk0 0\n"), "{f}");
-        assert!(f.contains("\tt_mount 0 'src' '/src' cow\n"), "{f}");
-        assert!(f.contains("\tt_mount 0 'it'\\''s' '/a b' ro\n"), "{f}");
+        assert!(
+            f.contains("T_SHARE_TAG='inputs'\nT_RW_TAG='writes'\n"),
+            "{f}"
+        );
+        assert!(f.contains("\tt_layer 'i-top'\n\tt_layer 'i-base'\n"), "{f}");
+        assert!(f.contains("\tt_input '/src' 's-1'\n"), "{f}");
+        assert!(f.contains("\tt_input '/a b' 'it'\\''s'\n"), "{f}");
+        assert!(f.contains("\tt_writable 'target' '/target'\n"), "{f}");
         assert!(
             f.contains(
                 "program=$(t_which 'bash') || exit 127\n\texec env -i -- 'X=a b' 'PATH=/usr/bin' \"$program\" '-c' 'echo '\\''hi'\\'' $X'\n"
@@ -759,26 +743,89 @@ mod tests {
     }
 
     #[test]
-    fn the_most_devices_a_step_can_ask_for_fit_the_machine() {
+    fn every_share_is_a_vhost_user_fs_device_on_shared_memory() {
         let mut spec = spec();
         spec.network = Some("/net".into());
-        spec.disks = (0..MAX_DISKS).map(|_| spec.disks[0].clone()).collect();
         let argv = qemu_argv(&spec);
-        let virtio = argv
-            .iter()
-            .filter_map(|a| a.to_str())
-            .filter(|a| a.starts_with("virtio-") && a.contains("-device"))
-            .count();
-        assert_eq!(virtio, virtio_devices(&spec));
-        let kernel = argv.iter().position(|a| a == "-kernel").unwrap();
-        assert_eq!(
-            argv.get(kernel.saturating_add(1)),
-            Some(&OsString::from(KERNEL)),
-            "-kernel takes the kernel: {argv:?}"
+        let words: Vec<&str> = argv.iter().filter_map(|a| a.to_str()).collect();
+        assert!(
+            words.contains(&"memory-backend-memfd,id=mem,size=1024M,share=on"),
+            "{words:?}"
         );
-        assert!(virtio <= VIRTIO_TRANSPORTS, "{virtio} virtio devices");
-        spec.disks.push(spec.disks[0].clone());
-        assert!(virtio_devices(&spec) > VIRTIO_TRANSPORTS || cfg!(target_arch = "aarch64"));
+        let machine = words.iter().position(|a| *a == "-M").unwrap();
+        assert!(
+            words[machine + 1].contains("memory-backend=mem"),
+            "{words:?}"
+        );
+        assert!(
+            words.contains(&"socket,id=fs0,path=/vm/fs0.sock"),
+            "{words:?}"
+        );
+        assert!(
+            words.contains(&"vhost-user-fs-device,chardev=fs0,tag=inputs"),
+            "{words:?}"
+        );
+        assert!(
+            words.contains(&"vhost-user-fs-device,chardev=fs1,tag=writes"),
+            "{words:?}"
+        );
+        assert!(!words.iter().any(|w| w.contains("root.img")), "{words:?}");
+        // The serial ports ride on the one serial device; every other device is a transport.
+        let virtio = words
+            .iter()
+            .filter(|a| a.starts_with("virtio-") || a.starts_with("vhost-user-fs-device"))
+            .count();
+        assert_eq!(virtio, virtio_devices(&spec), "{words:?}");
+        assert!(virtio <= VIRTIO_TRANSPORTS);
+        let kernel = words.iter().position(|a| *a == "-kernel").unwrap();
+        assert_eq!(
+            words.get(kernel + 1),
+            Some(&KERNEL),
+            "-kernel takes the kernel"
+        );
+    }
+
+    #[test]
+    fn a_share_name_that_would_break_the_guests_mounts_is_refused() {
+        for bad in ["", "a/b", "a:b", "a,b", ".."] {
+            let mut s = spec();
+            s.root = VmRoot::Share {
+                layers: vec![bad.into()],
+            };
+            let dir = tempfile::tempdir().unwrap();
+            assert!(
+                matches!(prepare(&s, dir.path()), Err(SpawnError::Invalid(_))),
+                "{bad:?} accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn virtiofsd_shares_read_only_with_submounts_and_xattrs() {
+        let argv = virtiofsd_argv(Path::new("/share"), Path::new("/sock/fs.sock"), true);
+        let words: Vec<&str> = argv.iter().filter_map(|a| a.to_str()).collect();
+        assert_eq!(
+            words,
+            [
+                "virtiofsd",
+                "--socket-path",
+                "/sock/fs.sock",
+                "--shared-dir",
+                "/share",
+                "--sandbox",
+                "none",
+                "--cache",
+                "always",
+                "--announce-submounts",
+                "--xattr",
+                "--readonly"
+            ]
+        );
+        assert!(
+            !virtiofsd_argv(Path::new("/s"), Path::new("/x"), false)
+                .iter()
+                .any(|a| a == "--readonly")
+        );
     }
 
     #[test]
@@ -823,12 +870,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let output = dir.path().join("output.img");
         let mut disk = vec![0_u8; usize::try_from(OUTPUTS_AT).unwrap() + 4096];
-        disk[..14].copy_from_slice(b"T-VM-STATUS 3\n");
         std::fs::write(&output, &disk).unwrap();
         let p = Prepared {
             job: JobSpec::new(Root::Host { extra: vec![] }, ["true"]),
             output: output.clone(),
         };
+        assert!(!p.done());
+        disk[..14].copy_from_slice(b"T-VM-STATUS 3\n");
+        std::fs::write(&output, &disk).unwrap();
+        assert!(p.done());
         let out = dir.path().join("out");
         std::fs::create_dir(&out).unwrap();
         assert_eq!(p.finish(Some(&out)).unwrap().code, Some(3));
@@ -838,5 +888,6 @@ mod tests {
         assert!(matches!(p.finish(None), Err(VmError::Guest)));
         std::fs::write(&output, vec![0_u8; 4096]).unwrap();
         assert!(matches!(p.finish(None), Err(VmError::NoStatus)));
+        assert!(!p.done());
     }
 }

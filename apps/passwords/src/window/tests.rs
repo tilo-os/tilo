@@ -139,7 +139,8 @@ fn the_window_is_the_shared_shell_and_follows_the_chosen_place() {
 #[test]
 fn list_rows_open_items_and_toggle_favorites_through_the_list() {
     let mut app =
-        ui::framework::testing::TestApp::<crate::resource::PasswordsShell>::capture(None).unwrap();
+        ui::framework::testing::TestApp::<crate::resource::PasswordsShell>::drive("detail")
+            .unwrap();
     let selected = |app: &mut ui::framework::testing::TestApp<crate::resource::PasswordsShell>| {
         app.surface::<PasswordsSurface, _>(|surface| {
             surface.core().selected.as_ref().map(|id| id.0.clone())
@@ -158,18 +159,27 @@ fn list_rows_open_items_and_toggle_favorites_through_the_list() {
     app.settle();
     assert_eq!(selected(&mut app).as_deref(), Some("demo-mail"));
 
-    // So does assistive technology, by the row's own target.
+    // So does assistive technology, by the list item's target.
     app.harness()
         .perform_semantic_named(
-            "passwords.item:demo-recovery",
-            Some("passwords.item:demo-recovery"),
+            "passwords.items",
+            Some("key:demo-recovery"),
             &ui::a11y::Action::Activate,
         )
         .unwrap();
     app.settle();
     assert_eq!(selected(&mut app).as_deref(), Some("demo-recovery"));
 
-    // The row's star toggles the item's favorite.
+    // The list and the stars publish the items by their opaque ids: no
+    // title of the vault reaches what the window publishes.
+    let published = public_text(&app.harness().resources());
+    assert!(published.contains("passwords:item:demo-mail"));
+    for title in ["Personal mail", "Northstar Bank", "Recovery codes"] {
+        assert!(!published.contains(title), "the window published {title:?}");
+    }
+
+    // The row's star toggles the item's favorite, through the item's
+    // published `favorite`.
     let before = favorites(&mut app);
     app.harness()
         .perform_semantic_named(

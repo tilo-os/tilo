@@ -718,6 +718,37 @@ pub fn summary_line(app: &str) -> Option<String> {
     Some(format_summary(app, &events))
 }
 
+/// What the process holds now and the most it has held, as a log line:
+/// `FIRST-FRAME-MEMORY rss_kib=<kib> peak_kib=<kib>`. `None` where the
+/// system does not say (only Linux's `/proc/self/status` is read).
+pub fn memory_line() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        let kib = |field: &str| {
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix(field))
+                .and_then(|value| {
+                    value
+                        .trim()
+                        .trim_end_matches("kB")
+                        .trim()
+                        .parse::<u64>()
+                        .ok()
+                })
+                .unwrap_or(0)
+        };
+        Some(format!(
+            "FIRST-FRAME-MEMORY rss_kib={} peak_kib={}",
+            kib("VmRSS:"),
+            kib("VmHWM:")
+        ))
+    }
+    #[cfg(not(target_os = "linux"))]
+    None
+}
+
 /// Every mark recorded so far, in order, with its nanoseconds since the
 /// process's origin. Empty while capture is disabled.
 pub fn events() -> Vec<(String, u128)> {

@@ -55,6 +55,12 @@ const MAX_REF_BYTES: usize = 40;
 /// A frame id is a dotted path of small decimal numbers, such as `1` or `1.2`.
 const MAX_FRAME_BYTES: usize = 16;
 const MAX_FRAME_DEPTH: usize = 8;
+/// Upper bound on the accessible name a
+/// [`PageRequest::Find`] matches, as the outline prints it.
+pub const MAX_FIND_NAME_BYTES: usize = 512;
+/// Upper bound on the role words a [`PageRequest::Find`] matches: a few
+/// words of the outline's own vocabulary, never a selector.
+pub const MAX_FIND_ROLE_BYTES: usize = 40;
 const MAX_MESSAGE_BYTES: usize = 1024;
 const MAX_CODE_BYTES: usize = 64;
 
@@ -170,6 +176,20 @@ pub enum PageRequest {
     Capture {
         element: Option<String>,
         max_width: Option<u32>,
+        frame: Option<FrameId>,
+    },
+    /// The element a stable description names: the same role and name a
+    /// person reads on it, wherever the document sits in its history.
+    ///
+    /// Every other request addresses an element by the ref one outline
+    /// printed, and a ref belongs to one document. This one reads the page
+    /// it is asked of, so a description recorded once is answered with the
+    /// ref of the page as it is now: what a step replaying a person's work
+    /// needs.
+    Find {
+        role: Option<String>,
+        name: Option<String>,
+        nth: Option<u32>,
         frame: Option<FrameId>,
     },
     /// Move the pointer over the page as a hand does: `steps` in order, a
@@ -311,6 +331,7 @@ impl PageRequest {
             Self::Network { .. } => "network",
             Self::Reader { .. } => "reader",
             Self::Capture { .. } => "capture",
+            Self::Find { .. } => "find",
             Self::Pointer { .. } => "pointer",
             Self::Scroll { .. } => "scroll",
         }
@@ -362,6 +383,20 @@ impl PageRequest {
             },
             Self::Reader { enabled: true } => "Showed the article alone".to_string(),
             Self::Reader { enabled: false } => "Put the page back as it was".to_string(),
+            Self::Find {
+                role, name, nth, ..
+            } => {
+                let what = match (role.as_deref(), name.as_deref()) {
+                    (Some(role), Some(name)) => format!("{role} {name:?}"),
+                    (Some(role), None) => role.to_string(),
+                    (None, Some(name)) => format!("{name:?}"),
+                    (None, None) => "the page's own element".to_string(),
+                };
+                match nth {
+                    Some(nth) => format!("Found {what} ({nth})"),
+                    None => format!("Found {what}"),
+                }
+            }
             Self::Pointer { steps, .. } => format!("Moved the pointer ({} steps)", steps.len()),
             Self::Scroll { to: Some(to), .. } => format!("Scrolled to the {}", to.as_str()),
             Self::Scroll {
@@ -376,6 +411,7 @@ impl PageRequest {
     pub fn element(&self) -> Option<&str> {
         match self {
             Self::Outline { .. }
+            | Self::Find { .. }
             | Self::Press { element: None, .. }
             | Self::Changes { .. }
             | Self::At { .. }
@@ -452,7 +488,8 @@ impl PageRequest {
             | Self::At { frame, .. }
             | Self::Settle { frame, .. }
             | Self::Scroll { frame, .. }
-            | Self::Capture { frame, .. } => frame.as_ref(),
+            | Self::Capture { frame, .. }
+            | Self::Find { frame, .. } => frame.as_ref(),
             Self::Console { .. }
             | Self::Network { .. }
             | Self::Reader { .. }
@@ -507,6 +544,14 @@ impl PageRequest {
             } => Self::Submit {
                 element,
                 cross_origin,
+                frame: None,
+            },
+            Self::Find {
+                role, name, nth, ..
+            } => Self::Find {
+                role,
+                name,
+                nth,
                 frame: None,
             },
             Self::Changes { .. } => Self::Changes { frame: None },
@@ -645,6 +690,17 @@ impl PageRequest {
             Self::Capture { max_width, .. } => {
                 max_width.is_none_or(|width| (1..=u32::from(MAX_CAPTURE_WIDTH)).contains(&width))
             }
+            Self::Find {
+                role, name, nth, ..
+            } => {
+                role.as_ref()
+                    .is_none_or(|role| !role.is_empty() && role.len() <= MAX_FIND_ROLE_BYTES)
+                    && name
+                        .as_ref()
+                        .is_none_or(|name| !name.is_empty() && name.len() <= MAX_FIND_NAME_BYTES)
+                    && (role.is_some() || name.is_some())
+                    && nth.is_none_or(|nth| nth >= 1)
+            }
             Self::Outline { .. }
             | Self::Click { .. }
             | Self::Submit { .. }
@@ -693,20 +749,35 @@ pub struct FrameId(String);
 
 impl FrameId {
     /// Reads a frame id the outline printed, refusing anything else so an id
-    /// can never smuggle selector or script syntax to the engine.
+    /// can never smuggle selector or script syntax to the engine. A frame is a
+    /// number, so the number alone, the number as text and the outline's own
+    /// `[frame=1]` all name the same frame: a caller that copies what it read
+    /// is understood.
     pub fn parse(value: &str) -> Option<Self> {
-        let parts: Vec<&str> = value.split('.').collect();
+        let written = value.trim();
+        // What the outline brackets is the id, and what marks it is not part
+        // of it: `frame=1`, `[frame=1.2]` and `1.2` are one id.
+        let written = written
+            .strip_prefix('[')
+            .and_then(|rest| rest.strip_suffix(']'))
+            .unwrap_or(written);
+        let written = written
+            .strip_prefix("frame=")
+            .or_else(|| written.strip_prefix("Frame="))
+            .unwrap_or(written)
+            .trim();
+        let parts: Vec<&str> = written.split('.').collect();
         let digit = |part: &str| {
             !part.is_empty()
                 && part.len() <= 3
                 && part.bytes().all(|byte| byte.is_ascii_digit())
                 && !part.starts_with('0')
         };
-        (value.len() <= MAX_FRAME_BYTES
+        (written.len() <= MAX_FRAME_BYTES
             && !parts.is_empty()
             && parts.len() <= MAX_FRAME_DEPTH
             && parts.iter().all(|part| digit(part)))
-        .then(|| Self(value.to_string()))
+        .then(|| Self(written.to_string()))
     }
 
     /// A frame id no outline printed, standing in for one the caller wrote
@@ -1007,6 +1078,18 @@ pub(crate) fn encode_request(request_id: u32, request: &PageRequest) -> serde_js
             command["since"] = (*since).into();
         }
         PageRequest::Reader { enabled } => command["enabled"] = (*enabled).into(),
+        PageRequest::Find {
+            role, name, nth, ..
+        } => {
+            for (key, value) in [("role", role), ("name", name)] {
+                if let Some(value) = value {
+                    command[key] = value.as_str().into();
+                }
+            }
+            if let Some(nth) = nth {
+                command["nth"] = (*nth).into();
+            }
+        }
         PageRequest::Capture { max_width, .. } => {
             command["max_width"] =
                 u32::from(max_width.unwrap_or(u32::from(MAX_CAPTURE_WIDTH))).into();
@@ -1636,8 +1719,27 @@ mod tests {
             for good in ["1", "2", "12", "1.2", "3.10.4"] {
                 assert_eq!(FrameId::parse(good).unwrap().as_str(), good);
             }
+            // A frame is the number the outline printed, in every form a
+            // caller copies it in: the number, its text, and the whole
+            // `[frame=1]` the outline writes.
+            for (written, named) in [
+                ("1", "1"),
+                (" 1", "1"),
+                ("1 ", "1"),
+                ("frame=1", "1"),
+                ("frame=1.2", "1.2"),
+                ("[frame=1]", "1"),
+                ("[frame=2.1]", "2.1"),
+            ] {
+                assert_eq!(
+                    FrameId::parse(written).unwrap().as_str(),
+                    named,
+                    "{written:?}"
+                );
+            }
             for bad in [
-                "", "0", "01", ".", "1.", ".1", "1..2", "a", "1e2", " 1", "1 ", "1234",
+                "", "0", "01", ".", "1.", ".1", "1..2", "a", "1e2", "1234", "frame=", "frame=a",
+                "[frame=]", "frame=01",
             ] {
                 assert!(FrameId::parse(bad).is_none(), "{bad:?}");
             }
@@ -1733,6 +1835,88 @@ mod tests {
                 assert!(!bad.valid(), "{bad:?}");
             }
             assert!(PageRequest::Changes { frame: None }.element().is_none());
+        }
+        // phase: a_find_names_an_element_by_what_a_page_says_it_is
+        {
+            let by_name = PageRequest::Find {
+                role: None,
+                name: Some("Email".into()),
+                nth: None,
+                frame: None,
+            };
+            assert!(by_name.valid());
+            assert_eq!(by_name.action(), "find");
+            assert_eq!(by_name.element(), None, "a find names no ref of its own");
+            assert_eq!(
+                encode_request(20, &by_name),
+                serde_json::json!({"op":"page","request_id":20,"action":"find","name":"Email"})
+            );
+            let by_role = PageRequest::Find {
+                role: Some("button".into()),
+                name: Some("Remove".into()),
+                nth: Some(2),
+                frame: FrameId::parse("1.2"),
+            };
+            assert!(by_role.valid());
+            assert_eq!(
+                encode_request(21, &by_role),
+                serde_json::json!({"op":"page","request_id":21,"action":"find",
+                    "role":"button","name":"Remove","nth":2,"frame":"1.2"})
+            );
+            assert_eq!(by_role.clone().main_frame().frame(), None);
+            assert_eq!(
+                by_role.described(),
+                "Found button \"Remove\" (2)",
+                "an answer that a dialog cut short says what was asked"
+            );
+            // A description that names nothing, or names it outside the
+            // bounds the engine accepts, never reaches the page.
+            for bad in [
+                PageRequest::Find {
+                    role: None,
+                    name: None,
+                    nth: None,
+                    frame: None,
+                },
+                PageRequest::Find {
+                    role: Some(String::new()),
+                    name: None,
+                    nth: None,
+                    frame: None,
+                },
+                PageRequest::Find {
+                    role: None,
+                    name: Some(String::new()),
+                    nth: None,
+                    frame: None,
+                },
+                PageRequest::Find {
+                    role: None,
+                    name: Some("x".repeat(MAX_FIND_NAME_BYTES + 1)),
+                    nth: None,
+                    frame: None,
+                },
+                PageRequest::Find {
+                    role: Some("r".repeat(MAX_FIND_ROLE_BYTES + 1)),
+                    name: None,
+                    nth: None,
+                    frame: None,
+                },
+                PageRequest::Find {
+                    role: Some("button".into()),
+                    name: None,
+                    nth: Some(0),
+                    frame: None,
+                },
+                PageRequest::Find {
+                    role: Some("button".into()),
+                    name: None,
+                    nth: None,
+                    frame: Some(FrameId::malformed()),
+                },
+            ] {
+                assert!(!bad.valid(), "{bad:?}");
+            }
         }
         // phase: pointer_gestures_are_bounded_and_name_their_two_ends
         {

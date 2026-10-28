@@ -28,7 +28,7 @@ fn a_new_document_publishes_the_standard_places() {
     }
     let effects: Vec<String> = <FilesEffect as ui::tilo_resource::Effect>::specs()
         .into_iter()
-        .map(|spec| spec.id)
+        .map(|spec| spec.id.clone())
         .collect();
     for expected in [
         "refresh",

@@ -708,7 +708,7 @@ pub trait SearchProvider {
 
     /// Whether this provider's rows of the focused app are the broker's copy
     /// of what its window publishes, left out while the window answers for
-    /// itself ([`app_scope`]).
+    /// itself (`app_scope`).
     fn gives_way_to_window(&self) -> bool {
         false
     }
@@ -782,7 +782,7 @@ pub trait SearchProvider {
     /// Where `result` stands among the rows one source ranks itself: the
     /// source (an app) and the row's rank in it, higher first. The merge
     /// keeps each source's order among its own rows
-    /// ([`sources_keep_their_order`]), whatever their titles' lexical fit
+    /// (`sources_keep_their_order`), whatever their titles' lexical fit
     /// says. `None` for rows no source ranks, most of them.
     fn source_order(&self, _result: &SearchResult) -> Option<(String, i64)> {
         None

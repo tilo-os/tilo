@@ -106,7 +106,11 @@ impl HeaderBar {
                 menu_commands.push(None);
             }
             previous = Some(command.group);
-            menu.push(MenuItem::selection(command.label.clone()).with_enabled(command.enabled));
+            menu.push(
+                MenuItem::selection(command.label.clone())
+                    .for_action(command.binding.address().clone())
+                    .with_enabled(command.enabled),
+            );
             menu_commands.push(command.invocation());
         }
 
@@ -509,6 +513,7 @@ mod tests {
         assert_eq!(labels[1], None, "recent changes follow a separator");
         assert_eq!(labels.len(), history.len() + 1);
         let show = bar.menu.item_rect(0).unwrap().center();
+        drop(bar);
         driver.click_at(show.x, show.y);
         let requests = driver.root_mut::<HeaderBar>().take_requests();
         let [HeaderRequest::Command(invocation)] = requests.as_slice() else {
@@ -609,6 +614,7 @@ mod tests {
                 .all(|label| label.is_some_and(|label| label.contains(" · ")))
         );
         let newest = bar.menu.item_rect(2).unwrap().center();
+        drop(bar);
         driver.click_at(newest.x, newest.y);
         let requests = driver.root_mut::<HeaderBar>().take_requests();
         let [HeaderRequest::Command(invocation)] = requests.as_slice() else {

@@ -143,7 +143,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
             self.assertIn('persist-credentials: false', authorization)
             self.assertIn('ref: ${{ github.sha }}', authorization)
             self.assertIn('[[ $(git rev-parse HEAD) == "$GITHUB_SHA" ]]', authorization)
-            self.assertIn('[[ $GITHUB_REF == refs/heads/main ]]', authorization)
+            self.assertIn('[[ $GITHUB_REF == refs/heads/stable ]]', authorization)
             self.assertIn('[[ $GITHUB_EVENT_NAME == push || $GITHUB_EVENT_NAME == workflow_dispatch ]]', authorization)
             self.assertNotIn('authorize-publish-final:', source)
             build = source.split('\n  build:\n', 1)[1].split(
@@ -304,7 +304,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
                         result = subprocess.run(['bash', bash_path(script)])
                     self.assertEqual(0 if allowed else 1, result.returncode)
             push = source.split('\n  push:\n', 1)[1].split('\n  workflow_dispatch:', 1)[0]
-            self.assertRegex(push, r'(?m)^    branches: \[main\]$')
+            self.assertRegex(push, r'(?m)^    branches: \[stable\]$')
             self.assertIn('tags: ["apps-v*", "app-*-v*"]', push)
         with self.subTest(phase='every plan resolves one builder'):
             source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()

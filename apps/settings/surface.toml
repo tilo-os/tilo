@@ -60,6 +60,7 @@ fields = [
   { path = "color_filter", type = "ColorFilter" },
   { path = "magnifier_zoom", type = "u8" },
   { path = "magnifier_view", type = "MagnifierView" },
+  { path = "magnifier_last_zoom", type = "u8", readonly = true },
   { path = "cursor_crosshair", type = "bool" },
   { path = "thick_text_caret", type = "bool" },
   { path = "switch_control", type = "bool" },
@@ -67,8 +68,16 @@ fields = [
   { path = "switch_scan_ms", type = "u16" },
   { path = "screen_reader_rate", type = "u16", readonly = true },
   { path = "screen_reader_voice", type = "ScreenReaderVoice", readonly = true },
+  { path = "apply_to_sign_in", type = "bool" },
   { path = "dictation_language", type = "DictationLanguage" },
   { path = "dictation_literal", type = "bool" },
+]
+
+[[resources.verbs]]
+id = "step-magnifier"
+kind = "undoable"
+params = [
+  { name = "step", required = true, schema = { type = "string" } },
 ]
 
 [[resources]]
@@ -151,6 +160,7 @@ fields = [
   { path = "performance_suspend_minutes", type = "Option<u32>" },
   { path = "blank_minutes", type = "u32" },
   { path = "lock_minutes", type = "u32" },
+  { path = "lock_on_sleep", type = "bool" },
   { path = "lid_close_action", type = "PowerActionPref" },
   { path = "power_key_action", type = "PowerActionPref" },
   { path = "low_battery_percent", type = "u32" },
@@ -428,6 +438,57 @@ person = true
 fields = [
   { path = "layout", type = "String", readonly = true },
   { path = "layouts", type = "Vec<String>", readonly = true },
+]
+
+[[resources]]
+kind = "settings.device-vpn"
+label = "Your devices as a VPN"
+version = 1
+person = true
+fields = [
+  { path = "exit", type = "bool" },
+  { path = "through", type = "Option<Through>", readonly = true },
+  { path = "stop", type = "Option<StopRequest>", readonly = true },
+  { path = "profile_kill_switches", type = "BTreeMap<String, ProfileKillSwitch>", readonly = true },
+  { path = "profile_release", type = "Option<ProfileRelease>", readonly = true },
+]
+
+[[resources.verbs]]
+id = "route-through"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "on", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "set-kill-switch"
+kind = "undoable"
+params = [
+  { name = "on", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "stop"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-profile-kill-switch"
+kind = "undoable"
+params = [
+  { name = "profile", required = true, schema = { type = "string" } },
+  { name = "on", required = true, schema = { type = "boolean" } },
+  { name = "allow_local", required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.verbs]]
+id = "release-profile"
+kind = "undoable"
+params = [
+  { name = "profile", required = true, schema = { type = "string" } },
 ]
 
 [[resources]]

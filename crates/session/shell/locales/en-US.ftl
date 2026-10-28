@@ -141,6 +141,7 @@ shortcut-explore-workspace-history = Explore workspace history
 shortcut-guide = Keyboard shortcuts
 shortcut-stop-remote-input = Stop all remote input
 shortcut-toggle-mouse-keys = Toggle mouse keys
+shortcut-toggle-screen-reader = Turn the screen reader on or off
 shortcut-vim-navigation = Vim navigation
 shortcut-dismiss = Dismiss
 
@@ -280,132 +281,25 @@ guide-a11y-description = Focus windows with { $window-back } or { $window-next }
 # Devices and media, the Quick Settings drill-in
 
 # Quick Settings
-qs-title = Quick Settings
-qs-a11y-description = Frequently used system controls
-qs-on = On
-qs-off = Off
-qs-connected = Connected
 qs-connecting = Connecting…
 qs-not-connected = Not connected
-qs-tile-settings = Settings
-qs-tile-settings-description = Open device settings
-qs-tile-power = Power
-qs-tile-power-description = Lock, log out, restart or shut down
-qs-volume = Volume
-qs-brightness = Brightness
-qs-brightness-display = Brightness, { $display }
-qs-slider-a11y-description = Use Left and Right Arrow to adjust
-qs-network = Network
-qs-wired-network = Wired network
-qs-cable-unplugged = Cable unplugged
-qs-bluetooth = Bluetooth
-qs-vpn = VPN
-qs-night-light = Night light
-qs-airplane-mode = Airplane mode
-qs-mobile-data = Mobile data
-qs-do-not-disturb = Do Not Disturb
-qs-do-not-disturb-on = Notifications held
-qs-rotation-lock = Rotation lock
-qs-rotation-locked = Locked
-qs-rotation-unlocked = Rotates with device
 qs-devices = Devices
-qs-devices-count = { $count ->
-    [one] 1 device
-   *[other] { $count } devices
-}
-qs-devices-a11y-description = Personal devices, audio outputs and media routes
 qs-clipboard = Clipboard
-qs-clipboard-empty = Empty
-qs-clipboard-count = { $count ->
-    [one] 1 item
-   *[other] { $count } items
-}
-qs-clipboard-a11y-description = Private clipboard history
-qs-power-saver = Power Saver
-qs-power-balanced = Balanced
-qs-power-performance = Performance
-qs-power-ac = AC power
 
 # Quick Settings: editing the control grid
-qs-edit-controls = Edit controls
-qs-edit-help = Drag or press Ctrl + Up/Down to reorder
-qs-edit-a11y-description = Edit controls; drag or use Control plus Arrow keys to reorder
-qs-edit-active-heading = Active controls
-qs-edit-available-heading = Available
-qs-edit-reset = Reset defaults
-qs-edit-reset-a11y = Reset Quick Settings defaults
-qs-edit-done = Done
-qs-edit-done-a11y = Finish editing Quick Settings
-qs-edit-required-a11y = Required Quick Settings control
-qs-edit-remove-a11y = Remove Quick Settings control
-qs-edit-add-a11y = Add Quick Settings control
-qs-edit-required-control-a11y = Required; use Control plus Arrow keys to reorder
-qs-edit-optional-control-a11y = Adds or removes this control. Control plus Arrow keys reorder it.
 
 # Quick Settings: Wi-Fi
 qs-wifi = Wi-Fi
 qs-wifi-off = Wi-Fi is off
 qs-wifi-scanning = Scanning for networks…
-qs-wifi-scan-failed = Couldn't scan for networks
-qs-wifi-none = No networks found
-qs-wifi-secured = Secured
-qs-wifi-open = Open
-qs-wifi-turn-on = Turn on Wi-Fi
-qs-turning-on = Turning on…
-qs-turning-off = Turning off…
-qs-wifi-problem-hardware-switch = Off with the hardware switch
-qs-wifi-problem-stayed-off = Couldn't turn on
-qs-wifi-problem-failed = Couldn't change Wi-Fi
 qs-power-mode = Power mode
-qs-power-mode-unavailable = This computer offers no power modes
-qs-power = Power mode
-qs-lock-description = Lock the screen; apps keep running
-qs-notifications = Notifications
-qs-notifications-none = None
-qs-notifications-count = { $count }
 qs-battery = Battery
-qs-battery-charging = Charging
-qs-battery-full = Fully charged
-qs-battery-not-charging = Plugged in, not charging
-qs-battery-on-battery = On battery
-qs-battery-time-left = { $hours ->
-    [0] { $minutes } min left
-   *[other] { $hours } h { $minutes } min left
-}
-qs-battery-time-to-full = { $hours ->
-    [0] Full in { $minutes } min
-   *[other] Full in { $hours } h { $minutes } min
-}
-qs-battery-settings = Battery settings
-qs-power-settings = Power settings
-qs-awake-app = { $app } is keeping the screen on
-qs-awake-apps = { $count } apps are keeping the screen on
-qs-wifi-settings = Wi-Fi settings
-qs-wifi-known = Known
 qs-wifi-password-for = Enter the network's password to join
-qs-bluetooth-off = Bluetooth is off
-qs-bluetooth-turn-on = Turn on Bluetooth
-qs-bluetooth-pair = Pair a new device
-qs-bluetooth-paired = Paired
-qs-bluetooth-use-elsewhere = Use on another device
-qs-vpn-settings = VPN settings
-qs-vpn-details = VPN profiles
-qs-sound-output = Sound output
-qs-volume-mute = Mute
-qs-sound-settings = Sound settings
-qs-devices-settings = Devices & sync settings
-qs-clipboard-clear-history = Clear history
 qs-clipboard-copied = { $age }, from { $source }
-qs-hosted-row-a11y = { $title }. { $detail }
-qs-hosted-row-action-a11y = { $title }. { $detail }. { $action }
 
 # Quick Settings: Bluetooth
-qs-bluetooth-empty = No devices found
-qs-bluetooth-device-connected-a11y = Connected; open device actions
-qs-bluetooth-device-paired-a11y = Paired; activate to connect
 
 # Quick Settings: VPN
-qs-vpn-empty = No VPN profiles. Add one in Settings.
 qs-device-vpn-through = Through { $device }
 qs-device-vpn-unnamed = your other device
 
@@ -878,8 +772,6 @@ qs-bluetooth-move-here = Move here after its local pairing is confirmed
 qs-devices-showing = { $first }–{ $last } of { $total }
 
 # Quick Settings: devices and media pane
-qs-devices-no-identity = Set up your personal identity to connect devices
-qs-devices-empty = No outputs or devices
 qs-devices-place = Place { $display } { $side ->
         [left] left
         [right] right
@@ -980,14 +872,12 @@ qs-clipboard-search-matches = { $count ->
         [one] One copy matches “{ $query }”
        *[other] { $count } copies match “{ $query }”
     }
-qs-clipboard-empty-hint = Nothing copied yet
 qs-clipboard-no-matches = Nothing matches “{ $query }”
 qs-clipboard-search-range = { $first } to { $last } of { $total } copies. Type to search.
 qs-clipboard-search-count = { $count ->
         [one] One copy. Type to search.
        *[other] { $count } copies. Type to search.
     }
-qs-clipboard-clear-a11y = Clear unpinned clipboard history
 qs-clipboard-mime-bytes = { $mime } · { $bytes } bytes
 qs-clipboard-remove-a11y = Remove clipboard item
 
@@ -1029,18 +919,10 @@ osd-pointer-held = The app holds the pointer. { $chord } releases it.
 osd-pointer-released = Pointer released
 osd-mouse-keys-on = Mouse keys on
 osd-mouse-keys-off = Mouse keys off
+osd-screen-reader-on = Screen reader on
+osd-screen-reader-off = Screen reader off
 
 # System status, the tray's accessible summary
-status-wired = Wired
-status-wired-named = Wired: { $name }
-status-wifi = Wi-Fi
-status-wifi-named = Wi-Fi: { $name }
-status-offline = Offline
-status-muted = Muted
-status-volume = Volume { $percent }%
-status-battery-charging = Battery { $percent }%, charging
-status-battery = Battery { $percent }%
-status-summary-empty = System status
 status-other-displays-a11y = Other displays
 
 # Notification toasts
@@ -1484,6 +1366,8 @@ search-session-not-offered = This session shares the computer with another deskt
 
 # Search: shortcuts
 search-shortcut-run-on = Run on { $resource }
+search-shortcut-continue-needs-step = Runs again from a step: name it as the last run reported it
+search-shortcut-continue-needs-run = Runs again from a step: name the run that reported it
 
 # Search: tray items
 search-tray-open = Open { $item }
@@ -1646,6 +1530,8 @@ search-action-group-move-to-display-previous = Move window group to the previous
 search-action-group-move-to-display-previous-subtitle = Move the focused window group onto the display to the left
 search-action-group-move-to-display-next = Move window group to the next display
 search-action-group-move-to-display-next-subtitle = Move the focused window group onto the display to the right
+search-action-group-toggle-maximize = Maximize the window group or restore it
+search-action-group-toggle-maximize-subtitle = The whole strip, or back to the size it had
 search-action-group-maximize = Maximize the window group
 search-action-group-maximize-subtitle = Make the focused window group fill its display
 search-action-group-restore = Restore the window group
@@ -2818,6 +2704,12 @@ dictation-action-finish-detail = Stop the microphone and insert the final correc
 dictation-action-cancel-detail = Stop dictation and discard its private draft.
 dictation-stopping-microphone = Stopping microphone…
 
+search-action-magnifier-toggle = Turn the magnifier on
+search-action-magnifier-toggle-subtitle = Zoom the screen in around the pointer, or turn it off again
+search-action-magnifier-zoom-in = Zoom in
+search-action-magnifier-zoom-in-subtitle = One step closer; the pointer moves the magnified view
+search-action-magnifier-zoom-out = Zoom out
+search-action-magnifier-zoom-out-subtitle = One step further away, down to off
 search-action-axis-enable = Enable experimental axis navigation
 search-action-axis-enable-subtitle = This session: step between groups and gather focus into view
 search-action-axis-disable = Disable experimental axis navigation
@@ -3106,7 +2998,14 @@ agent-quick-agent = Agent
 agent-quick-model = Model
 agent-quick-model-own = The agent's own model
 agent-quick-model-of = { $model } ({ $provider })
+agent-quick-mode = What to do
+agent-quick-mode-decides = Decide for me
+agent-quick-mode-answer = Answer here
+agent-quick-mode-task = Run as a task
+agent-quick-mode-answer-line = Answer in place
+agent-quick-mode-task-line = Run this as a task
 agent-quick-about-selection = About your selection in { $app }: “{ $selection }”
+agent-quick-about-resource = About { $resource } in { $app }
 agent-quick-about-window = About { $app }; nothing is selected
 agent-quick-accessible-name = Agent composer
 agent-quick-shots-context = About your selection in Notes: “[tilo OS](search for the tilo homepage)”
@@ -3222,6 +3121,10 @@ search-kw-group-move-to-strip-next = move window down, send to row below
 search-kw-group-move-to-display-previous = move to monitor, other screen, send to display, previous monitor
 search-kw-group-move-to-display-next = move to monitor, other screen, send to display, next monitor
 search-kw-group-maximize = maximize, restore, fill screen, zoom window
+search-kw-group-toggle-maximize = maximize or restore, toggle maximize, full size, normal size
+search-kw-magnifier-toggle = magnifier, screen magnifier, zoom, magnify, enlarge, low vision, Lupe
+search-kw-magnifier-zoom-in = magnifier, zoom in, bigger, closer, enlarge, vergrößern
+search-kw-magnifier-zoom-out = magnifier, zoom out, smaller, further away, verkleinern
 search-kw-group-fullscreen = fullscreen, full screen, immersive
 search-kw-group-narrower = narrower, shrink, smaller, resize
 search-kw-group-wider = wider, grow, bigger, larger, resize

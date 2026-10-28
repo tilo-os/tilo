@@ -44,9 +44,10 @@ has_t() {
   local values
   values="$(tcheck "$1" "$2")" && grep -Fxq -- "$3" <<<"$values" && ok "$4" || bad "$4"
 }
-for check in image-rpms-{arch} image-rpms provenance-rpms sign-rpms publish-rpms rpm-snapshot; do
+for check in image-rpms-{arch} image-rpms provenance-rpms sign-rpms publish-rpms rpm-snapshot rpm-package-set; do
   tcheck "$check" name >/dev/null || bad "t.toml declares $check"
 done
+has_t image-rpms-{arch} needs rpm-package-set "a changed package set rebuilds the RPM snapshot"
 
 # Checks read job text from here-strings, not `printf | grep -q`: under
 # pipefail, grep exiting at its first match can SIGPIPE the writer.
@@ -67,7 +68,8 @@ for file in "${frozen_consumers[@]}"; do
   grep -Fxq "$relative" <<<"$("$derive" --sources)" \
     && ok "$relative contributes packages to the snapshot parser" \
     || bad "$relative consumes frozen RPMs but is absent from the snapshot parser"
-  has_t image-rpms-{arch} inputs "$relative" "$relative changes rebuild the RPM snapshot"
+  # Through the package set it derives, which the snapshot is keyed by.
+  has_t rpm-package-set inputs "$relative" "$relative changes the snapshot's package set"
   has_t provenance-rpms inputs "$relative" "$relative changes the snapshot's fingerprint and provenance"
 done
 
@@ -158,6 +160,8 @@ else
 fi
 kernel_sources=(
   "$repo/tools/ci/publish/kernel.sh"
+  "$repo/tools/ci/publish/kernel-env.sh"
+  "$repo/tools/ci/publish/kernel-compile-cache.sh"
   "$repo/tools/ci/publish/kernel-buildroot.sh"
   "$repo/tools/ci/publish/kernel-acceptance.sh"
   "$repo/os/kernel/Containerfile"
@@ -276,7 +280,7 @@ has "$repo/tools/ci/publish/oci-sign.sh" 'require_published_snapshot "$out/rpms-
   'an image built from an unpublished RPM snapshot is never signed'
 has "$build_script" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \
   'local OS builds verify exact RPM snapshot provenance'
-has_t image-rpms-{arch} inputs 'os/dev/derive-rpm-package-set.py' \
+has_t rpm-package-set inputs 'os/dev/derive-rpm-package-set.py' \
   'package parser changes rebuild the snapshot'
 has_t provenance-rpms inputs 'os/dev/derive-rpm-package-set.py' \
   'package parser changes the snapshot fingerprint'

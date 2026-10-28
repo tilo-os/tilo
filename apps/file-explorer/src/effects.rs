@@ -547,12 +547,13 @@ pub fn row_action(
     label: impl Into<String>,
 ) -> ui::tilo_actions::ActionSpec {
     let mut spec = effect.bound();
-    spec.id = id.into();
-    spec.label = label.into();
+    spec.type_mut().id = id.into();
+    spec.type_mut().label = label.into();
     // A row's copy names what it acts on, so a person takes it from the row
     // even where the effect itself, its target typed out by id, is listed
     // for agents only (browsing a cloud folder, selecting a cloud entry).
-    spec.contract
+    spec.type_mut()
+        .contract
         .set_audience(ui::tilo_actions::Audience::Everyone);
     spec
 }

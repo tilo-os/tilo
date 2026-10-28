@@ -33,6 +33,7 @@ pub(super) const ACTION_SHORTCUTS: &[(&str, &str)] = &[
     ),
     ("group.move-to-display-next", "move-group-to-next-display"),
     ("group.maximize", "maximize-window"),
+    ("group.toggle-maximize", "toggle-maximize"),
     ("group.restore", "restore-window"),
     ("group.fullscreen", "toggle-fullscreen"),
     ("group.narrower", "resize-narrower"),
@@ -46,6 +47,9 @@ pub(super) const ACTION_SHORTCUTS: &[(&str, &str)] = &[
     ("lock", "lock"),
     ("emoji.picker", "emoji-picker"),
     ("input.source.next", "next-input-source"),
+    ("magnifier.toggle", "toggle-magnifier"),
+    ("magnifier.zoom-in", "magnifier-zoom-in"),
+    ("magnifier.zoom-out", "magnifier-zoom-out"),
 ];
 
 /// `shortcut_id`'s current chord as the active layout's keycaps spell it,
@@ -108,5 +112,76 @@ mod tests {
             );
         }
         assert_eq!(shortcut_text(&config, "no.such.shortcut"), None);
+    }
+    #[test]
+    fn every_shortcut_that_names_an_action_names_one_this_desktop_publishes() {
+        use super::super::tests::action_results;
+        use super::super::{Action, ActionsProvider};
+        let provider = ActionsProvider::new();
+        let chrome = super::super::tests::chrome_with_room();
+        let results = action_results(&provider, &chrome);
+        let mut chords = 0;
+        for shortcut in ShortcutAction::ALL {
+            let Some((provider_id, id)) = shortcut.action() else {
+                continue;
+            };
+            chords += 1;
+            if provider_id != "actions" {
+                // Lock and the like live on another provider's door, which
+                // this test has no registry to query.
+                continue;
+            }
+            assert!(
+                Action::ALL.iter().any(|action| action.id == id),
+                "the shortcut catalogue says {shortcut:?} is {id}, which this provider does not publish"
+            );
+            assert!(
+                results.iter().any(|result| result.id == id),
+                "{id} is published but a person searching cannot see it"
+            );
+        }
+        assert!(chords >= 20, "the catalogue names actions for most chords");
+        assert!(
+            ShortcutAction::Search.action().is_none(),
+            "the search chord keeps the host's own handling until a row publishes it"
+        );
+    }
+
+    #[test]
+    fn magnifier_steps_and_the_maximize_toggle_run_from_the_action_door() {
+        use super::super::tests::{chrome_with_room, invoke_shell_action};
+        let chrome = chrome_with_room();
+        for id in [
+            "magnifier.toggle",
+            "magnifier.zoom-in",
+            "magnifier.zoom-out",
+        ] {
+            let before = chrome.borrow().window_requests_queued();
+            invoke_shell_action(&chrome, id, &serde_json::json!({}))
+                .unwrap_or_else(|error| panic!("{id} runs from the action door: {error}"));
+            assert!(
+                chrome.borrow().window_requests_queued() > before,
+                "{id} asks the compositor for the change the chord asks for"
+            );
+        }
+    }
+
+    #[test]
+    fn moving_a_group_to_another_display_refuses_on_a_single_display_desk() {
+        use super::super::tests::{chrome_with_room, invoke_shell_action};
+        use crate::shell::search::action_api::ActionError;
+        let chrome = chrome_with_room();
+        assert_eq!(chrome.borrow().tree().desktop.outputs.displays.len(), 0);
+        for id in [
+            "group.move-to-display-previous",
+            "group.move-to-display-next",
+        ] {
+            let error = invoke_shell_action(&chrome, id, &serde_json::json!({}))
+                .expect_err("there is nowhere to move the group to");
+            assert!(
+                matches!(error, ActionError::Explained(_)),
+                "{id} says why it cannot act in the person's words, got {error:?}"
+            );
+        }
     }
 }

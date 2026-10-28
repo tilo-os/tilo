@@ -1,7 +1,8 @@
 //! `tilo-auth`: sign in at boot, and talk to `tilo-authd`.
 //!
-//! `boot-unlock` and `boot-people` run in the initrd and need no daemon. The
-//! rest ask the daemon. Secrets are read from a file or stdin, never argv.
+//! `boot-unlock`, `boot-people` and `boot-comforts` run in the initrd and need
+//! no daemon. The rest ask the daemon. Secrets are read from a file or stdin,
+//! never argv.
 
 use anyhow::{Context as _, Result, bail};
 use clap::{Parser, Subcommand};
@@ -11,6 +12,7 @@ use std::process::ExitCode;
 use tilo_auth::boot::{self, BootOutcome, BootUnlock};
 use tilo_auth::client::Client;
 use tilo_auth::handoff;
+use tilo_auth::luks;
 use tilo_auth::protocol::{Reply, Request};
 use tilo_auth::record::{self, Store};
 use tilo_auth::tpm::Tries;
@@ -58,6 +60,12 @@ enum Cmd {
     },
     /// The people who can open the system volume, as JSON, for the boot screen.
     BootPeople {
+        #[arg(long)]
+        device: PathBuf,
+    },
+    /// The device's sign-in comforts, as JSON with every value clamped, or
+    /// `null` when none were chosen, for the boot screen.
+    BootComforts {
         #[arg(long)]
         device: PathBuf,
     },
@@ -224,6 +232,15 @@ fn run(cli: &Cli) -> Result<()> {
             println!(
                 "{}",
                 serde_json::to_string(&boot::people(&runner, device)?)?
+            );
+            Ok(())
+        }
+        Cmd::BootComforts { device } => {
+            let scratch = tempfile::Builder::new().prefix("tilo-auth.").tempdir()?;
+            let runner = Real::new().with_cwd(scratch.path());
+            println!(
+                "{}",
+                serde_json::to_string(&luks::comforts(&runner, device)?)?
             );
             Ok(())
         }

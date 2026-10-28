@@ -91,7 +91,7 @@ protocol violation on the control channel closes that app's connection.
 Neither stalls the service. Proptest checks that every scene the toolkit can
 draw passes unchanged, and that scribbled-over records never panic the
 decoder, the validator or vello's resolver; the `render_scene` fuzz target
-(`fuzz/`, run nightly by the `nightly-fuzz` check) does the same with
+(`fuzz/`, run on release candidates by the `nightly-fuzz-<target>` checks) does the same with
 coverage guidance.
 
 **GPU time.** Each frame's time is measured from decode to GPU completion.
@@ -180,6 +180,62 @@ they installed themselves is not built yet.
 - **External surfaces** (video, camera, webviews as dma-bufs by id, Q4) are
   the next resource kind beside fonts and images; vello's `draw_image_from`
   already draws an image from a texture.
+
+## Component patches (step 3)
+
+Step 3 moves what a tilolang app's window *is* out of the app: the app sends
+the trees of its views, the UI host builds and draws them. The protocol and
+both halves exist; today they run side by side in the app's own process,
+joined by an in-process transport, so every tilolang window already travels
+through them. What remains for the halves to run in two processes is in
+"Not built yet" below.
+
+| Part | Where | What it does |
+|---|---|---|
+| Patch protocol | `tilo_render_protocol::patch` | `ToUi` (a view's tree when it opens, its patches by key path, the rows of virtual lists, what bound controls show, notices, the Ask bar) and `ToApp` (events by node key, text edits as splices, rows shown, focus, composition); one batch a frame |
+| Patch validator | `tilo_render_protocol::patch::validate` | Every batch the UI host receives, against the toolkit's catalogue (`tilo-ui-graph`) and the window's budget |
+| Transports | `patch::local` (one process), `patch::unix` (a `SOCK_SEQPACKET` channel, a sealed memfd for a batch over 12 KiB) | Carry the bytes; a page and a worker carry the same bytes with `postMessage` |
+| App instance | `tilolang_tilo::instance` | One window of an app without the toolkit: the runtime, its views, rows, bound values, the commits for the door; builds for `wasm32` |
+| UI host half | `tilo_ui_host::AppWindow` | Keeps each view's tree, composes the shell, builds widgets through the generic adapter, reports what the person did |
+
+**One frame.** The instance brings its runtime up to date with the room
+record, runs what the window sent, re-runs a view whose reads changed and
+sends the patches that bring the window's copy of the view's tree to the new
+one (a keyed diff of the trees it sent; `instance::wire::diff`). The window
+applies them to its copy, composes the shell and reconciles its widgets by
+key, exactly as before. A virtual list's rows are not in the tree: the list
+asks for the range it shows, the instance renders those rows and sends their
+keys and nodes, and forgets the rows outside the range; the first 48 rows of
+each list come with the tree, so the first frame shows them.
+
+**Typing is the window's.** A bound text field is the toolkit's; a keystroke
+shows on the next frame. The window sends a splice of what the field showed
+(`ToApp::Splice`, numbered per field); what the app sends of the field before
+it took the window's last splice (`ToUi::Bound { acked }`) is not shown, so
+the app never takes a person's typing back.
+
+**Hostile until validated.** A batch is decoded once into the window's own
+memory and checked before a widget is touched: a described component's node
+names a component of the catalogue, each prop is declared (or a sizing
+argument every node takes) and holds a value of its declared type, each
+event and binding is declared; a primitive is one the host builds; strings,
+keys, paths, props, depth and rows per message are bounded, and a window's
+trees and rows together hold at most `PatchLimits::nodes` nodes. A batch that
+fails, or a patch naming a node the window's trees lack, is refused whole:
+the window shows the platform's error state, nothing else of it changes, and
+it takes nothing more until its app opens its root anew. Every window test
+asserts that no batch a real package sends is refused.
+
+**Not built yet.** The app host process and the UI host in the render
+service. Running instances outside the app needs the room record, the door
+(attributed, undoable commits), presence and publication without the
+toolkit; today they are the framework's, inside `ui-core`
+(`ui_core::collaboration`, `app/actions.rs`, `state/undo_log.rs`,
+`permissions/`). Surfaces per app window from the UI host need the
+compositor to attribute each to its app; the intended mechanism is a Wayland
+connection per app instance that the broker inserts with the app's launch
+custody and hands the render service it started, so every surface on it is
+the app's as a launched app's are.
 
 ## Measuring
 

@@ -81,8 +81,13 @@ fn no_transient_overlaps_a_window_bar() {
     fb.host_mut().set_followed_peer(Some("ada".into()));
     settle(&mut fb);
 
-    let bars = fb.host().window_bar_rects();
-    assert!(!bars.is_empty(), "the window's bar is on screen");
+    let bars = fb.host().chrome_bar_rects(&ui::theme::Theme::dark());
+    assert!(!bars.is_empty(), "the window's bars are on screen");
+    assert_eq!(
+        bars.len(),
+        2,
+        "a window wears two bars: its group's tab strip and its header row"
+    );
     let banner = fb.host().notification_banners_rect();
     let follow = fb.host().follow_banner.chip_rect();
     assert!(!banner.is_zero_area(), "the banner is up");

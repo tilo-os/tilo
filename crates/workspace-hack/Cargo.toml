@@ -61,7 +61,7 @@ data-encoding = { version = "2" }
 der-c38e5c1d305a1b54 = { package = "der", version = "0.8", default-features = false, features = ["oid", "pem", "std"] }
 der-ca01ad9e24f5d932 = { package = "der", version = "0.7", default-features = false, features = ["derive", "flagset", "oid", "pem", "std"] }
 deranged = { version = "0.5", features = ["powerfmt", "serde"] }
-derive_more = { version = "2", features = ["add", "debug", "deref", "deref_mut", "display", "from", "into", "try_from", "try_into"] }
+derive_more = { version = "2", features = ["add", "as_ref", "debug", "deref", "deref_mut", "display", "from", "into", "try_from", "try_into"] }
 digest-93f6ce9d446188ac = { package = "digest", version = "0.10", features = ["mac", "oid", "std"] }
 digest-a6292c17cd707f01 = { package = "digest", version = "0.11", features = ["alloc", "mac", "oid", "rand_core"] }
 ecdsa = { version = "0.17", features = ["algorithm", "getrandom", "pem", "std"] }
@@ -137,6 +137,7 @@ n0-error = { version = "1", features = ["anyhow"] }
 naga = { version = "29", features = ["wgsl-in"] }
 num-bigint = { version = "0.4" }
 num-integer = { version = "0.1", features = ["i128"] }
+num-iter = { version = "0.1", default-features = false, features = ["i128", "std"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 once_cell = { version = "1", features = ["critical-section"] }
 p256-582f2526e08bb6a0 = { package = "p256", version = "0.14", features = ["ecdh"] }
@@ -180,7 +181,8 @@ ring = { version = "0.17" }
 rqrr = { version = "0.10" }
 rusqlite = { version = "0.37", default-features = false, features = ["bundled", "hooks"] }
 russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "net", "process", "system"] }
+rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["fs", "mm"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "mm", "net", "process", "system", "thread", "time"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 scopeguard = { version = "1" }
@@ -234,6 +236,7 @@ unicode-properties = { version = "0.1" }
 url = { version = "2", features = ["serde"] }
 usvg = { version = "0.47" }
 uuid = { version = "1", features = ["serde", "v4"] }
+wasm-encoder = { version = "0.252" }
 wasmi = { version = "1", default-features = false, features = ["simd", "std"] }
 wasmi_collections = { version = "1", default-features = false, features = ["std"] }
 wasmi_core = { version = "1", default-features = false, features = ["simd", "std"] }
@@ -301,8 +304,8 @@ data-encoding = { version = "2" }
 der-c38e5c1d305a1b54 = { package = "der", version = "0.8", default-features = false, features = ["oid", "pem", "std"] }
 der-ca01ad9e24f5d932 = { package = "der", version = "0.7", default-features = false, features = ["derive", "flagset", "oid", "pem", "std"] }
 deranged = { version = "0.5", features = ["powerfmt", "serde"] }
-derive_more = { version = "2", features = ["add", "debug", "deref", "deref_mut", "display", "from", "into", "try_from", "try_into"] }
-derive_more-impl = { version = "2", features = ["add", "debug", "deref", "deref_mut", "display", "from", "into", "try_from", "try_into"] }
+derive_more = { version = "2", features = ["add", "as_ref", "debug", "deref", "deref_mut", "display", "from", "into", "try_from", "try_into"] }
+derive_more-impl = { version = "2", features = ["add", "as_ref", "debug", "deref", "deref_mut", "display", "from", "into", "try_from", "try_into"] }
 digest-93f6ce9d446188ac = { package = "digest", version = "0.10", features = ["mac", "oid", "std"] }
 digest-a6292c17cd707f01 = { package = "digest", version = "0.11", features = ["alloc", "mac", "oid", "rand_core"] }
 displaydoc = { version = "0.2" }
@@ -379,6 +382,7 @@ n0-error = { version = "1", features = ["anyhow"] }
 naga = { version = "29", features = ["wgsl-in"] }
 num-bigint = { version = "0.4" }
 num-integer = { version = "0.1", features = ["i128"] }
+num-iter = { version = "0.1", default-features = false, features = ["i128", "std"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 once_cell = { version = "1", features = ["critical-section"] }
 p256-582f2526e08bb6a0 = { package = "p256", version = "0.14", features = ["ecdh"] }
@@ -422,7 +426,8 @@ ring = { version = "0.17" }
 rqrr = { version = "0.10" }
 rusqlite = { version = "0.37", default-features = false, features = ["bundled", "hooks"] }
 russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "net", "process", "system"] }
+rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["fs", "mm"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "mm", "net", "process", "system", "thread", "time"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 scopeguard = { version = "1" }
@@ -478,6 +483,7 @@ unicode-properties = { version = "0.1" }
 url = { version = "2", features = ["serde"] }
 usvg = { version = "0.47" }
 uuid = { version = "1", features = ["serde", "v4"] }
+wasm-encoder = { version = "0.252" }
 wasmi = { version = "1", default-features = false, features = ["simd", "std"] }
 wasmi_collections = { version = "1", default-features = false, features = ["std"] }
 wasmi_core = { version = "1", default-features = false, features = ["simd", "std"] }
@@ -518,10 +524,9 @@ nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "p
 nom = { version = "7" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 ordered-float = { version = "5" }
-profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
-rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "stdio", "termios", "time"] }
+rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pipe", "stdio", "termios"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -553,10 +558,9 @@ nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "p
 nom = { version = "7" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 ordered-float = { version = "5" }
-profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
-rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "stdio", "termios", "time"] }
+rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pipe", "stdio", "termios"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -588,10 +592,9 @@ nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "p
 nom = { version = "7" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 ordered-float = { version = "5" }
-profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
-rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "stdio", "termios", "time"] }
+rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pipe", "stdio", "termios"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -623,10 +626,9 @@ nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "p
 nom = { version = "7" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 ordered-float = { version = "5" }
-profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
-rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "stdio", "termios", "time"] }
+rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pipe", "stdio", "termios"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }

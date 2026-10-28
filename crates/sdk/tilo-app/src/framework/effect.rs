@@ -1573,10 +1573,10 @@ impl EffectStatus {
     /// Show `spec` as this status says it is right now.
     pub(crate) fn overlay(&self, spec: &mut ActionSpec) {
         if let Some(availability) = &self.availability {
-            spec.contract.availability = availability.clone();
+            spec.type_mut().contract.availability = availability.clone();
         }
         if let Some(label) = &self.label {
-            spec.label.clone_from(label);
+            spec.type_mut().label.clone_from(label);
         }
     }
 }
@@ -1616,8 +1616,9 @@ pub(crate) fn kept_specs_of(
     specs
 }
 
-/// `specs` with what `statuses` say of each laid over it: compiled once
-/// rather than for every effect vocabulary.
+/// `specs` with what `statuses` say of each laid over it, and unavailable
+/// where they need what this host lacks: compiled once rather than for
+/// every effect vocabulary.
 #[inline(never)]
 fn overlaid(specs: Vec<ActionSpec>, statuses: &[EffectStatus]) -> Vec<ActionSpec> {
     specs
@@ -1627,9 +1628,34 @@ fn overlaid(specs: Vec<ActionSpec>, statuses: &[EffectStatus]) -> Vec<ActionSpec
             for status in statuses.iter().filter(|status| status.id == id) {
                 status.overlay(&mut spec);
             }
+            require_host(&mut spec, host_lacks);
             spec
         })
         .collect()
+}
+
+/// `spec` unavailable when one of its [`tilo_actions::REQUIRES_HOST_PREFIX`]
+/// requirements is something `lacks` gives the host's reason for lacking.
+fn require_host(spec: &mut ActionSpec, lacks: impl Fn(&str) -> Option<&'static str>) {
+    if let Some(reason) = spec.contract.tags.iter().find_map(|tag| lacks(tag)) {
+        spec.type_mut().contract.availability = Availability::Unavailable {
+            code: tilo_actions::HOST_UNSUPPORTED_CODE.to_owned(),
+            reason: reason.to_owned(),
+        };
+    }
+}
+
+/// Why this host cannot meet `tag`, when it is a host requirement it lacks.
+fn host_lacks(tag: &str) -> Option<&'static str> {
+    tag.strip_prefix(tilo_actions::REQUIRES_HOST_PREFIX)?;
+    let feature = match tag {
+        tilo_actions::REQUIRES_NATIVE_PATHS_TAG => tilo_files::Feature::NativePaths,
+        _ => return Some("This device cannot do this."),
+    };
+    match tilo_files::availability(feature) {
+        tilo_files::Availability::Unsupported(reason) => Some(reason),
+        tilo_files::Availability::Available | tilo_files::Availability::Prompt => None,
+    }
 }
 
 /// What a job reported when polled.

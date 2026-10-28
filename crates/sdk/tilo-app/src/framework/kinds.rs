@@ -38,10 +38,16 @@ pub(crate) fn register<A: ResourceApp>() {
     // a host reads a part (a chat's messages) as the app's window does.
     let mut declared = super::Records::declaring();
     A::records(&mut declared);
+    // A runtime that runs a package hosts the kinds under the package's app.
+    let app = super::app::hooks::<A>();
     let mut hosted = HOSTED.lock_recover();
-    hosted.0.insert(resource_kind::<A>());
+    hosted.0.insert(
+        ResourceKind::of::<A::Resource>()
+            .hosted_by(app.id(), app.title())
+            .named(name::<A>),
+    );
     for chain in declared.into_chains() {
-        hosted.0.insert(chain.hosted_by(A::ID, A::TITLE));
+        hosted.0.insert(chain.hosted_by(app.id(), app.title()));
     }
     let kind = <A::Resource as Resource>::KIND;
     hosted.1.retain(|(known, _)| *known != kind);

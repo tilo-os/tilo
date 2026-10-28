@@ -1,0 +1,1172 @@
+//! One app window as the UI host holds it.
+//!
+//! The window keeps a copy of each of its app's two views (the root, and the view of the
+//! resource `open(r)` or a row went to), as the app sends them over the patch protocol, and
+//! shows them as the columns of one shell ([`crate::shell`]): the root's sidebar and overview
+//! beside the content and header of the view after it. On a narrow screen the columns become
+//! push navigation with Back, by the shell's rules. Everything in the shell is the views' own,
+//! built through the one adapter: the window adds no frame, header or list of its own.
+//!
+//! What holds for every window is the platform's, and so the window's: the overview's
+//! selection is the view shown after it; a notice of a destructive action offers Undo; the Ask
+//! bar is trusted chrome the app cannot draw.
+//!
+//! What the person does is sent back as it happens, at most one batch a frame: a component's
+//! event by its key, an edit through a binding as a splice of what the control showed (the
+//! toolkit's field shows the typing at once), the rows a list shows now.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use tilo_render_protocol::patch::validate::{PatchLimits, Validator};
+use tilo_render_protocol::patch::{self as wire, Answer, Lane, ToApp, ToUi, Transport, Words};
+use ui::tokens::{MotionSource, Rhythm, TextRole};
+use ui::widget::arrange::{Fit, Row, Slot, Stack};
+use ui::widget::toast::ToastKind;
+use ui::widget::{
+    Absent, AppModel, Button, ButtonRole, DescribedList, Element, ModelPath, NavPane, NavShell,
+    Text, Widget,
+};
+
+use crate::i18n::{t, t_args};
+use crate::pane::Pane;
+use crate::reconcile::{EventSink, Reconciler, UiEvent};
+use crate::rows::{BoundValues, RemoteRows};
+use crate::shell::DETAIL;
+use crate::{ResourceRef, UiNode, Value};
+
+/// Every virtual list of the window's views, by the key of its node in the window's tree.
+pub type Registry = Rc<RefCell<HashMap<String, Rc<RefCell<RemoteRows>>>>>;
+
+/// One of the window's two views, as the app last sent it.
+struct View {
+    /// The resource it shows.
+    target: ResourceRef,
+    /// Its tree, without the rows of its virtual lists.
+    tree: UiNode,
+}
+
+fn slot(element: Element, fit: Fit) -> Slot {
+    let mut slot = Slot::new(element);
+    slot.fit = fit;
+    slot
+}
+
+/// What moves a column the person's last input brings to the front: a click or a tap slides it
+/// in; a key, an agent's action, or nothing the person just did lands it.
+fn by_input() -> MotionSource {
+    ui::motion::recent_input(ui::time::now()).unwrap_or(MotionSource::Action)
+}
+
+/// See the module docs.
+pub struct AppWindow {
+    transport: Box<dyn Transport>,
+    limits: PatchLimits,
+    root: Option<View>,
+    detail: Option<View>,
+    /// Builds the composed shell and reconciles it, reporting what its controls do.
+    reconciler: Rc<RefCell<Reconciler>>,
+    events: EventSink,
+    /// The composed shell last built.
+    built: Option<UiNode>,
+    /// The rows of the views' virtual lists.
+    rows: Registry,
+    /// What each bound control shows, as the app last sent it, by key in the composed tree.
+    bound: BoundValues,
+    /// The text of each bound text control as the app has it, splices sent included: what the
+    /// next splice is against.
+    texts: HashMap<String, String>,
+    /// The last splice of each bound control sent, by key in the composed tree.
+    seqs: HashMap<String, u64>,
+    /// The shell, the Ask bar and whatever the embedder shows beside them.
+    body: Element,
+    answers: Rc<RefCell<Vec<Answer>>>,
+    /// The Ask bar shown, if one is.
+    ask: Option<wire::Ask>,
+    out: Vec<ToApp>,
+    structure_dirty: bool,
+    /// Why the window shows the platform's error state: a batch it refused.
+    failed: Option<String>,
+    /// A key, a press or a touch arrived since the window last looked where the keyboard focus
+    /// is.
+    input: bool,
+    /// The bound control the keyboard focus was in, as last sent, by key in the composed tree.
+    focus: Option<String>,
+    /// Whether an input method composes in the focused control, as last sent.
+    composing: bool,
+}
+
+impl AppWindow {
+    /// A window receiving its app's views over `transport`, showing `beside` after its shell
+    /// and Ask bar (an embedder's endpoints, which take no room).
+    #[must_use]
+    pub fn new(transport: Box<dyn Transport>, beside: Vec<Element>) -> Self {
+        let mut body = Stack::stack()
+            .fill_width()
+            .fill_height()
+            .gap(Rhythm::Tight)
+            .push_slot(slot(
+                Box::new(Pane::new(Box::new(NavShell::new()))),
+                Fit::fill(1.0),
+            ))
+            .push_slot(slot(Box::new(Absent::new()), Fit::hug()));
+        for element in beside {
+            body = body.push_slot(slot(element, Fit::hug()));
+        }
+        let events: EventSink = Rc::default();
+        let rows: Registry = Rc::default();
+        let reconciler = {
+            // Weakly: the rows' own readers share this reconciler, and a strong hold would keep
+            // the rows alive after the window closes.
+            let registry = Rc::downgrade(&rows);
+            let rows_of: crate::adapter::RowsOf = Rc::new(move |key: &str| {
+                registry
+                    .upgrade()?
+                    .borrow()
+                    .get(key)
+                    .map(|rows| Rc::clone(rows) as ui::component::SharedRows)
+            });
+            Reconciler::new(Rc::clone(&events)).with_rows(rows_of)
+        };
+        Self {
+            transport,
+            limits: PatchLimits::default(),
+            root: None,
+            detail: None,
+            reconciler: Rc::new(RefCell::new(reconciler)),
+            events,
+            built: None,
+            rows,
+            bound: Rc::default(),
+            texts: HashMap::new(),
+            seqs: HashMap::new(),
+            body: Box::new(body),
+            answers: Rc::default(),
+            ask: None,
+            out: Vec::new(),
+            structure_dirty: true,
+            failed: None,
+            input: false,
+            focus: None,
+            composing: false,
+        }
+    }
+
+    // ----- what the app sends --------------------------------------------------------------
+
+    /// Take what the app sent and show it. Whether anything arrived.
+    pub fn receive(&mut self) -> bool {
+        let mut any = false;
+        loop {
+            let batch = match self.transport.recv() {
+                Ok(Some(batch)) => batch,
+                Ok(None) => break,
+                Err(error) => {
+                    self.fail(&error.to_string());
+                    break;
+                }
+            };
+            any = true;
+            let messages: Vec<ToUi> = match wire::decode_batch(&batch) {
+                Ok(messages) => messages,
+                Err(error) => {
+                    self.fail(&error.to_string());
+                    continue;
+                }
+            };
+            let validator = Validator::new(crate::adapter::catalogue(), self.limits);
+            if let Err(error) = validator.to_ui(&messages) {
+                self.fail(&error.to_string());
+                continue;
+            }
+            if let Err(error) = self.apply(messages) {
+                self.fail(&error);
+            }
+        }
+        any
+    }
+
+    /// Refuse what the app sent: the window shows the platform's error state, and takes
+    /// nothing more until the app opens its root anew.
+    fn fail(&mut self, why: &str) {
+        tracing::warn!(why, "a window refused what its app sent");
+        if self.failed.is_none() {
+            let state = ui::widget::EmptyState::new(t("tilolang-open-failed"));
+            if let Some(pane) = self.shell_pane() {
+                pane.set(Box::new(state));
+            }
+            self.built = None;
+            self.structure_dirty = true;
+        }
+        self.failed = Some(why.to_owned());
+    }
+
+    fn apply(&mut self, messages: Vec<ToUi>) -> Result<(), String> {
+        let mut content = false;
+        let mut front = None;
+        for message in messages {
+            if self.failed.is_some()
+                && !matches!(
+                    message,
+                    ToUi::Open {
+                        lane: Lane::Root,
+                        ..
+                    }
+                )
+            {
+                continue;
+            }
+            match message {
+                ToUi::Loading => self.show_loading(),
+                ToUi::Open {
+                    lane,
+                    target,
+                    tree,
+                    front: brought,
+                } => {
+                    if lane == Lane::Root {
+                        self.failed = None;
+                    }
+                    self.forget_lane(lane);
+                    let view = View { target, tree };
+                    match lane {
+                        Lane::Root => self.root = Some(view),
+                        Lane::Detail => self.detail = Some(view),
+                    }
+                    self.track_rows();
+                    content = true;
+                    front = brought.or(front);
+                }
+                ToUi::Close => {
+                    if self.detail.take().is_some() {
+                        self.forget_lane(Lane::Detail);
+                        content = true;
+                    }
+                }
+                ToUi::Front(brought) => front = Some(brought),
+                ToUi::Patch { lane, patches } => {
+                    let view = match lane {
+                        Lane::Root => self.root.as_mut(),
+                        Lane::Detail => self.detail.as_mut(),
+                    }
+                    .ok_or("a patch to a view the window does not show")?;
+                    for patch in patches {
+                        patch
+                            .apply(&mut view.tree)
+                            .map_err(|error| error.to_string())?;
+                    }
+                    self.track_rows();
+                    content = true;
+                }
+                ToUi::Bound {
+                    lane,
+                    key,
+                    value,
+                    acked,
+                } => self.take_bound(lane, &key, value, acked),
+                ToUi::Rows {
+                    lane,
+                    list,
+                    len,
+                    start,
+                    keys,
+                    rows,
+                } => {
+                    if let Some(held) = self.rows.borrow().get(&composed_key(lane, &list)) {
+                        held.borrow_mut()
+                            .rows(len as usize, start as usize, keys, rows);
+                    }
+                }
+                ToUi::RowsChanged {
+                    lane,
+                    list,
+                    len,
+                    changes,
+                } => {
+                    if let Some(held) = self.rows.borrow().get(&composed_key(lane, &list)) {
+                        held.borrow_mut().changed(len as usize, changes);
+                    }
+                }
+                ToUi::Notice { words, kind, undo } => self.notice(&words, kind, undo),
+                ToUi::Ask(ask) => self.rebuild_ask(ask.as_ref()),
+            }
+        }
+        self.check_budget()?;
+        if content {
+            self.compose();
+        }
+        if let Some(front) = front {
+            self.show_content(match front {
+                wire::Front::Input => by_input(),
+                wire::Front::Action => MotionSource::Action,
+            });
+        }
+        Ok(())
+    }
+
+    /// The window's trees within its budget: one window's nodes are its own to spend.
+    fn check_budget(&self) -> Result<(), String> {
+        let rows: usize = self
+            .rows
+            .borrow()
+            .values()
+            .map(|rows| {
+                let rows = rows.borrow();
+                rows.rendered()
+                    .iter()
+                    .filter_map(|key| rows.row(key))
+                    .map(UiNode::count)
+                    .sum::<usize>()
+            })
+            .sum();
+        let nodes = [self.root.as_ref(), self.detail.as_ref()]
+            .into_iter()
+            .flatten()
+            .map(|view| view.tree.count())
+            .sum::<usize>()
+            .saturating_add(rows);
+        if nodes > self.limits.nodes as usize {
+            return Err(format!(
+                "the window holds {nodes} nodes, over its budget of {}",
+                self.limits.nodes
+            ));
+        }
+        Ok(())
+    }
+
+    fn show_loading(&mut self) {
+        let loading =
+            ui::widget::EmptyState::new(ui::i18n::I18nManager::lookup_plain("arriving-loading"))
+                .busy();
+        if let Some(pane) = self.shell_pane() {
+            pane.set(Box::new(loading));
+        }
+        self.built = None;
+        self.structure_dirty = true;
+    }
+
+    /// Forget what the window held of the view of `lane`: it opened anew, or closed.
+    fn forget_lane(&mut self, lane: Lane) {
+        let prefix = match lane {
+            Lane::Root => None,
+            Lane::Detail => Some(DETAIL),
+        };
+        let ours = |key: &String| match prefix {
+            Some(prefix) => key.starts_with(prefix),
+            None => !key.starts_with(DETAIL),
+        };
+        self.rows.borrow_mut().retain(|key, _| !ours(key));
+        self.bound.borrow_mut().retain(|key, _| !ours(key));
+        self.texts.retain(|key, _| !ours(key));
+        self.seqs.retain(|key, _| !ours(key));
+    }
+
+    /// Keep rows for every virtual list of the views, and drop the rows of lists gone.
+    fn track_rows(&self) {
+        let mut wanted: Vec<(String, Lane, String, &'static str)> = Vec::new();
+        for (view, lane, prefix) in [
+            (self.root.as_ref(), Lane::Root, ""),
+            (self.detail.as_ref(), Lane::Detail, DETAIL),
+        ] {
+            let Some(view) = view else { continue };
+            for list in virtual_lists(&view.tree) {
+                wanted.push((format!("{prefix}{list}"), lane, list, prefix));
+            }
+        }
+        let mut registry = self.rows.borrow_mut();
+        registry.retain(|key, rows| {
+            wanted
+                .iter()
+                .any(|(want, lane, list, _)| want == key && rows.borrow().reads(*lane, list))
+        });
+        for (key, lane, list, prefix) in wanted {
+            registry.entry(key).or_insert_with(|| {
+                let reader = Rc::new(RefCell::new(Reconciler::sharing(&self.reconciler.borrow())));
+                Rc::new(RefCell::new(RemoteRows::new(
+                    lane,
+                    &list,
+                    prefix,
+                    reader,
+                    Rc::clone(&self.bound),
+                )))
+            });
+        }
+    }
+
+    /// What the bound control `key` of `lane` shows now, as the app sends it: taken unless the
+    /// person typed into it since what the app took (`acked`).
+    fn take_bound(&mut self, lane: Lane, key: &str, value: Value, acked: u64) {
+        let key = composed_key(lane, key);
+        if self.seqs.get(&key).is_some_and(|sent| *sent > acked) {
+            return;
+        }
+        if let Value::Text(text) = &value {
+            self.texts.insert(key.clone(), text.clone());
+        }
+        self.bound.borrow_mut().insert(key, value);
+        self.refresh_bound();
+    }
+
+    fn notice(&mut self, words: &Words, kind: wire::NoticeKind, undo: bool) {
+        let text = say(words);
+        let Some(shell) = self.shell() else {
+            return;
+        };
+        match (kind, undo) {
+            (_, true) => {
+                shell.toast_with_action(text, ToastKind::Info, "undo-2", t("tilolang-undo"));
+            }
+            (wire::NoticeKind::Error, false) => shell.toast(text, ToastKind::Error),
+            (wire::NoticeKind::Info, false) => shell.toast(text, ToastKind::Info),
+        }
+    }
+
+    // ----- the shell -----------------------------------------------------------------------
+
+    /// The pane the shell stands in.
+    fn shell_pane(&mut self) -> Option<&mut Pane> {
+        self.body
+            .children_mut()
+            .into_iter()
+            .next()?
+            .as_any_mut()?
+            .downcast_mut::<Pane>()
+    }
+
+    fn shell(&mut self) -> Option<&mut NavShell> {
+        self.shell_pane()?
+            .content_mut()
+            .as_any_mut()?
+            .downcast_mut::<NavShell>()
+    }
+
+    fn show_content(&mut self, source: MotionSource) {
+        if let Some(shell) = self.shell() {
+            shell.show_from(NavPane::Content, source);
+        }
+        self.structure_dirty = true;
+    }
+
+    fn set_body_slot(&mut self, index: usize, element: Element, fit: Fit) {
+        if let Some(arranged) = self.body.as_any_mut().and_then(|any| {
+            any.downcast_mut::<ui::widget::arrange::Arranged<ui::widget::arrange::FlexLayout>>()
+        }) {
+            let mut slots = arranged.take_slots();
+            if let Some(target) = slots.get_mut(index) {
+                *target = slot(element, fit);
+            }
+            arranged.set_slots(slots);
+        }
+        self.structure_dirty = true;
+    }
+
+    /// Bring the shell up to date with the views: the root's shell with the view after it as
+    /// its content, reconciled into the widgets it was built into.
+    fn compose(&mut self) {
+        let Some(root) = self.root.as_ref() else {
+            return;
+        };
+        let root_tree = crate::reconcile::normalize(&root.tree);
+        let root_shell = crate::shell::as_shell(&crate::shell::without_rows(&root_tree));
+        let detail_shell = self.detail.as_ref().map(|detail| {
+            let tree = crate::reconcile::normalize(&detail.tree);
+            crate::shell::prefixed(
+                &crate::shell::as_shell(&crate::shell::without_rows(&tree)),
+                DETAIL,
+            )
+        });
+        let composed = crate::shell::compose(&root_shell, detail_shell.as_ref());
+        let composed = crate::shell::header_rules(composed);
+        let old = self.built.take();
+        let reconciler = Rc::clone(&self.reconciler);
+        if let Some(pane) = self.shell_pane() {
+            let mut reconciler = reconciler.borrow_mut();
+            match &old {
+                Some(old) if old.key == composed.key && old.kind == composed.kind => {
+                    if let Some(replaced) = reconciler.update_in(pane.content_mut(), old, &composed)
+                    {
+                        pane.set(replaced);
+                    }
+                }
+                _ => pane.set(reconciler.build(&composed)),
+            }
+        }
+        self.built = Some(composed);
+        self.select_shown();
+        self.refresh_bound();
+    }
+
+    /// Select, in each list of the overview, the row of the view shown after it: the app keeps
+    /// no selection beside it.
+    fn select_shown(&mut self) {
+        let shown = self.detail.as_ref().map(|detail| detail.target.id_string());
+        if let Some(shell) = self.shell()
+            && let Some(list) = shell.overview_mut::<DescribedList>()
+        {
+            list.select_presenting(shown.as_deref());
+        }
+    }
+
+    /// Show what the bound fields and view state hold now in the controls that edit them: the
+    /// shell's and the rows its lists show.
+    fn refresh_bound(&self) {
+        if let Some(built) = &self.built {
+            let reconciler = self.reconciler.borrow();
+            show_bound(built, "", &self.bound.borrow(), &reconciler);
+        }
+        for rows in self.rows.borrow().values() {
+            rows.borrow().refresh_bound();
+        }
+    }
+
+    /// The Ask bar: trusted chrome naming who asks for what, with the person's choices.
+    fn ask_bar(&self, ask: &wire::Ask) -> Element {
+        let by = t_args(
+            "tilolang-ask-by",
+            &[("invoker", ask.invoker.as_str().into())],
+        );
+        let text = |id: &str, value: &str, role: TextRole| {
+            slot(
+                Box::new(Text::new(value).with_role(role).with_id(id)),
+                Fit::hug(),
+            )
+        };
+        let answer = |id: &str, role: ButtonRole, to: Answer| {
+            let answers = Rc::clone(&self.answers);
+            slot(
+                Box::new(
+                    Button::new(id, &t(id))
+                        .role(role)
+                        .on_view(move || answers.borrow_mut().push(to)),
+                ),
+                Fit::hug(),
+            )
+        };
+        let choices = Row::row()
+            .fill_width()
+            .push_slot(answer(
+                "tilolang-ask-confirm",
+                ButtonRole::Primary,
+                Answer::Allow,
+            ))
+            .push_slot(answer(
+                "tilolang-ask-decline",
+                ButtonRole::Secondary,
+                Answer::Decline,
+            ))
+            .push_slot(answer(
+                "tilolang-ask-always",
+                ButtonRole::Plain,
+                Answer::Always,
+            ));
+        Box::new(
+            Stack::stack()
+                .gap(Rhythm::Related)
+                .with_id("tilolang-ask")
+                .push_slot(text(
+                    "tilolang-ask-title",
+                    &t("tilolang-ask-title"),
+                    TextRole::Heading,
+                ))
+                .push_slot(text("tilolang-ask-action", &ask.action, TextRole::Body))
+                .push_slot(text("tilolang-ask-by", &by, TextRole::Caption))
+                .push_slot(slot(Box::new(choices), Fit::hug())),
+        )
+    }
+
+    fn rebuild_ask(&mut self, ask: Option<&wire::Ask>) {
+        let bar: Element = match ask {
+            Some(ask) => self.ask_bar(ask),
+            None => Box::new(Absent::new()),
+        };
+        self.ask = ask.cloned();
+        self.set_body_slot(1, bar, Fit::hug());
+    }
+
+    // ----- what the person did -------------------------------------------------------------
+
+    /// Send the app what the person did since the last frame: one batch.
+    pub fn flush(&mut self) {
+        for answer in std::mem::take(&mut *self.answers.borrow_mut()) {
+            self.out.push(ToApp::Answer(answer));
+        }
+        let mut events: Vec<UiEvent> = std::mem::take(&mut *self.events.borrow_mut());
+        events.extend(self.reconciler.borrow().adapter().take_events());
+        for event in events {
+            self.event(event);
+        }
+        if self.shell().and_then(NavShell::take_toast_action).is_some() {
+            self.out.push(ToApp::Undo);
+        }
+        if std::mem::take(&mut self.input) {
+            self.follow_focus();
+        }
+        let wanted: Vec<(Lane, String, std::ops::Range<usize>)> = self
+            .rows
+            .borrow()
+            .values()
+            .filter_map(|rows| rows.borrow_mut().take_wanted())
+            .collect();
+        for (lane, list, range) in wanted {
+            self.out.push(ToApp::Rows {
+                lane,
+                list,
+                start: u32::try_from(range.start).unwrap_or(u32::MAX),
+                end: u32::try_from(range.end).unwrap_or(u32::MAX),
+            });
+        }
+        if self.out.is_empty() {
+            return;
+        }
+        let messages = std::mem::take(&mut self.out);
+        match wire::encode_batch(&messages) {
+            Ok(batch) => {
+                if let Err(error) = self.transport.send(batch) {
+                    tracing::warn!(%error, "the app's connection failed");
+                }
+            }
+            Err(error) => tracing::error!(%error, "a frame's batch did not encode"),
+        }
+    }
+
+    /// Tell the app which bound control the keyboard focus is in now, when that changed: what
+    /// its presence shows of the person (where they type).
+    fn follow_focus(&mut self) {
+        fn focused(widget: &dyn Widget, bound: &HashMap<String, Value>) -> Option<String> {
+            if widget.is_focused()
+                && let Some(id) = widget.test_id()
+                && bound.contains_key(id)
+            {
+                return Some(id.to_owned());
+            }
+            widget
+                .children()
+                .into_iter()
+                .find_map(|child| focused(child, bound))
+        }
+        let now = focused(self.body.as_ref(), &self.bound.borrow());
+        if now == self.focus {
+            return;
+        }
+        self.out.push(ToApp::Focus {
+            at: now.as_deref().map(lane_of),
+        });
+        self.focus = now;
+    }
+
+    fn event(&mut self, event: UiEvent) {
+        if let UiEvent::Fire(key, name, _) = &event
+            && *name == crate::shell::BACK
+            && self.built.as_ref().is_some_and(|built| built.key == *key)
+        {
+            self.out.push(ToApp::Back);
+            return;
+        }
+        let message = match event {
+            UiEvent::Press(key) => {
+                let (lane, key) = lane_of(&key);
+                ToApp::Fire {
+                    lane,
+                    key,
+                    event: "press".to_owned(),
+                    value: None,
+                }
+            }
+            UiEvent::Fire(key, event, value) => {
+                let (lane, key) = lane_of(&key);
+                ToApp::Fire {
+                    lane,
+                    key,
+                    event,
+                    value,
+                }
+            }
+            UiEvent::Edit(composed, text) => self.edit(&composed, text),
+            UiEvent::Toggle(key, checked) => {
+                let (lane, key) = lane_of(&key);
+                ToApp::Toggle { lane, key, checked }
+            }
+            UiEvent::Resolve(key, approve) => {
+                let (lane, key) = lane_of(&key);
+                ToApp::Resolve { lane, key, approve }
+            }
+            UiEvent::Open(resource) => ToApp::Open { resource },
+        };
+        self.out.push(message);
+    }
+
+    /// The bound control `composed` now holds `text`: a splice of what it showed when it edits
+    /// text, the new text when it edits another value (a number, a date).
+    fn edit(&mut self, composed: &str, text: String) -> ToApp {
+        let (lane, key) = lane_of(composed);
+        let edits_text = match self.bound.borrow().get(composed) {
+            Some(Value::Text(_)) | None => true,
+            Some(Value::Opt(held)) => matches!(held.as_deref(), Some(Value::Text(_)) | None),
+            Some(_) => false,
+        };
+        if !edits_text {
+            return ToApp::Edit { lane, key, text };
+        }
+        let before = self.texts.get(composed).cloned().unwrap_or_default();
+        let (at, delete, insert) = splice_between(&before, &text);
+        let seq = self.seqs.entry(composed.to_owned()).or_default();
+        *seq = seq.saturating_add(1);
+        let seq = *seq;
+        // What the field shows is what the person typed, whatever the window shows it again
+        // from before the app takes it.
+        self.bound
+            .borrow_mut()
+            .insert(composed.to_owned(), Value::Text(text.clone()));
+        self.texts.insert(composed.to_owned(), text);
+        ToApp::Splice {
+            lane,
+            key,
+            seq,
+            at: u32::try_from(at).unwrap_or(u32::MAX),
+            delete: u32::try_from(delete).unwrap_or(u32::MAX),
+            insert,
+        }
+    }
+
+    // ----- for embedders and tests ---------------------------------------------------------
+
+    /// The composed shell, as the window last built it.
+    #[must_use]
+    pub fn composed(&self) -> Option<&UiNode> {
+        self.built.as_ref()
+    }
+
+    /// The root view's tree, as the window holds it.
+    #[must_use]
+    pub fn root_tree(&self) -> Option<UiNode> {
+        self.root
+            .as_ref()
+            .map(|view| crate::reconcile::normalize(&view.tree))
+    }
+
+    /// The detail view's tree, as the window holds it.
+    #[must_use]
+    pub fn detail_tree(&self) -> Option<UiNode> {
+        self.detail
+            .as_ref()
+            .map(|view| crate::reconcile::normalize(&view.tree))
+    }
+
+    /// The resource the detail view shows.
+    #[must_use]
+    pub fn detail_target(&self) -> Option<&ResourceRef> {
+        self.detail.as_ref().map(|view| &view.target)
+    }
+
+    /// The keys of the virtual lists in the composed tree.
+    #[must_use]
+    pub fn lists(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self.rows.borrow().keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
+    /// The rows of the virtual list `key` (its key in the composed tree).
+    #[must_use]
+    pub fn rows_of(&self, key: &str) -> Option<Rc<RefCell<RemoteRows>>> {
+        self.rows.borrow().get(key).cloned()
+    }
+
+    /// What the bound control `key` (its key in the composed tree) shows, as the app last sent
+    /// it and the window took it.
+    #[must_use]
+    pub fn bound_value(&self, key: &str) -> Option<Value> {
+        self.bound.borrow().get(key).cloned()
+    }
+
+    /// Why the window shows the platform's error state, when it does.
+    #[must_use]
+    pub fn failed(&self) -> Option<&str> {
+        self.failed.as_deref()
+    }
+
+    /// The Ask bar the window shows, if it shows one.
+    #[must_use]
+    pub fn asks(&self) -> Option<&wire::Ask> {
+        self.ask.as_ref()
+    }
+
+    /// Answer the Ask bar, as the person does with its buttons.
+    pub fn answer(&self, answer: Answer) {
+        self.answers.borrow_mut().push(answer);
+    }
+
+    /// Report what a person did: an event of a control of the composed shell, by its key
+    /// there.
+    pub fn act(&self, event: UiEvent) {
+        self.events.borrow_mut().push(event);
+    }
+
+    /// The shell.
+    #[must_use]
+    pub fn shell_ref(&self) -> Option<&NavShell> {
+        self.body
+            .children()
+            .into_iter()
+            .next()?
+            .as_any()?
+            .downcast_ref::<Pane>()?
+            .content()
+            .as_any()?
+            .downcast_ref::<NavShell>()
+    }
+
+    /// The shell, to change it as a person would.
+    pub fn shell_mut(&mut self) -> Option<&mut NavShell> {
+        self.shell()
+    }
+}
+
+/// The key `key` of `lane`'s view in the composed tree.
+fn composed_key(lane: Lane, key: &str) -> String {
+    match lane {
+        Lane::Root => key.to_owned(),
+        Lane::Detail => format!("{DETAIL}{key}"),
+    }
+}
+
+/// The view a key of the composed tree is of, and the key in that view.
+fn lane_of(key: &str) -> (Lane, String) {
+    match key.strip_prefix(DETAIL) {
+        Some(own) => (Lane::Detail, own.to_owned()),
+        None => (Lane::Root, key.to_owned()),
+    }
+}
+
+/// The virtual lists of a view's tree, by key.
+fn virtual_lists(tree: &UiNode) -> Vec<String> {
+    fn walk(node: &UiNode, out: &mut Vec<String>) {
+        if crate::is_virtual(&node.kind) {
+            out.push(node.key.clone());
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(tree, &mut out);
+    out
+}
+
+/// What `words` say, in the person's language.
+fn say(words: &Words) -> String {
+    match words {
+        Words::Plain(text) => text.clone(),
+        Words::Phrase { id, args } => {
+            let args: Vec<(&str, ui::i18n::ArgValue)> = args
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.as_str().into()))
+                .collect();
+            t_args(id, &args)
+        }
+    }
+}
+
+/// The splice from `before` to `after`: where they first differ, how many bytes of `before`
+/// go from there, and what comes instead, on character boundaries.
+#[must_use]
+pub fn splice_between(before: &str, after: &str) -> (usize, usize, String) {
+    let mut start = before
+        .bytes()
+        .zip(after.bytes())
+        .take_while(|(a, b)| a == b)
+        .count();
+    while !before.is_char_boundary(start) || !after.is_char_boundary(start) {
+        start = start.saturating_sub(1);
+    }
+    let room = before.len().min(after.len()).saturating_sub(start);
+    let mut end = before
+        .bytes()
+        .rev()
+        .zip(after.bytes().rev())
+        .take(room)
+        .take_while(|(a, b)| a == b)
+        .count();
+    while !before.is_char_boundary(before.len().saturating_sub(end))
+        || !after.is_char_boundary(after.len().saturating_sub(end))
+    {
+        end = end.saturating_sub(1);
+    }
+    let delete = before.len().saturating_sub(end).saturating_sub(start);
+    let insert = after
+        .get(start..after.len().saturating_sub(end))
+        .unwrap_or_default()
+        .to_owned();
+    (start, delete, insert)
+}
+
+/// Show what each bound control under `node` is bound to, as `bound` holds it by key in the
+/// composed tree (each of `node`'s keys carrying `prefix` there).
+pub fn show_bound<S: std::hash::BuildHasher>(
+    node: &UiNode,
+    prefix: &str,
+    bound: &HashMap<String, Value, S>,
+    reconciler: &Reconciler,
+) {
+    if node.binding.is_some() {
+        let key = format!("{prefix}{}", node.key);
+        if let Some(value) = bound.get(&key) {
+            let flag = node.kind == "checkbox"
+                || node.kind == "toggle"
+                || node.kind == crate::adapter::kind("ListRow");
+            match value {
+                Value::Bool(checked) => reconciler.set_flag(&key, *checked),
+                Value::Int(number) if flag => reconciler.set_flag(&key, *number != 0),
+                other => reconciler.set_text(&key, &crate::reconcile::display(other)),
+            }
+        }
+    }
+    for child in &node.children {
+        show_bound(child, prefix, bound, reconciler);
+    }
+}
+
+impl Widget for AppWindow {
+    fn name(&self) -> &'static str {
+        "TilolangWindow"
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![self.body.as_ref()]
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
+        vec![self.body.as_mut()]
+    }
+
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.body.sync(state, path);
+    }
+
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.body.update(state, path)
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &ui::winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        // Focus moves on a key, a press or a touch, never on a pointer that only moves.
+        use ui::winit::event::WindowEvent;
+        if matches!(
+            event,
+            WindowEvent::KeyboardInput { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::Touch(_)
+                | WindowEvent::Ime(_)
+        ) {
+            self.input = true;
+        }
+        if let WindowEvent::Ime(ime) = event {
+            let composing =
+                matches!(ime, ui::winit::event::Ime::Preedit(text, _) if !text.is_empty());
+            if composing != self.composing {
+                self.composing = composing;
+                self.out.push(ToApp::Composing(composing));
+            }
+        }
+        self.body.handle_event(event, ctx);
+    }
+
+    fn build_layout(
+        &mut self,
+        tree: &mut ui::taffy::TaffyTree<()>,
+        theme: &ui::Theme,
+        nodes: &mut HashMap<ui::taffy::NodeId, *mut dyn Widget>,
+    ) -> ui::taffy::NodeId {
+        self.body.build_layout(tree, theme, nodes)
+    }
+
+    fn apply_layout(
+        &mut self,
+        tree: &ui::taffy::TaffyTree<()>,
+        node: ui::taffy::NodeId,
+        origin: ui::kurbo::Point,
+    ) {
+        self.body.apply_layout(tree, node, origin);
+    }
+
+    fn get_rect(&self) -> ui::kurbo::Rect {
+        self.body.get_rect()
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut ui::vello::Scene,
+        transform: ui::kurbo::Affine,
+        text: &mut ui::TextRenderer,
+        theme: &ui::Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        self.body.draw(scene, transform, text, theme, presence);
+    }
+
+    /// The window paints nothing of its own: what changed is what its body repaints.
+    fn collect_damage(&self, regions: &mut Vec<ui::kurbo::Rect>) {
+        self.body.collect_damage(regions);
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let dirty = std::mem::take(&mut self.structure_dirty);
+        self.body.take_structure_dirty() || dirty
+    }
+
+    /// The window's own changes (a shell built, a bar shown) rebuild; what its body describes
+    /// (a column's content changed in place) stays described.
+    fn take_structure_change(&mut self) -> ui::widget::StructureChange {
+        let own = ui::widget::StructureChange::of(std::mem::take(&mut self.structure_dirty));
+        own.join(self.body.take_structure_change())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_splice_is_where_the_texts_differ() {
+        assert_eq!(
+            splice_between("Q3 plan", "Q3 plans"),
+            (7, 0, "s".to_owned())
+        );
+        assert_eq!(splice_between("Q3 plans", "Q3"), (2, 6, String::new()));
+        assert_eq!(splice_between("abc", "aXc"), (1, 1, "X".to_owned()));
+        assert_eq!(splice_between("", "hi"), (0, 0, "hi".to_owned()));
+        assert_eq!(splice_between("aa", "aaa"), (2, 0, "a".to_owned()));
+        assert_eq!(splice_between("né", "nè"), (1, 2, "è".to_owned()));
+        for (before, after) in [("naïve", "naive"), ("日本", "日本語"), ("x", "")] {
+            let (at, delete, insert) = splice_between(before, after);
+            let mut text = before.to_owned();
+            text.replace_range(at..at + delete, &insert);
+            assert_eq!(text, after);
+        }
+    }
+
+    fn send(app: &mut tilo_render_protocol::patch::local::End, batch: &[ToUi]) {
+        app.send(wire::encode_batch(batch).expect("encodes"))
+            .expect("sends");
+    }
+
+    fn sent(app: &mut tilo_render_protocol::patch::local::End) -> Vec<ToApp> {
+        let mut out = Vec::new();
+        while let Some(batch) = app.recv().expect("receives") {
+            out.extend(wire::decode_batch::<ToApp>(&batch).expect("a batch"));
+        }
+        out
+    }
+
+    /// A page with one text field bound to a note's title.
+    fn titled_page() -> Vec<ToUi> {
+        let mut input = UiNode::empty("ui.TextInput", "title");
+        input.binding = Some(crate::Binding {
+            field: Some(("doc/notes:a".to_owned(), "title".to_owned())),
+            name: "Title".to_owned(),
+        });
+        let mut page = UiNode::empty("stack", "page");
+        page.children.push(input);
+        vec![
+            ToUi::Open {
+                lane: Lane::Root,
+                target: ResourceRef {
+                    id: "doc".to_owned(),
+                    ty: "notes.Note".to_owned(),
+                },
+                tree: page,
+                front: None,
+            },
+            ToUi::Bound {
+                lane: Lane::Root,
+                key: "title".to_owned(),
+                value: Value::text("Q3"),
+                acked: 0,
+            },
+        ]
+    }
+
+    #[test]
+    fn typing_is_sent_as_splices_and_what_the_app_sent_before_it_saw_them_is_not_shown() {
+        let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+        let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+        send(&mut app, &titled_page());
+        window.receive();
+        assert_eq!(window.bound_value("title"), Some(Value::text("Q3")));
+        // The person types: the field shows it at once (it is the toolkit's), and the app hears
+        // of it as a splice of what the field showed.
+        window.act(UiEvent::Edit("title".to_owned(), "Q3 plan".to_owned()));
+        window.flush();
+        assert_eq!(
+            sent(&mut app),
+            [ToApp::Splice {
+                lane: Lane::Root,
+                key: "title".to_owned(),
+                seq: 1,
+                at: 2,
+                delete: 0,
+                insert: " plan".to_owned(),
+            }]
+        );
+        // What the app sent before it took the splice does not take the typing back.
+        send(
+            &mut app,
+            &[ToUi::Bound {
+                lane: Lane::Root,
+                key: "title".to_owned(),
+                value: Value::text("Q3"),
+                acked: 0,
+            }],
+        );
+        window.receive();
+        assert_eq!(
+            window.bound_value("title"),
+            Some(Value::text("Q3 plan")),
+            "the field keeps what the person typed"
+        );
+        window.act(UiEvent::Edit("title".to_owned(), "Q3 plans".to_owned()));
+        window.flush();
+        assert!(
+            matches!(&sent(&mut app)[..], [ToApp::Splice { seq: 2, at: 7, delete: 0, insert, .. }] if insert == "s"),
+            "the next splice is against what the person typed"
+        );
+        // What it sent once it took them is shown.
+        send(
+            &mut app,
+            &[ToUi::Bound {
+                lane: Lane::Root,
+                key: "title".to_owned(),
+                value: Value::text("Q3 plans"),
+                acked: 2,
+            }],
+        );
+        window.receive();
+        assert_eq!(window.bound_value("title"), Some(Value::text("Q3 plans")));
+    }
+
+    #[test]
+    fn a_batch_that_breaks_the_protocol_shows_the_error_state_and_nothing_else() {
+        let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+        let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+        let unknown = vec![ToUi::Open {
+            lane: Lane::Root,
+            target: ResourceRef {
+                id: "doc".to_owned(),
+                ty: "app.Root".to_owned(),
+            },
+            tree: UiNode::empty("ui.NoSuchComponent", "root"),
+            front: None,
+        }];
+        app.send(wire::encode_batch(&unknown).expect("encodes"))
+            .expect("sends");
+        assert!(window.receive());
+        assert!(window.failed().is_some());
+        assert!(window.composed().is_none(), "nothing of it was built");
+        app.send(b"scribbles".to_vec()).expect("sends");
+        assert!(window.receive(), "a scribble is refused, not a panic");
+    }
+}

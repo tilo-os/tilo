@@ -14,7 +14,8 @@ use super::{
     LINUX_FENCE_WAIT, LINUX_FRAME_BUDGET, LINUX_MAP_CALLBACK_WAIT, MAX_VELLO_BINS, PIPELINE_WARMUP,
     RESILIENT_RENDER_ATTEMPTS, RetainedGpuTarget, SceneDamage, VELLO_BIN_PIXELS, VelloDrmBridge,
 };
-use crate::shell::render::{strip_layers, warmup};
+use crate::shell::render::strip_layers;
+use tilo_output_passes::warmup;
 
 /// Whether this process has published its pipelines for apps (see [`ui::pipeline_seed`]).
 static PIPELINE_SEED_PUBLISHED: std::sync::atomic::AtomicBool =
@@ -146,7 +147,6 @@ impl RetainedGpuTarget {
             completion_markers: 0,
             #[cfg(test)]
             completion_test: None,
-            #[cfg(test)]
             phase_wait_override: None,
             size: (width, height),
             last_frame_full: false,
@@ -369,16 +369,8 @@ impl RetainedGpuTarget {
     }
 
     /// A Linux allowance: `nominal` outside correctness fixtures.
-    #[allow(
-        clippy::unused_self,
-        reason = "correctness fixtures replace the allowance on this actual target instance"
-    )]
     fn linux_allowance(&self, nominal: Duration) -> Duration {
-        #[cfg(test)]
-        if let Some(wait) = self.phase_wait_override {
-            return wait;
-        }
-        nominal
+        self.phase_wait_override.unwrap_or(nominal)
     }
 
     /// The Linux policy for a frame starting now: its per-phase allowances share one

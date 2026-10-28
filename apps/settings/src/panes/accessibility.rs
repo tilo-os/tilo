@@ -295,7 +295,7 @@ impl AccessibilityPane {
             self.build_typing_card(),
             self.build_reader_card(),
             self.build_hearing_card(),
-            Self::build_explainer_card(),
+            self.build_explainer_card(),
         ])
     }
 
@@ -492,10 +492,18 @@ impl AccessibilityPane {
         )
     }
 
-    fn build_explainer_card() -> SettingsSection {
+    fn build_explainer_card(&self) -> SettingsSection {
         section(
             &t("a11y-shared-title"),
-            rows(vec![note(&t("a11y-shared-caption"))]),
+            rows(vec![
+                note(&t("a11y-shared-caption")),
+                self.assist(
+                    "a11y-sign-in",
+                    "a11y.apply_to_sign_in",
+                    AccessibilitySettings::paths().apply_to_sign_in,
+                )
+                .toggle(),
+            ]),
         )
     }
 
@@ -1026,11 +1034,13 @@ mod tests {
 
     #[test]
     fn a_click_on_text_size_and_high_contrast_writes_the_appearance_section() {
+        ui::i18n::I18nManager::init("en-US");
         click_and_check(TestApp::<SettingsShell>::new().unwrap());
     }
 
     #[test]
     fn a_click_writes_the_appearance_section_kept_in_the_persons_records() {
+        ui::i18n::I18nManager::init("en-US");
         click_and_check(TestApp::<SettingsShell>::for_person(&"ad".repeat(32)).unwrap());
     }
 
@@ -1046,8 +1056,9 @@ mod tests {
             .to_rect()
     }
 
+    /// The window's language is chosen before `app` is made: a manager
+    /// installed under a live window replaces the catalogues it loaded.
     fn click_and_check(mut app: TestApp<SettingsShell>) {
-        ui::i18n::I18nManager::init("en-US");
         app.harness().resize((1400, 2400)).unwrap();
         crate::effects::show_pane(&mut app, crate::categories::Category::Accessibility);
         settle(&mut app);

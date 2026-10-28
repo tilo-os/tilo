@@ -92,6 +92,16 @@ impl NativeControl {
         self.resource.clone()
     }
 
+    /// The resource of a control `id` whose `invoke` its owner answers
+    /// itself ([`invoked_control`]), without a handler of its own.
+    pub(crate) fn resource_of(
+        id: &str,
+        label: &str,
+        kind: tilo_actions::OperationKind,
+    ) -> tilo_actions::Resource {
+        Self::new(id, label, kind, Box::new(|| {})).0.resource
+    }
+
     /// The handler back, to publish it under another id.
     pub(crate) fn into_handler(self) -> Box<dyn FnMut()> {
         self.handler
@@ -125,6 +135,42 @@ impl NativeControl {
             tilo_actions::ActionOutput::default(),
         )))
     }
+}
+
+/// The control an `invoke` operation addresses, when it is one.
+///
+/// # Errors
+/// Returns why the payload does not read.
+pub(crate) fn invoked_control(
+    op: &crate::widget::ResourceOperation<'_>,
+) -> Result<Option<String>, String> {
+    let Some(request) = op.unscoped() else {
+        return Ok(None);
+    };
+    if request.kind == tilo_actions::OperationKind::Document || request.type_id != NATIVE_INVOKE {
+        return Ok(None);
+    }
+    serde_json::from_slice(request.payload)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+thread_local! {
+    static PRESSES: std::cell::RefCell<Vec<Point>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Ask the host to press the point `at` of the window, in the coordinates
+/// a widget is drawn in, once the operation it is answering returns: a
+/// published control whose owner reads its choice from the input it handles
+/// (a menu row) is chosen the way a person chooses it. The host presses as
+/// it does when an assistive technology activates a painted target.
+pub(crate) fn press_where_drawn(at: Point) {
+    PRESSES.with(|presses| presses.borrow_mut().push(at));
+}
+
+/// The presses asked for since the last call, in order.
+pub(crate) fn take_presses() -> Vec<Point> {
+    PRESSES.with(|presses| std::mem::take(&mut *presses.borrow_mut()))
 }
 
 #[derive(Default)]
@@ -176,6 +222,20 @@ impl Activation {
         let (native, binding) = NativeControl::new(&self.id, label, kind, handler);
         self.set_action(binding);
         self.native = Some(native);
+    }
+
+    /// Route every activation through `event`, a component's data: an action through the
+    /// door, or a view intent published as this surface's own view action, `label` naming it.
+    pub(crate) fn set_event(&mut self, event: crate::component::Event, label: &str) {
+        match event {
+            crate::component::Event::None => {}
+            crate::component::Event::Action(binding) => self.set_action(binding),
+            crate::component::Event::View(intent) => self.set_native(
+                tilo_actions::OperationKind::View,
+                label,
+                Box::new(intent.sender()),
+            ),
+        }
     }
 
     /// The resource a closure-bound surface publishes, if any.

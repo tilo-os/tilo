@@ -278,27 +278,16 @@ impl ShellOverlayHost {
                 return;
             };
             draw_modal_scrim_at(scene, transform, self.rect, 1.0, theme);
-            // A review sheet is a Panel (HIG §9.1): `radii.panel` and an `e4`
-            // shadow along that outline, painted before the surface so the
-            // sheet sits on its shadow rather than under it. Was a 16 px
-            // radius (off the scale) with a sprite shadow on a ramp slot until
-            // 2026-09-17 (S1-26); the sheet's other literals (title 20 px,
-            // `surfaces.raised` body) belong to the portal owner (S2).
+            // A review sheet is a Panel (HIG §9.1): `radii.panel` on the
+            // floating card's ground, with its inner hairline and the
+            // floating elevation, from the one painter every floating
+            // surface uses. It hand-painted the same ground under a bare
+            // shadow, so the sheet was the one Panel in the shell with no
+            // edge along its outline. Opaque, not the blurred material: this
+            // is a security surface, and a control on the window behind must
+            // not read through the text it asks the person to trust.
             let sheet_radius = ui::chrome::ChromeRole::Panel.radius(theme, layout.sheet.height());
-            let sheet = RoundedRect::from_rect(layout.sheet, sheet_radius);
-            ui::surface::shadow(
-                scene,
-                transform,
-                layout.sheet,
-                sheet_radius,
-                &theme.tokens.elevation.floating,
-            );
-            ui::paint::fill_shape(
-                scene,
-                transform,
-                &sheet,
-                ui::chrome::ChromeRole::Panel.surface(theme),
-            );
+            ui::widget::floating_surface::paint_card(scene, transform, layout.sheet, theme);
             crate::shell::trusted_ui::paint_seal(
                 scene,
                 transform,

@@ -248,6 +248,28 @@ The same chain runs against a local t server without any credential: give the se
 micro-VM steps, then `t dispatch publish-release-rehearsal --ref stable`. Signing then uses a
 throwaway key and publishing an OCI layout in the step.
 
+## Without t
+
+`tools/ci/run-checks.py` runs t.toml's checks on one machine with python3, git and a local
+podman: the named checks and everything they need, each in its image with its setup, env and
+`isolation`, in dependency order, with one shared `/target`; a check that passed with the same
+key is kept. It runs a committed checkout (its `HEAD`), so a builder runs a publishing chain in
+one command, for example main's dev image up to its gate and the model runtimes' uploads:
+
+```sh
+python3 tools/ci/run-checks.py --target /srv/scratch/target --ref main --jobs 10 \
+  os-dev-gate-x86_64 publish-model-runtime-vllm-cuda-x86_64 --secret TILO_PACKAGES_TOKEN
+```
+
+Secrets come from its environment, named with `--secret`. Of the identity tokens only
+registry.tilo.so's has a stand-in: `REGISTRY_TOKEN`, a Forgejo token that may push to this
+repository, which the registry takes from its owner (lib.sh `registry_login`). Signing needs
+t's identity token, so a check that signs runs on t; where its outputs were made another way,
+`--given CHECK` takes it as passed. A micro-VM step runs in a privileged container on the
+machine's own kernel, so os-dev-disk-<arch>, which installs onto a loop-mounted btrfs disk,
+needs a VM: tools/ci/builder-vm-guest.sh `disk` installs an image layout the same way in a worker
+VM booted from main's published dev disk.
+
 ## Mirrored images
 
 The images the publishing checks run in (buildah, skopeo) and the bases t's own web interface
@@ -276,7 +298,7 @@ serves it. To move one forward, put the new digest in that file and in the pins 
 | kernel buildroot | `image-kernel-buildroot-x86_64`, `-aarch64` (built and audited natively) | `sign-kernel-buildroot` (both) | | `publish-kernel-buildroot`: `sha-<commit>-<arch>`, signed, the `kernel-buildroot` pointer |
 | CI builder | `image-ci-builder-x86_64`, `-aarch64`, `image-ci-builder` (their index); in each candidate `canary-ci-builder-cache-cold-<arch>`, `-cache-warm-<arch>` (t's compiler cache, written by one job and read back by another) and `canary-ci-builder-browser-<arch>`, all of which gate signing and publishing | `sign-ci-builder`: the index and both images, with transparency log entries | `sign-dev-ci-builder` (development key), `publish-ci-builder`: `dev-<commit>`, `dev-<commit>-<arch>` | `publish-ci-builder`: `<commit>`, `<rust channel>`, signed; `latest` is not moved yet |
 | release tools | `image-release-tools-x86_64`, `-aarch64` (each built and tested natively), `image-release-tools` (their index) | | `publish-release-tools` (dispatch): index `sha-<commit>`, proven anonymously pullable | (CI tooling, not a product) |
-| local model catalog | `model-catalog-compiler`, `local-model-runtime-*` (the runtimes), `model-catalog-dev-<arch>` (the dev images' catalog, signed with a throwaway key) | `sign-model-catalog`, `review-model-catalog` (dispatch) | `publish-model-runtimes-<arch>` (before main's dev images): the runtime archives in generic packages | `publish-model-catalog` (dispatch): the signed catalog and the runtime archives in generic packages |
+| local model catalog | `model-catalog-compiler`, `local-model-runtime-*` (the runtimes), `model-catalog-dev-<arch>` (the dev images' catalog, signed with a throwaway key) | `sign-model-catalog`, `review-model-catalog` (dispatch) | `publish-model-runtime-<id>` (main, when t has room): each runtime archive in generic packages | `publish-model-catalog` (dispatch): the signed catalog and the runtime archives in generic packages |
 | cloud deploy | | | | `cloud-deploy` (stable, and dispatch on stable): after `publish-room-service` and `publish-web-entry`, commits their receipts' digests to the GitOps repository's main as the deploy target there says, waits until the services report their new build and stay healthy, and otherwise commits the previous digests back; a dry run while the target says `rollout = false` |
 | canonical verifier bundles | `verifier-bundle-<arch>` (`on = ["dispatch"]`, `t outputs`) | | | (reviewed and uploaded by hand) |
 | apps | `apps-build-x86_64`, `apps-build-aarch64`: every app of the default collection, packaged with throwaway keys, smoke-tested | `sign-apps-x86_64`, `sign-apps-aarch64`: the publisher identities over the built binaries, compiling nothing | | `publish-apps` (package token): tapps, collections, runtime objects, the `app-collection` pointer; `submit-apps` (publisher identity): the registry entries |
@@ -318,7 +340,7 @@ Deleted:
 | `sdk-native-envelope.yml` | `sdk-envelope` | checks in t.toml; Forgejo Actions no longer runs |
 | `web-size-native-envelope.yml` | `web-size-envelope-bundle`, `web-size-envelope` | checks in t.toml; Forgejo Actions no longer runs |
 | `wasm-check-qualification.yml` | `wasm`, `web-examples` | checks in t.toml; Forgejo Actions no longer runs |
-| `security-isolation.yml` | `security-isolation` | checks in t.toml; Forgejo Actions no longer runs |
+| `security-isolation.yml` | `security-isolation-*` | checks in t.toml; Forgejo Actions no longer runs |
 | `ci-render-counters.yml` | `render-counters` | checks in t.toml; Forgejo Actions no longer runs |
 | `standalone-app.yml` | `standalone-app` | checks in t.toml; Forgejo Actions no longer runs |
 | `dev-apps-macos.yml` | `sdk-macos`, `apps-macos` | checks in t.toml; Forgejo Actions no longer runs |
@@ -336,7 +358,7 @@ Deleted:
 | `ci-weekly-quality.yml` | `weekly-warnings`, `weekly-clippy`, `weekly-docs`, `weekly-release`, `weekly-latency` | checks in t.toml; Forgejo Actions no longer runs |
 | `perf-room-capacity.yml` | `perf-room-capacity` | checks in t.toml; Forgejo Actions no longer runs |
 | `browser-auth-e2e.yml` | `browser-auth-e2e` | checks in t.toml; Forgejo Actions no longer runs |
-| `ci-nightly.yml` | `nightly-fuzz`, `nightly-workspace-test`, `nightly-workspace-test-sandboxed`, `nightly-arm64-workspace-test`, `nightly-arm64-workspace-test-sandboxed`, `nightly-arm64-goldens`, `nightly-live-music`, `nightly-check`, `nightly-arm64-check`, `nightly-arm64-certify`, `nightly-examples`, `nightly-arm64-examples`, `nightly-ignored`, `nightly-arm64-ignored`, with `vendored`, `fmt`, `certify`, `workspace-layout` and the goldens | checks in t.toml; Forgejo Actions no longer runs |
+| `ci-nightly.yml` | `nightly-fuzz-*`, `nightly-workspace-test`, `nightly-workspace-test-sandboxed`, `nightly-arm64-workspace-test`, `nightly-arm64-workspace-test-sandboxed`, `nightly-arm64-goldens`, `nightly-live-music`, `nightly-check`, `nightly-arm64-check`, `nightly-arm64-certify`, `nightly-examples`, `nightly-arm64-examples`, `nightly-ignored-shell-*`, `nightly-ignored-format-host-*`, with `vendored`, `fmt`, `certify`, `workspace-layout` and the goldens | checks in t.toml; Forgejo Actions no longer runs |
 | `ci-staging-loop.yml` | `staging-loop` | checks in t.toml; Forgejo Actions no longer runs |
 | `release-local-model-catalog.yml` | `model-catalog-compiler`, `review-speech-catalog`, `sign-model-catalog`, `publish-model-catalog` (dispatch on stable) | checks in t.toml; Forgejo Actions no longer runs |
 | `release-relay.yml` | `rpm-snapshot`, `image-relay`, `sign-relay`, `publish-relay` (version tags) | `rpm-snapshot` and `image-relay` passed; checks in t.toml; Forgejo Actions no longer runs |

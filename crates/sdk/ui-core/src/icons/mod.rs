@@ -73,6 +73,10 @@ icons! {
     ChevronLeft => "chevron-left",
     Plus => "plus",
     Search => "search",
+    /// Lucide `zoom-in`: a magnifier with a plus in its lens.
+    ZoomIn => "zoom-in",
+    /// Lucide `zoom-out`: a magnifier with a minus in its lens.
+    ZoomOut => "zoom-out",
     PenTool => "pen-tool",
     Code => "code",
     Terminal => "terminal",
@@ -379,6 +383,28 @@ impl Icon {
     }
 }
 
+/// `icon` as an app's icon artwork: the glyph stroked in white on a rounded
+/// tile of the accent gradient, as a standalone SVG document. A package that
+/// names a platform glyph as its icon (a tilolang app's `icon: .note`)
+/// ships this as its signed icon file, so the launcher grid, search and the
+/// window chrome show the same artwork as any app with its own.
+#[must_use]
+pub fn icon_svg(icon: Icon) -> String {
+    let paths: String = icon_subpaths(icon)
+        .iter()
+        .map(|path| format!("<path d=\"{}\"/>", path.to_svg()))
+        .collect();
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"128\" height=\"128\" \
+         viewBox=\"0 0 128 128\"><defs><linearGradient id=\"g\" x1=\"0\" y1=\"0\" x2=\"0\" \
+         y2=\"1\"><stop offset=\"0\" stop-color=\"#4c6ef5\"/><stop offset=\"1\" \
+         stop-color=\"#8b5cf6\"/></linearGradient></defs><rect width=\"128\" height=\"128\" \
+         rx=\"30\" fill=\"url(#g)\"/><g transform=\"translate(28 28) scale(3)\" fill=\"none\" \
+         stroke=\"#ffffff\" stroke-width=\"2\" stroke-linecap=\"round\" \
+         stroke-linejoin=\"round\">{paths}</g></svg>"
+    )
+}
+
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
 /// system; [`draw_icon`] scales to the requested rect.
 pub const LUCIDE_VIEWBOX: f64 = 24.0;
@@ -637,6 +663,17 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         Icon::ChevronLeft => vec![path_from_d("m15 18-6-6 6-6")],
         Icon::Plus => vec![path_from_d("M5 12h14"), path_from_d("M12 5v14")],
         Icon::Search => vec![circle_path(11.0, 11.0, 8.0), path_from_d("m21 21-4.3-4.3")],
+        Icon::ZoomIn => vec![
+            circle_path(11.0, 11.0, 8.0),
+            path_from_d("m21 21-4.3-4.3"),
+            path_from_d("M11 8v6"),
+            path_from_d("M8 11h6"),
+        ],
+        Icon::ZoomOut => vec![
+            circle_path(11.0, 11.0, 8.0),
+            path_from_d("m21 21-4.3-4.3"),
+            path_from_d("M8 11h6"),
+        ],
         Icon::PenTool => vec![
             path_from_d(
                 "M15.707 21.293a1 1 0 0 1-1.414 0l-1.586-1.586a1 1 0 0 1 0-1.414l5.586-5.586a1 1 0 0 1 1.414 0l1.586 1.586a1 1 0 0 1 0 1.414z",
@@ -2034,6 +2071,17 @@ pub fn draw_icon_layered(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_icon_svg_is_a_document_of_the_glyph_on_a_tile() {
+        let svg = icon_svg(Icon::FileText);
+        assert!(svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\""));
+        assert!(svg.ends_with("</svg>"));
+        assert_eq!(
+            svg.matches("<path d=\"").count(),
+            icon_subpaths(Icon::FileText).len()
+        );
+    }
 
     #[test]
     fn every_glyph_is_found_by_its_lucide_name() {

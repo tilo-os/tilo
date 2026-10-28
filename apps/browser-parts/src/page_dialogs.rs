@@ -183,11 +183,11 @@ impl PageDialogs {
             text: None,
         }
         .bound_asking(if prompt { &["text"] } else { &[] });
-        accept.label.clone_from(&open.accept);
+        accept.type_mut().label.clone_from(&open.accept);
         row.actions.push(accept);
         if let Some(label) = &open.decline {
             let mut decline = BrowserEffect::DismissPageDialog { dialog: dialog.id }.bound();
-            decline.label.clone_from(label);
+            decline.type_mut().label.clone_from(label);
             row.actions.push(decline);
         }
         Some(row)

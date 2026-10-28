@@ -1,0 +1,29 @@
+[package]
+name = "tilo-liveness"
+description = "Whether the compositor's main loop is still turning, answered from threads of its own: heartbeats, every thread's state and backtraces, and the main thread's file-walk audit."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The thread dump records each thread's stack from its signal handler without
+# allocating, and symbolizes it on the answering thread.
+backtrace.workspace = true
+# The heartbeat wakes the compositor's loop through one of its ping sources:
+# the calloop smithay's loop is built on.
+calloop = "0.14"
+durable-store = { path = "../../system/durable-store" }
+libc.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dependencies]
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true

@@ -38,7 +38,9 @@
 #               runs); a swap is a normal session restart.
 #               "vm": VM-wide (system services, greeter, boot tooling); a swap
 #               merges into the VM's /usr and restarts `units`.
-#   profile     cargo profile of the build, "release" (default) or "thin-app"
+#   profile     cargo profile of the build, "release" (default), "thin-app" or
+#               "initrd" (os/image/compile.sh builds it on its own, phase
+#               rust-boot-greeter)
 #   packages    cargo package(s) built for this component
 #   bins        cargo bins those packages build for the image
 #   features    cargo features, package-qualified ("pkg/feature")
@@ -828,6 +830,23 @@ bins = ["tilo-boot-signin"]
 layer = "rollback-files"
 files = [
   { from = "tilo-boot-signin", to = "/usr/libexec/tilo/tilo-boot-signin", mode = "0755" },
+]
+
+# The greeter as the boot's sign-in screen (docs/security/sign-in.md §3.4):
+# tilo-boot-signin starts it in boot mode. A build of its own, without the
+# media stack other members unify into the release build, copied into the
+# initramfs by os/usr/lib/dracut/modules.d/94tilo-greeter.
+[[component]]
+name = "boot-greeter"
+kind = "boot"
+scope = "vm"
+scenario = "os/dev/test-encrypted-install.sh"
+profile = "initrd"
+packages = ["greeter"]
+bins = ["tilo-greeter"]
+layer = "rollback-files"
+files = [
+  { from = "tilo-greeter-boot", to = "/usr/libexec/tilo/tilo-greeter-boot", mode = "0755" },
 ]
 
 [[component]]

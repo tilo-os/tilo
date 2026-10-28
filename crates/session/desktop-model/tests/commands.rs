@@ -505,7 +505,10 @@ fn shortcut_commands_save_replace_and_delete_by_id_with_the_owner_as_saver() {
     let save = |shortcut_json: String| DesktopCommand::SaveShortcut { shortcut_json };
     apply_command(&mut workspace, &save(stamped), &mut minter(0), &mut create).unwrap();
     assert_eq!(workspace.shortcuts.len(), 1);
-    assert_eq!(workspace.shortcuts[0].saved_by.as_deref(), Some("owner"));
+    assert_eq!(
+        workspace.shortcuts[0].decode().unwrap().saved_by.as_deref(),
+        Some("owner")
+    );
     assert!(
         workspace.strips.is_empty(),
         "a shortcut changes no topology"
@@ -514,7 +517,7 @@ fn shortcut_commands_save_replace_and_delete_by_id_with_the_owner_as_saver() {
     let renamed = r#"{"id":"tidy","name":"Tidy up","steps":[]}"#.to_string();
     apply_command(&mut workspace, &save(renamed), &mut minter(0), &mut create).unwrap();
     assert_eq!(workspace.shortcuts.len(), 1, "the same id replaces");
-    assert_eq!(workspace.shortcuts[0].name, "Tidy up");
+    assert_eq!(workspace.shortcuts[0].decode().unwrap().name, "Tidy up");
 
     assert!(
         apply_command(

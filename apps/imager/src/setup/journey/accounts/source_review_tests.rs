@@ -30,12 +30,12 @@ fn linux_nextcloud_source_review_production_view_preserves_local_only_changes_wa
         .clone();
     let mut accounts = Accounts::default();
     accounts.update_sources(roots, inventory).unwrap();
-    let overview = accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+    let overview = accounts.view(Rc::new(|_| {}), None);
     assert!(visible_text(&overview).contains(&t("installer-accounts-nextcloud-linux-summary")));
     accounts
         .apply(AccountRequest::Source(candidate.id))
         .unwrap();
-    let review = accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
+    let review = accounts.view(Rc::new(|_| {}), None);
     let text = visible_text(&review);
     for key in [
         "installer-accounts-nextcloud-linux-files",

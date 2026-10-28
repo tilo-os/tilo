@@ -12,7 +12,7 @@
 //! structure preserves attribution and key ownership. The active tab owns
 //! keyboard/text-input focus; remote pointer enter/leave never churns the
 //! client's caret or IME session. See
-//! [`InputEvent`](crate::network::streaming::InputEvent) for the full
+//! [`InputEvent`](tilo_window_share::streaming::InputEvent) for the full
 //! contract.
 
 use std::collections::{HashMap, HashSet};

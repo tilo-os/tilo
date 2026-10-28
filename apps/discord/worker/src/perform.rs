@@ -103,6 +103,10 @@ pub struct Performer {
     /// Attachment bytes the host sent ahead of the op that names them.
     blobs: Mutex<HashMap<String, Vec<u8>>>,
     lanes: Mutex<HashMap<String, Lane>>,
+    /// Webhooks found gone from Discord, by id, with the one made in each's
+    /// place: ops queued before the bridge mapped the new one still name
+    /// the old.
+    replaced: Mutex<HashMap<String, String>>,
 }
 
 impl Performer {
@@ -112,6 +116,7 @@ impl Performer {
             ctx,
             blobs: Mutex::new(HashMap::new()),
             lanes: Mutex::new(HashMap::new()),
+            replaced: Mutex::new(HashMap::new()),
         }
     }
 
@@ -386,6 +391,32 @@ impl Performer {
             })
     }
 
+    /// The webhook to use for `webhook`: itself, or the one made in its
+    /// place when it was found gone.
+    fn current(&self, webhook: &str) -> String {
+        self.replaced
+            .lock()
+            .ok()
+            .and_then(|replaced| replaced.get(webhook).cloned())
+            .unwrap_or_else(|| webhook.to_owned())
+    }
+
+    /// `channel`'s webhook `gone` is no longer in Discord (deleted in the
+    /// channel's settings, say): make or adopt the channel's webhook as on
+    /// first use, and send through it from now on. The bridge maps it in
+    /// the old one's place when the send reports it.
+    async fn replace_webhook(
+        &self,
+        channel: &str,
+        gone: &str,
+    ) -> Result<(String, String), OpError> {
+        let (id, token) = self.channel_webhook(channel).await?;
+        if let Ok(mut replaced) = self.replaced.lock() {
+            replaced.insert(gone.to_owned(), id.clone());
+        }
+        Ok((id, token))
+    }
+
     /// Queue a send in its lane (webhook and thread) and start the lane's
     /// drain if it is idle.
     fn enqueue(self: &Arc<Self>, op: SendOp) -> oneshot::Receiver<OpResult> {
@@ -432,7 +463,7 @@ impl Performer {
                 .is_some_and(|token| {
                     let path = format!(
                         "/webhooks/{}/{}",
-                        segment(&first.op.webhook),
+                        segment(&self.current(&first.op.webhook)),
                         segment(&token)
                     );
                     self.ctx.rest.busy(&Method::POST, &path)
@@ -483,11 +514,20 @@ impl Performer {
             return Vec::new();
         };
         let fail = |error: OpError| ops.iter().map(|_| Err(error.clone())).collect::<Vec<_>>();
+        let mut webhook = self.current(&head.webhook);
         let token = match self.webhook_token(&head.channel).await {
             Ok(token) => token,
-            Err(error) => return fail(error),
+            // The token is lost: the channel's webhook is adopted again
+            // (or made anew when it is gone too).
+            Err(_) => match self.replace_webhook(&head.channel, &head.webhook).await {
+                Ok((id, token)) => {
+                    webhook = id;
+                    token
+                }
+                Err(error) => return fail(error),
+            },
         };
-        let recent = match self.recent_from_webhook(&head).await {
+        let recent = match self.recent_from_webhook(&head, &webhook).await {
             Ok(recent) => recent,
             Err(error) => return fail(error),
         };
@@ -503,6 +543,7 @@ impl Performer {
                         Ok(DiscordResult::Message {
                             message_id: id.clone(),
                             tilo: op.tilo.clone(),
+                            webhook_id: None,
                         })
                     })
             })
@@ -519,25 +560,58 @@ impl Performer {
                 .map(|op| op.content.as_str())
                 .collect::<Vec<_>>()
                 .join("\n");
-            let sent = self.execute(first, &content, &token).await;
+            let sent = match self.execute(first, &webhook, &content, &token).await {
+                // The webhook is gone from Discord: send once more through
+                // the channel's new one.
+                Err(error) if error.is_unknown() => {
+                    match self.replace_webhook(&first.channel, &first.webhook).await {
+                        Ok((id, token)) => {
+                            webhook = id;
+                            self.execute(first, &webhook, &content, &token)
+                                .await
+                                .map_err(OpError::from)
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
+                sent => sent.map_err(OpError::from),
+            };
             for (op, slot) in ops.iter().zip(results.iter_mut()) {
                 if slot.is_none() {
                     *slot = Some(sent.clone().map(|message_id| DiscordResult::Message {
                         message_id,
                         tilo: op.tilo.clone(),
+                        webhook_id: None,
                     }));
                 }
             }
         }
+        // The bridge maps a webhook made in the named one's place.
+        let replacement = (webhook != head.webhook).then_some(webhook);
         results
             .into_iter()
-            .map(|r| r.unwrap_or_else(|| Err(OpError::Unavailable("not sent".into()))))
+            .map(|r| match r {
+                Some(Ok(DiscordResult::Message {
+                    message_id, tilo, ..
+                })) => Ok(DiscordResult::Message {
+                    message_id,
+                    tilo,
+                    webhook_id: replacement.clone(),
+                }),
+                Some(result) => result,
+                None => Err(OpError::Unavailable("not sent".into())),
+            })
             .collect()
     }
 
-    /// `(id, content)` of the webhook's messages among the channel's last
-    /// [`DUPLICATE_WINDOW`].
-    async fn recent_from_webhook(&self, op: &SendOp) -> Result<Vec<(String, String)>, OpError> {
+    /// `(id, content)` of the messages among the channel's last
+    /// [`DUPLICATE_WINDOW`] sent through the op's webhook or `webhook`, the
+    /// one in its place.
+    async fn recent_from_webhook(
+        &self,
+        op: &SendOp,
+        webhook: &str,
+    ) -> Result<Vec<(String, String)>, OpError> {
         let channel = op.thread.as_deref().unwrap_or(&op.channel);
         let answer = self
             .ctx
@@ -555,7 +629,7 @@ impl Performer {
             .as_array()
             .into_iter()
             .flatten()
-            .filter(|m| m["webhook_id"] == op.webhook.as_str())
+            .filter(|m| m["webhook_id"] == op.webhook.as_str() || m["webhook_id"] == webhook)
             .map(|m| {
                 (
                     m["id"].as_str().unwrap_or_default().to_owned(),
@@ -565,8 +639,15 @@ impl Performer {
             .collect())
     }
 
-    /// Execute the webhook; the new message's id.
-    async fn execute(&self, op: &SendOp, content: &str, token: &str) -> Result<String, OpError> {
+    /// Execute `webhook` with `op`; the new message's id. The attachments'
+    /// bytes are let go only once sent, so a retry has them still.
+    async fn execute(
+        &self,
+        op: &SendOp,
+        webhook: &str,
+        content: &str,
+        token: &str,
+    ) -> Result<String, RestError> {
         let mut payload = json!({
             "content": content,
             "username": op.username,
@@ -582,13 +663,13 @@ impl Performer {
         } else {
             let mut files = Vec::new();
             {
-                let mut blobs = self
+                let blobs = self
                     .blobs
                     .lock()
-                    .map_err(|_| OpError::Unavailable("worker state poisoned".into()))?;
+                    .map_err(|_| RestError::Unavailable("worker state poisoned".into()))?;
                 for attachment in &op.attachments {
-                    let bytes = blobs.remove(&attachment.blob).ok_or_else(|| {
-                        OpError::Unavailable(format!(
+                    let bytes = blobs.get(&attachment.blob).cloned().ok_or_else(|| {
+                        RestError::Unavailable(format!(
                             "the bytes of {} did not arrive",
                             attachment.name
                         ))
@@ -610,29 +691,34 @@ impl Performer {
         if let Some(thread) = &op.thread {
             query.push(("thread_id", thread.clone()));
         }
-        let path = format!("/webhooks/{}/{}", segment(&op.webhook), segment(token));
+        let path = format!("/webhooks/{}/{}", segment(webhook), segment(token));
         let answer = self
             .ctx
             .rest
             .call(Method::POST, &path, &query, body, Auth::InPath, None)
             .await?;
-        answer["id"]
-            .as_str()
-            .map(str::to_owned)
-            .ok_or_else(|| OpError::Unavailable("Discord did not say which message it made".into()))
+        if let Ok(mut blobs) = self.blobs.lock() {
+            for attachment in &op.attachments {
+                blobs.remove(&attachment.blob);
+            }
+        }
+        answer["id"].as_str().map(str::to_owned).ok_or_else(|| {
+            RestError::Unavailable("Discord did not say which message it made".into())
+        })
     }
 
     async fn edit(&self, op: EditOp) -> OpResult {
         let token = self.webhook_token(&op.channel).await?;
         let path = format!(
             "/webhooks/{}/{}/messages/{}",
-            segment(&op.webhook),
+            segment(&self.current(&op.webhook)),
             segment(&token),
             segment(&op.message)
         );
         let query: Vec<(&str, String)> =
             op.thread.iter().map(|t| ("thread_id", t.clone())).collect();
-        self.ctx
+        let answer = self
+            .ctx
             .rest
             .call(
                 Method::PATCH,
@@ -644,8 +730,20 @@ impl Performer {
                 Auth::InPath,
                 None,
             )
-            .await?;
-        Ok(DiscordResult::Done)
+            .await;
+        match answer {
+            Ok(_) => Ok(DiscordResult::Done),
+            // The message is gone, or was sent through a webhook since
+            // gone (which only it could edit): nothing is left to edit.
+            Err(error) if error.is_unknown() => {
+                eprintln!(
+                    "discord-worker: edit of message {} dropped: {error}",
+                    op.message
+                );
+                Ok(DiscordResult::Done)
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     async fn delete(&self, op: DeleteOp) -> OpResult {
@@ -653,7 +751,7 @@ impl Performer {
             let token = self.webhook_token(&op.channel).await?;
             let path = format!(
                 "/webhooks/{}/{}/messages/{}",
-                segment(webhook),
+                segment(&self.current(webhook)),
                 segment(&token),
                 segment(&op.message)
             );
@@ -684,7 +782,17 @@ impl Performer {
         };
         match answer {
             Ok(_) => Ok(DiscordResult::Done),
-            Err(error) if error.is_unknown() => Ok(DiscordResult::Done),
+            // Gone already, or sent through a webhook since gone (which
+            // only it could delete): either way there is nothing to do.
+            Err(error) if error.is_unknown() => {
+                if op.webhook.is_some() {
+                    eprintln!(
+                        "discord-worker: delete of message {} dropped: {error}",
+                        op.message
+                    );
+                }
+                Ok(DiscordResult::Done)
+            }
             Err(error) => Err(error.into()),
         }
     }
@@ -748,7 +856,17 @@ impl Performer {
     /// before (an op may run twice). Its token goes to the host's secret
     /// store, never into the result.
     async fn create_webhook(&self, op: CreateWebhookOp) -> OpResult {
-        let path = format!("/channels/{}/webhooks", segment(&op.channel));
+        let (id, _) = self.channel_webhook(&op.channel).await?;
+        Ok(DiscordResult::Webhook {
+            webhook_id: id,
+            tilo: op.tilo,
+        })
+    }
+
+    /// `(id, token)` of the webhook the bridge made in `channel`, made now
+    /// when there is none; the token is stored with the host.
+    async fn channel_webhook(&self, channel: &str) -> Result<(String, String), OpError> {
+        let path = format!("/channels/{}/webhooks", segment(channel));
         let existing = self.call(Method::GET, &path, Body::Empty, None).await?;
         let adopt = existing.as_array().into_iter().flatten().find(|w| {
             // Discord shows a token only for webhooks this bot made.
@@ -771,11 +889,9 @@ impl Performer {
                 "Discord returned a webhook without a token".into(),
             ));
         };
-        self.ctx.secrets.store(WEBHOOK, &op.channel, token);
-        Ok(DiscordResult::Webhook {
-            webhook_id: id.to_owned(),
-            tilo: op.tilo,
-        })
+        self.ctx.secrets.store(WEBHOOK, channel, token);
+        self.ctx.own_webhook(id);
+        Ok((id.to_owned(), token.to_owned()))
     }
 
     /// Create a channel where `spec` places it, or bring an existing one's

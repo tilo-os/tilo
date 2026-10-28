@@ -24,7 +24,7 @@ pub const DEFAULT_SOCKET: &str = "/run/tilo-auth/socket";
 /// How long the greeter waits for the daemon before showing the ordinary
 /// screen. The daemon answers from memory; this only keeps a wedged daemon
 /// from holding the sign-in screen back.
-const EXCHANGE_BOUND: Duration = Duration::from_secs(2);
+pub(crate) const EXCHANGE_BOUND: Duration = Duration::from_secs(2);
 
 /// The longest reply line read. A name is at most 32 bytes.
 const REPLY_LIMIT: u64 = 4096;
@@ -68,7 +68,24 @@ pub fn key_held(socket: &Path, user: &str) -> bool {
     })
 }
 
-fn exchange(socket: &Path, request: &[u8], bound: Duration) -> Option<String> {
+/// Whether `user`'s secret is a PIN or a password, as `tilo-authd` keeps it
+/// in their record. No daemon, no answer, a record that does not say or
+/// anything unexpected reads as "not known", and the screen asks for a
+/// password.
+#[must_use]
+pub fn secret_kind(socket: &Path, user: &str) -> Option<crate::auth::boot::SecretKind> {
+    let mut request =
+        serde_json::to_vec(&serde_json::json!({"op": "secret-kind", "user": user})).ok()?;
+    request.push(b'\n');
+    let reply: Value =
+        serde_json::from_str(exchange(socket, &request, EXCHANGE_BOUND)?.trim()).ok()?;
+    if reply.get("ok") != Some(&Value::Bool(true)) {
+        return None;
+    }
+    serde_json::from_value(reply.get("secret")?.clone()).ok()
+}
+
+pub(crate) fn exchange(socket: &Path, request: &[u8], bound: Duration) -> Option<String> {
     let mut stream = UnixStream::connect(socket).ok()?;
     stream.set_read_timeout(Some(bound)).ok()?;
     stream.set_write_timeout(Some(bound)).ok()?;
@@ -187,6 +204,39 @@ mod tests {
         }
         let empty = tempfile::tempdir().unwrap();
         assert!(!key_held(&empty.path().join("socket"), "ada"));
+    }
+
+    #[test]
+    fn the_daemon_says_whether_a_secret_is_a_pin() {
+        use crate::auth::boot::SecretKind;
+        let (dir, served) = daemon(Some("{\"ok\":true,\"secret\":\"pin\"}\n"));
+        assert_eq!(
+            secret_kind(&dir.path().join("socket"), "ada"),
+            Some(SecretKind::Pin)
+        );
+        assert_eq!(
+            served.join().unwrap(),
+            "{\"op\":\"secret-kind\",\"user\":\"ada\"}\n"
+        );
+        for (reply, kind) in [
+            (
+                "{\"ok\":true,\"secret\":\"password\"}\n",
+                Some(SecretKind::Password),
+            ),
+            ("{\"ok\":true}\n", None),
+            ("{\"ok\":false,\"error\":\"not-permitted\"}\n", None),
+            ("{\"ok\":true,\"secret\":\"pattern\"}\n", None),
+        ] {
+            let (dir, served) = daemon(Some(reply));
+            assert_eq!(
+                secret_kind(&dir.path().join("socket"), "ada"),
+                kind,
+                "{reply}"
+            );
+            served.join().unwrap();
+        }
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(secret_kind(&empty.path().join("socket"), "ada"), None);
     }
 
     #[test]

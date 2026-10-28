@@ -220,7 +220,7 @@ fn activate_spec() -> tilo_actions::ActionSpec {
     // An agent brings the window forward; a person looking for it in the
     // window's own palette already has it.
     .for_audience(tilo_actions::Audience::Agents);
-    spec.contract.result = tilo_actions::ResultSpec::Json {
+    spec.type_mut().contract.result = tilo_actions::ResultSpec::Json {
         schema: serde_json::json!({"type": "object"}),
     };
     spec
@@ -274,7 +274,7 @@ fn render_spec() -> tilo_actions::ActionSpec {
     )
     // How an agent sees what the person sees: never a row of the person's.
     .for_audience(tilo_actions::Audience::Agents);
-    spec.contract.result = tilo_actions::ResultSpec::Json {
+    spec.type_mut().contract.result = tilo_actions::ResultSpec::Json {
         schema: serde_json::json!({"type": "object"}),
     };
     spec

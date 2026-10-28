@@ -15,7 +15,7 @@ fn notification_center_enlarged_header_sizes_from_the_actual_native_width() {
         state.overlays.quick_settings = true;
         state
             .quick_settings
-            .push_level(crate::shell::quick_settings::QsLevel::Notifications);
+            .push_level(tilo_quick_settings::QsLevel::Notifications);
         state.bump();
     }
     h.host.force_quick_settings_settled();
@@ -48,21 +48,21 @@ fn notification_center_enlarged_header_sizes_from_the_actual_native_width() {
     }
     h.host.handle_shell_quick_settings_drill_in_click(
         layout.clear().center(),
-        &crate::shell::quick_settings::QsLevel::Notifications,
+        &tilo_quick_settings::QsLevel::Notifications,
     );
     assert!(h.chrome.borrow().notification_history().is_empty());
     let cleared = h.host.qs_notification_layout();
     h.host.handle_shell_quick_settings_drill_in_click(
         cleared.undo().center(),
-        &crate::shell::quick_settings::QsLevel::Notifications,
+        &tilo_quick_settings::QsLevel::Notifications,
     );
     assert_eq!(h.chrome.borrow().notification_history().len(), 3);
     h.host.handle_shell_quick_settings_drill_in_click(
         layout.back().center(),
-        &crate::shell::quick_settings::QsLevel::Notifications,
+        &tilo_quick_settings::QsLevel::Notifications,
     );
     assert!(matches!(
         h.chrome.borrow().quick_settings.current_level(),
-        crate::shell::quick_settings::QsLevel::Root
+        tilo_quick_settings::QsLevel::Root
     ));
 }
