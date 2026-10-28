@@ -273,6 +273,9 @@ fn convert(value: &Value, ty: &Type, reconciler: &Reconciler) -> Option<Prop> {
             Prop::Resource(reference.id.clone())
         }
         (Type::Icon, Value::Text(name)) => Prop::Icon(name.replace('_', "-")),
+        // A moment reaches the component as the instant it is, never as text read the
+        // person's way: the component decides how to show it.
+        (Type::Time, Value::Text(at)) => Prop::Text(at.clone()),
         (Type::Choice { .. }, Value::Text(case)) => Prop::Choice(case.clone()),
         _ => return None,
     })

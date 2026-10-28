@@ -273,6 +273,8 @@ pub enum Type {
     Principal,
     /// A resource the component presents.
     Resource,
+    /// A moment: a date and a time of day, as the language's `Time`.
+    Time,
     /// One of the platform's icons, by its kebab-case name.
     Icon,
     /// One of a closed set of cases: the design system's roles and tokens.
@@ -295,6 +297,7 @@ impl Type {
             Self::Bool => "Bool".into(),
             Self::Principal => "Principal".into(),
             Self::Resource => "a resource".into(),
+            Self::Time => "Time".into(),
             Self::Icon => "Icon".into(),
             Self::Choice { name, .. } => name.clone(),
             Self::Option(inner) => format!("Option<{}>", inner.show()),
