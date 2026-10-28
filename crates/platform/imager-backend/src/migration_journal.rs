@@ -19,10 +19,9 @@ use std::{
     time::SystemTime,
 };
 
-// The old whole-document bound remains only for legacy decoding. V2 bounds
-// each frame, never the complete operation. Checksums detect corruption, not
-// malicious edits; receipts still confer no overwrite authority.
-const MAX_JOURNAL: u64 = 16 * 1024 * 1024;
+// The journal bounds each frame, never the complete operation. Checksums
+// detect corruption, not malicious edits; receipts still confer no overwrite
+// authority.
 const MAGIC: &[u8; 8] = b"TILOJL2\n";
 
 #[derive(Serialize, Deserialize)]
@@ -460,38 +459,22 @@ impl MigrationJournal {
         let (parent, name) = journal_parent(path)?;
         let (mut file, identity) = super::migration_journal_log::open_private(&parent, &name)?;
         let mut magic = [0; 8];
-        let modern = file.read_exact(&mut magic).is_ok() && &magic == MAGIC;
-        if &magic == b"TILOJL3\n" {
-            return Err(changed(
-                "fresh native selection required; use native resume",
-            ));
+        if file.read_exact(&mut magic).is_err() || &magic != MAGIC {
+            return Err(changed(if &magic == b"TILOJL3\n" {
+                "fresh native selection required; use native resume"
+            } else {
+                "unsupported journal format"
+            }));
         }
-        file.seek(SeekFrom::Start(if modern { 8 } else { 0 }))?;
         let mut sequence = 0;
-        let mut end = 8;
-        let mut document = if modern {
-            let Some(Record::Header { document }) = read_record(&mut file, sequence)? else {
-                return Err(changed("journal header missing"));
-            };
-            sequence += 1;
-            end = file.stream_position()?;
-            if document.version != 2 || !document.receipts.is_empty() || document.outcome.is_some()
-            {
-                return Err(changed("invalid journal header"));
-            }
-            document
-        } else {
-            let mut data = Vec::new();
-            (&mut *file).take(MAX_JOURNAL + 1).read_to_end(&mut data)?;
-            if data.len() as u64 > MAX_JOURNAL {
-                return Err(changed("legacy journal exceeds size bound"));
-            }
-            let document: Document = serde_json::from_slice(&data)?;
-            if document.version != 1 {
-                return Err(changed("unsupported legacy journal schema"));
-            }
-            document
+        let Some(Record::Header { mut document }) = read_record(&mut file, sequence)? else {
+            return Err(changed("journal header missing"));
         };
+        sequence += 1;
+        let mut end = file.stream_position()?;
+        if document.version != 2 || !document.receipts.is_empty() || document.outcome.is_some() {
+            return Err(changed("invalid journal header"));
+        }
         if document.operation.is_empty() || document.operation.len() > 128 {
             return Err(changed("unsupported journal operation"));
         }
@@ -503,13 +486,11 @@ impl MigrationJournal {
                 return Err(changed("duplicate journal receipt"));
             }
         }
-        if modern {
-            let mut pending = None;
-            while let Some(record) = read_record(&mut file, sequence)? {
-                Self::replay_record(&mut document, &mut index, &mut pending, record)?;
-                sequence += 1;
-                end = file.stream_position()?;
-            }
+        let mut pending = None;
+        while let Some(record) = read_record(&mut file, sequence)? {
+            Self::replay_record(&mut document, &mut index, &mut pending, record)?;
+            sequence += 1;
+            end = file.stream_position()?;
         }
         Self::validate_outcome_paths(&document)?;
         let mut result = Self {
@@ -527,18 +508,14 @@ impl MigrationJournal {
         };
         result.validate()?;
         result.load_reviewed_inventory()?;
-        if modern {
-            if end != result.file.metadata()?.len() {
-                result.validate_recovery_location()?;
-                // Revalidate before repairing only the uncommitted final tail.
-                #[cfg(test)]
-                persistence_injection::fail_at("before_recover_tail")?;
-                super::migration_journal_log::repair(&mut result.file, end, || Ok(()))?;
-            }
-            result.file.seek(SeekFrom::Start(end))?;
-        } else {
-            result.upgrade_legacy()?;
+        if end != result.file.metadata()?.len() {
+            result.validate_recovery_location()?;
+            // Revalidate before repairing only the uncommitted final tail.
+            #[cfg(test)]
+            persistence_injection::fail_at("before_recover_tail")?;
+            super::migration_journal_log::repair(&mut result.file, end, || Ok(()))?;
         }
+        result.file.seek(SeekFrom::Start(end))?;
         Ok(result)
     }
     fn load_reviewed_inventory(&mut self) -> io::Result<()> {
@@ -823,53 +800,6 @@ impl MigrationJournal {
             }
         }
         write_record(file, sequence, &Record::CommitOutcome)
-    }
-
-    fn upgrade_legacy(&mut self) -> io::Result<()> {
-        self.validate()?;
-        self.validate_recovery_location()?;
-        let mut temporary = OwnedTemporary::create(&self.parent, &self.name)?;
-        temporary.file.write_all(MAGIC)?;
-        let mut sequence = 0;
-        let mut header = self.document.clone();
-        header.version = 2;
-        header.receipts.clear();
-        header.outcome = None;
-        write_record(
-            &mut temporary.file,
-            &mut sequence,
-            &Record::Header { document: header },
-        )?;
-        for receipt in &self.document.receipts {
-            write_record(
-                &mut temporary.file,
-                &mut sequence,
-                &Record::Receipt {
-                    receipt: receipt.clone(),
-                },
-            )?;
-        }
-        if let Some(outcome) = &self.document.outcome {
-            Self::write_outcome(&mut temporary.file, &mut sequence, outcome)?;
-        }
-        durability::sync_file(&temporary.file)?;
-        let file = FileLock::try_exclusive(temporary.file.try_clone()?)
-            .map_err(|e| changed(&format!("journal is busy: {e}")))?;
-        self.validate()?;
-        #[cfg(test)]
-        persistence_injection::fail_at("legacy_before_replace")?;
-        cap_primitives::fs::rename(
-            &self.parent.file,
-            Path::new(&temporary.name),
-            &self.parent.file,
-            Path::new(&self.name),
-        )?;
-        durability::sync_directory(&self.parent.file)?;
-        self.file = file;
-        self.identity = Metadata::from_file(&self.file)?;
-        self.sequence = sequence;
-        self.document.version = 2;
-        Ok(())
     }
 
     pub fn validate_relative(&self, path: &Path) -> io::Result<()> {
@@ -1254,9 +1184,32 @@ mod tests {
 
     fn decoded_document<T: serde::de::DeserializeOwned>(path: &Path) -> T {
         let journal = MigrationJournal::open(path).unwrap();
-        let mut document = journal.document;
-        document.version = 1;
-        serde_json::from_value(serde_json::to_value(document).unwrap()).unwrap()
+        serde_json::from_value(serde_json::to_value(journal.document).unwrap()).unwrap()
+    }
+
+    /// Rewrite a journal from an edited document in the framed on-disk format,
+    /// so tests reach the validation behind the header, not the format check.
+    fn write_journal(path: &Path, mut document: serde_json::Value) {
+        let receipts = document["receipts"].take();
+        document["receipts"] = serde_json::json!([]);
+        let outcome = document["outcome"].take();
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(path)
+            .unwrap();
+        file.write_all(MAGIC).unwrap();
+        let mut sequence = 0;
+        let header = serde_json::json!({"record": "Header", "document": document});
+        write_record(&mut file, &mut sequence, &header).unwrap();
+        for receipt in receipts.as_array().unwrap() {
+            let record = serde_json::json!({"record": "Receipt", "receipt": receipt});
+            write_record(&mut file, &mut sequence, &record).unwrap();
+        }
+        if !outcome.is_null() {
+            let outcome: Outcome = serde_json::from_value(outcome).unwrap();
+            MigrationJournal::write_outcome(&mut file, &mut sequence, &outcome).unwrap();
+        }
     }
 
     #[test]
@@ -1319,53 +1272,19 @@ mod tests {
         });
 
         isolated(
-            "legacy_upgrade_failure_preserves_original_and_native_conflict",
-            || {
-                let (_temp, _source, output, journal) = completed_fixture();
-                let legacy: Document = decoded_document(&journal);
-                let bytes = serde_json::to_vec(&legacy).unwrap();
-                fs::write(&journal, &bytes).unwrap();
-                let failure = persistence_injection::Failure::at("legacy_before_replace", 1);
-                assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
-                assert_eq!(fs::read(&journal).unwrap(), bytes);
-                assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
-                drop(failure);
-                fs::write(output.join("a"), b"other").unwrap();
-                let report = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
-                assert!(!report.complete());
-                assert_eq!(fs::read(output.join("a")).unwrap(), b"other");
-                assert!(fs::read(&journal).unwrap().starts_with(MAGIC));
-            },
-        );
-
-        // Phase `legacy_journal_moved_into_output_is_refused_without_conversion`.
-        // Even migration/repair of the journal must not mutate a copied tree.
-        isolated(
-            "legacy_journal_moved_into_output_is_refused_without_conversion",
-            || {
-                let (_temp, _source, output, journal) = completed_fixture();
-                let legacy: Document = decoded_document(&journal);
-                let bytes = serde_json::to_vec(&legacy).unwrap();
-                let moved = output.join("moved.journal");
-                fs::write(&journal, &bytes).unwrap();
-                fs::rename(&journal, &moved).unwrap();
-                assert!(resume_folder(&moved, &AtomicBool::new(false), |_| {}).is_err());
-                assert_eq!(fs::read(&moved).unwrap(), bytes);
-            },
-        );
-
-        isolated(
             "malformed_schema_and_traversal_are_refused_before_writes",
             || {
                 let (_temp, _source, output, journal) = completed_fixture();
                 let original: serde_json::Value = decoded_document(&journal);
-                let mut cases = vec![b"not json".to_vec()];
+                fs::write(&journal, b"not a journal").unwrap();
+                assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
+                let mut cases = Vec::new();
                 let mut unknown = original.clone();
                 unknown["unknown"] = true.into();
-                cases.push(serde_json::to_vec(&unknown).unwrap());
+                cases.push(unknown);
                 let mut version = original.clone();
                 version["version"] = 99.into();
-                cases.push(serde_json::to_vec(&version).unwrap());
+                cases.push(version);
                 for units in [
                     vec![46, 46],
                     vec![47],
@@ -1376,10 +1295,10 @@ mod tests {
                     let mut bad = original.clone();
                     bad["receipts"][1]["path"]["components"][0] =
                         serde_json::json!({"platform":"Unix","units":units});
-                    cases.push(serde_json::to_vec(&bad).unwrap());
+                    cases.push(bad);
                 }
-                for bytes in cases {
-                    fs::write(&journal, bytes).unwrap();
+                for document in cases {
+                    write_journal(&journal, document);
                     assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
                     assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
                 }
@@ -1843,11 +1762,11 @@ mod tests {
                 let original: serde_json::Value = decoded_document(&journal);
                 let mut foreign = original.clone();
                 foreign["source"]["platform"] = "Windows".into();
-                fs::write(&journal, serde_json::to_vec(&foreign).unwrap()).unwrap();
+                write_journal(&journal, foreign);
                 assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
                 let mut changed = original;
                 changed["source_identity"]["volume"] = serde_json::json!([2, 0, 0, 0]);
-                fs::write(&journal, serde_json::to_vec(&changed).unwrap()).unwrap();
+                write_journal(&journal, changed);
                 assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
                 assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
             },
