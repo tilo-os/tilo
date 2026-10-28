@@ -319,6 +319,7 @@ impl Core {
                     FieldKind::Map => FieldValue::Entries(Vec::new()),
                     FieldKind::Counter => FieldValue::Counter(0),
                     FieldKind::Text => FieldValue::Text(String::new()),
+                    FieldKind::RichText => FieldValue::Rich(crate::rich::RichValue::default()),
                     FieldKind::Register => FieldValue::Absent,
                 }
             }
