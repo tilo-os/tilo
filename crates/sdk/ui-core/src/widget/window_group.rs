@@ -171,7 +171,11 @@ pub struct WindowGroup {
     close_reports: Vec<crate::application::ComponentCloseReport>,
     pub id: u64,
     bar: TabBar,
-    hosts: Vec<(u64, TileHost)>,
+    /// Each tab's host, boxed so it keeps its address while it stays in the
+    /// window: the frame's layout pointer map names the shown host by
+    /// address, and opening, closing or reordering another tab must not
+    /// move it out from under that map.
+    hosts: Vec<(u64, Box<TileHost>)>,
     width: WindowWidth,
     /// Pushed down by the parent [`crate::widget::GroupRow`] before every
     /// `build_layout`; seeded to [`DEFAULT_STRIP_USABLE_PX`].
@@ -458,7 +462,7 @@ impl WindowGroup {
             .into_iter()
             .map(|(d, h)| {
                 h.set_panic_scope(d.id);
-                (d.id, h)
+                (d.id, Box::new(h))
             })
             .collect();
         let mut bar = TabBar::new(&format!("g{id}"), descs, active_id);
@@ -1616,14 +1620,14 @@ impl WindowGroup {
         self.hosts
             .iter_mut()
             .find(|(i, _)| *i == id)
-            .map(|(_, h)| h)
+            .map(|(_, h)| &mut **h)
     }
 
     /// Read-only twin of [`Self::active_host_mut`] — avoids a `&mut`
     /// borrow that would conflict with the frame builder's own borrows.
     pub fn active_host(&self) -> Option<&TileHost> {
         let id = self.bar.active_id();
-        self.hosts.iter().find(|(i, _)| *i == id).map(|(_, h)| h)
+        self.hosts.iter().find(|(i, _)| *i == id).map(|(_, h)| &**h)
     }
 
     pub(crate) fn discard_layout_nodes(&mut self) {
@@ -1924,6 +1928,7 @@ impl WindowGroup {
     pub fn detach_tab(&mut self, tab_id: u64) -> Option<(TabDescriptor, TileHost)> {
         let host_idx = self.hosts.iter().position(|(i, _)| *i == tab_id)?;
         let (_, host) = self.hosts.remove(host_idx);
+        let host = *host;
         let desc = self.bar.tabs().iter().find(|t| t.id == tab_id)?.clone();
         self.bar.remove_tab(tab_id);
         // Drop lingering close-fade state for the moved id, or a stale
@@ -1946,12 +1951,12 @@ impl WindowGroup {
         let before_shown = self
             .hosts
             .iter()
-            .any(|(i, h)| *i == before && Widget::presented(h))
+            .any(|(i, h)| *i == before && Widget::presented(&**h))
             && !self.closing_hosts.contains_key(&before);
         self.bar.insert_tab(idx, desc);
         let clamped = idx.min(self.hosts.len());
         host.set_panic_scope(id);
-        self.hosts.insert(clamped, (id, host));
+        self.hosts.insert(clamped, (id, Box::new(host)));
         if before_shown && before != id && self.bar.active_id() == id {
             self.tab_waiting = Some((before, id));
         }
@@ -1967,7 +1972,7 @@ impl WindowGroup {
                 self.tab_waiting = None;
             } else if self.hosts.iter().any(|(i, h)| {
                 *i == to
-                    && (Widget::presented(h)
+                    && (Widget::presented(&**h)
                         || h.holds_first_frame_until(crate::time::now()).is_none())
             }) {
                 // Drawn, or its place is reserved past the frame its first
@@ -2031,7 +2036,7 @@ impl WindowGroup {
             id,
             close_reports: vec![],
             bar,
-            hosts: vec![(tab_id, host)],
+            hosts: vec![(tab_id, Box::new(host))],
             width,
             strip_usable_px: DEFAULT_STRIP_USABLE_PX,
             alone: false,
@@ -2712,7 +2717,7 @@ impl WindowGroup {
         self.hosts
             .iter_mut()
             .find(|(id, _)| *id == tab_id)
-            .map(|(_, h)| h)
+            .map(|(_, h)| &mut **h)
     }
 
     /// Laid-out content bounds for a tab. Shell-owned system windows use
@@ -2941,7 +2946,7 @@ impl WindowGroup {
             if let Some(idx) = self.hosts.iter().position(|(i, _)| *i == id) {
                 let (_, mut host) = self.hosts.remove(idx);
                 self.close_reports
-                    .extend(crate::component_lifecycle::close_components(&mut host));
+                    .extend(crate::component_lifecycle::close_components(&mut *host));
             }
             self.bar.finalize_close(id);
         }
@@ -3334,26 +3339,26 @@ impl WindowGroup {
 impl FloatingSurfaceProvider for WindowGroup {
     fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
         for (_, host) in &mut self.hosts {
-            FloatingSurfaceProvider::on_floating_surface_focus_changed(host, id, focused);
+            FloatingSurfaceProvider::on_floating_surface_focus_changed(&mut **host, id, focused);
         }
     }
 
     fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
         for (_, host) in &mut self.hosts {
-            FloatingSurfaceProvider::on_floating_surface_ime_source_changed(host, id);
+            FloatingSurfaceProvider::on_floating_surface_ime_source_changed(&mut **host, id);
         }
     }
 
     fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
         for (_, host) in &mut self.hosts {
-            FloatingSurfaceProvider::on_floating_surface_event_source(host, id);
+            FloatingSurfaceProvider::on_floating_surface_event_source(&mut **host, id);
         }
     }
 
     fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
-        self.hosts
-            .iter()
-            .find_map(|(_, host)| FloatingSurfaceProvider::floating_surface_accessibility(host, id))
+        self.hosts.iter().find_map(|(_, host)| {
+            FloatingSurfaceProvider::floating_surface_accessibility(&**host, id)
+        })
     }
 
     fn perform_floating_surface_accessibility_action(
@@ -3366,7 +3371,12 @@ impl FloatingSurfaceProvider for WindowGroup {
     ) -> bool {
         self.hosts.iter_mut().any(|(_, host)| {
             FloatingSurfaceProvider::perform_floating_surface_accessibility_action(
-                host, id, target, action, state, path,
+                &mut **host,
+                id,
+                target,
+                action,
+                state,
+                path,
             )
         })
     }
@@ -3374,7 +3384,7 @@ impl FloatingSurfaceProvider for WindowGroup {
     fn floating_surface_ime(&self, id: &str) -> Option<(crate::ime::InputContent, Rect)> {
         self.hosts
             .iter()
-            .find_map(|(_, host)| FloatingSurfaceProvider::floating_surface_ime(host, id))
+            .find_map(|(_, host)| FloatingSurfaceProvider::floating_surface_ime(&**host, id))
     }
 
     fn take_floating_surface_request(
@@ -3382,9 +3392,9 @@ impl FloatingSurfaceProvider for WindowGroup {
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
         // A detached presentation remains interactive even when its source tab
         // is not selected. Drain every retained owner, not only the tiled one.
-        self.hosts
-            .iter_mut()
-            .find_map(|(_, host)| FloatingSurfaceProvider::take_floating_surface_request(host))
+        self.hosts.iter_mut().find_map(|(_, host)| {
+            FloatingSurfaceProvider::take_floating_surface_request(&mut **host)
+        })
     }
 
     fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
@@ -3396,7 +3406,7 @@ impl FloatingSurfaceProvider for WindowGroup {
         self.hosts
             .iter_mut()
             .flat_map(|(_, host)| {
-                FloatingSurfaceProvider::take_floating_surface_source_updates(host)
+                FloatingSurfaceProvider::take_floating_surface_source_updates(&mut **host)
             })
             .collect()
     }
@@ -3411,7 +3421,7 @@ impl FloatingSurfaceProvider for WindowGroup {
     ) {
         for (_, host) in &mut self.hosts {
             FloatingSurfaceProvider::draw_floating_surfaces(
-                host,
+                &mut **host,
                 scene,
                 transform,
                 text_renderer,
@@ -3433,7 +3443,7 @@ impl FloatingSurfaceProvider for WindowGroup {
     ) -> bool {
         self.hosts.iter_mut().any(|(_, host)| {
             FloatingSurfaceProvider::draw_floating_surface(
-                host,
+                &mut **host,
                 id,
                 scene,
                 transform,
@@ -3446,7 +3456,7 @@ impl FloatingSurfaceProvider for WindowGroup {
 
     fn set_floating_surface_bounds(&mut self, bounds: Rect) {
         for (_, host) in &mut self.hosts {
-            FloatingSurfaceProvider::set_floating_surface_bounds(host, bounds);
+            FloatingSurfaceProvider::set_floating_surface_bounds(&mut **host, bounds);
         }
     }
 
@@ -3455,14 +3465,14 @@ impl FloatingSurfaceProvider for WindowGroup {
     ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
         self.hosts
             .iter()
-            .flat_map(|(_, host)| FloatingSurfaceProvider::floating_surface_presentations(host))
+            .flat_map(|(_, host)| FloatingSurfaceProvider::floating_surface_presentations(&**host))
             .collect()
     }
 
     fn active_floating_surface_ids(&self) -> Vec<String> {
         self.hosts
             .iter()
-            .flat_map(|(_, host)| FloatingSurfaceProvider::active_floating_surface_ids(host))
+            .flat_map(|(_, host)| FloatingSurfaceProvider::active_floating_surface_ids(&**host))
             .collect()
     }
 
@@ -3471,7 +3481,7 @@ impl FloatingSurfaceProvider for WindowGroup {
         message: &crate::floating_surface::FloatingSurfaceHostMessage,
     ) {
         for (_, host) in &mut self.hosts {
-            FloatingSurfaceProvider::on_floating_surface_host_message(host, message);
+            FloatingSurfaceProvider::on_floating_surface_host_message(&mut **host, message);
         }
     }
 }
@@ -3515,7 +3525,7 @@ impl Widget for WindowGroup {
         request: &mut crate::bound_dispatch::legacy_document::ResourceRequest<'_>,
     ) -> Result<(), tilo_actions::DoorError> {
         for (_, host) in &mut self.hosts {
-            request.visit(host)?;
+            request.visit(&mut **host)?;
         }
         Ok(())
     }
@@ -3543,7 +3553,7 @@ impl Widget for WindowGroup {
         for child in self
             .hosts
             .iter_mut()
-            .map(|(_, host)| host as &mut dyn Widget)
+            .map(|(_, host)| &mut **host as &mut dyn Widget)
         {
             child.set_platform_conventions(conventions);
         }
@@ -3557,7 +3567,7 @@ impl Widget for WindowGroup {
         for child in self
             .hosts
             .iter_mut()
-            .map(|(_, host)| host as &mut dyn Widget)
+            .map(|(_, host)| &mut **host as &mut dyn Widget)
         {
             child.set_interaction_environment(environment);
         }
@@ -3568,7 +3578,7 @@ impl Widget for WindowGroup {
         for child in self
             .hosts
             .iter_mut()
-            .map(|(_, host)| host as &mut dyn Widget)
+            .map(|(_, host)| &mut **host as &mut dyn Widget)
         {
             child.mount_native_views(host);
         }
@@ -3579,7 +3589,7 @@ impl Widget for WindowGroup {
         for child in self
             .hosts
             .iter_mut()
-            .map(|(_, host)| host as &mut dyn Widget)
+            .map(|(_, host)| &mut **host as &mut dyn Widget)
         {
             child.unmount_native_views();
         }
@@ -3590,7 +3600,7 @@ impl Widget for WindowGroup {
         for child in self
             .hosts
             .iter_mut()
-            .map(|(_, host)| host as &mut dyn Widget)
+            .map(|(_, host)| &mut **host as &mut dyn Widget)
         {
             child.native_view_frame_start();
         }
@@ -3609,7 +3619,7 @@ impl Widget for WindowGroup {
         if let Some((id, host)) = self.hosts.iter().find(|(id, _)| *id == active) {
             // A host swapped in through `host_for_tab_mut` is named here.
             host.set_panic_scope(*id);
-            children.push(host);
+            children.push(&**host);
         }
         children
     }
@@ -3638,7 +3648,7 @@ impl Widget for WindowGroup {
         }
         if let Some((id, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
             host.set_panic_scope(*id);
-            children.push(host);
+            children.push(&mut **host);
         }
         children
     }
@@ -3647,7 +3657,7 @@ impl Widget for WindowGroup {
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         for (id, host) in &self.hosts {
             host.set_panic_scope(*id);
-            visitor(host);
+            visitor(&**host);
         }
     }
 
@@ -4289,7 +4299,7 @@ impl crate::collaboration::participants::CollaborationTopology for WindowGroup {
     fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.hosts
             .iter_mut()
-            .map(|(_, host)| host as &mut dyn Widget)
+            .map(|(_, host)| &mut **host as &mut dyn Widget)
             .collect()
     }
 }
@@ -4519,6 +4529,29 @@ mod tests {
             "restoring twice must not duplicate the pill"
         );
         assert_eq!(group.tab_count(), 2);
+    }
+
+    #[test]
+    fn a_host_keeps_its_address_while_other_tabs_come_and_go() {
+        // The frame's layout pointer map names the shown host by address
+        // until the next structural rebuild; another tab opening, moving or
+        // leaving must not move it.
+        let mut group = make_group();
+        let shown: *const TileHost = group.host_for_tab_mut(1).expect("tab 1");
+        for id in 3..40 {
+            group.insert_detached_tab(
+                0,
+                TabDescriptor::new(id, format!("T{id}")),
+                TileHost::new(TileContent::Stub {
+                    kind: AppKind::Settings,
+                    label: format!("t{id}"),
+                }),
+            );
+        }
+        assert!(group.reorder_tab(0, 5));
+        assert!(group.detach_tab(2).is_some());
+        let now: *const TileHost = group.host_for_tab_mut(1).expect("tab 1");
+        assert_eq!(shown, now);
     }
 
     pub(super) fn make_group() -> WindowGroup {
