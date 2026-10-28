@@ -2161,6 +2161,15 @@ impl DeviceFabricRuntime {
         self.enforce_policy(network, selection, policy);
     }
 
+    /// Read the settings this runtime follows now, as the settings watch
+    /// would on its own thread a moment later: a test that has just written
+    /// a setting pumps against it, not against whatever the watch has
+    /// published so far.
+    #[cfg(test)]
+    pub(super) fn refresh_settings_for_test(&self) {
+        let _ = self.display_refresh.settings().refresh_now();
+    }
+
     /// Hold the periodic sample back for good: from here on a pump samples
     /// only for a change it was told about, however long it takes.
     #[cfg(test)]

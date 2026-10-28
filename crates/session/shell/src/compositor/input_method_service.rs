@@ -999,10 +999,31 @@ mod tests {
         tilo_test_env::wait_until("the service transition", ready);
     }
 
-    /// Wait until thread `tid` of this process is blocked in a system call.
-    fn wait_until_blocked(tid: &str, what: &str) {
-        tilo_test_env::wait_until(format!("the {what} to block"), || {
-            tilo_test_env::idle::blocked(tid)
+    /// Whether system call `number` is `poll(2)` or `ppoll(2)`, which libc's
+    /// `poll` makes where the architecture has no `poll` call.
+    fn is_poll_call(number: libc::c_long) -> bool {
+        #[cfg(target_arch = "x86_64")]
+        if number == libc::SYS_poll {
+            return true;
+        }
+        number == libc::SYS_ppoll
+    }
+
+    /// Wait until thread `tid` of this process sleeps in `poll(2)`: blocked,
+    /// and in that call. A thread on its way there can block for a moment
+    /// on something else (an allocator lock another thread holds), and
+    /// then run on, which counts as a wakeup of the poll it had not reached.
+    fn wait_until_blocked_in_poll(tid: &str, what: &str) {
+        let in_poll = || {
+            std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall")).is_ok_and(|call| {
+                call.split_whitespace()
+                    .next()
+                    .and_then(|number| number.parse::<libc::c_long>().ok())
+                    .is_some_and(is_poll_call)
+            })
+        };
+        tilo_test_env::wait_until(format!("the {what} to sleep in poll"), || {
+            tilo_test_env::idle::blocked(tid) && in_poll()
         });
     }
 
@@ -1246,7 +1267,7 @@ mod tests {
         // group is published, the supervisor's only blocking call left is its
         // wait for the child or the stop signal.
         let supervisor = tilo_test_env::idle::named_thread("tilo-input-meth");
-        wait_until_blocked(&supervisor, "input method supervisor");
+        wait_until_blocked_in_poll(&supervisor, "input method supervisor");
         // The 150 ms stop poll this replaces switched about three times here.
         tilo_test_env::idle::assert_stays_asleep(&supervisor, "input method supervisor");
         assert!(
