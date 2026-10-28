@@ -440,6 +440,12 @@ def main() -> int:
     ap.add_argument("--runner", default="local", help="the runner class the records name")
     ap.add_argument("--out", type=Path)
     args = ap.parse_args()
+    if args.only:
+        known = {c.id for c in core.REGISTRY} | {c.area for c in core.REGISTRY}
+        unknown = sorted({w.strip() for w in args.only.split(",")} - known - {""})
+        if unknown:
+            # A name that matches nothing would run nothing and pass.
+            ap.error(f"--only names no check or area: {', '.join(unknown)}")
     selected = select(args.only, SHARDS[args.shard] if args.shard else None)
     if args.shard and not selected - FRAME:
         # A part of the suite with nothing selected in it: no VM, no records, and a pass.
@@ -640,14 +646,21 @@ def main() -> int:
 
 PROVIDERS = {"two_windows": "W01", "workspaces": "W10"}
 # The parts of the suite t runs apart (t.toml's `shards` of vm-acceptance), each in a VM of its
-# own, by the areas whose checks they run. Every area is in exactly one; the checks that depend
-# on another's order or facts (ORDER, PROVIDERS, DE_PASS) share their part with them.
+# own, by the areas whose checks they run, or by check id where an area alone would make one
+# part far longer than the others: a check named by id runs in that part only, and its area's
+# part runs the rest. Every check is in exactly one; the checks that depend on another's order
+# or facts (ORDER, PROVIDERS, DE_PASS) share their part with them.
 SHARDS = {
     "session": "provenance,resources,secrets,agent,basics",
     "apps": "apps",
+    # The non-Tilo apps (Chromium on Wayland and X11, GTK, Qt, alacritty, glxgears), each a
+    # minute or more: with the Tilo apps they made the longest part twice the next.
+    "foreign-apps": "A08,A09,A10,A11,A12,A13",
     "window": "window,input",
     "shell": "ui,search",
 }
+# The checks a part names by id, which their areas' parts leave out.
+_BY_ID = {w for part in SHARDS.values() for w in part.split(",") if w[:1].isupper()}
 # What every run states: the image it runs, and that its slot is up.
 FRAME = {"P01", "P02"}
 # The checks that judge everything a session did rather than one area: no failed or looping
@@ -666,7 +679,8 @@ def select(only: str | None, areas: str | None = None) -> set[str]:
     if areas:
         part = {a.strip() for a in areas.split(",")}
         chosen = {c.id for c in core.REGISTRY
-                  if c.id in chosen and (c.area in part or c.id in SESSION_JUDGES)}
+                  if c.id in chosen and (c.id in part or c.id in SESSION_JUDGES
+                                         or (c.area in part and c.id not in _BY_ID))}
         if not chosen - SESSION_JUDGES:
             chosen = set()
     # A check that needs a fact runs after the check that establishes it.

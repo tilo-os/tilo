@@ -2362,7 +2362,7 @@ image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 writable_sources = true
-inputs = ["scripts/vm-acceptance/**", "scripts/vm-acceptance/test_app_cohort.py", "scripts/vm-acceptance/test_app_startup.py", "scripts/vm-acceptance/test_apps.py", "scripts/vm-acceptance/test_basics.py", "scripts/vm-acceptance/test_ci_select.py", "scripts/vm-acceptance/test_clock.py", "scripts/vm-acceptance/test_component_replacement.py", "scripts/vm-acceptance/test_device_fidelity.py", "scripts/vm-acceptance/test_dialog_guard.py", "scripts/vm-acceptance/test_frames.py", "scripts/vm-acceptance/test_kept_windows.py", "scripts/vm-acceptance/test_layer_artifacts.py", "scripts/vm-acceptance/test_lock_guard.py", "scripts/vm-acceptance/test_management.py", "scripts/vm-acceptance/test_provenance.py", "scripts/vm-acceptance/test_records.py", "scripts/vm-acceptance/test_report.py", "scripts/vm-acceptance/test_resources.py", "scripts/vm-acceptance/test_runtime_backing.py", "scripts/vm-acceptance/test_secrets.py", "scripts/vm-acceptance/test_selected_groups.py", "scripts/vm-acceptance/test_session_guard.py", "scripts/vm-acceptance/test_session_restart.py", "scripts/vm-acceptance/test_skip.py", "scripts/vm-acceptance/test_store_chooser.py", "scripts/vm-acceptance/test_terminal_cohort.py", "scripts/vm-acceptance/test_ui.py", "scripts/vm-acceptance/test_vm_actions.py", "scripts/vm-acceptance/test_window_guard.py", "t.toml", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/ci/vm-acceptance.sh", "tools/ci/vm-cohort.sh", "tools/perf/**", "tools/policy/run_unit_tests.py", "tools/with-test-environment.sh"]
+inputs = ["scripts/vm-acceptance/**", "scripts/vm-acceptance/test_app_cohort.py", "scripts/vm-acceptance/test_app_startup.py", "scripts/vm-acceptance/test_apps.py", "scripts/vm-acceptance/test_basics.py", "scripts/vm-acceptance/test_ci_select.py", "scripts/vm-acceptance/test_clock.py", "scripts/vm-acceptance/test_component_replacement.py", "scripts/vm-acceptance/test_device_fidelity.py", "scripts/vm-acceptance/test_dialog_guard.py", "scripts/vm-acceptance/test_frames.py", "scripts/vm-acceptance/test_guest_wait.py", "scripts/vm-acceptance/test_kept_windows.py", "scripts/vm-acceptance/test_layer_artifacts.py", "scripts/vm-acceptance/test_lock_guard.py", "scripts/vm-acceptance/test_management.py", "scripts/vm-acceptance/test_provenance.py", "scripts/vm-acceptance/test_records.py", "scripts/vm-acceptance/test_report.py", "scripts/vm-acceptance/test_resources.py", "scripts/vm-acceptance/test_runtime_backing.py", "scripts/vm-acceptance/test_secrets.py", "scripts/vm-acceptance/test_selected_groups.py", "scripts/vm-acceptance/test_session_guard.py", "scripts/vm-acceptance/test_session_restart.py", "scripts/vm-acceptance/test_skip.py", "scripts/vm-acceptance/test_store_chooser.py", "scripts/vm-acceptance/test_terminal_cohort.py", "scripts/vm-acceptance/test_ui.py", "scripts/vm-acceptance/test_vm_actions.py", "scripts/vm-acceptance/test_window_guard.py", "t.toml", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/ci/vm-acceptance.sh", "tools/ci/vm-cohort.sh", "tools/perf/**", "tools/policy/run_unit_tests.py", "tools/with-test-environment.sh"]
 on = ["stable", "dispatch", "idle"]
 default = false
 heavy = true
@@ -4475,7 +4475,7 @@ relay_cpus = ""
 # os-dev-disk-x86_64 installed it to (the disk the dev channel publishes), booted from a
 # throwaway overlay in a libvirt guest by tilo-vm-binary-x86_64's tilo-vm
 # (tools/ci/vm-acceptance.sh).
-# The suite runs in shards (run.py SHARDS: session, apps, window, shell), each a check of its
+# The suite runs in shards (run.py SHARDS: session, apps, foreign-apps, window, shell), each a check of its
 # own, `vm-acceptance/<shard>`, in a VM of its own, cached on its own and run again alone when
 # it fails; t runs them in parallel where there is room. The packages the job needs beside the
 # builder image are its setup (tools/ci/packages/vm-acceptance.txt), a cached layer over it.
@@ -4499,7 +4499,7 @@ git = true
 writable_sources = true
 run = "bash tools/ci/vm-acceptance.sh"
 setup = { run = "bash tools/ci/install-packages.sh tools/ci/packages/vm-acceptance.txt", inputs = ["tools/ci/install-packages.sh", "tools/ci/packages/vm-acceptance.txt"] }
-shards = ["session", "apps", "window", "shell"]
+shards = ["session", "apps", "foreign-apps", "window", "shell"]
 needs = ["os-dev-disk-x86_64", "tilo-vm-binary-x86_64"]
 inputs = [
   "scripts/vm-acceptance/**",
