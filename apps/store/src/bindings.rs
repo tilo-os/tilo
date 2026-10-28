@@ -4,7 +4,7 @@
 
 use std::sync::LazyLock;
 
-use ui::tilo_actions::{ActionBinding, Resource};
+use ui::tilo_actions::{ActionBinding, ResourceSpec};
 use ui::tilo_resource::Effect;
 
 use crate::model::ActionKind;
@@ -12,7 +12,7 @@ use crate::resource::{StoreEffect, door};
 use crate::{StoreItem, flathub_client::Remote};
 
 /// The published resource every control is bound to.
-static DOOR: LazyLock<Resource> = LazyLock::new(door);
+static DOOR: LazyLock<ResourceSpec> = LazyLock::new(door);
 
 fn arguments<const N: usize>(
     pairs: [(&str, String); N],

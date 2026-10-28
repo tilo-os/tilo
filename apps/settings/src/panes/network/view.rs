@@ -80,7 +80,7 @@ impl NetworkModel {
     /// `button_row` acting on the live row `on`, which offers `effect`.
     pub(super) fn row_button_row(
         &self,
-        on: &ui::tilo_actions::Resource,
+        on: &ui::tilo_actions::ResourceSpec,
         id: &str,
         label: &str,
         effect: impl Into<crate::effects::SettingsEffect>,

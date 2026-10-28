@@ -209,7 +209,7 @@ impl App {
             .collect()
     }
 
-    pub(super) fn history_local_resources(&mut self) -> Vec<tilo_actions::Resource> {
+    pub(super) fn history_local_resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
         if !self.history_chrome_enabled {
             let mut resources = self.close_admission.resources();
             resources.extend(self.framework_history_resource());
@@ -911,7 +911,7 @@ impl App {
 
     /// A registered framework History serves the same History door as the
     /// standalone one, without selecting a change: it has no session rows.
-    fn framework_history_resource(&self) -> Option<tilo_actions::Resource> {
+    fn framework_history_resource(&self) -> Option<tilo_actions::ResourceSpec> {
         Some(self.history.as_ref()?.door_resource())
     }
 

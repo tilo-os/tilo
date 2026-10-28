@@ -6477,8 +6477,11 @@ mod tests {
     /// The resource `id` as the palette, an agent or a search hit reaches it:
     /// the record's published tree, a child it resolves beyond its listed
     /// page, or a live row the reader adds beside it.
-    fn resolve(app: &PdfApp, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        fn find(resource: &tilo_actions::Resource, id: &str) -> Option<tilo_actions::Resource> {
+    fn resolve(app: &PdfApp, doc: &AutoCommit, id: &str) -> Option<tilo_actions::ResourceSpec> {
+        fn find(
+            resource: &tilo_actions::ResourceSpec,
+            id: &str,
+        ) -> Option<tilo_actions::ResourceSpec> {
             if resource.id.as_str() == id {
                 return Some(resource.clone());
             }

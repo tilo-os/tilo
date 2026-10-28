@@ -331,14 +331,14 @@ impl ViewStorage {
 
     /// The person's records a view asked for and could not open, as they
     /// are published: their declared actions, unavailable for why.
-    pub(crate) fn unavailable_records(&self) -> Vec<tilo_actions::Resource> {
+    pub(crate) fn unavailable_records(&self) -> Vec<tilo_actions::ResourceSpec> {
         self.person
             .as_ref()
             .map(super::person::PersonState::unavailable)
             .unwrap_or_default()
     }
 
-    pub(crate) fn record_resources(&self) -> Vec<tilo_actions::Resource> {
+    pub(crate) fn record_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         let mut resources = self
             .person
             .as_ref()
@@ -555,7 +555,7 @@ impl ViewStorage {
 }
 
 /// `resource`'s actions as `provider` runs them, its parts' too.
-fn run_by(resource: &mut tilo_actions::Resource, provider: &'static str) {
+fn run_by(resource: &mut tilo_actions::ResourceSpec, provider: &'static str) {
     resource.actions = std::mem::take(&mut resource.actions)
         .into_iter()
         .map(|spec| spec.run_by(provider))

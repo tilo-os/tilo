@@ -2,7 +2,7 @@
 //! This is comparison evidence, never permission or a document-basis witness.
 use tilo_actions::{
     ActionInput, ActionSpec, ContinuationArguments, ContinuationEvidence, ContinuationQuery,
-    EncodedAction, ExecutionLocus, Resource,
+    EncodedAction, ExecutionLocus, ResourceSpec,
 };
 
 pub(super) struct Builder {
@@ -52,7 +52,7 @@ impl Builder {
         }
     }
 
-    pub(super) fn resource(&mut self, resource: &Resource) {
+    pub(super) fn resource(&mut self, resource: &ResourceSpec) {
         self.tag(0);
         self.bytes(resource.id.as_str().as_bytes());
         self.length(resource.actions.len());
@@ -163,7 +163,7 @@ mod tests {
         ActionSpec::operation("run", "Run", OperationKind::View, "test.effective", &value).unwrap()
     }
     fn witness(spec: ActionSpec) -> Option<[u8; 32]> {
-        let resources = vec![Resource::new("probe", "probe", "Probe").with_action(spec)];
+        let resources = vec![ResourceSpec::new("probe", "probe", "Probe").with_action(spec)];
         let descriptors = tilo_actions::door::survey(&resources);
         ActionDirectorySnapshot::build(&resources, &descriptors, |_| None).effective_invocations
     }
@@ -260,7 +260,7 @@ mod tests {
     }
     #[test]
     fn directory_effective_stream_supported_large_materialization_and_duplicates() {
-        let mut resource = Resource::new("probe", "probe", "Probe");
+        let mut resource = ResourceSpec::new("probe", "probe", "Probe");
         for index in 0..600 {
             let mut spec = fixed(index);
             spec.type_mut().id = index.to_string();

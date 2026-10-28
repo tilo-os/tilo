@@ -97,7 +97,7 @@ pub(crate) trait RootApp {
 
 /// The [`PublishesResources`] part of a root.
 pub(crate) trait RootPublishes {
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource>;
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec>;
     fn shared_resources_for(
         &self,
         participant: Option<&tilo_actions::ParticipantId>,
@@ -107,15 +107,15 @@ pub(crate) trait RootPublishes {
         &self,
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
-    ) -> Vec<tilo_actions::Resource>;
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource>;
+    ) -> Vec<tilo_actions::ResourceSpec>;
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::ResourceSpec>;
     fn resource_pending(&self, id: &str) -> bool;
     fn resource_for(
         &self,
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
         id: &str,
-    ) -> Option<tilo_actions::Resource>;
+    ) -> Option<tilo_actions::ResourceSpec>;
     fn document_action_result(
         &self,
         doc: &AutoCommit,
@@ -418,7 +418,7 @@ impl AppWidget for RootWidget {
 }
 
 impl PublishesResources for RootWidget {
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.0.resources(doc)
     }
 
@@ -434,11 +434,11 @@ impl PublishesResources for RootWidget {
         &self,
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
-    ) -> Vec<tilo_actions::Resource> {
+    ) -> Vec<tilo_actions::ResourceSpec> {
         self.0.resources_for(participant, doc)
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::ResourceSpec> {
         self.0.resource(doc, id)
     }
 
@@ -451,7 +451,7 @@ impl PublishesResources for RootWidget {
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
         id: &str,
-    ) -> Option<tilo_actions::Resource> {
+    ) -> Option<tilo_actions::ResourceSpec> {
         self.0.resource_for(participant, doc, id)
     }
 

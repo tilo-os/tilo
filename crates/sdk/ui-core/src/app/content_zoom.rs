@@ -37,7 +37,7 @@ impl App {
 
     /// The window's Zoom in, Zoom out and Actual size, when it has a window
     /// a person sees.
-    pub(super) fn zoom_resource(&self) -> Option<tilo_actions::Resource> {
+    pub(super) fn zoom_resource(&self) -> Option<tilo_actions::ResourceSpec> {
         self.accessibility
             .zoom
             .in_window()

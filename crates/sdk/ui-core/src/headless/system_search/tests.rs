@@ -36,9 +36,9 @@ fn data() -> GlobalSearchSourceData {
         active_instance_id: Some(11),
     }
 }
-fn actions() -> Vec<tilo_actions::Resource> {
+fn actions() -> Vec<tilo_actions::ResourceSpec> {
     vec![
-        tilo_actions::Resource::new("certified/revision", "document", "Writer").with_action(
+        tilo_actions::ResourceSpec::new("certified/revision", "document", "Writer").with_action(
             tilo_actions::ActionSpec::typed(
                 "insert",
                 "Insert table",

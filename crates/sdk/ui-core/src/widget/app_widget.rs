@@ -374,7 +374,7 @@ pub trait AppWidget: Widget {
     /// device's person without publishing them to any room. `None` for a
     /// window that is not private, whose actions reach automation through
     /// its collaboration route instead.
-    fn device_local_resources(&self) -> Option<Vec<tilo_actions::Resource>> {
+    fn device_local_resources(&self) -> Option<Vec<tilo_actions::ResourceSpec>> {
         None
     }
 
@@ -417,7 +417,7 @@ pub trait AppWidget: Widget {
 /// What a window publishes for its own search: the resources it holds and
 /// can act on, and the search providers that find what it keeps.
 pub struct WindowPublication {
-    pub resources: Vec<tilo_actions::Resource>,
+    pub resources: Vec<tilo_actions::ResourceSpec>,
     pub providers: Vec<Box<dyn crate::search::SearchProvider>>,
 }
 
@@ -1645,7 +1645,7 @@ mod component_adapter {
     }
 
     impl crate::resources::PublishesResources for BoundAppWidget {
-        fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
             let binding = self.component.callback_binding();
             binding
                 .read_document(doc, |document, _record_root| {
@@ -1701,7 +1701,7 @@ mod component_adapter {
                 })
                 .unwrap_or_default()
         }
-        fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::ResourceSpec> {
             let binding = self.component.callback_binding();
             binding
                 .read_document(doc, |document, _record_root| {
@@ -1717,7 +1717,7 @@ mod component_adapter {
             &self,
             participant: Option<&tilo_actions::ParticipantId>,
             doc: &AutoCommit,
-        ) -> Vec<tilo_actions::Resource> {
+        ) -> Vec<tilo_actions::ResourceSpec> {
             let binding = self.component.callback_binding();
             binding
                 .read_document(doc, |document, _record_root| {
@@ -1733,7 +1733,7 @@ mod component_adapter {
             participant: Option<&tilo_actions::ParticipantId>,
             doc: &AutoCommit,
             id: &str,
-        ) -> Option<tilo_actions::Resource> {
+        ) -> Option<tilo_actions::ResourceSpec> {
             let binding = self.component.callback_binding();
             binding
                 .read_document(doc, |document, _record_root| {

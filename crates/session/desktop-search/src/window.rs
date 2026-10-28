@@ -24,7 +24,7 @@
 //!   collect. An action on the selection names it in its label.
 //! - Actions that act on what the person selected lead the other actions.
 
-use tilo_actions::{ActionSpec, ContextRequirement, FlatAction, Resource};
+use tilo_actions::{ActionSpec, ContextRequirement, FlatAction, ResourceSpec};
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 
 use crate::model::{ActionTarget, Hit, Source, Target};
@@ -76,7 +76,7 @@ pub fn acts_on_selection(spec: &ActionSpec) -> bool {
 /// anything is typed every action is listed, those acting on the selection
 /// first.
 struct Actions<'a> {
-    resources: &'a [Resource],
+    resources: &'a [ResourceSpec],
 }
 
 impl Source for Actions<'_> {
@@ -164,7 +164,7 @@ pub fn selection_first(hits: &mut [Hit]) {
 
 /// One window's search, over what it publishes now.
 pub struct WindowSearch {
-    resources: Vec<Resource>,
+    resources: Vec<ResourceSpec>,
     content: Content,
 }
 
@@ -173,7 +173,7 @@ impl WindowSearch {
     /// publishes.
     #[must_use]
     pub fn new(
-        resources: Vec<Resource>,
+        resources: Vec<ResourceSpec>,
         providers: Vec<Box<dyn ui::search::SearchProvider>>,
     ) -> Self {
         Self {
@@ -294,9 +294,9 @@ mod tests {
     /// A notebook window: the notebook, two notes inside it, each note with
     /// an action of its own, and the notebook's own actions, one acting on
     /// the selection.
-    fn notebook() -> Vec<Resource> {
+    fn notebook() -> Vec<ResourceSpec> {
         let note = |id: &str, label: &str| {
-            Resource::new(id, "notes.page", label)
+            ResourceSpec::new(id, "notes.page", label)
                 .with_action(action("rename", "Rename note"))
                 .with_action({
                     let mut open = action("open-note", "Open note");
@@ -304,7 +304,7 @@ mod tests {
                     open
                 })
         };
-        let mut notebook = Resource::new("notes.notebook", "notes.notebook", "Notebook")
+        let mut notebook = ResourceSpec::new("notes.notebook", "notes.notebook", "Notebook")
             .with_action(open())
             .with_action(action("new-note", "New note").with_icon("file-plus"))
             .with_action(
@@ -312,7 +312,7 @@ mod tests {
             );
         notebook.children = vec![note("page:1", "Groceries"), note("page:2", "Trip plan")];
         // The toolkit's mirror of a segmented control the window shows.
-        let control = Resource::new("tilo.control:view-mode", "tilo.control.segmented", "view")
+        let control = ResourceSpec::new("tilo.control:view-mode", "tilo.control.segmented", "view")
             .with_action(action("select", "Select"));
         vec![notebook, control]
     }
@@ -430,7 +430,7 @@ mod tests {
     /// A file manager's window as it stands: a folder shown that is not a
     /// favourite, one file selected, and the actions it publishes, some of
     /// which cannot run now or are not for a person.
-    fn folder(selected: Option<&str>) -> Vec<Resource> {
+    fn folder(selected: Option<&str>) -> Vec<ResourceSpec> {
         let selection = |id: &str, label: String| {
             let spec = action(id, &label).requires(tilo_actions::ContextRequirement::Selection);
             match selected {
@@ -440,7 +440,7 @@ mod tests {
         };
         let name = selected.unwrap_or_default();
         vec![
-            Resource::new("files.folder", "files.folder", "Files")
+            ResourceSpec::new("files.folder", "files.folder", "Files")
                 .with_action(action("refresh", "Refresh folder"))
                 // A toggle pair: the folder is no favourite, so only adding
                 // applies.
@@ -490,7 +490,7 @@ mod tests {
         ]
     }
 
-    fn action_titles(resources: Vec<Resource>, needle: &str) -> Vec<String> {
+    fn action_titles(resources: Vec<ResourceSpec>, needle: &str) -> Vec<String> {
         let mut hits: Vec<Hit> = WindowSearch::new(resources, Vec::new())
             .query(needle)
             .into_iter()

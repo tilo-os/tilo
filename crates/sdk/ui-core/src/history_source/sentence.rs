@@ -95,9 +95,9 @@ thread_local! {
 
 /// Remember the labels of the actions `resources` publish, as the app words
 /// them in the reader's language, so entries naming them read the same.
-pub fn learn_labels(resources: &[tilo_actions::Resource]) {
+pub fn learn_labels(resources: &[tilo_actions::ResourceSpec]) {
     fn walk(
-        resource: &tilo_actions::Resource,
+        resource: &tilo_actions::ResourceSpec,
         labels: &mut std::collections::HashMap<String, Vec<(String, String)>>,
     ) {
         for action in &resource.actions {

@@ -401,12 +401,15 @@ impl crate::search::SearchProvider for DirectoryDomainProvider {
             },
         )
     }
-    fn resolve_action_resource(&self, address: &tilo_actions::ActionAddress) -> Option<Resource> {
+    fn resolve_action_resource(
+        &self,
+        address: &tilo_actions::ActionAddress,
+    ) -> Option<ResourceSpec> {
         if address.resource != "lazy:target" || address.action != "inspect" {
             return None;
         }
         Some(
-            Resource::new("lazy:target", "lazy", "Lazy").with_action(
+            ResourceSpec::new("lazy:target", "lazy", "Lazy").with_action(
                 ActionSpec::operation(
                     "inspect",
                     "Inspect",

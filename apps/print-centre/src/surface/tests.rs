@@ -35,7 +35,7 @@ pub(super) fn live_with_studio() -> TestApp<PrintCentreShell> {
 
 /// The tree Print Centre publishes once a refresh has found printers,
 /// documents and scanners.
-fn populated_resources() -> Vec<ui::tilo_actions::Resource> {
+fn populated_resources() -> Vec<ui::tilo_actions::ResourceSpec> {
     live_with_studio().harness().resources()
 }
 

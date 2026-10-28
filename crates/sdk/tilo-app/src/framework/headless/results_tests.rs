@@ -34,10 +34,10 @@ impl Resource for Document {
             .and_then(|(value, _)| value.as_str().map(str::to_owned))
             .ok_or_else(|| ModelError::invalid("missing document body"))
     }
-    fn children(_: &String) -> Vec<tilo_actions::Resource> {
+    fn children(_: &String) -> Vec<tilo_actions::ResourceSpec> {
         vec![
-            tilo_actions::Resource::new("public-body", "text", "Public body"),
-            tilo_actions::Resource::new("private-account", "account", "Secret account")
+            tilo_actions::ResourceSpec::new("public-body", "text", "Public body"),
+            tilo_actions::ResourceSpec::new("private-account", "account", "Secret account")
                 .with_action(
                     tilo_actions::ActionSpec::operation(
                         "render",

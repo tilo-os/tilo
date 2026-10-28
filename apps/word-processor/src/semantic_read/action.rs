@@ -2,7 +2,7 @@
 //! body-text projection the SDK runs over the committed canonical document.
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
-use tilo_actions::{ActionSpec, Resource};
+use tilo_actions::{ActionSpec, ResourceSpec};
 use ui::semantic_document_read::{
     ReadPage, RegisteredSemanticReader, SemanticReadError, decode_cursor, decode_request,
     encode_cursor,
@@ -42,7 +42,7 @@ enum Format {
 const DEFAULT_PAGE_SIZE: u8 = 64;
 
 /// Shape validation only; no supplied heads or cursor confer authority.
-fn validate_request(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError> {
+fn validate_request(resource: &ResourceSpec, payload: &[u8]) -> Result<(), SemanticReadError> {
     let request: Request = decode_request(payload)?;
     let kind = <crate::model::Document as ui::tilo_resource::Resource>::KIND;
     if resource.kind != kind

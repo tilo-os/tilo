@@ -330,14 +330,14 @@ fn timeline(node: &ui::headless::InspectionNode) -> Option<&ui::headless::Inspec
     node.children.iter().find_map(timeline)
 }
 
-fn action_ids(resource: &tilo_actions::Resource, out: &mut Vec<String>) {
+fn action_ids(resource: &tilo_actions::ResourceSpec, out: &mut Vec<String>) {
     out.extend(resource.actions.iter().map(|action| action.id.clone()));
     for child in &resource.children {
         action_ids(child, out);
     }
 }
 
-fn history_labels(resource: &tilo_actions::Resource, out: &mut Vec<String>) {
+fn history_labels(resource: &tilo_actions::ResourceSpec, out: &mut Vec<String>) {
     out.extend(
         resource
             .actions

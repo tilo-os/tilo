@@ -11,7 +11,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::{Arc, Weak};
 
-use ui::tilo_actions::{Resource, ResourcePresentation};
+use ui::tilo_actions::{ResourcePresentation, ResourceSpec};
 use ui::tokens::TextRole;
 use ui::webview::{
     MAX_PAGE_DIALOG_ANSWER, PageDialog, PageDialogKind, SharedEngine, WebViewCommand,
@@ -165,16 +165,17 @@ impl PageDialogs {
     /// The question as the window's row: who asks, what (the page's own
     /// words), and its answers, each bound to this question so an answer
     /// meant for it never reaches the next.
-    pub fn resource(&self) -> Option<Resource> {
+    pub fn resource(&self) -> Option<ResourceSpec> {
         use ui::tilo_resource::Effect as _;
         let open = self.open.as_ref()?;
         let dialog = &open.dialog;
-        let mut row =
-            Resource::new(ROW, ROW, open.title.clone()).with_presentation(ResourcePresentation {
+        let mut row = ResourceSpec::new(ROW, ROW, open.title.clone()).with_presentation(
+            ResourcePresentation {
                 detail: None,
                 badge: None,
                 preview: Some(preview(&open.body())),
-            });
+            },
+        );
         let prompt = dialog.kind == PageDialogKind::Prompt;
         // A prompt's answer is asked; absent, it is what the field holds,
         // which starts as the page's suggestion.

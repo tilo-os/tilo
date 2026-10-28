@@ -702,7 +702,7 @@ pub fn build_tree_update_with_resources<S: BuildHasher>(
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     focused: Option<TaffyNodeId>,
     scale: f64,
-    resources: &[tilo_actions::Resource],
+    resources: &[tilo_actions::ResourceSpec],
 ) -> TreeUpdate {
     build_tree_update_with_resources_impl::<S, false>(&[root], node_map, focused, scale, resources)
 }
@@ -735,7 +735,7 @@ pub(crate) fn build_tree_update_with_resources_bound<S: BuildHasher>(
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     focused: Option<TaffyNodeId>,
     scale: f64,
-    resources: &[tilo_actions::Resource],
+    resources: &[tilo_actions::ResourceSpec],
 ) -> TreeUpdate {
     build_tree_update_with_resources_impl::<S, true>(&[root], node_map, focused, scale, resources)
 }
@@ -765,7 +765,7 @@ pub(crate) fn build_presentation_with_resources_bound<S: BuildHasher>(
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     focused: Option<TaffyNodeId>,
     scale: f64,
-    resources: &[tilo_actions::Resource],
+    resources: &[tilo_actions::ResourceSpec],
 ) -> TreeUpdate {
     build_tree_update_with_resources_impl::<S, true>(roots, node_map, focused, scale, resources)
 }
@@ -775,7 +775,7 @@ fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     focused: Option<TaffyNodeId>,
     scale: f64,
-    resources: &[tilo_actions::Resource],
+    resources: &[tilo_actions::ResourceSpec],
 ) -> TreeUpdate {
     // Reverse map so we can look up a stable id for any &dyn Widget during the walk.
     let ptr_to_taffy = reverse_node_map::<S, BOUND>(roots, node_map);
@@ -836,7 +836,7 @@ fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
 }
 
 fn append_resource_nodes(
-    resources: &[tilo_actions::Resource],
+    resources: &[tilo_actions::ResourceSpec],
     nodes: &mut Vec<(AkNodeId, AkNode)>,
     parent_children: &mut Vec<AkNodeId>,
     claimed: &mut HashMap<AkNodeId, String>,
@@ -1991,7 +1991,7 @@ mod tests {
             );
             let resources =
                 [
-                    tilo_actions::Resource::new("document:1", "test.document", "Document")
+                    tilo_actions::ResourceSpec::new("document:1", "test.document", "Document")
                         .with_action(immediate)
                         .with_action(prompted),
                 ];

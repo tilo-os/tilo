@@ -30,7 +30,7 @@ fn semantic(calls: Rc<Cell<usize>>) -> SemanticOnly {
 }
 
 fn action_button() -> Button {
-    let resource = tilo_actions::Resource::new("doc:1", "doc", "Document").with_action(
+    let resource = tilo_actions::ResourceSpec::new("doc:1", "doc", "Document").with_action(
         tilo_actions::ActionSpec::operation(
             "save",
             "Save",

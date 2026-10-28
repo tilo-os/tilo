@@ -1,7 +1,7 @@
 //! A published resource tree whose unchanged subtrees are shared between
 //! versions.
 //!
-//! [`tilo_actions::Resource`] owns its children inline, so two versions of a
+//! [`tilo_actions::ResourceSpec`] owns its children inline, so two versions of a
 //! tree cannot share an item and nothing reading them can tell an unchanged
 //! item from a changed one without comparing it. A keystroke in a field no
 //! item depends on then rebuilt, copied, filtered and re-mirrored every item
@@ -16,7 +16,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use tilo_actions::Resource;
+use tilo_actions::ResourceSpec;
 
 /// What filtering one node or one list of children for one permission
 /// context (`token`) gave, kept on the input so the same input is filtered
@@ -47,7 +47,7 @@ impl<T: Clone> Clone for Filtered<T> {
 pub struct SharedResource(Rc<Node>);
 
 struct Node {
-    head: Resource,
+    head: ResourceSpec,
     children: SharedChildren,
     filtered: RefCell<Option<(u64, Filtered<SharedResource>)>>,
 }
@@ -127,7 +127,7 @@ impl<'a> IntoIterator for &'a SharedChildren {
 
 impl SharedResource {
     /// `head`, whose own children are ignored, over `children`.
-    pub fn new(mut head: Resource, children: SharedChildren) -> Self {
+    pub fn new(mut head: ResourceSpec, children: SharedChildren) -> Self {
         debug_assert!(
             head.children.is_empty(),
             "a shared resource's children are its SharedChildren"
@@ -141,7 +141,7 @@ impl SharedResource {
     }
 
     /// `resource` as a shared tree, every node its own.
-    pub fn from_resource(mut resource: Resource) -> Self {
+    pub fn from_resource(mut resource: ResourceSpec) -> Self {
         let children = std::mem::take(&mut resource.children)
             .into_iter()
             .map(Self::from_resource)
@@ -150,7 +150,7 @@ impl SharedResource {
     }
 
     /// The ordinary tree, exactly as published.
-    pub fn to_resource(&self) -> Resource {
+    pub fn to_resource(&self) -> ResourceSpec {
         let mut resource = self.0.head.clone();
         resource.children = self.0.children.iter().map(Self::to_resource).collect();
         resource
@@ -158,7 +158,7 @@ impl SharedResource {
 
     /// The resource without its children: its id, kind, label,
     /// presentation, actions and views.
-    pub fn head(&self) -> &Resource {
+    pub fn head(&self) -> &ResourceSpec {
         &self.0.head
     }
 
@@ -197,7 +197,7 @@ impl SharedResource {
 }
 
 /// `forest` as ordinary trees.
-pub fn to_resources(forest: &[SharedResource]) -> Vec<Resource> {
+pub fn to_resources(forest: &[SharedResource]) -> Vec<ResourceSpec> {
     forest.iter().map(SharedResource::to_resource).collect()
 }
 
@@ -339,7 +339,7 @@ mod tests {
     use super::*;
 
     fn leaf(id: &str) -> SharedResource {
-        SharedResource::new(Resource::new(id, "kind", id), SharedChildren::default())
+        SharedResource::new(ResourceSpec::new(id, "kind", id), SharedChildren::default())
     }
 
     fn changes(last: &[SharedResource], next: &[SharedResource]) -> Vec<String> {
@@ -359,8 +359,8 @@ mod tests {
     fn a_shared_subtree_is_skipped_and_an_edit_found_by_position() {
         let items = (0..5).map(|i| leaf(&format!("i{i}"))).collect::<Vec<_>>();
         let list = SharedChildren::new(items.clone());
-        let root = SharedResource::new(Resource::new("root", "k", "Root"), list.clone());
-        let relabelled = SharedResource::new(Resource::new("root", "k", "Root 2"), list);
+        let root = SharedResource::new(ResourceSpec::new("root", "k", "Root"), list.clone());
+        let relabelled = SharedResource::new(ResourceSpec::new("root", "k", "Root 2"), list);
         assert_eq!(
             changes(
                 std::slice::from_ref(&root),
@@ -372,7 +372,7 @@ mod tests {
         let mut edited = items.clone();
         edited[3] = leaf("i3");
         let after = SharedResource::new(
-            Resource::new("root", "k", "Root"),
+            ResourceSpec::new("root", "k", "Root"),
             SharedChildren::new(edited),
         );
         assert_eq!(
@@ -384,7 +384,7 @@ mod tests {
         grown.push(leaf("i9"));
         grown.push(leaf("i8"));
         let after = SharedResource::new(
-            Resource::new("root", "k", "Root"),
+            ResourceSpec::new("root", "k", "Root"),
             SharedChildren::new(grown),
         );
         assert_eq!(
@@ -395,11 +395,11 @@ mod tests {
 
     #[test]
     fn the_ordinary_tree_round_trips() {
-        let mut resource = Resource::new("root", "k", "Root");
-        let mut child = Resource::new("child", "k", "Child");
+        let mut resource = ResourceSpec::new("root", "k", "Root");
+        let mut child = ResourceSpec::new("child", "k", "Child");
         child
             .children
-            .push(Resource::new("grandchild", "k", "Grandchild"));
+            .push(ResourceSpec::new("grandchild", "k", "Grandchild"));
         resource.children.push(child);
         let shared = SharedResource::from_resource(resource);
         let back = shared.to_resource();

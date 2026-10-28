@@ -131,9 +131,9 @@ fn first_part_messages(owners: &ui::record::RecordOwners, room: RoomId) -> Optio
 /// The published resource of `resources` (or of their children) that
 /// offers `action`.
 pub(super) fn offering<'a>(
-    resources: &'a [tilo_actions::Resource],
+    resources: &'a [tilo_actions::ResourceSpec],
     action: &str,
-) -> Option<&'a tilo_actions::Resource> {
+) -> Option<&'a tilo_actions::ResourceSpec> {
     resources.iter().find_map(|resource| {
         if resource.actions.iter().any(|spec| spec.id == action) {
             Some(resource)
@@ -145,7 +145,7 @@ pub(super) fn offering<'a>(
 
 /// Each published resource of `resources` with its actions, for a failure
 /// to say what the app offered.
-pub(super) fn offered(resources: &[tilo_actions::Resource]) -> Vec<String> {
+pub(super) fn offered(resources: &[tilo_actions::ResourceSpec]) -> Vec<String> {
     resources
         .iter()
         .flat_map(|resource| {

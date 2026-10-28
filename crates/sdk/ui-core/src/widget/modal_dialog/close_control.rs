@@ -117,7 +117,7 @@ impl ModalDialog<dyn Widget> {
     }
 
     /// The close control and the footer buttons while the dialog is open.
-    fn dismissal_resources(&self) -> Vec<tilo_actions::Resource> {
+    fn dismissal_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         let close = self
             .dismiss
             .as_ref()
@@ -226,7 +226,7 @@ impl<C: Widget + 'static> crate::widget::ResourceOperations for ModalDialog<C> {
 }
 
 impl<C: Widget + 'static> crate::resources::PublishesResources for ModalDialog<C> {
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.as_dyn().dismissal_resources()
     }
 }

@@ -191,7 +191,7 @@ pub fn catalogue_schema_bytes(entries: &[CatalogueSchemaEntry]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EncodedAction, Resource, door};
+    use crate::{EncodedAction, ResourceSpec, door};
 
     fn encoded(tag: &str) -> EncodedAction {
         EncodedAction {
@@ -207,8 +207,8 @@ mod tests {
         own: (String, bool),
     }
 
-    fn tree(caret: &str, selected: bool, schema: bool) -> Vec<Resource> {
-        let mut root = Resource::new("doc", "fixture.document", "Document").with_action(
+    fn tree(caret: &str, selected: bool, schema: bool) -> Vec<ResourceSpec> {
+        let mut root = ResourceSpec::new("doc", "fixture.document", "Document").with_action(
             ActionSpec::immediate_encoded(
                 "type-text",
                 "Type",
@@ -231,14 +231,13 @@ mod tests {
         if !schema {
             // Volatile, view-derived resource ids never enter the schema.
             root = root.with_child(
-                Resource::new(format!("doc.caret:{caret}"), "fixture.caret", "Caret").with_action(
-                    ActionSpec::immediate_encoded(
+                ResourceSpec::new(format!("doc.caret:{caret}"), "fixture.caret", "Caret")
+                    .with_action(ActionSpec::immediate_encoded(
                         "go-to",
                         "Go to",
                         ExecutionLocus::ClientLocal,
                         encoded(caret),
-                    ),
-                ),
+                    )),
             );
         }
         vec![root]
@@ -246,7 +245,7 @@ mod tests {
 
     impl TwoViews {
         /// The tree `participant` sees; `None` is the local window's.
-        fn resources_for(&self, participant: Option<&crate::ParticipantId>) -> Vec<Resource> {
+        fn resources_for(&self, participant: Option<&crate::ParticipantId>) -> Vec<ResourceSpec> {
             let Some(participant) = participant else {
                 return tree(&self.own.0, self.own.1, false);
             };
@@ -257,10 +256,10 @@ mod tests {
     }
 
     /// The participant-independent schema every view publishes.
-    fn schema_tree() -> Vec<Resource> {
+    fn schema_tree() -> Vec<ResourceSpec> {
         let mut schema = tree("", false, true);
         schema.push(
-            Resource::new("doc.caret", "fixture.caret", "Caret").with_action(
+            ResourceSpec::new("doc.caret", "fixture.caret", "Caret").with_action(
                 ActionSpec::immediate_encoded(
                     "go-to",
                     "Go to",

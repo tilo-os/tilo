@@ -3,7 +3,7 @@
 //! (`crate::content_zoom`) through the same door, not only Ctrl+Plus,
 //! Ctrl+Minus, Ctrl+0, Ctrl+scroll and a pinch.
 
-use tilo_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
+use tilo_actions::{ActionSpec, EncodedAction, OperationKind, ResourceSpec};
 
 use crate::content_zoom::ZoomStep;
 use crate::i18n::I18nManager;
@@ -16,7 +16,7 @@ pub(crate) const ZOOM_OPERATION: &str = "tilo.host.zoom";
     clippy::expect_used,
     reason = "fixed unit zoom payloads serialize infallibly"
 )]
-pub(crate) fn zoom_resource() -> Resource {
+pub(crate) fn zoom_resource() -> ResourceSpec {
     let action = |step: ZoomStep, id: &str, key: &str| {
         ActionSpec::operation(
             id,
@@ -27,7 +27,7 @@ pub(crate) fn zoom_resource() -> Resource {
         )
         .expect("unit zoom operation serializes")
     };
-    Resource::new(
+    ResourceSpec::new(
         ZOOM_RESOURCE,
         "tilo.host.zoom",
         I18nManager::lookup_plain("host-menu-view"),

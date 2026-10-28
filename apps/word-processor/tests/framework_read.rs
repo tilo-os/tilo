@@ -7,7 +7,9 @@ use word_processor::framework::WordProcessorApp;
 
 const INSTANCE: u64 = 7;
 
-fn read_text_address(resources: &[tilo_actions::Resource]) -> Option<tilo_actions::ActionAddress> {
+fn read_text_address(
+    resources: &[tilo_actions::ResourceSpec],
+) -> Option<tilo_actions::ActionAddress> {
     resources.iter().find_map(|resource| {
         resource
             .actions
@@ -94,7 +96,7 @@ fn invoke(
     arguments: &serde_json::Value,
 ) -> Option<serde_json::Value> {
     fn address(
-        resources: &[tilo_actions::Resource],
+        resources: &[tilo_actions::ResourceSpec],
         id: &str,
     ) -> Option<tilo_actions::ActionAddress> {
         resources.iter().find_map(|resource| {

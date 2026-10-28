@@ -652,7 +652,7 @@ mod tests {
     }
 
     /// Whether a resource whose id starts with `prefix` is published.
-    fn resources_have(resources: &[ui::tilo_actions::Resource], prefix: &str) -> bool {
+    fn resources_have(resources: &[ui::tilo_actions::ResourceSpec], prefix: &str) -> bool {
         resources.iter().any(|resource| {
             resource.id.0.starts_with(prefix) || resources_have(&resource.children, prefix)
         })

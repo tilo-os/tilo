@@ -3961,7 +3961,7 @@ mod tests {
 
     /// The published notebook resource `id`, as the framework root resolves it
     /// from the notebook's state.
-    fn published(doc: &AutoCommit, id: &str) -> tilo_actions::Resource {
+    fn published(doc: &AutoCommit, id: &str) -> tilo_actions::ResourceSpec {
         use ui::tilo_resource::Resource as _;
         let state = crate::resource::Notebook::read(doc).unwrap();
         if id == "notes.notebook" {

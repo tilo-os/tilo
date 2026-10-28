@@ -1,4 +1,4 @@
-//! Resources a widget publishes: the tree of open [`tilo_actions::Resource`]s
+//! Resources a widget publishes: the tree of open [`tilo_actions::ResourceSpec`]s
 //! with the actions each exports to the palette, agents and scripts, and the
 //! bounded pages the broker's pull directory reads.
 //!
@@ -15,14 +15,14 @@ pub trait PublishesResources: Widget {
     /// The tree of resources this widget currently has open, each with the
     /// actions it exports, e.g. a playing video plus its comments. `doc` lets
     /// a provider enumerate resources living in the document.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         Vec::new()
     }
 
     /// Explicit host-local presentation/request controls for the portable
     /// caller palette. Only View operations are accepted; shared effects
     /// remain broker-owned.
-    fn caller_view_resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn caller_view_resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         Vec::new()
     }
 
@@ -57,7 +57,7 @@ pub trait PublishesResources: Widget {
     }
 
     /// Resolve an addressable resource omitted from the contextual snapshot.
-    fn resource(&self, _doc: &AutoCommit, _id: &str) -> Option<tilo_actions::Resource> {
+    fn resource(&self, _doc: &AutoCommit, _id: &str) -> Option<tilo_actions::ResourceSpec> {
         None
     }
 
@@ -77,7 +77,7 @@ pub trait PublishesResources: Widget {
         &self,
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
-    ) -> Vec<tilo_actions::Resource> {
+    ) -> Vec<tilo_actions::ResourceSpec> {
         let _ = participant;
         self.resources(doc)
     }
@@ -102,7 +102,7 @@ pub trait PublishesResources: Widget {
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
         id: &str,
-    ) -> Option<tilo_actions::Resource> {
+    ) -> Option<tilo_actions::ResourceSpec> {
         let _ = participant;
         self.resource(doc, id)
     }
@@ -156,7 +156,10 @@ pub fn document_action_result(
     found
 }
 
-pub fn resources(widget: &(impl Widget + ?Sized), doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+pub fn resources(
+    widget: &(impl Widget + ?Sized),
+    doc: &AutoCommit,
+) -> Vec<tilo_actions::ResourceSpec> {
     capability::<dyn PublishesResources>(widget).map_or_else(Vec::new, |w| w.resources(doc))
 }
 
@@ -180,7 +183,7 @@ pub fn shared_resources(widget: &(impl Widget + ?Sized), doc: &AutoCommit) -> Ve
 pub fn caller_view_resources(
     widget: &(impl Widget + ?Sized),
     doc: &AutoCommit,
-) -> Vec<tilo_actions::Resource> {
+) -> Vec<tilo_actions::ResourceSpec> {
     capability::<dyn PublishesResources>(widget)
         .map_or_else(Vec::new, |w| w.caller_view_resources(doc))
 }
@@ -221,7 +224,7 @@ pub fn resource(
     widget: &(impl Widget + ?Sized),
     doc: &AutoCommit,
     id: &str,
-) -> Option<tilo_actions::Resource> {
+) -> Option<tilo_actions::ResourceSpec> {
     capability::<dyn PublishesResources>(widget)?.resource(doc, id)
 }
 
@@ -230,7 +233,7 @@ pub fn resources_for(
     widget: &(impl Widget + ?Sized),
     participant: Option<&tilo_actions::ParticipantId>,
     doc: &AutoCommit,
-) -> Vec<tilo_actions::Resource> {
+) -> Vec<tilo_actions::ResourceSpec> {
     capability::<dyn PublishesResources>(widget)
         .map_or_else(Vec::new, |w| w.resources_for(participant, doc))
 }
@@ -241,7 +244,7 @@ pub fn resource_for(
     participant: Option<&tilo_actions::ParticipantId>,
     doc: &AutoCommit,
     id: &str,
-) -> Option<tilo_actions::Resource> {
+) -> Option<tilo_actions::ResourceSpec> {
     capability::<dyn PublishesResources>(widget)?.resource_for(participant, doc, id)
 }
 

@@ -5,7 +5,7 @@
 use super::*;
 use crate::record::uuid_of;
 use ui::framework::testing::TestApp;
-use ui::tilo_actions::Resource as Published;
+use ui::tilo_actions::ResourceSpec as Published;
 use ui::tilo_resource::{Edit, Replica, Resource as _};
 
 fn edit(workspace: &mut Replica<Workspace>, edit: &Edit<Workspace>) -> Result<(), String> {

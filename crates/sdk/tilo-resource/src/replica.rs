@@ -172,7 +172,7 @@ impl<R: Resource> Replica<R> {
     }
 
     /// The tree the resource publishes now: what the door resolves against.
-    pub fn published(&self) -> Result<tilo_actions::Resource, ModelError> {
+    pub fn published(&self) -> Result<tilo_actions::ResourceSpec, ModelError> {
         Ok(resource::publish::<R>(
             R::KIND,
             R::LABEL,

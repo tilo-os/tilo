@@ -100,9 +100,9 @@ fn read_is_published_as_the_notebooks_document_read() {
 #[test]
 fn note_and_body_reads_are_bound_document_projections() {
     fn find<'a>(
-        resources: &'a [tilo_actions::Resource],
+        resources: &'a [tilo_actions::ResourceSpec],
         id: &str,
-    ) -> Option<&'a tilo_actions::Resource> {
+    ) -> Option<&'a tilo_actions::ResourceSpec> {
         resources.iter().find_map(|resource| {
             if resource.id.as_str() == id {
                 Some(resource)

@@ -41,7 +41,7 @@
 use super::FrameHarness;
 use crate::application::{AppComponent, ComponentRunnerInputs};
 use serde_json::Value;
-use tilo_actions::{ActionAddress, Resource};
+use tilo_actions::{ActionAddress, ResourceSpec};
 
 /// One step of a drive: an action from the headless grammar, a document the
 /// app must hold, or a resource it must publish.
@@ -209,7 +209,7 @@ impl HeadlessApp {
     /// The resources the app publishes now — its public surface, which
     /// search, the palette and an agent all read.
     #[must_use]
-    pub fn resources(&self) -> Vec<Resource> {
+    pub fn resources(&self) -> Vec<ResourceSpec> {
         self.frame.resources()
     }
 

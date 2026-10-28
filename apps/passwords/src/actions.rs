@@ -8,7 +8,7 @@
 
 use accounts::{SecretItem, SecretItemKind};
 use ui::framework::LiveRow;
-use ui::tilo_actions::{ActionBinding, Resource};
+use ui::tilo_actions::{ActionBinding, ResourceSpec};
 use ui::tilo_resource::{self, Effect};
 
 /// The prefix of an item row's id; the rest is the item's opaque vault id.
@@ -214,7 +214,7 @@ pub fn item_row(item: &SecretItem) -> LiveRow {
 /// A control's binding to `action` of the item's published row
 /// ([`item_row`]): pressing it is what an agent addressing the item by its
 /// opaque id does, and it names the item by that id alone.
-pub(crate) fn item_binding(row: &Resource, action: &str) -> Option<ActionBinding<()>> {
+pub(crate) fn item_binding(row: &ResourceSpec, action: &str) -> Option<ActionBinding<()>> {
     let spec = row.actions.iter().find(|spec| spec.id == action)?;
     ActionBinding::static_json(row, spec, serde_json::Map::new()).ok()
 }

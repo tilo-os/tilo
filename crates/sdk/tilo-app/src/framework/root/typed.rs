@@ -130,7 +130,7 @@ pub(crate) trait TypedRoot {
     fn cache_epoch(&self, state: &dyn Any) -> Option<String>;
 
     /// [`tilo_resource::publish_head`] of `state` at `id`, labelled `label`.
-    fn head(&self, id: &str, label: &str, state: &dyn Any) -> tilo_actions::Resource;
+    fn head(&self, id: &str, label: &str, state: &dyn Any) -> tilo_actions::ResourceSpec;
 
     /// [`tilo_resource::head_inputs`] of `state`.
     fn head_inputs(&self, state: &dyn Any) -> Option<tilo_resource::HeadInputs>;
@@ -141,7 +141,7 @@ pub(crate) trait TypedRoot {
         id: &str,
         label: &str,
         inputs: &tilo_resource::HeadInputs,
-    ) -> tilo_actions::Resource;
+    ) -> tilo_actions::ResourceSpec;
 
     /// Whether this exact child belongs to the declared document projection.
     fn document_child(&self, state: &dyn Any, id: &str) -> bool;
@@ -164,9 +164,9 @@ pub(crate) trait TypedRoot {
     /// [`Self::no_declarations`]) bound.
     fn bind(
         &self,
-        resource: tilo_actions::Resource,
+        resource: tilo_actions::ResourceSpec,
         declarations: Box<dyn Any>,
-    ) -> tilo_actions::Resource;
+    ) -> tilo_actions::ResourceSpec;
 
     /// [`Resource::read_content`].
     ///
@@ -200,7 +200,12 @@ pub(crate) trait TypedRoot {
     ) -> Result<serde_json::Value, ui_core::history_mode::HistoricalGap>;
 
     /// [`tilo_resource::child_by_id`] of `state`.
-    fn child(&self, state: &dyn Any, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource>;
+    fn child(
+        &self,
+        state: &dyn Any,
+        doc: &AutoCommit,
+        id: &str,
+    ) -> Option<tilo_actions::ResourceSpec>;
 
     /// [`Resource::answer`].
     fn answer(
@@ -287,9 +292,9 @@ fn state_of<R: Resource>(state: &dyn Any) -> Option<&R::State> {
 /// rather than in every app's root.
 #[inline(never)]
 fn bind_each<'a>(
-    mut resource: tilo_actions::Resource,
+    mut resource: tilo_actions::ResourceSpec,
     decl_at: &dyn Fn(usize) -> Option<&'a tilo_resource::Declaration>,
-) -> tilo_actions::Resource {
+) -> tilo_actions::ResourceSpec {
     let mut at = 0usize;
     while let Some(decl) = decl_at(at) {
         resource = tilo_resource::bind_declaration(resource, decl);
@@ -408,10 +413,10 @@ impl<R: Resource> TypedRoot for Typed<R> {
         R::publication_cache_epoch(state_of::<R>(state)?)
     }
 
-    fn head(&self, id: &str, label: &str, state: &dyn Any) -> tilo_actions::Resource {
+    fn head(&self, id: &str, label: &str, state: &dyn Any) -> tilo_actions::ResourceSpec {
         match state_of::<R>(state) {
             Some(state) => tilo_resource::publish_head::<R>(id, label, state),
-            None => tilo_actions::Resource::new(id, R::KIND, label),
+            None => tilo_actions::ResourceSpec::new(id, R::KIND, label),
         }
     }
 
@@ -424,7 +429,7 @@ impl<R: Resource> TypedRoot for Typed<R> {
         id: &str,
         label: &str,
         inputs: &tilo_resource::HeadInputs,
-    ) -> tilo_actions::Resource {
+    ) -> tilo_actions::ResourceSpec {
         tilo_resource::publish_head_of::<R>(id, label, inputs)
     }
 
@@ -464,9 +469,9 @@ impl<R: Resource> TypedRoot for Typed<R> {
 
     fn bind(
         &self,
-        mut resource: tilo_actions::Resource,
+        mut resource: tilo_actions::ResourceSpec,
         declarations: Box<dyn Any>,
-    ) -> tilo_actions::Resource {
+    ) -> tilo_actions::ResourceSpec {
         if let Some(declarations) = declarations.downcast_ref::<Vec<ActionDecl<R>>>() {
             resource = bind_each(resource, &|at| declarations.get(at).map(|decl| &**decl));
         }
@@ -498,7 +503,12 @@ impl<R: Resource> TypedRoot for Typed<R> {
         super::super::preview::historical_content::<R>(frozen, item)
     }
 
-    fn child(&self, state: &dyn Any, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+    fn child(
+        &self,
+        state: &dyn Any,
+        doc: &AutoCommit,
+        id: &str,
+    ) -> Option<tilo_actions::ResourceSpec> {
         tilo_resource::child_by_id::<R>(state_of::<R>(state)?, doc, id)
     }
 

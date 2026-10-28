@@ -42,7 +42,7 @@ impl tracing::Subscriber for Errors {
 }
 
 /// Every resource `resources` publishes, with the ones under them.
-fn flattened(resources: &[ui::tilo_actions::Resource]) -> Vec<&ui::tilo_actions::Resource> {
+fn flattened(resources: &[ui::tilo_actions::ResourceSpec]) -> Vec<&ui::tilo_actions::ResourceSpec> {
     resources
         .iter()
         .flat_map(|resource| std::iter::once(resource).chain(flattened(&resource.children)))

@@ -167,7 +167,7 @@ fn live_personal_import_search_folder_and_removal_never_edit_workspace_bookmarks
     );
     assert!(app.state().bookmarks.is_empty());
 }
-fn find(rows: &[ui::tilo_actions::Resource], id: &str) -> bool {
+fn find(rows: &[ui::tilo_actions::ResourceSpec], id: &str) -> bool {
     rows.iter()
         .any(|row| row.id.as_str() == id || find(&row.children, id))
 }

@@ -150,7 +150,7 @@ fn reopening_guided_installer_recovers_exact_name_photo_and_signer_only_after_ex
     assert!(offered["prepared_identity"]["public_key"].is_null());
     assert_eq!(offered["pairing"]["state"], "unconnected");
     fn find_continue(
-        resources: &[ui::tilo_actions::Resource],
+        resources: &[ui::tilo_actions::ResourceSpec],
     ) -> Option<&ui::tilo_actions::ActionSpec> {
         resources.iter().find_map(|resource| {
             resource

@@ -593,9 +593,9 @@ fn empty_chat_hides_ask_and_stale_activation_reports_the_refusal() {
 }
 
 fn message_resource<'a>(
-    rows: &'a [tilo_actions::Resource],
+    rows: &'a [tilo_actions::ResourceSpec],
     id: &str,
-) -> Option<&'a tilo_actions::Resource> {
+) -> Option<&'a tilo_actions::ResourceSpec> {
     rows.iter().find_map(|row| {
         if row.id.as_str() == id {
             Some(row)

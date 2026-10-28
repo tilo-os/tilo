@@ -952,9 +952,9 @@ fn a_file_dragged_in_arms_the_page_rail() {
 #[test]
 fn delete_affordances_and_the_context_menu_dispatch_the_palette_action() {
     fn find<'a>(
-        resource: &'a tilo_actions::Resource,
+        resource: &'a tilo_actions::ResourceSpec,
         id: &str,
-    ) -> Option<&'a tilo_actions::Resource> {
+    ) -> Option<&'a tilo_actions::ResourceSpec> {
         if resource.id.as_str() == id {
             return Some(resource);
         }

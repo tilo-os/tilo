@@ -9,14 +9,14 @@
 //! not fix a resource id.
 
 use tilo_actions::door;
-use tilo_actions::{ActionKey, Resource};
+use tilo_actions::{ActionKey, ResourceSpec};
 
 use crate::{Binding, Invocation, Selector, kind_matches};
 
 /// The published address `invocation` names, or `None` when the tree
 /// publishes no such action.
 #[must_use]
-pub fn resolve(resources: &[Resource], invocation: &Invocation) -> Option<door::ActionAddress> {
+pub fn resolve(resources: &[ResourceSpec], invocation: &Invocation) -> Option<door::ActionAddress> {
     let wanted = SelectorTarget::of(&invocation.resource)?;
     let mut best: Option<(usize, door::ActionAddress)> = None;
     walk(resources, &mut |resource| {
@@ -71,7 +71,7 @@ impl<'a> SelectorTarget<'a> {
     }
 }
 
-fn matching(resource: &Resource, action: &ActionKey, target: &SelectorTarget<'_>) -> bool {
+fn matching(resource: &ResourceSpec, action: &ActionKey, target: &SelectorTarget<'_>) -> bool {
     kind_matches(&action.kind, &resource.kind)
         && match target {
             SelectorTarget::Fixed(id) => resource.id.as_str() == *id,
@@ -80,7 +80,7 @@ fn matching(resource: &Resource, action: &ActionKey, target: &SelectorTarget<'_>
 }
 
 /// `resource` and every resource under it.
-fn walk(resources: &[Resource], visit: &mut impl FnMut(&Resource)) {
+fn walk(resources: &[ResourceSpec], visit: &mut impl FnMut(&ResourceSpec)) {
     for resource in resources {
         visit(resource);
         walk(&resource.children, visit);
@@ -108,8 +108,8 @@ mod tests {
         )
     }
 
-    fn note(id: &str) -> Resource {
-        let mut resource = Resource::new(id, "notes.note", "Note");
+    fn note(id: &str) -> ResourceSpec {
+        let mut resource = ResourceSpec::new(id, "notes.note", "Note");
         resource.actions = vec![action("rename"), action("delete")];
         resource
     }
@@ -129,10 +129,10 @@ mod tests {
 
     #[test]
     fn a_step_finds_the_action_the_tree_publishes() {
-        let folder = Resource::new("notes.folder:inbox", "notes.folder", "Inbox");
+        let folder = ResourceSpec::new("notes.folder:inbox", "notes.folder", "Inbox");
         let mut folder = folder;
         folder.children = vec![note("notes.note:1")];
-        let mut nested = Resource::new("notes.note:2", "notes.note", "Second");
+        let mut nested = ResourceSpec::new("notes.note:2", "notes.note", "Second");
         nested.actions = vec![action("rename")];
         folder.children.push(nested);
         let resources = vec![folder];

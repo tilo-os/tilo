@@ -27,7 +27,7 @@ fn a_kind_reads_and_publishes_what_the_typed_resource_does() {
 
     let erased = board.publish("test.board", replica.doc()).unwrap();
     let typed = tilo_resource::publish::<Board>("test.board", "Board", &replica.state().unwrap());
-    let ids = |resource: &tilo_actions::Resource| {
+    let ids = |resource: &tilo_actions::ResourceSpec| {
         resource
             .actions
             .iter()

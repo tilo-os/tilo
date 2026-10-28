@@ -32,9 +32,9 @@ impl tilo_actions::Action for Rename {
     }
 }
 
-fn page_resource() -> tilo_actions::Resource {
+fn page_resource() -> tilo_actions::ResourceSpec {
     use tilo_actions::{ActionParam, ActionSpec, EncodedAction, ExecutionLocus, ParamType};
-    tilo_actions::Resource::new(PAGE, "browser-scratch.page", "Scratch page").with_action(
+    tilo_actions::ResourceSpec::new(PAGE, "browser-scratch.page", "Scratch page").with_action(
         ActionSpec::typed(
             "rename",
             "Rename",
@@ -125,11 +125,11 @@ struct Page {
     root: ui::widget::Element,
     /// The record's title, as the title input shows it.
     title: ui::LocalState<String>,
-    resource: tilo_actions::Resource,
+    resource: tilo_actions::ResourceSpec,
 }
 
 impl ui::resources::PublishesResources for Page {
-    fn resources(&self, _doc: &ui::automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _doc: &ui::automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         vec![self.resource.clone()]
     }
 }

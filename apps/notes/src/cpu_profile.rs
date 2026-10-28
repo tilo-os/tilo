@@ -239,7 +239,7 @@ fn assert_action_inventory(root: &dyn ui::Widget) {
 #[test]
 fn unchanged_publication_reuses_tree_and_remote_and_locale_changes_refresh_it() {
     use automerge::transaction::Transactable;
-    fn contains(resources: &[tilo_actions::Resource], id: &str) -> bool {
+    fn contains(resources: &[tilo_actions::ResourceSpec], id: &str) -> bool {
         resources
             .iter()
             .any(|resource| resource.id.as_str() == id || contains(&resource.children, id))

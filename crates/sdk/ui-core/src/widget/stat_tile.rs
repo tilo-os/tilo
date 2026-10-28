@@ -750,7 +750,7 @@ impl crate::widget::ResourceOperations for StatTile {
 activation_controls!(StatTile, activation);
 
 impl crate::resources::PublishesResources for StatTile {
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.activation.native_resources()
     }
 }

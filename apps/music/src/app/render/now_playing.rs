@@ -132,7 +132,7 @@ impl NowPlayingLink {
     /// a click or assistive technology alike.
     fn control(&self) -> Option<Link> {
         let (id, kind, label) = &self.resource;
-        let resource = ui::tilo_actions::Resource::new(id.clone(), *kind, self.name.clone())
+        let resource = ui::tilo_actions::ResourceSpec::new(id.clone(), *kind, self.name.clone())
             .with_action(crate::actions::bound(&self.effect, label));
         let binding =
             ui::tilo_actions::ActionBinding::unit_for(&resource, self.effect.id()).ok()?;

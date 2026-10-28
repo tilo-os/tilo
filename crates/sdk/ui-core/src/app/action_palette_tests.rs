@@ -6,7 +6,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tilo_actions::{Action, ActionError, ActionSpec, Doc, Resource};
+use tilo_actions::{Action, ActionError, ActionSpec, Doc, ResourceSpec};
 use winit::event::{ElementState, KeyEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
 
@@ -57,7 +57,10 @@ impl crate::search::SearchProvider for LazyProvider {
         }
     }
 
-    fn resolve_action_resource(&self, _address: &tilo_actions::ActionAddress) -> Option<Resource> {
+    fn resolve_action_resource(
+        &self,
+        _address: &tilo_actions::ActionAddress,
+    ) -> Option<ResourceSpec> {
         panic!("search providers must never be asked for authority")
     }
 }
@@ -121,9 +124,9 @@ impl crate::search::capability::SearchSource for Publisher {
 }
 
 impl crate::resources::PublishesResources for Publisher {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
         vec![
-            Resource::new("test.obj:1", "test.obj", "Widget Object").with_action(
+            ResourceSpec::new("test.obj:1", "test.obj", "Widget Object").with_action(
                 ActionSpec::immediate(
                     "flip",
                     "Flip it",
@@ -136,9 +139,9 @@ impl crate::resources::PublishesResources for Publisher {
             ),
         ]
     }
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<ResourceSpec> {
         (id == "test.lazy:1").then(|| {
-            Resource::new("test.lazy:1", "test.lazy", "Lazy object").with_action(
+            ResourceSpec::new("test.lazy:1", "test.lazy", "Lazy object").with_action(
                 ActionSpec::immediate(
                     "flip",
                     "Flip lazy object",
@@ -172,9 +175,9 @@ impl Widget for CountingPublisher {
 }
 
 impl crate::resources::PublishesResources for CountingPublisher {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
         self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        vec![Resource::new("test.cache:1", "test.cache", "Cached")]
+        vec![ResourceSpec::new("test.cache:1", "test.cache", "Cached")]
     }
 }
 

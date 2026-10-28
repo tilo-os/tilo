@@ -713,7 +713,7 @@ impl Replica {
 
     /// The tree the record's view publishes to this participant now.
     #[must_use]
-    pub fn resources(&self) -> Vec<tilo_actions::Resource> {
+    pub fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         self.view.resources()
     }
 
@@ -815,7 +815,7 @@ impl Replica {
 }
 
 /// The ids of every resource the chains among `resources` publish.
-fn chain_resources(resources: &[tilo_actions::Resource]) -> std::collections::HashSet<String> {
+fn chain_resources(resources: &[tilo_actions::ResourceSpec]) -> std::collections::HashSet<String> {
     let mut in_chains = std::collections::HashSet::new();
     for resource in resources
         .iter()
@@ -829,7 +829,7 @@ fn chain_resources(resources: &[tilo_actions::Resource]) -> std::collections::Ha
 }
 
 /// The ids of `resource` and everything published under it.
-fn chain_ids(resource: &tilo_actions::Resource, out: &mut std::collections::HashSet<String>) {
+fn chain_ids(resource: &tilo_actions::ResourceSpec, out: &mut std::collections::HashSet<String>) {
     out.insert(resource.id.as_str().to_owned());
     for child in &resource.children {
         chain_ids(child, out);

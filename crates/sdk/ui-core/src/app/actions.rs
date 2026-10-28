@@ -202,7 +202,7 @@ impl App {
         key
     }
 
-    fn collect_declared_resources(&self) -> Vec<tilo_actions::Resource> {
+    fn collect_declared_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         let key = self.ensure_resource_cache();
         let mut resources = self
             .actions
@@ -271,7 +271,7 @@ impl App {
         (key, permission_generation)
     }
 
-    fn collect_local_resources(&self) -> Vec<tilo_actions::Resource> {
+    fn collect_local_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         let (key, permission_generation) = self.ensure_local_resource_cache();
         let mut resources = self
             .actions
@@ -328,7 +328,7 @@ impl App {
         })
     }
 
-    pub fn collect_resources(&self) -> Vec<tilo_actions::Resource> {
+    pub fn collect_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         let _entry = self.enter_wake_scope();
         let key = self.ensure_resource_cache();
         let mut resources = self
@@ -399,7 +399,7 @@ impl App {
 
     fn control_action_coverage_for(
         &self,
-        resources: &[tilo_actions::Resource],
+        resources: &[tilo_actions::ResourceSpec],
     ) -> Vec<ControlBindingCoverage> {
         self.control_binding_coverage_for(
             resources,
@@ -409,7 +409,7 @@ impl App {
 
     fn control_binding_coverage_for(
         &self,
-        resources: &[tilo_actions::Resource],
+        resources: &[tilo_actions::ResourceSpec],
         bindings: Vec<crate::widget::ControlBindingMetadata>,
     ) -> Vec<ControlBindingCoverage> {
         // Shared chrome invokes doors served by this host, rather than by
@@ -517,8 +517,10 @@ impl App {
 
     /// Transport-only projection. Each component is validated with its own
     /// registry before its domain resource is assigned an opaque publication alias.
-    fn publication_resources(&mut self) -> Vec<tilo_actions::Resource> {
-        fn remove_reserved(mut resource: tilo_actions::Resource) -> Option<tilo_actions::Resource> {
+    fn publication_resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
+        fn remove_reserved(
+            mut resource: tilo_actions::ResourceSpec,
+        ) -> Option<tilo_actions::ResourceSpec> {
             if resource
                 .id
                 .as_str()
@@ -992,7 +994,7 @@ impl App {
     }
 
     fn resolve_resource_invocation<'a>(
-        resources: &'a [tilo_actions::Resource],
+        resources: &'a [tilo_actions::ResourceSpec],
         address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
         confirmed_by_broker: bool,
@@ -1015,7 +1017,7 @@ impl App {
     }
 
     fn encode_resource_action(
-        resources: &[tilo_actions::Resource],
+        resources: &[tilo_actions::ResourceSpec],
         address: &tilo_actions::ActionAddress,
         typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
@@ -1202,9 +1204,9 @@ impl App {
     fn invoke_document_resource_action(
         &mut self,
         invocation: &ResourceInvocation<'_>,
-        resources: &[tilo_actions::Resource],
+        resources: &[tilo_actions::ResourceSpec],
         typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
-        resource: &tilo_actions::Resource,
+        resource: &tilo_actions::ResourceSpec,
         spec: &tilo_actions::ActionSpec,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         let ResourceInvocation {
@@ -1345,7 +1347,7 @@ impl App {
     fn route_bound_invocation_to_broker(
         &mut self,
         target: &crate::bound_dispatch::BoundActionTarget,
-        resources: &[tilo_actions::Resource],
+        resources: &[tilo_actions::ResourceSpec],
         arguments: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
         evidence: Option<&serde_json::Value>,
@@ -3565,8 +3567,8 @@ impl App {
 
     fn filter_resource_for_local_actor(
         &self,
-        resource: tilo_actions::Resource,
-    ) -> Option<tilo_actions::Resource> {
+        resource: tilo_actions::ResourceSpec,
+    ) -> Option<tilo_actions::ResourceSpec> {
         self.permission_ctx
             .permitted_resource(&crate::collaboration::local_app_id(), resource)
     }
@@ -4062,11 +4064,11 @@ const DIRECTORY_PAGE_WIRE_BYTES: usize = 512;
 /// descriptions or resource label contains `needle` (already lowercase). Each matched resource is kept without its
 /// children.
 fn collect_named_actions(
-    resource: &tilo_actions::Resource,
+    resource: &tilo_actions::ResourceSpec,
     needle: &str,
     depth: u16,
     max_depth: u16,
-    out: &mut Vec<(tilo_actions::Resource, String)>,
+    out: &mut Vec<(tilo_actions::ResourceSpec, String)>,
 ) {
     let contains = |text: &str| text.to_lowercase().contains(needle);
     let mut shallow = None;
@@ -4080,7 +4082,7 @@ fn collect_named_actions(
                 .iter()
                 .any(|param| contains(&param.name) || contains(&param.description))
         {
-            let shallow = shallow.get_or_insert_with(|| tilo_actions::Resource {
+            let shallow = shallow.get_or_insert_with(|| tilo_actions::ResourceSpec {
                 children: Vec::new(),
                 ..resource.clone()
             });

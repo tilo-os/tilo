@@ -450,7 +450,7 @@ impl PaneCx {
     /// on the root resource. Bound item arguments remain inside the spec.
     pub fn row_binding<I: 'static>(
         &self,
-        row: &ui::tilo_actions::Resource,
+        row: &ui::tilo_actions::ResourceSpec,
         effect: impl Binds<SettingsEffect, I>,
     ) -> Option<ui::tilo_actions::ActionBinding<I>> {
         let door = self.door.as_ref()?;
@@ -480,7 +480,7 @@ impl PaneCx {
     #[must_use]
     pub fn bind_on_row<I: 'static, C: ActionControl<I>>(
         &self,
-        row: &ui::tilo_actions::Resource,
+        row: &ui::tilo_actions::ResourceSpec,
         control: C,
         effect: impl Binds<SettingsEffect, I>,
     ) -> C {
@@ -495,7 +495,7 @@ impl PaneCx {
     /// or where the row does not offer it now.
     pub fn row_invocation(
         &self,
-        row: &ui::tilo_actions::Resource,
+        row: &ui::tilo_actions::ResourceSpec,
         effect: impl Into<SettingsEffect>,
     ) -> Option<ui::tilo_actions::ActionBinding<()>> {
         let effect = effect.into();
@@ -519,7 +519,7 @@ impl PaneCx {
     pub fn bind_row<C: ActionControl<()>>(
         &self,
         control: C,
-        row: &ui::tilo_actions::Resource,
+        row: &ui::tilo_actions::ResourceSpec,
         effect: impl Into<SettingsEffect>,
     ) -> C {
         match self.row_invocation(row, effect) {

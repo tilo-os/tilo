@@ -16,7 +16,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Effect};
 
-use tilo_actions::{ActionSpec, Resource};
+use tilo_actions::{ActionSpec, ResourceSpec};
 /// The maximum decoded size of a portable embedded playlist cover.
 pub const MAX_PORTABLE_COVER_BYTES: usize = 256 * 1024;
 /// Portal normalization never persists an image wider or taller than this.
@@ -661,7 +661,7 @@ impl MusicResourceCtx {
 /// The library as this window shows it: playlists, tracks, albums,
 /// artists and navigation views, each with the effects that apply to it.
 /// A bounded page; [`resource_by_id`] resolves the rest.
-pub(crate) fn library_rows(ctx: &MusicResourceCtx) -> Vec<Resource> {
+pub(crate) fn library_rows(ctx: &MusicResourceCtx) -> Vec<ResourceSpec> {
     let mut children = Vec::new();
     let mut playlists = ctx.playlists.iter().collect::<Vec<_>>();
     playlists.sort_by(|a, b| a.id.cmp(&b.id));
@@ -691,10 +691,10 @@ pub(crate) fn library_rows(ctx: &MusicResourceCtx) -> Vec<Resource> {
 
 /// Device-local player, queue and open file. Published beside the framework
 /// root when hosted — never a second copy of the library document door.
-pub(crate) fn live_device_resources(ctx: &MusicResourceCtx) -> Vec<Resource> {
+pub(crate) fn live_device_resources(ctx: &MusicResourceCtx) -> Vec<ResourceSpec> {
     let mut resources = vec![
         with_transport(
-            Resource::new(PLAYER_RESOURCE_ID, "music.player", "Player"),
+            ResourceSpec::new(PLAYER_RESOURCE_ID, "music.player", "Player"),
             &ctx.playback,
         ),
         queue_resource(ctx),
@@ -714,8 +714,8 @@ fn playlist_label(p: &PlaylistResource) -> String {
     }
 }
 
-fn navigation_view_resource(id: &str, label: &str) -> Resource {
-    Resource::new(view_resource_id(id), "music.view", label).with_action(bound(
+fn navigation_view_resource(id: &str, label: &str) -> ResourceSpec {
+    ResourceSpec::new(view_resource_id(id), "music.view", label).with_action(bound(
         &MusicEffect::Open {
             place: Place::View(id.to_owned()),
         },
@@ -728,7 +728,7 @@ pub(crate) const PLAYER_RESOURCE_ID: &str = "music.player:player";
 
 /// The player's transport, bound to the player row: every control is
 /// offered, those that cannot act right now with the reason why.
-fn with_transport(mut root: Resource, playback: &crate::model::Playback) -> Resource {
+fn with_transport(mut root: ResourceSpec, playback: &crate::model::Playback) -> ResourceSpec {
     root = root.with_action(MusicEffect::PlaybackStatus.bound());
     let play = bound(
         &MusicEffect::PlayPause,
@@ -951,8 +951,8 @@ fn open_queue() -> ActionSpec {
 
 /// A song as search shows it: its title as the row's label and its artist
 /// as the secondary line, one fact each.
-fn song_resource(id: String, kind: &str, title: &str, artist: &str) -> Resource {
-    let resource = Resource::new(id, kind, title);
+fn song_resource(id: String, kind: &str, title: &str, artist: &str) -> ResourceSpec {
+    let resource = ResourceSpec::new(id, kind, title);
     if artist.is_empty() {
         return resource;
     }
@@ -962,7 +962,7 @@ fn song_resource(id: String, kind: &str, title: &str, artist: &str) -> Resource 
     })
 }
 
-fn queue_item_resource(item: &QueueItemResource, total: usize) -> Resource {
+fn queue_item_resource(item: &QueueItemResource, total: usize) -> ResourceSpec {
     let index = item.index;
     let track = item.track.clone();
     let move_up = MusicEffect::MoveUp {
@@ -1009,18 +1009,18 @@ fn queue_item_resource(item: &QueueItemResource, total: usize) -> Resource {
     })
 }
 
-fn queue_resource(ctx: &MusicResourceCtx) -> Resource {
+fn queue_resource(ctx: &MusicResourceCtx) -> ResourceSpec {
     let total = ctx.playback.queue.len();
     let mut resource =
-        Resource::new(QUEUE_RESOURCE_ID, "music.queue", "Queue").with_action(open_queue());
+        ResourceSpec::new(QUEUE_RESOURCE_ID, "music.queue", "Queue").with_action(open_queue());
     for item in &ctx.queue {
         resource = resource.with_child(queue_item_resource(item, total));
     }
     resource
 }
 
-fn playlist_resource(playlist: &PlaylistResource, track_limit: usize) -> Resource {
-    let mut resource = Resource::new(
+fn playlist_resource(playlist: &PlaylistResource, track_limit: usize) -> ResourceSpec {
+    let mut resource = ResourceSpec::new(
         playlist_resource_id(&playlist.id),
         "music.playlist",
         playlist_label(playlist),
@@ -1037,7 +1037,7 @@ fn playlist_resource(playlist: &PlaylistResource, track_limit: usize) -> Resourc
     resource
 }
 
-fn playlist_track_resource(playlist: &str, track: &TrackRef) -> Resource {
+fn playlist_track_resource(playlist: &str, track: &TrackRef) -> ResourceSpec {
     song_resource(
         playlist_track_resource_id(playlist, &track.id),
         "music.playlist-track",
@@ -1066,9 +1066,9 @@ fn like_spec(track: &str, liked: bool) -> ActionSpec {
     )
 }
 
-pub(crate) fn catalog_track_resource(track: &CatalogTrackResource) -> Resource {
+pub(crate) fn catalog_track_resource(track: &CatalogTrackResource) -> ResourceSpec {
     let tracks = vec![track.id.clone()];
-    let mut resource = Resource::new(
+    let mut resource = ResourceSpec::new(
         track_resource_id(&track.id),
         "music.track",
         track.label.clone(),
@@ -1137,8 +1137,8 @@ pub(crate) fn catalog_track_resource(track: &CatalogTrackResource) -> Resource {
     resource
 }
 
-fn catalog_album_resource(album: &CatalogAlbumResource) -> Resource {
-    Resource::new(
+fn catalog_album_resource(album: &CatalogAlbumResource) -> ResourceSpec {
+    ResourceSpec::new(
         album_resource_id(&album.id),
         "music.album",
         album.label.clone(),
@@ -1154,7 +1154,7 @@ fn catalog_album_resource(album: &CatalogAlbumResource) -> Resource {
 /// An album, artist or playlist the live catalogue found and the library
 /// does not hold, labelled `label`, as the row `id`: opening its page is
 /// all it offers. `None` for any other row.
-pub fn live_catalogue_resource(id: &str, label: &str) -> Option<Resource> {
+pub fn live_catalogue_resource(id: &str, label: &str) -> Option<ResourceSpec> {
     let kind = if id.starts_with("music.album:") {
         "music.album"
     } else if id.starts_with("music.artist:") {
@@ -1165,11 +1165,11 @@ pub fn live_catalogue_resource(id: &str, label: &str) -> Option<Resource> {
         return None;
     };
     let effect = anchor_effect(id)?;
-    Some(Resource::new(id, kind, label).with_action(bound(&effect, "Open")))
+    Some(ResourceSpec::new(id, kind, label).with_action(bound(&effect, "Open")))
 }
 
-fn catalog_artist_resource(artist: &CatalogArtistResource) -> Resource {
-    let resource = Resource::new(
+fn catalog_artist_resource(artist: &CatalogArtistResource) -> ResourceSpec {
+    let resource = ResourceSpec::new(
         artist_resource_id(&artist.id),
         "music.artist",
         artist.label.clone(),
@@ -1207,7 +1207,7 @@ fn catalog_artist_resource(artist: &CatalogArtistResource) -> Resource {
 /// time the host calls this against the current model, so deleted or
 /// otherwise stale targets disappear instead of gaining authority from an old
 /// palette snapshot.
-pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
+pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<ResourceSpec> {
     if id == LOCAL_FILE_RESOURCE_ID {
         return ctx
             .local_file
@@ -1227,7 +1227,7 @@ pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
     }
     if id == PLAYER_RESOURCE_ID {
         return Some(with_transport(
-            Resource::new(PLAYER_RESOURCE_ID, "music.player", "Player"),
+            ResourceSpec::new(PLAYER_RESOURCE_ID, "music.player", "Player"),
             &ctx.playback,
         ));
     }
@@ -1274,7 +1274,7 @@ impl crate::app::MusicApp {
     /// entries, a track, album, artist, playlist or membership, a view, the
     /// open file — resolved against what it shows now, so a stale address
     /// from an old palette snapshot finds nothing.
-    pub fn publish_resource(&self, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, id: &str) -> Option<ResourceSpec> {
         let ctx = self.music_resource_ctx_for_id(id)?;
         resource_by_id(&ctx, id)
     }
@@ -1285,7 +1285,7 @@ impl crate::app::MusicApp {
     /// What the palette and agents see of `doc` in a window showing this
     /// surface: the library as the framework publishes it, with the
     /// surface's live player, queue and open file beside its rows.
-    pub(crate) fn palette_tree(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
+    pub(crate) fn palette_tree(&self, doc: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         use ui::tilo_resource::Resource as _;
         let state = crate::model::Library::read(doc).unwrap_or_default();
         let mut root =
@@ -1310,8 +1310,11 @@ impl crate::app::MusicApp {
 /// A device-local source has no collaborative track/catalog identity.
 pub const LOCAL_FILE_RESOURCE_ID: &str = "music.local-file:current";
 
-fn local_file_resource(file: &CatalogTrackResource, playback: &crate::model::Playback) -> Resource {
-    let resource = Resource::new(
+fn local_file_resource(
+    file: &CatalogTrackResource,
+    playback: &crate::model::Playback,
+) -> ResourceSpec {
+    let resource = ResourceSpec::new(
         LOCAL_FILE_RESOURCE_ID,
         "music.local-file",
         file.label.clone(),
@@ -1397,7 +1400,7 @@ mod tests {
 
     /// The tree the palette sees for the rows in `ctx`: the library root the
     /// framework publishes and the window's rows.
-    fn published_tree(ctx: &MusicResourceCtx) -> Vec<Resource> {
+    fn published_tree(ctx: &MusicResourceCtx) -> Vec<ResourceSpec> {
         let mut root =
             ui::tilo_resource::publish::<Library>("music.library", "Library", &Library::default());
         root.children.clear();

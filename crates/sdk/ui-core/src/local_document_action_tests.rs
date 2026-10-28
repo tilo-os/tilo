@@ -39,7 +39,7 @@ fn legacy_local_action_keeps_behavior_without_fabricating_admission() {
     let queue = Queue::new();
     let _scope = queue.enter("snapshot".into());
     let mut doc = AutoCommit::new();
-    let mut host = crate::action_host::ActionHost::new();
+    let mut host = crate::local_dispatch::LocalDispatch::new();
     host.try_dispatch(&mut doc, "put", &Put(7)).unwrap();
     assert!(!doc.get_heads().is_empty());
     assert!(queue.drain().is_empty());
@@ -72,7 +72,7 @@ fn capture_debug_does_not_disclose_private_intent() {
 fn canonical_host_captures_each_execution_not_each_undo_step() {
     let queue = Queue::new();
     let mut doc = AutoCommit::new();
-    let mut host = crate::action_host::ActionHost::new();
+    let mut host = crate::local_dispatch::LocalDispatch::new();
     // A native/background action outside local input has no user observation.
     host.try_dispatch(&mut doc, "put", &Put(0)).unwrap();
     assert!(queue.drain().is_empty());
@@ -125,7 +125,7 @@ fn saturation_bounds_reports_records_the_gap_and_reply_restores_capacity() {
     let _scope = queue.enter("snapshot".into());
     let _published = published();
     let mut doc = AutoCommit::new();
-    let mut host = crate::action_host::ActionHost::new();
+    let mut host = crate::local_dispatch::LocalDispatch::new();
     // Every edit lands; the first one the queue has no room to report for
     // is recorded as a gap.
     let mut reported = 0;
@@ -162,7 +162,7 @@ fn noops_keep_empty_actual_mutations_without_inventing_a_change() {
     let _scope = queue.enter("snapshot".into());
     let _published = published();
     let mut doc = AutoCommit::new();
-    let mut host = crate::action_host::ActionHost::new();
+    let mut host = crate::local_dispatch::LocalDispatch::new();
     host.try_dispatch(&mut doc, "noop", &Noop).unwrap();
     host.try_dispatch(&mut doc, "noop", &Noop).unwrap();
     let captured = queue.drain();
@@ -182,7 +182,7 @@ fn original_broker_continuations_and_native_work_are_not_local_user_actions() {
     let _scope = queue.enter("snapshot".into());
     let _published = published();
     let mut doc = AutoCommit::new();
-    let mut host = crate::action_host::ActionHost::new();
+    let mut host = crate::local_dispatch::LocalDispatch::new();
     let source = tilo_actions::InvocationId(uuid::Uuid::new_v4());
     host.try_dispatch_with_context(
         &mut doc,
@@ -206,7 +206,7 @@ fn missing_published_invocation_refuses_observation_not_legacy_edits() {
     let _scope = queue.enter("snapshot".into());
     let mut doc = AutoCommit::new();
     let before = doc.get_heads();
-    let mut host = crate::action_host::ActionHost::new();
+    let mut host = crate::local_dispatch::LocalDispatch::new();
     host.try_dispatch(&mut doc, "put", &Put(1)).unwrap();
     assert_ne!(doc.get_heads(), before);
     assert!(!queue.take_refusals().is_empty());
@@ -242,7 +242,7 @@ fn escaped_payload_and_published_arguments_refuse_before_mutation() {
         });
         let mut doc = AutoCommit::new();
         let before = doc.get_heads();
-        let mut host = crate::action_host::ActionHost::new();
+        let mut host = crate::local_dispatch::LocalDispatch::new();
         let text = if published_arguments {
             "small".into()
         } else {
@@ -261,7 +261,7 @@ fn context_wire_budget_refuses_before_mutation() {
     let _scope = queue.enter("snapshot".into());
     let _invocation = published();
     let mut doc = AutoCommit::new();
-    let mut host = crate::action_host::ActionHost::new();
+    let mut host = crate::local_dispatch::LocalDispatch::new();
     let context = ActionContext {
         purpose: Some("\n".repeat(32 * 1024)),
         ..ActionContext::default()
@@ -288,7 +288,7 @@ fn reservation_counts_transport_bytes_with_bounded_hash_allowance() {
             arguments: arguments.clone(),
         });
         let mut doc = AutoCommit::new();
-        let mut host = crate::action_host::ActionHost::new();
+        let mut host = crate::local_dispatch::LocalDispatch::new();
         let custody = runtime_collab::committed_document::ConnectionSnapshot {
             root: [1; 32],
             device: [2; 32],
@@ -349,7 +349,7 @@ fn reservation_accepts_exact_wire_limit_and_refuses_one_extra_byte() {
     let queue = Queue::new();
     let _scope = queue.enter("snapshot".into());
     let _invocation = published();
-    let mut host = crate::action_host::ActionHost::new();
+    let mut host = crate::local_dispatch::LocalDispatch::new();
     host.try_dispatch_with_context(
         &mut AutoCommit::new(),
         "put",
@@ -390,7 +390,7 @@ fn input_without_any_pinned_directory_reports_nothing_and_records_the_gap() {
     let _scope = queue.enter(String::new());
     let _invocation = published();
     let mut doc = AutoCommit::new();
-    let mut host = crate::action_host::ActionHost::new();
+    let mut host = crate::local_dispatch::LocalDispatch::new();
     host.try_dispatch(&mut doc, "put", &Put(1)).unwrap();
     assert!(!doc.get_heads().is_empty(), "the edit lands");
     assert!(
@@ -407,7 +407,7 @@ fn nested_route_scope_restores_exact_snapshot_without_cross_route_drain() {
     let _scope = outer.enter("outer".into());
     let _published = published();
     let mut doc = AutoCommit::new();
-    let mut host = crate::action_host::ActionHost::new();
+    let mut host = crate::local_dispatch::LocalDispatch::new();
     {
         let _scope = inner.enter("inner".into());
         let _published = published();

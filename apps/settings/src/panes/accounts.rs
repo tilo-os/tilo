@@ -1227,7 +1227,7 @@ impl AccountsPane {
             return cx.invocation_binding(effect.clone());
         };
         let spec = SettingsEffect::from(effect.clone()).bound();
-        let resource = ui::tilo_actions::Resource::new(
+        let resource = ui::tilo_actions::ResourceSpec::new(
             format!("settings.account:{account}"),
             "settings.account",
             account,
@@ -2248,7 +2248,7 @@ impl AccountsPane {
     fn files_button(&self, view: &AccountView, details: &mut Vec<String>) -> Option<Button> {
         let spec = self.files_handoff(view)?;
         let label = spec.label.clone();
-        let resource = ui::tilo_actions::Resource::new(
+        let resource = ui::tilo_actions::ResourceSpec::new(
             format!("settings.account:{}", view.id),
             "settings.account",
             &view.label,

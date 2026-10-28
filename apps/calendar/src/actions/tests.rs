@@ -1,7 +1,7 @@
 use super::*;
 use crate::outbox::{deletes, uploads};
 use crate::resource::{CalendarEffect, RemoteAt, calendar, fingerprint, notes_path};
-use tilo_actions::{ActionRegistry, EncodedAction, Resource};
+use tilo_actions::{ActionRegistry, EncodedAction, ResourceSpec};
 use tilo_document::RichTextAction;
 use ui::tilo_resource::{Invoke, Replica, Resource as _};
 use uuid::Uuid;
@@ -37,7 +37,7 @@ fn encoded(invoke: &Invoke<Calendar>) -> EncodedAction {
 }
 
 /// The calendar's published tree for `doc`, with its effects.
-fn resources_for(doc: &ui::automerge::AutoCommit) -> Vec<Resource> {
+fn resources_for(doc: &ui::automerge::AutoCommit) -> Vec<ResourceSpec> {
     let mut root =
         ui::tilo_resource::publish::<Calendar>("calendar.calendar", "Calendar", &read(doc));
     root.actions

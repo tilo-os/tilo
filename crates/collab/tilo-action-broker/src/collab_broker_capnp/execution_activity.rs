@@ -127,7 +127,7 @@ pub(super) struct ShownActor {
     pub(super) resource: tilo_actions::ActionResource,
     /// The run or task it works in, whose label names an actor the room's
     /// roster does not know (a Shortcut's run).
-    pub(super) group: Option<tilo_actions::ActionGroup>,
+    pub(super) group: Option<tilo_actions::WorkGroup>,
     /// Last sequence published for this invocation.
     pub(super) sequence: Arc<std::sync::atomic::AtomicU64>,
 }

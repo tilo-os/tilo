@@ -7,6 +7,7 @@ pub use executing_host::{
     executing_host_device, executing_host_person, executing_host_scope,
     host_person_invocation_permitted,
 };
+use tilo_actions::ResourceSpec;
 
 mod node_map;
 pub use node_map::{BoundNodeMap, invoke_bound_node};
@@ -19,6 +20,9 @@ mod hosted;
 pub(crate) use hosted::{HostedInvocation, published_here};
 
 mod deferred_intent;
+mod filter;
+pub(crate) use filter::{filter_resource, filter_shared};
+use filter::{inherit_filtered, insert_available_permitted};
 mod ordinary_confirmation;
 use deferred_intent::validate_deferred_arguments;
 pub(crate) use deferred_intent::{DeferredIntent, PreparedActionIntent};
@@ -674,11 +678,11 @@ pub(crate) struct BoundResourceSnapshot {
 /// only for consumers of the whole surface (the palette, agents, search).
 struct Forest {
     shared: std::cell::OnceCell<Rc<[SharedResource]>>,
-    plain: std::cell::OnceCell<Rc<Vec<tilo_actions::Resource>>>,
+    plain: std::cell::OnceCell<Rc<Vec<ResourceSpec>>>,
 }
 
 impl BoundResourceSnapshot {
-    pub(crate) fn new(binding: CallbackBinding, resources: Vec<tilo_actions::Resource>) -> Self {
+    pub(crate) fn new(binding: CallbackBinding, resources: Vec<ResourceSpec>) -> Self {
         Self {
             binding,
             forest: Rc::new(Forest {
@@ -706,7 +710,7 @@ impl BoundResourceSnapshot {
 
     /// The component's resources as ordinary trees, materialised once per
     /// snapshot from its shared forest.
-    pub(crate) fn resources(&self) -> &Rc<Vec<tilo_actions::Resource>> {
+    pub(crate) fn resources(&self) -> &Rc<Vec<ResourceSpec>> {
         self.forest.plain.get_or_init(|| {
             Rc::new(crate::published::to_resources(
                 self.forest.shared.get().map_or(&[][..], |forest| forest),
@@ -715,7 +719,7 @@ impl BoundResourceSnapshot {
     }
 
     /// [`Self::resources`] by value.
-    pub(crate) fn into_resources(self) -> Vec<tilo_actions::Resource> {
+    pub(crate) fn into_resources(self) -> Vec<ResourceSpec> {
         let resources = Rc::clone(self.resources());
         drop(self);
         Rc::unwrap_or_clone(resources)
@@ -728,7 +732,7 @@ impl BoundResourceSnapshot {
 
     /// Add `more` to the component's resources: a new tree, sharing nothing
     /// derived from this one.
-    pub(crate) fn extend(&mut self, more: impl IntoIterator<Item = tilo_actions::Resource>) {
+    pub(crate) fn extend(&mut self, more: impl IntoIterator<Item = ResourceSpec>) {
         let binding = self.binding.clone();
         let mut resources =
             std::mem::replace(self, Self::new(binding.clone(), Vec::new())).into_resources();
@@ -864,8 +868,8 @@ impl BoundPublication {
     pub(crate) fn project(
         &self,
         binding: &CallbackBinding,
-        mut resource: tilo_actions::Resource,
-    ) -> Result<tilo_actions::Resource, BoundActionError> {
+        mut resource: ResourceSpec,
+    ) -> Result<ResourceSpec, BoundActionError> {
         resource.semantic_identity = tilo_actions::ResourceSemanticIdentity::new(
             resource.kind.clone(),
             resource.id.as_str(),
@@ -883,7 +887,7 @@ impl BoundPublication {
 pub(crate) fn validate_bound_resources(
     root: &mut dyn Widget,
     binding: &CallbackBinding,
-    resources: &[tilo_actions::Resource],
+    resources: &[ResourceSpec],
 ) -> Result<bool, BoundDispatchError> {
     Ok(bound_contract_violations(root, binding, resources)?.is_some_and(|found| found.is_empty()))
 }
@@ -894,7 +898,7 @@ pub(crate) fn validate_bound_resources(
 pub(crate) fn bound_contract_violations(
     root: &mut dyn Widget,
     binding: &CallbackBinding,
-    resources: &[tilo_actions::Resource],
+    resources: &[ResourceSpec],
 ) -> Result<Option<Vec<tilo_actions::ContractViolation>>, BoundDispatchError> {
     let _entry = binding.enter()?;
     let mut violations = None;
@@ -980,7 +984,7 @@ fn provider_resource(
     widget: &dyn Widget,
     binding: &CallbackBinding,
     address: &tilo_actions::ActionAddress,
-) -> Option<tilo_actions::Resource> {
+) -> Option<ResourceSpec> {
     crate::search::capability::search_providers(widget)
         .into_iter()
         .filter(|provider| {
@@ -998,7 +1002,7 @@ pub(crate) fn resolve_component_resource(
     binding: &CallbackBinding,
     resource: &str,
     action: &str,
-) -> Result<Option<tilo_actions::Resource>, BoundDispatchError> {
+) -> Result<Option<ResourceSpec>, BoundDispatchError> {
     let _entry = binding.enter()?;
     let mut result = None;
     let mut visit = |current: &CallbackBinding,
@@ -1653,7 +1657,7 @@ pub(crate) fn discover_cached_bound_resources(
 /// effect) gets no further than an action declaring its own confirmation.
 pub(crate) fn admit_local_action(
     permissions: &PermissionContext,
-    (app_id, resource, action): (&str, &tilo_actions::Resource, &tilo_actions::ActionSpec),
+    (app_id, resource, action): (&str, &ResourceSpec, &tilo_actions::ActionSpec),
     typed: Option<&serde_json::Map<String, serde_json::Value>>,
     argument: Option<&str>,
     confirmed: bool,
@@ -1696,174 +1700,6 @@ pub(crate) fn denied(action: &tilo_actions::ActionSpec) -> tilo_actions::DoorErr
     tilo_actions::DoorError::Unavailable {
         code: "permission_denied".into(),
         reason: format!("you may not {} here", action.label.to_lowercase()),
-    }
-}
-
-pub(crate) fn filter_resource(
-    binding: &CallbackBinding,
-    resource: tilo_actions::Resource,
-) -> Option<tilo_actions::Resource> {
-    binding
-        .permissions
-        .borrow()
-        .permitted_resource(&binding.app_id, resource)
-}
-
-/// [`filter_resource`] of a shared tree, for the permission context `token`
-/// names: a subtree whose result under `token` is kept on it is not
-/// filtered again, and the result shares every subtree filtering left
-/// unchanged. A token stands for one component's permissions, so the
-/// result is exactly [`filter_resource`]'s.
-pub(crate) fn filter_shared(
-    binding: &CallbackBinding,
-    token: u64,
-    resource: &SharedResource,
-) -> Option<SharedResource> {
-    use crate::published::Filtered;
-    let filtered = resource.filtered(token).unwrap_or_else(|| {
-        let filtered = filter_shared_node(binding, token, resource);
-        resource.remember_filtered(token, filtered.clone());
-        filtered
-    });
-    match filtered {
-        Filtered::Same => Some(resource.clone()),
-        Filtered::Pruned => None,
-        Filtered::Kept(kept) => Some(kept),
-    }
-}
-
-/// Let `next` take `last`'s filtering under `token` when every action of
-/// `last` was permitted and `next` offers the same (a root head rebuilt as
-/// it was for a new publication): only its children are filtered, each
-/// from what it kept, and nobody is asked about its actions again.
-fn inherit_filtered(
-    binding: &CallbackBinding,
-    token: u64,
-    last: &SharedResource,
-    next: &SharedResource,
-) {
-    use crate::published::Filtered;
-    if next.filtered(token).is_some()
-        || !matches!(last.filtered(token), Some(Filtered::Same))
-        || !same_offer(last, next)
-        || (next.head().actions.is_empty() && next.children().is_empty())
-    {
-        return;
-    }
-    if matches!(
-        filter_shared_children(binding, token, next.children()),
-        Filtered::Same
-    ) {
-        next.remember_filtered(token, Filtered::Same);
-    }
-}
-
-/// What filtering `resource` under `token` gives, its children's results
-/// kept on them.
-fn filter_shared_node(
-    binding: &CallbackBinding,
-    token: u64,
-    resource: &SharedResource,
-) -> crate::published::Filtered<SharedResource> {
-    use crate::published::{Filtered, SharedChildren};
-    let _phase = tilo_resource::profiling::Phase::start("ui.filtered_resource");
-    let head = resource.head();
-    let permissions = binding.permissions.borrow();
-    let decider = permissions.action_decider(&binding.app_id);
-    let every_action = head
-        .actions
-        .iter()
-        .all(|action| decider.permits(&head.kind, head.id.as_str(), action));
-    let children = filter_shared_children(binding, token, resource.children());
-    if every_action
-        && matches!(children, Filtered::Same)
-        && (!head.actions.is_empty() || !resource.children().is_empty())
-    {
-        return Filtered::Same;
-    }
-    let children = match children {
-        Filtered::Same => resource.children().clone(),
-        Filtered::Kept(children) => children,
-        Filtered::Pruned => SharedChildren::default(),
-    };
-    let mut head = head.clone();
-    head.retain_actions(|action| {
-        decider.permits(&resource.head().kind, resource.head().id.as_str(), action)
-    });
-    if head.actions.is_empty() && children.is_empty() {
-        Filtered::Pruned
-    } else {
-        Filtered::Kept(SharedResource::new(head, children))
-    }
-}
-
-/// The filtered `children` under `token`: [`Filtered::Same`] when every
-/// child stands as it is, else the children kept, sharing those unchanged.
-fn filter_shared_children(
-    binding: &CallbackBinding,
-    token: u64,
-    children: &crate::published::SharedChildren,
-) -> crate::published::Filtered<crate::published::SharedChildren> {
-    use crate::published::{Filtered, SharedChildren};
-    if let Some(filtered) = children.filtered(token) {
-        return filtered;
-    }
-    let mut kept: Option<Vec<SharedResource>> = None;
-    for (index, child) in children.iter().enumerate() {
-        let filtered = filter_shared(binding, token, child);
-        let same = filtered
-            .as_ref()
-            .is_some_and(|filtered| filtered.ptr_eq(child));
-        match (&mut kept, same) {
-            (None, true) => {}
-            (None, false) => {
-                let mut list = children.iter().take(index).cloned().collect::<Vec<_>>();
-                list.extend(filtered);
-                kept = Some(list);
-            }
-            (Some(list), _) => list.extend(filtered),
-        }
-    }
-    let filtered = match kept {
-        None => Filtered::Same,
-        Some(list) if list.is_empty() => Filtered::Pruned,
-        Some(list) => Filtered::Kept(SharedChildren::new(list)),
-    };
-    children.remember_filtered(token, filtered.clone());
-    filtered
-}
-
-/// Add to `allowed` the address of every available action in `resources`
-/// that `binding` permits: what [`tilo_actions::door::survey`] lists as
-/// available in the trees [`filter_resource`] keeps, read in place rather
-/// than through a filtered copy and a descriptor per action.
-fn insert_available_permitted(
-    binding: &CallbackBinding,
-    resources: &[tilo_actions::Resource],
-    allowed: &mut std::collections::HashSet<tilo_actions::ActionAddress>,
-) {
-    let permissions = binding.permissions.borrow();
-    let decider = permissions.action_decider(&binding.app_id);
-    insert_available(&decider, resources, allowed);
-}
-
-fn insert_available(
-    decider: &crate::permissions::ActionDecider<'_>,
-    resources: &[tilo_actions::Resource],
-    allowed: &mut std::collections::HashSet<tilo_actions::ActionAddress>,
-) {
-    for resource in resources {
-        for action in &resource.actions {
-            if action.contract.availability.is_available()
-                && decider.permits(&resource.kind, resource.id.as_str(), action)
-            {
-                allowed.insert(tilo_actions::ActionAddress::new(
-                    resource.id.as_str(),
-                    &action.id,
-                ));
-            }
-        }
-        insert_available(decider, &resource.children, allowed);
     }
 }
 
@@ -2001,14 +1837,14 @@ pub(crate) fn select_bound_target(
 
 pub(crate) type ResolvedResourceInvocation<'a> = (
     Option<serde_json::Map<String, serde_json::Value>>,
-    &'a tilo_actions::Resource,
+    &'a ResourceSpec,
     &'a tilo_actions::ActionSpec,
 );
 
 pub(crate) fn find_action_resource<'a>(
-    resources: &'a [tilo_actions::Resource],
+    resources: &'a [ResourceSpec],
     id: &str,
-) -> Option<&'a tilo_actions::Resource> {
+) -> Option<&'a ResourceSpec> {
     resources.iter().find_map(|resource| {
         if resource.id.as_str() == id {
             Some(resource)
@@ -2019,7 +1855,7 @@ pub(crate) fn find_action_resource<'a>(
 }
 
 pub(crate) fn resolve_resource_invocation<'a>(
-    resources: &'a [tilo_actions::Resource],
+    resources: &'a [ResourceSpec],
     address: &tilo_actions::ActionAddress,
     argument: Option<&str>,
     arguments: Option<&serde_json::Map<String, serde_json::Value>>,
@@ -2058,7 +1894,7 @@ pub(crate) fn resolve_resource_invocation<'a>(
 }
 
 pub(crate) fn encode_resource_action(
-    resources: &[tilo_actions::Resource],
+    resources: &[ResourceSpec],
     address: &tilo_actions::ActionAddress,
     arguments: Option<&serde_json::Map<String, serde_json::Value>>,
     argument: Option<&str>,
@@ -2307,7 +2143,7 @@ fn resources_for_control_target(
     doc: &AutoCommit,
     target: &legacy_document::LocalResourceTarget,
     address: &tilo_actions::ActionAddress,
-) -> Result<Vec<tilo_actions::Resource>, tilo_actions::DoorError> {
+) -> Result<Vec<ResourceSpec>, tilo_actions::DoorError> {
     match target {
         legacy_document::LocalResourceTarget::Component(target) => {
             if target.address.address != *address {
@@ -2349,13 +2185,13 @@ fn resources_for_control_target(
 }
 
 fn unique_control_spec<'a>(
-    resources: &'a [tilo_actions::Resource],
+    resources: &'a [ResourceSpec],
     address: &tilo_actions::ActionAddress,
-) -> Result<(&'a tilo_actions::Resource, &'a tilo_actions::ActionSpec), tilo_actions::DoorError> {
+) -> Result<(&'a ResourceSpec, &'a tilo_actions::ActionSpec), tilo_actions::DoorError> {
     fn matches<'a>(
-        resources: &'a [tilo_actions::Resource],
+        resources: &'a [ResourceSpec],
         address: &tilo_actions::ActionAddress,
-        found: &mut Vec<&'a tilo_actions::Resource>,
+        found: &mut Vec<&'a ResourceSpec>,
     ) {
         for resource in resources {
             if resource.id.as_str() == address.resource {
@@ -2397,7 +2233,7 @@ fn unique_control_spec<'a>(
 }
 
 fn control_identity_from_spec(
-    _resource: &tilo_actions::Resource,
+    _resource: &ResourceSpec,
     spec: &tilo_actions::ActionSpec,
     continuation: tilo_actions::ContinuationEvidence,
 ) -> ControlIdentity {
@@ -2583,7 +2419,7 @@ pub(crate) fn runs_own_device(
 pub(crate) struct ResourceOperation<'a> {
     pub(crate) target_route: Option<crate::collaboration::RouteSpec>,
     pub(crate) address: &'a tilo_actions::ActionAddress,
-    pub(crate) resource: &'a tilo_actions::Resource,
+    pub(crate) resource: &'a ResourceSpec,
     pub(crate) spec: &'a tilo_actions::ActionSpec,
     pub(crate) encoded: tilo_actions::EncodedAction,
     pub(crate) actor: &'a str,
@@ -3197,7 +3033,7 @@ fn resolve_document_action(
     doc: &AutoCommit,
     binding: &CallbackBinding,
     address: &tilo_actions::ActionAddress,
-) -> Option<tilo_actions::Resource> {
+) -> Option<ResourceSpec> {
     fn collect(widget: &dyn Widget, doc: &AutoCommit, forest: &mut Vec<SharedResource>) {
         if widget.has_separate_document_owner() {
             return;
@@ -3265,7 +3101,7 @@ fn resolve_document_action(
 fn collect_component_resources(
     widget: &dyn Widget,
     doc: &AutoCommit,
-    resources: &mut Vec<tilo_actions::Resource>,
+    resources: &mut Vec<ResourceSpec>,
 ) {
     if widget.has_separate_document_owner() {
         return;
@@ -3277,7 +3113,7 @@ fn collect_component_resources(
 pub(crate) fn collect_unbound_resources(
     widget: &dyn Widget,
     doc: &AutoCommit,
-    resources: &mut Vec<tilo_actions::Resource>,
+    resources: &mut Vec<ResourceSpec>,
 ) {
     collect_component_resources(widget, doc, resources);
 }
@@ -3288,7 +3124,7 @@ pub(crate) fn collect_participant_resources(
     widget: &dyn Widget,
     doc: &AutoCommit,
     participant: &tilo_actions::ParticipantId,
-    resources: &mut Vec<tilo_actions::Resource>,
+    resources: &mut Vec<ResourceSpec>,
 ) {
     if widget.has_separate_document_owner() {
         return;
@@ -3321,7 +3157,7 @@ pub(crate) fn resolve_unbound_resource(
     widget: &dyn Widget,
     doc: &AutoCommit,
     id: &str,
-) -> Option<tilo_actions::Resource> {
+) -> Option<ResourceSpec> {
     if widget.has_separate_document_owner() {
         return None;
     }
@@ -3793,7 +3629,7 @@ fn note_native_text_policy(
 }
 
 /// Narrow shared producer hook. Called only when a typed action is about to
-/// execute; returning None preserves the legacy `ActionHost` path unchanged.
+/// execute; returning None preserves the legacy `LocalDispatch` path unchanged.
 pub(crate) fn typed_action_before(doc: &mut AutoCommit) -> Option<Vec<ChangeHash>> {
     let handle = mutation_frame(doc)?;
     let mut owned = handle.borrow_mut();
@@ -4582,7 +4418,7 @@ impl CallbackBinding {
                 return Ok(true);
             }
             // A nested action can already have consumed a bracket still
-            // reported by an ancestor ActionHost. Only advance the pending
+            // reported by an ancestor LocalDispatch. Only advance the pending
             // boundary; never move it backwards across a recorded action.
             frame.commit_physical(doc);
             let advances = frame.state.pending.as_ref().is_none_or(|pending| {

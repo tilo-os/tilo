@@ -4304,7 +4304,7 @@ impl crate::widget::ResourceOperations for PaletteHistoryOwner {
 }
 
 impl crate::resources::PublishesResources for PaletteHistoryOwner {
-    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         if self
             .state
             .authority
@@ -4314,7 +4314,7 @@ impl crate::resources::PublishesResources for PaletteHistoryOwner {
             return vec![];
         }
         vec![
-            tilo_actions::Resource::new("palette-owner", "fixture.palette", "Palette owner")
+            tilo_actions::ResourceSpec::new("palette-owner", "fixture.palette", "Palette owner")
                 .with_action(self.action("text", PALETTE_TEXT_OPERATION, false))
                 .with_action(self.action("json", PALETTE_JSON_OPERATION, true))
                 .with_action(self.action("named", PALETTE_TEXT_OPERATION, false)),
@@ -4583,7 +4583,7 @@ struct ComponentControlOwner {
 }
 
 impl ComponentControlOwner {
-    fn resource(&self) -> tilo_actions::Resource {
+    fn resource(&self) -> tilo_actions::ResourceSpec {
         let operation = self.operation.clone();
         let target = self.id.clone();
         let handler = operation.clone();
@@ -4617,10 +4617,10 @@ impl ComponentControlOwner {
                 .returns(tilo_actions::ResultSpec::Job);
         }
         if !self.identity_supported.get() {
-            return tilo_actions::Resource::new(&self.id, "fixture.component", &self.id)
+            return tilo_actions::ResourceSpec::new(&self.id, "fixture.component", &self.id)
                 .with_action(spec);
         }
-        tilo_actions::Resource::new(&self.id, "fixture.component", &self.id).with_action(
+        tilo_actions::ResourceSpec::new(&self.id, "fixture.component", &self.id).with_action(
             spec.with_continuation_identity(move |query| match query {
                 tilo_actions::ContinuationQuery::Exact(arguments) => {
                     Some(tilo_actions::ContinuationEvidence::Exact {
@@ -4933,19 +4933,21 @@ impl crate::widget::ResourceOperations for ComponentControlOwner {
 }
 
 impl crate::resources::PublishesResources for ComponentControlOwner {
-    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         let mut resources = vec![self.resource()];
-        let empty = tilo_actions::Resource::new(&self.id, "fixture.component", "Empty duplicate");
+        let empty =
+            tilo_actions::ResourceSpec::new(&self.id, "fixture.component", "Empty duplicate");
         match self.duplicate_depth.get() {
             1 => resources.push(empty),
             2 => resources.push(
-                tilo_actions::Resource::new("parent", "fixture.parent", "Parent").with_child(empty),
+                tilo_actions::ResourceSpec::new("parent", "fixture.parent", "Parent")
+                    .with_child(empty),
             ),
             _ => {}
         }
         resources
     }
-    fn resource(&self, _: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+    fn resource(&self, _: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::ResourceSpec> {
         (id == self.id).then(|| self.resource())
     }
 }
@@ -6567,7 +6569,7 @@ struct CustodyControlsRoot {
     installed_output: Option<std::rc::Rc<std::cell::RefCell<Option<crate::ControlOutbox>>>>,
     record: Option<std::rc::Rc<std::cell::RefCell<Option<crate::RecordCheckout>>>>,
     child: Box<dyn crate::widget::Widget>,
-    resources: Vec<tilo_actions::Resource>,
+    resources: Vec<tilo_actions::ResourceSpec>,
     ledger: std::rc::Rc<std::cell::RefCell<Vec<serde_json::Value>>>,
 }
 
@@ -6703,7 +6705,7 @@ impl crate::record::capability::RecordScoped for CustodyControlsRoot {
 }
 
 impl crate::resources::PublishesResources for CustodyControlsRoot {
-    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.resources.clone()
     }
 }
@@ -6724,7 +6726,7 @@ impl crate::widget::controls::ActionControls for CustodyControlsRoot {
     }
 }
 
-fn custody_matrix_spec(kind: &str) -> tilo_actions::Resource {
+fn custody_matrix_spec(kind: &str) -> tilo_actions::ResourceSpec {
     use tilo_actions::*;
     let parameter = match kind {
         "Checkbox" | "Toggle" => Some(ParamType::Boolean),
@@ -6777,11 +6779,11 @@ fn custody_matrix_spec(kind: &str) -> tilo_actions::Resource {
         }),
         _ => None,
     });
-    Resource::new("fixture:control", "fixture", "Fixture").with_action(spec)
+    ResourceSpec::new("fixture:control", "fixture", "Fixture").with_action(spec)
 }
 
 fn custody_matrix_binding<I: serde::Serialize + 'static>(
-    resource: &tilo_actions::Resource,
+    resource: &tilo_actions::ResourceSpec,
 ) -> tilo_actions::ActionBinding<I> {
     tilo_actions::ActionBinding::new(resource, &resource.actions[0], |value| {
         serde_json::json!({"value":value})

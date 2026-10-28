@@ -5,6 +5,7 @@
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
+use tilo_actions::ResourceSpec;
 use ui_core::widget::{AppModel, ModelPath};
 
 use crate::runner::with_native_presentations;
@@ -212,7 +213,7 @@ fn item_open_spec(anchor: &str) -> tilo_actions::ActionSpec {
 /// Offer `open` on every item resource under `resource` (an item of the
 /// collections of the resource `item_of` knows the items of), bound to that
 /// item.
-fn offer_item_open(item_of: fn(&str) -> bool, resource: &mut tilo_actions::Resource) {
+fn offer_item_open(item_of: fn(&str) -> bool, resource: &mut ResourceSpec) {
     if item_of(resource.id.as_str())
         && !resource
             .actions
@@ -262,7 +263,7 @@ pub fn reserved_action_ids() -> Vec<String> {
     ids.push(tilo_resource::share::SHARE_INVITE_LINK.to_owned());
     ids.extend(super::history::specs().iter().map(|spec| spec.id.clone()));
     ids.extend(
-        with_native_presentations(tilo_actions::Resource::new("", "", ""))
+        with_native_presentations(ResourceSpec::new("", "", ""))
             .actions
             .iter()
             .map(|spec| spec.id.clone()),
@@ -285,7 +286,7 @@ fn read_spec() -> tilo_actions::ActionSpec {
 
 /// Bind a document read to one of the readable resource's own children.
 /// These declarations never apply to live surface rows or external resources.
-fn offer_document_reads(resource: &mut tilo_actions::Resource, eligible: &dyn Fn(&str) -> bool) {
+fn offer_document_reads(resource: &mut ResourceSpec, eligible: &dyn Fn(&str) -> bool) {
     if eligible(resource.id.as_str()) && !resource.actions.iter().any(|spec| spec.id == "read") {
         resource
             .actions
@@ -737,10 +738,10 @@ impl ResourceRoot {
     /// costs the view plus surfaces × rows, never the view once per row. Each
     /// row binds its edits in tree order of the surfaces offering them.
     #[inline(never)]
-    fn bind_row_declarations(&self, rows: &mut [tilo_actions::Resource]) {
+    fn bind_row_declarations(&self, rows: &mut [ResourceSpec]) {
         // Every row, nested ones too (a playlist's tracks), asked of the
         // surfaces in one walk.
-        fn ids(rows: &[tilo_actions::Resource], out: &mut Vec<String>) {
+        fn ids(rows: &[ResourceSpec], out: &mut Vec<String>) {
             for row in rows {
                 out.push(row.id.as_str().to_owned());
                 ids(&row.children, out);
@@ -748,12 +749,12 @@ impl ResourceRoot {
         }
         fn bind(
             typed: &dyn TypedRoot,
-            rows: &mut [tilo_actions::Resource],
+            rows: &mut [ResourceSpec],
             offered: &mut std::collections::HashMap<String, Box<dyn std::any::Any>>,
         ) {
             for row in rows {
                 if let Some(decls) = offered.remove(row.id.as_str()) {
-                    let bound = std::mem::replace(row, tilo_actions::Resource::new("", "", ""));
+                    let bound = std::mem::replace(row, ResourceSpec::new("", "", ""));
                     *row = typed.bind(bound, decls);
                 }
                 bind(typed, &mut row.children, offered);
@@ -788,7 +789,7 @@ impl ResourceRoot {
     /// views and surfaces bound to where the user is, the live rows surfaces
     /// show, and the framework's operations every app answers.
     #[inline(never)]
-    fn publication(&self) -> tilo_actions::Resource {
+    fn publication(&self) -> ResourceSpec {
         let _profile = tilo_resource::profiling::Phase::start("framework.publication");
         let state = self.typed.state();
         let mut tree = self.shared_document_tree(&*state).to_resource();
@@ -858,7 +859,7 @@ impl ResourceRoot {
     /// exactly as [`Self::publication`] publishes them, without building or
     /// decorating its children.
     #[cfg(test)]
-    fn binding_publication(&self, head: &BindingHead) -> tilo_actions::Resource {
+    fn binding_publication(&self, head: &BindingHead) -> ResourceSpec {
         let base = self.binding_base(head);
         let overlay = self.binding_overlay(&base);
         let mut resource = (*base.resource).clone();
@@ -939,7 +940,7 @@ impl ResourceRoot {
             .unwrap_or_default();
         // The head's actions the edits bind over, refined where they say so.
         let ids = self.typed.declaration_ids(&*bound);
-        let mut overlay = tilo_actions::Resource::new("", "", "");
+        let mut overlay = ResourceSpec::new("", "", "");
         overlay.actions = own
             .iter()
             .filter(|spec| ids.contains(&spec.id.as_str()))
@@ -1017,7 +1018,7 @@ impl ResourceRoot {
     /// change from another window or participant may have moved past what
     /// this view last synced.
     #[inline(never)]
-    fn current_publication(&self, doc: &AutoCommit) -> tilo_actions::Resource {
+    fn current_publication(&self, doc: &AutoCommit) -> ResourceSpec {
         if !self.typed.follows(doc)
             && let Ok(current) = self.typed.read(doc)
         {
@@ -1037,7 +1038,7 @@ impl ResourceRoot {
     }
 
     #[inline(never)]
-    fn publication_of(&self, state: &dyn std::any::Any) -> tilo_actions::Resource {
+    fn publication_of(&self, state: &dyn std::any::Any) -> ResourceSpec {
         let _profile = tilo_resource::profiling::Phase::start("framework.publication");
         let tree = self.shared_document_tree(state).to_resource();
         self.decorate_publication(state, tree, Decoration::Tree)
@@ -1050,9 +1051,9 @@ impl ResourceRoot {
     fn decorate_publication(
         &self,
         state: &dyn std::any::Any,
-        mut resource: tilo_actions::Resource,
+        mut resource: ResourceSpec,
         decoration: Decoration,
-    ) -> tilo_actions::Resource {
+    ) -> ResourceSpec {
         let children = decoration == Decoration::Tree;
         let mut bound = {
             let _profile = tilo_resource::profiling::Phase::start("framework.bound_declarations");
@@ -1126,10 +1127,7 @@ impl ResourceRoot {
 
     /// `resource` with the view and effect operations of the app's
     /// presentation it does not offer itself.
-    fn with_presentation_specs(
-        &self,
-        mut resource: tilo_actions::Resource,
-    ) -> tilo_actions::Resource {
+    fn with_presentation_specs(&self, mut resource: ResourceSpec) -> ResourceSpec {
         for spec in &self.presentation {
             if spec.kind == tilo_actions::OperationKind::Document {
                 continue;
@@ -1148,7 +1146,7 @@ impl ResourceRoot {
 
     /// `resource` with the framework's render, `read` and History actions it
     /// does not offer itself.
-    fn with_framework_specs(&self, mut resource: tilo_actions::Resource) -> tilo_actions::Resource {
+    fn with_framework_specs(&self, mut resource: ResourceSpec) -> ResourceSpec {
         let specs = framework_specs();
         let read = self.resource.readable.then_some(&specs.read);
         let facts = self.resource.facts.then_some(&specs.facts);
@@ -1230,7 +1228,7 @@ fn surface_mut(
 /// What [`ResourceRoot::binding_base`] is built from.
 #[derive(Clone)]
 struct BaseKey {
-    head: Rc<tilo_actions::Resource>,
+    head: Rc<ResourceSpec>,
     locale: u64,
     epoch: Option<String>,
     causal: bool,
@@ -1250,7 +1248,7 @@ impl PartialEq for BaseKey {
 /// The shared part of what bound controls look up, at one [`BaseKey`].
 struct BindingBase {
     key: BaseKey,
-    resource: Rc<tilo_actions::Resource>,
+    resource: Rc<ResourceSpec>,
     /// How many of its actions are the head's own.
     head_len: usize,
     /// How many are the head's and the presentation's: what an effect of
@@ -1283,7 +1281,7 @@ fn framework_specs() -> Rc<FrameworkSpecs> {
             return Rc::clone(specs);
         }
         let specs = Rc::new(FrameworkSpecs {
-            native: with_native_presentations(tilo_actions::Resource::new("", "", "")).actions,
+            native: with_native_presentations(ResourceSpec::new("", "", "")).actions,
             read: read_spec(),
             facts: facts::facts_spec(),
             history: super::history::specs(),
@@ -1310,13 +1308,13 @@ struct BindingHead {
     version: ((u64, u64), u64),
     /// [`Resource::publication_cache_epoch`] at the time.
     epoch: Option<String>,
-    resource: Rc<tilo_actions::Resource>,
+    resource: Rc<ResourceSpec>,
 }
 
 /// `resource` without its children, cloning nothing of them.
 #[cfg(all(test, not(target_arch = "wasm32")))]
-fn without_children(resource: &tilo_actions::Resource) -> tilo_actions::Resource {
-    let tilo_actions::Resource {
+fn without_children(resource: &ResourceSpec) -> ResourceSpec {
+    let ResourceSpec {
         id,
         kind,
         label,
@@ -1327,7 +1325,7 @@ fn without_children(resource: &tilo_actions::Resource) -> tilo_actions::Resource
         actions,
         views,
     } = resource;
-    tilo_actions::Resource {
+    ResourceSpec {
         id: id.clone(),
         kind: kind.clone(),
         label: label.clone(),
@@ -2141,7 +2139,7 @@ impl RootSearch for ResourceRoot {
 }
 
 impl RootPublishes for ResourceRoot {
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<ResourceSpec> {
         RootPublishes::resources_for(self, None, doc)
     }
     fn shared_resources_for(
@@ -2155,7 +2153,7 @@ impl RootPublishes for ResourceRoot {
         &self,
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
-    ) -> Vec<tilo_actions::Resource> {
+    ) -> Vec<ResourceSpec> {
         // What surfaces bind to where someone is, they bind to this
         // participant's view.
         let _viewer = participant
@@ -2197,7 +2195,7 @@ impl RootPublishes for ResourceRoot {
         resources.append(&mut extras);
         resources
     }
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<ResourceSpec> {
         RootPublishes::resource_for(self, None, doc, id)
     }
     /// A live row a surface is still reading.
@@ -2213,7 +2211,7 @@ impl RootPublishes for ResourceRoot {
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
         id: &str,
-    ) -> Option<tilo_actions::Resource> {
+    ) -> Option<ResourceSpec> {
         let _viewer = participant
             .cloned()
             .map(ui_core::invocation_scope::ViewerScope::enter);
@@ -3103,7 +3101,7 @@ pub(crate) struct Unopened {
     icon: IconDescriptor,
     /// What it publishes: the resource's declared actions, every document
     /// one unavailable for the reason.
-    resource: tilo_actions::Resource,
+    resource: ResourceSpec,
     shown: ui_core::widget::EmptyState,
 }
 
@@ -3117,7 +3115,7 @@ impl Unopened {
         declarations: &[tilo_resource::Declaration],
         reason: &str,
     ) -> Self {
-        let mut resource = tilo_actions::Resource::new(kind, kind, label);
+        let mut resource = ResourceSpec::new(kind, kind, label);
         for decl in declarations {
             resource = resource.with_action(tilo_resource::declaration_spec(decl));
         }
@@ -3154,7 +3152,7 @@ impl Decorator for Unopened {
 }
 
 impl ui_core::resources::PublishesResources for Unopened {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
         vec![self.resource.clone()]
     }
 }
@@ -3180,8 +3178,8 @@ mod tests {
 
     #[test]
     fn child_document_reads_are_bound_to_their_own_resource() {
-        let mut child = tilo_actions::Resource::new("book/page/body", "text", "Body");
-        child.children.push(tilo_actions::Resource::new(
+        let mut child = ResourceSpec::new("book/page/body", "text", "Body");
+        child.children.push(ResourceSpec::new(
             "private-child",
             "account",
             "Secret account",

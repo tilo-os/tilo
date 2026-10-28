@@ -778,7 +778,7 @@ impl PermissionContext {
     pub fn invocation_verdict(
         &self,
         app_id: &str,
-        resource: &tilo_actions::Resource,
+        resource: &tilo_actions::ResourceSpec,
         action: &tilo_actions::ActionSpec,
         json: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
@@ -803,7 +803,7 @@ impl PermissionContext {
     pub fn invocation_answer(
         &self,
         app_id: &str,
-        resource: &tilo_actions::Resource,
+        resource: &tilo_actions::ResourceSpec,
         action: &tilo_actions::ActionSpec,
         json: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
@@ -836,8 +836,8 @@ impl PermissionContext {
     pub fn permitted_resource(
         &self,
         app_id: &str,
-        resource: tilo_actions::Resource,
-    ) -> Option<tilo_actions::Resource> {
+        resource: tilo_actions::ResourceSpec,
+    ) -> Option<tilo_actions::ResourceSpec> {
         // A host action authority decides some nodes from a standing it
         // samples per action: ask action by action.
         if self.action_authority.is_some() {
@@ -977,8 +977,8 @@ impl PublishedAnswers<'_> {
     fn keep_permitted(
         &self,
         app_id: &str,
-        mut resource: tilo_actions::Resource,
-    ) -> Option<tilo_actions::Resource> {
+        mut resource: tilo_actions::ResourceSpec,
+    ) -> Option<tilo_actions::ResourceSpec> {
         let mut node = self.resource(app_id, &resource.kind, resource.id.as_str());
         resource.retain_actions(|action| {
             let need = action.contract.need();
@@ -997,9 +997,9 @@ impl PublishedAnswers<'_> {
 /// and action) and the nested resources that keep any; `None` when nothing
 /// is left.
 fn keep_permitted(
-    mut resource: tilo_actions::Resource,
+    mut resource: tilo_actions::ResourceSpec,
     permits: &dyn Fn(&str, &str, &tilo_actions::ActionSpec) -> bool,
-) -> Option<tilo_actions::Resource> {
+) -> Option<tilo_actions::ResourceSpec> {
     let id = resource.id.as_str().to_owned();
     let kind = resource.kind.clone();
     resource.retain_actions(|action| permits(&kind, &id, action));

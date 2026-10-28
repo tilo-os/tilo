@@ -179,7 +179,7 @@ fn counted_resources(
     visible: &Cell<bool>,
     duplicate: bool,
     doc: &AutoCommit,
-) -> Vec<Resource> {
+) -> Vec<ResourceSpec> {
     counts[0].set(counts[0].get() + 1);
     let mut resources = if visible.get() {
         crate::resources::PublishesResources::resources(&Publisher, doc)
@@ -193,7 +193,7 @@ fn counted_resources(
 }
 
 impl crate::resources::PublishesResources for SemanticCountingPublisher {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<ResourceSpec> {
         counted_resources(&self.counts, &self.visible, self.duplicate, doc)
     }
 }
@@ -363,7 +363,7 @@ impl Widget for InventoryOnlyPublisher {
 }
 
 impl crate::resources::PublishesResources for InventoryOnlyPublisher {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<ResourceSpec> {
         counted_resources(&self.counts, &self.visible, self.duplicate, doc)
     }
 }
@@ -416,7 +416,7 @@ impl Widget for FastInventoryPublisher {
 }
 
 impl crate::resources::PublishesResources for FastInventoryPublisher {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<ResourceSpec> {
         counted_resources(&self.counts, &self.visible, self.duplicate, doc)
     }
 }

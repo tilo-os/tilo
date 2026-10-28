@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use tilo_actions::Resource;
+use tilo_actions::ResourceSpec;
 use ui::icons::Icon;
 use ui::search::SearchResult;
 use ui::tilo_resource::{Derived, SearchBody, SearchPiece, SearchText, SearchWeight};
@@ -534,7 +534,7 @@ impl BookSearch {
     /// Resolve a full-text location resource exactly. This performs a bounded
     /// metadata lookup plus one block bounds check; it does not construct a
     /// prose index or hydrate unrelated chapters.
-    fn location_resource_for(&self, id: &str) -> Option<Resource> {
+    fn location_resource_for(&self, id: &str) -> Option<ResourceSpec> {
         let suffix = id.strip_prefix("ebook.location:")?;
         let (book, location) = self.books.iter().find_map(|book| {
             let prefix = format!("{}:", book.id);
@@ -553,7 +553,7 @@ impl BookSearch {
         chapter_data.blocks.get(block)?;
         let chapter_title = chapter_label(chapter_data, chapter);
         Some(
-            Resource::new(
+            ResourceSpec::new(
                 id,
                 "ebook.location",
                 format!("{chapter_title} in {}", Self::book_title(book)),
@@ -569,13 +569,13 @@ impl BookSearch {
 
     /// The resource a hit names: a chapter opened, or the place the library
     /// publishes for a book or an annotation, with what acts on it.
-    fn resource_for(&self, entry: &SearchEntry, id: &str) -> Option<Resource> {
+    fn resource_for(&self, entry: &SearchEntry, id: &str) -> Option<ResourceSpec> {
         let book = match entry.target {
             SearchTarget::Chapter { book, chapter } => {
                 let book = self.books.get(book)?;
                 book.chapters.get(chapter)?;
                 return Some(
-                    Resource::new(id, "ebook.chapter", &entry.result.title)
+                    ResourceSpec::new(id, "ebook.chapter", &entry.result.title)
                         .with_action(crate::actions::open_at(&book.id, chapter, None, "Open")),
                 );
             }
@@ -623,7 +623,7 @@ impl BookSearch {
 impl BookSearch {
     /// The exact resource a hit is anchored at: a book, a chapter, an
     /// annotation, a remote book or a reading location.
-    pub(crate) fn resolve(&self, id: &str) -> Option<Resource> {
+    pub(crate) fn resolve(&self, id: &str) -> Option<ResourceSpec> {
         if !self.available {
             return None;
         }
@@ -737,7 +737,7 @@ impl BookSearchProvider {
 
     /// The exact resource the hit anchored at `id` resolves to, as the
     /// palette resolves a hit's address.
-    pub(crate) fn resolve(&self, id: &str) -> Option<Resource> {
+    pub(crate) fn resolve(&self, id: &str) -> Option<ResourceSpec> {
         self.books.resolve(id)
     }
 }
@@ -775,7 +775,10 @@ impl ui::search::SearchProvider for BookSearchProvider {
         self.source.action_directory_cursor_is_current(cursor)
     }
 
-    fn resolve_action_resource(&self, address: &tilo_actions::ActionAddress) -> Option<Resource> {
+    fn resolve_action_resource(
+        &self,
+        address: &tilo_actions::ActionAddress,
+    ) -> Option<ResourceSpec> {
         self.books.resolve(&address.resource)
     }
 }

@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ActionApp, ActionGroup, ActionResource, InvocationId};
+use crate::{ActionApp, ActionResource, InvocationId, WorkGroup};
 
 /// Wire version understood by this crate.
 pub const INTERACTION_VERSION: u16 = 1;
@@ -210,7 +210,7 @@ pub struct SemanticInteraction {
     pub resource: ActionResource,
     pub anchor: InteractionAnchor,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub group: Option<ActionGroup>,
+    pub group: Option<WorkGroup>,
 }
 
 /// Transport/UI spelling for a semantic interaction lifecycle update.
@@ -469,7 +469,7 @@ mod tests {
                 label: "Budget".into(),
             },
             anchor,
-            group: Some(ActionGroup {
+            group: Some(WorkGroup {
                 id: "task:42".into(),
                 label: "Prepare budget".into(),
                 kind: "task".into(),

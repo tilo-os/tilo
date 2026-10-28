@@ -714,8 +714,8 @@ mod tests {
             vec![],
             |_| tilo_actions::EncodedAction::encode_operation("fixture.run", &()).unwrap(),
         );
-        let resource =
-            tilo_actions::Resource::new("fixture", "fixture", "Fixture").with_action(spec.clone());
+        let resource = tilo_actions::ResourceSpec::new("fixture", "fixture", "Fixture")
+            .with_action(spec.clone());
         tilo_actions::ActionBinding::new(&resource, &spec, |()| serde_json::Map::new()).unwrap()
     }
     fn raw_request(resource: &str, action: &str, marker: &str) -> ControlInvocation {

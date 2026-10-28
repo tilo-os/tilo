@@ -7,7 +7,7 @@
 use crate::time::SystemTime;
 
 use fluent::FluentArgs;
-use tilo_actions::{ActionBinding, ActionSpec, ControlInvocation, OperationKind, Resource};
+use tilo_actions::{ActionBinding, ActionSpec, ControlInvocation, OperationKind, ResourceSpec};
 
 use super::edit::EDIT_RESOURCE;
 use crate::i18n::I18nManager;
@@ -49,7 +49,7 @@ pub(crate) struct HostCommand {
 }
 
 impl HostCommand {
-    fn new(resource: &Resource, action: &ActionSpec, group: CommandGroup) -> Option<Self> {
+    fn new(resource: &ResourceSpec, action: &ActionSpec, group: CommandGroup) -> Option<Self> {
         Some(Self {
             binding: ActionBinding::unit(resource, action).ok()?,
             label: action.label.clone(),
@@ -108,7 +108,7 @@ impl RecentChange {
 /// the host's own (History, Search, Undo) followed by the app's declared
 /// ones; only nullary, person-facing app actions become commands.
 pub(crate) fn host_commands(
-    resources: &[Resource],
+    resources: &[ResourceSpec],
     recent: &[RecentChange],
     conventions: PlatformConventions,
     now: SystemTime,
@@ -199,13 +199,13 @@ pub(crate) fn host_commands(
     commands
 }
 
-fn action<'a>(resource: &'a Resource, id: &str) -> Option<&'a ActionSpec> {
+fn action<'a>(resource: &'a ResourceSpec, id: &str) -> Option<&'a ActionSpec> {
     resource.actions.iter().find(|action| action.id == id)
 }
 
 /// The host's own resources are presented by their own commands above; the
 /// broker-facing `tilo.history` door is the same History.
-fn is_app_resource(resource: &Resource) -> bool {
+fn is_app_resource(resource: &ResourceSpec) -> bool {
     let id = resource.id.as_str();
     !(id.starts_with("tilo.host") || id == crate::app::HISTORY_ACTION_RESOURCE)
 }

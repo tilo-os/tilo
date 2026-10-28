@@ -570,7 +570,7 @@ mod tests {
     }
     #[test]
     fn an_action_link_runs_its_action_instead_of_opening() {
-        let resource = tilo_actions::Resource::new("app:1", "app", "App").with_action(
+        let resource = tilo_actions::ResourceSpec::new("app:1", "app", "App").with_action(
             tilo_actions::ActionSpec::operation(
                 "search",
                 "Search everywhere",

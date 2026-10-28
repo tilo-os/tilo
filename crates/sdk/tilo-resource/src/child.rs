@@ -40,7 +40,7 @@ pub fn publish_child<C, R>(
     label: &str,
     state: Option<&C::State>,
     wrap: impl Fn(C::Action) -> R::Action + Send + Sync + 'static,
-) -> tilo_actions::Resource
+) -> tilo_actions::ResourceSpec
 where
     C: Resource,
     R: Resource,
@@ -55,9 +55,9 @@ where
 }
 
 fn rewrap<C: Resource, R: Resource>(
-    mut resource: tilo_actions::Resource,
+    mut resource: tilo_actions::ResourceSpec,
     wrap: &Arc<dyn Fn(C::Action) -> R::Action + Send + Sync>,
-) -> tilo_actions::Resource {
+) -> tilo_actions::ResourceSpec {
     resource.actions = std::mem::take(&mut resource.actions)
         .into_iter()
         .map(|spec| {
@@ -123,7 +123,7 @@ fn wrap_encoded<C: Resource, R: Resource>(
 pub struct NestedResource {
     /// The field type's [`Resource::KIND`].
     pub kind: &'static str,
-    publish: fn(&str, &str) -> tilo_actions::Resource,
+    publish: fn(&str, &str) -> tilo_actions::ResourceSpec,
     ops: fn(&EncodedAction) -> Result<Vec<serde_json::Value>, String>,
 }
 
@@ -154,7 +154,7 @@ impl NestedResource {
 }
 
 /// `C`'s published tree at `id`, labelled `label`, its actions still `C`'s.
-fn publish_nested<C: Resource>(id: &str, label: &str) -> tilo_actions::Resource {
+fn publish_nested<C: Resource>(id: &str, label: &str) -> tilo_actions::ResourceSpec {
     publish_parts::<C>(id, label, None)
 }
 
@@ -209,7 +209,7 @@ pub(crate) fn nested_children(
     parent: &str,
     prefix: &[crate::Segment],
     item: Option<&str>,
-) -> Vec<tilo_actions::Resource> {
+) -> Vec<tilo_actions::ResourceSpec> {
     let mut children = Vec::new();
     for field in shape.fields() {
         let Some(nested) = field.resource else {
@@ -236,14 +236,14 @@ pub(crate) fn nested_children(
 /// The children `nested_children` publishes for the record itself
 /// (`#[model(resource)]` fields of `R`, not of its items).
 #[must_use]
-pub fn record_nested_children<R: Resource>() -> Vec<tilo_actions::Resource> {
+pub fn record_nested_children<R: Resource>() -> Vec<tilo_actions::ResourceSpec> {
     nested_children_of(crate::vocabulary::<R>())
 }
 
 /// [`record_nested_children`] of the record whose vocabulary is `vocabulary`.
 pub(crate) fn nested_children_of(
     vocabulary: &'static crate::Vocabulary,
-) -> Vec<tilo_actions::Resource> {
+) -> Vec<tilo_actions::ResourceSpec> {
     match (vocabulary.shape)() {
         Some(shape) => nested_children(vocabulary, shape, vocabulary.kind, &[], None),
         None => Vec::new(),
@@ -255,11 +255,11 @@ type NestedOps = fn(&EncodedAction) -> Result<Vec<serde_json::Value>, String>;
 /// `resource` with every document action re-encoded as the field edit of
 /// the resource `vocabulary` at `path` carrying the operations it carried.
 fn as_field_edits(
-    mut resource: tilo_actions::Resource,
+    mut resource: tilo_actions::ResourceSpec,
     vocabulary: &'static crate::Vocabulary,
     ops: NestedOps,
     path: &Arc<Vec<crate::Segment>>,
-) -> tilo_actions::Resource {
+) -> tilo_actions::ResourceSpec {
     resource.actions = std::mem::take(&mut resource.actions)
         .into_iter()
         .map(|spec| {

@@ -153,7 +153,7 @@ fn drives_are_published() {
         entry("sdb1:7", "", false, Some(Path::new("/run/media/u/Stick"))),
     ]);
     let document = automerge::AutoCommit::new();
-    let resources: Vec<Resource> = crate::files_app::published::tree(&files, &document)
+    let resources: Vec<ResourceSpec> = crate::files_app::published::tree(&files, &document)
         .into_iter()
         .flat_map(|resource| resource.children)
         .filter(|resource| resource.kind == "files.drive")

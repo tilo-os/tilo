@@ -15,7 +15,8 @@ use tilo_resource::{Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::history_mode::HistoryOwner;
 use ui_core::record::RecordKind;
-use ui_core::record::person::{PersonRecord as StoredRecord, PersonRecords};
+use ui_core::record::StoredRecord;
+use ui_core::record::person::PersonRecords;
 
 /// A resource of the person's own, kept in their own room: what they
 /// watched, the words they taught the keyboard, where they stopped
@@ -246,7 +247,7 @@ pub(crate) struct PersonState {
     /// what they are, with what they publish: their declared actions,
     /// unavailable for why. Those views are told now, and never again for
     /// the same record.
-    unavailable: RefCell<HashMap<(String, &'static str), tilo_actions::Resource>>,
+    unavailable: RefCell<HashMap<(String, &'static str), tilo_actions::ResourceSpec>>,
 }
 
 /// One open record as the root publishes it.
@@ -618,7 +619,7 @@ impl PersonState {
 
     /// Every record a view asked for that could not be opened, as it is
     /// published: its declared actions, unavailable for why.
-    pub(crate) fn unavailable(&self) -> Vec<tilo_actions::Resource> {
+    pub(crate) fn unavailable(&self) -> Vec<tilo_actions::ResourceSpec> {
         self.unavailable.borrow().values().cloned().collect()
     }
 
@@ -640,7 +641,7 @@ impl PersonState {
     /// The open records as resources of their own: the person's undo and
     /// redo of each, which the palette and agents reach like the app's own
     /// history.
-    pub(crate) fn resources(&self) -> Vec<tilo_actions::Resource> {
+    pub(crate) fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         self.published
             .borrow()
             .iter()
@@ -801,5 +802,5 @@ struct RecordType<'a> {
     kind: &'static str,
     label: &'static str,
     /// What the record publishes when it could not be opened, for why.
-    unreadable: &'a dyn Fn(&str) -> tilo_actions::Resource,
+    unreadable: &'a dyn Fn(&str) -> tilo_actions::ResourceSpec,
 }

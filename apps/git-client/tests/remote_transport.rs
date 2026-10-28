@@ -414,7 +414,7 @@ fn remote_row(name: &str) -> String {
 
 /// Whether the app publishes a row for a transfer in flight.
 fn transfer_published(app: &mut TestApp<git_client::GitClientShell>) -> bool {
-    fn find(resource: &tilo_actions::Resource) -> bool {
+    fn find(resource: &tilo_actions::ResourceSpec) -> bool {
         resource.id.as_str() == "git_client.remote-job" || resource.children.iter().any(find)
     }
     app.harness().resources().iter().any(find)

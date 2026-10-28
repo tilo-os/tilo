@@ -8,7 +8,7 @@ use super::participants::{
 use super::*;
 use crate::actions::participant::{FindState, ParticipantView, ViewPoint};
 use crate::actions::{RegionKind, SearchTarget};
-use tilo_actions::{ActionInvoker, ParticipantId, Resource};
+use tilo_actions::{ActionInvoker, ParticipantId, ResourceSpec};
 use tilo_automerge::ApplyIncoming as _;
 use ui::widget::Edits;
 use winit::event::ElementState;
@@ -52,8 +52,8 @@ fn selecting(block: &str, from: usize, to: usize) -> ParticipantView {
     }
 }
 
-fn has_resource_prefix(resources: &[Resource], prefix: &str) -> bool {
-    fn walk(resource: &Resource, prefix: &str) -> bool {
+fn has_resource_prefix(resources: &[ResourceSpec], prefix: &str) -> bool {
+    fn walk(resource: &ResourceSpec, prefix: &str) -> bool {
         resource.id.as_str().starts_with(prefix)
             || resource.children.iter().any(|child| walk(child, prefix))
     }

@@ -1526,7 +1526,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         }
     };
     let children = quote! {{
-        let mut children: ::std::vec::Vec<#krate::__private::Resource> =
+        let mut children: ::std::vec::Vec<#krate::__private::ResourceSpec> =
             (#published).to_resources();
         children.extend(#krate::items::item_children::<Self>(
             &<Self as #krate::Fields>::item_collections(state),
@@ -2134,7 +2134,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             #views
             #field_fn
 
-            fn children(state: &Self) -> ::std::vec::Vec<#krate::__private::Resource> {
+            fn children(state: &Self) -> ::std::vec::Vec<#krate::__private::ResourceSpec> {
                 let _ = state;
                 #children
             }
@@ -2148,7 +2148,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             fn child(
                 state: &Self,
                 id: &str,
-            ) -> ::core::option::Option<#krate::__private::Resource> {
+            ) -> ::core::option::Option<#krate::__private::ResourceSpec> {
                 let _ = (state, id);
                 #derived_child
                 #item_child

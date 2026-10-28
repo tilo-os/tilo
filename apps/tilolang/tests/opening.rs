@@ -75,9 +75,9 @@ fn kept_notebook(dir: &std::path::Path, n: usize) {
 
 /// The published resource `id` among `resources` and the ones under them.
 fn find<'a>(
-    resources: &'a [ui::tilo_actions::Resource],
+    resources: &'a [ui::tilo_actions::ResourceSpec],
     id: &str,
-) -> Option<&'a ui::tilo_actions::Resource> {
+) -> Option<&'a ui::tilo_actions::ResourceSpec> {
     resources.iter().find_map(|resource| {
         (resource.id.as_str() == id)
             .then_some(resource)

@@ -292,9 +292,9 @@ pub(crate) fn taken_label(snapshot: &Snapshot) -> String {
 mod tests {
     use super::*;
     use crate::model::Catalog;
-    use tilo_actions::{Availability, OperationKind, Resource};
+    use tilo_actions::{Availability, OperationKind, ResourceSpec};
 
-    fn row_tree(catalog: &Catalog, blocked: Option<&Blocked>) -> Vec<Resource> {
+    fn row_tree(catalog: &Catalog, blocked: Option<&Blocked>) -> Vec<ResourceSpec> {
         live_rows(catalog, blocked)
             .into_iter()
             .map(LiveRow::into_resource)

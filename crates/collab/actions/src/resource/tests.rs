@@ -110,7 +110,7 @@ fn retaining_actions_keeps_only_the_views_still_opened() {
         )
         .expect("view payload encodes")
     };
-    let mut resource = Resource::new("thing", "test.thing", "Thing")
+    let mut resource = ResourceSpec::new("thing", "test.thing", "Thing")
         .with_action(open("reveal"))
         .with_action(open("show"))
         .with_view(ResourceViewSpec::new("revealed", "Revealed", "reveal"))
@@ -193,7 +193,7 @@ fn explicit_resource_view_builders_validate_open_and_mount_bindings() {
             "slot_capability",
             "slot_view",
         ));
-    let resource = Resource::new("note:1", "notes.note", "Note")
+    let resource = ResourceSpec::new("note:1", "notes.note", "Note")
         .with_action(open)
         .with_view(view.clone());
 
@@ -215,7 +215,7 @@ fn resource_view_validation_rejects_implicit_or_unsafe_bindings() {
         confirmation: ConfirmationPolicy::Confirm,
         ..ActionContract::default()
     });
-    let resource = Resource::new("note:1", "notes.note", "Note").with_action(effect);
+    let resource = ResourceSpec::new("note:1", "notes.note", "Note").with_action(effect);
     let view = ResourceViewSpec::new("editor", "Editor", "open")
         .with_mount(ResourceViewMountSpec::new("open", "missing", "missing"));
     let errors = view.validate(&resource).join("\n");
@@ -278,7 +278,7 @@ fn operation_builder_cannot_switch_its_declared_protocol_type() {
 
 fn binding_looks_up_real_spec_and_validates_static_arguments() {
     let resource =
-        Resource::new("view:1", "view", "View").with_action(ActionSpec::typed_operation(
+        ResourceSpec::new("view:1", "view", "View").with_action(ActionSpec::typed_operation(
             "zoom",
             "Zoom",
             "factor",
@@ -311,7 +311,7 @@ fn resource_presentation_is_bounded_before_publication() {
     };
     assert!(valid.is_valid());
     assert!(
-        Resource::new("weather:home", "weather", "Home")
+        ResourceSpec::new("weather:home", "weather", "Home")
             .with_presentation(valid)
             .presentation
             .is_some()
@@ -324,7 +324,7 @@ fn resource_presentation_is_bounded_before_publication() {
     };
     assert!(!oversized.is_valid());
     assert!(
-        Resource::new("weather:home", "weather", "Home")
+        ResourceSpec::new("weather:home", "weather", "Home")
             .with_presentation(oversized)
             .presentation
             .is_none()

@@ -154,7 +154,7 @@ impl crate::widget::ResourceOperations for ContextMenu {
 impl crate::resources::PublishesResources for ContextMenu {
     /// Each row is an effect: what a menu row does is the owner's to say,
     /// and the host admits an effect under the invoker's grants.
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.published_rows()
             .into_iter()
             .filter(|row| row.address.is_none())

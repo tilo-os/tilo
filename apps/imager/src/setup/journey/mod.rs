@@ -11225,7 +11225,7 @@ mod tests {
         id: &str,
     ) -> ui::tilo_actions::Availability {
         fn find(
-            resources: &[ui::tilo_actions::Resource],
+            resources: &[ui::tilo_actions::ResourceSpec],
             id: &str,
         ) -> Option<ui::tilo_actions::Availability> {
             resources.iter().find_map(|resource| {
@@ -11496,7 +11496,7 @@ mod tests {
         })
         .unwrap();
         app.settle();
-        fn unavailable(resources: &[ui::tilo_actions::Resource], id: &str) -> bool {
+        fn unavailable(resources: &[ui::tilo_actions::ResourceSpec], id: &str) -> bool {
             resources.iter().any(|resource| {
                 resource
                     .actions

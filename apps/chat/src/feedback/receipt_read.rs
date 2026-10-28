@@ -5,7 +5,7 @@
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
-use tilo_actions::{ActionSpec, Resource};
+use tilo_actions::{ActionSpec, ResourceSpec};
 use ui::semantic_document_read::{
     ReadPage, RegisteredSemanticReader, SemanticReadError, decode_request,
 };
@@ -28,7 +28,7 @@ pub(super) struct Request {
     pub(super) expected_author: Option<String>,
 }
 
-pub(super) fn validate(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError> {
+pub(super) fn validate(resource: &ResourceSpec, payload: &[u8]) -> Result<(), SemanticReadError> {
     let request: Request = decode_request(payload)?;
     if request.id.len() != 32
         || !request.id.bytes().all(|c| c.is_ascii_hexdigit())

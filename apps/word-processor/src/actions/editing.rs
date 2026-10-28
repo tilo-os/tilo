@@ -1544,7 +1544,7 @@ mod tests {
     use crate::word_processor::{Caret, WordProcessor};
     use tilo_actions::{
         ActionSpec, ConfirmationPolicy, ContextRequirement, EncodedAction, LocalTransport,
-        OperationKind, Resource,
+        OperationKind, ResourceSpec,
     };
     use ui::tilo_resource::Effect as _;
     use ui::widget::Widget as _;
@@ -1661,7 +1661,7 @@ mod tests {
     /// Everything published for `view`, folded into one resource for
     /// lookup: the document's actions with the view's own operations and
     /// rows beside them.
-    fn root(view: &ParticipantView, doc: &AutoCommit) -> Resource {
+    fn root(view: &ParticipantView, doc: &AutoCommit) -> ResourceSpec {
         let mut published =
             published_for(&view.ctx(doc).expect("view has a caret"), doc).into_iter();
         let mut root = published.next().expect("the document is published");
@@ -1676,7 +1676,7 @@ mod tests {
         root
     }
 
-    fn spec(root: &Resource, id: &str) -> ActionSpec {
+    fn spec(root: &ResourceSpec, id: &str) -> ActionSpec {
         root.actions
             .iter()
             .find(|spec| spec.id == id)

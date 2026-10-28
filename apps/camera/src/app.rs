@@ -608,8 +608,8 @@ impl CameraApp {
         }
     }
 
-    fn media_handoff_resource(app_id: &str, label: &str) -> ui::tilo_actions::Resource {
-        use ui::tilo_actions::Resource;
+    fn media_handoff_resource(app_id: &str, label: &str) -> ui::tilo_actions::ResourceSpec {
+        use ui::tilo_actions::ResourceSpec;
 
         let spec = crate::actions::ApplicationLaunch::content_spec(
             app_id,
@@ -617,7 +617,7 @@ impl CameraApp {
             &format!("Open {label}"),
             &format!("Open the latest capture in {label}"),
         );
-        Resource::new(format!("{app_id}.app"), "applications.app", label).with_action(spec)
+        ResourceSpec::new(format!("{app_id}.app"), "applications.app", label).with_action(spec)
     }
 
     fn media_handoff_emitter(app_id: &str, label: &str) -> Option<ActionEmitter<String>> {
@@ -645,7 +645,7 @@ impl CameraApp {
         // host can still re-resolve this address against the current Camera
         // resource surface before permitting the launch.
         let resource =
-            ui::tilo_actions::Resource::new("camera.capture", "camera.capture", "Capture")
+            ui::tilo_actions::ResourceSpec::new("camera.capture", "camera.capture", "Capture")
                 .with_action(crate::actions::open_photos_action());
         ActionBinding::unit_for(&resource, "open-photos")
             .ok()
@@ -5246,7 +5246,7 @@ mod tests {
             .iter()
             .find(|resource| resource.id.as_str() == "camera")
             .expect("the camera");
-        let ids = |resource: &ui::tilo_actions::Resource| {
+        let ids = |resource: &ui::tilo_actions::ResourceSpec| {
             resource
                 .actions
                 .iter()

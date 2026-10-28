@@ -3767,7 +3767,7 @@ pub struct LocalDocumentActionReport {
     pub context: Option<tilo_actions::ActionContext>,
     pub original_heads: Vec<[u8; 32]>,
     pub mutation_hashes: Vec<[u8; 32]>,
-    pub group: Option<tilo_actions::ActionGroup>,
+    pub group: Option<tilo_actions::WorkGroup>,
 }
 
 impl std::fmt::Debug for LocalDocumentActionReport {

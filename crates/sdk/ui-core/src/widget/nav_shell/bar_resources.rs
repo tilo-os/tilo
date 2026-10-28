@@ -7,7 +7,7 @@ use super::NavShell;
 /// shell's laid-out children, yet a press on it in the bar runs it: it
 /// publishes its action, and the operation the press starts reaches it.
 impl crate::resources::PublishesResources for NavShell {
-    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         let mut resources = Vec::new();
         for part in self.bar_parts() {
             if let Some(widget) = self.part(part) {

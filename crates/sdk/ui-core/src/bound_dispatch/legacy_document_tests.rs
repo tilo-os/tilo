@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use taffy::TaffyTree;
 use tilo_actions::{
     Action, ActionAddress, ActionError, ActionSpec, EncodedAction, ExecutionLocus, LocalTransport,
-    Resource,
+    ResourceSpec,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,7 +49,7 @@ pub(crate) struct Probe {
     pub(crate) ready: Rc<Cell<bool>>,
     pub(crate) invocation: Rc<Cell<Option<tilo_actions::InvocationId>>>,
     pub(crate) expected_owner: Rc<Cell<u64>>,
-    pub(crate) actions: Rc<RefCell<crate::action_host::ActionHost>>,
+    pub(crate) actions: Rc<RefCell<crate::local_dispatch::LocalDispatch>>,
     pub(crate) spec: Rc<RefCell<ActionSpec>>,
     pub(crate) queue: Rc<RefCell<VecDeque<tilo_actions::ControlInvocation>>>,
     pub(crate) acks: Rc<Cell<usize>>,
@@ -70,7 +70,7 @@ impl Probe {
             ready: Rc::default(),
             invocation: Rc::default(),
             expected_owner: Rc::default(),
-            actions: Rc::new(RefCell::new(crate::action_host::ActionHost::new())),
+            actions: Rc::new(RefCell::new(crate::local_dispatch::LocalDispatch::new())),
             spec: Rc::new(RefCell::new(spec(2, false, false))),
             queue: Rc::default(),
             acks: Rc::default(),
@@ -213,7 +213,7 @@ impl crate::widget::ResourceOperations for Probe {
 }
 
 impl crate::resources::PublishesResources for Probe {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<ResourceSpec> {
         self.value.set(
             doc.get(ROOT, "value")
                 .unwrap()
@@ -225,14 +225,14 @@ impl crate::resources::PublishesResources for Probe {
         }
         (0..self.declarations.get())
             .map(|_| {
-                Resource::new("controlled.value", "controlled", "Owned value")
+                ResourceSpec::new("controlled.value", "controlled", "Owned value")
                     .with_action(self.spec.borrow().clone())
             })
             .collect()
     }
-    fn resource(&self, _: &AutoCommit, id: &str) -> Option<Resource> {
+    fn resource(&self, _: &AutoCommit, id: &str) -> Option<ResourceSpec> {
         (id == "controlled.value" && !self.eager.get() && self.declarations.get() > 0).then(|| {
-            Resource::new("controlled.value", "controlled", "Owned value")
+            ResourceSpec::new("controlled.value", "controlled", "Owned value")
                 .with_action(self.spec.borrow().clone())
         })
     }

@@ -72,7 +72,7 @@ impl Resource for Query {
         Ok(())
     }
 
-    fn children(_state: &String) -> Vec<tilo_actions::Resource> {
+    fn children(_state: &String) -> Vec<tilo_actions::ResourceSpec> {
         vec![publish_child::<PlainText, Self>(
             &sql_id(),
             "SQL",

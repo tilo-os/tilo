@@ -235,7 +235,10 @@ fn published(app: &mut TestApp<ClocksShell>) -> Vec<(String, String)> {
         .collect()
 }
 
-fn find(resources: &[ui::tilo_actions::Resource], id: &str) -> Option<ui::tilo_actions::Resource> {
+fn find(
+    resources: &[ui::tilo_actions::ResourceSpec],
+    id: &str,
+) -> Option<ui::tilo_actions::ResourceSpec> {
     resources.iter().find_map(|resource| {
         if resource.id.as_str() == id {
             Some(resource.clone())

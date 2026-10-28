@@ -780,11 +780,11 @@ impl App {
     /// The person's Retry, while changes the broker refused wait for it: a
     /// resource of the window's own, reached by the History bar's status,
     /// the palette, menus and assistive technology alike.
-    pub(super) fn unsaved_changes_resources(&self) -> Vec<tilo_actions::Resource> {
+    pub(super) fn unsaved_changes_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         if !self.has_unsaved_changes_to_retry() {
             return Vec::new();
         }
-        let mut resource = tilo_actions::Resource::new(
+        let mut resource = tilo_actions::ResourceSpec::new(
             UNSAVED_RESOURCE,
             UNSAVED_RESOURCE,
             crate::i18n::I18nManager::lookup_plain("history-local-action-not-saved"),
@@ -1063,7 +1063,7 @@ mod tests {
     fn only_a_recorded_edit_makes_unmanaged_history_unsigned() {
         let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
         let mut doc = automerge::AutoCommit::new();
-        let mut host = crate::action_host::ActionHost::new();
+        let mut host = crate::local_dispatch::LocalDispatch::new();
         // Input that edits nothing, even one running a no-op action.
         for _ in 0..3 {
             let input = app.begin_local_input_capture();
@@ -1097,7 +1097,7 @@ mod tests {
     fn a_refused_action_that_committed_an_edit_is_unsigned_history() {
         let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
         let mut doc = automerge::AutoCommit::new();
-        let mut host = crate::action_host::ActionHost::new();
+        let mut host = crate::local_dispatch::LocalDispatch::new();
         let input = app.begin_local_input_capture();
         assert!(
             host.try_dispatch(&mut doc, "commit-then-refuse", &CommitThenRefuse)
@@ -1122,7 +1122,7 @@ mod tests {
     fn a_refused_action_without_a_commit_leaves_history_silent() {
         let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
         let mut doc = automerge::AutoCommit::new();
-        let mut host = crate::action_host::ActionHost::new();
+        let mut host = crate::local_dispatch::LocalDispatch::new();
         let input = app.begin_local_input_capture();
         assert!(
             host.try_dispatch(&mut doc, "write-then-refuse", &WriteThenRefuse)
@@ -1165,7 +1165,7 @@ mod tests {
                     arguments: serde_json::Map::new(),
                 },
             );
-            crate::action_host::ActionHost::new()
+            crate::local_dispatch::LocalDispatch::new()
                 .try_dispatch(&mut doc, "noop", &Noop)
                 .unwrap();
         }
@@ -1188,7 +1188,7 @@ mod tests {
             .queues
             .insert(route.clone(), queue.clone());
         let mut doc = automerge::AutoCommit::new();
-        let mut host = crate::action_host::ActionHost::new();
+        let mut host = crate::local_dispatch::LocalDispatch::new();
         {
             let _scope = input(&queue, &route);
             let _invocation = crate::local_document_action::with_invocation(
@@ -1242,7 +1242,7 @@ mod tests {
             .queues
             .insert(route.clone(), queue.clone());
         let mut doc = automerge::AutoCommit::new();
-        let mut host = crate::action_host::ActionHost::new();
+        let mut host = crate::local_dispatch::LocalDispatch::new();
         let mut first = None;
         for _ in 0..130 {
             {

@@ -823,7 +823,7 @@ fn with_nobody_yet_the_window_says_how_to_start() {
 }
 
 /// Whether `resource` or one inside it offers Open Contacts.
-fn offers_open_contacts(resource: &ui::tilo_actions::Resource) -> bool {
+fn offers_open_contacts(resource: &ui::tilo_actions::ResourceSpec) -> bool {
     resource
         .actions
         .iter()

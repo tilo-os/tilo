@@ -45,7 +45,7 @@ fn read(app: &mut TestApp<SettingsShell>) -> Vec<&'static str> {
 
 /// `resource` as inert data, children included: what agents, the palette
 /// and accessibility read.
-fn outline(resource: &tilo_actions::Resource) -> serde_json::Value {
+fn outline(resource: &tilo_actions::ResourceSpec) -> serde_json::Value {
     let mut own = resource.clone();
     own.children.clear();
     serde_json::json!({
@@ -152,7 +152,7 @@ fn controls(app: &mut TestApp<SettingsShell>) -> Vec<(String, Option<String>, bo
 /// Every resource id the live window publishes before its first frame:
 /// what its first control-availability refresh built.
 fn before_the_first_frame(deferred: bool) -> BTreeSet<String> {
-    fn collect(resources: &[tilo_actions::Resource], ids: &mut BTreeSet<String>) {
+    fn collect(resources: &[tilo_actions::ResourceSpec], ids: &mut BTreeSet<String>) {
         for resource in resources {
             ids.insert(resource.id.as_str().to_owned());
             collect(&resource.children, ids);

@@ -1,12 +1,12 @@
 //! The nested **Resource** tree an app publishes, and the **`ActionSpec`**s
 //! each resource exports.
 //!
-//! A [`Resource`] is something the app currently has *open/presented*
+//! A [`ResourceSpec`] is something the app currently has *open/presented*
 //! (a playing video, an open book); resources **nest** — a video owns
 //! its comments, a book its annotations. Each exports [`ActionSpec`]s:
 //! the operations Ctrl+K offers for it.
 //!
-//! The split that matters: [`Resource`]/[`ActionSpec`] is
+//! The split that matters: [`ResourceSpec`]/[`ActionSpec`] is
 //! **presentation** — local, per-frame, with human labels and (for a
 //! prompted action) a closure. The [`EncodedAction`] an `ActionSpec`
 //! yields is the **action** — serializable, replayable. Presentation
@@ -104,7 +104,7 @@ type Arguments<I> =
 
 /// Type-safe adapter from a control's input value to an exported action.
 ///
-/// Construction requires the real [`Resource`] and [`ActionSpec`], rather
+/// Construction requires the real [`ResourceSpec`] and [`ActionSpec`], rather
 /// than parallel string constants. Emission pre-validates arguments against a
 /// clone of that spec; the host nevertheless re-resolves and validates again
 /// at dispatch time because this object is convenience, not authority.
@@ -124,7 +124,7 @@ impl<I> ActionBinding<I> {
     /// Returns [`ActionBindingError::ActionNotExported`] if `spec` is absent
     /// from `resource`.
     pub fn new(
-        resource: &Resource,
+        resource: &ResourceSpec,
         spec: &ActionSpec,
         arguments: impl Fn(I) -> serde_json::Map<String, serde_json::Value> + Send + Sync + 'static,
     ) -> Result<Self, ActionBindingError> {
@@ -140,7 +140,7 @@ impl<I> ActionBinding<I> {
     /// Returns [`ActionBindingError::ActionNotExported`] if `spec` is absent
     /// from `resource`.
     pub fn fallible(
-        resource: &Resource,
+        resource: &ResourceSpec,
         spec: &ActionSpec,
         arguments: impl Fn(I) -> Result<serde_json::Map<String, serde_json::Value>, String>
         + Send
@@ -192,7 +192,7 @@ impl<I> ActionBinding<I> {
 
 impl ActionBinding<()> {
     /// Bind a nullary control to a nullary exported action.
-    pub fn unit(resource: &Resource, spec: &ActionSpec) -> Result<Self, ActionBindingError> {
+    pub fn unit(resource: &ResourceSpec, spec: &ActionSpec) -> Result<Self, ActionBindingError> {
         let binding = Self::new(resource, spec, |()| serde_json::Map::new())?;
         // Refuse a required-argument action at construction, not first click.
         if binding.spec.deferred_invocation_type().is_some()
@@ -207,7 +207,7 @@ impl ActionBinding<()> {
 
     /// Look up the real exported spec by stable id, then create a nullary
     /// binding. Useful when the resource is assembled inline or generated.
-    pub fn unit_for(resource: &Resource, action_id: &str) -> Result<Self, ActionBindingError> {
+    pub fn unit_for(resource: &ResourceSpec, action_id: &str) -> Result<Self, ActionBindingError> {
         let spec = resource
             .actions
             .iter()
@@ -221,7 +221,7 @@ impl ActionBinding<()> {
 
     /// Bind a control to a fixed, strictly validated JSON argument object.
     pub fn static_json(
-        resource: &Resource,
+        resource: &ResourceSpec,
         spec: &ActionSpec,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<Self, ActionBindingError> {
@@ -242,7 +242,7 @@ impl ActionBinding<()> {
 
     /// Look up the real exported spec by id, then bind fixed JSON arguments.
     pub fn static_json_for(
-        resource: &Resource,
+        resource: &ResourceSpec,
         action_id: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<Self, ActionBindingError> {
@@ -455,7 +455,7 @@ impl ResourceViewSpec {
     ///
     /// Cross-view invariants such as unique open actions and a single primary
     /// view are checked by [`crate::validate_surface_contracts`].
-    pub fn validate(&self, resource: &Resource) -> Vec<String> {
+    pub fn validate(&self, resource: &ResourceSpec) -> Vec<String> {
         let mut errors = Vec::new();
         if self.id.is_empty() || self.id.contains(KEY_SEP) {
             errors.push("view id is empty or contains the separator".into());
@@ -538,7 +538,7 @@ impl ResourceViewSpec {
 }
 
 fn validate_view_action(
-    resource: &Resource,
+    resource: &ResourceSpec,
     action_id: &str,
     role: &str,
     errors: &mut Vec<String>,
@@ -604,9 +604,9 @@ impl ResourceSemanticIdentity {
 }
 
 /// One open/presented resource and the actions it exports. Resources
-/// nest via [`children`](Resource::children).
+/// nest via [`children`](ResourceSpec::children).
 #[derive(Clone)]
-pub struct Resource {
+pub struct ResourceSpec {
     pub id: ResourceId,
     /// A stable kind tag (e.g. `"tube.video"`, `"ebook.annotation"`),
     /// shared with the global-search type registry for OS-wide enumeration.
@@ -623,14 +623,14 @@ pub struct Resource {
     /// provider keeping it in a room. `None` for a resource published
     /// outside an app.
     pub app_id: Option<String>,
-    pub children: Vec<Resource>,
+    pub children: Vec<ResourceSpec>,
     pub actions: Vec<ActionSpec>,
     /// Explicit presentations of this resource. Actions remain invocation
     /// mechanisms; only entries in this collection are resource views.
     pub views: Vec<ResourceViewSpec>,
 }
 
-impl Resource {
+impl ResourceSpec {
     pub fn new(id: impl Into<String>, kind: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             id: ResourceId::new(id),
@@ -682,13 +682,13 @@ impl Resource {
     }
 
     #[must_use]
-    pub fn with_child(mut self, child: Resource) -> Self {
+    pub fn with_child(mut self, child: ResourceSpec) -> Self {
         self.children.push(child);
         self
     }
 
     #[must_use]
-    pub fn with_children(mut self, children: impl IntoIterator<Item = Resource>) -> Self {
+    pub fn with_children(mut self, children: impl IntoIterator<Item = ResourceSpec>) -> Self {
         self.children.extend(children);
         self
     }
@@ -2566,7 +2566,7 @@ pub use listed_row::{ListedRow, listed_row, listed_row_problems};
 
 /// Depth-first flatten of a resource forest into every exported action,
 /// parents before children — what the palette lists.
-pub fn flatten(resources: &[Resource]) -> Vec<FlatAction<'_>> {
+pub fn flatten(resources: &[ResourceSpec]) -> Vec<FlatAction<'_>> {
     let mut out = Vec::new();
     for r in resources {
         flatten_into(r, 0, &mut out);
@@ -2574,7 +2574,7 @@ pub fn flatten(resources: &[Resource]) -> Vec<FlatAction<'_>> {
     out
 }
 
-fn flatten_into<'a>(resource: &'a Resource, depth: usize, out: &mut Vec<FlatAction<'a>>) {
+fn flatten_into<'a>(resource: &'a ResourceSpec, depth: usize, out: &mut Vec<FlatAction<'a>>) {
     for action in &resource.actions {
         out.push(FlatAction {
             key: format!("{}{}{}", resource.id.0, KEY_SEP, action.id),

@@ -6,7 +6,7 @@ use super::{
     resolve_resource_invocation,
 };
 use crate::history_mode::HistoryOwner;
-use tilo_actions::{ActionAddress, ControlInvocation, DoorError, OperationKind, Resource};
+use tilo_actions::{ActionAddress, ControlInvocation, DoorError, OperationKind, ResourceSpec};
 
 #[allow(
     clippy::needless_pass_by_value,
@@ -43,7 +43,7 @@ enum ResourceOwner {
 }
 struct OwnerResources {
     owner: ResourceOwner,
-    resources: Vec<Resource>,
+    resources: Vec<ResourceSpec>,
     interactive: bool,
 }
 pub(crate) struct ResourceReadRequest<'a> {
@@ -60,7 +60,7 @@ fn owned_resources<W: Widget + ?Sized>(
     root: &W,
     doc: &AutoCommit,
     address: Option<&ActionAddress>,
-    resources: &mut Vec<Resource>,
+    resources: &mut Vec<ResourceSpec>,
 ) {
     // A delivered invocation resolves against its invoker's own view,
     // rebuilt now; outside one this is the widget's own view.
@@ -85,7 +85,7 @@ fn provider<W: Widget + ?Sized>(
     root: &W,
     binding: &CallbackBinding,
     address: &ActionAddress,
-) -> Option<Resource> {
+) -> Option<ResourceSpec> {
     let mut found = crate::search::capability::search_providers(root)
         .into_iter()
         .filter(|p| {
@@ -211,7 +211,7 @@ fn inventory(
     root.visit_resource_owners(&mut request)?;
     Ok(request.owners)
 }
-fn claims(resources: &[Resource], address: &ActionAddress) -> usize {
+fn claims(resources: &[ResourceSpec], address: &ActionAddress) -> usize {
     resources
         .iter()
         .map(|resource| {
@@ -281,7 +281,7 @@ pub(crate) fn legacy_resources(
     authority: &PermissionContext,
     author: &UserId,
     broker: bool,
-) -> Result<Vec<Resource>, DoorError> {
+) -> Result<Vec<ResourceSpec>, DoorError> {
     let mut output = vec![];
     // Component declarations come from the cached component discovery.
     for snapshot in inventory(root, None, false)? {
@@ -315,13 +315,13 @@ fn operation_allowed(
     ))
 }
 fn filter_legacy_resource(
-    mut resource: Resource,
+    mut resource: ResourceSpec,
     owner: &HistoryOwner,
     app: &str,
     authority: &PermissionContext,
     author: &UserId,
     broker: bool,
-) -> Option<Resource> {
+) -> Option<ResourceSpec> {
     let current = current_authority(authority).ok()?;
     resource.retain_actions(|spec| {
         operation_allowed(&current, app, spec)
@@ -664,7 +664,7 @@ pub(crate) fn invoke_legacy_document<'a>(
 pub(crate) fn resolve_legacy_invocation(
     root: &dyn Widget,
     target: &LegacyResourceTarget,
-) -> Result<Vec<Resource>, DoorError> {
+) -> Result<Vec<ResourceSpec>, DoorError> {
     // This exact-target lookup must not depend on unrelated busy siblings.
     let mut request = ResourceReadRequest {
         address: Some(&target.address),

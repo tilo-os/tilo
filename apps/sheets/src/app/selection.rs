@@ -205,7 +205,7 @@ impl SheetsApp {
     /// The workbook as the palette, agents and scripts see it from this
     /// surface: the resource's publication with the edits bound to the
     /// selection and its effects.
-    pub(crate) fn published(&self) -> Vec<tilo_actions::Resource> {
+    pub(crate) fn published(&self) -> Vec<tilo_actions::ResourceSpec> {
         use ui::tilo_resource::{Effect as _, Resource as _};
 
         let mut workbook =

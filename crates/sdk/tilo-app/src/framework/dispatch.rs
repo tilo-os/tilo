@@ -258,7 +258,7 @@ pub(crate) struct DispatchState {
     /// Why the record does not read as the resource, while it does not:
     /// nothing is submitted against a state nobody can see.
     unreadable: Rc<RefCell<Option<String>>>,
-    host: Rc<RefCell<ui_core::action_host::ActionHost>>,
+    host: Rc<RefCell<ui_core::local_dispatch::LocalDispatch>>,
     /// Counts the immediate actions of the resource and its children, so a
     /// dispatcher can tell that nothing came between its last action and
     /// its next.
@@ -332,7 +332,7 @@ type Serialed<R> = (u64, <R as Resource>::Action);
 /// Applies a group of the resource's actions now, as one action.
 type GroupNow<R> = Rc<
     dyn Fn(
-        &mut ui_core::action_host::ActionHost,
+        &mut ui_core::local_dispatch::LocalDispatch,
         &mut Edits<'_>,
         &tilo_resource::ActionGroup<<R as Resource>::Action>,
         ActionContext,
@@ -343,7 +343,7 @@ type GroupNow<R> = Rc<
 /// the host.
 type SubmitNow<R> = Rc<
     dyn Fn(
-        &mut ui_core::action_host::ActionHost,
+        &mut ui_core::local_dispatch::LocalDispatch,
         &mut Edits<'_>,
         &<R as Resource>::Action,
         ActionContext,

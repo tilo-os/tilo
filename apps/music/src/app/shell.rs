@@ -34,7 +34,7 @@ pub(crate) struct Playing {
 /// `effect` on this device's player row, which offers it whatever plays:
 /// the control follows the row's own offer of it.
 fn on_player(effect: &MusicEffect) -> Option<ui::tilo_actions::ActionBinding<()>> {
-    let player = ui::tilo_actions::Resource::new(
+    let player = ui::tilo_actions::ResourceSpec::new(
         crate::actions::PLAYER_RESOURCE_ID,
         "music.player",
         "Player",

@@ -2,7 +2,7 @@
 //! goes through its declared action; host chrome owns only the close decision.
 use crate::widget::{Button, Column, ModalDialog, Text, Widget};
 use serde::{Deserialize, Serialize};
-use tilo_actions::{ActionAddress, ActionSpec, OperationKind, Resource};
+use tilo_actions::{ActionAddress, ActionSpec, OperationKind, ResourceSpec};
 
 /// An external editable document which cannot be replaced by an in-memory
 /// record flush or a lossy recovery export. `revision` identifies the exact
@@ -138,7 +138,7 @@ impl Admission {
             && command.session == self.session
             && self.choices.contains(&command.choice)
     }
-    pub fn resources(&self) -> Vec<Resource> {
+    pub fn resources(&self) -> Vec<ResourceSpec> {
         if self.dialog.is_none() {
             return Vec::new();
         }
@@ -168,8 +168,8 @@ impl Admission {
     }
 }
 
-fn resource_for(session: uuid::Uuid, choices: &[Choice]) -> Resource {
-    let mut resource = Resource::new(
+fn resource_for(session: uuid::Uuid, choices: &[Choice]) -> ResourceSpec {
+    let mut resource = ResourceSpec::new(
         format!("tilo.host.close:{session}"),
         "tilo.host.close",
         crate::i18n::I18nManager::lookup_plain("close-title"),

@@ -131,15 +131,15 @@ impl SharedSelection {
 
     /// Name the published resource the selection is in when the widget did
     /// not: the resource of [`Self::resource_kind`], else the first one.
-    pub fn resolve_resource(&mut self, published: &[tilo_actions::Resource]) {
+    pub fn resolve_resource(&mut self, published: &[tilo_actions::ResourceSpec]) {
         if self.resource.is_some() {
             return;
         }
         fn find<'a>(
-            resources: &'a [tilo_actions::Resource],
+            resources: &'a [tilo_actions::ResourceSpec],
             kind: &str,
             depth: usize,
-        ) -> Option<&'a tilo_actions::Resource> {
+        ) -> Option<&'a tilo_actions::ResourceSpec> {
             if depth > 4 {
                 return None;
             }
@@ -272,7 +272,7 @@ impl AgentRequest {
     pub fn resolve(
         self,
         focused: Option<SharedSelection>,
-        published: &[tilo_actions::Resource],
+        published: &[tilo_actions::ResourceSpec],
     ) -> (Option<SharedSelection>, Option<[f64; 4]>) {
         let at = self.at;
         let focused = focused.filter(|selection| match (at, selection.bounds) {
@@ -419,9 +419,9 @@ mod tests {
     #[test]
     fn the_resource_is_the_published_one_of_the_items_kind() {
         let published = vec![
-            tilo_actions::Resource::new("settings", "app.settings", "Settings"),
-            tilo_actions::Resource::new("doc:1", "notebook", "Notebook").with_child(
-                tilo_actions::Resource::new("page:7", "rich-text", "Monday notes"),
+            tilo_actions::ResourceSpec::new("settings", "app.settings", "Settings"),
+            tilo_actions::ResourceSpec::new("doc:1", "notebook", "Notebook").with_child(
+                tilo_actions::ResourceSpec::new("page:7", "rich-text", "Monday notes"),
             ),
         ];
         let mut selection = SharedSelection::of_text("x").in_kind("rich-text");
@@ -601,8 +601,10 @@ mod tests {
         );
     }
 
-    fn published() -> Vec<tilo_actions::Resource> {
-        vec![tilo_actions::Resource::new("doc:1", "notebook", "Notebook")]
+    fn published() -> Vec<tilo_actions::ResourceSpec> {
+        vec![tilo_actions::ResourceSpec::new(
+            "doc:1", "notebook", "Notebook",
+        )]
     }
 
     #[test]

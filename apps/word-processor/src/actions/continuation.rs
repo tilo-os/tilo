@@ -50,7 +50,7 @@ pub(crate) fn pure(spec: ActionSpec, handler: &'static str, domain: Parts) -> Ac
 
 #[cfg(test)]
 mod tests {
-    use tilo_actions::{ContinuationArguments, ContinuationQuery, Resource};
+    use tilo_actions::{ContinuationArguments, ContinuationQuery, ResourceSpec};
 
     #[test]
     fn writer_continuation_read_text_stays_dynamic_and_encodes() {
@@ -70,7 +70,7 @@ mod tests {
             )))
             .is_some()
         );
-        let resource = Resource::new(
+        let resource = ResourceSpec::new(
             "word-processor.document",
             "word-processor.document",
             "Document",

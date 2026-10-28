@@ -69,7 +69,10 @@ fn signature(id: &str, page: usize, rect: PtRect, signer: &str, ink: SignatureIn
 }
 
 /// The published resource `id` within `root`, wherever it nests.
-fn find<'a>(root: &'a tilo_actions::Resource, id: &str) -> Option<&'a tilo_actions::Resource> {
+fn find<'a>(
+    root: &'a tilo_actions::ResourceSpec,
+    id: &str,
+) -> Option<&'a tilo_actions::ResourceSpec> {
     if root.id.as_str() == id {
         return Some(root);
     }
@@ -80,7 +83,7 @@ fn item(field: &str, id: &str) -> String {
     ui::tilo_resource::items::item_resource_id::<PdfMarkup>(field, &Id::from_raw(id))
 }
 
-fn action_ids(resource: &tilo_actions::Resource) -> Vec<&str> {
+fn action_ids(resource: &tilo_actions::ResourceSpec) -> Vec<&str> {
     resource.actions.iter().map(|a| a.id.as_str()).collect()
 }
 

@@ -3,7 +3,7 @@
 
 use serde_json::json;
 use tilo_actions::{
-    ActionParam, ActionSpec, Availability, EncodedAction, OperationKind, ParamType, Resource,
+    ActionParam, ActionSpec, Availability, EncodedAction, OperationKind, ParamType, ResourceSpec,
 };
 use zeroize::Zeroizing;
 
@@ -12,7 +12,7 @@ use crate::shell::test_control::{Command, Response};
 
 const PROVIDER: &str = "session-lock";
 
-fn resources(locked: bool, lock: &LockController) -> Vec<Resource> {
+fn resources(locked: bool, lock: &LockController) -> Vec<ResourceSpec> {
     let mut action = ActionSpec::typed_operation(
         "unlock",
         crate::shell::i18n::t("lock-screen-unlock"),
@@ -46,7 +46,7 @@ fn resources(locked: bool, lock: &LockController) -> Vec<Resource> {
         };
     }
     vec![
-        Resource::new(
+        ResourceSpec::new(
             PROVIDER,
             "session-lock.unlock",
             crate::shell::i18n::t("lock-screen-unlock"),

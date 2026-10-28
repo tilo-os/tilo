@@ -54,7 +54,7 @@ fn library(doc: &AutoCommit) -> PhotoLibrary {
 }
 
 /// The library `doc` holds, as it publishes itself.
-fn published(doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+fn published(doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
     vec![ui::tilo_resource::publish::<PhotoLibrary>(
         "photos.library",
         "Photos",

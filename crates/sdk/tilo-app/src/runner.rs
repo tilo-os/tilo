@@ -121,7 +121,7 @@ pub(crate) fn operation_types() -> &'static [&'static str] {
 
 #[cfg(target_family = "wasm")]
 pub(crate) fn with_native_presentations(
-    resource: tilo_actions::Resource,
-) -> tilo_actions::Resource {
+    resource: tilo_actions::ResourceSpec,
+) -> tilo_actions::ResourceSpec {
     resource
 }

@@ -2357,9 +2357,9 @@ impl ui::widget::Widget for OpensWriter {
 }
 
 impl ui::resources::PublishesResources for OpensWriter {
-    fn resources(&self, _: &ui::automerge::AutoCommit) -> Vec<ui::tilo_actions::Resource> {
+    fn resources(&self, _: &ui::automerge::AutoCommit) -> Vec<ui::tilo_actions::ResourceSpec> {
         vec![
-            ui::tilo_actions::Resource::new("camera.capture", "camera.capture", "Capture")
+            ui::tilo_actions::ResourceSpec::new("camera.capture", "camera.capture", "Capture")
                 .with_action(
                     ui::tilo_actions::remote::ApplicationLaunch::app("so.tilo.writer").spec(
                         "open-writer",

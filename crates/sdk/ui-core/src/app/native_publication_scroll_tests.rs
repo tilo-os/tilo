@@ -75,10 +75,10 @@ impl crate::widget::AppWidget for PublicationProbeRoot {
 }
 
 impl crate::resources::PublishesResources for PublicationProbeRoot {
-    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.declarations.set(self.declarations.get() + 1);
         vec![
-            tilo_actions::Resource::new("probe:scroll", "probe", "Scroll fixture").with_action(
+            tilo_actions::ResourceSpec::new("probe:scroll", "probe", "Scroll fixture").with_action(
                 tilo_actions::ActionSpec::operation(
                     "inspect",
                     "Inspect",

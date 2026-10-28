@@ -101,7 +101,10 @@ impl FrameHarness {
     /// The semantic tree the live `App` builds: over the exported node map
     /// and the bound components' resources, so widgets inside a hosted
     /// component are reached the way assistive technology reaches them.
-    pub(super) fn semantic_tree_over(&self, resources: &[tilo_actions::Resource]) -> SemanticTree {
+    pub(super) fn semantic_tree_over(
+        &self,
+        resources: &[tilo_actions::ResourceSpec],
+    ) -> SemanticTree {
         let components = crate::bound_dispatch::discover_bound_resources(
             self.root.as_ref(),
             &self.state.doc,
@@ -188,7 +191,7 @@ impl FrameHarness {
         &self,
         widget: &dyn crate::widget::Widget,
         target: &crate::bound_dispatch::BoundActionTarget,
-        resources: &[tilo_actions::Resource],
+        resources: &[tilo_actions::ResourceSpec],
         result: &mut Vec<Option<Rect>>,
     ) {
         if widget

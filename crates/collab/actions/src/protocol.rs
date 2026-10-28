@@ -7,7 +7,7 @@
 
 use std::{collections::HashSet, hash::BuildHasher};
 
-use crate::{ActionInput, ActionRegistry, Resource};
+use crate::{ActionInput, ActionRegistry, ResourceSpec};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContractViolation {
@@ -16,7 +16,7 @@ pub struct ContractViolation {
 }
 
 pub fn validate_surface<S: BuildHasher>(
-    resources: &[Resource],
+    resources: &[ResourceSpec],
     registry: &ActionRegistry,
     operation_handlers: &HashSet<String, S>,
 ) -> Vec<ContractViolation> {
@@ -28,14 +28,14 @@ pub fn validate_surface<S: BuildHasher>(
 /// effect/view handler table. Tooling that owns an explicit handler table
 /// should use [`validate_surface`] for the additional coverage.
 pub fn validate_surface_contracts(
-    resources: &[Resource],
+    resources: &[ResourceSpec],
     registry: &ActionRegistry,
 ) -> Vec<ContractViolation> {
     validate_surface_inner(resources, registry, None::<&HashSet<String>>)
 }
 
 fn validate_surface_inner<S: BuildHasher>(
-    resources: &[Resource],
+    resources: &[ResourceSpec],
     registry: &ActionRegistry,
     operation_handlers: Option<&HashSet<String, S>>,
 ) -> Vec<ContractViolation> {
@@ -56,7 +56,7 @@ fn validate_surface_inner<S: BuildHasher>(
 }
 
 fn validate_resource<S: BuildHasher>(
-    resource: &Resource,
+    resource: &ResourceSpec,
     registry: &ActionRegistry,
     operation_handlers: Option<&HashSet<String, S>>,
     seen_resources: &mut HashSet<String>,
@@ -162,7 +162,7 @@ fn validate_resource<S: BuildHasher>(
 }
 
 fn validate_resource_identity(
-    resource: &Resource,
+    resource: &ResourceSpec,
     seen_resources: &mut HashSet<String>,
     violations: &mut Vec<ContractViolation>,
 ) {
@@ -181,7 +181,7 @@ fn validate_resource_identity(
     }
 }
 
-fn validate_views(resource: &Resource, violations: &mut Vec<ContractViolation>) {
+fn validate_views(resource: &ResourceSpec, violations: &mut Vec<ContractViolation>) {
     let mut view_ids = HashSet::new();
     let mut view_open_actions = HashSet::new();
     let mut primary_views = 0usize;
@@ -243,13 +243,15 @@ mod tests {
                     ..crate::ActionContract::default()
                 });
         let resources = vec![
-            Resource::new("same", "test.item", "One").with_action(unsafe_effect),
-            Resource::new("same", "test.item", "Two").with_action(ActionSpec::immediate_encoded(
-                "edit",
-                "Edit",
-                crate::ExecutionLocus::ClientLocal,
-                EncodedAction::encode_operation("test.missing", &()).unwrap(),
-            )),
+            ResourceSpec::new("same", "test.item", "One").with_action(unsafe_effect),
+            ResourceSpec::new("same", "test.item", "Two").with_action(
+                ActionSpec::immediate_encoded(
+                    "edit",
+                    "Edit",
+                    crate::ExecutionLocus::ClientLocal,
+                    EncodedAction::encode_operation("test.missing", &()).unwrap(),
+                ),
+            ),
         ];
         let violations = validate_surface(&resources, &ActionRegistry::new(), &HashSet::new());
         let text = violations
@@ -282,7 +284,7 @@ mod tests {
             confirmation: crate::ConfirmationPolicy::Confirm,
             ..crate::ActionContract::default()
         });
-        let resource = Resource::new("thing:1", "test.thing", "Thing")
+        let resource = ResourceSpec::new("thing:1", "test.thing", "Thing")
             .with_action(open)
             .with_action(mount)
             .with_view(

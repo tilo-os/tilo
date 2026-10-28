@@ -5,7 +5,7 @@ use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 
-use tilo_actions::{ActionInput, ActionSpec, Resource};
+use tilo_actions::{ActionInput, ActionSpec, ResourceSpec};
 
 use super::{
     AccessState, PromptedMap, Role, SemanticAction, SemanticActionKind, SemanticId, SemanticNode,
@@ -23,7 +23,7 @@ enum Source {
     /// A shared forest, kept so the next one is diffed against it.
     Shared(Rc<[SharedResource]>),
     /// An ordinary tree, reused while the component hands over the same one.
-    Plain(Weak<Vec<Resource>>),
+    Plain(Weak<Vec<ResourceSpec>>),
 }
 
 /// The semantic nodes of one bound component's published resources, and the
@@ -298,7 +298,7 @@ impl ComponentNodes {
     /// Its actions' bound targets are then the ones a rebuild records too:
     /// they come from the resource's id, each action's id and the
     /// component's identity alone.
-    fn keeps_node_of(&self, id: &SemanticId, head: &Resource) -> bool {
+    fn keeps_node_of(&self, id: &SemanticId, head: &ResourceSpec) -> bool {
         let Some(node) = self.nodes.get(id) else {
             return false;
         };
@@ -370,7 +370,7 @@ impl ComponentNodes {
     fn resource_node(
         &mut self,
         id: SemanticId,
-        head: &Resource,
+        head: &ResourceSpec,
         children: Vec<SemanticId>,
     ) -> SemanticNode {
         #[cfg(any(test, feature = "test-support"))]
@@ -423,7 +423,7 @@ impl ComponentNodes {
         self.insert_node(node, order)
     }
 
-    fn insert_plain(&mut self, resource: &Resource, order: &mut Vec<SemanticId>) -> SemanticId {
+    fn insert_plain(&mut self, resource: &ResourceSpec, order: &mut Vec<SemanticId>) -> SemanticId {
         let id = bound_resource_id(&self.binding, resource.id.as_str());
         #[cfg(any(test, feature = "test-support"))]
         {
@@ -470,7 +470,7 @@ pub(super) fn bound_resource_id(binding: &CallbackBinding, id: &str) -> Semantic
 /// prompted builder and, for a component's resource, each bound target.
 pub(super) fn resource_actions(
     id: &SemanticId,
-    resource: &Resource,
+    resource: &ResourceSpec,
     binding: Option<&CallbackBinding>,
     prompted: &mut PromptedMap,
     mut bound_actions: Option<&mut BoundActions>,
@@ -499,7 +499,7 @@ pub(super) fn resource_actions(
 /// resources (no component) keep their identity beyond this lifetime.
 pub(super) fn resource_semantic_node(
     id: SemanticId,
-    resource: &Resource,
+    resource: &ResourceSpec,
     actions: Vec<SemanticAction>,
     children: Vec<SemanticId>,
     durable_identity: bool,

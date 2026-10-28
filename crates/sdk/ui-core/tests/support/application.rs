@@ -189,7 +189,7 @@ impl tilo_ui::search::SearchProvider for ProbeProvider {
     fn resolve_action_resource(
         &self,
         _: &tilo_actions::ActionAddress,
-    ) -> Option<tilo_actions::Resource> {
+    ) -> Option<tilo_actions::ResourceSpec> {
         self.observe("resolve");
         None
     }
@@ -732,7 +732,7 @@ impl tilo_ui::resources::PublishesResources for ProbeRoot {
         clippy::too_many_lines,
         reason = "one shared resource declares the runner action matrix"
     )]
-    fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         PRESENTATION.with_borrow(|slot| {
             if let Some(observations) = slot {
                 observations
@@ -745,7 +745,7 @@ impl tilo_ui::resources::PublishesResources for ProbeRoot {
             return vec![];
         }
         vec![
-            tilo_actions::Resource::new("probe:shared", "probe", "Shared probe")
+            tilo_actions::ResourceSpec::new("probe:shared", "probe", "Shared probe")
                 .with_action(
                     tilo_actions::ActionSpec::immediate(
                         "edit",
@@ -1014,7 +1014,7 @@ pub fn write_fixture_string(edits: &mut tilo_ui::widget::Edits<'_>, key: &str, v
     }
     edits
         .apply(
-            &mut tilo_ui::action_host::ActionHost::new(),
+            &mut tilo_ui::local_dispatch::LocalDispatch::new(),
             "test.fixture.write",
             &Write {
                 key: key.into(),
@@ -1039,7 +1039,7 @@ pub fn write_fixture_flag(edits: &mut tilo_ui::widget::Edits<'_>, key: &str) {
     }
     edits
         .apply(
-            &mut tilo_ui::action_host::ActionHost::new(),
+            &mut tilo_ui::local_dispatch::LocalDispatch::new(),
             "test.fixture.flag",
             &Flag { key: key.into() },
             tilo_actions::ActionContext::default(),

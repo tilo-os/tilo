@@ -181,9 +181,9 @@ impl crate::widget::ResourceOperations for PtyRoot {
     }
 }
 impl crate::resources::PublishesResources for PtyRoot {
-    fn resources(&self, _: &AutoCommit) -> Vec<Resource> {
+    fn resources(&self, _: &AutoCommit) -> Vec<ResourceSpec> {
         vec![
-            Resource::new(TYPE, TYPE, "PTY")
+            ResourceSpec::new(TYPE, TYPE, "PTY")
                 .with_action(
                     ActionSpec::operation(
                         "run",

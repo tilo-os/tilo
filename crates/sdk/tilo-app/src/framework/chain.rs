@@ -176,7 +176,7 @@ pub(crate) struct ChainState<P: Chained> {
     /// The store's [`RecordStore::kept_revision`] when the window last
     /// looked for a newer head and at the parts it waits for.
     looked: Cell<Option<u64>>,
-    published: RefCell<Option<((u64, u64), tilo_actions::Resource)>>,
+    published: RefCell<Option<((u64, u64), tilo_actions::ResourceSpec)>>,
 }
 
 impl<P: Chained> ChainState<P> {
@@ -726,7 +726,7 @@ impl<P: Chained> ChainState<P> {
     /// part's items, each carried out through [`CHAIN_ACTION_TYPE`] on the
     /// part it changes; checked against the participant's roles in the room
     /// as the app's own actions are.
-    pub(crate) fn publish(&self) -> tilo_actions::Resource {
+    pub(crate) fn publish(&self) -> tilo_actions::ResourceSpec {
         let revision = (self.revision(), ui_core::i18n::I18nManager::revision());
         if let Some((at, published)) = self.published.borrow().as_ref()
             && *at == revision
@@ -787,15 +787,15 @@ fn verb_of<P: Chained>(action: &P::Action) -> Option<String> {
 /// answered by the app's window: an item of a part opens at the address a
 /// room's host knows it by. The chain itself offers only document actions;
 /// the app's own record offers its effects.
-fn route(resource: tilo_actions::Resource, chain: &str) -> tilo_actions::Resource {
+fn route(resource: tilo_actions::ResourceSpec, chain: &str) -> tilo_actions::ResourceSpec {
     route_at(resource, chain, false)
 }
 
 fn route_at(
-    mut resource: tilo_actions::Resource,
+    mut resource: tilo_actions::ResourceSpec,
     chain: &str,
     item: bool,
-) -> tilo_actions::Resource {
+) -> tilo_actions::ResourceSpec {
     resource.actions = std::mem::take(&mut resource.actions)
         .into_iter()
         .filter_map(|spec| {
@@ -830,7 +830,7 @@ impl<P: Chained> RecordDoor for ChainState<P> {
         ChainState::revision(self)
     }
 
-    fn publish(&self) -> tilo_actions::Resource {
+    fn publish(&self) -> tilo_actions::ResourceSpec {
         ChainState::publish(self)
     }
 

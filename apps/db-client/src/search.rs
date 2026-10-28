@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use ui::tilo_actions::Resource;
+use ui::tilo_actions::ResourceSpec;
 use ui::tilo_resource::{Effect, SearchEntry};
 use uuid::Uuid;
 
@@ -27,7 +27,7 @@ fn kind() -> String {
 struct IndexState {
     revision: Option<String>,
     entries: Vec<SearchEntry>,
-    resources: HashMap<String, Resource>,
+    resources: HashMap<String, ResourceSpec>,
     /// The most recent rejected rebuild. Keep the last known-good snapshot
     /// available, but never make a failed index refresh invisible to the app.
     last_error: Option<String>,
@@ -59,7 +59,7 @@ impl DbSearchIndex {
 fn index_active_catalog(
     session: &Session,
     rows: &mut Vec<(String, SearchEntry)>,
-    resources: &mut HashMap<String, Resource>,
+    resources: &mut HashMap<String, ResourceSpec>,
 ) {
     let Some(connection) = session.active_connection().filter(|_| session.connected) else {
         return;
@@ -74,7 +74,7 @@ fn index_database_and_schema(
     session: &Session,
     connection: &crate::model::ConnectionProfile,
     rows: &mut Vec<(String, SearchEntry)>,
-    resources: &mut HashMap<String, Resource>,
+    resources: &mut HashMap<String, ResourceSpec>,
 ) {
     let connection_id = &connection.id.to_string();
     let database_name = if connection.database.is_empty() {
@@ -86,8 +86,8 @@ fn index_database_and_schema(
     let focus = DbEffect::FocusDatabase {
         connection: connection.id,
     };
-    let database =
-        Resource::new(&database_id, "database.database", &database_name).with_action(focus.bound());
+    let database = ResourceSpec::new(&database_id, "database.database", &database_name)
+        .with_action(focus.bound());
     index_resource(
         rows,
         resources,
@@ -102,8 +102,8 @@ fn index_database_and_schema(
             connection: connection.id,
             schema: schema.name.clone(),
         };
-        let schema_resource =
-            Resource::new(&schema_id, "database.schema", &schema.name).with_action(focus.bound());
+        let schema_resource = ResourceSpec::new(&schema_id, "database.schema", &schema.name)
+            .with_action(focus.bound());
         index_resource(
             rows,
             resources,
@@ -126,14 +126,14 @@ fn index_relation(
     schema: &crate::model::SchemaInfo,
     relation: &crate::model::TableInfo,
     rows: &mut Vec<(String, SearchEntry)>,
-    resources: &mut HashMap<String, Resource>,
+    resources: &mut HashMap<String, ResourceSpec>,
 ) {
     let connection_id = &connection.to_string();
     let relation_id =
         catalog_resource_id("relation", &[connection_id, &schema.name, &relation.name]);
     let result =
         hit(&relation.name, &relation_id).subtitled(format!("{}.{}", schema.name, relation.name));
-    let resource = Resource::new(
+    let resource = ResourceSpec::new(
         &relation_id,
         match relation.kind {
             crate::model::RelationKind::Table => "database.table",
@@ -170,7 +170,7 @@ fn index_relation(
                 ("table", text(&relation.name)),
             ],
         ));
-        let mut column_resource = Resource::new(&column_id, "database.column", &column.name);
+        let mut column_resource = ResourceSpec::new(&column_id, "database.column", &column.name);
         column_resource.actions.clone_from(&resource.actions);
         index_resource(
             rows,
@@ -190,7 +190,7 @@ fn index_current_result(
     session: &Session,
     connection: Uuid,
     rows: &mut Vec<(String, SearchEntry)>,
-    resources: &mut HashMap<String, Resource>,
+    resources: &mut HashMap<String, ResourceSpec>,
 ) {
     let result_id = catalog_resource_id(
         "query-result",
@@ -203,7 +203,7 @@ fn index_current_result(
             generation,
         };
         let mut result_resource =
-            Resource::new(&result_id, "database.query-result", result.message())
+            ResourceSpec::new(&result_id, "database.query-result", result.message())
                 .with_action(show.bound());
         if result.is_select {
             result_resource = result_resource.with_action(
@@ -228,11 +228,11 @@ fn index_current_result(
 fn index_transactions(
     connection: Uuid,
     rows: &mut Vec<(String, SearchEntry)>,
-    resources: &mut HashMap<String, Resource>,
+    resources: &mut HashMap<String, ResourceSpec>,
 ) {
     let transaction_id = catalog_resource_id("transaction", &[&connection.to_string()]);
     let begin = DbEffect::Begin { connection };
-    let transaction = Resource::new(
+    let transaction = ResourceSpec::new(
         &transaction_id,
         "database.transaction",
         t("db-search-transaction"),
@@ -254,13 +254,13 @@ fn index_query_history(
     session: &Session,
     connection: &crate::model::ConnectionProfile,
     rows: &mut Vec<(String, SearchEntry)>,
-    resources: &mut HashMap<String, Resource>,
+    resources: &mut HashMap<String, ResourceSpec>,
 ) {
     let connection_id = &connection.id.to_string();
     let history_id = catalog_resource_id("query-history", &[connection_id]);
     resources.insert(
         history_id.clone(),
-        Resource::new(
+        ResourceSpec::new(
             &history_id,
             "database.query-history",
             t("db-search-query-history"),
@@ -286,7 +286,7 @@ fn index_query_history(
             connection: connection.id,
             generation: entry.generation,
         };
-        let history_entry = Resource::new(&entry_id, "database.query-history-entry", &title)
+        let history_entry = ResourceSpec::new(&entry_id, "database.query-history-entry", &title)
             .with_action(rerun.bound());
         index_resource(
             rows,
@@ -303,7 +303,7 @@ fn apply_catalog_snapshot(
     state: &Arc<RwLock<IndexState>>,
     revision: String,
     rows: Vec<(String, SearchEntry)>,
-    resources: HashMap<String, Resource>,
+    resources: HashMap<String, ResourceSpec>,
 ) -> Result<(), String> {
     let mut seen = std::collections::HashSet::new();
     if let Some((duplicate, _)) = rows.iter().find(|(id, _)| !seen.insert(id.as_str())) {
@@ -342,7 +342,7 @@ impl DbSearchIndex {
     /// The bounded top of the live catalog: the open database and its
     /// schemas, the current result, the transaction controls and the query
     /// history. Tables, columns and history entries resolve by id.
-    pub fn rows(&self) -> Vec<Resource> {
+    pub fn rows(&self) -> Vec<ResourceSpec> {
         const TOP: &[&str] = &[
             "database.database",
             "database.schema",
@@ -350,7 +350,7 @@ impl DbSearchIndex {
             "database.transaction",
             "database.query-history",
         ];
-        let mut rows: Vec<Resource> = self
+        let mut rows: Vec<ResourceSpec> = self
             .state
             .read_recover()
             .resources
@@ -362,7 +362,7 @@ impl DbSearchIndex {
         rows
     }
 
-    pub fn resource(&self, id: &str) -> Option<Resource> {
+    pub fn resource(&self, id: &str) -> Option<ResourceSpec> {
         self.state.read_recover().resources.get(id).cloned()
     }
 
@@ -380,8 +380,8 @@ fn hit(title: impl Into<String>, id: &str) -> SearchEntry {
 
 fn index_resource(
     rows: &mut Vec<(String, SearchEntry)>,
-    resources: &mut HashMap<String, Resource>,
-    resource: Resource,
+    resources: &mut HashMap<String, ResourceSpec>,
+    resource: ResourceSpec,
     action_id: &str,
     search_text: impl Into<String>,
     mut entry: SearchEntry,

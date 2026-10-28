@@ -2,9 +2,9 @@
 fn deferred_counter_resource(
     calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     server: bool,
-) -> Resource {
+) -> ResourceSpec {
     use tilo_actions::{ContinuationEvidence, ContinuationKey, ContinuationQuery};
-    Resource::new("test.counter", "test.counter", "Counter").with_action(
+    ResourceSpec::new("test.counter", "test.counter", "Counter").with_action(
         ActionSpec::deferred(
             "create",
             "Create counter",

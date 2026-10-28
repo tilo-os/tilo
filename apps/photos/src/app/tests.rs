@@ -74,7 +74,7 @@ fn invocation(
 }
 
 /// The library as published, with every child resource.
-fn published(doc: &AutoCommit) -> tilo_actions::Resource {
+fn published(doc: &AutoCommit) -> tilo_actions::ResourceSpec {
     let library = crate::test_doc::library(doc);
     ui::tilo_resource::publish::<PhotoLibrary>("photos.library", "Photos", &library)
 }
@@ -101,7 +101,7 @@ fn stage(app: &mut PhotosApp, doc: &mut AutoCommit, name: &str) {
     app.stage_scenario(name);
 }
 
-fn has_resource_id(resource: &tilo_actions::Resource, id: &str) -> bool {
+fn has_resource_id(resource: &tilo_actions::ResourceSpec, id: &str) -> bool {
     resource.id.0 == id
         || resource
             .children

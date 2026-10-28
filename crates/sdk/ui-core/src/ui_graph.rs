@@ -1369,13 +1369,13 @@ impl LiveUi {
         clippy::expect_used,
         reason = "graph action payloads are unit or already-validated JSON maps"
     )]
-    fn graph_resource(&self) -> crate::tilo_actions::Resource {
+    fn graph_resource(&self) -> crate::tilo_actions::ResourceSpec {
         use crate::tilo_actions::{
             ActionContract, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
-            Resource, ResultSpec,
+            ResourceSpec, ResultSpec,
         };
         let id = self.seen_document.root.id();
-        let mut resource = Resource::new(
+        let mut resource = ResourceSpec::new(
             format!("tilo.ui-graph:{id}"),
             "tilo.ui-graph",
             format!("UI graph {id}"),
@@ -1577,7 +1577,7 @@ impl crate::widget::ResourceOperations for LiveUi {
 }
 
 impl crate::resources::PublishesResources for LiveUi {
-    fn resources(&self, doc: &AutoCommit) -> Vec<crate::tilo_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<crate::tilo_actions::ResourceSpec> {
         let mut resources = crate::resources::resources(self.child.as_ref(), doc);
         resources.push(self.graph_resource());
         resources
@@ -3200,7 +3200,7 @@ mod tests {
             |args| EncodedAction::encode_operation("graph.rename", &args.to_json()).unwrap(),
         );
         let resource =
-            tilo_actions::Resource::new("ordinary:graph", "graph", "Graph").with_action(spec);
+            tilo_actions::ResourceSpec::new("ordinary:graph", "graph", "Graph").with_action(spec);
         let action = tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |title| {
             let mut arguments = serde_json::Map::new();
             arguments.insert("title".into(), serde_json::Value::String(title));

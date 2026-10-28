@@ -5057,7 +5057,10 @@ mod tests {
         TestApp::<SetupFlow>::new().unwrap()
     }
 
-    fn find_row(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+    fn find_row(
+        resources: &[tilo_actions::ResourceSpec],
+        id: &str,
+    ) -> Option<tilo_actions::ResourceSpec> {
         resources.iter().find_map(|resource| {
             if resource.id.as_str() == id {
                 Some(resource.clone())
@@ -5118,7 +5121,7 @@ mod tests {
 
     /// Setup as the imager resource publishes it: the live row, carrying
     /// the setup effects as callers see them now.
-    fn setup_resource(app: &SetupApp) -> tilo_actions::Resource {
+    fn setup_resource(app: &SetupApp) -> tilo_actions::ResourceSpec {
         let mut root = app.live_rows().remove(0).into_resource();
         let blocked = super::super::actions::blocked(&app.setup_projection());
         root.actions = SetupEffect::specs()
@@ -5199,9 +5202,9 @@ mod tests {
     }
 
     fn child_resource<'a>(
-        resource: &'a tilo_actions::Resource,
+        resource: &'a tilo_actions::ResourceSpec,
         kind: &str,
-    ) -> &'a tilo_actions::Resource {
+    ) -> &'a tilo_actions::ResourceSpec {
         resource
             .children
             .iter()

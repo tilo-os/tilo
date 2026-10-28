@@ -1,7 +1,7 @@
 // Included in the actual palette fixture; final dispatch is the ordinary registry.
-fn deferred_palette_resource(calls: Arc<std::sync::atomic::AtomicUsize>) -> Resource {
+fn deferred_palette_resource(calls: Arc<std::sync::atomic::AtomicUsize>) -> ResourceSpec {
     use tilo_actions::{ContinuationEvidence, ContinuationKey, ContinuationQuery};
-    Resource::new("test.thing:1", "test.thing", "Thing").with_action(
+    ResourceSpec::new("test.thing:1", "test.thing", "Thing").with_action(
         ActionSpec::deferred(
             "create",
             "Create",

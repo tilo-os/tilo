@@ -18,7 +18,8 @@ use tilo_resource::{Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::history_mode::HistoryOwner;
 use ui_core::permissions::{LivePermissions, PermissionScope, TreePath};
-use ui_core::record::workspace::{WorkspaceRecord as StoredRecord, WorkspaceRecords};
+use ui_core::record::StoredRecord;
+use ui_core::record::workspace::WorkspaceRecords;
 use ui_core::wake::WakeHandle;
 
 use super::live::Live;

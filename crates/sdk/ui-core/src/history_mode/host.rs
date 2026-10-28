@@ -244,7 +244,7 @@ impl HistoryHost {
 
     /// The window's History door as this History serves it: the same
     /// Open, Open at and Hide as the standalone door, without session rows.
-    pub(crate) fn door_resource(&self) -> tilo_actions::Resource {
+    pub(crate) fn door_resource(&self) -> tilo_actions::ResourceSpec {
         crate::standalone_history_host::history_resource(!self.invalid_owner, self.is_open())
     }
 
@@ -2377,7 +2377,7 @@ pub(crate) trait HistoryChromeApi: Widget {
     ) -> Option<NodeId>;
     fn request_open(&self) -> bool;
     fn is_open(&self) -> bool;
-    fn door_resource(&self) -> tilo_actions::Resource;
+    fn door_resource(&self) -> tilo_actions::ResourceSpec;
     fn invoke_door(&mut self, encoded: &tilo_actions::EncodedAction) -> Result<(), String>;
     #[cfg(any(feature = "native", test))]
     fn current_entries(&self, doc: &AutoCommit) -> Vec<crate::widget::HistoryEntry>;
@@ -2587,7 +2587,7 @@ impl HistoryChromeApi for HistoryHost {
     fn is_open(&self) -> bool {
         HistoryHost::is_open(self)
     }
-    fn door_resource(&self) -> tilo_actions::Resource {
+    fn door_resource(&self) -> tilo_actions::ResourceSpec {
         HistoryHost::door_resource(self)
     }
     fn invoke_door(&mut self, encoded: &tilo_actions::EncodedAction) -> Result<(), String> {

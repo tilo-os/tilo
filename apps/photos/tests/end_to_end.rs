@@ -46,7 +46,7 @@ fn set_library(doc: &mut AutoCommit, library: &PhotoLibrary) {
 }
 
 /// The library as published.
-fn published(doc: &AutoCommit) -> tilo_actions::Resource {
+fn published(doc: &AutoCommit) -> tilo_actions::ResourceSpec {
     ui::tilo_resource::publish::<PhotoLibrary>("photos.library", "Photos", &library(doc))
 }
 

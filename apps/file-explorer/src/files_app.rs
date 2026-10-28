@@ -29,7 +29,7 @@ use thumbnail::{ThumbKey, ThumbnailService};
 use ui::lock::MutexRecover as _;
 #[cfg(test)]
 use ui::tilo_actions::{ActionKind, ConfirmationPolicy, ExecutionMode, OperationKind, ResultSpec};
-use ui::tilo_actions::{Availability, Resource};
+use ui::tilo_actions::{Availability, ResourceSpec};
 use ui::time::{Duration, Instant, UNIX_EPOCH};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{AppModel, ModelPath};
@@ -344,13 +344,13 @@ const RETRY_ROW: &str = "files.retry";
 
 /// A failed listing's way on, as a row: Try again when that may get past
 /// the failure, else going to the enclosing folder.
-fn retry_row(may_pass: bool) -> Resource {
+fn retry_row(may_pass: bool) -> ResourceSpec {
     let (effect, label) = if may_pass {
         (crate::effects::FilesEffect::Refresh, t("files-try-again"))
     } else {
         (crate::effects::FilesEffect::Up, t("files-open-enclosing"))
     };
-    Resource::new(RETRY_ROW, RETRY_ROW, label.clone())
+    ResourceSpec::new(RETRY_ROW, RETRY_ROW, label.clone())
         .with_action(crate::effects::row_action(&effect, "invoke", label))
 }
 
@@ -372,7 +372,7 @@ fn failure_state(title: String, detail: String, may_pass: bool) -> EmptyState {
 
 /// The bookmarked places, as [`crate::resource::FileExplorer::children`]
 /// publishes them: each opens in the window.
-pub(crate) fn published_place_resources(favorites: &[favorites::Favorite]) -> Vec<Resource> {
+pub(crate) fn published_place_resources(favorites: &[favorites::Favorite]) -> Vec<ResourceSpec> {
     favorites
         .iter()
         .map(|favorite| {
@@ -384,14 +384,14 @@ pub(crate) fn published_place_resources(favorites: &[favorites::Favorite]) -> Ve
                 crate::search_provider::OPEN_ACTION,
                 "Open",
             );
-            Resource::new(resource_id, "files.place", favorite.label.clone()).with_action(open)
+            ResourceSpec::new(resource_id, "files.place", favorite.label.clone()).with_action(open)
         })
         .collect()
 }
 
 /// Template create Effects, rows of the window.
 /// The catalogue is the user's Templates directory, not the live folder listing.
-pub(crate) fn published_template_resources(templates: Vec<PathBuf>) -> Vec<Resource> {
+pub(crate) fn published_template_resources(templates: Vec<PathBuf>) -> Vec<ResourceSpec> {
     templates
         .into_iter()
         .map(|template| {
@@ -404,7 +404,7 @@ pub(crate) fn published_template_resources(templates: Vec<PathBuf>) -> Vec<Resou
                 "create",
                 templates::menu_label(&template),
             );
-            Resource::new(
+            ResourceSpec::new(
                 template_id,
                 "files.template",
                 templates::menu_label(&template),
@@ -9068,7 +9068,7 @@ impl FileExplorerWidget {
         answer
     }
 
-    fn append_nearby_receiver_resources(&self, folder: &mut Resource) {
+    fn append_nearby_receiver_resources(&self, folder: &mut ResourceSpec) {
         for transfer in self.nearby_send.transfers() {
             folder
                 .children
@@ -9079,10 +9079,10 @@ impl FileExplorerWidget {
     fn nearby_receiver_resource(
         &self,
         transfer: &ui::collaboration::NearbyTransferStatus,
-    ) -> Resource {
+    ) -> ResourceSpec {
         use ui::collaboration::NearbyTransferPhase;
 
-        let mut resource = Resource::new(
+        let mut resource = ResourceSpec::new(
             format!(
                 "nearby-transfer:{}",
                 nearby_action_locator("transfer", transfer.handle.as_bytes())
@@ -9126,7 +9126,7 @@ impl FileExplorerWidget {
 
     fn append_nearby_decision_actions(
         &self,
-        resource: &mut Resource,
+        resource: &mut ResourceSpec,
         transfer: &ui::collaboration::NearbyTransferStatus,
     ) {
         use ui::collaboration::{NearbyTransferDirection, NearbyTransferPhase};
@@ -9167,7 +9167,7 @@ impl FileExplorerWidget {
     /// The live rows the window shows beneath the resource: listing entries,
     /// remote accounts, nearby transfers, and the retry of a failed listing.
     /// The folder, its places and templates are the resource's publication.
-    fn live_filesystem_extras(&self) -> Vec<Resource> {
+    fn live_filesystem_extras(&self) -> Vec<ResourceSpec> {
         self.published_live_rows()
             .into_iter()
             .map(ui::framework::LiveRow::into_resource)
@@ -9196,13 +9196,13 @@ impl FileExplorerWidget {
     /// The live rows besides places, templates and entries: remote
     /// accounts, drives, cloud entries, nearby transfers and a failed
     /// listing's retry.
-    fn live_other_resources(&self) -> Vec<Resource> {
+    fn live_other_resources(&self) -> Vec<ResourceSpec> {
         let mut extras = self.live_remote_account_resources();
         extras.extend(self.live_drive_resources());
         if ui::bound_dispatch::host_person_invocation_permitted() {
             extras.extend(self.cloud_resources());
         }
-        let mut nearby_root = Resource::new("files.nearby", "files.nearby", "Nearby");
+        let mut nearby_root = ResourceSpec::new("files.nearby", "files.nearby", "Nearby");
         self.append_nearby_receiver_resources(&mut nearby_root);
         extras.extend(nearby_root.children);
         if let Some((failure, _)) = self.folder_failure() {
@@ -9211,7 +9211,7 @@ impl FileExplorerWidget {
         extras
     }
 
-    fn live_remote_account_resources(&self) -> Vec<Resource> {
+    fn live_remote_account_resources(&self) -> Vec<ResourceSpec> {
         // Account discovery belongs to the host person, not to whoever owns
         // the workspace. Checked resource reads install this trusted scope too.
         if !ui::bound_dispatch::host_person_invocation_permitted() {
@@ -9227,7 +9227,7 @@ impl FileExplorerWidget {
                 let resource_id = crate::remote_accounts::resource_id(&account.id);
                 let availability = remote_folder_availability(&account);
                 let mut resource =
-                    Resource::new(resource_id, "files.remote-account", account.label.clone());
+                    ResourceSpec::new(resource_id, "files.remote-account", account.label.clone());
                 resource.presentation = Some(tilo_actions::ResourcePresentation {
                     detail: Some(format!("{} at {}", account.kind.label(), account.host)),
                     badge: account.badge(),
@@ -10236,15 +10236,15 @@ impl FileExplorerWidget {
     /// The folder, its places and templates and its folder-wide work are the
     /// resource's publication.
     #[cfg(test)]
-    pub(crate) fn published_rows(&self) -> Vec<Resource> {
+    pub(crate) fn published_rows(&self) -> Vec<ResourceSpec> {
         self.live_filesystem_extras()
     }
 
     /// The row `id`, when [`Self::published_rows`] leaves it out: an entry
     /// past the eager page, a place, a late collaborative record, a remote
     /// account, found by a search and resolved only when acted on.
-    pub(crate) fn published_row(&self, id: &str) -> Option<Resource> {
-        fn find(resource: &Resource, id: &str) -> Option<Resource> {
+    pub(crate) fn published_row(&self, id: &str) -> Option<ResourceSpec> {
+        fn find(resource: &ResourceSpec, id: &str) -> Option<ResourceSpec> {
             if resource.id.as_str() == id {
                 return Some(resource.clone());
             }
@@ -10357,12 +10357,15 @@ pub(crate) mod published {
     use crate::effects::FilesEffect;
     use crate::resource::FileExplorer;
     use ui::framework::HostDelivery as _;
-    use ui::tilo_actions::Resource;
+    use ui::tilo_actions::ResourceSpec;
     use ui::tilo_resource::{Effect as _, Resource as _};
 
     /// The published tree: one root, as the framework publishes it, with the
     /// places the window shows.
-    pub(crate) fn tree(files: &FileExplorerWidget, doc: &automerge::AutoCommit) -> Vec<Resource> {
+    pub(crate) fn tree(
+        files: &FileExplorerWidget,
+        doc: &automerge::AutoCommit,
+    ) -> Vec<ResourceSpec> {
         let mut root = ui::tilo_resource::publish::<FileExplorer>(
             FileExplorer::KIND,
             "Files",

@@ -531,7 +531,7 @@ pub fn picks(
 /// The room's governance surface: granting, revoking, named grant sets and
 /// letting one app use another's action, published on the room's own
 /// resource so searches, agents and scripts reach them like any action.
-pub fn governance_resource(ws: &Workspace, local_user: &UserId) -> tilo_actions::Resource {
+pub fn governance_resource(ws: &Workspace, local_user: &UserId) -> tilo_actions::ResourceSpec {
     governance_resource_with_access(
         ws,
         ws.may_govern_at(
@@ -549,12 +549,15 @@ pub fn governance_resource(ws: &Workspace, local_user: &UserId) -> tilo_actions:
     clippy::too_many_lines,
     reason = "a declarative resource description listing every governance action"
 )]
-pub fn governance_resource_with_access(ws: &Workspace, can_govern: bool) -> tilo_actions::Resource {
+pub fn governance_resource_with_access(
+    ws: &Workspace,
+    can_govern: bool,
+) -> tilo_actions::ResourceSpec {
     use tilo_actions::{
         ActionContract, ActionParam, ConfirmationPolicy, OperationKind, ParamType, RiskLevel,
     };
 
-    let mut root = tilo_actions::Resource::new(
+    let mut root = tilo_actions::ResourceSpec::new(
         tilo_desktop_model::governance_resource_id(&ws.room()),
         tilo_action_policy::roles::ROOM_KIND,
         t_args(
@@ -846,8 +849,11 @@ fn encoded_ownership_operation(
 /// Publish the active workspace and its ownership ceremony as typed,
 /// resource-addressed operations for search, automation, and assistive tools.
 /// Generic member-role actions remain separate and never include Owner.
-pub fn ownership_transfer_resource(ws: &Workspace, local_user: &UserId) -> tilo_actions::Resource {
-    let mut resource = tilo_actions::Resource::new(
+pub fn ownership_transfer_resource(
+    ws: &Workspace,
+    local_user: &UserId,
+) -> tilo_actions::ResourceSpec {
+    let mut resource = tilo_actions::ResourceSpec::new(
         format!("workspace:{}", ws.room()),
         "workspace.governance",
         t_args(

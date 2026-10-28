@@ -13,8 +13,12 @@ use crate::vocabulary::vocabulary;
 /// learns why they do not apply instead of finding a hole in the surface.
 /// What a state would offer — its children, its views, which actions can be
 /// taken now — is not published: there is no state to read it from.
-pub(crate) fn parts<R: Resource>(id: &str, label: &str, reason: &str) -> tilo_actions::Resource {
-    let mut resource = tilo_actions::Resource::new(id, R::KIND, label);
+pub(crate) fn parts<R: Resource>(
+    id: &str,
+    label: &str,
+    reason: &str,
+) -> tilo_actions::ResourceSpec {
+    let mut resource = tilo_actions::ResourceSpec::new(id, R::KIND, label);
     let mut add = |spec: tilo_actions::ActionSpec| {
         resource.actions.push(withhold(spec, reason));
     };
@@ -33,7 +37,7 @@ pub(crate) fn parts<R: Resource>(id: &str, label: &str, reason: &str) -> tilo_ac
 /// Every document action of `resource` and its children, unavailable for
 /// `reason`: the record does not read as the resource, so none of them could
 /// apply nor say what it holds.
-pub fn withhold_document_actions(resource: &mut tilo_actions::Resource, reason: &str) {
+pub fn withhold_document_actions(resource: &mut tilo_actions::ResourceSpec, reason: &str) {
     for spec in &mut resource.actions {
         if spec.kind == tilo_actions::OperationKind::Document {
             spec.type_mut().contract.availability = unavailable(reason);

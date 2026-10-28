@@ -464,7 +464,7 @@ fn a_popup_is_no_tab_and_finds_the_page_it_opened_over() {
 /// does: its bound payload, decoded as the window decodes it.
 fn invoke(
     controller: &mut ExtensionController,
-    resource: &Resource,
+    resource: &ResourceSpec,
     action: &str,
 ) -> Result<(), String> {
     invoke_operation(resource, action, |operation| match operation {
@@ -476,7 +476,7 @@ fn invoke(
 /// The operation the action `action` of `resource` decodes to, as a
 /// caller of the door sends it, handed to `run`.
 fn invoke_operation(
-    resource: &Resource,
+    resource: &ResourceSpec,
     action: &str,
     run: impl FnOnce(crate::effects::BrowserOperation) -> Result<(), String>,
 ) -> Result<(), String> {
@@ -611,9 +611,12 @@ fn adding_from_the_store_is_an_action_on_a_store_item_only() {
     assert!(controller.offer_store_item().is_err());
     controller.store_item = web_store::item_from_url(STORE_ITEM);
     assert_eq!(available(&controller), Some(true));
-    let extensions =
-        ui::tilo_actions::Resource::new("browser.extensions", "browser.extensions", "Extensions")
-            .with_action(controller.add_action().unwrap());
+    let extensions = ui::tilo_actions::ResourceSpec::new(
+        "browser.extensions",
+        "browser.extensions",
+        "Extensions",
+    )
+    .with_action(controller.add_action().unwrap());
     invoke_operation(&extensions, "add-extension", |operation| match operation {
         crate::effects::BrowserOperation::AddExtension => controller.offer_store_item(),
         other => Err(format!("{other:?} is not adding")),

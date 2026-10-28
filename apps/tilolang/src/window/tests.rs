@@ -162,7 +162,7 @@ impl Room {
         self.window.mark_drawn();
     }
 
-    fn resources() -> Vec<ui::tilo_actions::Resource> {
+    fn resources() -> Vec<ui::tilo_actions::ResourceSpec> {
         crate::resource::published()
     }
 

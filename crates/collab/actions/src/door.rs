@@ -1,7 +1,7 @@
 //! **The door**: how a participant that is not the app enumerates what
 //! it has open and performs one of its exported operations.
 //!
-//! [`Resource`] trees already describe an app's surface and
+//! [`ResourceSpec`] trees already describe an app's surface and
 //! [`dispatch`](crate::executor::dispatch) already performs one
 //! operation on it; the missing step was naming a thing from outside the
 //! process that built it — without which collaboration, agency and
@@ -24,7 +24,7 @@ use crate::entry::Described;
 use crate::executor::{ActionTransport, Dispatched, dispatch_by_with_context};
 use crate::registry::ActionRegistry;
 use crate::resource::{
-    ActionInput, ActionSpec, Collects, KEY_SEP, Resource, ResourceViewMountSpec,
+    ActionInput, ActionSpec, Collects, KEY_SEP, ResourceSpec, ResourceViewMountSpec,
     ResourceViewRangeSpec,
 };
 use serde::{Deserialize, Serialize};
@@ -226,7 +226,7 @@ impl ResourceViewDescriptor {
     /// The view `resource` declares for `action_id`, when that action is a
     /// view's open action.
     #[must_use]
-    pub fn declared_for(resource: &Resource, action_id: &str) -> Option<Self> {
+    pub fn declared_for(resource: &ResourceSpec, action_id: &str) -> Option<Self> {
         resource
             .views
             .iter()
@@ -375,7 +375,7 @@ impl std::error::Error for DoorError {}
 /// Depth-first, parents before children, matching
 /// [`flatten`](crate::resource::flatten)'s order. Borrows the tree,
 /// returns owned data — nothing handed back can act on what it described.
-pub fn survey(resources: &[Resource]) -> Vec<ActionDescriptor> {
+pub fn survey(resources: &[ResourceSpec]) -> Vec<ActionDescriptor> {
     let mut out = Vec::new();
     for r in resources {
         survey_into(r, &mut out);
@@ -383,7 +383,7 @@ pub fn survey(resources: &[Resource]) -> Vec<ActionDescriptor> {
     out
 }
 
-fn survey_into(resource: &Resource, out: &mut Vec<ActionDescriptor>) {
+fn survey_into(resource: &ResourceSpec, out: &mut Vec<ActionDescriptor>) {
     for action in &resource.actions {
         let view = ResourceViewDescriptor::declared_for(resource, &action.id);
         out.push(ActionDescriptor {
@@ -410,20 +410,23 @@ fn survey_into(resource: &Resource, out: &mut Vec<ActionDescriptor>) {
 
 /// Resolve `address` against `resources` without running anything, so a caller
 /// can check what an address currently names before committing to it.
-pub fn resolve<'a>(resources: &'a [Resource], address: &ActionAddress) -> Option<&'a ActionSpec> {
+pub fn resolve<'a>(
+    resources: &'a [ResourceSpec],
+    address: &ActionAddress,
+) -> Option<&'a ActionSpec> {
     locate(resources, address).map(|(_, spec)| spec)
 }
 
 /// [`resolve`], with the resource that publishes the action: what a door
 /// needs to place the action in the tree it grants over.
 pub fn locate<'a>(
-    resources: &'a [Resource],
+    resources: &'a [ResourceSpec],
     address: &ActionAddress,
-) -> Option<(&'a Resource, &'a ActionSpec)> {
+) -> Option<(&'a ResourceSpec, &'a ActionSpec)> {
     fn walk<'a>(
-        r: &'a Resource,
+        r: &'a ResourceSpec,
         address: &ActionAddress,
-    ) -> Option<(&'a Resource, &'a ActionSpec)> {
+    ) -> Option<(&'a ResourceSpec, &'a ActionSpec)> {
         if r.id.as_str() == address.resource
             && let Some(spec) = r.actions.iter().find(|a| a.id == address.action)
         {
@@ -437,9 +440,13 @@ pub fn locate<'a>(
 /// The address of the action `action` that the resource `resource` in the
 /// tree `resources` publishes, or `None` when the tree publishes no such
 /// action: a caller holding a published tree takes its addresses from it
-/// (see [`Resource::action_address`]).
-pub fn published(resources: &[Resource], resource: &str, action: &str) -> Option<ActionAddress> {
-    fn walk(r: &Resource, resource: &str, action: &str) -> Option<ActionAddress> {
+/// (see [`ResourceSpec::action_address`]).
+pub fn published(
+    resources: &[ResourceSpec],
+    resource: &str,
+    action: &str,
+) -> Option<ActionAddress> {
+    fn walk(r: &ResourceSpec, resource: &str, action: &str) -> Option<ActionAddress> {
         if r.id.as_str() == resource
             && let Some(address) = r.action_address(action)
         {
@@ -454,7 +461,7 @@ pub fn published(resources: &[Resource], resource: &str, action: &str) -> Option
 /// publishes, or `None`: [`resolve`] of the address the tree publishes it at
 /// ([`published`]).
 pub fn spec_of<'a>(
-    resources: &'a [Resource],
+    resources: &'a [ResourceSpec],
     resource: &str,
     action: &str,
 ) -> Option<&'a ActionSpec> {
@@ -475,7 +482,7 @@ pub fn spec_of<'a>(
 /// [`DoorError::MissingArgument`] if it's `None` for an
 /// [`ActionInput::Prompted`] one whose text is required.
 pub fn encode(
-    resources: &[Resource],
+    resources: &[ResourceSpec],
     address: &ActionAddress,
     argument: Option<&str>,
 ) -> Result<EncodedAction, DoorError> {
@@ -551,7 +558,7 @@ pub fn encode(
 /// [`DoorError::InvalidArguments`] (or [`DoorError::ArgumentOutOfRange`])
 /// when the object violates its parameter contract.
 pub fn encode_json(
-    resources: &[Resource],
+    resources: &[ResourceSpec],
     address: &ActionAddress,
     arguments: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<EncodedAction, DoorError> {
@@ -638,7 +645,7 @@ impl<'a> InvocationProvenance<'a> {
 /// once decoded.
 pub fn invoke(
     doc: &mut crate::action::Doc,
-    resources: &[Resource],
+    resources: &[ResourceSpec],
     address: &ActionAddress,
     argument: Option<&str>,
     provenance: InvocationProvenance<'_>,
@@ -655,7 +662,7 @@ pub fn invoke(
 /// [`invoke`], whose default is fail-closed for consequential actions.
 pub fn invoke_confirmed(
     doc: &mut crate::action::Doc,
-    resources: &[Resource],
+    resources: &[ResourceSpec],
     address: &ActionAddress,
     argument: Option<&str>,
     provenance: InvocationProvenance<'_>,
@@ -669,7 +676,7 @@ pub fn invoke_confirmed(
 
 fn invoke_with_consent(
     doc: &mut crate::action::Doc,
-    resources: &[Resource],
+    resources: &[ResourceSpec],
     address: &ActionAddress,
     argument: Option<&str>,
     provenance: InvocationProvenance<'_>,
@@ -690,7 +697,7 @@ fn invoke_with_consent(
 /// Typed-argument counterpart to [`invoke`].
 pub fn invoke_json(
     doc: &mut crate::action::Doc,
-    resources: &[Resource],
+    resources: &[ResourceSpec],
     address: &ActionAddress,
     arguments: &serde_json::Map<String, serde_json::Value>,
     provenance: InvocationProvenance<'_>,
@@ -706,7 +713,7 @@ pub fn invoke_json(
 /// action contract's confirmation step.
 pub fn invoke_json_confirmed(
     doc: &mut crate::action::Doc,
-    resources: &[Resource],
+    resources: &[ResourceSpec],
     address: &ActionAddress,
     arguments: &serde_json::Map<String, serde_json::Value>,
     provenance: InvocationProvenance<'_>,
@@ -720,7 +727,7 @@ pub fn invoke_json_confirmed(
 
 fn invoke_json_with_consent(
     doc: &mut crate::action::Doc,
-    resources: &[Resource],
+    resources: &[ResourceSpec],
     address: &ActionAddress,
     arguments: &serde_json::Map<String, serde_json::Value>,
     provenance: InvocationProvenance<'_>,
@@ -741,7 +748,7 @@ fn invoke_json_with_consent(
 /// Refuse an unconfirmed invocation whose effective confirmation — for these
 /// exact arguments — is not [`None`](crate::ConfirmationPolicy::None).
 fn ensure_confirmation(
-    resources: &[Resource],
+    resources: &[ResourceSpec],
     address: &ActionAddress,
     confirmed: bool,
     policy: impl FnOnce(&ActionSpec) -> crate::ConfirmationPolicy,
@@ -756,7 +763,7 @@ fn ensure_confirmation(
 // This low-level transport accepts already encoded actions. A Deferred server
 // operation must instead reach the SDK's address-based broker door before mint.
 fn ensure_deferred_local_owner(
-    resources: &[Resource],
+    resources: &[ResourceSpec],
     address: &ActionAddress,
     registry: &ActionRegistry,
 ) -> Result<(), DoorError> {
@@ -784,7 +791,7 @@ fn ensure_deferred_local_owner(
 
 fn dispatch_encoded_with_context(
     doc: &mut crate::action::Doc,
-    resources: &[Resource],
+    resources: &[ResourceSpec],
     address: &ActionAddress,
     encoded: EncodedAction,
     provenance: InvocationProvenance<'_>,
@@ -835,8 +842,8 @@ fn dispatch_encoded_with_context(
     .map_err(|e| DoorError::Failed(e.to_string()))
 }
 
-fn find_resource<'a>(resources: &'a [Resource], id: &str) -> Option<&'a Resource> {
-    fn walk<'a>(resource: &'a Resource, id: &str) -> Option<&'a Resource> {
+fn find_resource<'a>(resources: &'a [ResourceSpec], id: &str) -> Option<&'a ResourceSpec> {
+    fn walk<'a>(resource: &'a ResourceSpec, id: &str) -> Option<&'a ResourceSpec> {
         if resource.id.as_str() == id {
             return Some(resource);
         }
@@ -889,9 +896,9 @@ mod tests {
     /// One note publishing an immediate action and a prompted one, as an app
     /// would. `star_does` / `retitle_does` decide what each *performs* while
     /// leaving every id and label identical.
-    fn note(star_does: &Note, retitle_does: fn(&str) -> Note) -> Vec<Resource> {
+    fn note(star_does: &Note, retitle_does: fn(&str) -> Note) -> Vec<ResourceSpec> {
         vec![
-            Resource::new("notes.note:1", "notes.note", "Harbour")
+            ResourceSpec::new("notes.note:1", "notes.note", "Harbour")
                 .with_action(ActionSpec::immediate("star", "Star", NOTE_TYPE, star_does).unwrap())
                 .with_action(ActionSpec::prompted_param(
                     "retitle",
@@ -904,7 +911,7 @@ mod tests {
         ]
     }
 
-    fn open() -> Vec<Resource> {
+    fn open() -> Vec<ResourceSpec> {
         note(&Note::Star, |text| Note::Retitle(text.to_string()))
     }
 
@@ -918,7 +925,7 @@ mod tests {
 
     fn perform(
         doc: &mut Doc,
-        tree: &[Resource],
+        tree: &[ResourceSpec],
         address: &ActionAddress,
         argument: Option<&str>,
     ) -> Result<Dispatched, DoorError> {
@@ -989,7 +996,7 @@ mod tests {
         let select =
             ActionSpec::operation("select", "Select", OperationKind::View, "notes.select", &())
                 .unwrap();
-        let resource = Resource::new("note:1", "notes.note", "Harbour")
+        let resource = ResourceSpec::new("note:1", "notes.note", "Harbour")
             .with_action(open)
             .with_action(select)
             .with_view(
@@ -1048,7 +1055,7 @@ mod tests {
 
         // The note closed; a different one is open, exporting the same action id.
         let now = vec![
-            Resource::new("notes.note:2", "notes.note", "Ledger").with_action(
+            ResourceSpec::new("notes.note:2", "notes.note", "Ledger").with_action(
                 ActionSpec::immediate("star", "Star", NOTE_TYPE, &Note::Star).unwrap(),
             ),
         ];
@@ -1096,7 +1103,7 @@ mod tests {
     #[test]
     fn an_optional_only_prompt_runs_without_its_argument() {
         let tree = vec![
-            Resource::new("notes.note:1", "notes.note", "Harbour").with_action(
+            ResourceSpec::new("notes.note:1", "notes.note", "Harbour").with_action(
                 ActionSpec::prompted_param(
                     "retitle",
                     "Rename",
@@ -1221,7 +1228,7 @@ mod tests {
 
     /// Build the tree by reading the document, so enumeration exercises the
     /// path an app actually takes.
-    fn notes(doc: &AutoCommit) -> Vec<Resource> {
+    fn notes(doc: &AutoCommit) -> Vec<ResourceSpec> {
         let label = doc
             .get(&ROOT, "title")
             .ok()
@@ -1229,7 +1236,7 @@ mod tests {
             .and_then(|(v, _)| v.into_string().ok())
             .unwrap_or_else(|| "Untitled".into());
         vec![
-            Resource::new("notes.note:1", "notes.note", label).with_action(
+            ResourceSpec::new("notes.note:1", "notes.note", label).with_action(
                 ActionSpec::immediate("star", "Star", NOTE_TYPE, &Note::Star).unwrap(),
             ),
         ]
@@ -1375,7 +1382,7 @@ mod tests {
 
     fn consequential_actions_cannot_cross_the_door_without_consent() {
         let resources = vec![
-            Resource::new("notes.note:1", "notes.note", "Harbour").with_action(
+            ResourceSpec::new("notes.note:1", "notes.note", "Harbour").with_action(
                 ActionSpec::immediate("star", "Star", NOTE_TYPE, &Note::Star)
                     .unwrap()
                     .with_contract(ActionContract {
@@ -1418,9 +1425,9 @@ mod tests {
 
     /// A generic edit whose value decides its risk: clearing the title is
     /// destructive, renaming is not.
-    fn edit_by_value() -> Vec<Resource> {
+    fn edit_by_value() -> Vec<ResourceSpec> {
         vec![
-            Resource::new("notes.note:1", "notes.note", "Harbour").with_action(
+            ResourceSpec::new("notes.note:1", "notes.note", "Harbour").with_action(
                 ActionSpec::typed(
                     "edit",
                     "Edit",
@@ -1563,7 +1570,7 @@ mod tests {
     #[test]
     fn a_confirmed_invocation_inside_a_run_is_recorded_with_its_group() {
         let resources = vec![
-            Resource::new("notes.note:1", "notes.note", "Harbour").with_action(
+            ResourceSpec::new("notes.note:1", "notes.note", "Harbour").with_action(
                 ActionSpec::immediate("star", "Star", NOTE_TYPE, &Note::Star)
                     .unwrap()
                     .destructive(),

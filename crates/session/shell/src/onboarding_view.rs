@@ -25,32 +25,28 @@ mod recovery_key;
 mod semantic;
 mod session;
 mod snapshot;
+use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value};
 use recovery_key::{
     RecoveryKeyCopy, WordsCheck, import_recovery_words, recovery_key_copy_page, short_fingerprint,
 };
 use session::SessionPaths;
 pub use snapshot::OnboardingVisualState;
-
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use ui::widget::TaffyTreeExt;
-use ui::widget::{AppModel, ModelPath};
-
-use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value};
+use std::{cell::RefCell, rc::Rc};
 use taffy::{NodeId, TaffyTree};
 use ui::color_compat::ColorCompat;
 use ui::theme::Theme;
 use ui::widget::{
-    Banner, Button, ButtonRole, Checkbox, Column, FilePicker, FilePickerMode, IconWidget, ListRow,
-    ProgressBar, Row, Scrollable, Section, Spacer, Spinner, Text, TextInput, Widget,
+    AppModel, Banner, Button, ButtonRole, Checkbox, Column, FilePicker, FilePickerMode, IconWidget,
+    ListRow, ModelPath, ProgressBar, Row, Scrollable, Section, Spacer, Spinner, TaffyTreeExt, Text,
+    TextInput, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
@@ -807,7 +803,7 @@ pub struct OnboardingView {
     /// written to the document.
     pressed: PressedActions,
     acknowledgements: Rc<RefCell<Vec<(AcknowledgementKind, bool)>>>,
-    acknowledgement_actions: ui::action_host::ActionHost,
+    acknowledgement_actions: ui::local_dispatch::LocalDispatch,
     invalidation: Invalidation,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
@@ -1156,7 +1152,7 @@ impl OnboardingView {
             finished: false,
             pressed: PressedActions::default(),
             acknowledgements: Rc::default(),
-            acknowledgement_actions: ui::action_host::ActionHost::new(),
+            acknowledgement_actions: ui::local_dispatch::LocalDispatch::new(),
             invalidation: Invalidation::Focus,
             composed: None,
             rect: Rect::ZERO,

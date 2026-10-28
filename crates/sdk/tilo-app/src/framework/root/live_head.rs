@@ -16,7 +16,7 @@ impl ResourceRoot {
         &self,
         state: &dyn std::any::Any,
         epoch: &str,
-    ) -> Rc<tilo_actions::Resource> {
+    ) -> Rc<tilo_actions::ResourceSpec> {
         let at = (
             self.version(),
             ui_core::i18n::I18nManager::revision(),
@@ -67,5 +67,5 @@ pub(super) struct LiveHead {
     id: String,
     label: String,
     inputs: tilo_resource::HeadInputs,
-    resource: Rc<tilo_actions::Resource>,
+    resource: Rc<tilo_actions::ResourceSpec>,
 }

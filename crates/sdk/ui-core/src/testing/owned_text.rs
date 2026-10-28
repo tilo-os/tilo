@@ -50,7 +50,7 @@ impl OwnedText {
                 Ok(())
             }
         }
-        let mut host = crate::action_host::ActionHost::new();
+        let mut host = crate::local_dispatch::LocalDispatch::new();
         doc.apply(
             &mut host,
             "test.owned-text.write",

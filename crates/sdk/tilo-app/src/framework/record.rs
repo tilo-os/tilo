@@ -60,7 +60,7 @@ pub struct Held<P: Resource> {
     /// The last publication, at the record's revision and loads and the
     /// locale's revision it was built at: published again only when one
     /// moved.
-    published: RefCell<Option<(Published, tilo_actions::Resource)>>,
+    published: RefCell<Option<(Published, tilo_actions::ResourceSpec)>>,
 }
 
 /// The record's revision and loads ([`Live::loads`]), the locale's
@@ -128,7 +128,7 @@ impl<P: Resource> Held<P> {
     /// The record as it is published: its field edits and verbs carried out
     /// through [`RECORD_ACTION_TYPE`], open to the person whatever their
     /// role in the room; nothing to change where it is read only.
-    pub(crate) fn publish(&self) -> tilo_actions::Resource {
+    pub(crate) fn publish(&self) -> tilo_actions::ResourceSpec {
         self.sync();
         // Reading it again changes no revision — the state stays the last
         // one that read — so whether it reads is part of what the
@@ -164,10 +164,10 @@ impl<P: Resource> Held<P> {
 /// `resource`'s document actions, and those of its children, carried out on
 /// the record `record`; nothing else it publishes is answered here.
 pub(crate) fn route(
-    mut resource: tilo_actions::Resource,
+    mut resource: tilo_actions::ResourceSpec,
     record: &str,
     editable: bool,
-) -> tilo_actions::Resource {
+) -> tilo_actions::ResourceSpec {
     resource.actions = std::mem::take(&mut resource.actions)
         .into_iter()
         .filter(|spec| editable && spec.kind == OperationKind::Document)
@@ -218,7 +218,7 @@ pub(crate) trait RecordDoor {
     fn editable(&self) -> bool;
     /// Increases whenever what the record holds changed, read now.
     fn revision(&self) -> u64;
-    fn publish(&self) -> tilo_actions::Resource;
+    fn publish(&self) -> tilo_actions::ResourceSpec;
     fn apply_encoded(&self, action: &EncodedAction, invoker: &ActionInvoker) -> Result<(), String>;
     /// [`Self::apply_encoded`], answering its invoker with what it made.
     fn apply_answering(
@@ -257,7 +257,7 @@ impl<P: Resource> RecordDoor for Held<P> {
         self.live.revision()
     }
 
-    fn publish(&self) -> tilo_actions::Resource {
+    fn publish(&self) -> tilo_actions::ResourceSpec {
         Held::publish(self)
     }
 

@@ -561,11 +561,11 @@ pub(crate) fn worktree_row(model: &RepoModel, id: &str) -> Option<LiveRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_actions::Resource;
+    use tilo_actions::ResourceSpec;
 
     /// The rows the window publishes for `model`: its repository and its
     /// working tree.
-    fn published(model: &RepoModel) -> Vec<Resource> {
+    fn published(model: &RepoModel) -> Vec<ResourceSpec> {
         repository_rows(model)
             .into_iter()
             .chain([working_tree_rows(model)])

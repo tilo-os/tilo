@@ -22,7 +22,7 @@
 //!
 //! ## Resources
 //!
-//! An app publishes the tree of [`Resource`]s it currently has open (a
+//! An app publishes the tree of [`ResourceSpec`]s it currently has open (a
 //! video → its comments; a book → its annotations) through the toolkit's
 //! `PublishesResources`. Each resource exports [`ActionSpec`]s; the
 //! palette lists them, and choosing one
@@ -159,9 +159,9 @@ pub use content::{
     CONTENT_PART_THRESHOLD, CONTENT_REFERENCE_KEY, ContentParts, MissingContent, keep_content_in,
 };
 pub use context::{
-    AGENT_TASK_PARTICIPANT_PREFIX, ActionApp, ActionContext, ActionFacet, ActionGroup,
-    ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX, CONTINUATION_PREFIX, Cause, ChangeKind,
-    MAX_PARTICIPANT_ID_BYTES, PLACE_FACET, ParticipantId, RISK_FACET,
+    AGENT_TASK_PARTICIPANT_PREFIX, ActionApp, ActionContext, ActionFacet, ActionInvoker,
+    ActionResource, CHANGE_MESSAGE_PREFIX, CONTINUATION_PREFIX, Cause, ChangeKind,
+    MAX_PARTICIPANT_ID_BYTES, PLACE_FACET, ParticipantId, RISK_FACET, WorkGroup,
 };
 pub use contract::{
     AGENTS_AUDIENCE_TAG, ARGUMENT_RISK_TAG, ATTENDED_TAG, ActionContract, ActionKind, ActionNeed,
@@ -216,9 +216,9 @@ pub use resource::{
     ActionBinding, ActionBindingError, ActionInput, ActionSpec, ActionType, ArgsBuilder, Collects,
     ContinuationArguments, ContinuationEvidence, ContinuationKey, ContinuationQuery,
     ControlInvocation, FlatAction, KEY_SEP, ListedRow, NESTED_RESOURCE_FACET, PROMPTED_PARAM,
-    Resource, ResourceId, ResourcePresentation, ResourceSemanticIdentity, ResourceViewMountSpec,
-    ResourceViewRangeSpec, ResourceViewSpec, RunBy, Target, flatten, listed_row,
-    listed_row_problems, sole_text_argument,
+    ResourceId, ResourcePresentation, ResourceSemanticIdentity, ResourceSpec,
+    ResourceViewMountSpec, ResourceViewRangeSpec, ResourceViewSpec, RunBy, Target, flatten,
+    listed_row, listed_row_problems, sole_text_argument,
 };
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,
@@ -750,10 +750,10 @@ mod tests {
             key: "k".into(),
             value: 1,
         };
-        let video = Resource::new("tube.video:v1", "tube.video", "A Video")
+        let video = ResourceSpec::new("tube.video:v1", "tube.video", "A Video")
             .with_action(ActionSpec::immediate("like", "Like", COUNTER_TYPE, &put).unwrap())
             .with_child(
-                Resource::new("tube.comment:v1:0", "tube.comment", "nice!").with_action(
+                ResourceSpec::new("tube.comment:v1:0", "tube.comment", "nice!").with_action(
                     ActionSpec::immediate("like", "Like comment", COUNTER_TYPE, &put).unwrap(),
                 ),
             );

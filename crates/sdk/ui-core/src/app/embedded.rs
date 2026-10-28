@@ -928,7 +928,7 @@ impl AppWidget for EmbeddedApp {
     fn uses_host_record(&self) -> bool {
         false
     }
-    fn device_local_resources(&self) -> Option<Vec<tilo_actions::Resource>> {
+    fn device_local_resources(&self) -> Option<Vec<tilo_actions::ResourceSpec>> {
         self.device_local.then(|| {
             crate::widget::published_resources(self.app.root_widget.as_ref(), &self.app.state.doc)
         })

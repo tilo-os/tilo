@@ -1526,14 +1526,14 @@ mod tests {
     use automerge::ROOT;
     use ui::headless::FrameHarness;
     use ui::theme::Theme;
-    use ui::tilo_actions::Resource;
+    use ui::tilo_actions::ResourceSpec;
 
     use crate::model::{ConnectionProfile, Engine};
 
     fn of_kind<'a>(
-        resources: &'a [ui::tilo_actions::Resource],
+        resources: &'a [ui::tilo_actions::ResourceSpec],
         kind: &str,
-    ) -> Option<&'a ui::tilo_actions::Resource> {
+    ) -> Option<&'a ui::tilo_actions::ResourceSpec> {
         resources.iter().find_map(|resource| {
             if resource.kind == kind {
                 Some(resource)
@@ -2160,7 +2160,7 @@ mod tests {
             app.call_on(&item, "connect", serde_json::json!({}))
                 .unwrap();
             tilo_test_env::wait_until("the query fixture connection to open", || {
-                fn has_schema(rows: &[Resource]) -> bool {
+                fn has_schema(rows: &[ResourceSpec]) -> bool {
                     rows.iter()
                         .any(|row| row.kind == "database.schema" || has_schema(&row.children))
                 }
@@ -2194,7 +2194,7 @@ mod tests {
 
             let (mut app, _doc) = synced();
             app.session.connections[0].password = "never-publish-this".into();
-            let rows: Vec<Resource> = app
+            let rows: Vec<ResourceSpec> = app
                 .live_rows()
                 .into_iter()
                 .map(LiveRow::into_resource)

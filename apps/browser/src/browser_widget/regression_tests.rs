@@ -1119,7 +1119,7 @@ fn a_refused_page_action_is_never_reported_retryable() {
 fn a_page_action_failure_is_retryable_only_where_its_contract_allows_it() {
     use ui::tilo_actions::RetryPolicy;
 
-    fn walk(resource: &ui::tilo_actions::Resource, page_actions: &mut Vec<String>) {
+    fn walk(resource: &ui::tilo_actions::ResourceSpec, page_actions: &mut Vec<String>) {
         for action in &resource.actions {
             if resource.id.0 != "browser.page" {
                 continue;

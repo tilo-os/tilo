@@ -19,7 +19,7 @@ use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
     ActionContract, ActionOutput, ActionParam, ActionSpec, DoorError, EncodedAction, OperationKind,
-    ParamType, Resource, ResultSpec, RetryPolicy, RiskLevel,
+    ParamType, ResourceSpec, ResultSpec, RetryPolicy, RiskLevel,
 };
 
 use super::App;
@@ -210,7 +210,7 @@ fn typed(
     clippy::expect_used,
     reason = "the nullary Open command serializes infallibly"
 )]
-pub(crate) fn resource() -> Resource {
+pub(crate) fn resource() -> ResourceSpec {
     let open = ActionSpec::operation(
         OPEN,
         lookup("history-action-open"),
@@ -335,7 +335,7 @@ pub(crate) fn resource() -> Resource {
             label: text(args, "label").unwrap_or_default(),
         },
     );
-    Resource::new(RESOURCE, RESOURCE, lookup("history-action-resource"))
+    ResourceSpec::new(RESOURCE, RESOURCE, lookup("history-action-resource"))
         .with_action(open)
         .with_action(list)
         .with_action(view_at)
@@ -346,7 +346,7 @@ pub(crate) fn resource() -> Resource {
 }
 
 /// The in-app palette already lists the History chrome's own launcher.
-pub(super) fn without_duplicate_launcher(resources: &mut [Resource]) {
+pub(super) fn without_duplicate_launcher(resources: &mut [ResourceSpec]) {
     let chrome = resources
         .iter()
         .any(|resource| resource.id.as_str() == crate::standalone_history_host::HISTORY_RESOURCE);
@@ -444,7 +444,7 @@ fn output(value: serde_json::Value) -> ActionOutput {
 
 impl App {
     /// The published History resource, present only where History is.
-    pub(super) fn history_action_resources(&self) -> Vec<Resource> {
+    pub(super) fn history_action_resources(&self) -> Vec<ResourceSpec> {
         if self.history_chrome_enabled {
             vec![resource()]
         } else {

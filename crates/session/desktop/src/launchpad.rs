@@ -283,7 +283,7 @@ fn consume_launchpad(
     };
     let context = tilo_actions::ActionContext::for_app("tilo.desktop", action.choice.path());
     match edits.apply(
-        &mut ui::action_host::ActionHost::new(),
+        &mut ui::local_dispatch::LocalDispatch::new(),
         "tilo.desktop.launchpad.consume",
         &action,
         context,
@@ -314,7 +314,7 @@ pub struct CollaborationLaunchpad {
     dirty: bool,
     copy: LaunchpadCopy,
     scope: WorkspaceScope,
-    actions: ui::action_host::ActionHost,
+    actions: ui::local_dispatch::LocalDispatch,
     targets: ui::widget::PaintedTargets,
     target_geometry: Option<([Rect; 6], Rect)>,
 }
@@ -375,7 +375,7 @@ impl CollaborationLaunchpad {
             dirty: true,
             copy: LaunchpadCopy::default(),
             scope: WorkspaceScope::default(),
-            actions: ui::action_host::ActionHost::new(),
+            actions: ui::local_dispatch::LocalDispatch::new(),
             targets: ui::widget::PaintedTargets::new(),
             target_geometry: None,
         }

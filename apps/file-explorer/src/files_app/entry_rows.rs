@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use ui::collaboration::NearbyTransferTarget;
 use ui::framework::LiveRow;
-use ui::tilo_actions::Resource;
+use ui::tilo_actions::ResourceSpec;
 use ui::tilo_resource::Effect as _;
 
 use super::open_with_recent::{OpenWithFacts, append_open_with_actions};
@@ -125,7 +125,7 @@ impl FileExplorerWidget {
 
     /// The complete action contract of one listed entry's row, as an exact
     /// search, history or agent address resolves it.
-    pub(super) fn entry_resource(&self, entry: &Entry) -> Resource {
+    pub(super) fn entry_resource(&self, entry: &Entry) -> ResourceSpec {
         let context = self.row_context();
         let facts = self.entry_row_facts(&context, entry);
         entry_row(&context, &facts, entry)
@@ -163,10 +163,10 @@ impl FileExplorerWidget {
 /// An app's row in the Applications place: open it, and uninstall it (or
 /// remove it from the person's apps), which the shell asks about first.
 fn app_row(
-    mut resource: Resource,
+    mut resource: ResourceSpec,
     resource_id: &str,
     removal: runtime_portal::tools::AppRemoval,
-) -> Resource {
+) -> ResourceSpec {
     use crate::effects::{FilesEffect, row_action};
     use runtime_portal::tools::AppRemoval;
     resource.actions.push(row_action(
@@ -202,12 +202,12 @@ fn app_row(
     clippy::too_many_lines,
     reason = "an entry's complete canonical action contract stays together so lazy and eager resource resolution cannot diverge by dispatch route"
 )]
-fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Resource {
+fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> ResourceSpec {
     use crate::effects::{FilesEffect, row_action};
     let resource_id = FileExplorerWidget::entry_resource_id(entry);
     let id = || resource_id.clone();
     let record_id = entry.record_id.map(uuid::Uuid::from_bytes);
-    let mut resource = Resource::new(
+    let mut resource = ResourceSpec::new(
         resource_id.clone(),
         if record_id.is_some() {
             "files.record"

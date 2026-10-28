@@ -1043,7 +1043,7 @@ impl<C: Widget + 'static> crate::widget::ResourceOperations for Popover<C> {
 
 impl<C: Widget + 'static> crate::resources::PublishesResources for Popover<C> {
     /// The close control while the popover is open.
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.dismiss
             .as_ref()
             .filter(|_| self.open)

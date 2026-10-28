@@ -330,7 +330,7 @@ pub struct ToggleGroup {
     on_change: Option<ChangeCallback>,
     action: Option<ActionEmitter<usize>>,
     binding: Option<BoxedBinding<usize>>,
-    native_resource: Option<crate::tilo_actions::Resource>,
+    native_resource: Option<crate::tilo_actions::ResourceSpec>,
     /// Indices aligned 1:1 with `segments`; drawing also consults this for
     /// the fill.
     segment_rects: Vec<Rect>,
@@ -677,7 +677,7 @@ impl ToggleGroup {
     fn on_view_boxed(mut self, id: &str, f: Box<dyn FnMut(usize)>) -> Self {
         use crate::tilo_actions::{
             ActionBinding, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
-            Resource,
+            ResourceSpec,
         };
 
         const TYPE_ID: &str = "tilo.ui.segmented.select";
@@ -705,8 +705,9 @@ impl ToggleGroup {
                 .expect("generated segmented action payload is serializable")
             },
         );
-        let resource = Resource::new(format!("tilo.control:{id}"), "tilo.control.segmented", id)
-            .with_action(spec.clone());
+        let resource =
+            ResourceSpec::new(format!("tilo.control:{id}"), "tilo.control.segmented", id)
+                .with_action(spec.clone());
         let binding = ActionBinding::new(&resource, &spec, |index: usize| {
             serde_json::Map::from_iter([("index".into(), serde_json::json!(index))])
         })
@@ -2646,7 +2647,7 @@ impl crate::widget::ResourceOperations for ToggleGroup {
 }
 
 impl crate::resources::PublishesResources for ToggleGroup {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<crate::tilo_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<crate::tilo_actions::ResourceSpec> {
         self.native_resource.iter().cloned().collect()
     }
 }

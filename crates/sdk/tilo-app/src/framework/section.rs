@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use tilo_actions::{Action, ActionContext, ActionError, ActionInvoker, ChangeKind, EncodedAction};
 use tilo_resource::{Doc, Fields, Reader, Resource};
-use ui_core::record::person::PersonRecord as StoredRecord;
+use ui_core::record::StoredRecord;
 use ui_core::storage::{
     ChangeOrigin, InvokingAction, Settings, SettingsDocument, SettingsRevision, SettingsSchema,
 };
@@ -39,7 +39,7 @@ enum SectionOp<'a> {
 enum SectionOut {
     Done,
     Holds(bool),
-    Published(Box<tilo_actions::Resource>),
+    Published(Box<tilo_actions::ResourceSpec>),
     Decoded(Box<dyn Action>),
     Value(serde_json::Value),
 }
@@ -116,7 +116,7 @@ impl SectionKind {
         (self.ops)(self, SectionOp::Store(doc, &origin)).map(drop)
     }
 
-    fn publish(&self, doc: &Doc, id: &str) -> Result<tilo_actions::Resource, String> {
+    fn publish(&self, doc: &Doc, id: &str) -> Result<tilo_actions::ResourceSpec, String> {
         match (self.ops)(self, SectionOp::Publish(doc, id, self.label))? {
             SectionOut::Published(resource) => Ok(*resource),
             _ => Err("the section published nothing".into()),
@@ -231,7 +231,7 @@ pub(crate) struct SectionDoor {
     revision: Cell<u64>,
     /// The last publication, at the door's and the locale's revision it was
     /// built at: published again only when either moved.
-    published: RefCell<Option<((u64, u64), tilo_actions::Resource)>>,
+    published: RefCell<Option<((u64, u64), tilo_actions::ResourceSpec)>>,
 }
 
 impl SectionDoor {
@@ -562,7 +562,7 @@ impl RecordDoor for SectionDoor {
         self.revision.get()
     }
 
-    fn publish(&self) -> tilo_actions::Resource {
+    fn publish(&self) -> tilo_actions::ResourceSpec {
         self.follow();
         let revision = (self.revision.get(), ui_core::i18n::I18nManager::revision());
         if let Some((at, published)) = self.published.borrow().as_ref()
@@ -575,7 +575,7 @@ impl RecordDoor for SectionDoor {
             .unwrap_or_else(|| Err("the section's record is unavailable".into()))
             .unwrap_or_else(|error| {
                 tracing::warn!(kind = self.kind.kind, %error, "settings section unreadable");
-                tilo_actions::Resource::new(self.id.as_str(), self.kind.kind, self.kind.label)
+                tilo_actions::ResourceSpec::new(self.id.as_str(), self.kind.kind, self.kind.label)
             });
         let published = super::record::route(published, &self.id, self.editable);
         *self.published.borrow_mut() = Some((revision, published.clone()));
@@ -717,7 +717,7 @@ impl SettingsRecords {
     /// Every section, published with its field edits and verbs, and the
     /// person's undo and redo of each kept in their records.
     #[must_use]
-    pub fn resources(&self) -> Vec<tilo_actions::Resource> {
+    pub fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         match &self.person {
             Some(person) => person.resources(),
             None => self.doors.iter().map(|door| door.publish()).collect(),

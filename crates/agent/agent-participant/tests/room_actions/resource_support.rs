@@ -123,9 +123,9 @@ pub(super) fn on_messages(
 /// its kind, as `page` publishes it: an item of the part that keeps it.
 pub(super) fn published_message(page: &super::Replica, message: &str) -> (String, String) {
     fn find<'a>(
-        resources: &'a [ui::tilo_actions::Resource],
+        resources: &'a [ui::tilo_actions::ResourceSpec],
         id: &str,
-    ) -> Option<&'a ui::tilo_actions::Resource> {
+    ) -> Option<&'a ui::tilo_actions::ResourceSpec> {
         resources.iter().find_map(|resource| {
             if resource.id.as_str() == id {
                 Some(resource)

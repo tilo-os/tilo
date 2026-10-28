@@ -9,7 +9,7 @@ pub fn publish_head<R: Resource>(
     id: &str,
     label: &str,
     state: &R::State,
-) -> tilo_actions::Resource {
+) -> tilo_actions::ResourceSpec {
     publish_head_of::<R>(id, label, &head_inputs::<R>(state))
 }
 
@@ -48,7 +48,7 @@ pub fn publish_head_of<R: Resource>(
     id: &str,
     label: &str,
     inputs: &HeadInputs,
-) -> tilo_actions::Resource {
+) -> tilo_actions::ResourceSpec {
     publish_head_from(vocabulary::<R>(), R::local_operations(), id, label, inputs)
 }
 
@@ -60,7 +60,7 @@ fn publish_head_from(
     id: &str,
     label: &str,
     inputs: &HeadInputs,
-) -> tilo_actions::Resource {
+) -> tilo_actions::ResourceSpec {
     let declarations = vocabulary.declarations();
     let availability = |action: &str| {
         declarations

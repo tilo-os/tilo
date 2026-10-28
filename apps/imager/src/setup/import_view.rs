@@ -3255,7 +3255,7 @@ mod tests {
 
     /// The imports as the imager resource publishes them: the live row,
     /// carrying the effects as callers see them now.
-    fn root_resource(app: &ImportApp) -> tilo_actions::Resource {
+    fn root_resource(app: &ImportApp) -> tilo_actions::ResourceSpec {
         let mut root = app.live_rows().remove(0).into_resource();
         let blocked = import_actions::blocked(&app.import_projection());
         root.actions = ImportEffect::specs()
@@ -3287,7 +3287,7 @@ mod tests {
         ImportEffect::from_payload(&encoded.payload)
     }
 
-    fn action(resource: &tilo_actions::Resource, id: &str) -> tilo_actions::ActionSpec {
+    fn action(resource: &tilo_actions::ResourceSpec, id: &str) -> tilo_actions::ActionSpec {
         resource
             .actions
             .iter()

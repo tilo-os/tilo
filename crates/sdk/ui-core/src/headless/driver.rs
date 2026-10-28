@@ -14,7 +14,7 @@ use tilo_sort::CompactSort as _;
 
 /// One published resource, its actions (address, kind, availability and
 /// parameters) and its children, as the `resources` answer lists them.
-pub(super) fn resource_json(resource: &tilo_actions::Resource) -> serde_json::Value {
+pub(super) fn resource_json(resource: &tilo_actions::ResourceSpec) -> serde_json::Value {
     let actions: Vec<serde_json::Value> = resource
         .actions
         .iter()

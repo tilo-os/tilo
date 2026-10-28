@@ -4,7 +4,7 @@
 //! door resolves it against the live resource tree), every other row is
 //! handed back through [`DesktopSearch::take_choice`].
 
-use tilo_actions::{FlatAction, Resource};
+use tilo_actions::{FlatAction, ResourceSpec};
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
 
 use crate::model::{Hit, Source, Target, search};
@@ -25,7 +25,7 @@ pub struct SearchData {
     pub applications: Vec<AppEntry>,
     pub windows: Vec<WindowEntry>,
     pub commands: Vec<CommandSpec>,
-    pub resources: Vec<Resource>,
+    pub resources: Vec<ResourceSpec>,
     /// The search providers open applications publish.
     pub providers: Vec<Box<dyn ui::search::SearchProvider>>,
     /// Search what the resources hold, not what can be done to them.
@@ -561,7 +561,7 @@ mod tests {
 
     #[test]
     fn an_action_row_queues_its_invocation_for_the_host_and_closes() {
-        let mut resource = Resource::new("page-1", "notes.page", "Groceries");
+        let mut resource = ResourceSpec::new("page-1", "notes.page", "Groceries");
         resource
             .actions
             .push(tilo_actions::ActionSpec::immediate_encoded(
@@ -649,7 +649,7 @@ mod tests {
     /// Search over `base` with an app whose answer is still coming.
     fn with_a_late_app(base: SearchData) -> (DesktopSearch, std::rc::Rc<std::cell::Cell<bool>>) {
         let arrived = std::rc::Rc::new(std::cell::Cell::new(false));
-        let mut meeting = Resource::new("meeting", "notes.page", "Meeting");
+        let mut meeting = ResourceSpec::new("meeting", "notes.page", "Meeting");
         meeting
             .actions
             .push(tilo_actions::ActionSpec::immediate_encoded(
@@ -724,10 +724,10 @@ mod tests {
                 payload: Vec::new(),
             },
         );
-        let mut notebook = Resource::new("notes.notebook", "notes.notebook", "Notebook")
+        let mut notebook = ResourceSpec::new("notes.notebook", "notes.notebook", "Notebook")
             .with_action(open)
             .with_action(action("new-note", "New note"));
-        notebook.children = vec![Resource::new("page:1", "notes.page", "Groceries")];
+        notebook.children = vec![ResourceSpec::new("page:1", "notes.page", "Groceries")];
         let mut search = DesktopSearch::new();
         search.open(SearchData {
             resources: vec![notebook],

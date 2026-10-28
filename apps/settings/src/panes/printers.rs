@@ -1408,7 +1408,7 @@ mod tests {
         .expect("the queue is paused");
     }
 
-    fn tilo_actions_has(resource: &ui::tilo_actions::Resource, id: &str) -> bool {
+    fn tilo_actions_has(resource: &ui::tilo_actions::ResourceSpec, id: &str) -> bool {
         resource.id.as_str() == id
             || resource
                 .children

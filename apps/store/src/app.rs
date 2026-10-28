@@ -5198,7 +5198,7 @@ mod tests {
                 .find(|resource| resource.id.as_str() == eager)
                 .expect("the first app is on the published page");
             let looked_up = app.live_row(eager).unwrap().into_resource();
-            let ids = |resource: &ui::tilo_actions::Resource| {
+            let ids = |resource: &ui::tilo_actions::ResourceSpec| {
                 resource
                     .actions
                     .iter()

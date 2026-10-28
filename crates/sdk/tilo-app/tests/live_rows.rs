@@ -82,20 +82,20 @@ impl Resource for Tally {
         ]
     }
 
-    fn children(count: &i64) -> Vec<tilo_actions::Resource> {
+    fn children(count: &i64) -> Vec<tilo_actions::ResourceSpec> {
         vec![
-            tilo_actions::Resource::new(TOTAL, "test.tally.total", format!("Total {count}"))
+            tilo_actions::ResourceSpec::new(TOTAL, "test.tally.total", format!("Total {count}"))
                 .with_action(JobEffect::Reveal { at: *count }.bound()),
         ]
     }
 
-    fn child(_: &i64, id: &str) -> Option<tilo_actions::Resource> {
+    fn child(_: &i64, id: &str) -> Option<tilo_actions::ResourceSpec> {
         let slot: i64 = id.strip_prefix("tally/slot:")?.parse().ok()?;
         let fill = ActionDecl::<Self>::new("fill", "Fill the slot", Vec::new(), move |_, _| {
             Ok(TallyAction::Add { by: slot })
         });
         Some(
-            tilo_actions::Resource::new(id, "test.tally.slot", format!("Slot {slot}"))
+            tilo_actions::ResourceSpec::new(id, "test.tally.slot", format!("Slot {slot}"))
                 .with_action(tilo_resource::declaration_spec(&fill)),
         )
     }
@@ -203,12 +203,12 @@ impl Widget for Jobs {
 }
 
 impl tilo_app::resources::PublishesResources for Jobs {
-    fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         if RAW.get() == Raw::Nothing {
             return Vec::new();
         }
         vec![
-            tilo_actions::Resource::new("rogue", "test.rogue", "Rogue").with_action(
+            tilo_actions::ResourceSpec::new("rogue", "test.rogue", "Rogue").with_action(
                 ActionSpec::immediate("bump", "Bump", ACTION_TYPE, &TallyAction::Add { by: 1 })
                     .unwrap(),
             ),
@@ -280,14 +280,14 @@ impl ResourceSurface<Tally, JobEffect> for Jobs {
     }
 }
 
-fn published(app: &mut TestApp<TallyApp>) -> Vec<tilo_actions::Resource> {
+fn published(app: &mut TestApp<TallyApp>) -> Vec<tilo_actions::ResourceSpec> {
     app.harness().resources()
 }
 
 fn find<'a>(
-    resources: &'a [tilo_actions::Resource],
+    resources: &'a [tilo_actions::ResourceSpec],
     id: &str,
-) -> Option<&'a tilo_actions::Resource> {
+) -> Option<&'a tilo_actions::ResourceSpec> {
     resources.iter().find_map(|resource| {
         if resource.id.as_str() == id {
             Some(resource)
@@ -297,7 +297,7 @@ fn find<'a>(
     })
 }
 
-fn action_ids(resource: &tilo_actions::Resource) -> Vec<&str> {
+fn action_ids(resource: &tilo_actions::ResourceSpec) -> Vec<&str> {
     resource
         .actions
         .iter()

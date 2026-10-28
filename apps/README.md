@@ -34,7 +34,7 @@ External systems (CalDAV, a shared filesystem file) are projections drained by
 an `Effect`; undo of a document action that wrote a queue entry is the inverse
 action through `apply`.
 
-Do **not** hand-build a second `tilo_actions::Resource` tree for the same state,
+Do **not** hand-build a second `tilo_actions::ResourceSpec` tree for the same state,
 mutate a private `AutoCommit` from the widget, or keep an app-local action
 vocabulary that is not `Resource::Action`.
 

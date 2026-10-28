@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
-use tilo_actions::{ActionAddress, Resource};
+use tilo_actions::{ActionAddress, ResourceSpec};
 use ui::icons::Icon;
 #[cfg(test)]
 use ui::search::{DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCursor};
@@ -498,7 +498,7 @@ impl LibraryIndex {
 
     /// The resource `id` as the library publishes it, from the retained
     /// generation: what the widget resolves for agent and history lookups.
-    pub fn resource(&self, id: &str) -> Option<Resource> {
+    pub fn resource(&self, id: &str) -> Option<ResourceSpec> {
         let state = self.state.read_recover();
         state.rows.get(id)?;
         if id == LIBRARY_ID {
@@ -634,7 +634,7 @@ mod tests {
         super::opened(&crate::test_doc::library(doc), anchor).map(|effect| effect.id().to_owned())
     }
 
-    fn published(doc: &AutoCommit, id: &str) -> Option<Resource> {
+    fn published(doc: &AutoCommit, id: &str) -> Option<ResourceSpec> {
         let library = crate::test_doc::library(doc);
         if id == LIBRARY_ID {
             return Some(ui::tilo_resource::publish::<PhotoLibrary>(
@@ -647,7 +647,7 @@ mod tests {
     /// The resource a search hit opens, as the library publishes it, when
     /// the window can show it: an item as itself, any other place through
     /// the view it offers.
-    fn opened(doc: &AutoCommit, (resource, _): &(String, Option<String>)) -> Option<Resource> {
+    fn opened(doc: &AutoCommit, (resource, _): &(String, Option<String>)) -> Option<ResourceSpec> {
         let library = crate::test_doc::library(doc);
         let item = library_rows(&library).get(resource)?.kind.item();
         let published = published(doc, resource)?;

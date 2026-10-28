@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
-use tilo_actions::{ActionAddress, Availability, Resource};
+use tilo_actions::{ActionAddress, Availability, ResourceSpec};
 use ui::search::{PagePoll, PendingToken, SearchQuery};
 
 use crate::model::{ActionTarget, Hit, Source, Target};
@@ -201,8 +201,8 @@ impl Source for Commands {
 }
 
 /// Every resource of `resources`, nested ones included, by id.
-fn index(resources: &[Resource]) -> BTreeMap<String, &Resource> {
-    fn visit<'a>(resource: &'a Resource, out: &mut BTreeMap<String, &'a Resource>) {
+fn index(resources: &[ResourceSpec]) -> BTreeMap<String, &ResourceSpec> {
+    fn visit<'a>(resource: &'a ResourceSpec, out: &mut BTreeMap<String, &'a ResourceSpec>) {
         out.entry(resource.id.as_str().to_owned())
             .or_insert(resource);
         for child in &resource.children {
@@ -221,7 +221,7 @@ fn offered(spec: &tilo_actions::ActionSpec) -> bool {
     spec.reaches_people() && matches!(spec.contract.availability, Availability::Available)
 }
 
-fn action_target(resource: &Resource, action: &str) -> Option<ActionTarget> {
+fn action_target(resource: &ResourceSpec, action: &str) -> Option<ActionTarget> {
     let spec = resource
         .actions
         .iter()
@@ -238,7 +238,7 @@ fn action_target(resource: &Resource, action: &str) -> Option<ActionTarget> {
 
 /// The actions open applications publish (`tilo_actions`), the same
 /// catalogue their own controls, agents and remote peers invoke.
-pub struct Actions(pub Vec<Resource>);
+pub struct Actions(pub Vec<ResourceSpec>);
 
 impl Source for Actions {
     fn id(&self) -> &'static str {
@@ -321,7 +321,7 @@ const CONTENT_MATCH_SCORE: i32 = 10;
 /// the palette once the answer is in, so the rows are built again.
 pub struct Content {
     providers: Vec<Box<dyn ui::search::SearchProvider>>,
-    resources: Vec<Resource>,
+    resources: Vec<ResourceSpec>,
     /// The part of the application a search it opened is narrowed to (a
     /// [`ui::search::ScopeDecl`] anchor).
     scope: Option<String>,
@@ -336,7 +336,7 @@ pub struct Content {
 impl Content {
     pub fn new(
         providers: Vec<Box<dyn ui::search::SearchProvider>>,
-        resources: Vec<Resource>,
+        resources: Vec<ResourceSpec>,
     ) -> Self {
         Self {
             providers,
@@ -825,8 +825,13 @@ mod tests {
         assert!(!term.iter().any(|id| id == "so.tilo.terminal"));
     }
 
-    fn resource_with_action(id: &str, label: &str, action: &str, action_label: &str) -> Resource {
-        let mut resource = Resource::new(id, "notes.page", label);
+    fn resource_with_action(
+        id: &str,
+        label: &str,
+        action: &str,
+        action_label: &str,
+    ) -> ResourceSpec {
+        let mut resource = ResourceSpec::new(id, "notes.page", label);
         resource
             .actions
             .push(tilo_actions::ActionSpec::immediate_encoded(
@@ -1093,7 +1098,7 @@ mod tests {
                 Library.search(query)
             }
         }
-        let mut library = Resource::new("videos", "videos.library", "Videos");
+        let mut library = ResourceSpec::new("videos", "videos.library", "Videos");
         // As the framework publishes it: a view taking the anchor.
         library.actions = vec![
             tilo_actions::ActionSpec::typed_operation(

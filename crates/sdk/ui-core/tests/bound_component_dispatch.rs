@@ -726,7 +726,7 @@ impl tilo_ui::host_operation::ResourceOperations for Leaf {
 }
 
 impl tilo_ui::resources::PublishesResources for Leaf {
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some(self.record.as_str())
@@ -734,7 +734,7 @@ impl tilo_ui::resources::PublishesResources for Leaf {
         self.capture("resources");
         vec![]
     }
-    fn resource(&self, doc: &AutoCommit, _: &str) -> Option<tilo_actions::Resource> {
+    fn resource(&self, doc: &AutoCommit, _: &str) -> Option<tilo_actions::ResourceSpec> {
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some(self.record.as_str())
@@ -2397,7 +2397,7 @@ fn bound_resources_list_and_look_up_what_the_component_permissions_admit() {
         };
         driver
     };
-    let actions = |resources: &[tilo_actions::Resource]| {
+    let actions = |resources: &[tilo_actions::ResourceSpec]| {
         resources
             .iter()
             .flat_map(|resource| resource.actions.iter().map(|action| action.id.clone()))
@@ -2582,7 +2582,7 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
                 records.push(component.record().clone());
                 column = column.push(Box::new(TileHost::from_component(component)));
             }
-            let resource = tilo_actions::Resource::new("probe:shared", "probe", "Shared probe")
+            let resource = tilo_actions::ResourceSpec::new("probe:shared", "probe", "Shared probe")
                 .with_action(
                     tilo_actions::ActionSpec::immediate(
                         "edit",

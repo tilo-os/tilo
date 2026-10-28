@@ -27,7 +27,7 @@ impl DisplayModel {
 
     fn bind_shared_row<I: 'static, C: ui::framework::ActionControl<I>>(
         &self,
-        row: &ui::tilo_actions::Resource,
+        row: &ui::tilo_actions::ResourceSpec,
         control: C,
         effect: impl ui::tilo_resource::Binds<SettingsEffect, I>,
     ) -> C {

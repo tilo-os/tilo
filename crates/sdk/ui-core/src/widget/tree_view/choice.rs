@@ -128,7 +128,7 @@ impl<T: 'static, M: TreeModel + 'static> crate::widget::ResourceOperations for T
 }
 
 impl<T: 'static, M: TreeModel + 'static> crate::resources::PublishesResources for TreeImpl<T, M> {
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.view
             .as_ref()
             .map(|view| view.choice.resource_of_keys(self.entries()))

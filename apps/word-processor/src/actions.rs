@@ -122,7 +122,7 @@ fn range_label(
 /// the view's Find results. For a peer in a test that serves a Writer
 /// document without a window.
 #[cfg(any(test, feature = "test-support"))]
-pub fn published_for(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+pub fn published_for(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
     use ui::tilo_resource::Resource as _;
     let Ok(state) = crate::framework::Document::read(doc) else {
         return Vec::new();
@@ -495,9 +495,9 @@ mod tests {
     /// The object of `kind` (`table`, `image`, `change`, `comment`) the
     /// document publishes beneath it.
     fn derived<'a>(
-        root: &'a tilo_actions::Resource,
+        root: &'a tilo_actions::ResourceSpec,
         kind: &str,
-    ) -> Option<&'a tilo_actions::Resource> {
+    ) -> Option<&'a tilo_actions::ResourceSpec> {
         let prefix = format!("{DOCUMENT}/derived/{kind}:");
         root.children
             .iter()
@@ -507,7 +507,7 @@ mod tests {
     /// Invoke `action` on the published resource `resource` through the door.
     fn invoke(
         doc: &mut AutoCommit,
-        resources: &[tilo_actions::Resource],
+        resources: &[tilo_actions::ResourceSpec],
         resource: &str,
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
@@ -1770,7 +1770,7 @@ mod tests {
         }
     }
 
-    fn root_for(state: &ui::State, block: &str) -> tilo_actions::Resource {
+    fn root_for(state: &ui::State, block: &str) -> tilo_actions::ResourceSpec {
         published_for(&caret_at(block), &state.doc).remove(0)
     }
 
@@ -1823,7 +1823,7 @@ mod tests {
     /// parameterised operation rather than by raising it.
     #[test]
     fn a_fresh_document_publishes_few_grantable_document_operations() {
-        fn document_ops(resource: &tilo_actions::Resource, out: &mut Vec<String>) {
+        fn document_ops(resource: &tilo_actions::ResourceSpec, out: &mut Vec<String>) {
             for action in &resource.actions {
                 if action.kind == tilo_actions::OperationKind::Document {
                     out.push(format!("{}#{}", resource.id.0, action.id));

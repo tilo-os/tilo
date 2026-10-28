@@ -241,7 +241,7 @@ fn targets(action: &ItemAction, fields: &[&str], field: &str) -> bool {
 /// resolved one by one when addressed ([`item_child`]).
 pub const ITEM_PAGE: usize = 256;
 
-type Cached = HashMap<Id, (String, u64, tilo_actions::Resource)>;
+type Cached = HashMap<Id, (String, u64, tilo_actions::ResourceSpec)>;
 
 thread_local! {
     /// Item resources built before, by resource type and collection, then
@@ -258,7 +258,7 @@ fn item_resource(
     field: &str,
     id: &Id,
     label: &str,
-) -> tilo_actions::Resource {
+) -> tilo_actions::ResourceSpec {
     cached_item((vocabulary.type_id)(), field, id, label, &|| {
         build_item(vocabulary, scoped, field, id, label)
     })
@@ -271,8 +271,8 @@ fn cached_item(
     field: &str,
     id: &Id,
     label: &str,
-    build: &dyn Fn() -> tilo_actions::Resource,
-) -> tilo_actions::Resource {
+    build: &dyn Fn() -> tilo_actions::ResourceSpec,
+) -> tilo_actions::ResourceSpec {
     let epoch = crate::resource::type_epoch();
     let key = (kind, field.to_owned());
     let cached = BUILT.with(|built| {
@@ -310,8 +310,8 @@ fn build_item(
     field: &str,
     id: &Id,
     label: &str,
-) -> tilo_actions::Resource {
-    let mut child = tilo_actions::Resource::new(
+) -> tilo_actions::ResourceSpec {
+    let mut child = tilo_actions::ResourceSpec::new(
         item_resource_id_in(vocabulary.kind, field, id),
         format!("{}.{field}", vocabulary.kind),
         label,
@@ -448,7 +448,7 @@ fn rename_type(vocabulary: &'static Vocabulary, field: &str) -> Option<Arc<Actio
 /// their parameters and contract, and its children, for telling two
 /// publications of the same thing apart.
 #[must_use]
-pub fn fingerprint(resource: &tilo_actions::Resource) -> String {
+pub fn fingerprint(resource: &tilo_actions::ResourceSpec) -> String {
     use std::fmt::Write as _;
     let mut out = format!(
         "{}|{}|{}",
@@ -482,7 +482,7 @@ pub fn item_child<R: Resource>(
     fields: &[&str],
     actions: &[ItemAction],
     label_of: impl Fn(&str, &Id) -> Option<String>,
-) -> Option<tilo_actions::Resource> {
+) -> Option<tilo_actions::ResourceSpec> {
     let vocabulary = vocabulary::<R>();
     let (field, id) = item_of_resource_in(vocabulary.kind, resource_id)?;
     let field = *fields.iter().find(|candidate| **candidate == field)?;
@@ -498,7 +498,10 @@ pub fn item_child<R: Resource>(
 }
 
 /// The resource `id` among `resource`'s children, at any depth.
-fn descendant(resource: tilo_actions::Resource, id: &str) -> Option<tilo_actions::Resource> {
+fn descendant(
+    resource: tilo_actions::ResourceSpec,
+    id: &str,
+) -> Option<tilo_actions::ResourceSpec> {
     resource.children.into_iter().find_map(|child| {
         if child.id.as_str() == id {
             Some(child)
@@ -516,7 +519,7 @@ fn scoped_item(
     field: &str,
     id: &Id,
     label: &str,
-) -> tilo_actions::Resource {
+) -> tilo_actions::ResourceSpec {
     let declarations = vocabulary.declarations();
     let scoped = scoped(&declarations, actions, fields, field);
     item_resource(vocabulary, &scoped, field, id, label)
@@ -625,7 +628,7 @@ const fn same(a: &[u8], b: &[u8]) -> bool {
 pub fn item_children<R: Resource>(
     collections: &[ItemCollection],
     actions: &[ItemAction],
-) -> Vec<tilo_actions::Resource> {
+) -> Vec<tilo_actions::ResourceSpec> {
     let mut children = Vec::new();
     for_each_item_child_of(
         vocabulary::<R>(),
@@ -641,7 +644,7 @@ pub fn item_children<R: Resource>(
 /// What [`for_each_item_child`] calls per item child: the collection it is
 /// an item of, its id and label, and how to build it.
 pub type ItemChildVisitor<'a> =
-    dyn FnMut(&ItemCollection, &Id, &str, &dyn Fn() -> tilo_actions::Resource) + 'a;
+    dyn FnMut(&ItemCollection, &Id, &str, &dyn Fn() -> tilo_actions::ResourceSpec) + 'a;
 
 /// [`item_children`] one item at a time, for a publisher that keeps the
 /// children it built for an earlier version: `each(collection, id, label,
@@ -736,12 +739,12 @@ pub fn item_child_id<R: Resource>(collection: &ItemCollection, id: &Id) -> Strin
 /// `item_actions` ([`item_children`]).
 pub struct ChildrenParts {
     /// The children before the kept ones, built afresh.
-    pub others: Vec<tilo_actions::Resource>,
+    pub others: Vec<tilo_actions::ResourceSpec>,
     /// The record's nested resources and derived ones
     /// ([`crate::derived::published`]): the very same, and each the very
     /// same, while they are unchanged, so a publisher holding what it built
     /// of them keeps it.
-    pub kept: Rc<[Rc<tilo_actions::Resource>]>,
+    pub kept: Rc<[Rc<tilo_actions::ResourceSpec>]>,
     /// The record's collections, each item with its label.
     pub items: Vec<ItemCollection>,
     /// The actions offered on items.
@@ -802,8 +805,8 @@ fn nested_item(
     field: &'static str,
     id: &Id,
     label: &str,
-) -> tilo_actions::Resource {
-    let mut child = tilo_actions::Resource::new(
+) -> tilo_actions::ResourceSpec {
+    let mut child = tilo_actions::ResourceSpec::new(
         nested_resource_id_in(vocabulary.kind, within, field, id),
         format!("{}.{field}", vocabulary.kind),
         label,
@@ -827,7 +830,7 @@ fn nested_item(
 /// items of a collection, known from how many items each collection holds
 /// (`sizes`, by field) without building a child per item.
 pub fn offered_on_items<R: Resource>(
-    others: &[tilo_actions::Resource],
+    others: &[tilo_actions::ResourceSpec],
     derived: &crate::derived::PublishedDerived,
     sizes: &[(&'static str, usize)],
     actions: &[ItemAction],
@@ -849,7 +852,7 @@ pub fn offered_on_items<R: Resource>(
 /// names each). A verb on items of a nested collection is offered when
 /// `nested` says such an item is published.
 fn offered_on_items_of(
-    others: &[tilo_actions::Resource],
+    others: &[tilo_actions::ResourceSpec],
     derived: &crate::derived::PublishedDerived,
     sizes: &[(&'static str, usize)],
     actions: &[ItemAction],
@@ -1018,12 +1021,12 @@ fn finish_bound(mut spec: ActionSpec, decl: &Declaration) -> ActionSpec {
 /// Whether some resource in `children`, at any depth, offers `decl` with
 /// arguments bound ([`bound`]).
 #[must_use]
-pub fn offered_bound(children: &[tilo_actions::Resource], decl: &Declaration) -> bool {
+pub fn offered_bound(children: &[tilo_actions::ResourceSpec], decl: &Declaration) -> bool {
     offered_bound_as(children, decl.id, decl.params.len())
 }
 
 /// [`offered_bound`] of the declaration `id` taking `params` parameters.
-fn offered_bound_as(children: &[tilo_actions::Resource], id: &str, params: usize) -> bool {
+fn offered_bound_as(children: &[tilo_actions::ResourceSpec], id: &str, params: usize) -> bool {
     children.iter().any(|child| {
         child
             .actions

@@ -1040,7 +1040,7 @@ fn bound_navigation_inventory_follows_the_visible_semantic_window() {
             targets(child, result);
         }
     }
-    let resource = tilo_actions::Resource::new("navigation", "test", "Navigation").with_action(
+    let resource = tilo_actions::ResourceSpec::new("navigation", "test", "Navigation").with_action(
         tilo_actions::ActionSpec::operation(
             "open",
             "Open destination",
@@ -1662,7 +1662,7 @@ fn a_change_builds_the_rows_it_changes_and_publishes_as_a_fresh_walk() {
 /// destinations are still handed over as they were.
 #[test]
 fn an_unavailable_destination_is_published_disabled_and_the_rest_kept() {
-    let resource = tilo_actions::Resource::new("navigation", "test", "Navigation").with_action(
+    let resource = tilo_actions::ResourceSpec::new("navigation", "test", "Navigation").with_action(
         tilo_actions::ActionSpec::operation(
             "open",
             "Open destination",
@@ -1711,7 +1711,7 @@ fn whether_a_list_binds_actions_is_answered_without_building_rows() {
             .iter()
             .any(|binding| matches!(binding.kind, crate::widget::ControlBindingKind::Action(_)))
     }
-    let resource = tilo_actions::Resource::new("navigation", "test", "Navigation").with_action(
+    let resource = tilo_actions::ResourceSpec::new("navigation", "test", "Navigation").with_action(
         tilo_actions::ActionSpec::operation(
             "open",
             "Open destination",

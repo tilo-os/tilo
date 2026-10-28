@@ -230,7 +230,7 @@ pub trait Resource: Sized + 'static {
     /// a page's rich-text body), each exporting actions with their arguments
     /// already bound. Published beneath the root resource for the palette,
     /// agents and scripts — the same door as the root, not a second tree.
-    fn children(_state: &Self::State) -> Vec<tilo_actions::Resource> {
+    fn children(_state: &Self::State) -> Vec<tilo_actions::ResourceSpec> {
         Vec::new()
     }
 
@@ -285,7 +285,7 @@ pub trait Resource: Sized + 'static {
     /// `children` and resolves the rest here, so an action addressed to any
     /// of them still reaches it through the same door. The default resolves
     /// nothing beyond `children`.
-    fn child(_state: &Self::State, _id: &str) -> Option<tilo_actions::Resource> {
+    fn child(_state: &Self::State, _id: &str) -> Option<tilo_actions::ResourceSpec> {
         None
     }
 
@@ -1917,7 +1917,7 @@ pub fn child_by_id<R: Resource>(
     state: &R::State,
     doc: &Doc,
     id: &str,
-) -> Option<tilo_actions::Resource> {
+) -> Option<tilo_actions::ResourceSpec> {
     if let Some(child) = R::child(state, id) {
         return Some(child);
     }
@@ -1947,7 +1947,7 @@ pub(crate) fn refused(reason: &str) -> EncodedAction {
 
 /// The ids of `declarations` some child among `children` offers bound.
 fn offered_bound_ids(
-    children: &[tilo_actions::Resource],
+    children: &[tilo_actions::ResourceSpec],
     declarations: &[Declaration],
 ) -> Vec<&'static str> {
     let mut ids = Vec::new();
@@ -2594,13 +2594,13 @@ fn default_search_of(
 /// actions, the named [`Resource::views`], and the nested resources.
 ///
 /// This is the only bridge from a [`Resource`] type to the
-/// [`tilo_actions::Resource`] tree the palette, agents, scripts and the shell
+/// [`tilo_actions::ResourceSpec`] tree the palette, agents, scripts and the shell
 /// door see. Apps do not construct a second tree for the same state.
 ///
 /// An action offered on the items of a collection (see [`crate::items`])
 /// stays published on the record, with its id parameter, for scripts and
 /// agents; a person picks it on the item, so it is not a palette row here.
-pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_actions::Resource {
+pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_actions::ResourceSpec {
     publish_parts::<R>(id, label, Some(state))
 }
 
@@ -2611,7 +2611,7 @@ pub(crate) fn publish_parts<R: Resource>(
     id: &str,
     label: &str,
     state: Option<&R::State>,
-) -> tilo_actions::Resource {
+) -> tilo_actions::ResourceSpec {
     let vocabulary = vocabulary::<R>();
     let Some(state) = state else {
         let own = Own {
@@ -2646,7 +2646,7 @@ pub fn unreadable_parts<R: Resource>(
     id: &str,
     label: &str,
     reason: &str,
-) -> tilo_actions::Resource {
+) -> tilo_actions::ResourceSpec {
     crate::unreadable::parts::<R>(id, label, reason)
 }
 
@@ -2670,8 +2670,8 @@ fn publish_own(
     label: &str,
     own: Own<'_>,
     offered_bound: &dyn Fn(&Declaration) -> bool,
-) -> tilo_actions::Resource {
-    let mut resource = tilo_actions::Resource::new(id, vocabulary.kind, label);
+) -> tilo_actions::ResourceSpec {
+    let mut resource = tilo_actions::ResourceSpec::new(id, vocabulary.kind, label);
     // Describe the declared domain ID before any host dispatch alias projection.
     resource.semantic_identity = tilo_actions::ResourceSemanticIdentity::new(vocabulary.kind, id);
     // The app it publishes under: what an action's `ActionKey` names, and
@@ -2774,9 +2774,9 @@ pub(crate) fn build_action_of(
 /// the declared spec while the binding lasts.
 #[must_use]
 pub fn bind_declaration(
-    resource: tilo_actions::Resource,
+    resource: tilo_actions::ResourceSpec,
     decl: &Declaration,
-) -> tilo_actions::Resource {
+) -> tilo_actions::ResourceSpec {
     let spec = spec_of_declaration(decl);
     let mut resource = resource;
     match resource

@@ -2,7 +2,7 @@
 //! reach the one undo implementation through the same door.
 
 use fluent::FluentArgs;
-use tilo_actions::{ActionSpec, Availability, OperationKind, Resource};
+use tilo_actions::{ActionSpec, Availability, OperationKind, ResourceSpec};
 
 use crate::i18n::I18nManager;
 use crate::undo::{UndoRequest, UndoStatus};
@@ -16,7 +16,7 @@ pub(crate) use crate::undo::EDIT_OPERATION;
     clippy::expect_used,
     reason = "fixed unit Edit payloads serialize infallibly"
 )]
-pub(crate) fn edit_resource(status: &UndoStatus) -> Resource {
+pub(crate) fn edit_resource(status: &UndoStatus) -> ResourceSpec {
     let action = |request: UndoRequest, key: &str| {
         let label = match status.summary(request) {
             Some(change) if change != crate::history_source::NO_VISIBLE_CHANGE => {
@@ -42,7 +42,7 @@ pub(crate) fn edit_resource(status: &UndoStatus) -> Resource {
         }
         spec
     };
-    Resource::new(
+    ResourceSpec::new(
         EDIT_RESOURCE,
         "tilo.host.edit",
         I18nManager::lookup_plain("host-menu-edit"),

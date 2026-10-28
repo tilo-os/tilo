@@ -167,7 +167,7 @@ impl Shelf {
     }
 }
 
-fn published(replica: &Replica<Shelf>) -> tilo_actions::Resource {
+fn published(replica: &Replica<Shelf>) -> tilo_actions::ResourceSpec {
     tilo_resource::publish::<Shelf>("shelf", "Shelf", &replica.state().unwrap())
 }
 

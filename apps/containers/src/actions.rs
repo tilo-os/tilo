@@ -34,7 +34,7 @@ mod tests {
 
     /// The resource as the framework publishes it beside the sample engine's
     /// rows.
-    fn published(doc: &AutoCommit) -> Vec<ui::tilo_actions::Resource> {
+    fn published(doc: &AutoCommit) -> Vec<ui::tilo_actions::ResourceSpec> {
         let state = Containers::read(doc).unwrap_or_default();
         let mut root =
             ui::tilo_resource::publish::<Containers>(Containers::KIND, Containers::LABEL, &state);

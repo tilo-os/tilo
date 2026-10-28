@@ -1,7 +1,7 @@
 use super::*;
 use automerge::ReadDoc as _;
 
-fn enabled(record: &PersonRecord) -> Option<bool> {
+fn enabled(record: &StoredRecord) -> Option<bool> {
     record
         .read(|doc| {
             let Some((automerge::Value::Scalar(value), _)) =

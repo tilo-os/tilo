@@ -88,7 +88,7 @@ pub struct Button {
     /// Resource and handler synthesized by the low-ceremony `on_effect` /
     /// `on_view` APIs. The closure is still ordinary Rust, but it is reachable
     /// only through the same published action door as agents and search.
-    native_resource: Option<tilo_actions::Resource>,
+    native_resource: Option<tilo_actions::ResourceSpec>,
     native_handler: Option<Box<dyn FnMut()>>,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
@@ -323,7 +323,7 @@ impl Button {
                 .push(tilo_actions::OWN_DEVICE_SCOPE.to_owned());
         }
         let resource =
-            tilo_actions::Resource::new(resource_id, "tilo.control", label).with_action(spec);
+            tilo_actions::ResourceSpec::new(resource_id, "tilo.control", label).with_action(spec);
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "invoke")
             .expect("the synthesized invoke action is nullary");
         self = self.on_action(binding);
@@ -2125,7 +2125,7 @@ impl crate::permissions::capability::PermissionGated for Button {
 }
 
 impl crate::resources::PublishesResources for Button {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         let Some(mut resource) = self.native_resource.clone() else {
             return Vec::new();
         };
@@ -2894,7 +2894,7 @@ mod tests {
         }
 
         fn action_mode_suppresses_raw_mutation_and_callback() {
-            let resource = tilo_actions::Resource::new("doc:1", "doc", "Document").with_action(
+            let resource = tilo_actions::ResourceSpec::new("doc:1", "doc", "Document").with_action(
                 tilo_actions::ActionSpec::operation(
                     "save",
                     "Save",
@@ -2929,7 +2929,7 @@ mod tests {
         }
 
         fn action_availability_revokes_and_restores_without_overriding_authored_state() {
-            let resource = tilo_actions::Resource::new("doc:1", "doc", "Document").with_action(
+            let resource = tilo_actions::ResourceSpec::new("doc:1", "doc", "Document").with_action(
                 tilo_actions::ActionSpec::operation(
                     "save",
                     "Save",

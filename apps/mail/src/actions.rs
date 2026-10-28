@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Effect, JsonSchema};
 
-use tilo_actions::{ActionSpec, Resource};
+use tilo_actions::{ActionSpec, ResourceSpec};
 
 use crate::attachment_store;
 use crate::model::{Draft, DraftAttachment, Folder};
@@ -607,9 +607,9 @@ fn message_label(m: &MessageRow) -> String {
     }
 }
 
-pub(crate) fn message_resource(message: &MessageRow) -> Resource {
+pub(crate) fn message_resource(message: &MessageRow) -> ResourceSpec {
     let mut resource = with_message_views(
-        Resource::new(
+        ResourceSpec::new(
             format!("mail.message:{}", message.id),
             "mail.message",
             message_label(message),
@@ -622,13 +622,13 @@ pub(crate) fn message_resource(message: &MessageRow) -> Resource {
     resource
 }
 
-fn attachment_resource(message_id: &str, index: usize, attachment: &AttachmentRow) -> Resource {
+fn attachment_resource(message_id: &str, index: usize, attachment: &AttachmentRow) -> ResourceSpec {
     let save = MailEffect::Save {
         message: message_id.to_owned(),
         index,
     }
     .bound();
-    Resource::new(
+    ResourceSpec::new(
         format!("mail.attachment:{message_id}:{index}"),
         "mail.attachment",
         format!(
@@ -646,7 +646,7 @@ fn attachment_resource(message_id: &str, index: usize, attachment: &AttachmentRo
 
 /// Open, preview, reply, reply all and forward, bound to the message
 /// `id`: what can be done with a message that changes no document.
-fn with_message_views(resource: Resource, id: &str) -> Resource {
+fn with_message_views(resource: ResourceSpec, id: &str) -> ResourceSpec {
     let message = || id.to_owned();
     resource
         .with_action(bound(
@@ -672,10 +672,10 @@ fn with_message_views(resource: Resource, id: &str) -> Resource {
 }
 
 /// This device's accounts `(id, label, active)`, each opening its inbox.
-pub(crate) fn accounts_collection(accounts: &[(String, String, bool)]) -> Resource {
-    Resource::new("mail.accounts", "mail.account.collection", "Accounts").with_children(
+pub(crate) fn accounts_collection(accounts: &[(String, String, bool)]) -> ResourceSpec {
+    ResourceSpec::new("mail.accounts", "mail.account.collection", "Accounts").with_children(
         accounts.iter().map(|(id, label, active)| {
-            Resource::new(
+            ResourceSpec::new(
                 format!("mail.account:{id}"),
                 "mail.account",
                 if *active {

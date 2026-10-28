@@ -27,7 +27,7 @@ impl Selection {
             Service::Discord => "Discord",
         }
     }
-    pub fn resource(&self) -> tilo_actions::Resource {
+    pub fn resource(&self) -> tilo_actions::ResourceSpec {
         let mut forget = crate::effects::BrowserEffect::ForgetServiceSession {
             session_id: self.id.clone(),
         }
@@ -43,7 +43,7 @@ impl Selection {
         }
         .bound();
         open.type_mut().label = format!("Open {}", self.label());
-        tilo_actions::Resource::new(
+        tilo_actions::ResourceSpec::new(
             format!("browser.service.{}", self.id),
             "browser.service",
             self.label(),

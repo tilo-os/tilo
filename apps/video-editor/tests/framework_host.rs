@@ -90,7 +90,7 @@ fn host_door_edits_publish_resources_and_undo_as_one_action() {
     }
 }
 
-fn walk(resource: &tilo_actions::Resource, ids: &mut Vec<String>) {
+fn walk(resource: &tilo_actions::ResourceSpec, ids: &mut Vec<String>) {
     ids.push(resource.id.0.clone());
     for child in &resource.children {
         walk(child, ids);

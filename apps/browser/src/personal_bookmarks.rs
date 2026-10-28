@@ -439,14 +439,14 @@ pub fn node_id(source: &[u8; 32], id: &str) -> String {
 pub(crate) fn node_resource(
     tree: &ImportedTree,
     node: &ImportedNode,
-) -> ui::tilo_actions::Resource {
+) -> ui::tilo_actions::ResourceSpec {
     let kind = match node.kind {
         NodeKind::Folder => "browser.personal-bookmark-folder",
         NodeKind::Bookmark { .. } => "browser.personal-bookmark-placement",
         NodeKind::Separator => "browser.personal-bookmark-separator",
     };
     let mut resource =
-        ui::tilo_actions::Resource::new(node_id(&tree.source, &node.id), kind, &node.title);
+        ui::tilo_actions::ResourceSpec::new(node_id(&tree.source, &node.id), kind, &node.title);
     resource = resource.with_action(
         crate::effects::BrowserEffect::RemovePersonalImportedNode {
             source: blake3::Hash::from(tree.source).to_hex().to_string(),
@@ -475,8 +475,8 @@ pub(crate) fn node_resource(
 }
 pub(crate) fn flat_resource(
     entry: &crate::continuity_library::Bookmark,
-) -> ui::tilo_actions::Resource {
-    ui::tilo_actions::Resource::new(
+) -> ui::tilo_actions::ResourceSpec {
+    ui::tilo_actions::ResourceSpec::new(
         flat_id(&entry.url),
         "browser.personal-bookmark",
         &entry.title,
@@ -532,7 +532,7 @@ pub(crate) fn search(state: &PersonalBookmarkState) -> Vec<ui::tilo_resource::Se
 pub(crate) fn resolve(
     state: &PersonalBookmarkState,
     id: &str,
-) -> Option<ui::tilo_actions::Resource> {
+) -> Option<ui::tilo_actions::ResourceSpec> {
     for entry in state.bookmarks.entries() {
         if flat_id(&entry.url) == id {
             return Some(flat_resource(entry));

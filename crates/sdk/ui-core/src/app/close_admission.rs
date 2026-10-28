@@ -573,7 +573,7 @@ mod tests {
     }
 
     impl crate::resources::PublishesResources for OwnedRoot {
-        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
             vec![crate::widget::resource_actions::resource(
                 "test.quit",
                 "Draft",

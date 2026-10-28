@@ -1803,7 +1803,7 @@ impl crate::widget::ResourceOperations for EmptyState {
 }
 
 impl crate::resources::PublishesResources for EmptyState {
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.engine
             .as_ref()
             .map(|engine| crate::resources::PublishesResources::resources(engine, doc))
@@ -2245,7 +2245,7 @@ mod tests {
         }
 
         fn canonical_action_binding_replaces_the_legacy_document_channel() {
-            let resource = tilo_actions::Resource::new("catalog", "catalog", "Catalog")
+            let resource = tilo_actions::ResourceSpec::new("catalog", "catalog", "Catalog")
                 .with_action(
                     tilo_actions::ActionSpec::operation(
                         "refresh",

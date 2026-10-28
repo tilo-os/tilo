@@ -525,7 +525,7 @@ impl RouteDocument {
 mod tests {
     use super::*;
     use crate::collaboration::CollabRequest;
-    use crate::record::person::{PersonRecord, PersonRecords};
+    use crate::record::person::{PersonRecords, StoredRecord};
     use crate::record::{RecordKind, RecordOwners};
     use automerge::ReadDoc as _;
     use automerge::transaction::Transactable as _;
@@ -536,7 +536,7 @@ mod tests {
 
     /// One device's copy of the person's watched list, held by a host
     /// without a window.
-    fn device() -> PersonRecord {
+    fn device() -> StoredRecord {
         let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
         PersonRecords::open(
             &mut owners,
@@ -552,7 +552,7 @@ mod tests {
         .unwrap()
     }
 
-    fn watch(record: &PersonRecord, video: &str) {
+    fn watch(record: &StoredRecord, video: &str) {
         record
             .edit(true, |doc| {
                 let watched = doc.get(automerge::ROOT, "watched").unwrap().unwrap().1;
@@ -562,7 +562,7 @@ mod tests {
             .unwrap();
     }
 
-    fn watched(record: &PersonRecord) -> Vec<String> {
+    fn watched(record: &StoredRecord) -> Vec<String> {
         record
             .read(|doc| {
                 let watched = doc.get(automerge::ROOT, "watched").unwrap().unwrap().1;
@@ -572,7 +572,7 @@ mod tests {
     }
 
     /// A participant holding `record`, its route open.
-    fn holding(record: &PersonRecord) -> RecordRouteParticipant {
+    fn holding(record: &StoredRecord) -> RecordRouteParticipant {
         let mut participant = RecordRouteParticipant {
             manager: CollaborationManager::connected_for_lifecycle_test(),
             routes: OwnerDocumentRoutes::default(),

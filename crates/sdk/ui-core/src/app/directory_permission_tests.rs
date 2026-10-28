@@ -179,7 +179,7 @@ fn directory_permission_actor_and_capability_semantics_invalidate_revision() {
     }
 }
 
-fn republish_directory(fixture: &mut ActionFixture) -> (String, Vec<tilo_actions::Resource>) {
+fn republish_directory(fixture: &mut ActionFixture) -> (String, Vec<tilo_actions::ResourceSpec>) {
     let resources = fixture.app.publication_resources();
     let descriptors = tilo_actions::door::survey(&resources);
     fixture

@@ -505,8 +505,11 @@ mod tests {
         save(app);
     }
 
-    fn published(app: &mut TestApp<TotpShell>, id: &str) -> tilo_actions::Resource {
-        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+    fn published(app: &mut TestApp<TotpShell>, id: &str) -> tilo_actions::ResourceSpec {
+        fn find(
+            resources: &[tilo_actions::ResourceSpec],
+            id: &str,
+        ) -> Option<tilo_actions::ResourceSpec> {
             resources.iter().find_map(|resource| {
                 if resource.id.as_str() == id {
                     Some(resource.clone())

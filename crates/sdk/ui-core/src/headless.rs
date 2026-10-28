@@ -6459,7 +6459,7 @@ impl FrameHarness {
     /// Snapshot the exact resource tree the native host currently publishes.
     /// Tests can assert search/agent visibility without reaching into widget
     /// internals or rebuilding a parallel catalogue.
-    pub fn resources(&self) -> Vec<tilo_actions::Resource> {
+    pub fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         self.drain_component_wakes();
         let mut resources = Vec::new();
         crate::widget::collect_widget_resources(
@@ -7015,7 +7015,7 @@ impl FrameHarness {
             if history_input {
                 // Framework editors (and History chrome) capture the keyboard
                 // before the ordinary host tick. Still record dispatched action
-                // brackets: ActionHost records them through get_heads, which
+                // brackets: LocalDispatch records them through get_heads, which
                 // closes the Automerge transaction so the next resource sync
                 // can refresh incrementally instead of re-reading the whole
                 // document on every keystroke.
@@ -7748,7 +7748,7 @@ impl FrameHarness {
     pub fn bound_resources(
         &self,
         id: Option<&str>,
-    ) -> Result<Vec<tilo_actions::Resource>, tilo_actions::DoorError> {
+    ) -> Result<Vec<tilo_actions::ResourceSpec>, tilo_actions::DoorError> {
         self.bound_resources_of(None, id)
     }
 
@@ -7761,7 +7761,7 @@ impl FrameHarness {
         &self,
         instance: Option<crate::application::InstanceId>,
         id: Option<&str>,
-    ) -> Result<Vec<tilo_actions::Resource>, tilo_actions::DoorError> {
+    ) -> Result<Vec<tilo_actions::ResourceSpec>, tilo_actions::DoorError> {
         self.drain_component_wakes();
         let lazy = id.map(|id| tilo_actions::ActionAddress::new(id, ""));
         let resources = crate::bound_dispatch::discover_bound_resources(
@@ -7796,7 +7796,7 @@ impl FrameHarness {
     pub fn published_bound_resources_of(
         &self,
         instance: Option<crate::application::InstanceId>,
-    ) -> Result<Vec<tilo_actions::Resource>, tilo_actions::DoorError> {
+    ) -> Result<Vec<tilo_actions::ResourceSpec>, tilo_actions::DoorError> {
         crate::bound_dispatch::discover_bound_resources(self.root.as_ref(), &self.state.doc, None)
             .map_err(|e| crate::bound_dispatch::BoundActionError::Dispatch(e).into_door())?
             .into_iter()
@@ -11199,7 +11199,7 @@ mod tests {
 
     struct RememberControl {
         content: crate::widget::Checkbox,
-        resource: tilo_actions::Resource,
+        resource: tilo_actions::ResourceSpec,
     }
 
     impl RememberControl {
@@ -11225,7 +11225,7 @@ mod tests {
                     .unwrap()
                 },
             );
-            let resource = tilo_actions::Resource::new("remember", "test", "Remember")
+            let resource = tilo_actions::ResourceSpec::new("remember", "test", "Remember")
                 .with_action(spec.clone());
             let binding = tilo_actions::ActionBinding::new(&resource, &spec, |value: bool| {
                 serde_json::json!({"value": value})
@@ -11264,7 +11264,7 @@ mod tests {
     }
     impl crate::widget::controls::ActionControls for RememberControl {}
     impl crate::resources::PublishesResources for RememberControl {
-        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
             vec![self.resource.clone()]
         }
     }
@@ -13134,8 +13134,8 @@ mod tests {
     }
 
     impl crate::resources::PublishesResources for RecordRootProbe {
-        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-            vec![tilo_actions::Resource::new(
+        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
+            vec![tilo_actions::ResourceSpec::new(
                 "probe.document:1",
                 "probe.document",
                 "Probe document",
@@ -13962,7 +13962,7 @@ mod undo_driver_tests {
 ///
 /// The module above drives a widget that writes the document itself and
 /// reports its own bracket. An app built on
-/// [`ActionHost`](crate::action_host::ActionHost) writes only through
+/// [`ActionHost`](crate::local_dispatch::LocalDispatch) writes only through
 /// dispatched actions: its boundary arrives through
 /// [`take_committed_action`](crate::undo::CommittedActions::take_committed_action)
 /// from the action host. Until the driver drained that, a headless test of such an app could
@@ -14002,7 +14002,7 @@ mod dispatched_action_driver_tests {
     }
 
     /// An editor in the migrated shape: every edit is dispatched through
-    /// [`ActionHost`](crate::action_host::ActionHost), and the only thing it
+    /// [`ActionHost`](crate::local_dispatch::LocalDispatch), and the only thing it
     /// tells the host is the bracket the action host captured — that is the
     /// whole distinction under test.
     ///
@@ -14011,7 +14011,7 @@ mod dispatched_action_driver_tests {
     /// technology, and every headless scenario over a canvas, drives it).
     struct ActionEditor {
         rect: vello::kurbo::Rect,
-        actions: crate::action_host::ActionHost,
+        actions: crate::local_dispatch::LocalDispatch,
         focused: bool,
         /// Whether this editor claims the event. A `Row` stops dispatching to
         /// later siblings once a child claims one, so a second editor that must
@@ -14024,7 +14024,7 @@ mod dispatched_action_driver_tests {
         fn new() -> Self {
             Self {
                 rect: vello::kurbo::Rect::ZERO,
-                actions: crate::action_host::ActionHost::new(),
+                actions: crate::local_dispatch::LocalDispatch::new(),
                 focused: false,
                 claims: true,
             }
@@ -14322,7 +14322,7 @@ mod dispatched_action_driver_tests {
     fn dispatched_action_boundaries_follow_interactions() {
         // Case `several_actions_in_one_event_are_one_boundary`:
         // One event is one undo boundary, however many actions it dispatched —
-        // [`ActionHost`](crate::action_host::ActionHost)'s contract, observed
+        // [`ActionHost`](crate::local_dispatch::LocalDispatch)'s contract, observed
         // through the driver rather than asserted against the host in isolation.
         {
             let mut d = action_driver();
@@ -14617,7 +14617,7 @@ pub(crate) mod legacy_control_feedback_tests {
     }
 
     impl crate::resources::PublishesResources for ImportProbe {
-        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
             let contract = tilo_actions::ActionContract {
                 execution: tilo_actions::ExecutionMode::Background { cancellable: false },
                 result: tilo_actions::ResultSpec::Job,
@@ -14647,7 +14647,7 @@ pub(crate) mod legacy_control_feedback_tests {
                 .unwrap(),
             );
             vec![
-                tilo_actions::Resource::new("feedback:import", "import", "Import")
+                tilo_actions::ResourceSpec::new("feedback:import", "import", "Import")
                     .with_action(begin)
                     .with_action(finalize),
             ]

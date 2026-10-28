@@ -43,11 +43,11 @@ impl App {
     pub(super) fn edit_resource_for(
         &mut self,
         address: &tilo_actions::ActionAddress,
-    ) -> Option<tilo_actions::Resource> {
+    ) -> Option<tilo_actions::ResourceSpec> {
         (address.resource == EDIT_RESOURCE).then(|| self.focused_edit_resource())
     }
 
-    fn focused_edit_resource(&mut self) -> tilo_actions::Resource {
+    fn focused_edit_resource(&mut self) -> tilo_actions::ResourceSpec {
         let mut resource = edit_resource(&self.focused_undo_status());
         if crate::undo::local_undo_is_deferred(self.root_widget.as_ref()) {
             for action in &mut resource.actions {

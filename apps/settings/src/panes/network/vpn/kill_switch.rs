@@ -124,7 +124,7 @@ impl NetworkModel {
     pub(super) fn kill_switch_rows(
         &self,
         vpn: &VpnInfo,
-        live: &ui::tilo_actions::Resource,
+        live: &ui::tilo_actions::ResourceSpec,
     ) -> Vec<Item> {
         let switch = self.kill_switch(&vpn.uuid);
         let label = t("net-vpn-kill-switch");

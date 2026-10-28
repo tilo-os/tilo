@@ -250,7 +250,7 @@ mod tests {
     use super::*;
 
     fn binding() -> tilo_actions::ActionBinding<()> {
-        use tilo_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
+        use tilo_actions::{ActionSpec, EncodedAction, OperationKind, ResourceSpec};
         let spec = ActionSpec::typed_operation(
             "forget",
             "Forget",
@@ -260,7 +260,7 @@ mod tests {
             vec![],
             |_| EncodedAction::encode_operation("test.forget", &()).unwrap(),
         );
-        let resource = Resource::new("test:device", "test", "Test").with_action(spec.clone());
+        let resource = ResourceSpec::new("test:device", "test", "Test").with_action(spec.clone());
         tilo_actions::ActionBinding::new(&resource, &spec, |()| serde_json::Map::new())
             .expect("the spec is exported")
     }

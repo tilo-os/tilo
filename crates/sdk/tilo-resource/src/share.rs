@@ -66,7 +66,7 @@ pub struct ShareRequest {
 
 /// Offer `share-link` and `share-invite-link` on `resource` when it
 /// declares a view and does not offer them already.
-pub fn offer(resource: &mut tilo_actions::Resource) {
+pub fn offer(resource: &mut tilo_actions::ResourceSpec) {
     if resource.views.is_empty()
         || resource
             .actions
@@ -108,7 +108,7 @@ fn share_type(invite: bool, kind: &str, views: &[SharedView]) -> Arc<ActionType>
 }
 
 /// [`offer`] on `resource` and everything nested in it.
-pub fn offer_tree(resource: &mut tilo_actions::Resource) {
+pub fn offer_tree(resource: &mut tilo_actions::ResourceSpec) {
     offer(resource);
     for child in &mut resource.children {
         offer_tree(child);
@@ -116,7 +116,7 @@ pub fn offer_tree(resource: &mut tilo_actions::Resource) {
 }
 
 /// Offer the link actions again after `resource` gained views.
-pub fn reoffer(resource: &mut tilo_actions::Resource) {
+pub fn reoffer(resource: &mut tilo_actions::ResourceSpec) {
     resource
         .actions
         .retain(|spec| spec.id != SHARE_LINK && spec.id != SHARE_INVITE_LINK);
@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn a_resource_with_a_view_offers_both_and_range_params_only_with_a_range() {
         let mut plain =
-            tilo_actions::Resource::new("notes.page:1", "notes.page", "Page").with_view(
+            tilo_actions::ResourceSpec::new("notes.page:1", "notes.page", "Page").with_view(
                 tilo_actions::ResourceViewSpec::new("page", "Page", "open-page"),
             );
         offer(&mut plain);
@@ -272,7 +272,7 @@ mod tests {
             ["view", "mode", "role", "expires_in"]
         );
 
-        let mut ranged = tilo_actions::Resource::new("notes.page:2", "notes.page", "Page")
+        let mut ranged = tilo_actions::ResourceSpec::new("notes.page:2", "notes.page", "Page")
             .with_view(
                 tilo_actions::ResourceViewSpec::new("page", "Page", "open-page")
                     .with_range(tilo_actions::ResourceViewRangeSpec::new("open-page-range")),
@@ -285,7 +285,7 @@ mod tests {
         offer(&mut ranged);
         assert_eq!(ranged.actions.len(), 2, "offered once");
 
-        let mut viewless = tilo_actions::Resource::new("notes.tag:1", "notes.tag", "Tag");
+        let mut viewless = tilo_actions::ResourceSpec::new("notes.tag:1", "notes.tag", "Tag");
         offer(&mut viewless);
         assert!(viewless.actions.is_empty());
     }

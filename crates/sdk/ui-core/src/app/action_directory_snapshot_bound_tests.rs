@@ -158,7 +158,7 @@ fn directory_snapshot_finds_every_disclosure_in_one_walk() {
     let resources = fixture.app.publication_resources();
     let batched = fixture.app.directory_explicit_visibilities(&resources);
     let mut each = std::collections::HashMap::new();
-    let mut pending: Vec<&tilo_actions::Resource> = resources.iter().collect();
+    let mut pending: Vec<&tilo_actions::ResourceSpec> = resources.iter().collect();
     while let Some(resource) = pending.pop() {
         if let Some(address) = fixture.app.directory_explicit_visibility(resource) {
             each.insert(resource.id.as_str().to_owned(), address);

@@ -640,9 +640,9 @@ mod tests {
     }
 
     fn find<'a>(
-        resources: &'a [ui::tilo_actions::Resource],
+        resources: &'a [ui::tilo_actions::ResourceSpec],
         id: &str,
-    ) -> Option<&'a ui::tilo_actions::Resource> {
+    ) -> Option<&'a ui::tilo_actions::ResourceSpec> {
         resources.iter().find_map(|resource| {
             if resource.id.as_str() == id {
                 Some(resource)
@@ -652,7 +652,7 @@ mod tests {
         })
     }
 
-    fn ids(resource: &ui::tilo_actions::Resource) -> Vec<&str> {
+    fn ids(resource: &ui::tilo_actions::ResourceSpec) -> Vec<&str> {
         resource
             .actions
             .iter()

@@ -58,7 +58,7 @@ pub(crate) const NATIVE_INVOKE: &str = "tilo.ui.control.invoke";
 /// closure, so a closure-bound control is still discoverable and
 /// agent-driveable like [`Button::on_effect`](crate::widget::Button::on_effect).
 pub(crate) struct NativeControl {
-    resource: tilo_actions::Resource,
+    resource: tilo_actions::ResourceSpec,
     handler: Box<dyn FnMut()>,
 }
 
@@ -81,14 +81,14 @@ impl NativeControl {
             .expect("a control id is always JSON serializable")
             .for_audience(tilo_actions::Audience::Agents);
         let resource =
-            tilo_actions::Resource::new(format!("tilo.control:{id}"), "tilo.control", label)
+            tilo_actions::ResourceSpec::new(format!("tilo.control:{id}"), "tilo.control", label)
                 .with_action(spec);
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "invoke")
             .expect("the synthesized invoke action is nullary");
         (Self { resource, handler }, binding)
     }
 
-    pub(crate) fn resource(&self) -> tilo_actions::Resource {
+    pub(crate) fn resource(&self) -> tilo_actions::ResourceSpec {
         self.resource.clone()
     }
 
@@ -98,7 +98,7 @@ impl NativeControl {
         id: &str,
         label: &str,
         kind: tilo_actions::OperationKind,
-    ) -> tilo_actions::Resource {
+    ) -> tilo_actions::ResourceSpec {
         Self::new(id, label, kind, Box::new(|| {})).0.resource
     }
 
@@ -239,7 +239,7 @@ impl Activation {
     }
 
     /// The resource a closure-bound surface publishes, if any.
-    pub(crate) fn native_resources(&self) -> Vec<tilo_actions::Resource> {
+    pub(crate) fn native_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         self.native
             .as_ref()
             .map(NativeControl::resource)

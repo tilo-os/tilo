@@ -79,7 +79,7 @@ impl ResourceApp for UnpresentedPagesApp {
 fn item(
     app: &mut TestApp<PagesApp>,
     title: &str,
-) -> Result<tilo_actions::Resource, Box<dyn std::error::Error>> {
+) -> Result<tilo_actions::ResourceSpec, Box<dyn std::error::Error>> {
     app.invoke(Pages::ADD.with(title))?;
     app.harness()
         .resources()

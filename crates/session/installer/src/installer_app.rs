@@ -4526,7 +4526,7 @@ impl ui::host_operation::ResourceOperations for InstallerApp {
 }
 
 impl ui::resources::PublishesResources for InstallerApp {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.publish()
     }
 }

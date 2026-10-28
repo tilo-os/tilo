@@ -2220,7 +2220,7 @@ mod local_document_report_tests {
             },
             context: Some(tilo_actions::ActionContext {
                 purpose: Some("private context".into()),
-                group: Some(tilo_actions::ActionGroup {
+                group: Some(tilo_actions::WorkGroup {
                     id: "private-group".into(),
                     label: "Private work".into(),
                     kind: "task".into(),

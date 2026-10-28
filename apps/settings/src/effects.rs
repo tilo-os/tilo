@@ -695,7 +695,7 @@ mod tests {
             let reference = Flattened(effect.clone()).bound_asking_params(spec.params().to_vec());
             let direct = effect.bound_asking_params(spec.params().to_vec());
             let survey = |spec| {
-                tilo_actions::door::survey(&[tilo_actions::Resource::new(
+                tilo_actions::door::survey(&[tilo_actions::ResourceSpec::new(
                     "comparison",
                     "comparison",
                     "comparison",
@@ -774,13 +774,13 @@ mod tests {
                 let direct = effect.bound();
                 let flattened = Flattened(effect).bound();
                 assert_eq!(
-                    tilo_actions::door::survey(&[tilo_actions::Resource::new(
+                    tilo_actions::door::survey(&[tilo_actions::ResourceSpec::new(
                         "comparison",
                         "comparison",
                         "comparison"
                     )
                     .with_action(direct.clone())]),
-                    tilo_actions::door::survey(&[tilo_actions::Resource::new(
+                    tilo_actions::door::survey(&[tilo_actions::ResourceSpec::new(
                         "comparison",
                         "comparison",
                         "comparison"
