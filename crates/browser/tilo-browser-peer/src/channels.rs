@@ -1540,6 +1540,33 @@ mod tests {
         assert_eq!(steward_of(&own, &note), Some(device(&laptop)));
     }
 
+    /// A session of the governing host's own device (its room actions)
+    /// starts no group of its own for a room it does not hold as its own
+    /// room: the host's channel steward holds the group and hands this
+    /// session its keys. A group started here sealed the session off from
+    /// everything the governor wrote, so the host's actions saw no record.
+    #[test]
+    fn the_governing_hosts_own_session_stewards_no_room_channel() {
+        let owner = SigningKey::from_bytes(&[1; 32]);
+        let server = SigningKey::from_bytes(&[5; 32]);
+        let note = route("note-1");
+        let mut host = Channels::new(device(&server), device(&owner), [4; 32]);
+        host.govern_by_host(&cert(
+            &owner,
+            &server,
+            tilo_user_identity::cloud_enrollment::host_capabilities(),
+        ));
+        let changes = host.open(&note, 0);
+        assert!(
+            !changes
+                .steward
+                .iter()
+                .any(|change| matches!(change, StewardChange::Take { .. })),
+            "the session takes over none of the room's channels"
+        );
+        assert!(!host.routes[&Channels::channel(&note)].stewarded);
+    }
+
     /// A room whose governor has not shown up is not ungoverned: a genesis
     /// that arrives later still names it, and the route asks for access.
     #[test]
