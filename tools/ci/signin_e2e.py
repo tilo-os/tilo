@@ -27,6 +27,10 @@ Variants:
                          set: migration keeps the old password hash, the old image still signs the
                          person in with it, and the new one still checks only through tilo-authd
 
+The one-secret variant then boots once more with the screen reader turned on by the volume's
+`tilo-comforts` token, QEMU's audio written to a WAV file and a multitouch screen in place of
+the keyboard: the boot sign-in must speak, and the secret is tapped on its on-screen keyboard.
+
 Writes report.json and report.md, screenshots and per-boot logs into --out. Every file there is
 searched for every secret the run used before the run ends; a file that holds one is emptied
 and the run fails.
@@ -569,11 +573,18 @@ cryptsetup close e2e-target
 
     # -- target boots ------------------------------------------------------------------------
 
-    def boot(self, label: str) -> None:
+    def boot(self, label: str, **devices: str) -> None:
+        """`devices` are vm.sh's device settings for this boot only (TILO_VM_INPUT,
+        TILO_VM_AUDIO_WAV)."""
         c = self.cycle
         c.boots += 1
         say(f"--- boot {c.boots}: {label}")
-        c.vm("boot-target", "--2d", "--tpm", timeout=600)
+        saved = dict(c.env)
+        c.env.update(devices)
+        try:
+            c.vm("boot-target", "--2d", "--tpm", timeout=600)
+        finally:
+            c.env = saved
         c.hotplug_shell()
 
     def classify(self, text: str) -> str:
@@ -1047,6 +1058,10 @@ cryptsetup close e2e-target
             evidence["journal"] = [l for l in journal.splitlines()
                                    if "boot" in l.lower() and "tilo-authd" in l][-6:]
             evidence["greeter_states"] = sorted({s.get("phase") for s in self.read_greeter_log(label)})
+            _, frames = self.guest("journalctl -b -o short-monotonic --no-pager | grep -E "
+                                   "'tilo-boot-signin: [0-9]+ may sign in here|"
+                                   "tilo-greeter: first frame of the boot sign-in'", quiet=True)
+            self.first_frame(frames)
         if session and not prompts and not disk_again and not handoff_left:
             self.item("3", "passed", "boot sign-in screen, one entry, the session started with no "
                       "greeter prompt (greeter phases seen: "
@@ -1323,6 +1338,179 @@ cryptsetup close e2e-target
             saved["evidence"]["boot_sign_in"] = result
             self.items["7"] = saved
 
+    def first_frame(self, lines: str) -> None:
+        """Item 13: the greeter's first frame in the initrd within 300 ms of the moment
+        tilo-boot-signin knows who may sign in, when Plymouth's sign-in screen appeared (the
+        same measure as os/tests/boot_performance_gate.sh)."""
+        stamps = {}
+        for line in lines.splitlines():
+            match = re.match(r"\[\s*([0-9.]+)\]", line)
+            if match:
+                kind = "frame" if "first frame" in line else "people"
+                stamps.setdefault(kind, float(match.group(1)))
+        if "people" not in stamps or "frame" not in stamps:
+            self.item("13", "failed", "the boot's journal has no first frame of the greeter after "
+                      "tilo-boot-signin listed the people", lines=lines.splitlines())
+            return
+        ms = round((stamps["frame"] - stamps["people"]) * 1000)
+        self.item("13", "passed" if ms <= 300 else "failed",
+                  f"the greeter's first frame came {ms} ms after the people were known (budget 300 ms)",
+                  first_frame_ms=ms)
+
+    def write_comforts(self) -> None:
+        """Turn the screen reader on at the login screens the way tilo-authd does: the
+        `tilo-comforts` token in the volume header, which the initrd reads before the volume
+        opens. Needs the test shell of a booted target."""
+        dev = self.root_device()
+        token = json.dumps({"type": "tilo-comforts", "keyslots": [], "screen_reader": True,
+                            "screen_reader_rate": 100, "screen_reader_voice": "system",
+                            "language": "en-US", "text_scale": 1.0, "high_contrast": False})
+        code, out = self.guest(f"for id in $(cryptsetup luksDump {quote(dev)} "
+                               r"| sed -n 's/^ *\([0-9]*\): tilo-comforts$/\1/p'); do "
+                               f"cryptsetup token remove --token-id $id {quote(dev)}; done; "
+                               f"printf '%s' {quote(token)} | cryptsetup token import {quote(dev)}")
+        if code:
+            raise Failed(f"could not write the tilo-comforts token: {out.strip()[-400:]}")
+
+    def touch_keys(self, path: Path) -> dict[str, tuple[int, int]]:
+        """Where the on-screen keyboard's keys are on a screenshot: the key labels tesseract
+        finds, completed from the keyboard's layout (ui::passcode_keyboard: rows of equal keys,
+        each row centred, the digit row on top and Enter on the right of the last row)."""
+        rows = ["1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm"]
+        tsv = subprocess.run(["tesseract", str(path), "stdout", "--psm", "11", "tsv"],
+                             capture_output=True, text=True).stdout
+        found: dict[str, list[tuple[float, float]]] = {}
+        for line in tsv.splitlines()[1:]:
+            cols = line.split("\t")
+            if len(cols) == 12 and len(cols[11].strip()) == 1:
+                left, top, width, height = map(float, cols[6:10])
+                found.setdefault(cols[11].strip().lower(), []).append((left + width / 2,
+                                                                         top + height / 2))
+        # The digit row is the lowest row whose digits line up; letters lie below it.
+        digits = [(rows[0].index(k), at) for k in rows[0] for at in found.get(k, [])]
+        if len(digits) < 2:
+            raise Failed(f"tesseract found {len(digits)} of the on-screen keyboard's digit keys")
+        top_y = max(y for _, (_, y) in digits)
+        digits = [(i, (x, y)) for i, (x, y) in digits if abs(y - top_y) < 20]
+        (i0, (x0, _)), (i1, (x1, _)) = min(digits), max(digits)
+        if i0 == i1:
+            raise Failed("tesseract found one digit key only")
+        pitch = (x1 - x0) / (i1 - i0)
+        centre = x0 - (i0 - 4.5) * pitch
+        # Each letter's row is known, so every letter found gives the distance between rows.
+        pitches = sorted((y - top_y) / r for r in (1, 2, 3) for k in rows[r]
+                         for _, y in found.get(k, []) if y > top_y + pitch * 0.5)
+        if not pitches:
+            raise Failed("tesseract found no letter key below the digit row")
+        row_pitch = pitches[len(pitches) // 2]
+        keys = {}
+        for r, row in enumerate(rows):
+            for i, k in enumerate(row):
+                keys[k] = (round(centre + (i - (len(row) - 1) / 2) * pitch),
+                           round(top_y + r * row_pitch))
+        # Enter is two units wide at the right of the last row; its centre sits about 3.5 key
+        # pitches right of the middle whatever the gap between keys.
+        keys["\n"] = (round(centre + 3.5 * pitch), round(top_y + 4 * row_pitch))
+        return keys
+
+    def card_matches(self, boot: Path, greeter: Path) -> tuple[bool, str]:
+        """Whether the boot screen and the greeter after switch-root show the same card: the
+        middle of both screens (the card, without the clock and status corners) compared with
+        ImageMagick."""
+        crops = []
+        for source in (boot, greeter):
+            crop = self.private / f"card-{source.stem}.png"
+            subprocess.run(["convert", str(source), "-gravity", "center", "-crop", "40%x55%+0+0",
+                            "+repage", str(crop)], check=True)
+            crops.append(crop)
+        diff = self.out / "card-difference.png"
+        result = subprocess.run(["compare", "-metric", "RMSE", str(crops[0]), str(crops[1]),
+                                 str(diff)], capture_output=True, text=True)
+        measured = result.stderr.strip()
+        try:
+            normalised = float(measured.split("(")[1].rstrip(")"))
+        except (IndexError, ValueError):
+            return False, f"ImageMagick could not compare them: {measured}"
+        return normalised < 0.06, f"RMSE {measured}"
+
+    def comforts_and_touch(self) -> None:
+        """Items 10-12: speech from the comforts token, the secret tapped on the on-screen
+        keyboard with no keyboard attached, and the same card before and after switch-root."""
+        boot_shot, greeter_shot = self.out / "boot-sign-in.png", self.out / "greeter-before-sign-in.png"
+        if boot_shot.is_file() and greeter_shot.is_file():
+            same, measured = self.card_matches(boot_shot, greeter_shot)
+            self.item("12", "passed" if same else "failed",
+                      f"boot sign-in and greeter cards {'match' if same else 'differ'} ({measured})",
+                      boot=boot_shot.name, greeter=greeter_shot.name)
+        else:
+            self.item("12", "failed", "no screenshot of the boot sign-in or of the greeter to compare",
+                      boot=boot_shot.is_file(), greeter=greeter_shot.is_file())
+
+        label = "comforts"
+        self.boot(label)
+        kind, path, text, _ = self.wait_screen(label, {"disk-prompt", "boot-signin"}, 600)
+        if kind != "boot-signin":
+            self.recover_boot(label, kind)
+            raise Failed(f"no boot sign-in screen to sign in at ({kind})")
+        self.cycle.type(self.account)
+        self.cycle.keys("ret")
+        self.connect(300)
+        self.write_comforts()
+        self.power_off(label)
+
+        label = "speech-touch"
+        wav = self.out / "boot-sign-in-speech.wav"
+        wav.unlink(missing_ok=True)
+        self.boot(label, TILO_VM_INPUT="touch", TILO_VM_AUDIO_WAV=str(wav))
+        kind, path, text, _ = self.wait_screen(label, {"disk-prompt", "boot-signin"}, 600)
+        if kind != "boot-signin":
+            self.cycle.keep_screen("speech-touch-no-boot-sign-in", path, text)
+            self.item("11", "failed", f"no boot sign-in screen ({kind}) to tap the secret into")
+            self.cycle.stop()
+            self.cycle.keep_serial(label)
+            raise Failed(f"no boot sign-in screen with the touch screen ({kind})")
+        self.cycle.keep_screen("boot-sign-in-touch", path, text)
+        try:
+            keys = self.touch_keys(path)
+        except Failed as error:
+            self.item("11", "failed", f"the on-screen keyboard was not found: {error}")
+            self.cycle.stop()
+            self.cycle.keep_serial(label)
+            raise
+        for character in self.account + "\n":
+            self.cycle.vm("tap", *map(str, keys[character]))
+            time.sleep(0.15)
+        connected = True
+        try:
+            self.connect(300)
+            session = self.wait_session(240)
+        except Failed:
+            connected, session = False, None
+        if session:
+            self.item("11", "passed", "the secret tapped on the boot sign-in's on-screen keyboard, "
+                      "with no keyboard attached, opened the volume and the session",
+                      user_session=session)
+        else:
+            path, text = self.cycle.screen()
+            self.cycle.keep_screen("speech-touch-after-taps", path, text)
+            self.item("11", "failed", "tapping the secret on the on-screen keyboard did not reach a "
+                      "session", connected=connected)
+        if connected:
+            self.power_off(label)
+        else:
+            self.cycle.stop()
+            self.cycle.keep_serial(label)
+        samples = wav.read_bytes()[44:] if wav.is_file() else b""
+        loud = sum(1 for i in range(0, len(samples) - 1, 2)
+                   if abs(int.from_bytes(samples[i:i + 2], "little", signed=True)) > 500)
+        evidence = {"wav": wav.name, "bytes": len(samples), "loud_samples": loud}
+        if loud > 4410:
+            self.item("10", "passed", f"the boot sign-in spoke with the screen reader the comforts "
+                      f"token turned on ({loud} loud samples)", **evidence)
+        else:
+            self.item("10", "failed", "the boot sign-in was silent with the screen reader turned on "
+                      "by the comforts token", **evidence)
+
     # -- the variants -----------------------------------------------------------------------
 
     def execute(self) -> None:
@@ -1334,8 +1522,9 @@ cryptsetup close e2e-target
             steps = [("install", self.install, ("1", "2", "3", "4", "5", "8")),
                      ("first boot", self.first_boot, ("1",)),
                      ("migration", self.migrate, ("2", "3", "4", "5")),
-                     ("boot sign-in", self.boot_sign_in, ("3",)),
-                     ("wrong entry", self.wrong_entry, ("4", "5"))]
+                     ("boot sign-in", self.boot_sign_in, ("3", "13")),
+                     ("wrong entry", self.wrong_entry, ("4", "5")),
+                     ("speech and touch", self.comforts_and_touch, ("10", "11", "12"))]
         else:
             steps = [("install", self.install, ("6", "7")),
                      ("first boot", self.first_boot_quiet, ("6", "7")),
@@ -1487,6 +1676,10 @@ def report(runs: list[Run], out: Path, withheld: list[Path]) -> int:
         "6": "Recovery key opens the volume from \"Can't sign in\"",
         "7": "Separate disk passphrase: migration through the linked volume key, then boot sign-in",
         "8": "One secret: the recovery key the installer hands over opens its own keyslot after install",
+        "10": "The boot sign-in speaks when the comforts token turns the screen reader on",
+        "11": "With a touch screen and no keyboard, the secret is tapped on the on-screen keyboard",
+        "12": "The boot sign-in and the greeter after switch-root show the same card",
+        "13": "The boot sign-in's first frame comes within 300 ms of when Plymouth's appeared",
     }
     if any(r.variant == "rollback" for r in runs):
         names["9"] = "Rollback to an image from before pam_tilo still signs in with the old password"

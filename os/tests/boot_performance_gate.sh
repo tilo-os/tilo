@@ -96,6 +96,32 @@ if [ -n "$device_timeouts" ]; then
   exit 1
 fi
 
+# A boot that signed in before the volume opened (docs/security/sign-in.md
+# §3.4) shows the greeter's first frame within 300 ms of the moment
+# tilo-boot-signin knows who may sign in, which is when Plymouth's sign-in
+# screen appeared. Both lines come from the initrd, timed from the same boot.
+signin_frame_budget_ms="${TILO_BOOT_SIGNIN_FIRST_FRAME_MS:-300}"
+case "$signin_frame_budget_ms" in ''|*[!0-9]*) echo 'invalid first-frame budget' >&2; exit 2 ;; esac
+signin_people="$(grep -m1 -E 'tilo-boot-signin: [0-9]+ may sign in here' <<<"$boot_log" || true)"
+if [ -n "$signin_people" ]; then
+  signin_frame="$(grep -m1 -F 'tilo-greeter: first frame of the boot sign-in' <<<"$boot_log" || true)"
+  if [ -z "$signin_frame" ]; then
+    echo 'the boot sign-in showed no frame of the greeter:' >&2
+    grep -E 'tilo-boot-signin: the greeter' <<<"$boot_log" >&2 || true
+    exit 1
+  fi
+  signin_frame_ms="$(printf '%s\n%s\n' "$signin_people" "$signin_frame" \
+    | awk -F'[][]' 'NR == 1 { start = $2 } NR == 2 { printf "%d\n", ($2 - start) * 1000 + 0.5 }')"
+  if [ "$signin_frame_ms" -gt "$signin_frame_budget_ms" ]; then
+    printf 'the boot sign-in drew its first frame %d ms after it knew who may sign in (budget: %d ms)\n' \
+      "$signin_frame_ms" "$signin_frame_budget_ms" >&2
+    grep -E 'tilo-boot-signin|tilo-greeter' <<<"$boot_log" | head -20 >&2 || true
+    exit 1
+  fi
+  printf 'boot sign-in first frame %d ms after it knew who may sign in (budget: %d ms)\n' \
+    "$signin_frame_ms" "$signin_frame_budget_ms"
+fi
+
 zram_sysfs="${TILO_ZRAM_SYSFS:-/sys/block/zram0}"
 if [ ! -r "$zram_sysfs/comp_algorithm" ]; then
   echo 'zram0 compressor state is unavailable' >&2
