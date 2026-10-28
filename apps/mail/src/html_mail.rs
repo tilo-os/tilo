@@ -4,9 +4,11 @@
 //! forms that post what is typed into them, frames, plugins, a `<meta>`
 //! refresh that navigates the moment the message opens, and remote images,
 //! fonts and style sheets whose requests tell the sender the message was
-//! read. [`prepare`] never hands the engine the mail's own markup: it reads
-//! the markup into tokens and writes a new document from them that holds
-//! only what a mail needs to look like itself.
+//! read. [`prepare`] never hands the engine the mail's own markup: it parses
+//! the markup into a tree as an HTML engine does (html5ever, the WHATWG
+//! parsing algorithm, so unterminated tags, comments, raw text and foreign
+//! content end where the engine ends them) and writes a new document from
+//! the tree that holds only what a mail needs to look like itself.
 //!
 //! * **Only known elements and attributes survive.** Script, style sheets
 //!   from elsewhere, frames, objects, embeds, SVG and `MathML`, templates,
@@ -40,6 +42,10 @@
 //! with no cookies and no storage.
 
 use std::fmt::Write as _;
+
+use html5ever::tendril::TendrilSink as _;
+use html5ever::{Attribute, LocalName, ns};
+use markup5ever_rcdom::{Handle, NodeData, RcDom};
 
 /// The longest `data:` URL the engine loads: Chromium refuses URLs over 2 MiB.
 const MAX_DATA_URL: usize = 2 * 1024 * 1024 - 1024;
@@ -100,6 +106,7 @@ pub fn prepare(html: &str, policy: &Policy<'_>) -> Prepared {
         links,
         remote,
         doctype,
+        body,
         ..
     } = sanitizer;
     let mut document = String::with_capacity(out.len() + 1024);
@@ -116,7 +123,7 @@ pub fn prepare(html: &str, policy: &Policy<'_>) -> Prepared {
 <meta name=\"referrer\" content=\"no-referrer\">\
 <meta name=\"color-scheme\" content=\"{scheme}\">\
 <base target=\"_blank\">\
-<style>{}</style></head><body>",
+<style>{}</style></head><body{body}>",
         base_css(dark, policy)
     );
     document.push_str(&out);
@@ -496,11 +503,6 @@ const DROPPED: &[&str] = &[
     "video", "xmp",
 ];
 
-/// Elements whose content is text up to their end tag, never markup.
-const RAW_TEXT: &[&str] = &[
-    "iframe", "noembed", "noframes", "noscript", "script", "style", "textarea", "title", "xmp",
-];
-
 /// Attributes kept as they are, on any allowed element.
 const PLAIN_ATTRIBUTES: &[&str] = &[
     "abbr",
@@ -558,12 +560,13 @@ const PLAIN_ATTRIBUTES: &[&str] = &[
     "width",
 ];
 
-/// What the sanitizer does with a start tag's element.
+/// What the sanitizer does with an element.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Allowed,
     Body,
     Link,
+    Style,
     Dropped,
     /// Its tags go; its content stays.
     Unwrapped,
@@ -576,6 +579,8 @@ fn kind_of(name: &str) -> Kind {
         Kind::Body
     } else if name == "link" {
         Kind::Link
+    } else if name == "style" {
+        Kind::Style
     } else if DROPPED.contains(&name) {
         Kind::Dropped
     } else {
@@ -583,121 +588,52 @@ fn kind_of(name: &str) -> Kind {
     }
 }
 
-/// A start or end tag as read: its lower-case name, and its attributes with
-/// lower-case names and raw values, the first of each name only.
-#[derive(Debug, Default)]
-struct Tag {
-    name: String,
-    attributes: Vec<(String, String)>,
-    end: bool,
-    self_closing: bool,
+/// The value of the attribute `name`, as the parser decoded it.
+fn attribute<'a>(attributes: &'a [Attribute], name: &str) -> Option<&'a str> {
+    attributes
+        .iter()
+        .find(|attribute| attribute.name.ns == ns!() && &*attribute.name.local == name)
+        .map(|attribute| &*attribute.value)
 }
 
-impl Tag {
-    fn attribute(&self, name: &str) -> Option<&str> {
-        self.attributes
-            .iter()
-            .find(|(key, _)| key == name)
-            .map(|(_, value)| value.as_str())
+/// The mail's doctype as written again: an HTML doctype keeps the mode the
+/// mail was written for. The parser keeps one only before any content.
+fn doctype(name: &str, public: &str, system: &str) -> Option<String> {
+    if !name.eq_ignore_ascii_case("html") || public.len() + system.len() > 512 {
+        return None;
     }
+    let quoted = |id: &str| -> String {
+        id.chars()
+            .filter(|c| !c.is_control() && !matches!(c, '"' | '<' | '>'))
+            .collect()
+    };
+    Some(match (public.is_empty(), system.is_empty()) {
+        (true, true) => "<!DOCTYPE html>".to_owned(),
+        (false, true) => format!("<!DOCTYPE html PUBLIC \"{}\">", quoted(public)),
+        (true, false) => format!("<!DOCTYPE html SYSTEM \"{}\">", quoted(system)),
+        (false, false) => format!(
+            "<!DOCTYPE html PUBLIC \"{}\" \"{}\">",
+            quoted(public),
+            quoted(system)
+        ),
+    })
 }
 
-/// Read the tag at `at` (just past its `<`). Returns it and where it ends,
-/// or `None` when the input ends inside it (the tag is then dropped, as an
-/// engine drops it).
-fn read_tag(src: &str, at: usize) -> Option<(Tag, usize)> {
-    let bytes = src.as_bytes();
-    let mut i = at;
-    let mut tag = Tag::default();
-    if bytes.get(i) == Some(&b'/') {
-        tag.end = true;
-        i += 1;
-    }
-    let start = i;
-    while let Some(&byte) = bytes.get(i) {
-        if byte.is_ascii_whitespace() || byte == b'/' || byte == b'>' {
-            break;
-        }
-        i += 1;
-    }
-    tag.name = src.get(start..i)?.to_ascii_lowercase();
-    loop {
-        // Between attributes.
-        while let Some(&byte) = bytes.get(i) {
-            if byte.is_ascii_whitespace() {
-                i += 1;
-            } else if byte == b'/' {
-                tag.self_closing = bytes.get(i + 1) == Some(&b'>');
-                i += 1;
-            } else {
-                break;
-            }
-        }
-        if *bytes.get(i)? == b'>' {
-            return Some((tag, i + 1));
-        }
-        tag.self_closing = false;
-        let name_start = i;
-        // The first character of a name may be `=`.
-        i += 1;
-        while let Some(&byte) = bytes.get(i) {
-            if byte.is_ascii_whitespace() || matches!(byte, b'/' | b'>' | b'=') {
-                break;
-            }
-            i += 1;
-        }
-        let name = src.get(name_start..i)?.to_ascii_lowercase();
-        while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
-            i += 1;
-        }
-        let mut value = String::new();
-        if bytes.get(i) == Some(&b'=') {
-            i += 1;
-            while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
-                i += 1;
-            }
-            if let quote @ (b'"' | b'\'') = *bytes.get(i)? {
-                let open = i + 1;
-                let close = open + src.get(open..)?.find(char::from(quote))?;
-                src.get(open..close)?.clone_into(&mut value);
-                i = close + 1;
-            } else {
-                let open = i;
-                while bytes
-                    .get(i)
-                    .is_some_and(|&byte| !byte.is_ascii_whitespace() && byte != b'>')
-                {
-                    i += 1;
-                }
-                src.get(open..i)?.clone_into(&mut value);
-            }
-        }
-        if !tag.attributes.iter().any(|(key, _)| *key == name) {
-            tag.attributes.push((name, value));
+/// The text inside `node`, such as a style sheet's.
+fn text_content(node: &Handle) -> String {
+    let mut text = String::new();
+    for child in node.children.borrow().iter() {
+        if let NodeData::Text { contents } = &child.data {
+            text.push_str(&contents.borrow());
         }
     }
+    text
 }
 
-/// Where the raw text of element `name` that starts at `from` ends: the
-/// start of its end tag, and just past it. Without one, the rest is text.
-fn raw_text_end(src: &str, from: usize, name: &str) -> (usize, usize) {
-    let lower = src.get(from..).unwrap_or_default().to_ascii_lowercase();
-    let needle = format!("</{name}");
-    let mut search = 0;
-    while let Some(found) = lower.get(search..).and_then(|rest| rest.find(&needle)) {
-        let at = search + found;
-        let after = at + needle.len();
-        let next = lower.as_bytes().get(after).copied();
-        if next.is_none_or(|byte| byte.is_ascii_whitespace() || byte == b'/' || byte == b'>') {
-            let close = lower
-                .get(after..)
-                .and_then(|rest| rest.find('>'))
-                .map_or(lower.len(), |gt| after + gt + 1);
-            return (from + at, from + close);
-        }
-        search = after;
-    }
-    (src.len(), src.len())
+/// One step of the walk over the parsed document.
+enum Step {
+    Enter(Handle),
+    Close(LocalName),
 }
 
 struct Sanitizer<'p> {
@@ -711,9 +647,8 @@ struct Sanitizer<'p> {
     /// the mail was written for; without one it renders in quirks mode, as
     /// in the mail clients it was written for.
     doctype: Option<String>,
-    /// An element being dropped with its content, and how deep in nested
-    /// elements of its name the reader is.
-    skipping: Option<(String, usize)>,
+    /// The attributes the mail gives its body, written ` name="value"`.
+    body: String,
     /// What inline images may still take of the document.
     inline_budget: usize,
 }
@@ -727,103 +662,103 @@ impl<'p> Sanitizer<'p> {
             links: Vec::new(),
             remote: 0,
             doctype: None,
-            skipping: None,
+            body: String::new(),
             inline_budget: INLINE_BUDGET,
         }
     }
 
+    /// Parse `src` as the engine would and write what survives of it. The
+    /// walk keeps its own stack, so no nesting depth can exhaust ours.
     fn run(&mut self, src: &str) {
-        let bytes = src.as_bytes();
-        let mut i = 0;
-        while i < src.len() {
-            let Some(lt) = src
-                .get(i..)
-                .and_then(|rest| rest.find('<'))
-                .map(|at| i + at)
-            else {
-                self.text(src.get(i..).unwrap_or_default());
-                break;
-            };
-            self.text(src.get(i..lt).unwrap_or_default());
-            match bytes.get(lt + 1).copied() {
-                Some(b'!') => i = self.declaration(src, lt),
-                Some(b'/') if bytes.get(lt + 2).is_some_and(u8::is_ascii_alphabetic) => {
-                    let Some((tag, next)) = read_tag(src, lt + 1) else {
-                        break;
-                    };
-                    self.end(&tag);
-                    i = next;
+        let dom =
+            html5ever::parse_document(RcDom::default(), html5ever::ParseOpts::default()).one(src);
+        // The walk starts at the document's children and `dom` keeps the
+        // document: dropping a node's last handle empties its whole subtree.
+        let mut stack: Vec<Step> = dom
+            .document
+            .children
+            .borrow()
+            .iter()
+            .rev()
+            .cloned()
+            .map(Step::Enter)
+            .collect();
+        while let Some(step) = stack.pop() {
+            let node = match step {
+                Step::Enter(node) => node,
+                Step::Close(name) => {
+                    let _ = write!(self.out, "</{name}>");
+                    continue;
                 }
-                Some(b'?' | b'/') => i = past(src, lt, ">"),
-                Some(byte) if byte.is_ascii_alphabetic() => {
-                    let Some((tag, next)) = read_tag(src, lt + 1) else {
-                        break;
-                    };
-                    i = next;
-                    if RAW_TEXT.contains(&tag.name.as_str()) {
-                        let (content_end, close) = raw_text_end(src, next, &tag.name);
-                        self.raw_element(&tag, src.get(next..content_end).unwrap_or_default());
-                        i = close;
-                    } else if tag.name == "plaintext" {
-                        // The rest of the input is its text.
-                        self.text(src.get(next..).unwrap_or_default());
-                        break;
-                    } else {
-                        self.start(&tag);
+            };
+            match &node.data {
+                NodeData::Document => {}
+                NodeData::Doctype {
+                    name,
+                    public_id,
+                    system_id,
+                } => {
+                    self.doctype = self
+                        .doctype
+                        .take()
+                        .or_else(|| doctype(name, public_id, system_id));
+                    continue;
+                }
+                NodeData::Text { contents } => {
+                    self.text(&contents.borrow());
+                    continue;
+                }
+                NodeData::Comment { .. } | NodeData::ProcessingInstruction { .. } => continue,
+                NodeData::Element { name, attrs, .. } => {
+                    // SVG and MathML go whole with their roots; nothing of
+                    // another namespace is written.
+                    if name.ns != ns!(html) {
+                        continue;
+                    }
+                    let local = &*name.local;
+                    let attrs = attrs.borrow();
+                    match kind_of(local) {
+                        Kind::Allowed => {
+                            let attributes = self.attributes(local, &attrs);
+                            let _ = write!(self.out, "<{local}{attributes}>");
+                            if VOID.contains(&local) {
+                                continue;
+                            }
+                            stack.push(Step::Close(name.local.clone()));
+                        }
+                        Kind::Body => self.body = self.attributes("body", &attrs),
+                        Kind::Link => {
+                            self.link(&attrs);
+                            continue;
+                        }
+                        Kind::Style => {
+                            let css = self.css(&text_content(&node), true);
+                            self.out.push_str("<style>");
+                            self.out.push_str(&css);
+                            self.out.push_str("</style>");
+                            continue;
+                        }
+                        Kind::Dropped => continue,
+                        Kind::Unwrapped => {}
                     }
                 }
-                _ => {
-                    self.text("<");
-                    i = lt + 1;
-                }
             }
+            stack.extend(
+                node.children
+                    .borrow()
+                    .iter()
+                    .rev()
+                    .cloned()
+                    .map(Step::Enter),
+            );
         }
     }
 
-    /// A comment, doctype or other `<!` declaration at `lt`; returns where
-    /// it ends. Only an HTML doctype before any content is kept.
-    fn declaration(&mut self, src: &str, lt: usize) -> usize {
-        let rest = src.get(lt..).unwrap_or_default();
-        if rest.starts_with("<!--") {
-            // `<!-->` and `<!--->` are empty comments.
-            for empty in ["<!-->", "<!--->"] {
-                if rest.starts_with(empty) {
-                    return lt + empty.len();
-                }
-            }
-            let body = lt + 4;
-            let end = src.get(body..).and_then(|tail| {
-                let close = tail.find("-->").map(|at| at + 3);
-                let bang = tail.find("--!>").map(|at| at + 4);
-                match (close, bang) {
-                    (Some(a), Some(b)) => Some(a.min(b)),
-                    (a, b) => a.or(b),
-                }
-            });
-            return end.map_or(src.len(), |end| body + end);
-        }
-        let end = past(src, lt, ">");
-        let token = src.get(lt..end).unwrap_or_default();
-        if self.doctype.is_none()
-            && self.out.trim().is_empty()
-            && token.len() <= 512
-            && token
-                .get(..14)
-                .is_some_and(|head| head.eq_ignore_ascii_case("<!doctype html"))
-            && token.ends_with('>')
-            && !token.get(1..).unwrap_or_default().contains('<')
-        {
-            self.doctype = Some(token.chars().filter(|c| !c.is_control()).collect());
-        }
-        end
-    }
-
+    /// Text, escaped so nothing in it opens markup.
     fn text(&mut self, text: &str) {
-        if self.skipping.is_some() || text.is_empty() {
-            return;
-        }
         for c in text.chars() {
             match c {
+                '&' => self.out.push_str("&amp;"),
                 '<' => self.out.push_str("&lt;"),
                 '>' => self.out.push_str("&gt;"),
                 '\0' => {}
@@ -832,74 +767,18 @@ impl<'p> Sanitizer<'p> {
         }
     }
 
-    /// An element whose content is raw text: a style sheet is kept,
-    /// rewritten; every other one goes with its text.
-    fn raw_element(&mut self, tag: &Tag, content: &str) {
-        if self.skipping.is_some() || tag.name != "style" {
-            return;
-        }
-        let css = self.css(content, true);
-        self.out.push_str("<style>");
-        self.out.push_str(&css);
-        self.out.push_str("</style>");
-    }
-
-    fn start(&mut self, tag: &Tag) {
-        if let Some((name, depth)) = &mut self.skipping {
-            if *name == tag.name && !tag.self_closing {
-                *depth += 1;
-            }
-            return;
-        }
-        match kind_of(&tag.name) {
-            Kind::Allowed => {
-                let attributes = self.attributes(tag);
-                let _ = write!(self.out, "<{}{attributes}>", tag.name);
-            }
-            Kind::Body => {
-                let attributes = self.attributes(tag);
-                let _ = write!(self.out, "<body{attributes}>");
-            }
-            Kind::Link => self.link(tag),
-            Kind::Dropped => {
-                // SVG and MathML close themselves with `/>`; HTML elements
-                // stay open whatever their tag says.
-                let foreign = matches!(tag.name.as_str(), "svg" | "math");
-                if !(foreign && tag.self_closing) {
-                    self.skipping = Some((tag.name.clone(), 1));
-                }
-            }
-            Kind::Unwrapped => {}
-        }
-    }
-
-    fn end(&mut self, tag: &Tag) {
-        if let Some((name, depth)) = &mut self.skipping {
-            if *name == tag.name {
-                *depth = depth.saturating_sub(1);
-                if *depth == 0 {
-                    self.skipping = None;
-                }
-            }
-            return;
-        }
-        if kind_of(&tag.name) == Kind::Allowed && !VOID.contains(&tag.name.as_str()) {
-            let _ = write!(self.out, "</{}>", tag.name);
-        }
-    }
-
     /// A `<link>`: a remote style sheet, kept only while remote content is
     /// allowed. Every other kind (prefetch, preconnect, DNS prefetch, icons)
     /// goes.
-    fn link(&mut self, tag: &Tag) {
-        let stylesheet = tag.attribute("rel").is_some_and(|rel| {
+    fn link(&mut self, attributes: &[Attribute]) {
+        let stylesheet = attribute(attributes, "rel").is_some_and(|rel| {
             rel.split_ascii_whitespace()
                 .any(|token| token.eq_ignore_ascii_case("stylesheet"))
         });
         if !stylesheet {
             return;
         }
-        let Some(href) = tag.attribute("href").map(url_value) else {
+        let Some(href) = attribute(attributes, "href").map(clean_url) else {
             return;
         };
         if let Some(url) = remote_url(&href) {
@@ -915,14 +794,18 @@ impl<'p> Sanitizer<'p> {
     }
 
     /// The attributes an allowed element keeps, written ` name="value"`.
-    fn attributes(&mut self, tag: &Tag) -> String {
+    fn attributes(&mut self, element: &str, attributes: &[Attribute]) -> String {
         let mut out = String::new();
         let mut fragment = false;
         let mut shows = false;
         let mut style = String::new();
-        for (name, raw) in &tag.attributes {
-            match name.as_str() {
-                "href" if tag.name == "a" => match link_target(&url_value(raw)) {
+        for attribute in attributes {
+            if attribute.name.ns != ns!() {
+                continue;
+            }
+            let (name, value) = (&*attribute.name.local, &*attribute.value);
+            match name {
+                "href" if element == "a" => match link_target(&clean_url(value)) {
                     Some(Target::Fragment(at)) => {
                         fragment = true;
                         let _ = write!(out, " href=\"{}\"", escape_decoded(&at));
@@ -935,40 +818,41 @@ impl<'p> Sanitizer<'p> {
                     }
                     None => {}
                 },
-                "src" if tag.name == "img" => {
-                    if let Some(url) = self.image(&url_value(raw)) {
+                "src" if element == "img" => {
+                    if let Some(url) = self.image(&clean_url(value)) {
                         shows = true;
                         let _ = write!(out, " src=\"{}\"", escape_decoded(&url));
                     }
                 }
-                "srcset" if tag.name == "img" => {
-                    let kept = self.srcset(raw);
+                "srcset" if element == "img" => {
+                    let kept = self.srcset(value);
                     if !kept.is_empty() {
                         shows = true;
                         let _ = write!(out, " srcset=\"{}\"", escape_decoded(&kept));
                     }
                 }
                 "background" => {
-                    if let Some(url) = self.image(&url_value(raw)) {
+                    if let Some(url) = self.image(&clean_url(value)) {
                         let _ = write!(out, " background=\"{}\"", escape_decoded(&url));
                     }
                 }
                 "style" => {
-                    style = self.css(&decode_entities(raw), false);
+                    style = self.css(value, false);
                 }
                 name if PLAIN_ATTRIBUTES.contains(&name) || is_aria(name) => {
-                    let _ = write!(out, " {name}=\"{}\"", escape_attribute(raw));
+                    let _ = write!(out, " {name}=\"{}\"", escape_decoded(value));
                 }
                 _ => {}
             }
         }
-        if tag.name == "img" && !shows {
+        if element == "img" && !shows {
             // An image held back is an empty box at the size the mail gives
             // it, and takes no room when it gives none: never the engine's
             // broken image and its alternative text over the layout. The
             // text stays its accessible name.
             let _ = write!(out, " src=\"{HELD_BACK_IMAGE}\"");
-            let sized = tag.attribute("width").is_some() && tag.attribute("height").is_some()
+            let sized = attribute(attributes, "width").is_some()
+                && attribute(attributes, "height").is_some()
                 || ["width", "height"]
                     .iter()
                     .all(|side| css_declares(&style, side));
@@ -978,8 +862,8 @@ impl<'p> Sanitizer<'p> {
             // Its proportions are the declared ones, not the held-back
             // pixel's square, when the mail scales it (`height:auto`).
             if let (Some(width), Some(height)) = (
-                tag.attribute("width").and_then(image_length),
-                tag.attribute("height").and_then(image_length),
+                attribute(attributes, "width").and_then(image_length),
+                attribute(attributes, "height").and_then(image_length),
             ) && !css_declares(&style, "aspect-ratio")
             {
                 let _ = write!(style, ";aspect-ratio:{width}/{height}");
@@ -988,7 +872,7 @@ impl<'p> Sanitizer<'p> {
         if !style.trim().trim_matches(';').trim().is_empty() {
             let _ = write!(out, " style=\"{}\"", escape_decoded(&style));
         }
-        if tag.name == "a" {
+        if element == "a" {
             // A link opens outside the message; one to a place in it stays.
             if fragment {
                 out.push_str(" target=\"_self\"");
@@ -1040,10 +924,9 @@ impl<'p> Sanitizer<'p> {
     }
 
     /// The `srcset` candidates whose images may show.
-    fn srcset(&mut self, raw: &str) -> String {
-        let value = decode_entities(raw);
+    fn srcset(&mut self, value: &str) -> String {
         let mut kept: Vec<String> = Vec::new();
-        let mut rest = value.as_str();
+        let mut rest = value;
         loop {
             rest = rest.trim_start_matches(|c: char| c.is_ascii_whitespace() || c == ',');
             if rest.is_empty() {
@@ -1326,13 +1209,6 @@ fn plain_css_names(css: &str) -> String {
     out
 }
 
-/// Just past the first `needle` after `from`, or the end.
-fn past(src: &str, from: usize, needle: &str) -> usize {
-    src.get(from..)
-        .and_then(|rest| rest.find(needle))
-        .map_or(src.len(), |at| from + at + needle.len())
-}
-
 /// The end of the CSS string that starts `css` with `quote`, just past its
 /// closing quote (or the end).
 fn string_end(css: &str, quote: char) -> usize {
@@ -1470,12 +1346,6 @@ fn image_mime(mime: &str) -> bool {
     )
 }
 
-/// An attribute's URL as the engine would read it: entities decoded,
-/// whitespace and control characters gone.
-fn url_value(raw: &str) -> String {
-    clean_url(&decode_entities(raw))
-}
-
 /// `url` without tabs and newlines anywhere, or controls and spaces at its
 /// ends, as URL parsers read it; bounded.
 fn clean_url(url: &str) -> String {
@@ -1509,104 +1379,6 @@ fn percent_decode(value: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
-}
-
-/// Character references decoded: every numeric one, and the named ones a
-/// URL can be spelled with. Other named references stay as written.
-fn decode_entities(raw: &str) -> String {
-    const NAMED: &[(&str, char)] = &[
-        ("amp", '&'),
-        ("lt", '<'),
-        ("gt", '>'),
-        ("quot", '"'),
-        ("apos", '\''),
-        ("nbsp", '\u{a0}'),
-        ("colon", ':'),
-        ("tab", '\t'),
-        ("newline", '\n'),
-        ("sol", '/'),
-        ("period", '.'),
-        ("comma", ','),
-        ("lpar", '('),
-        ("rpar", ')'),
-        ("num", '#'),
-        ("percnt", '%'),
-        ("quest", '?'),
-        ("equals", '='),
-        ("plus", '+'),
-        ("bsol", '\\'),
-    ];
-    let mut out = String::with_capacity(raw.len());
-    let mut rest = raw;
-    while let Some(amp) = rest.find('&') {
-        out.push_str(rest.get(..amp).unwrap_or_default());
-        let after = rest.get(amp + 1..).unwrap_or_default();
-        if let Some(numeric) = after.strip_prefix('#') {
-            let (radix, digits) = match numeric.strip_prefix(['x', 'X']) {
-                Some(hex) => (16, hex),
-                None => (10, numeric),
-            };
-            let len = digits
-                .find(|c: char| !c.is_digit(radix))
-                .unwrap_or(digits.len());
-            if len > 0 {
-                let value = digits
-                    .get(..len.min(8))
-                    .and_then(|d| u32::from_str_radix(d, radix).ok())
-                    .and_then(char::from_u32)
-                    .filter(|c| *c != '\0')
-                    .unwrap_or('\u{fffd}');
-                out.push(value);
-                let mut used = 1 + (numeric.len() - digits.len()) + len;
-                if digits.get(len..).is_some_and(|tail| tail.starts_with(';')) {
-                    used += 1;
-                }
-                rest = after.get(used..).unwrap_or_default();
-                continue;
-            }
-        } else if let Some(semi) = after.find(';').filter(|semi| *semi <= 10) {
-            let name = after.get(..semi).unwrap_or_default();
-            if let Some((_, c)) = NAMED
-                .iter()
-                .find(|(known, _)| name.eq_ignore_ascii_case(known))
-            {
-                out.push(*c);
-                rest = after.get(semi + 1..).unwrap_or_default();
-                continue;
-            }
-        }
-        out.push('&');
-        rest = after;
-    }
-    out.push_str(rest);
-    out
-}
-
-/// An attribute value, double-quoted: quotes and angle brackets escaped, an
-/// ampersand kept where it starts a character reference, escaped elsewhere.
-fn escape_attribute(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    for (at, c) in raw.char_indices() {
-        match c {
-            '"' => out.push_str("&quot;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '\0' => {}
-            '&' => {
-                let tail = raw.get(at + 1..).unwrap_or_default();
-                let len = tail
-                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '#'))
-                    .unwrap_or(tail.len());
-                if len > 0 && tail.get(len..).is_some_and(|after| after.starts_with(';')) {
-                    out.push('&');
-                } else {
-                    out.push_str("&amp;");
-                }
-            }
-            _ => out.push(c),
-        }
-    }
-    out
 }
 
 /// A value already decoded (an address, a rewritten style) as an attribute
