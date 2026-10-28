@@ -46,6 +46,18 @@ pub(crate) const KEYS: &[&str] = &[
     "greeter-high-contrast",
     "greeter-screen-reader",
     "greeter-accounts",
+    "greeter-pin",
+    "greeter-cant-sign-in",
+    "greeter-hint-pin",
+    "greeter-error-pin",
+    "greeter-error-pin-tries",
+    "greeter-error-passcode-tries",
+    "greeter-error-pin-repeated",
+    "greeter-error-pin-repeated-tries",
+    "greeter-error-passcode-repeated",
+    "greeter-error-passcode-repeated-tries",
+    "greeter-error-wait-minutes",
+    "greeter-error-wait-hours",
 ];
 
 #[cfg(test)]

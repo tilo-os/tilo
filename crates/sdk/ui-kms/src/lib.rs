@@ -299,6 +299,10 @@ impl Host {
             if app.surface_touch_hold(&self.surface, &mut self.emulator, now) {
                 wants = true;
             }
+            // Both volume keys have been held long enough.
+            if app.tick_screen_reader_chord(now) {
+                wants = true;
+            }
             if devices {
                 app.set_interaction_environment(self.environment(app.interaction_environment()));
                 wants = true;
@@ -339,6 +343,7 @@ impl Host {
                 self.input.deadline(),
                 app.surface_next_frame(),
                 self.emulator.long_press_deadline(),
+                app.screen_reader_chord_deadline(),
             ]
             .into_iter()
             .flatten()

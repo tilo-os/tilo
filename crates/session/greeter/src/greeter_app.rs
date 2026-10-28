@@ -63,11 +63,14 @@ use ui::widget::{
     Presentation, Row, Scrollable, SecretKind, SecretPrompt, Spacer, Text, TextInput, Widget,
 };
 
+mod boot_mode;
 mod console;
 mod sign_in_comforts;
+mod touch_keyboard;
 
 pub use console::{CONSOLE_WAKE, PROVIDER as CONSOLE_PROVIDER};
 
+use crate::auth::boot::{self, BootLink, Note, ToGreeter};
 use crate::auth::{AuthSession, AuthUpdate, Failure, spawn_auth, spawn_handoff};
 use crate::device_status::DeviceStatus;
 use crate::i18n::{t, t_args};
@@ -608,6 +611,8 @@ struct Requests {
     power: Cell<Option<PowerAction>>,
     account: Cell<Option<usize>>,
     accessibility: Cell<Option<AccessibilityRequest>>,
+    /// "Can't sign in", at the boot sign-in.
+    cant_sign_in: Cell<bool>,
 }
 
 const SESSION_DIAGNOSTICS: [(&str, &str); 4] = [
@@ -718,7 +723,31 @@ pub struct GreeterApp {
     /// The person who signed in on the boot screen, whose session starts
     /// without this screen asking them anything.
     boot_sign_in: BootSignIn,
+    /// The boot sign-in this screen is, when it runs in the initramfs as
+    /// `tilo-boot-signin`'s screen ([`crate::auth::boot`]).
+    boot: Option<Boot>,
+    /// The on-screen keyboard's state and the keys pressed on it.
+    touch_keyboard: touch_keyboard::Shared,
+    /// The input devices and the one in use, as the host reports them.
+    environment: ui::InteractionEnvironment,
+    /// Whether a keyboard is attached, where the kiosk's own report cannot
+    /// be trusted ([`crate::keyboards`]); `None` takes the host's.
+    keyboards: Option<bool>,
 }
+
+/// The greeter as the boot's sign-in screen: it shows the people and notes
+/// the supervisor sends and answers with the person and secret.
+struct Boot {
+    link: BootLink,
+    /// The people as the supervisor listed them; the screen answers with an
+    /// index into this list.
+    people: Vec<boot::Person>,
+    note: Note,
+}
+
+/// The notice that stands for the supervisor's note ([`Boot::note`]), which
+/// carries its own numbers.
+const BOOT_NOTE: &str = "greeter-boot-note";
 
 /// Where the boot sign-in handoff is (see [`crate::handoff`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -930,6 +959,10 @@ impl GreeterApp {
             next_sign_in_diagnostics: None,
             keyboard_focus: false,
             boot_sign_in: BootSignIn::None,
+            boot: None,
+            touch_keyboard: touch_keyboard::Shared::default(),
+            environment: ui::InteractionEnvironment::default(),
+            keyboards: None,
         }
     }
 
@@ -1160,6 +1193,11 @@ impl GreeterApp {
             AuthPhase::Authenticating => t("greeter-signing-in"),
             AuthPhase::Starting => t("greeter-starting"),
             AuthPhase::Idle => match self.notice {
+                Notice::Error(BOOT_NOTE) => self
+                    .boot
+                    .as_ref()
+                    .map(|boot| boot_mode::boot_note_text(boot.note))
+                    .unwrap_or_default(),
                 Notice::Error("greeter-error-passcode") if self.failures > 1 => t_args(
                     "greeter-error-passcode-again",
                     &[("count", self.failures.into())],
@@ -1271,6 +1309,8 @@ impl GreeterApp {
                 FieldRole::Secret,
                 t(if challenge {
                     "greeter-auth-response"
+                } else if self.boot_secret() == Some(boot::SecretKind::Pin) {
+                    "greeter-pin"
                 } else {
                     "greeter-passcode"
                 }),
@@ -1452,6 +1492,7 @@ impl GreeterApp {
         if self.offers_account_choice() {
             form.push(self.build_accounts(busy, theme, align));
         }
+        form.extend(self.build_cant_sign_in(busy, align));
         Box::new(
             Stack::column(s.s3, form)
                 .max_width(FORM_WIDTH)
@@ -1608,7 +1649,13 @@ impl GreeterApp {
             ));
         }
         let requests = Rc::clone(&self.requests);
-        let labels: Vec<String> = PowerAction::ALL.iter().map(|a| a.label()).collect();
+        // The initramfs cannot suspend: what is in memory there is the boot.
+        let actions: &'static [PowerAction] = if self.boot.is_some() {
+            &[PowerAction::Reboot, PowerAction::PowerOff]
+        } else {
+            &PowerAction::ALL
+        };
+        let labels: Vec<String> = actions.iter().map(|a| a.label()).collect();
         let chosen = labels.clone();
         trailing.push(Box::new(
             // A menu: the choice is a command, reported and never kept.
@@ -1620,7 +1667,7 @@ impl GreeterApp {
                     let action = chosen
                         .iter()
                         .position(|candidate| candidate == label)
-                        .and_then(|index| PowerAction::ALL.get(index).copied());
+                        .and_then(|index| actions.get(index).copied());
                     requests.power.set(action);
                 }),
         ));
@@ -1771,9 +1818,17 @@ impl GreeterApp {
                 .with_persisted_offset(self.viewport_offset.clone()),
         );
         Box::new(
-            Stack::column(s.s2, vec![view, self.build_footer(busy, theme)])
-                .padding(if compact { s.s2 } else { s.s6 })
-                .fill_height(),
+            Stack::column(s.s2, {
+                let mut column = vec![view, self.build_footer(busy, theme)];
+                if self.shows_touch_keyboard() {
+                    column.push(Box::new(touch_keyboard::TouchKeyboard::new(
+                        self.touch_keyboard.clone(),
+                    )));
+                }
+                column
+            })
+            .padding(if compact { s.s2 } else { s.s6 })
+            .fill_height(),
         )
     }
 
@@ -1785,6 +1840,18 @@ impl GreeterApp {
     /// [`last_power_action`]: GreeterApp::last_power_action
     fn request_power(&mut self, action: PowerAction) {
         self.last_power_action = Some(action);
+        if let Some(boot) = &self.boot {
+            // The supervisor carries it out: this process may not.
+            let power = match action {
+                PowerAction::Reboot => boot::Power::Reboot,
+                PowerAction::PowerOff => boot::Power::PowerOff,
+                PowerAction::Suspend => return,
+            };
+            if boot.link.power(power).is_err() {
+                self.show_error("greeter-error-service");
+            }
+            return;
+        }
         Self::run_power(action);
     }
 
@@ -1891,6 +1958,12 @@ impl GreeterApp {
     /// headless), it falls back to a synchronous exchange so the path is
     /// still exercised.
     fn attempt_login(&mut self, method: AuthMethod) {
+        if self.boot.is_some() {
+            if method == AuthMethod::Password {
+                self.attempt_boot_sign_in();
+            }
+            return;
+        }
         if self.phase == AuthPhase::Authenticating && method == AuthMethod::Password {
             if let Some(challenge) = self.auth_session.as_ref().and_then(AuthSession::challenge)
                 && let Some(session) = &self.auth_session
@@ -2162,6 +2235,7 @@ impl Widget for GreeterApp {
             self.choose_account(index);
         }
 
+        self.take_touch_keys();
         // Pull local-only passcode edits into the zeroized buffer before
         // taking a sign-in request raised by Enter or the sign-in action in
         // the same event cycle.
@@ -2188,6 +2262,18 @@ impl Widget for GreeterApp {
 
         if let Some(action) = self.requests.power.take() {
             self.request_power(action);
+        }
+
+        if self.requests.cant_sign_in.take()
+            && self.phase == AuthPhase::Idle
+            && let Some(boot) = &self.boot
+        {
+            self.clear_password();
+            if boot.link.cant_sign_in().is_ok() {
+                self.begin_authenticating();
+            } else {
+                self.show_error("greeter-error-service");
+            }
         }
     }
 
@@ -2394,6 +2480,11 @@ impl Widget for GreeterApp {
     /// The card is rebuilt from state: each build keeps the input in use,
     /// so a finger gets touch-sized fields and actions.
     fn set_interaction_environment(&mut self, environment: ui::InteractionEnvironment) {
+        let shown = self.shows_touch_keyboard();
+        self.environment = environment;
+        if self.shows_touch_keyboard() != shown {
+            self.dirty_structure = true;
+        }
         self.composed.set_interaction_environment(environment);
     }
 
@@ -2459,6 +2550,20 @@ impl Widget for GreeterApp {
             // A display was plugged, removed or rescaled: place the card and
             // the backdrop for the new arrangement.
             self.dirty_structure = true;
+            return;
+        }
+        if payload == crate::keyboards::KEYBOARDS_WAKE {
+            let shown = self.shows_touch_keyboard();
+            self.keyboards = Some(crate::keyboards::present(std::path::Path::new(
+                crate::keyboards::INPUT_CLASS,
+            )));
+            if self.shows_touch_keyboard() != shown {
+                self.dirty_structure = true;
+            }
+            return;
+        }
+        if let Some(message) = boot::decode(payload) {
+            self.boot_message(message);
             return;
         }
         // Progress from the background auth worker (see `crate::auth`).
