@@ -8,8 +8,8 @@ type Draft {
     sent: Bool = false
 
     search {
-        filter "Drafts" = not sent
-        filter sent
+        filter "Drafts" = not sent (icon: .pencil)
+        filter sent (icon: .send)
     }
 }
 
@@ -61,16 +61,17 @@ view desk(desk: Desk) {
 
 /// One letter in a list: its subject and who it goes to.
 view draft_row(d: Draft) {
-    row(d.subject, secondary: d.to)
+    row(d.subject, secondary: d.to, mark: if d.sent { .send })
 }
 
 /// A letter's window.
 view editor(d: Draft) {
     std.document(d) {
-        input(bind: d.to, placeholder: "To")
+        field("To") {
+            input(bind: d.to, placeholder: "name@example.org")
+        }
         input(bind: d.subject, placeholder: "Subject")
         input(bind: d.body, placeholder: "Write your letter", lines: 10)
-        button(send(d), enabled: not d.sent) as send
     }
 }
 
