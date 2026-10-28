@@ -3581,6 +3581,13 @@ impl State {
                 continue;
             }
 
+            // What this machine encodes is read off the frame loop once; the
+            // stream starts when it is known (a worker wakes the loop then).
+            if !paint
+                && !tilo_window_share::flatpak_share::encoders_known(crate::shell::wake_compositor)
+            {
+                continue;
+            }
             // The window is still shared: its stream is replaced, not ended,
             // unless the new one cannot start.
             let replaced = self.active_sessions.remove(&surface);

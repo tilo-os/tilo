@@ -260,6 +260,18 @@ impl ActorState {
             return;
         };
         self.native_routes.serial = serial;
+        // A room this device hosts itself has no host to reach: its apps'
+        // empty states are their own from the start, as in a workspace that
+        // syncs with no host.
+        if self
+            .host_identity
+            .as_ref()
+            .is_some_and(|identity| connect.hosted_here(identity))
+        {
+            self.native_routes.remove(ws);
+            crate::shell::room_sync::forget(ws);
+            return;
+        }
         // Apps in the room say they are connecting until its first sync.
         crate::shell::room_sync::connecting(ws);
         self.native_routes.entries.insert(
@@ -278,6 +290,19 @@ impl ActorState {
         let Some(identity) = self.host_identity.as_ref() else {
             return;
         };
+        let hosted_here: Vec<u64> = self
+            .native_routes
+            .entries
+            .iter()
+            .filter(|(_, route)| route.connect.hosted_here(identity))
+            .map(|(&ws, _)| ws)
+            .collect();
+        for ws in hosted_here {
+            // It became this device's own since it was connected (the
+            // identity arrived after it): nothing to dial.
+            self.native_routes.remove(ws);
+            crate::shell::room_sync::forget(ws);
+        }
         for (&ws, route) in &mut self.native_routes.entries {
             let material = route.connect.material(identity);
             if let Err(error) = &material {
@@ -508,7 +533,13 @@ fn dial_refused(
                 let _ = subscriber.try_send(super::NetEvent::NotAdmitted { ws });
             }
         }
-        error => tracing::debug!(%error, ws, "native host dial failed; retrying"),
+        // Anything else did not reach the room's host: until a sync with
+        // it completes, its apps say it cannot be reached and work on what
+        // this device has. The route dials again on the next heartbeat.
+        error => {
+            tracing::debug!(%error, ws, "native host dial failed; retrying");
+            crate::shell::room_sync::unreachable(ws);
+        }
     }
 }
 
@@ -542,5 +573,100 @@ mod tests {
                 .material(&identity)
                 .is_err()
         );
+    }
+
+    /// A room this device governs itself is dialled nowhere and its apps'
+    /// empty states are their own; a room whose host cannot be reached says
+    /// so once the try failed, rather than connecting forever.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_room_hosted_here_dials_nothing_and_an_unreachable_host_is_said() {
+        use crate::shell::room_sync;
+        use ui::room_sync::RoomSyncState;
+        let (_directory, owner, room, _, key) =
+            crate::shell::native_workspace_owner::test_enrolled_owner();
+        let certificate = owner
+            .with_current(room, |view| Ok(view.device().clone()))
+            .unwrap();
+        let identity = HostIdentity {
+            device_cert: certificate,
+            device_signing_key: key.clone(),
+            workspace_device_certs: HashMap::default(),
+            workspace_revocations: HashMap::default(),
+            identity_paths: None,
+        };
+        let elsewhere = Connect::new(owner, room).unwrap();
+        assert!(
+            !elsewhere.hosted_here(&identity),
+            "the enrollment pins another device as the room's host"
+        );
+
+        let governed_directory = tempfile::tempdir().unwrap();
+        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
+        tree.persist_path = Some(governed_directory.path().join("state.json"));
+        let workspace = tree.desktop.active;
+        let governed = tree.room_of(workspace).unwrap();
+        let tree = tree.shared();
+        let governed_owner = crate::shell::native_workspace_owner::open(tree).unwrap();
+        let governor = tilo_joined_room::testing::certificate(
+            &ed25519_dalek::SigningKey::from_bytes(&[72; 32]),
+            &key,
+            "Desktop",
+        );
+        let seed = tilo_peer_state::workspace_seed(
+            &governed.to_string(),
+            &governor,
+            std::slice::from_ref(&governor),
+            "Garden",
+        )
+        .unwrap();
+        governed_owner
+            .create_governed(
+                governed,
+                workspace.raw(),
+                &governor,
+                &key,
+                seed,
+                std::time::SystemTime::now(),
+            )
+            .unwrap();
+        let here = Connect::new(governed_owner, governed).unwrap();
+        assert!(here.hosted_here(&identity), "this device governs it");
+
+        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
+        let (commands, actor) = super::super::Actor::spawn_reporting_addrs(
+            endpoint,
+            iroh::address_lookup::memory::MemoryLookup::new(),
+            Some(identity),
+            Arc::new(std::sync::Mutex::new(Vec::new())),
+        );
+        // In this order: once the second room has an answer, the actor has
+        // handled the first.
+        for connect in [here, elsewhere] {
+            commands
+                .send(super::super::NetCmd::NativeConnect(connect, None))
+                .await
+                .unwrap();
+        }
+        let topic = crate::shell::network::room_topic_id(room);
+        tilo_test_env::within("the room to say its host cannot be reached", async {
+            while room_sync::state(topic) != Some(RoomSyncState::Unreachable) {
+                tokio::task::yield_now().await;
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert_eq!(
+            room_sync::state(crate::shell::network::room_topic_id(governed)),
+            None,
+            "a room hosted here is not waiting for anyone"
+        );
+        actor.abort();
     }
 }
