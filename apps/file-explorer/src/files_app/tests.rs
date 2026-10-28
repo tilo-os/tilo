@@ -5315,8 +5315,8 @@ mod responsive_body_tests {
         );
         harness.present_in_window_bar();
         let gone = dir.path().join("a.txt").display().to_string();
-        let w = harness.root_mut::<FileExplorerWidget>();
-        ui::undo::UndoControl::set_undo_status(w, &mut || ui::UndoStatus {
+        let mut w = harness.root_mut::<FileExplorerWidget>();
+        ui::undo::UndoControl::set_undo_status(&mut *w, &mut || ui::UndoStatus {
             can_undo: true,
             ..ui::UndoStatus::default()
         });
@@ -5327,6 +5327,7 @@ mod responsive_body_tests {
                 entry: Some("/trash/files/a.txt".into()),
             }]),
         );
+        drop(w);
         harness.recompose().unwrap();
         // The move waits for the person with one action, and its row is the
         // same row at every width: it is not a notice with a lifetime and a

@@ -1,2 +1,2 @@
 //! Compatibility export of the shared shell implementation.
-pub use crate::shell::render::xrgb_history::*;
+pub use tilo_output_passes::xrgb_history::*;

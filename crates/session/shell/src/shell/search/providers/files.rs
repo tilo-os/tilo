@@ -2071,7 +2071,7 @@ mod tests {
     const SEARCH_PERF_GATE: &str = "TILO_SEARCH_PERF_GATE";
 
     fn process_cpu() -> Duration {
-        crate::compositor::metrics::cpu_trace::process_cpu_time().expect("a process CPU clock")
+        tilo_frame_metrics::cpu_trace::process_cpu_time().expect("a process CPU clock")
     }
 
     fn cpu_ms(spent: Duration) -> String {

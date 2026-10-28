@@ -704,7 +704,7 @@ pub struct NavGeometry {
     pub size_class: Breakpoint,
     /// The size of the rect this plan was solved for. Two passes that differ
     /// here are a **resize** — the window's own edge moved — and a plan that
-    /// switches between them lands at once ([`NavShell::reconcile_size_class`]).
+    /// switches between them lands at once (`NavShell::reconcile_size_class`).
     pub size: Vec2,
     /// Each column's visible area (header and body); a drawer's panel.
     pub sidebar_column: Rect,
@@ -2886,41 +2886,6 @@ impl NavShell {
         false
     }
 
-    /// What the host meets for `part`: the part, or a stand-in while its
-    /// push screen is not in front, so a walk that pairs children with the
-    /// tree's nodes never reaches an inert column.
-    fn exposed(&self, part: Part) -> Option<&dyn Widget> {
-        if self.part_inert(part) {
-            return Some(&INERT_PART);
-        }
-        self.part(part)
-    }
-
-    /// The parts the host walks: those in the host tree once it is built,
-    /// in its order (the host pairs them with the tree's nodes), and every
-    /// owned part before the first build, when there is no tree for their
-    /// order to disagree with. A part of a screen not in front answers as an
-    /// [`InertPart`]; an action in the More menu stays, so its door is still
-    /// published.
-    fn exposed_parts(&self) -> Vec<Part> {
-        if self.built {
-            self.host_parts.clone()
-        } else {
-            let history = self.inputs.borrow().history.map(HistoryControl::is_open);
-            self.all_parts()
-                .into_iter()
-                .filter(|part| self.part(*part).is_some())
-                .filter(|part| match part {
-                    Part::Toggle => self.has_sidebar(),
-                    Part::InspectorToggle => self.inspector.is_some(),
-                    Part::Back | Part::More(_) => false,
-                    Part::History(open) => history == Some(*open),
-                    _ => true,
-                })
-                .collect()
-        }
-    }
-
     /// Which column's theme a part draws with.
     fn part_column(&self, part: Part) -> Option<Column> {
         match part {
@@ -4595,11 +4560,36 @@ impl Widget for NavShell {
 
     /// The shell's own changes (a column shown or hidden, a part swapped) rebuild; what its
     /// parts describe (a column's content changed in place) stays described.
+    /// Every owned part's change is taken, so none keeps a stale one, and
+    /// is the shell's for a part it lays out, where
+    /// [`Widget::remount_children`] reaches it. A part outside the tree has
+    /// no widget in the host's maps: it is built whole when it comes in (a
+    /// change of the shell's own), which carries out what it reported.
     fn take_structure_change(&mut self) -> StructureChange {
         self.take_requests();
         let mut change = StructureChange::of(std::mem::take(&mut self.structure_dirty));
-        self.for_each_owned_mut(|child| change = change.join(child.take_structure_change()));
+        let laid_out = self.exposed_parts();
+        for part in self.all_parts() {
+            if let Some(widget) = self.part_mut(part) {
+                let part_change = widget.take_structure_change();
+                if laid_out.contains(&part) {
+                    change = change.join(part_change);
+                }
+            }
+        }
         change
+    }
+
+    /// The parts the shell lays out carry out their own changes, those of a
+    /// screen not in front too: they stand in the tree while it slides.
+    fn remount_children(&mut self, remount: &mut crate::widget::Remount<'_>) -> bool {
+        let mut carried = true;
+        for part in self.exposed_parts() {
+            if let Some(widget) = self.part_mut(part) {
+                carried &= widget.remount_children(remount);
+            }
+        }
+        carried && self.sync_status.remount_children(remount)
     }
 
     /// A part whose overlay holds the pointer (a popover a header button

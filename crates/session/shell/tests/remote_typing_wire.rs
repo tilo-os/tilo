@@ -15,8 +15,9 @@
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 
-use shell::network::{Denial, InputEvent, ShellView, StreamingShare};
+use shell::network::{Denial, ShellView};
 use shell::shell::input_policy::InputCapture;
+use tilo_window_share::streaming::{InputEvent, StreamingShare};
 use vello::kurbo::Rect;
 use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop};

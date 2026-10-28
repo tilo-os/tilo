@@ -12,12 +12,15 @@
 
 mod collab;
 mod columns;
+mod engines;
 mod fixtures;
 mod incremental;
 mod index;
 mod outbox;
 mod outcomes;
 mod records;
+#[cfg(feature = "room")]
+mod room;
 mod scenarios;
 mod surface;
 mod sync;

@@ -21,7 +21,7 @@
 //!   the resource line, fields, notice and its own Cancel and primary
 //!   buttons, no title or sheet.
 //! - [`Presentation::DialogBody`]: the body of a retained
-//!   [`ModalDialog`](super::ModalDialog), which draws the title and the
+//!   [`ModalDialog`], which draws the title and the
 //!   actions; [`SecretPrompt::into_dialog`] wires them.
 //!
 //! The secret lives only in the fields' zeroizing buffers and in the
@@ -882,6 +882,23 @@ impl SecretPrompt {
             .iter_mut()
             .find(|field| field.role == role)
             .map(|field| &mut field.input)
+    }
+
+    /// Edit the field holding `role` as typing into it does: an on-screen
+    /// keyboard of the host's own types this way. What is typed reaches the
+    /// host's buffer ([`Self::with_secret_buffer`]), clears the error and
+    /// keeps a PIN to its longest. `false` when there is no such field or
+    /// the prompt is busy.
+    pub fn edit_field(&mut self, role: FieldRole, edit: impl FnOnce(&mut TextInput)) -> bool {
+        if self.busy.is_some() {
+            return false;
+        }
+        let Some(field) = self.field_mut(role) else {
+            return false;
+        };
+        edit(field);
+        self.after_edit(true);
+        true
     }
 
     /// Every field, in order, with what it holds.

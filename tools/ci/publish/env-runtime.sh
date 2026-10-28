@@ -23,6 +23,12 @@
 #                                           seal ARCH's dev tree with a throwaway key into OUT as
 #                                           seal lays it out: the runtime a run's dev images ship
 #                                           (os-dev-image-ARCH); nothing publishes it (builder)
+#   env-runtime.sh local-dev ARCH RPMS_REF PACKER OUT
+#                                           dev-tree and dev in one, for a dev image built off t
+#                                           (os/dev/build-dev-image.sh): the tree from the RPM
+#                                           snapshot image RPMS_REF in this host's podman
+#                                           storage, built with podman, sealed with a throwaway
+#                                           key into OUT; nothing publishes it
 #   env-runtime.sh image SEALED OUT         the published image of both tapps, one per platform,
 #                                           joined into one index (buildah image)
 #   env-runtime.sh release OUT              publish OUT signed as set-<fingerprint>, unless that
@@ -72,7 +78,7 @@ build_tree() {
   rm -rf "$context"
   install -D -m 0644 os/Containerfile.env-runtime "$context/os/Containerfile.env-runtime"
   mkdir -p "$out"
-  b build --layers=false --timestamp 0 --file os/Containerfile.env-runtime --target tree \
+  ${tree_builder:-b} build --layers=false --timestamp 0 --file os/Containerfile.env-runtime --target tree \
     --build-arg "BASE_REF=$BASE_REF" --build-arg "RPMS_REF=$rpms_ref" \
     --output "type=tar,dest=$out/env-runtime-tree-$arch.tar" "$context"
   printf '%s\n' "$source" > "$out/env-runtime-rpms-$arch.txt"
@@ -163,6 +169,24 @@ case ${1:-} in
     seal_tree "$arch" "$trees/env-runtime-tree-$arch.tar" "$trees/env-runtime-rpms-$arch.txt" \
       "$packer" "$out"
     seal_index "$out" "$packer" "$arch"
+    ;;
+  local-dev)
+    arch=${2:?usage: env-runtime.sh local-dev ARCH RPMS_REF PACKER OUT}
+    rpms_ref=${3:?}
+    packer=${4:?}/tilo-app-package
+    out=${5:?}
+    [[ -x $packer ]] || die "no packer at $packer"
+    unset TAPP_PUBLISHER_IDENTITY
+    trees=$scratch/env-runtime-local-trees
+    # podman refuses --timestamp beside a SOURCE_DATE_EPOCH in its environment.
+    tree_builder="env -u SOURCE_DATE_EPOCH podman" build_tree "$arch" "$rpms_ref" "local $rpms_ref" "$trees"
+    echo "sealing the $arch runtime of $rpms_ref with a throwaway key for a local dev image: nothing is published"
+    rm -rf "$out"
+    mkdir -p "$out"
+    seal_tree "$arch" "$trees/env-runtime-tree-$arch.tar" "$trees/env-runtime-rpms-$arch.txt" \
+      "$packer" "$out"
+    seal_index "$out" "$packer" "$arch"
+    rm -rf "$trees"
     ;;
   image)
     sealed=${2:?usage: env-runtime.sh image SEALED OUT}

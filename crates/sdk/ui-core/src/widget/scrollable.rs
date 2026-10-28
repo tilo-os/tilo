@@ -237,6 +237,10 @@ pub struct Scrollable {
     /// follows its layout node, so no control inside it has a durable
     /// identity and none is published as an action resource.
     semantic_key: Option<String>,
+    /// What a screen reader calls the scroll region. An overflowing region
+    /// is a keyboard stop (Tab reaches it to scroll by keyboard), so one
+    /// without a name is announced as an unnamed control.
+    label: Option<String>,
     /// What the frame being drawn shows of the content, and what the last
     /// frame the host presented showed: a scroll between the two that moved
     /// nothing else is offered to the host as a copy
@@ -349,6 +353,7 @@ impl Scrollable {
             bottom_content_inset: 0.0,
             compact_bottom_content_inset: None,
             semantic_key: None,
+            label: None,
             shown: crate::scroll_copy::ShownFrames::default(),
             follow_end: false,
         }
@@ -419,6 +424,14 @@ impl Scrollable {
     #[must_use]
     pub fn with_semantic_key(mut self, key: impl Into<String>) -> Self {
         self.semantic_key = Some(key.into());
+        self
+    }
+
+    /// Name the scroll region for assistive technology: what Tab announces
+    /// when the region overflows and becomes a keyboard stop.
+    #[must_use]
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
         self
     }
 
@@ -1788,10 +1801,14 @@ impl Widget for Scrollable {
         true
     }
 
-    /// The meaningful label belongs to whatever it wraps.
+    /// The meaningful label belongs to whatever it wraps; a region that
+    /// becomes a keyboard stop carries its own ([`Self::with_label`]).
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        let node = AccessNode::new(Role::Group);
+        let mut node = AccessNode::new(Role::Group);
+        if let Some(label) = &self.label {
+            node = node.with_name(label.clone());
+        }
         Some(match &self.semantic_key {
             Some(key) => node.with_semantic_key(key.clone()),
             None => node,

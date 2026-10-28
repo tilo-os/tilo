@@ -19,8 +19,8 @@ use vello::Scene;
 use vello::kurbo::Affine;
 use vello::peniko::Color;
 
-use crate::collab::encoder::{Encoder, EncoderInit, FrameInput, build};
-use crate::config::EncoderChoice;
+use tilo_window_share::config::EncoderChoice;
+use tilo_window_share::encoder::{Encoder, EncoderInit, FrameInput, build};
 
 const VIDEO_SOCKET_ENV: &str = "TILO_PROJECTOR_VIDEO_SOCKET";
 
@@ -209,7 +209,7 @@ impl ProjectionCapture {
             return false;
         };
         if self.renderer_size != (width, height) {
-            self.renderer = OffscreenRenderer::try_new(width, height).ok();
+            self.renderer = OffscreenRenderer::try_new_live(width, height).ok();
             self.renderer_size = (width, height);
         }
         let Some(renderer) = self.renderer.as_mut() else {

@@ -223,6 +223,16 @@ impl From<&str> for BridgeError {
 impl From<BridgeError> for String {
     fn from(error: BridgeError) -> Self {
         match error {
+            // What happened, and what to do: a bare code leaves the caller
+            // guessing whether to retry, and a caller that retries the same
+            // stale revision fails the same way.
+            BridgeError::Host(tilo_actions::remote::ActionHostError::StaleRevision) => {
+                "the resource changed since the revision this call named, which you read: \
+                 the action is offered at a newer revision now. Invoke it again and omit \
+                 revision, which runs it against the directory as it is now, or re-run \
+                 tilo_query and invoke it at the revision that page names"
+                    .to_owned()
+            }
             BridgeError::Host(error) => error.to_string(),
             BridgeError::Bridge(message) => message,
         }
@@ -398,6 +408,7 @@ struct InvokeArgs {
     wait_ms: Option<u64>,
 }
 /// One action of either form, after the batch has been split apart.
+#[derive(Clone)]
 struct OneCall {
     /// Resolved once per tool call: a batch runs on one peer.
     provider: Addressed,
@@ -917,19 +928,148 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .await?
             .rows)
     }
-    /// The top-level resources of `provider` whose kind or label is `name`.
+    /// The resources of `provider` whose kind or label is `name`: its
+    /// top-level ones and, inside each container there, its live children.
     /// The host answers the name itself, whole: a listing's page can stop at
     /// its work budget short of the resource (right after a write, an app
     /// walks its widgets until it publishes again), so reading pages for it
     /// would fail once an app outgrows any page count.
+    ///
+    /// A child is named like any resource: a browser's page is `browser.page`
+    /// while the app it belongs to is the one a person opened, and a caller
+    /// that names the page should not have to browse the tree first.
     async fn resources_named(
         &self,
         provider: &str,
         name: &str,
     ) -> Result<Vec<CatalogueRow>, String> {
+        let mut rows = self.named_under(provider, "", name).await?;
+        // A container is found by listing the level, not by name: the name
+        // being searched for is the child's, and the container's is another.
+        // The listing costs one question per container, and only when the
+        // name is not at the level already: a caller naming a top-level
+        // resource pays what it paid before.
+        //
+        // Children hang as deep as an app draws them: a browser's page is
+        // under the row of the widget bound to it, which is under the app's
+        // own row. So the walk goes down while it finds containers and stops
+        // at the first level that answers, or when the tree is deeper than
+        // any app draws it (and when a host answered a container as its own
+        // child, which is what the visited set is for).
+        let mut frontier = Vec::new();
+        if rows.is_empty() {
+            frontier.extend(self.containers_under(provider, "").await?);
+        }
+        let mut visited = std::collections::BTreeSet::new();
+        for _ in 0..NAMED_DEPTH {
+            if !rows.is_empty() || frontier.is_empty() {
+                break;
+            }
+            let mut deeper = Vec::new();
+            for container in std::mem::take(&mut frontier) {
+                if !visited.insert(container.clone()) {
+                    continue;
+                }
+                for row in self.named_under(provider, &container, name).await? {
+                    if rows.iter().all(|seen| seen.resource.id != row.resource.id) {
+                        rows.push(row);
+                    }
+                }
+                if rows.is_empty() {
+                    deeper.extend(self.containers_under(provider, &container).await?);
+                }
+            }
+            frontier = deeper;
+        }
+        // Not every app publishes a row for the box its actions hang under: a
+        // browser's page is one resource whose actions hang under its own id,
+        // so no container row names it and it is never at the top level. The
+        // host still searches its whole tree for a needle, so the name is
+        // asked as one, and only the rows whose kind or label is exactly the
+        // name are kept: a needle also matches ids and parameter names.
+        if rows.is_empty() {
+            rows = self
+                .asked_by_needle(provider, name)
+                .await?
+                .into_iter()
+                .filter(|row| {
+                    row.resource.id == name
+                        || row.resource.kind == name
+                        || row.resource.label.eq_ignore_ascii_case(name)
+                })
+                .collect();
+        }
+        Ok(rows)
+    }
+    /// The rows `provider` answers for `needle`, searched across its whole
+    /// tree: the one question that reaches a resource no container lists.
+    async fn asked_by_needle(
+        &self,
+        provider: &str,
+        needle: &str,
+    ) -> Result<Vec<CatalogueRow>, String> {
+        let mut rows = self.asked_for(provider, needle).await?;
+        // A host searches the words it writes on a row, so a kind written
+        // `browser.page` is reached by the `page` in it and not by the whole
+        // dotted name. Ask for that too, and let the caller keep the rows
+        // whose kind or label is exactly the name it wants.
+        if let Some((_, tail)) = needle.rsplit_once('.')
+            && !tail.is_empty()
+            && tail != needle
+        {
+            for row in self.asked_for(provider, tail).await? {
+                if rows.iter().all(|seen| seen.resource.id != row.resource.id) {
+                    rows.push(row);
+                }
+            }
+        }
+        Ok(rows)
+    }
+    /// The rows `provider` answers for `needle` in one question.
+    async fn asked_for(&self, provider: &str, needle: &str) -> Result<Vec<CatalogueRow>, String> {
         Ok(self
             .ask(CatalogueQuery {
                 provider: Some(provider.to_owned()),
+                needle: needle.to_owned(),
+                max_results: 128,
+                ..CatalogueQuery::default()
+            })
+            .await?
+            .rows)
+    }
+    /// The containers listed directly under `parent` (the top level for ""):
+    /// the rows that hold children and offer no action themselves.
+    async fn containers_under(&self, provider: &str, parent: &str) -> Result<Vec<String>, String> {
+        let rows = if parent.is_empty() {
+            self.top_resources(provider).await?
+        } else {
+            self.ask(CatalogueQuery {
+                provider: Some(provider.to_owned()),
+                parent_resource: Some(parent.to_owned()),
+                max_results: 128,
+                ..CatalogueQuery::default()
+            })
+            .await?
+            .rows
+        };
+        Ok(rows
+            .into_iter()
+            .filter(|row| row.has_children && row.action.is_none())
+            .map(|row| row.resource.id)
+            .collect())
+    }
+    /// The resources under `parent` (the level itself for "") whose kind or
+    /// label is `name`, asked of the host by name.
+    async fn named_under(
+        &self,
+        provider: &str,
+        parent: &str,
+        name: &str,
+    ) -> Result<Vec<CatalogueRow>, String> {
+        Ok(self
+            .ask(CatalogueQuery {
+                provider: Some(provider.to_owned()),
+                parent_resource: (!parent.is_empty()).then(|| parent.to_owned()),
                 resource_name: Some(name.to_owned()),
                 max_results: 128,
                 ..CatalogueQuery::default()
@@ -1663,7 +1803,20 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             }),
         };
         let detail = args.detail.unwrap_or_else(|| self.detail());
-        let mut page = self.ask(query.clone()).await?;
+        let mut page = match self.ask(query.clone()).await {
+            Err(BridgeError::Host(tilo_actions::remote::ActionHostError::StaleRevision))
+                if !query.revision.as_deref().unwrap_or_default().is_empty() =>
+            {
+                // A directory moves on every change the app publishes, and
+                // a caller that keeps a revision from the page it read a
+                // few calls ago is reading the directory, not asking for
+                // that snapshot back: read it as it is now, once.
+                let mut now = query.clone();
+                now.revision = None;
+                self.ask(now).await?
+            }
+            read => read?,
+        };
         let mut partial = false;
         if words.len() > 1 {
             page.rows.retain(|row| page::matches_words(row, &words));
@@ -1803,6 +1956,61 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         Ok(())
     }
+    /// The row offering one action to this caller: the resource it names by
+    /// id, kind or label, at the revision the caller named or the directory
+    /// as it is now.
+    ///
+    /// A revision refuses only when it is not the directory's current one,
+    /// and a directory moves whenever the app's page does: a caller that
+    /// named a revision it read a few calls ago is asking about the action,
+    /// not about a snapshot it wants restored. So a named revision that
+    /// moved on is resolved once more as the directory is now, and the
+    /// answer names the revision it was resolved against — the one to pass
+    /// to `tilo_invoke`. Only a directory that moves between those two
+    /// reads (or one that keeps refusing) is reported, with what to do.
+    async fn resolve_target(&self, a: TargetArgs) -> Result<Value, String> {
+        if a.revision.as_deref() == Some("") {
+            return Err("revision must not be empty".into());
+        }
+        let provider = self
+            .provider(a.peer_id, a.app_id.as_deref(), a.workspace)
+            .await?;
+        let named = a.revision.clone().unwrap_or_default();
+        let (revision, _) = self.revision_for(&provider, a.revision).await?;
+        let mut target = RemoteActionTarget {
+            provider,
+            address: tilo_actions::ActionAddress::new(self.full_id(a.resource), a.action),
+        };
+        let mut page = self
+            .ask(CatalogueQuery::resolve(&target, revision.clone()))
+            .await?;
+        if page.rows.is_empty()
+            && !page.stale_cursor
+            && let Some(resolved) = self.named_resource(&target).await?
+        {
+            target.address.resource = resolved;
+            page = self
+                .ask(CatalogueQuery::resolve(&target, revision.clone()))
+                .await?;
+        }
+        if page.stale_cursor {
+            // The directory moved between reading its revision and asking
+            // it: read it as it is now, once, and answer with the revision
+            // it was resolved against.
+            let current = self.current_revision(&target.provider).await?;
+            page = self
+                .ask(CatalogueQuery::resolve(&target, current.clone()))
+                .await?;
+            if page.stale_cursor {
+                let before = if named.is_empty() { revision } else { named };
+                return Err(stale_revision_error(&before, &current));
+            }
+        }
+        match page.rows.first() {
+            Some(row) => Ok(json!({"row":self.resolved(row, &target.provider)})),
+            None => Err(self.not_offered(&target).await?),
+        }
+    }
     /// The revision `provider`'s directory is at now, for a caller that
     /// named none.
     async fn current_revision(&self, provider: &str) -> Result<String, BridgeError> {
@@ -1847,37 +2055,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         match name {
             "tilo_list_apps" => self.apps(parse(args)?).await,
             "tilo_query" => self.query(parse(args)?).await,
-            "tilo_resolve" => {
-                let a: TargetArgs = parse(args)?;
-                if a.revision.as_deref() == Some("") {
-                    return Err("revision must not be empty".into());
-                }
-                let provider = self
-                    .provider(a.peer_id, a.app_id.as_deref(), a.workspace)
-                    .await?;
-                let (revision, _) = self.revision_for(&provider, a.revision).await?;
-                let mut target = RemoteActionTarget {
-                    provider,
-                    address: tilo_actions::ActionAddress::new(self.full_id(a.resource), a.action),
-                };
-                let mut page = self
-                    .ask(CatalogueQuery::resolve(&target, revision.clone()))
-                    .await?;
-                if page.rows.is_empty()
-                    && !page.stale_cursor
-                    && let Some(named) = self.named_resource(&target).await?
-                {
-                    target.address.resource = named;
-                    page = self.ask(CatalogueQuery::resolve(&target, revision)).await?;
-                }
-                if page.stale_cursor {
-                    return Err("StaleRevision".into());
-                }
-                match page.rows.first() {
-                    Some(row) => Ok(json!({"row":self.resolved(row, &target.provider)})),
-                    None => Err(self.not_offered(&target).await?),
-                }
-            }
+            "tilo_resolve" => self.resolve_target(parse(args)?).await,
             "tilo_invoke" => self.invoke(parse(args)?).await,
             "tilo_status" => {
                 let a: StatusArgs = parse(args)?;
@@ -2005,9 +2183,62 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         Ok(answer)
     }
+    /// The Tilo app a workspace call launches, when it is one: opening an
+    /// application resource from the workspace. A host application
+    /// (`app.host:<desktop-id>`) is no Tilo peer.
+    fn launched_app(resource: &str, action: &str, workspace: bool) -> Option<String> {
+        resource
+            .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
+            .filter(|app_id| {
+                workspace
+                    && action == tilo_actions::remote::APPLICATION_OPEN_ACTION
+                    && !app_id.starts_with("host:")
+            })
+            .map(str::to_owned)
+    }
     /// Start an action and answer with its terminal update when it arrives
     /// within the caller's wait, so a quick action costs one call.
     async fn invoke_one(&self, mut a: OneCall) -> Result<Value, String> {
+        let named = a.revision.clone();
+        match self.start_one(a.clone()).await {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                let moved = error.contains(tilo_actions::remote::STALE_REVISION_REASON);
+                match self
+                    .maybe_retry_stale(&mut a, named.as_deref(), moved)
+                    .await
+                {
+                    Some(retried) => retried,
+                    None => Err(error),
+                }
+            }
+        }
+    }
+    /// `error` as an answer, after running the action again against the
+    /// directory as it is now when the caller named a revision the
+    /// directory has left behind.
+    ///
+    /// A revision a caller names is one it read a few calls ago, and a
+    /// directory moves whenever the app's page does: the caller is after the
+    /// action, not that snapshot. An omitted revision is resolved by the
+    /// host as it admits the action, which always names the revision it
+    /// resolved against, so a second refusal is a directory that moved under
+    /// the call itself and is reported with what to do.
+    async fn maybe_retry_stale(
+        &self,
+        a: &mut OneCall,
+        named: Option<&str>,
+        moved: bool,
+    ) -> Option<Result<Value, String>> {
+        if !moved || named.is_none_or(str::is_empty) {
+            return None;
+        }
+        a.revision = None;
+        Some(self.start_one(a.clone()).await)
+    }
+    /// [`Self::invoke_one`] for one revision: the action started, or the
+    /// host's refusal.
+    async fn start_one(&self, mut a: OneCall) -> Result<Value, String> {
         if a.revision.as_deref() == Some("") {
             return Err("revision must not be empty".into());
         }
@@ -2015,16 +2246,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if a.workspace {
             self.seat_for_launch().await;
         }
-        // A host application (`app.host:<desktop-id>`) is no Tilo peer.
-        let launching = a
-            .resource
-            .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
-            .filter(|app_id| {
-                a.workspace
-                    && a.action == tilo_actions::remote::APPLICATION_OPEN_ACTION
-                    && !app_id.starts_with("host:")
-            })
-            .map(str::to_owned);
+        let launching = Self::launched_app(&a.resource, &a.action, a.workspace);
         // The workspace launches the app empty; the path goes to the app's
         // own open action once it runs.
         let path = match launching {
@@ -2948,6 +3170,10 @@ fn state_json(
 }
 /// Longer names are resource ids, never a kind or a label.
 const RESOURCE_NAME_BYTES: usize = 64;
+/// How far below the top level a resource named by kind or label is looked
+/// for: an app's own row, the row of a widget bound to it, and the widget's
+/// page are three, and no app draws its directory deeper than that.
+const NAMED_DEPTH: usize = 3;
 /// How many resources an error names before it stops.
 const LISTED_RESOURCES: usize = 16;
 
@@ -3012,6 +3238,15 @@ fn resource_list(rows: &[CatalogueRow]) -> String {
     } else {
         listed.join(", ")
     }
+}
+/// What a caller is told when a directory moved on under a resolve: which
+/// revision it named, which the directory is at, and what to do next.
+fn stale_revision_error(named: &str, current: &str) -> String {
+    format!(
+        "the resource changed since revision {named}, which you read; it is at {current} now. \
+         The directory moved while it was being read: re-run tilo_query for the resource and \
+         resolve it again, or omit revision to resolve against the directory as it is now"
+    )
 }
 fn call_failed(value: &Value) -> bool {
     if value.get("pending").is_some() || value.pointer("/opened/error").is_some() {

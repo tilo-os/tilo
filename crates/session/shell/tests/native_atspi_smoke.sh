@@ -593,7 +593,9 @@ sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBB
     }
     ;;
   oobe-finish-focused)
-    # Tab from where the ready screen put focus reaches its primary action.
+    # The ready screen puts keyboard focus on its one action, Continue to
+    # desktop, so Return takes it without a Tab first. (An overflowing page
+    # is a named keyboard stop of its own after it, for keyboard scrolling.)
     focused_name=""
     for _ in $(seq 1 400); do
       if collect_tree && focused=$(focused_node); then

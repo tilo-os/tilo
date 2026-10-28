@@ -7,7 +7,7 @@
 //! its bound says so instead of pretending the listing is complete.
 //!
 //! Files are compared by content: two files of the same length are read (up
-//! to [`MAX_COMPARE_BYTES`]) and compared byte for byte; larger files are
+//! to `MAX_COMPARE_BYTES`) and compared byte for byte; larger files are
 //! compared by length alone, and the listing says which files that applies
 //! to through [`FolderEntry::by_length`].
 

@@ -512,7 +512,12 @@ impl Device {
     fn serve_layouts(&mut self) {
         use std::os::fd::IntoRawFd as _;
         use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_KIND, DESKTOP_RECORD};
-        let socket = self.dir.join("session-collab.sock");
+        // The broker binds only under a directory its owner alone may enter.
+        let parent = self.dir.join("session-collab");
+        std::fs::create_dir_all(&parent).expect("the session's broker directory");
+        std::fs::set_permissions(&parent, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .expect("the broker directory is the device's alone");
+        let socket = parent.join("collab.sock");
         let _ = std::fs::remove_file(&socket);
         let broker = self.start_broker(&socket);
         let (key, cert) = (self.key(), self.cert());
@@ -1008,7 +1013,21 @@ impl Device {
     /// The note's channel keys in `room`, once the room's steward admitted
     /// this device: what the identity service answers the notes app.
     fn note_keys(&self, room: RoomId) -> Option<channel_crypto::ChannelContentKeys> {
-        let (channels, _) = self.channels.as_ref()?;
+        let Some((channels, _)) = self.channels.as_ref() else {
+            // A device serving through its session's broker
+            // ([`Self::carry_layouts`]) holds its channels there: asked as
+            // the notes app asks it.
+            let keys = self.endpoint_keys.lock().unwrap().clone()?;
+            let reply = keys(&room.to_string(), NOTES, NOTE_RECORD, 0).ok()?;
+            return match reply.access {
+                runtime_identity::wire::ChannelAccess::Ready => {
+                    channel_crypto::ChannelContentKeys::from_bytes(&reply.keys?).ok()
+                }
+                runtime_identity::wire::ChannelAccess::Waiting
+                | runtime_identity::wire::ChannelAccess::Unavailable => None,
+                other => panic!("{} cannot open the note's channel: {other:?}", self.label),
+            };
+        };
         let route = collab_types::ChannelRoute::new(NOTES, NOTE_RECORD);
         match channels.access_record(room, &route).0 {
             ChannelAccess::Ready(keys) => Some(keys),

@@ -41,7 +41,7 @@ impl App {
                         .flatten()
                     });
                 if self.native_room_route.as_ref() == Some(&route)
-                    || room_route.is_some_and(|witness| witness.route == route)
+                    || room_route.is_some_and(|witness| *witness.route() == route)
                 {
                     let room = self
                         .persistence
@@ -153,7 +153,7 @@ impl App {
                     .collaboration
                     .manager
                     .primary_route()
-                    .is_some_and(|witness| witness.route == route)
+                    .is_some_and(|witness| *witness.route() == route)
                     && !self.document_routes.retired_route(&route)
                     && route.record.as_deref().is_none_or(|record| {
                         self.persistence

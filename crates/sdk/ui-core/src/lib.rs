@@ -103,6 +103,7 @@
 )]
 
 pub mod a11y;
+pub(crate) mod a11y_child_route;
 pub mod a11y_tree;
 #[cfg(all(feature = "native", target_os = "android"))]
 mod accesskit_android_adapter;
@@ -142,7 +143,9 @@ pub(crate) mod application_test_support;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod app;
-pub mod app_surface;
+/// The app surface an app's changes are decided against, kept with the collab
+/// client that names it on every signed op.
+pub use ::collaboration::app_surface;
 pub mod auth_backdrop;
 pub mod backdrop;
 pub mod call_pictures;
@@ -243,7 +246,7 @@ pub mod pick;
 pub mod pick_wire;
 pub mod platform;
 pub mod pointer_replay;
-pub mod portable_storage;
+pub use ::collaboration::portable_storage;
 pub mod presence;
 pub mod priority_contacts;
 pub mod profiling;
@@ -270,7 +273,7 @@ pub mod ux_bench;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
 pub mod deferred;
 pub mod lazy_code;
-pub mod person_chat;
+pub use ::collaboration::person_chat;
 pub mod personal_dictionary;
 pub mod private_draft;
 pub mod text_assistance;
@@ -315,6 +318,8 @@ pub mod save_status;
 pub mod scale;
 pub mod scene_parts;
 pub mod screen_reader;
+pub mod screen_reader_chord;
+pub mod screen_reader_touch;
 pub mod scroll_copy;
 pub mod search;
 pub mod secret_paint;

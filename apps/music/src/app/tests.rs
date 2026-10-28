@@ -665,7 +665,8 @@ pub(super) fn hosted_click(app: &mut MusicApp, doc: &mut AutoCommit, at: Point) 
         at.y + hosted_origin.y - origin.y,
     );
     frame.relayout();
-    let (owned, state) = frame.root_and_state_mut::<MusicApp>();
+    let mut parts = frame.root_and_state_mut::<MusicApp>();
+    let (owned, state) = parts.split();
     *app = std::mem::take(owned);
     *doc = std::mem::take(&mut state.doc);
 }

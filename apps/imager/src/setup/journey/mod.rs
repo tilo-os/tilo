@@ -219,6 +219,14 @@ pub enum InstallerPreviewEffect {
         )]
         choice: String,
     },
+    /// Choose an option on this page and continue to the next page.
+    #[effect(returns)]
+    ChooseAndContinuePreview {
+        #[param(
+            "Choice: computer, another, desktop; migrate, fresh; new, existing; device, backup"
+        )]
+        choice: String,
+    },
     /// Set your display name.
     #[effect(returns)]
     SetPreviewName { value: String },
@@ -1163,6 +1171,7 @@ impl InstallerPreview {
                 id,
                 "read-preview"
                     | "choose-preview"
+                    | "choose-and-continue-preview"
                     | "continue-preview"
                     | "back-in-preview"
                     | "find-windows-roots"
@@ -1277,6 +1286,12 @@ impl InstallerPreview {
     }
 
     fn apply(&mut self, effect: InstallerPreviewEffect) -> Result<(), &'static str> {
+        // A choice card chooses and moves on: each step is admitted as if
+        // it had been asked for on its own.
+        if let InstallerPreviewEffect::ChooseAndContinuePreview { choice } = effect {
+            self.apply(InstallerPreviewEffect::ChoosePreview { choice })?;
+            return self.apply(InstallerPreviewEffect::ContinuePreview);
+        }
         if self.demo && !demo::admits(&effect) {
             return Err("installer-demo-unavailable");
         }
@@ -4662,7 +4677,11 @@ impl InstallerPreview {
             || pairing_changed
             || !commands.is_empty();
         for command in commands {
-            let submitted = matches!(command, InstallerPreviewEffect::ContinuePreview);
+            let submitted = matches!(
+                command,
+                InstallerPreviewEffect::ContinuePreview
+                    | InstallerPreviewEffect::ChooseAndContinuePreview { .. }
+            );
             if let Err(error) = self.apply(command) {
                 self.show_refusal(error, submitted);
             }
@@ -4949,7 +4968,6 @@ impl InstallerPreview {
     }
 
     fn choice(&self, key: &str, selected: bool) -> Card {
-        let commands = self.commands.clone();
         let choice = key.strip_prefix("purpose-").unwrap_or(key).to_string();
         let icon = match key {
             "computer" | "purpose-computer" | "purpose-server" => Icon::Monitor,
@@ -4996,16 +5014,16 @@ impl InstallerPreview {
                     .with_child(Box::new(copy)),
             ))
             .push(Box::new(IconWidget::new(Icon::ChevronRight)));
-        Card::new(Box::new(contents))
+        let card = Card::new(Box::new(contents))
             .with_accessible_name(format!("{title}. {description}"))
-            .selected(selected)
-            .on_activate(format!("installer.choice.{key}"), move || {
-                let mut queue = commands.borrow_mut();
-                queue.push(InstallerPreviewEffect::ChoosePreview {
-                    choice: choice.clone(),
-                });
-                queue.push(InstallerPreviewEffect::ContinuePreview);
-            })
+            .selected(selected);
+        // Inert where nothing hosts the page.
+        match self.actions.as_ref().and_then(|actions| {
+            actions.effect(&InstallerPreviewEffect::ChooseAndContinuePreview { choice })
+        }) {
+            Some(binding) => card.on_action(format!("installer.choice.{key}"), binding),
+            None => card,
+        }
     }
 
     fn track_password_focus(&mut self) -> bool {
@@ -5229,7 +5247,11 @@ impl InstallerPreview {
                 .map(Effected::value)
                 .map_err(t);
         }
-        let submitted = matches!(effect, InstallerPreviewEffect::ContinuePreview);
+        let submitted = matches!(
+            effect,
+            InstallerPreviewEffect::ContinuePreview
+                | InstallerPreviewEffect::ChooseAndContinuePreview { .. }
+        );
         if let Err(error) = self.apply(effect) {
             // The semantic door and the button queue share visible feedback
             // and focus the field whose correction permits progress.
@@ -5485,7 +5507,11 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
                     && self.journey.destination != Some(Destination::Desktop)))
         {
             let actions: &[&str] = if self.journey.page == Page::Migration {
-                &["choose-preview", "continue-preview"]
+                &[
+                    "choose-preview",
+                    "choose-and-continue-preview",
+                    "continue-preview",
+                ]
             } else if self.journey.page == Page::Target {
                 &[
                     "set-target-identity-field",

@@ -8,7 +8,7 @@
 //! ([`SecretAsks::reject`]). Cancel closes it at once.
 //!
 //! Every clone shares one queue: the window and every pane's context hold
-//! the same one. A secret passes only in the zeroizing [`SecretAnswer`]
+//! the same one. A secret passes only in the zeroizing `SecretAnswer`
 //! the prompt hands out, which the pane moves on to the device.
 
 use std::cell::RefCell;

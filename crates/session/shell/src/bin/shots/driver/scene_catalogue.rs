@@ -145,3 +145,105 @@ impl ShellDriver {
         "notifications-call",
     ];
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ShellDriver;
+
+    /// The scene catalogue is driven in this many parts, one test each, so
+    /// the parts run side by side: a fresh driver takes about ten seconds per
+    /// scene in a debug build on a busy runner, and six parts of 22 scenes
+    /// each averaged 205 s and reached 479 s, crossing the hang bound.
+    const SCENE_PARTS: usize = 44;
+
+    /// Drive every scene of part `part` of [`SCENE_PARTS`] and check each
+    /// returns Ok.
+    fn drive_scene_part(part: usize) {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_UI_DEBUG", "1");
+        for &name in scene_part(part) {
+            let mut d = ShellDriver::new((1600, 900));
+            d.scene_setup(name)
+                .unwrap_or_else(|e| panic!("scene_setup({name}) failed: {e}"));
+            let _ = d.paint_settled();
+        }
+    }
+
+    /// The scenes of part `part` of [`SCENE_PARTS`].
+    fn scene_part(part: usize) -> &'static [&'static str] {
+        let per_part = ShellDriver::ALL_SCENES.len().div_ceil(SCENE_PARTS);
+        ShellDriver::ALL_SCENES
+            .chunks(per_part)
+            .nth(part)
+            .unwrap_or(&[])
+    }
+
+    /// One test per part, numbered from 1.
+    macro_rules! scene_part_tests {
+        ($($name:ident = $part:expr),+ $(,)?) => {
+            $(#[test]
+            fn $name() {
+                drive_scene_part($part);
+            })+
+            /// Every part has a test, and the parts drive the whole catalogue.
+            #[test]
+            fn driver_scene_parts_cover_the_catalogue() {
+                let parts = [$($part),+];
+                assert_eq!(parts.len(), SCENE_PARTS);
+                let driven: Vec<&str> = parts
+                    .iter()
+                    .flat_map(|&part| scene_part(part))
+                    .copied()
+                    .collect();
+                assert_eq!(driven, ShellDriver::ALL_SCENES);
+            }
+        };
+    }
+
+    scene_part_tests!(
+        driver_scene_setup_covers_the_catalogue_part_1 = 0,
+        driver_scene_setup_covers_the_catalogue_part_2 = 1,
+        driver_scene_setup_covers_the_catalogue_part_3 = 2,
+        driver_scene_setup_covers_the_catalogue_part_4 = 3,
+        driver_scene_setup_covers_the_catalogue_part_5 = 4,
+        driver_scene_setup_covers_the_catalogue_part_6 = 5,
+        driver_scene_setup_covers_the_catalogue_part_7 = 6,
+        driver_scene_setup_covers_the_catalogue_part_8 = 7,
+        driver_scene_setup_covers_the_catalogue_part_9 = 8,
+        driver_scene_setup_covers_the_catalogue_part_10 = 9,
+        driver_scene_setup_covers_the_catalogue_part_11 = 10,
+        driver_scene_setup_covers_the_catalogue_part_12 = 11,
+        driver_scene_setup_covers_the_catalogue_part_13 = 12,
+        driver_scene_setup_covers_the_catalogue_part_14 = 13,
+        driver_scene_setup_covers_the_catalogue_part_15 = 14,
+        driver_scene_setup_covers_the_catalogue_part_16 = 15,
+        driver_scene_setup_covers_the_catalogue_part_17 = 16,
+        driver_scene_setup_covers_the_catalogue_part_18 = 17,
+        driver_scene_setup_covers_the_catalogue_part_19 = 18,
+        driver_scene_setup_covers_the_catalogue_part_20 = 19,
+        driver_scene_setup_covers_the_catalogue_part_21 = 20,
+        driver_scene_setup_covers_the_catalogue_part_22 = 21,
+        driver_scene_setup_covers_the_catalogue_part_23 = 22,
+        driver_scene_setup_covers_the_catalogue_part_24 = 23,
+        driver_scene_setup_covers_the_catalogue_part_25 = 24,
+        driver_scene_setup_covers_the_catalogue_part_26 = 25,
+        driver_scene_setup_covers_the_catalogue_part_27 = 26,
+        driver_scene_setup_covers_the_catalogue_part_28 = 27,
+        driver_scene_setup_covers_the_catalogue_part_29 = 28,
+        driver_scene_setup_covers_the_catalogue_part_30 = 29,
+        driver_scene_setup_covers_the_catalogue_part_31 = 30,
+        driver_scene_setup_covers_the_catalogue_part_32 = 31,
+        driver_scene_setup_covers_the_catalogue_part_33 = 32,
+        driver_scene_setup_covers_the_catalogue_part_34 = 33,
+        driver_scene_setup_covers_the_catalogue_part_35 = 34,
+        driver_scene_setup_covers_the_catalogue_part_36 = 35,
+        driver_scene_setup_covers_the_catalogue_part_37 = 36,
+        driver_scene_setup_covers_the_catalogue_part_38 = 37,
+        driver_scene_setup_covers_the_catalogue_part_39 = 38,
+        driver_scene_setup_covers_the_catalogue_part_40 = 39,
+        driver_scene_setup_covers_the_catalogue_part_41 = 40,
+        driver_scene_setup_covers_the_catalogue_part_42 = 41,
+        driver_scene_setup_covers_the_catalogue_part_43 = 42,
+        driver_scene_setup_covers_the_catalogue_part_44 = 43,
+    );
+}

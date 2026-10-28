@@ -79,6 +79,7 @@ include!("app/actions.rs");
 include!("app/action_directory.rs");
 include!("app/control_availability.rs");
 include!("app/accessibility.rs");
+include!("app/touch_exploration.rs");
 include!("app/collaboration.rs");
 include!("app/persistence.rs");
 include!("app/host.rs");
@@ -991,9 +992,8 @@ impl App {
         }
     }
 
-    /// The window's root widget, for a test that drives a live window and
-    /// looks at what it mounted.
-    #[cfg(any(test, feature = "test-support"))]
+    /// The window's root widget: what a host or a test drives the window
+    /// through when it looks at what the app mounted.
     pub fn root_widget_mut(&mut self) -> &mut dyn Widget {
         self.root_widget.as_mut()
     }
@@ -1959,7 +1959,7 @@ impl App {
                 .continuation
                 .last_private_route
                 .as_ref()
-                .is_some_and(|last| last.route != witness.route)
+                .is_some_and(|last| last.route() != witness.route())
                 || self.continuation.private_instance != Some(instance)
             {
                 self.continuation.owner_view = Default::default();
@@ -1974,7 +1974,7 @@ impl App {
             self.continuation.last_private_route = Some(witness.clone());
             self.continuation.private_instance = Some(instance);
         }
-        Some(witness.route)
+        Some(witness.route().clone())
     }
 }
 

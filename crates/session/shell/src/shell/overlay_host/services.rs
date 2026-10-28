@@ -11,18 +11,18 @@ impl ShellOverlayHost {
     /// recording impl that captures every `set_*` call instead of
     /// shelling out to `nmcli` / `brightnessctl` / `bluetoothctl` /
     /// `wpctl` / `powerprofilesctl`. Production builds keep the
-    /// default [`crate::shell::quick_settings::actions::RealQsActions`].
+    /// default [`tilo_quick_settings::actions::RealQsActions`].
     #[must_use]
     pub fn with_qs_actions(
         mut self,
-        actions: Box<dyn crate::shell::quick_settings::actions::QsActions>,
+        actions: Box<dyn tilo_quick_settings::actions::QsActions>,
     ) -> Self {
-        let actions: std::rc::Rc<dyn crate::shell::quick_settings::actions::QsActions> =
+        let actions: std::rc::Rc<dyn tilo_quick_settings::actions::QsActions> =
             std::rc::Rc::from(actions);
         self.qs_actions = actions.clone();
         self.qs_action_slot.replace(
             actions,
-            crate::shell::quick_settings::actions::QsActionAvailability::all(),
+            tilo_quick_settings::actions::QsActionAvailability::all(),
         );
         // Replacing where quick settings writes means this host is not
         // driving the host, so it must not read from it either.
@@ -94,7 +94,7 @@ impl ShellOverlayHost {
     /// outside the popover — the media keys, which drive the same
     /// volume and brightness the sliders do and must go through the same
     /// dispatcher so a test can record them.
-    pub fn qs_actions(&self) -> &dyn crate::shell::quick_settings::actions::QsActions {
+    pub fn qs_actions(&self) -> &dyn tilo_quick_settings::actions::QsActions {
         self.qs_actions.as_ref()
     }
 
@@ -177,7 +177,7 @@ impl ShellOverlayHost {
             }
         }
         state.overlays.quick_settings = false;
-        state.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
+        state.quick_settings.nav_stack = vec![tilo_quick_settings::QsLevel::Root];
         state.bump();
     }
 

@@ -408,7 +408,9 @@ impl PermissionContext {
     /// Retain the actual host's fallible policy-time sampler (Unix seconds).
     /// This supplies time only, not authority. Every decision resamples;
     /// failure denies without consulting the wall clock or a numeric pin.
-    /// Clones retain this same sampler.
+    /// Clones retain this same sampler. Nothing samples a clock that failed
+    /// on a schedule: once it can be read again, its host announces that
+    /// ([`outside_changed`]).
     #[must_use]
     pub fn with_policy_time_sampler(
         mut self,
@@ -496,8 +498,8 @@ impl PermissionContext {
     /// zero, so a wake for it never comes before the change. Only a context following a
     /// policy clock changes so; one judged at a fixed instant never does.
     /// The host's view of an app's action authority announces its own
-    /// changes ([`outside_changed`]); a clock that cannot be read says
-    /// nothing until something else changes.
+    /// changes ([`outside_changed`]), as does a clock that cannot be read
+    /// when it can be again.
     pub(crate) fn next_change_in(&self) -> Option<std::time::Duration> {
         let sampler = self.policy_time.as_ref()?;
         let now = (sampler.0)().ok()?;
@@ -1039,11 +1041,13 @@ pub fn shared_revision() -> u64 {
         .wrapping_add(OUTSIDE_REVISION.load(std::sync::atomic::Ordering::Acquire))
 }
 
-/// An outside authority permissions follow changed (the host's view of an
-/// app's action authority): on any thread. Moves [`shared_revision`] on and
-/// wakes every loop that asked ([`wake_on_outside_change`]), so what it
-/// derived from permissions is derived again.
-pub(crate) fn outside_changed() {
+/// An outside authority permissions follow changed, on any thread: the
+/// host's view of an app's action authority, or a policy clock
+/// ([`PermissionContext::with_policy_time_sampler`]) that could not be read
+/// and can be again. Moves [`shared_revision`] on and wakes every loop that
+/// asked ([`wake_on_outside_change`]), so what it derived from permissions
+/// is derived again.
+pub fn outside_changed() {
     OUTSIDE_REVISION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     let wakes: Vec<_> = {
         let mut wakes = OUTSIDE_WAKES

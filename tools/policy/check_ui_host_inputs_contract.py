@@ -8,8 +8,10 @@ runner reads them from the process, so the same toolkit can be hosted where
 there is no process environment to read.
 
 This check fails on a process-environment read (`env::var`, `env::var_os`,
-`env::vars`, `env::args`) in `crates/sdk/ui-core/src` and
-`crates/sdk/tilo-host/src` outside:
+`env::vars`, `env::args`) in `crates/sdk/ui-core/src`,
+`crates/sdk/tilo-host/src`, the collab client below the toolkit
+(`crates/collab/collaboration/src`) and the host inputs themselves
+(`crates/platform/tilo-process/src/environment`) outside:
 
 * the native modules (`src/native/`);
 * test code (`*tests.rs` files and each file's trailing test module);
@@ -33,6 +35,13 @@ from rust_source import blank_test_items  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "crates/sdk/ui-core/src"
 HOST_SRC = ROOT / "crates/sdk/tilo-host/src"
+# Code below the toolkit that reads host inputs as the toolkit does: each root
+# with the files of it that are checked (all, or one module and its children).
+BELOW_TOOLKIT = (
+    (HOST_SRC, None),
+    (ROOT / "crates/collab/collaboration/src", None),
+    (ROOT / "crates/platform/tilo-process/src", "environment"),
+)
 
 NATIVE_PREFIXES = ("native/",)
 
@@ -79,19 +88,27 @@ def is_exempt(relative: str) -> bool:
 
 
 def host_audit() -> list[str]:
-    """The host services crate reads the process only in its native backends."""
+    """Host services, the collab client and the host inputs read the process
+    only in their native backends (`native/`, `<module>/native.rs`)."""
     violations: list[str] = []
-    for path in sorted(HOST_SRC.rglob("*.rs")):
-        relative = path.relative_to(HOST_SRC).as_posix()
-        if relative.startswith(NATIVE_PREFIXES) or relative.endswith("tests.rs"):
-            continue
-        text = production_source(path.read_text(encoding="utf-8"))
-        for hit in ENV_READ.finditer(text):
-            line = text.count("\n", 0, hit.start()) + 1
-            violations.append(
-                f"crates/sdk/tilo-host/src/{relative}:{line}: reads the process environment "
-                "outside the native backends"
-            )
+    for root, module in BELOW_TOOLKIT:
+        for path in sorted(root.rglob("*.rs")):
+            relative = path.relative_to(root).as_posix()
+            if module is not None and relative != f"{module}.rs" and not relative.startswith(f"{module}/"):
+                continue
+            if (
+                relative.startswith(NATIVE_PREFIXES)
+                or relative.endswith("/native.rs")
+                or relative.endswith("tests.rs")
+            ):
+                continue
+            text = production_source(path.read_text(encoding="utf-8"))
+            for hit in ENV_READ.finditer(text):
+                line = text.count("\n", 0, hit.start()) + 1
+                violations.append(
+                    f"{root.relative_to(ROOT).as_posix()}/{relative}:{line}: reads the process "
+                    "environment outside the native backends"
+                )
     return violations
 
 

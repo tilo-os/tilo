@@ -252,7 +252,7 @@ impl App {
                         {
                             aliases
                                 .entry(None)
-                                .or_insert_with(|| (witness.route.clone(), HashMap::new()))
+                                .or_insert_with(|| (witness.route().clone(), HashMap::new()))
                                 .1
                                 .insert(address.resource.clone(), address.resource.clone());
                         }
@@ -341,7 +341,7 @@ impl App {
             .collect();
         if let Some(primary) = self.collaboration.manager.primary_route() {
             if self.persistence.records.is_some() || self.persistence.autosave.is_some() {
-                recovery_routes.push(primary.route.clone());
+                recovery_routes.push(primary.route().clone());
             }
         }
         for route in recovery_routes {
@@ -499,7 +499,7 @@ impl App {
                     .collaboration
                     .manager
                     .primary_route()
-                    .is_some_and(|w| &w.route == route)
+                    .is_some_and(|w| w.route() == route)
                 || self
                     .document_routes
                     .owners

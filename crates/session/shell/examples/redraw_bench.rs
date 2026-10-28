@@ -3898,6 +3898,10 @@ mod tests {
                 .enable_canonical_segment_order()
                 .expect("canonical segment order");
             assert!(bridge.canonical_segment_order_available());
+            // These compare native 4K pixels; how long llvmpipe takes to produce them on a
+            // loaded host (a dense frame ran out of the one-second fence allowance there) is
+            // not what they check.
+            bridge.wait_for_gpu_completion_within(tilo_test_env::hang_bound());
         }
         retained.set_phase_timing_enabled(true);
         let mut retained_pixels = vec![0_u8; len];

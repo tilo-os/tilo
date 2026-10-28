@@ -35,6 +35,7 @@ pub mod live;
 pub mod remote_page;
 mod room_layout;
 pub mod session;
+mod stewards;
 #[cfg(feature = "toolkit")]
 pub mod transport;
 pub mod voice;
@@ -53,6 +54,9 @@ pub use session::{
     Failure, FailureSubject, Host, LocalState, NodeCompletion, PAGE_FAILURE_CODES, PeerConfig,
     PeerEvent, PeerEvents, PeerHandle, PeerStatus, RoomsCompletion, TransportPhase,
 };
+#[cfg(feature = "lazy-stewards")]
+pub use stewards::STEWARDS;
+pub use stewards::{MakeStewards, builtin_stewards};
 pub use tilo_relay_client::https::{HttpClient, HttpFuture, HttpsLink, LinkError, host_info};
 pub use tilo_relay_client::{DeviceSigner, SignError, SignFuture};
 pub use voice::VoiceEvent;

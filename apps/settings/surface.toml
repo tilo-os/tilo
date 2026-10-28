@@ -68,6 +68,7 @@ fields = [
   { path = "switch_scan_ms", type = "u16" },
   { path = "screen_reader_rate", type = "u16", readonly = true },
   { path = "screen_reader_voice", type = "ScreenReaderVoice", readonly = true },
+  { path = "apply_to_sign_in", type = "bool" },
   { path = "dictation_language", type = "DictationLanguage" },
   { path = "dictation_literal", type = "bool" },
 ]

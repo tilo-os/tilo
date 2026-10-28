@@ -21,7 +21,9 @@ builder = "tilo-builder"
 
 # Repository name under host/namespace -> pinned digest.
 # ci-fast: lint, planning and other quick jobs (os/Containerfile.ci-fast).
+# ci-control: ci-fast plus the Docker client (os/Containerfile.ci-control).
 # tilo-release-tools: release signing and publication tools.
 [pins]
-ci-fast = "sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
+ci-fast = "sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
+ci-control = "sha256:585b2dacdaa651cb37ea66a57ec8203301d3724726f1b8c700ee55d2438ef728"
 tilo-release-tools = "sha256:2a7292af48bf8074e27f95661a293b2c48c420c5522d465da7fb31b6e22562fa"

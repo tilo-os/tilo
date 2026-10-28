@@ -1168,7 +1168,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         )
         counts: dict[tuple[str, str], int] = {}
         contract.audit(root, counts)
-        self.assertEqual(counts[("closure_action_button", "apps/sample/src/lib.rs")], 5)
+        self.assertEqual(counts[("closure_action_button", "apps/sample/src/lib.rs")], 4)
 
     def test_a_counted_builder_whose_arity_changes_fails(self):
         root = self.fixture("")

@@ -345,6 +345,7 @@ mod record;
 pub mod reference;
 mod root;
 mod rows;
+mod save_notice;
 mod saves;
 mod scenario;
 mod section;

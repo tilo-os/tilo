@@ -106,6 +106,71 @@ fn a_changed_row_is_mounted_again_in_place_and_alone() {
     assert!(list.mounted.iter().any(|row| row.key == 3));
 }
 
+/// A row built anew in a sync, before the host remounts it, leaves the layout the host holds
+/// as it was: the row it replaces stays alive and stands in the layout walk until the
+/// remount lets go of its node, and the remount leaves no node behind.
+#[test]
+fn a_row_replaced_before_its_remount_is_let_go_of_by_the_remount() {
+    let model = VecListModel::new((0..10_u64).collect(), |key| *key).unwrap();
+    let mut list = VirtualList::new(model, 20.0, move |_, _, key| {
+        Box::new(ProbeRow::new(
+            key.to_string(),
+            20.0,
+            false,
+            Rc::new(Cell::new(0)),
+        ))
+    })
+    .with_viewport_height(200.0);
+    let doc = automerge::AutoCommit::new();
+    crate::widget::Widget::sync(&mut list, &doc, &automerge::ROOT);
+    let theme = crate::theme::Theme::dark();
+    let mut taffy = taffy::TaffyTree::new();
+    let mut node_map = std::collections::HashMap::new();
+    let node = crate::widget::Widget::build_layout(&mut list, &mut taffy, &theme, &mut node_map);
+    let _ = crate::widget::Widget::take_structure_change(&mut list);
+    let laid_out = |list: &VirtualList<VecListModel<u64, u64>>| {
+        let mut walked = Vec::new();
+        crate::widget::Widget::for_each_layout_child(list, &mut |row| {
+            walked.push(std::ptr::from_ref(row).cast::<()>());
+        });
+        walked
+    };
+    let nodes = node_map.len();
+
+    for _ in 0..3 {
+        let walked = laid_out(&list);
+        list.invalidate_rows([3]);
+        crate::widget::Widget::sync(&mut list, &doc, &automerge::ROOT);
+        assert_eq!(
+            laid_out(&list),
+            walked,
+            "until the remount, the layout walk meets the widgets the layout holds"
+        );
+        assert_eq!(
+            crate::widget::Widget::take_structure_change(&mut list),
+            crate::widget::StructureChange::Children
+        );
+        let mut remount = crate::widget::Remount::new(&mut taffy, &theme, &mut node_map);
+        assert!(crate::widget::Widget::remount_children(
+            &mut list,
+            &mut remount
+        ));
+        let (mounted, unmounted) = remount.finish();
+        assert_eq!(
+            (mounted.len(), unmounted.len()),
+            (1, 1),
+            "one row in, one out"
+        );
+    }
+    assert_eq!(node_map.len(), nodes, "no node is left behind");
+    assert_eq!(
+        taffy.children(node).unwrap().len(),
+        list.mounted.len(),
+        "the list's node holds its rows"
+    );
+    assert_eq!(taffy.total_node_count(), nodes, "nor in the tree");
+}
+
 #[test]
 fn a_row_the_model_says_changed_is_mounted_again_in_place_and_alone() {
     let built = Rc::new(Cell::new(0_u32));

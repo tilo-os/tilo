@@ -5,6 +5,40 @@ use ui::tilo_resource::Effect as _;
 use tilo_test_env::hang_bound;
 
 #[test]
+fn search_and_editor_share_the_current_syncs_authoritative_text() {
+    let mut sample = synced_sample();
+    sample.with_doc(|app, edits| {
+        let doc = edits.doc();
+        let node = app.active_file_node().expect("sample source");
+        let key = app.buffer_key(node);
+        let object = EditorDoc::buffer_text_key(doc, &key).expect("source object");
+        let mut changed = doc.clone();
+        EditorDoc::splice(&mut changed, &object, 0, 0, "fn newly_indexed() {}\n");
+        let reads = app.editor.sync_text_reads();
+        app.sync(&changed, &automerge::ROOT);
+        assert_eq!(app.editor.text(), changed.text(&object).unwrap());
+        assert!(
+            app.search_symbols
+                .iter()
+                .any(|symbol| symbol.name == "newly_indexed")
+        );
+        assert_eq!(
+            app.editor.sync_text_reads(),
+            reads,
+            "the editor must not walk the text again"
+        );
+        app.sync(doc, &automerge::ROOT);
+        assert_eq!(app.editor.text(), doc.text(&object).unwrap());
+        assert!(
+            !app.search_symbols
+                .iter()
+                .any(|symbol| symbol.name == "newly_indexed")
+        );
+        assert_eq!(app.editor.sync_text_reads(), reads);
+    });
+}
+
+#[test]
 fn peer_hardware_language_metadata_survives_projection_without_a_source_extension() {
     for language in [Language::Verilog, Language::SystemVerilog] {
         let mut sample = synced_sample();

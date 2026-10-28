@@ -14,7 +14,7 @@
 //! so echo suppression is exercised for real.
 //!
 //! Voice is faked too: a voice gateway and a UDP media path on loopback,
-//! with transport encryption and DAVE for real (see [`voice`]'s notes in
+//! with transport encryption and DAVE for real (see `voice`'s notes in
 //! the source). Fake users join, mute, leave and say Opus frames through
 //! [`FakeDiscord::voice_join`] and friends; what the bot said is decrypted
 //! and kept for [`FakeDiscord::voice_heard`]. [`tone`] makes and tells
@@ -1001,6 +1001,30 @@ impl FakeDiscord {
         });
         drop(state);
         (id, token)
+    }
+
+    /// Someone deletes webhook `webhook` in its channel's settings; its
+    /// messages stay. Returns whether there was one.
+    pub fn delete_webhook(&self, webhook: &str) -> bool {
+        let mut state = self.shared.lock();
+        let before = state.webhooks.len();
+        state.webhooks.retain(|w| w.id != webhook);
+        before != state.webhooks.len()
+    }
+
+    /// Delete every webhook of `channel`, as [`Self::delete_webhook`];
+    /// returns their ids.
+    pub fn delete_webhooks_in(&self, channel: &str) -> Vec<String> {
+        let mut state = self.shared.lock();
+        let gone = state
+            .webhooks
+            .iter()
+            .filter(|w| w.channel == channel)
+            .map(|w| w.id.clone())
+            .collect();
+        state.webhooks.retain(|w| w.channel != channel);
+        drop(state);
+        gone
     }
 
     /// The ephemeral answers the bot gave to interactions.

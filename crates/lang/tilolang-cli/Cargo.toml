@@ -21,6 +21,7 @@ getrandom.workspace = true
 hex.workspace = true
 notify.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal" }
+rustix = { workspace = true, features = ["event", "process"] }
 serde.workspace = true
 sha2.workspace = true
 serde_json.workspace = true

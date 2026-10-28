@@ -134,7 +134,11 @@ impl<M: ListModel + 'static> VirtualList<M> {
         let Some(node) = self.layout_node else {
             return false;
         };
-        let before: Vec<NodeId> = self.mounted.iter().filter_map(|row| row.node).collect();
+        let before: Vec<NodeId> = self
+            .mounted
+            .iter()
+            .filter_map(super::MountedRow::laid_out_node)
+            .collect();
         self.reconcile_mounted();
         // The rows it built are the ones laid out here.
         self.structure_dirty = false;
@@ -161,6 +165,10 @@ impl<M: ListModel + 'static> VirtualList<M> {
         }
         for gone in before.into_iter().filter(|gone| !children.contains(gone)) {
             remount.unmount(gone);
+        }
+        // The rows replaced are out of the layout: they go.
+        for row in &mut self.mounted {
+            row.replacing = None;
         }
         carried
     }

@@ -4,7 +4,7 @@
 //! surface streaming and the chat call app share one codec stack + wire
 //! format; this module re-exports it under the network namespace.
 //!
-//! The streaming loop in [`crate::network::streaming`] owns one encoder
+//! The streaming loop in [`tilo_window_share::streaming`] owns one encoder
 //! per shared surface; the caller must not queue frames behind it — encode
 //! synchronously and ship the bytes, or drop the frame.
 

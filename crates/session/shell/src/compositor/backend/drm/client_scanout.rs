@@ -63,12 +63,12 @@ pub(super) struct ClientEligibility {
     pub upright: bool,
     /// The output has no ICC profile: a client buffer flipped onto a
     /// calibrated output would skip the profile its composited frames go
-    /// through (`shell::render::icc_lut`).
+    /// through (`tilo_output_passes::icc_lut`).
     pub uncalibrated: bool,
     /// The compositor's final pass does not dim the output: a client buffer
     /// flipped onto an output dimmed there would skip the dimming. Dimming
     /// in the CRTC's gamma LUT applies to every plane, so it never stands in
-    /// the way ([`crate::shell::software_dim`]).
+    /// the way ([`tilo_color_pipeline::software_dim`]).
     pub undimmed_by_compositor: bool,
     /// The candidate covers exactly this output, pixel for pixel.
     pub covers_output: bool,
@@ -747,7 +747,7 @@ mod tests {
 
     #[test]
     fn software_dimming_in_the_crtc_keeps_direct_scanout() {
-        use crate::shell::software_dim::final_pass_dim;
+        use tilo_color_pipeline::software_dim::final_pass_dim;
         let dimmed_by_crtc = ClientEligibility {
             undimmed_by_compositor: final_pass_dim(0.4, true).is_none(),
             ..eligible()

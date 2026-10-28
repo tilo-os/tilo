@@ -1070,7 +1070,7 @@ pub struct ProxyConfiguration {
     pub automatic_url: Option<String>,
     /// One proxy server for everything, `host:port`. `NetworkManager` keeps
     /// proxies as auto-configuration only, so it is stored as the one-line
-    /// script that names it ([`manual_proxy_script`]).
+    /// script that names it (`manual_proxy_script`).
     pub manual: Option<String>,
     pub browser_only: bool,
 }

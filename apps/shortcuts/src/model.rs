@@ -906,6 +906,63 @@ impl Workbench {
         })
     }
 
+    /// Move a step into another block of the same draft: `""` for the top
+    /// level, or a block of a step such as `2.then`, `2.else` or `3.each`.
+    /// It lands at `index` there, counted from 0 (past the block's last
+    /// step puts it last), and the steps that follow it make room. A step
+    /// never moves inside its own blocks.
+    #[action]
+    pub fn set_nested(
+        &mut self,
+        cx: &mut ActionCx,
+        draft: &Id,
+        #[param("The step's position, like 0 or 2.then.1")] path: String,
+        #[param("The block it moves into: empty for the top level, or like 2.then")] block: String,
+        #[param("Where it lands there: 0 first, or past its last step")] index: usize,
+    ) -> Result<(), Refusal> {
+        draft_mut(self, draft)?
+            .step_item(&path)
+            .ok_or_else(|| Refusal::new(format!("there is no step `{path}`")))?;
+        edit_program(self, cx, draft, |program| {
+            let (from, at) = split_path(&path).ok_or_else(|| format!("no step `{path}`"))?;
+            let moved = block_at(&program.steps, from)
+                .and_then(|steps| steps.get(at))
+                .cloned()
+                .ok_or_else(|| format!("there is no step `{path}`"))?;
+            if block == from || block.starts_with(&format!("{from}.")) {
+                return Err(format!("step `{path}` cannot move into its own block"));
+            }
+            let count = block_at(&program.steps, &block)
+                .ok_or_else(|| format!("there is no block `{block}`"))?
+                .len();
+            let from_block = from.to_owned();
+            block_mut(&mut program.steps, &from_block)
+                .ok_or_else(|| format!("there is no step `{path}`"))?
+                .remove(at);
+            let destination = block_mut(&mut program.steps, &block)
+                .ok_or_else(|| format!("there is no block `{block}`"))?;
+            destination.insert(index.min(count), moved);
+            Ok(())
+        })
+    }
+
+    /// Say what the shortcut reports when it finishes, or that it reports
+    /// nothing.
+    #[action]
+    pub fn set_output(
+        &mut self,
+        cx: &mut ActionCx,
+        draft: &Id,
+        #[param("Where the value comes from, as binding JSON; empty reports nothing")]
+        binding: String,
+    ) -> Result<(), Refusal> {
+        let binding = parse_binding(&binding)?;
+        edit_program(self, cx, draft, |program| {
+            program.output = binding;
+            Ok(())
+        })
+    }
+
     /// Declare a value the shortcut is started with.
     #[action]
     pub fn add_input(
@@ -1108,6 +1165,80 @@ pub fn block_at<'a>(steps: &'a [Step], block: &str) -> Option<&'a [Step]> {
         (StepKind::If { then, .. }, "then") => Some(then),
         (StepKind::If { otherwise, .. }, "else") => Some(otherwise),
         (StepKind::ForEach { body, .. }, "each") => Some(body),
+        _ => None,
+    }
+}
+
+impl Draft {
+    /// The item holding the step at `path` (`2.then.1`), which
+    /// [`Workbench::set_nested`] moves in the stored draft itself.
+    #[must_use]
+    pub fn step_item(&self, path: &str) -> Option<Id> {
+        let (block, index) = path.rsplit_once('.').unwrap_or(("", path));
+        let block = segments(block)?;
+        self.item_at(&block, index.parse().ok()?)
+    }
+
+    /// The item of the step at `index` of `block`.
+    fn item_at(&self, block: &[Segment], index: usize) -> Option<Id> {
+        let (parent, branch) = self.block_owner(block);
+        self.steps
+            .iter()
+            .filter(|(_, node)| node.parent.0 == parent && node.branch.0 == branch)
+            .map(|(key, _)| key.clone())
+            .nth(index)
+    }
+
+    /// The item id of the step whose block `block` names, and which of its
+    /// branches that block is.
+    fn block_owner(&self, block: &[Segment]) -> (String, String) {
+        let Some((Segment::Branch(branch), addressing)) = block.split_last() else {
+            return (String::new(), String::new());
+        };
+        if addressing.is_empty() {
+            return (String::new(), (*branch).to_owned());
+        }
+        let owner = self
+            .item_at(addressing, index_of(addressing).unwrap_or_default())
+            .map_or_else(String::new, |owner| owner.as_str().to_owned());
+        (owner, (*branch).to_owned())
+    }
+}
+
+/// A block address (`2.then`) as its segments: step indices, then the
+/// branches they lead into.
+type Block = Vec<Segment>;
+
+/// One segment of a block address: where a step sits in its block, or which
+/// of a step's blocks it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Segment {
+    At(usize),
+    Branch(&'static str),
+}
+
+/// The segments of `block`, in order; `None` when one is neither a step
+/// index nor a branch.
+fn segments(block: &str) -> Option<Block> {
+    block
+        .split('.')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| {
+            if let Some(branch) = [THEN, ELSE, EACH]
+                .into_iter()
+                .find(|branch| *branch == segment)
+            {
+                return Some(Segment::Branch(branch));
+            }
+            segment.parse().ok().map(Segment::At)
+        })
+        .collect()
+}
+
+/// The index `addressing` ends with, when it ends with one.
+fn index_of(addressing: &[Segment]) -> Option<usize> {
+    match addressing.last() {
+        Some(Segment::At(index)) => Some(*index),
         _ => None,
     }
 }

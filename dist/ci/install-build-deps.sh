@@ -9,8 +9,10 @@ set -euo pipefail
 #
 # `fedora test` adds, on top of `workspace`, what running the whole test suite
 # needs: the runtime libraries, plugins, fonts, software Vulkan driver and test
-# subjects the suites drive, plus the pinned cargo-nextest. The developer
-# distrobox installs it so the suite runs there as it does in CI; the CI builder
+# subjects the suites drive, plus the pinned cargo-nextest. It also carries what
+# running the Callgrind benchmarks needs: Valgrind with its client-request
+# headers, and the pinned iai-callgrind runner. The developer distrobox installs
+# it so the suite and the benchmarks run there as they do in CI; the CI builder
 # keeps its own workflow tooling.
 #
 # TILO_RUST_TOOLCHAIN (default: stable) and TILO_RUST_COMPONENTS (space
@@ -55,6 +57,10 @@ esac
 # session manager, which the screen-capture tests start to serve a headless
 # screen node to the production pipewiresrc capture path; pipewire-utils'
 # pw-dump finds the node they create.
+# valgrind is the instrumenter the iai-callgrind benches run under (the runner
+# invokes it from PATH), and valgrind-devel the client-request headers they are
+# compiled against: iai-callgrind reads them from /usr/include when
+# IAI_CALLGRIND_VALGRIND_INCLUDE names it, instead of the headers it bundles.
 install_test_runtime_fedora() {
     if rpm -q pipewire-pulseaudio >/dev/null 2>&1; then
         dnf swap -y pipewire-pulseaudio pulseaudio
@@ -75,7 +81,8 @@ install_test_runtime_fedora() {
         cryptsetup swtpm swtpm-tools tpm2-tools \
         libsecret gnome-keyring python3-gobject \
         xorg-x11-server-Xwayland xcb-util-cursor-devel open-sans-fonts \
-        pipewire wireplumber pipewire-gstreamer pipewire-utils
+        pipewire wireplumber pipewire-gstreamer pipewire-utils \
+        valgrind valgrind-devel
     # Package scriptlets that create system accounts (sysusers) or compile
     # GSettings schemas can be skipped or fail inside unprivileged image
     # builds without failing the transaction. Replay both idempotently so the
@@ -88,6 +95,7 @@ install_test_runtime_fedora() {
     glib-compile-schemas /usr/share/glib-2.0/schemas
     test -s /usr/share/glib-2.0/schemas/gschemas.compiled
     install_nextest
+    install_iai_callgrind_runner
 }
 
 # The test runner, pinned and checksum-verified. It goes to /usr/local/bin, not
@@ -117,6 +125,45 @@ install_nextest() {
     rm -f -- "$archive"
     chmod 0755 /usr/local/bin/cargo-nextest
     /usr/local/bin/cargo-nextest nextest --version
+}
+
+# The benchmarks' Valgrind harness. iai-callgrind refuses to run under a runner
+# of any other version, and the workspace pins the library in the crate that
+# carries the benches (iai-callgrind = 0.16.1), so this is that version: the
+# upstream release built for the architecture of this image, checksum-verified
+# like cargo-nextest and on PATH in /usr/local/bin for the same reason. Its
+# `--version` reads the calling package's manifest, so the check below only
+# requires the self-report the binary prints either way.
+install_iai_callgrind_runner() {
+    local version=0.16.1 target sha archive reported
+    case "$(uname -m)" in
+    x86_64)
+        target=x86_64-unknown-linux-gnu
+        sha=436feddb83ec916ddaf401dd1cea45aa329745067e8136a774b2fc581de6b448
+        ;;
+    aarch64)
+        target=aarch64-unknown-linux-gnu
+        sha=046c854014745a7d26ecc58cd8b8ca99ef39d856a3ab6b933f34503845d5bfe4
+        ;;
+    *)
+        echo "unsupported iai-callgrind-runner architecture: $(uname -m)" >&2
+        exit 1
+        ;;
+    esac
+    archive=$(mktemp -d)
+    curl --proto '=https' --tlsv1.2 -fsSL \
+        "https://github.com/iai-callgrind/iai-callgrind/releases/download/v$version/iai-callgrind-runner-v$version-$target.tar.gz" \
+        -o "$archive/runner.tar.gz"
+    printf '%s  %s\n' "$sha" "$archive/runner.tar.gz" | sha256sum --check --status
+    tar -xzf "$archive/runner.tar.gz" -C "$archive" \
+        --strip-components=1 "iai-callgrind-runner-v$version-$target/iai-callgrind-runner"
+    install -m 0755 "$archive/iai-callgrind-runner" /usr/local/bin/iai-callgrind-runner
+    rm -rf -- "$archive"
+    reported=$(/usr/local/bin/iai-callgrind-runner --version 2>&1 || true)
+    case "$reported" in
+    *"iai-callgrind-runner ($version)"*) ;;
+    *) echo "iai-callgrind-runner did not report $version: $reported" >&2; exit 1 ;;
+    esac
 }
 
 case "$distro" in

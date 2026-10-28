@@ -18,7 +18,7 @@
 //!
 //! ## Cases come from real runs
 //!
-//! [`Case::from_run`] turns a run a person marked good or bad into a case,
+//! `Case::from_run` turns a run a person marked good or bad into a case,
 //! with the model's answer kept when they marked it bad, so the regression it
 //! caught is reproduced from then on. It is built from what the run already
 //! recorded and stored where the caller says — nothing leaves the machine.

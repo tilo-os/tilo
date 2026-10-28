@@ -124,6 +124,10 @@ const LAYOUT_SAMPLE: Duration = Duration::from_millis(17);
 /// Consecutive equal samples that count as a settled layout.
 const SETTLED_SAMPLES: usize = 4;
 
+/// Frames drawn while a layout held still that count as it settled, when
+/// something is still animating.
+const SETTLED_FRAMES: u64 = 2;
+
 /// Block until one of `clients` receives an event, or `extra` becomes
 /// readable, for at most `timeout`, then dispatch whatever arrived.
 ///
@@ -5653,13 +5657,24 @@ impl Compositor {
     }
 
     /// Wait until the targets `pick` admits stop moving: the same names at
-    /// the same rects for [`SETTLED_SAMPLES`] samples about a frame apart.
-    /// A position read mid-animation is clicked where the target used to be.
+    /// the same rects for [`SETTLED_SAMPLES`] samples about a frame apart,
+    /// across at least [`SETTLED_FRAMES`] frames the compositor drew, or with
+    /// nothing animating. A position read mid-animation is clicked where the
+    /// target used to be. Samples alone are not enough: on a busy runner one
+    /// frame can take longer than all of them together, so an entrance still
+    /// under way looked settled because no frame landed in between.
     fn wait_for_layout_to_settle(&self, pick: impl Fn(&str) -> bool, what: &str) {
         let started = Instant::now();
         let mut last = self.target_rects(&pick);
+        let mut since = self.frames_drawn();
         let mut equal = 1usize;
-        while equal < SETTLED_SAMPLES {
+        loop {
+            if equal >= SETTLED_SAMPLES {
+                let (frames, animating) = self.frames_and_animation();
+                if frames.saturating_sub(since) >= SETTLED_FRAMES || !animating {
+                    return;
+                }
+            }
             assert!(
                 started.elapsed() < deadline(),
                 "{what}: the layout never stopped moving; last {last:?}.\n{}",
@@ -5667,13 +5682,32 @@ impl Compositor {
             );
             std::thread::sleep(LAYOUT_SAMPLE);
             let next = self.target_rects(&pick);
-            equal = if next == last {
-                equal.saturating_add(1)
+            if next == last {
+                equal = equal.saturating_add(1);
             } else {
-                1
-            };
+                equal = 1;
+                since = self.frames_drawn();
+            }
             last = next;
         }
+    }
+
+    /// Frames the compositor has drawn so far, per its state dump.
+    fn frames_drawn(&self) -> u64 {
+        self.frames_and_animation().0
+    }
+
+    /// Frames drawn so far, and whether anything still asks for frames.
+    fn frames_and_animation(&self) -> (u64, bool) {
+        let resp = self.control(&serde_json::json!({"op": "state_dump"}));
+        let chrome = &resp["state"]["chrome"];
+        let frames = chrome["frames_drawn"]
+            .as_u64()
+            .expect("the state dump counts the frames drawn");
+        let animating = chrome["animating"]
+            .as_array()
+            .is_some_and(|owners| !owners.is_empty());
+        (frames, animating)
     }
 
     /// Wait until `cond` holds on the compositor's control state, failing

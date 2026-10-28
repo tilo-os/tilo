@@ -45,3 +45,40 @@ greeter-auth-cancelling = Cancelling sign-in…
 greeter-auth-cancelled = Sign-in cancelled
 
 greeter-session-diagnostics = Configure timing diagnostics for this sign-in
+
+# The sign-in screen before the system volume opens, in the initramfs.
+greeter-pin = PIN
+greeter-cant-sign-in = Can't sign in
+greeter-hint-pin = Enter your PIN.
+greeter-error-pin = Incorrect PIN. Try again.
+greeter-error-pin-tries = Incorrect PIN. { $count ->
+        [one] 1 try left.
+       *[other] { $count } tries left.
+    }
+greeter-error-passcode-tries = Incorrect password. { $count ->
+        [one] 1 try left.
+       *[other] { $count } tries left.
+    }
+greeter-error-pin-repeated = You already tried that PIN. Try another.
+greeter-error-pin-repeated-tries = You already tried that PIN. { $count ->
+        [one] 1 try left.
+       *[other] { $count } tries left.
+    }
+greeter-error-passcode-repeated = You already tried that password. Try another.
+greeter-error-passcode-repeated-tries = You already tried that password. { $count ->
+        [one] 1 try left.
+       *[other] { $count } tries left.
+    }
+greeter-error-wait-minutes = Too many failed attempts. Try again in { $count ->
+        [one] 1 minute.
+       *[other] { $count } minutes.
+    }
+greeter-error-wait-hours = Too many failed attempts. Try again in { $count } hours.
+greeter-keyboard = Keyboard
+greeter-key-shift = Shift
+greeter-key-symbols = Symbols
+greeter-key-numbers = Numbers
+greeter-key-letters = Letters
+greeter-key-space = Space
+greeter-key-delete = Delete
+greeter-key-enter = Enter

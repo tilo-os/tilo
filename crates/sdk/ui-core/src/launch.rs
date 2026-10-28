@@ -1304,7 +1304,34 @@ fn native_launch_manager(
     if !(spec.runtime_attachment)(args) {
         return Ok(crate::collaboration::CollaborationManager::disabled());
     }
-    crate::collaboration::CollaborationManager::for_native_launch(&spec.definition.record_kind)
+    crate::collaboration::CollaborationManager::for_native_launch(
+        &spec.definition.record_kind,
+        native_connection(),
+    )
+    .map_err(LaunchError::from)
+}
+
+/// The connection a native launch's manager joins on: a window the shell
+/// opened in this running process has one of its own
+/// ([`crate::window_door`]); the one the launcher handed the process is its
+/// first window's.
+#[cfg(feature = "native")]
+fn native_connection() -> crate::collaboration::NativeConnection {
+    if crate::window_door::is_building() {
+        crate::collaboration::NativeConnection::Window(crate::window_door::take_collaboration())
+    } else {
+        crate::collaboration::NativeConnection::Launch
+    }
+}
+
+#[cfg(feature = "native")]
+impl From<crate::collaboration::NativeLaunchError> for LaunchError {
+    fn from(error: crate::collaboration::NativeLaunchError) -> Self {
+        match error {
+            crate::collaboration::NativeLaunchError::IdentityRequired => Self::IdentityRequired,
+            crate::collaboration::NativeLaunchError::Operation(message) => Self::Operation(message),
+        }
+    }
 }
 
 fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), LaunchError> {
@@ -2744,6 +2771,7 @@ mod tests {
         env_override.set("TILO_SVC_COLLAB_FD", "-1");
         let manager = crate::collaboration::CollaborationManager::for_native_launch(
             &crate::record::RecordKind::new("launch-fixture.document"),
+            crate::collaboration::NativeConnection::Launch,
         );
         drop(env_override);
         assert!(

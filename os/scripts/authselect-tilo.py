@@ -6,9 +6,12 @@ usage: authselect-tilo.py PROFILE_DIR
 Edits the system-auth and password-auth templates of a custom authselect
 profile (`authselect create-profile`) so every PAM service that includes them
 (the greeter, the lock screen, polkit, sudo, su, passwd) asks tilo-authd first.
-pam_tilo's answer is final for anyone tilo-authd knows; it steps aside only
-when the daemon cannot answer (`authinfo_unavail`) or does not know the person
-(`ignore`), and then the profile's own lines run as before.
+pam_tilo's answer is final, and so is the daemon not answering
+(`authinfo_unavail`): tilo-authd checks the old password itself for people not
+yet moved off it, and a migrated person's old hash may still be in
+/etc/shadow for an older image that can boot, which nothing here may accept.
+pam_tilo steps aside only for someone the daemon does not know (`ignore`, an
+account that is not local), and then the profile's own lines run as before.
 
 In the password phase it goes before every other line, so a person whose
 secret tilo-authd checks changes it there and the old password's quality rules,
@@ -24,7 +27,7 @@ import re
 import sys
 from pathlib import Path
 
-CONTROL = "[success=done authinfo_unavail=ignore ignore=ignore default=die]"
+CONTROL = "[success=done ignore=ignore default=die]"
 AUTH = f"-auth       {CONTROL} pam_tilo.so\n"
 PASSWORD = f"-password   {CONTROL} pam_tilo.so\n"
 TEMPLATES = ("system-auth", "password-auth")

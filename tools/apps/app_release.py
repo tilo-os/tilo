@@ -99,7 +99,9 @@ def architecture_matrix(
 ) -> dict:
     if ref.startswith("refs/tags/"):
         raw = "x86_64 aarch64"
-    elif ref == "refs/heads/main" and event == "push":
+    elif ref == "refs/heads/stable" and event == "push":
+        # A promotion publishes the collection for both native architectures;
+        # the variable narrows it while one architecture's slot is unavailable.
         raw = main_architectures or "x86_64 aarch64"
     else:
         raw = requested or "x86_64 aarch64"

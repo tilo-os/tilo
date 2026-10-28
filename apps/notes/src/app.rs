@@ -56,7 +56,7 @@ thread_local! {
 /// What the window's bar was last declared with: the note shown (its title
 /// and anchor), whether the page tree is open, and whether New note is
 /// offered.
-type DeclaredBar = (Option<(String, String)>, bool, bool, bool);
+type DeclaredBar = (Option<(String, String)>, bool, bool);
 
 /// The test id of the sidebar header's "New note" button.
 pub(crate) const NEW_NOTE_BUTTON_ID: &str = "new-note";
@@ -334,16 +334,6 @@ pub struct NotesApp {
     /// was counted at, so a status refresh that saw no change reuses it
     /// instead of walking every block again.
     word_count: Option<(u64, usize)>,
-    /// The framework's save status, said in the window's bar: autosave says
-    /// nothing; a save that stalls says "Couldn't save yet. Retrying…", and
-    /// "Saved" once it lands; one that gives up says "Not saved" and a
-    /// failed save says why, each with "Try again" beside it until a save
-    /// succeeds and says "Saved".
-    save_surface: ui::SaveStatusSurface,
-    /// The notification a save that gave up raises out of sight.
-    save_notices: crate::save_notice::SaveNotices,
-    /// "Try again" was chosen on a failed save; the host drains it.
-    save_retry: bool,
     /// The last copied link, whose outcome can arrive after its toast.
     pub(crate) link_copy: ui::CopyWatch,
     /// A deleted note's "Undo" toast is up: the notebook's state it acts
@@ -352,10 +342,6 @@ pub struct NotesApp {
     delete_undo: DeleteUndo,
     /// "Undo" was chosen on a toast; the host performs it as Ctrl+Z.
     undo_requested: bool,
-    /// Shot-only override for the real save progress/failure presentation.
-    /// Notes opens its workspace synchronously, so this does not alter live
-    /// loading behavior or introduce a second production state source.
-    shots_save_status: Option<SaveStatus>,
     shortcuts: ShortcutsOverlay,
     /// Root container rect, populated by `apply_layout`.
     rect: Rect,
@@ -733,13 +719,9 @@ impl NotesApp {
             main,
             status: StatusModel::new(),
             word_count: None,
-            save_surface: ui::SaveStatusSurface::new(),
-            save_notices: crate::save_notice::SaveNotices::new(),
-            save_retry: false,
             link_copy: ui::CopyWatch::default(),
             delete_undo: DeleteUndo::None,
             undo_requested: false,
-            shots_save_status: None,
             shortcuts: ShortcutsOverlay::new(),
             rect: Rect::ZERO,
             shell,
@@ -807,13 +789,6 @@ impl NotesApp {
     /// Cheap — called from `handle_event`'s tail and after every
     /// `apply_event`. The status bar diffs internally so a no-op
     /// refresh doesn't dirty its render.
-    pub(crate) fn take_save_retry_request(&mut self) -> bool {
-        // A save the store has not confirmed for a while is submitted again
-        // on the surface's behalf, as "Retrying…" says.
-        let stalled = self.save_surface.take_retry();
-        std::mem::take(&mut self.save_retry) || stalled
-    }
-
     /// The open note's word count, counted once per change of its blocks
     /// rather than once per status refresh: every pointer move and scroll
     /// ends in one, and walking every block of a long note each time is what
@@ -852,18 +827,14 @@ impl NotesApp {
         // change. A pointer move, a scroll, a save landing or a key that
         // edited nothing leaves the note and its count where they were.
         let word_count = self.cached_word_count();
-        let save_status = self
-            .shots_save_status
-            .unwrap_or(match self.record_save_status {
-                ui::record::RecordSaveStatus::Saved => SaveStatus::Saved,
-                ui::record::RecordSaveStatus::Saving => SaveStatus::Saving,
-                ui::record::RecordSaveStatus::Failed(_) => SaveStatus::Failed,
-                ui::record::RecordSaveStatus::MemoryOnly => SaveStatus::SessionOnly,
-            });
+        let save_status = match self.record_save_status {
+            ui::record::RecordSaveStatus::Saved => SaveStatus::Saved,
+            ui::record::RecordSaveStatus::Saving => SaveStatus::Saving,
+            ui::record::RecordSaveStatus::Failed(_) => SaveStatus::Failed,
+            ui::record::RecordSaveStatus::MemoryOnly => SaveStatus::SessionOnly,
+        };
         let save_problem = match &self.record_save_status {
-            ui::record::RecordSaveStatus::Failed(reason) if self.shots_save_status.is_none() => {
-                Some(reason.clone())
-            }
+            ui::record::RecordSaveStatus::Failed(reason) => Some(reason.clone()),
             _ => None,
         };
         self.status.set_state(StatusBarState {
@@ -873,52 +844,9 @@ impl NotesApp {
             page_count: self.workspace.pages().len(),
             word_count,
         });
-        // A failure stays on the surface until the note saves or it is
-        // dismissed; autosave itself shows nothing. The state and counts stay
-        // in the accessibility status.
-        let now = ui::time::now();
-        self.save_surface.set(self.save_state(), now);
-        self.deliver_save_notice(now);
-    }
-
-    /// Raise, take down or answer the notification of a save that gave up
-    /// while the note was out of sight.
-    fn deliver_save_notice(&mut self, now: ui::time::Instant) {
-        if self
-            .save_notices
-            .deliver(&mut self.save_surface, self.main.title(), now)
-        {
-            self.save_retry = true;
-            self.self_dirty = true;
-        }
-    }
-
-    /// The save state the surface reports.
-    fn save_state(&self) -> ui::SaveState {
-        match self.status.state().save_status {
-            SaveStatus::Saved => ui::SaveState::Saved,
-            SaveStatus::Saving => ui::SaveState::Saving,
-            SaveStatus::SessionOnly => ui::SaveState::Idle,
-            // What it means for the person, not the storage error behind it.
-            SaveStatus::Failed => ui::SaveState::Failed(ui::i18n!("notes-save-failed-detail")),
-        }
-    }
-
-    /// `--shots`: capture an actual save-state presentation deterministically,
-    /// without depending on a timing-sensitive filesystem failure: the save
-    /// began `waited` ago, and a `Saved` one landed just now after that
-    /// wait.
-    pub fn set_save_status_for_shots(&mut self, status: SaveStatus, waited: ui::time::Duration) {
-        let now = ui::time::now();
-        let began = now.checked_sub(waited).unwrap_or(now);
-        self.save_surface = ui::SaveStatusSurface::new();
-        self.save_surface.set(ui::SaveState::Saving, began);
-        self.save_surface.advance(now);
-        self.shots_save_status = Some(status);
-        let mut state = self.status.state().clone();
-        state.save_status = status;
-        let _ = self.status.set_state(state);
-        self.refresh_status();
+        // The window's framework says a save that stalls or fails, and
+        // marks the note unsaved then; the state and counts stay in the
+        // accessibility status.
     }
 
     /// What `draw` painted, as the parts its damage is proven by: the note
@@ -952,6 +880,13 @@ impl NotesApp {
         let mut sidebar_damage = Vec::new();
         if self.sidebar_node.is_some() {
             sidebar.collect_damage(&mut sidebar_damage);
+            // The outline draws into the same part, under the page tree: a
+            // heading typed into the note changes it, and without its damage
+            // the part could not say where it changed and the whole window
+            // was repainted for every key.
+            if self.outline_node.is_some() {
+                self.outline.collect_damage(&mut sidebar_damage);
+            }
         }
         let part = |key: &str, rect: Rect, scene: &Scene, damage: Vec<Rect>| {
             PaintPart::new(key.into(), rect, scene.clone(), damage)
@@ -1615,24 +1550,11 @@ impl NotesApp {
         if matches!(scenario, Some("image" | "image_edit" | "image_sized")) {
             self.load_images_for_capture();
         }
-        match scenario {
-            Some("status") => {
-                self.set_save_status_for_shots(SaveStatus::Saved, ui::SAVE_STALL);
-            }
-            Some("save_retrying") => {
-                self.set_save_status_for_shots(SaveStatus::Saving, ui::SAVE_STALL);
-            }
-            Some("save_not_saved") => {
-                self.set_save_status_for_shots(SaveStatus::Saving, ui::SAVE_GIVE_UP);
-            }
-            Some("save_error") => {
-                self.set_save_status_for_shots(SaveStatus::Failed, ui::time::Duration::ZERO);
-            }
-            Some("import_success") => self.notify(
+        if scenario == Some("import_success") {
+            self.notify(
                 "Imported Project brief",
                 ui::widget::toast::ToastKind::Success,
-            ),
-            _ => {}
+            );
         }
     }
 
@@ -2236,9 +2158,6 @@ impl NotesApp {
     #[doc(hidden)]
     pub fn set_record_save_status_for_test(&mut self, status: ui::record::RecordSaveStatus) {
         self.record_save_status = status;
-        // The store's report is what a live window would show, not a
-        // capture's staged one.
-        self.shots_save_status = None;
         self.refresh_status();
     }
 
@@ -2706,14 +2625,6 @@ impl Widget for NotesApp {
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        // A scheduled sync only runs when update reports a change: the save's
-        // notice leaving the window's bar, or its next stage, is one. The
-        // sync takes up the deadline, leaving an idle window asleep after.
-        let feedback_expired = self.save_surface.needs_publish()
-            || self
-                .save_surface
-                .next_wake_deadline()
-                .is_some_and(|deadline| deadline <= ui::time::now());
         // A dragged block's pointer at the page's edge scrolls the page.
         self.main.autoscroll_block_drag();
         // A lifted touchpad gesture glides the page on; only the view moves.
@@ -2721,7 +2632,7 @@ impl Widget for NotesApp {
         // The retained shell owns queued header views, responsive bindings
         // and navigation. It participates in the same lifecycle as the
         // separately projected notebook content in its column slots.
-        self.shell.update(state, path) || feedback_expired
+        self.shell.update(state, path)
     }
 
     fn native_input_snapshot(
@@ -2756,17 +2667,6 @@ impl Widget for NotesApp {
             self.record_save_status = saved;
             self.refresh_status();
         }
-        // A save that gave up is raised as a notification only if no frame
-        // paints this note: the person could lose work they cannot see.
-        self.deliver_save_notice(ui::time::now());
-        // "Try again" beside the save's notice in the window's bar submits
-        // the note again; the notice says the save in the bar.
-        if self.save_surface.take_bar_action() == Some(ui::SaveAction::Retry) {
-            self.save_retry = true;
-            self.self_dirty = true;
-        }
-        self.save_surface.advance(ui::time::now());
-        self.save_surface.publish();
         self.refresh_canonical_assets();
         let requested = std::mem::take(&mut self.opened.borrow_mut().requests);
         for page in requested {
@@ -3025,9 +2925,6 @@ impl Widget for NotesApp {
             }
         }
         let sidebar_scene = std::mem::take(scene);
-        // The window drew: a save that gave up is said in its bar, not
-        // raised as a notification.
-        self.save_surface.seen();
         self.main_scroll_copy = self.main.scroll_copy();
         let frame = self.paint_frame(
             transform,
@@ -3049,7 +2946,7 @@ impl Widget for NotesApp {
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        let mut earliest = self.save_surface.next_wake_deadline();
+        let mut earliest: Option<ui::time::Instant> = None;
         for child in self.children() {
             if let Some(deadline) = child.next_wake_deadline() {
                 earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));
@@ -3065,11 +2962,9 @@ impl Widget for NotesApp {
     }
 
     fn has_transient_feedback(&self) -> bool {
-        self.save_surface.next_wake_deadline().is_some()
-            || self
-                .children()
-                .iter()
-                .any(|child| child.has_transient_feedback())
+        self.children()
+            .iter()
+            .any(|child| child.has_transient_feedback())
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -4375,8 +4270,6 @@ mod tests {
                 ui::record::RecordSaveStatus::Saved,
                 "the real owner must acknowledge the repaired writer"
             );
-            assert!(!notes.save_retry, "the owner consumed the request");
-            assert!(notes.save_surface.failure().is_none());
         })
         .unwrap();
         assert!(!host.take_save_retry().unwrap(), "no second retry remains");
@@ -4395,133 +4288,22 @@ mod tests {
         );
     }
 
-    /// A note whose save gives up says "Not saved" with "Try again" in the
-    /// window's bar while it is painted, and raises nothing; one that
-    /// nothing paints raises a notification whose "Try again" submits the
-    /// note again.
     #[test]
-    fn a_save_that_gives_up_asks_in_place_in_view_and_notifies_out_of_sight() {
-        ui::i18n::I18nManager::init("en-US");
-        let later = || ui::time::now() + ui::time::Duration::from_secs(2);
-        let staged = |recording: &std::sync::Arc<ui::notify::conformance::Recording>| {
-            let (mut app, state, tmp, _) = app_seeded_into_doc();
-            app.save_notices.set_notifier(recording.clone());
-            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-            app.set_save_status_for_shots(SaveStatus::Saving, ui::SAVE_GIVE_UP);
-            (app, state, tmp)
-        };
-
-        let in_view = std::sync::Arc::new(ui::notify::conformance::Recording::default());
-        let (mut app, _state, _tmp) = staged(&in_view);
-        // The window draws a frame: the person sees it.
-        app.save_surface.seen();
-        assert!(app.save_surface.gave_up());
-        let notice = app.save_surface.notice().expect("said in the bar");
-        assert_eq!(notice.text, "Not saved");
-        assert_eq!(
-            notice.actions.first().map(|action| action.name.as_str()),
-            Some("Try again")
-        );
-        assert!(app.save_surface.failure().is_none(), "no failure reason");
-        app.deliver_save_notice(later());
-        assert!(in_view.shown().is_empty(), "in view, nothing is notified");
-
-        let out_of_sight = std::sync::Arc::new(ui::notify::conformance::Recording::default());
-        let (mut app, _state, _tmp) = staged(&out_of_sight);
-        app.deliver_save_notice(later());
-        let shown = out_of_sight.shown();
-        assert_eq!(shown.len(), 1, "nothing painted it: notify");
-        let title = app.main.title().expect("the seeded note has a title");
-        assert_eq!(shown[0].title, format!("{title} wasn't saved"));
-        assert_eq!(shown[0].body, "Your changes are still in Notes.");
-        assert_eq!(shown[0].action.as_deref(), Some("Try again"));
-        assert_eq!(shown[0].severity, ui::notify::Severity::Warning);
-        let tag = shown[0].tag.clone();
-        // The retry the stall asked for on the way.
-        app.take_save_retry_request();
-        assert!(!app.take_save_retry_request());
-        app.save_notices.click();
-        app.deliver_save_notice(later());
-        assert!(app.take_save_retry_request(), "Try again submits the note");
-        assert_eq!(out_of_sight.withdrawn(), [tag], "and takes it down");
-        assert!(!app.save_surface.gave_up(), "the wait starts over");
-    }
-
-    #[test]
-    fn status_reports_live_word_counts_persistent_failures_and_calm_motion() {
-        eprintln!(
-            "phase word_count_updates_without_reopening_status_and_save_failure_stays_visible"
-        );
+    fn status_reports_live_word_counts() {
+        eprintln!("phase word_count_updates_without_reopening_status");
         {
             let (mut app, _state, _tmp, _) = app_seeded_into_doc();
-            app.shots_save_status = Some(SaveStatus::Saved);
             app.refresh_status();
             app.main
                 .editor_mut()
                 .set_blocks(vec![ui::widget::Block::paragraph("One two three")]);
             app.refresh_status();
             assert_eq!(app.status.state().word_count, Some(3));
-            assert_eq!(app.save_surface.failure(), None);
-            for status in [SaveStatus::Saving, SaveStatus::Saved].repeat(3) {
-                app.shots_save_status = Some(status);
-                app.refresh_status();
-                assert_eq!(
-                    app.save_surface.notice(),
-                    None,
-                    "autosave must not say anything while typing"
-                );
-            }
-            assert_eq!(app.save_surface.state(), Some(&ui::SaveState::Saved));
-
-            app.shots_save_status = Some(SaveStatus::Failed);
-            app.refresh_status();
-            assert!(
-                app.save_surface.failure().is_some(),
-                "an unresolved save failure stays on the surface"
-            );
-            assert_eq!(
-                app.save_surface.next_wake_deadline(),
-                None,
-                "a held failure must not cause an idle wake loop"
-            );
-            assert!(!app.needs_animation_frame(), "nor an idle redraw loop");
-
-            app.shots_save_status = Some(SaveStatus::Saved);
-            app.refresh_status();
-            assert_eq!(
-                app.save_surface.failure(),
-                None,
-                "the failure goes away once the note saves"
-            );
-        }
-
-        eprintln!("phase a_passing_save_notice_wakes_once_to_leave");
-        {
-            let (mut app, state, _tmp, _) = app_seeded_into_doc();
-            app.set_save_status_for_shots(SaveStatus::Saved, ui::SAVE_STALL);
-            assert!(
-                !app.needs_animation_frame(),
-                "the bar's notice takes no frames of its own"
-            );
-            assert!(
-                app.next_wake_deadline().is_some(),
-                "a passing Saved schedules its removal"
-            );
-            assert!(
-                app.has_transient_feedback(),
-                "scene comparisons must observe the transient chip"
-            );
-            assert!(
-                !app.has_pending_visual_work(),
-                "captures can include save feedback without waiting out its lifetime"
-            );
-            assert_expired_save_feedback_presents(&mut app, &state);
         }
 
         eprintln!("phase words_are_counted_once_per_change_of_the_note");
         {
             let (mut app, _state, _tmp, _welcome) = app_seeded_into_doc();
-            app.shots_save_status = Some(SaveStatus::Saved);
             app.refresh_status();
             let boards = app.main.word_count();
             assert!(boards > 0, "the seeded note has words");
@@ -4552,39 +4334,6 @@ mod tests {
             app.refresh_search_blocks();
             assert!(app.search_blocks.is_empty());
         }
-    }
-
-    fn assert_expired_save_feedback_presents(app: &mut NotesApp, state: &ui::State) {
-        // The notice's lifetime runs on the window's clock: Saved landed a
-        // notice's lifetime and a second ago.
-        let landed = ui::time::now()
-            .checked_sub(ui::widget::toast::NOTICE_LIFETIME + ui::time::Duration::from_secs(1))
-            .expect("the test clock can age the notice");
-        let began = landed
-            .checked_sub(ui::SAVE_STALL)
-            .expect("the test clock can age the save");
-        app.save_surface = ui::SaveStatusSurface::new();
-        ui::time::testing::with_monotonic_time(landed, || {
-            app.save_surface.set(ui::SaveState::Saving, began);
-            app.save_surface.advance(landed);
-            app.save_surface.set(ui::SaveState::Saved, landed);
-            app.save_surface.publish();
-        });
-        app.mark_drawn();
-        assert!(!app.self_dirty);
-        assert!(
-            app.update(&state.doc, &state.root),
-            "the deadline's sync must run to take the notice down"
-        );
-        assert!(
-            !app.self_dirty,
-            "the window's bar takes it down; the note does not repaint"
-        );
-        app.sync(&state.doc, &state.root);
-        assert!(
-            app.save_surface.next_wake_deadline().is_none(),
-            "the sync that takes it down consumes the one-shot wake"
-        );
     }
 
     /// A notebook holding one "Welcome" note of several paragraphs, and the

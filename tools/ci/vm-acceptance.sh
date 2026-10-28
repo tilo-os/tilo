@@ -71,7 +71,8 @@ python3 os/dev/probe-kvm.py "$arch" || {
 rm -rf "$work" "$reports"
 mkdir -p "$work" "$reports"
 
-target=$(git rev-parse HEAD)
+# A run off t (tools/ci/builder-vm.sh) has no git checkout, and names its commit.
+target=${TILO_ACCEPTANCE_COMMIT:-$(git rev-parse HEAD)}
 disk=$gate/disk.qcow2
 [[ -s $disk && -s $gate/image-digest ]] \
   || { echo "no installed dev disk in $gate: the check needs os-dev-disk-$arch" >&2; exit 1; }
@@ -165,7 +166,7 @@ jq -n --arg commit "$commit" --arg subject "$(git log -1 --format=%s "$commit" 2
 id "$run_user" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash "$run_user"
 uid=$(id -u "$run_user")
 install -d -m 0700 -o "$run_user" -g "$run_user" "/run/user/$uid"
-chmod 0666 /dev/kvm
+[[ -w /dev/kvm && -r /dev/kvm ]] && [[ $(stat -c %a /dev/kvm) == 666 ]] || chmod 0666 /dev/kvm
 # install -d gives -o only to the directories it names, so .config is named too: a
 # root-owned .config would leave the user unable to make tilo-vm's config and keys there.
 install -d -o "$run_user" -g "$run_user" "/home/$run_user/.config" "/home/$run_user/.config/libvirt"
@@ -176,7 +177,10 @@ chown -R "$run_user:" "$work" "$reports" "$src/target"
 keep=$(env | sed -n 's/^\(RUSTC_WRAPPER\|SCCACHE_[A-Z0-9_]*\|CARGO_[A-Z0-9_]*\|RUSTUP_HOME\|TILO_[A-Z0-9_]*\)=.*/\1/p' \
   | grep -vx CARGO_TARGET_DIR | paste -sd, -)
 as_user() { sudo -n -u "$run_user" -H --preserve-env="$keep" env "XDG_RUNTIME_DIR=/run/user/$uid" "PATH=$PATH" "$@"; }
-as_user virsh --connect qemu:///session capabilities | grep -q "<domain type='kvm'"
+# Read whole before matching: `grep -q` stops at the first match and, under pipefail, the
+# SIGPIPE virsh then gets ended a run with status 141 and nothing said.
+caps=$(as_user virsh --connect qemu:///session capabilities)
+grep -q "<domain type='kvm'" <<<"$caps" || { echo "libvirt's session daemon offers no KVM domain" >&2; exit 1; }
 
 args=(--disk "$disk" --commit "$commit" --outputs "$outputs" --budgets "$budgets"
       --tilo-vm /usr/local/bin/tilo-vm --runner t)
@@ -219,7 +223,15 @@ spec = importlib.util.spec_from_file_location("run", "scripts/vm-acceptance/run.
 run = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(run)
 print(" ".join(run.SHARDS))')}
+unreached=""
 for shard in $shards; do
+  if [[ -n $unreached ]]; then
+    # The same disk and tilo-vm in a fresh VM fail the same way: say so, rather than wait
+    # out the same bounds once per shard.
+    echo "not run: shard $unreached could not reach a working session on this disk (its P00 above)"
+    echo "t-shard: $shard failed"
+    continue
+  fi
   if part "$reports/$shard/report" --shard "$shard"; then
     phase "shard $shard passed"
     echo "t-shard: $shard passed"
@@ -227,6 +239,9 @@ for shard in $shards; do
     status=1
     phase "shard $shard failed"
     echo "t-shard: $shard failed"
+    if jq -e '[.results[].id] == ["P00"]' "$reports/$shard/report/report.json" >/dev/null 2>&1; then
+      unreached=$shard
+    fi
   fi
 done
 exit "$status"

@@ -52,9 +52,10 @@ assert any(
 )
 
 imager_workflow = (ROOT / ".forgejo/workflows/release-imager.yml").read_text()
+# The native lanes the fleet serves: the release and large ARM classes.
 for runner, architecture in (
-    ("imager-linux-x86_64", "x86_64"),
-    ("imager-linux-aarch64", "aarch64"),
+    ("runner-release", "x86_64"),
+    ("runner-large-arm64", "aarch64"),
 ):
     assert f'{{"arch":"{architecture}","runner":"{runner}"}}' in imager_workflow
     medium = f"tilo-installer-linux-{architecture}.img.zst"
@@ -144,6 +145,62 @@ assert "'brew install --cask tilo-imager' 'brew install tilo-imager'" in site_pu
 # The install tests run the same tap people get told to run.
 assert imager_workflow.count('brew tap "$TILO_HOMEBREW_TAP_NAME"') == 2
 assert "brew tap tilo/" not in imager_workflow
+
+# Every host/architecture the install contract declares is one the release
+# workflow builds and requires, and every download it declares is a file the
+# publication gate carries and the landing-page promotion links. A host whose
+# artifacts are declared and built but never mapped is how Windows ARM64 stayed
+# declared, built, and absent from the download matrix.
+required_matrix = imager_workflow.split("          required=(\n", 1)[1].split("          )\n", 1)[0]
+required_assets = {
+    line.strip() for line in required_matrix.splitlines() if line.strip()
+}
+assert required_assets, "the publication gate requires no artifact"
+
+declared_entries = {}
+for host in contract["imager"]["hosts"]:
+    assert host["architectures"], f"{host['os']} declares no architecture"
+    assert host["downloads"], f"{host['os']} declares no download"
+    for download in host["downloads"]:
+        assert set(download) == {"name", "asset", "pageKey"}, download
+        assert "{arch}" in download["asset"], download
+        assert "{archKey}" in download["pageKey"], download
+        for architecture in host["architectures"]:
+            release_file = download["asset"].replace("{arch}", architecture)
+            assert release_file in required_assets, f"{release_file} is not a release prerequisite"
+            runner = "windows" if host["os"].startswith("Windows") else host["os"].lower()
+            if runner == "linux":
+                # The Linux lanes come from the plan's native runner matrix,
+                # not a per-host label.
+                lane = {"x86_64": "runner-release", "aarch64": "runner-large-arm64"}[architecture]
+                assert f'"arch":"{architecture}","runner":"{lane}"' in imager_workflow, release_file
+            else:
+                assert f"runner: imager-{runner}-{architecture}" in imager_workflow, release_file
+            arch_key = "X64" if architecture == "x86_64" else "Arm64"
+            entry = download["pageKey"].replace("{archKey}", arch_key)
+            assert entry not in declared_entries, f"{entry} is declared twice"
+            declared_entries[entry] = release_file
+
+# Windows ARM64 was the host this gap dropped: declared, built by its own
+# runner, required by the publication gate, and absent from the page.
+assert {
+    entry: release_file
+    for entry, release_file in declared_entries.items()
+    if entry.startswith("windowsArm64")
+} == {
+    "windowsArm64Setup": "tilo-imager-setup-windows-aarch64.exe",
+    "windowsArm64Standalone": "tilo-imager-windows-aarch64.exe",
+    "windowsArm64Portable": "tilo-imager-windows-aarch64.zip",
+}
+
+# The publisher may not keep a second copy of this list: it has to derive every
+# entry from the contract, and it has to verify the manifest it publishes rather
+# than a hard-kept subset of it.
+assert ".imager.hosts[] | .os as $os | .downloads[]" in site_publisher
+assert ".pageKey" in site_publisher
+assert "jq -r '.assets | keys[]' \"$manifest\"" in site_publisher
+for entry in declared_entries:
+    assert f'"{entry} "' not in site_publisher, entry
 
 # Imager's native Windows release includes `ui`, and with it the host
 # services that re-export the clipboard crate. The Wayland clipboard backend
@@ -291,6 +348,74 @@ assert "amd64_runner=runner-large" in session_workflow
 assert "arm64_runner=runner-large-arm64" in session_workflow
 assert '{arch:"amd64",runner:$amd64_runner,targets:$amd64_targets}' in session_workflow
 assert '{arch:"arm64",runner:$arm64_runner,targets:$arm64_targets}' in session_workflow
+
+# Workflow enablement is not a support claim. The ARM64 lanes are enabled, so no
+# page may still describe them as switched off or name a pool the workflow does
+# not ask for, and none may turn an enabled lane into a supported public
+# platform: the contract keeps ARM64 in `plannedArchitectures`, and every page
+# that names the release lane says a tag or `full_native` is what selects it.
+for desktop in contract["desktopSession"]:
+    assert any(
+        arch in desktop["plannedArchitectures"]
+        for arch in ("arm64", "aarch64", "aarch64-linux")
+    ), desktop["distribution"]
+getting_started = (ROOT / "docs/getting-started.md").read_text()
+release_pipeline = (ROOT / "docs/release-pipeline.md").read_text()
+packaging_flat = packaging_docs.replace("\n", " ")
+release_flat = release_pipeline.replace("\n", " ")
+for name, page in (
+    ("docs/getting-started.md", getting_started),
+    ("docs/packaging.md", packaging_docs),
+    ("docs/release-pipeline.md", release_pipeline),
+):
+    assert "when enabled" not in page, name
+    assert "not release-gated" not in page, name
+assert "releases build and install-test ARM64" in getting_started
+assert "x86-64 currently" in getting_started
+assert "not a qualified public platform yet" in getting_started
+assert "workflow fact, not a support claim" in getting_started
+assert "`arm64` in tagged and full-native builds" in packaging_docs
+assert "`aarch64` in tagged and full-native builds" in packaging_docs
+assert "runner-large-arm64" in packaging_docs
+assert "runner-arm64" not in packaging_docs
+assert "not a release qualification" in packaging_docs
+assert "no ARM64 combination is release-qualified or publicly supported" in packaging_flat
+assert "native `runner-large-arm64` package lanes" in release_flat
+assert "still marks ARM64 desktop sessions as" in release_pipeline
+
+# Workflow enablement is not a support claim. The ARM64 lanes are enabled, so no
+# page may still describe them as switched off or name a pool the workflow does
+# not ask for, and none may turn an enabled lane into a supported public
+# platform: the contract keeps ARM64 in `plannedArchitectures`, and every page
+# that names the release lane says a tag or `full_native` is what selects it.
+for desktop in contract["desktopSession"]:
+    assert any(
+        arch in desktop["plannedArchitectures"]
+        for arch in ("arm64", "aarch64", "aarch64-linux")
+    ), desktop["distribution"]
+getting_started = (ROOT / "docs/getting-started.md").read_text()
+release_pipeline = (ROOT / "docs/release-pipeline.md").read_text()
+packaging_flat = packaging_docs.replace("\n", " ")
+release_flat = release_pipeline.replace("\n", " ")
+for name, page in (
+    ("docs/getting-started.md", getting_started),
+    ("docs/packaging.md", packaging_docs),
+    ("docs/release-pipeline.md", release_pipeline),
+):
+    assert "when enabled" not in page, name
+    assert "not release-gated" not in page, name
+assert "releases build and install-test ARM64" in getting_started
+assert "x86-64 currently" in getting_started
+assert "not a qualified public platform yet" in getting_started
+assert "workflow fact, not a support claim" in getting_started
+assert "`arm64` in tagged and full-native builds" in packaging_docs
+assert "`aarch64` in tagged and full-native builds" in packaging_docs
+assert "runner-large-arm64" in packaging_docs
+assert "runner-arm64" not in packaging_docs
+assert "not a release qualification" in packaging_docs
+assert "no ARM64 combination is release-qualified or publicly supported" in packaging_flat
+assert "native `runner-large-arm64` package lanes" in release_flat
+assert "still marks ARM64 desktop sessions as" in release_pipeline
 package_targets = (ROOT / "dist/ci/package-targets.txt").read_text()
 assert "amd64|arch|docker.io/menci/archlinuxarm@sha256:" in package_targets
 assert "arm64|arch|docker.io/gomasy/archlinuxarm@sha256:" in package_targets

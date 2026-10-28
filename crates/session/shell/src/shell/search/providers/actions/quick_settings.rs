@@ -9,19 +9,16 @@ use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, Par
 use std::rc::Rc;
 
 pub(crate) struct SharedQsDispatcher {
-    pub(super) actions:
-        std::cell::RefCell<Rc<dyn crate::shell::quick_settings::actions::QsActions>>,
-    pub(super) availability:
-        std::cell::Cell<crate::shell::quick_settings::actions::QsActionAvailability>,
-    pub(super) radio_job:
-        std::cell::RefCell<Option<crate::shell::quick_settings::radio::RadioTicket>>,
+    pub(super) actions: std::cell::RefCell<Rc<dyn tilo_quick_settings::actions::QsActions>>,
+    pub(super) availability: std::cell::Cell<tilo_quick_settings::actions::QsActionAvailability>,
+    pub(super) radio_job: std::cell::RefCell<Option<tilo_quick_settings::radio::RadioTicket>>,
     pub(super) radio_wake: std::cell::RefCell<Option<crate::session_runtime::Wake>>,
 }
 
 impl SharedQsDispatcher {
     pub(crate) fn new(
-        actions: Rc<dyn crate::shell::quick_settings::actions::QsActions>,
-        availability: crate::shell::quick_settings::actions::QsActionAvailability,
+        actions: Rc<dyn tilo_quick_settings::actions::QsActions>,
+        availability: tilo_quick_settings::actions::QsActionAvailability,
     ) -> Self {
         Self {
             actions: std::cell::RefCell::new(actions),
@@ -33,8 +30,8 @@ impl SharedQsDispatcher {
 
     pub(crate) fn replace(
         &self,
-        actions: Rc<dyn crate::shell::quick_settings::actions::QsActions>,
-        availability: crate::shell::quick_settings::actions::QsActionAvailability,
+        actions: Rc<dyn tilo_quick_settings::actions::QsActions>,
+        availability: tilo_quick_settings::actions::QsActionAvailability,
     ) {
         if let Some(job) = self.radio_job.borrow().as_ref() {
             job.retire();
@@ -58,7 +55,7 @@ impl SharedQsDispatcher {
         &self,
         change: os_actions::RadioChange,
         chrome: &Chrome,
-    ) -> Result<Option<crate::shell::quick_settings::radio::RadioTicket>, String> {
+    ) -> Result<Option<tilo_quick_settings::radio::RadioTicket>, String> {
         let id = match change {
             os_actions::RadioChange::Wifi(_) => QS_WIFI_ID,
             os_actions::RadioChange::Airplane(_) => QS_AIRPLANE_ID,
@@ -71,7 +68,7 @@ impl SharedQsDispatcher {
         }
         let actions = self.actions.borrow().clone();
         if let Some(work) = actions.prepare_radio_change(change) {
-            let job = crate::shell::quick_settings::radio::RadioTicket::start(
+            let job = tilo_quick_settings::radio::RadioTicket::start(
                 change,
                 work,
                 self.radio_wake.borrow().clone(),
@@ -84,14 +81,15 @@ impl SharedQsDispatcher {
             Ok(Some(job))
         } else {
             let radios = change.run(actions.as_ref())?;
-            crate::shell::quick_settings::radio::apply(change, Ok(radios), chrome);
+            let mut state = chrome.borrow_mut();
+            let landed =
+                tilo_quick_settings::radio::apply(change, Ok(radios), &mut state.quick_settings);
+            state.land_radio_change(landed);
             Ok(None)
         }
     }
 
-    pub(crate) fn take_radio_completion(
-        &self,
-    ) -> Option<crate::shell::quick_settings::radio::RadioTicket> {
+    pub(crate) fn take_radio_completion(&self) -> Option<tilo_quick_settings::radio::RadioTicket> {
         let mut pending = self.radio_job.borrow_mut();
         if !pending.as_ref()?.finished() {
             return None;
@@ -201,7 +199,7 @@ pub(super) fn validated_percent(args: &ActionArgs) -> f32 {
 
 pub(super) fn apply_quick_settings_effect(
     id: &str,
-    actions: &dyn crate::shell::quick_settings::actions::QsActions,
+    actions: &dyn tilo_quick_settings::actions::QsActions,
     args: &ActionArgs,
 ) -> Result<(), ActionError> {
     let result = match id {
@@ -215,11 +213,9 @@ pub(super) fn apply_quick_settings_effect(
         QS_AIRPLANE_ID => actions.set_airplane_mode(args.boolean("enabled").unwrap_or(false)),
         QS_POWER_ID => {
             let profile = match args.text("profile") {
-                Some("saver") => crate::shell::quick_settings::actions::PowerProfile::Saver,
-                Some("balanced") => crate::shell::quick_settings::actions::PowerProfile::Balanced,
-                Some("performance") => {
-                    crate::shell::quick_settings::actions::PowerProfile::Performance
-                }
+                Some("saver") => tilo_quick_settings::actions::PowerProfile::Saver,
+                Some("balanced") => tilo_quick_settings::actions::PowerProfile::Balanced,
+                Some("performance") => tilo_quick_settings::actions::PowerProfile::Performance,
                 _ => return Err(ActionError::Refused("invalid power profile".into())),
             };
             actions.set_power_profile(profile)
@@ -238,11 +234,11 @@ pub(super) fn apply_quick_settings_effect(
 /// same typed parameters and call the same provider path as external action
 /// invocation. Operations outside this slice pass through unchanged.
 pub(crate) struct ValidatedQsActions<'a> {
-    inner: &'a dyn crate::shell::quick_settings::actions::QsActions,
+    inner: &'a dyn tilo_quick_settings::actions::QsActions,
 }
 
 impl<'a> ValidatedQsActions<'a> {
-    pub(crate) fn new(inner: &'a dyn crate::shell::quick_settings::actions::QsActions) -> Self {
+    pub(crate) fn new(inner: &'a dyn tilo_quick_settings::actions::QsActions) -> Self {
         Self { inner }
     }
 
@@ -257,7 +253,7 @@ impl<'a> ValidatedQsActions<'a> {
     }
 }
 
-impl crate::shell::quick_settings::actions::QsActions for ValidatedQsActions<'_> {
+impl tilo_quick_settings::actions::QsActions for ValidatedQsActions<'_> {
     fn prepare_radio_change(
         &self,
         change: os_actions::RadioChange,
@@ -320,12 +316,12 @@ impl crate::shell::quick_settings::actions::QsActions for ValidatedQsActions<'_>
 
     fn set_power_profile(
         &self,
-        profile: crate::shell::quick_settings::actions::PowerProfile,
+        profile: tilo_quick_settings::actions::PowerProfile,
     ) -> Result<(), String> {
         let profile = match profile {
-            crate::shell::quick_settings::actions::PowerProfile::Saver => "saver",
-            crate::shell::quick_settings::actions::PowerProfile::Balanced => "balanced",
-            crate::shell::quick_settings::actions::PowerProfile::Performance => "performance",
+            tilo_quick_settings::actions::PowerProfile::Saver => "saver",
+            tilo_quick_settings::actions::PowerProfile::Balanced => "balanced",
+            tilo_quick_settings::actions::PowerProfile::Performance => "performance",
         };
         self.dispatch(
             QS_POWER_ID,
@@ -497,7 +493,7 @@ pub(super) fn display_brightness_connector(id: &str) -> Option<&str> {
 /// brightness can be set: what "brighter" and "dimmer" adjust.
 pub(super) fn focused_brightness(
     state: &ChromeState,
-) -> Option<&crate::shell::chrome_state::DisplayBrightness> {
+) -> Option<&tilo_quick_settings::DisplayBrightness> {
     let focused = state.quick_settings.focused_display.as_deref()?;
     state
         .quick_settings

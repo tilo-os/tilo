@@ -131,6 +131,29 @@ impl Direct {
             .collect()
     }
 
+    /// The records `query` matches, with their ranks, in no order: the scan
+    /// [`Self::search`] does, without ordering or paging what it found.
+    pub(crate) fn ranks(
+        &self,
+        matching: Matching,
+        ranks: Ranks,
+        query: &str,
+    ) -> Vec<(u64, Option<i32>)> {
+        match Typed::new(self, matching, ranks, query) {
+            // An empty query browses every record.
+            None => self
+                .records
+                .iter()
+                .map(|record| (record.key, Some(0)))
+                .collect(),
+            Some(typed) => self
+                .records
+                .iter()
+                .filter_map(|record| Some((record.key, Some(typed.rank(record)?))))
+                .collect(),
+        }
+    }
+
     /// The page of `query`'s hits, ordered by `score` of their
     /// [`Signals`], then rank, then key: what the tantivy path answers.
     pub(crate) fn search(

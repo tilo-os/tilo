@@ -367,6 +367,7 @@ pub fn start_peer_with_store(
             host_cert,
             revocations: RevocationList::new(),
             watching: false,
+            background: false,
         },
         Arc::new(key),
         store,
@@ -480,30 +481,6 @@ pub async fn next_document(peer: &PeerHandle, pending: &mut Vec<PeerEvent>) -> D
         let found = pending
             .iter()
             .position(|event| matches!(event, PeerEvent::Document(_)))
-            .and_then(|index| match pending.remove(index) {
-                PeerEvent::Document(document) => document.mutation(),
-                _ => None,
-            });
-        async move { found }
-    })
-    .await
-}
-
-/// The next document `peer` opened on `route`, as [`next_document`] waits
-/// for any: what the room sends on its other routes (its shared desktop
-/// record, which every room holds) is left in `pending`.
-pub async fn next_document_on(
-    peer: &PeerHandle,
-    pending: &mut Vec<PeerEvent>,
-    route: &tilo_browser_peer::DocumentRoute,
-) -> DocumentMutation {
-    wait_for("a document on the route", || {
-        pending.extend(peer.drain());
-        let found = pending
-            .iter()
-            .position(
-                |event| matches!(event, PeerEvent::Document(document) if document.route == *route),
-            )
             .and_then(|index| match pending.remove(index) {
                 PeerEvent::Document(document) => document.mutation(),
                 _ => None,

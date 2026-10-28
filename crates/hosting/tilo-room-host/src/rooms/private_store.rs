@@ -17,6 +17,10 @@ use tokio::sync::watch;
 use uuid::Uuid;
 use web_time::SystemTime;
 
+/// A person of the room: their root, the name the room keeps for them and
+/// their current devices.
+type Person = ([u8; 32], Option<String>, Vec<[u8; 32]>);
+
 const MAX_PAIRS: usize = 1024;
 const MAX_MESSAGES: usize = 4096;
 const MAX_TEXT: usize = 16_384;
@@ -273,29 +277,50 @@ impl GovernedRoom {
     /// by the name the room keeps for them unless that is only one of their
     /// devices' labels ("Browser", "Primary device"): a device's label never
     /// names a person.
+    ///
+    /// The room's owner is one of them whenever one of their devices other
+    /// than the governing host is current here, although the owner is never
+    /// admitted like the people they invite: governance keeps the owner
+    /// apart from its admitted members, and without this a guest could
+    /// write to every member but the person who invited them. The host
+    /// that governs the room is nobody's messaging endpoint.
     fn private_contacts(&self, own: &str, now: SystemTime) -> Result<Vec<PrivateContact>, String> {
         let certificates = self.peer.certificates();
-        Ok(self
-            .peer
-            .governance()
+        let speaks_for = |device: [u8; 32], person: &[u8; 32]| {
+            self.peer.permissions(device, now).is_ok_and(|p| {
+                !p.foreign && p.delegate.is_none() && p.person == hex::encode(person)
+            })
+        };
+        let governance = self.peer.governance();
+        let owner = governance.owner_user_public_key();
+        let mut people: Vec<Person> = governance
             .governed_members(now)?
             .into_iter()
-            .filter(|m| !m.removed && hex::encode(m.user_public_key) != own)
-            .filter(|m| {
-                m.active_device_keys.iter().any(|device| {
-                    self.peer.permissions(*device, now).is_ok_and(|p| {
-                        !p.foreign
-                            && p.delegate.is_none()
-                            && p.person == hex::encode(m.user_public_key)
-                    })
+            .filter(|m| !m.removed)
+            .map(|m| (m.user_public_key, m.display_name, m.active_device_keys))
+            .collect();
+        if !people.iter().any(|(person, ..)| *person == owner) {
+            let devices = certificates
+                .iter()
+                .filter(|cert| {
+                    cert.user_public_key == owner
+                        && cert.device_public_key != self.record.authority.device_public_key
                 })
+                .map(|cert| cert.device_public_key)
+                .collect();
+            people.push((owner, None, devices));
+        }
+        Ok(people
+            .into_iter()
+            .filter(|(person, _, devices)| {
+                hex::encode(person) != own
+                    && devices.iter().any(|device| speaks_for(*device, person))
             })
-            .map(|m| PrivateContact {
-                public_key: hex::encode(m.user_public_key),
-                display_name: m.display_name.filter(|name| {
+            .map(|(person, name, _)| PrivateContact {
+                public_key: hex::encode(person),
+                display_name: name.filter(|name| {
                     !certificates.iter().any(|cert| {
-                        cert.user_public_key == m.user_public_key
-                            && cert.device_label.trim() == name.trim()
+                        cert.user_public_key == person && cert.device_label.trim() == name.trim()
                     })
                 }),
                 conversation: false,
@@ -830,6 +855,76 @@ mod tests {
         assert!(reopened.private_watch(&alice, &peer).is_ok());
         send(&reopened, &alice, &bob, invocation, "retained private text").unwrap();
         assert_eq!(before, std::fs::read(reopened.private_path()).unwrap());
+    }
+
+    #[test]
+    fn a_guest_can_write_to_the_owner_who_invited_them_but_not_to_the_host() {
+        let directory = tempfile::tempdir().unwrap();
+        let (key, governor) = super::super::tests::governor();
+        let mut room = GovernedRoom::create(
+            directory.path(),
+            "Invited",
+            &governor,
+            &key,
+            SystemTime::now(),
+        )
+        .unwrap();
+        let guest = member(&mut room, &key, 61);
+        let owner_key = hex::encode(governor.user_public_key);
+        let contacts = |room: &GovernedRoom| {
+            let PrivateReply::Contacts(contacts) = room
+                .private_command(&guest, PrivateOperation::Contacts)
+                .unwrap()
+            else {
+                panic!("contacts")
+            };
+            contacts
+                .into_iter()
+                .map(|contact| contact.public_key)
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            contacts(&room).is_empty(),
+            "the governing host alone is nobody's messaging endpoint"
+        );
+        // The owner's own browser, certified by the same root.
+        let owner_root = SigningKey::from_bytes(&[1; 32]);
+        let page_key = SigningKey::from_bytes(&[3; 32]);
+        let mut page = DeviceCert {
+            user_public_key: governor.user_public_key,
+            device_public_key: page_key.verifying_key().to_bytes(),
+            device_label: "Browser".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut page, &owner_root).unwrap();
+        assert!(
+            room.peer
+                .admit_certificate(page.clone(), &key, SystemTime::now())
+                .unwrap()
+        );
+        assert_eq!(contacts(&room), [owner_key]);
+        let invocation = Uuid::new_v4();
+        assert!(matches!(
+            send(&room, &guest, &page, invocation, "Thanks for the invite").unwrap(),
+            PrivateReply::Sent
+        ));
+        let PrivateReply::Conversation(conversation) = room
+            .private_command(
+                &page,
+                PrivateOperation::Read {
+                    peer: hex::encode(guest.user_public_key),
+                    after_sequence: 0,
+                    limit: 10,
+                },
+            )
+            .unwrap()
+        else {
+            panic!("expected conversation")
+        };
+        assert_eq!(conversation.messages[0].text, "Thanks for the invite");
     }
 
     #[test]

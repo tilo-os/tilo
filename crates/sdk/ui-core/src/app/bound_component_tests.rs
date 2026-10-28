@@ -944,6 +944,18 @@ impl ActionFixture {
         separate: bool,
         queue: Option<&crate::owner_wake::OwnerWakeQueue>,
     ) -> Self {
+        Self::assemble(shared, separate, queue, None)
+    }
+    /// The fixture's app woken through `scope`, as a running app is.
+    fn scoped(scope: crate::wake::WakeScope) -> Self {
+        Self::assemble(false, false, None, Some(scope))
+    }
+    fn assemble(
+        shared: bool,
+        separate: bool,
+        queue: Option<&crate::owner_wake::OwnerWakeQueue>,
+        scope: Option<crate::wake::WakeScope>,
+    ) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::record::RecordOwners::new(temp.path().into());
         let records = owners
@@ -1023,7 +1035,12 @@ impl ActionFixture {
             bindings.push(component.callback_binding());
             column = column.push(Box::new(TileHost::from_component(component)));
         }
-        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(column));
+        let mut app = match scope {
+            Some(scope) => {
+                App::from_scoped_parts_with_controlled_inputs(scope, State::new(), Box::new(column))
+            }
+            None => App::new_with_controlled_inputs(State::new(), Box::new(column)),
+        };
         app.init_layout();
         Self {
             _temp: temp,
@@ -1632,51 +1649,6 @@ fn bound_controls_read_the_host_authority_only_when_it_changes() {
         vec![(false, false), (true, false)]
     );
     assert_eq!(reads.load(Ordering::SeqCst), 2);
-}
-
-/// A bound component whose grant ends at a time of its policy clock has its
-/// controls walked again then, and not before.
-#[test]
-fn bound_controls_wake_when_a_grant_ends_by_the_policy_clock() {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    let clock = Arc::new(AtomicU64::new(100));
-    let mut fixture = ActionFixture::new();
-    let sampled = clock.clone();
-    fixture.permissions.set(
-        crate::permissions::PermissionContext::granted(
-            "fixture-user",
-            &crate::permissions::TreePath::root(),
-            crate::permissions::policy::KindSet::ALL,
-            Some(110),
-        )
-        .with_policy_time_sampler(Arc::new(move || Ok(sampled.load(Ordering::SeqCst)))),
-    );
-    CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
-    let start = crate::time::now();
-    crate::time::testing::with_monotonic_time(start, || {
-        fixture.app.refresh_control_action_availability();
-    });
-    assert_eq!(
-        CONTROL_AUTHORITY.with_borrow(Clone::clone),
-        vec![(false, true), (true, true)]
-    );
-    let ends = start + std::time::Duration::from_secs(10);
-    assert_eq!(fixture.app.permissions_change_at(), Some(ends));
-    CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
-    crate::time::testing::with_monotonic_time(ends - std::time::Duration::from_millis(1), || {
-        fixture.app.refresh_control_action_availability();
-    });
-    assert!(CONTROL_AUTHORITY.with_borrow(Vec::is_empty));
-    clock.store(110, Ordering::SeqCst);
-    crate::time::testing::with_monotonic_time(ends, || {
-        fixture.app.refresh_control_action_availability();
-    });
-    assert_eq!(
-        CONTROL_AUTHORITY.with_borrow(Clone::clone),
-        vec![(false, false), (true, false)]
-    );
-    assert_eq!(fixture.app.permissions_change_at(), None);
 }
 
 #[test]
@@ -3327,3 +3299,6 @@ fn broker_text_slot_keeps_the_advertised_primary_parameter_through_model_resolut
         Err(tilo_actions::DoorError::InvalidArguments(_))
     ));
 }
+
+#[path = "bound_policy_clock_tests.rs"]
+mod policy_clock;

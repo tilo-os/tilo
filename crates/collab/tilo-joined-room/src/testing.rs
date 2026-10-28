@@ -30,8 +30,18 @@ pub fn enroll_interactive_governor(
     key: &SigningKey,
     certificate: &DeviceCert,
 ) -> Result<governor::TestGovernor, String> {
+    enroll_interactive_governor_in(owner, key, certificate, ROOM)
+}
+
+/// [`enroll_interactive_governor`] into `room`.
+pub fn enroll_interactive_governor_in(
+    owner: &NativeWorkspaceOwner,
+    key: &SigningKey,
+    certificate: &DeviceCert,
+    room: &str,
+) -> Result<governor::TestGovernor, String> {
     let mut governor =
-        governor::TestGovernor::empty_interactive(certificate.clone(), key.clone(), ROOM).unwrap();
+        governor::TestGovernor::empty_interactive(certificate.clone(), key.clone(), room).unwrap();
     let endpoint = iroh_base::EndpointAddr::new(
         iroh_base::EndpointId::from_bytes(&certificate.device_public_key).unwrap(),
     );

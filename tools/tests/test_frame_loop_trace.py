@@ -48,7 +48,7 @@ class FrameLoopTraceTests(unittest.TestCase):
         self.path.write_text(stream.getvalue(), encoding="utf-8", newline="")
 
     def test_native_schema_strings_and_optional_numbers_roundtrip(self) -> None:
-        source = (ROOT / "crates/session/shell/src/compositor/metrics.rs").read_text()
+        source = (ROOT / "crates/session/frame-metrics/src/lib.rs").read_text()
         match = re.search(r'pub const CSV_HEADER: &str = "(.*?)";', source, re.S)
         self.assertIsNotNone(match)
         self.assertEqual(re.sub(r"\\\n\s*", "", match.group(1)).split(","), HEADER)

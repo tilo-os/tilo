@@ -1144,6 +1144,7 @@ impl InstallerApp {
     pub fn new() -> Self {
         let mut s = Self::with_disks(SystemBackend.read_disks());
         s.power_probe = current_insufficient_battery_percent;
+        s.hardware = crate::hardware_report::HardwareReport::probe();
         s.timezones = crate::timezones::list_timezones();
         match crate::media_profile::load() {
             Ok(Some(profile)) => s.apply_media_profile(profile),
@@ -1238,8 +1239,9 @@ impl InstallerApp {
     }
 
     /// Construct with an explicit disk list (tests / headless rendering).
-    /// Uses a small deterministic time-zone list so tests don't shell out;
-    /// [`Self::new`] swaps in the full system list.
+    /// Uses a small deterministic time-zone list so tests don't shell out and
+    /// reads no hardware report; [`Self::new`] swaps in the full system list
+    /// and this computer's report.
     pub fn with_disks(disks: Vec<Disk>) -> Self {
         Self {
             network: InstallerNetwork::default(),
@@ -1262,7 +1264,7 @@ impl InstallerApp {
             force_startup_passphrase: false,
             unattended_mode: false,
             unattended_error: None,
-            hardware: crate::hardware_report::HardwareReport::probe(),
+            hardware: crate::hardware_report::HardwareReport::default(),
             tpm2: has_tpm2(),
             secure_boot: secure_boot_enabled(),
             kernel_lockdown: kernel_lockdown_active(),
@@ -1337,6 +1339,7 @@ impl InstallerApp {
     pub(crate) fn for_unattended() -> Self {
         let mut app = Self::with_disks(SystemBackend.read_disks());
         app.power_probe = current_insufficient_battery_percent;
+        app.hardware = crate::hardware_report::HardwareReport::probe();
         app.timezones = crate::timezones::list_timezones();
         app.set_filesystem_support(load_filesystem_support());
         app
@@ -1385,6 +1388,17 @@ impl InstallerApp {
         self.secure_boot = protection.secure_boot;
         self.kernel_lockdown = protection.kernel_lockdown;
         self.target_verified_boot = protection.target_verified_boot;
+        self
+    }
+
+    /// Replace the hardware report. Production never calls this; tests use
+    /// it to hand Review a report of their own instead of this host's.
+    #[cfg(test)]
+    pub(crate) fn with_hardware_for_test(
+        mut self,
+        report: imager_backend::support_report::SupportReport,
+    ) -> Self {
+        self.hardware = crate::hardware_report::HardwareReport::from_report(report);
         self
     }
 
@@ -5404,6 +5418,65 @@ mod tests {
             assert!(!app.filesystem_policy_ready());
             app.step = Step::Options;
             assert!(app.validate_current_step_details().is_err());
+        }
+    }
+
+    fn hardware_report(
+        state: imager_backend::support_report::SupportState,
+    ) -> imager_backend::support_report::SupportReport {
+        use imager_backend::support_report::{
+            Applicability, ComponentKind, ComponentSupport, DestinationIdentity, REPORT_SCHEMA,
+            ReportSource, SupportReason, SupportReport,
+        };
+        SupportReport {
+            schema: REPORT_SCHEMA.into(),
+            identity: DestinationIdentity {
+                source: ReportSource::LocalScan,
+                manufacturer: Some("Example".into()),
+                model: Some("Laptop 14".into()),
+                variant: Some("BOARD-1".into()),
+                board: None,
+                sku: None,
+                firmware: None,
+            },
+            kernel: Some("6.17.0".into()),
+            architecture: Some("x86_64".into()),
+            components: vec![ComponentSupport {
+                kind: ComponentKind::Storage,
+                name: "Observed 9000".into(),
+                present: true,
+                state,
+                applicability: Applicability::ObservationOnly,
+                reason: SupportReason::NotDetected,
+                evidence: Vec::new(),
+                remedy: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn review_begin_refuses_a_report_missing_an_essential_component() {
+        use imager_backend::support_report::SupportState;
+        for (state, blocked) in [
+            (SupportState::Unverified, false),
+            (SupportState::Unsupported, true),
+        ] {
+            let mut app =
+                InstallerApp::with_disks(sample()).with_hardware_for_test(hardware_report(state));
+            app.selected_disk = Some(0);
+            app.step = Step::Review;
+            app.tpm2 = false;
+            app.recovery_ack = true;
+            app.erase_confirmation.set("/dev/sda".to_string());
+            *app.password.lock().unwrap() = "correct horse battery staple".to_string();
+            let _ = build(&mut app);
+            let begin_enabled = find_test_id(&app, "Begin Install").map(Widget::is_focusable);
+            assert_eq!(begin_enabled, Some(!blocked), "{state:?}");
+            assert_eq!(
+                find_test_id(&app, "installer.hardware.blocked").is_some(),
+                blocked,
+                "{state:?}"
+            );
         }
     }
 

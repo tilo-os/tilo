@@ -386,6 +386,18 @@ impl SettingsChange {
         self.touches(&["desktop_controls"])
     }
 
+    /// The person's record of the desktop's control hints: what they learned
+    /// on any of their devices, and whether hints show.
+    pub fn control_hints(&self) -> bool {
+        self.touches(&[settings_store::control_hints::SECTION])
+    }
+
+    /// When and from whom notifications may interrupt (do not disturb,
+    /// quiet hours, per-app choices).
+    pub fn notifications(&self) -> bool {
+        self.touches(&[settings_store::notification_policy::SECTION])
+    }
+
     /// The theme: `appearance`, and the contrast and text-size layers in
     /// `accessibility`. The only change that wakes every window to repaint.
     pub fn appearance(&self) -> bool {
@@ -1401,6 +1413,50 @@ mod tests {
         let keyboard = KeyboardSettings::from_section(&live.section(SECTION));
         assert_eq!(keyboard.layouts, "de");
         assert_eq!(keyboard.source_ids, ["de"]);
+    }
+
+    /// The person's control-hint record and notification policy reach the
+    /// desktop with the settings change that carries them, read from the
+    /// changed document: nothing reads them again on a schedule.
+    #[test]
+    fn the_hint_record_and_the_notification_policy_follow_their_settings_change() {
+        let path = scratch("hints-notifications");
+        write(&path, "input", json!({"tap_to_click": true}));
+        let live = LiveSettings::start_at(path.clone(), || {});
+        let mut follower = SectionFollower::new(&live);
+
+        changed(&live, || {
+            write(
+                &path,
+                settings_store::control_hints::SECTION,
+                json!({"learned": {"enabled": false}}),
+            );
+        });
+        let change = SettingsChange::from(follower.changed_sections(&live));
+        assert!(change.control_hints());
+        assert!(!change.notifications());
+        assert!(
+            !settings_store::control_hints::LEARNED
+                .from_document(&live.snapshot().document)
+                .enabled
+        );
+
+        changed(&live, || {
+            write(
+                &path,
+                settings_store::notification_policy::SECTION,
+                json!({"do_not_disturb": true}),
+            );
+        });
+        let change = SettingsChange::from(follower.changed_sections(&live));
+        assert!(change.notifications());
+        assert!(!change.control_hints());
+        assert!(
+            settings_store::notification_policy::NotificationPolicy::from_document(
+                &live.snapshot().document
+            )
+            .do_not_disturb
+        );
     }
 
     #[test]

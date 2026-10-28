@@ -2110,20 +2110,19 @@ pub(crate) struct OrdinaryConfirmation {
 }
 
 fn control_input_surface(spec: &tilo_actions::ActionSpec) -> ControlInputSurface {
-    match &spec.input {
+    match spec.input() {
         tilo_actions::ActionInput::Immediate(_) => ControlInputSurface::Immediate,
-        tilo_actions::ActionInput::Deferred { type_id, .. } => ControlInputSurface::Deferred {
-            type_id: type_id.clone(),
+        tilo_actions::ActionInput::Deferred { type_id } => ControlInputSurface::Deferred {
+            type_id: type_id.to_owned(),
         },
         tilo_actions::ActionInput::Prompted {
             prompt,
             placeholder,
             collects,
-            ..
         } => ControlInputSurface::Prompted {
-            prompt: prompt.clone(),
-            placeholder: placeholder.clone(),
-            collects: *collects,
+            prompt: prompt.to_owned(),
+            placeholder: placeholder.to_owned(),
+            collects,
         },
     }
 }
@@ -2246,25 +2245,27 @@ pub(crate) fn control_witness_with_arguments(
         ControlContinuationArguments::Text(value) => (Some(value.as_str()), None),
         ControlContinuationArguments::Json(arguments) => (None, Some(arguments)),
     };
-    let (intent, continuation) = if matches!(spec.input, tilo_actions::ActionInput::Deferred { .. })
-    {
-        validate_deferred_arguments(spec, arguments, argument)?;
-        let intent = DeferredIntent::capture(spec)?;
-        let continuation = intent.draft().clone();
-        (PreparedActionIntent::Deferred(intent), continuation)
-    } else {
-        let encoded = encode_resource_action(&resources, &invocation.address, arguments, argument)?;
-        let continuation = spec
-            .continuation_identity(tilo_actions::ContinuationQuery::Exact(
-                original_arguments.query(),
-            ))
-            .ok_or_else(|| tilo_actions::DoorError::Unavailable {
-                code: "unsupported_continuation_identity".into(),
-                reason: "The action provider cannot prove the original target and handler identity"
-                    .into(),
-            })?;
-        (PreparedActionIntent::Encoded(encoded), continuation)
-    };
+    let (intent, continuation) =
+        if matches!(spec.input(), tilo_actions::ActionInput::Deferred { .. }) {
+            validate_deferred_arguments(spec, arguments, argument)?;
+            let intent = DeferredIntent::capture(spec)?;
+            let continuation = intent.draft().clone();
+            (PreparedActionIntent::Deferred(intent), continuation)
+        } else {
+            let encoded =
+                encode_resource_action(&resources, &invocation.address, arguments, argument)?;
+            let continuation = spec
+                .continuation_identity(tilo_actions::ContinuationQuery::Exact(
+                    original_arguments.query(),
+                ))
+                .ok_or_else(|| tilo_actions::DoorError::Unavailable {
+                    code: "unsupported_continuation_identity".into(),
+                    reason:
+                        "The action provider cannot prove the original target and handler identity"
+                            .into(),
+                })?;
+            (PreparedActionIntent::Encoded(encoded), continuation)
+        };
     Ok(ControlWitness {
         identity: control_identity_from_spec(resource, spec, continuation),
         intent,
@@ -3364,6 +3365,28 @@ pub struct CallbackBinding {
     pub(crate) writes_as_author: bool,
 }
 
+impl crate::collaboration::native_initial::ComponentBinding for CallbackBinding {
+    type Entry = CallbackScopeGuard;
+    type EnterError = BoundDispatchError;
+    fn admission_route(&self) -> Option<crate::collaboration::RouteSpec> {
+        CallbackBinding::admission_route(self)
+    }
+    fn app_id(&self) -> &str {
+        &self.app_id
+    }
+    fn checkout(&self) -> &RecordCheckout {
+        &self.checkout
+    }
+    fn enter(&self) -> Result<CallbackScopeGuard, BoundDispatchError> {
+        CallbackBinding::enter(self)
+    }
+    fn merge_committed(&self, mutation: collab_types::DocumentMutation) -> Result<(), String> {
+        self.records
+            .merge_remote_document(&self.checkout, mutation)
+            .map(|_| ())
+    }
+}
+
 /// Private retained traversal request. The public Widget trait cannot expose a
 /// root/registry closure directly; only toolkit code can construct this request.
 type ComponentVisitor<'a> = dyn FnMut(
@@ -3428,6 +3451,57 @@ pub(crate) fn service_retained_owner_model(
                     .map_err(BoundDispatchError::Persistence)
             });
             result = Some(admitted.and(projected).and(offered));
+        }
+        None
+    };
+    let mut request = ComponentRequest {
+        target: Some(captured),
+        found: false,
+        visit: &mut visit,
+    };
+    root.visit_retained_components(&mut RetainedComponentRequest {
+        inner: &mut request,
+    })?;
+    result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
+}
+
+/// A record's save moved on, and nothing else woke the owner
+/// ([`crate::owner_wake::OwnerWakeRequest::save_progress_only`]): its owner
+/// is told the save status alone. No model callback runs (update, settle,
+/// sync), nothing is offered, and the window's layout stands: the status
+/// is shown by what the owner presents of it (the window's bar), as when a
+/// sync delivers it. A save still in flight wakes the owner again when it
+/// moves on. Whether the owner shows something new, which a frame draws.
+pub(crate) fn service_owner_save_progress(
+    root: &mut dyn Widget,
+    work: &crate::owner_wake::OwnerWakeRequest,
+) -> Result<bool, BoundDispatchError> {
+    let captured = work.binding();
+    let _entry = captured.enter()?;
+    let mut result = None;
+    let mut visit = |current: &CallbackBinding,
+                     owner: &mut dyn crate::widget::AppWidget,
+                     _: &tilo_actions::ActionRegistry| {
+        if current.same_component(captured) {
+            result = Some(current.enter().and_then(|_entry| {
+                let status = current
+                    .records
+                    .save_status(&current.checkout.id)
+                    .map_err(BoundDispatchError::Record)?;
+                if status == crate::record::RecordSaveStatus::Saving {
+                    let wake = current.lifetime.clone();
+                    current.records.wake_on_save_progress(
+                        &current.checkout.id,
+                        std::sync::Arc::new(move || wake.wake_save_progress()),
+                    );
+                }
+                // What the owner shows of it: its window's bar (read by
+                // the host's next frame, the window current here), or
+                // anything else it asks to redraw.
+                let bar = crate::window_toolbar::revision();
+                owner.record_save_status(status);
+                Ok(crate::window_toolbar::revision() != bar || owner.needs_redraw())
+            }));
         }
         None
     };
@@ -4312,7 +4386,8 @@ type ActiveRecord = (
 thread_local! {
     static ACTIVE: RefCell<Option<ActiveRecord>> = const { RefCell::new(None) };
 }
-pub(crate) struct CallbackScopeGuard {
+/// What entering a component's callback scope holds until it is dropped.
+pub struct CallbackScopeGuard {
     _wake: WakeScopeGuard,
     _device: ExecutingHostDevice,
     _person: ExecutingHostPerson,
@@ -4374,7 +4449,7 @@ impl CallbackBinding {
         &self,
         witness: Option<&crate::collaboration::PrimaryRouteWitness>,
     ) -> bool {
-        witness.is_some_and(|witness| self.matches_route(&witness.route))
+        witness.is_some_and(|witness| self.matches_route(witness.route()))
     }
     /// Whether `route` is the broker route this binding names.
     pub(crate) fn matches_route(&self, route: &crate::collaboration::RouteSpec) -> bool {

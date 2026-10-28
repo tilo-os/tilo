@@ -337,9 +337,12 @@ newline-terminated `NAME=value` per line:
   native and package-index gates pass, the workflow updates only
   `src/data/imager-release.json`, including its exact public `releaseRoot`, runs
   the site's release contract and full production build, and pushes that
-  exact-tag change to `main`. Promotion also inspects the generated site and
-  refuses to push unless its signed setup link uses that manifest root and no
-  private-source download URL remains.
+  exact-tag change to `main`. The manifest's download entries are derived from
+  `docs/install-contract.json`, each host download declaring the release file it
+  links and the page entry that links it, so a declared architecture reaches the
+  page without a second list to keep in step. Promotion also inspects the
+  generated site and refuses to push unless every entry it just wrote is a link
+  at that manifest root and no private-source download URL remains.
 
 The workflow rejects every other output key. The underlying code-signing
 identities are not all ephemeral, but their private material never needs to be

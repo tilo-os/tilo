@@ -1,12 +1,13 @@
 name: Release / apps
 
-# Pull requests start no jobs here; CI covers their builds. Main publishes only
-# affected tapps and reuses unchanged members of the prior immutable collection.
+# Nothing here runs on main: main is unstable, and publication is what a
+# promotion to stable authorizes. Stable publishes the affected tapps and reuses
+# unchanged members of the prior immutable collection.
 # Tags remain credential-free validation inputs only until a trusted
 # default-branch controller or server-enforced tag policy can authorize them.
 on:
   push:
-    branches: [main]
+    branches: [stable]
     tags: ["apps-v*", "app-*-v*"]
     paths:
       - "apps/**"
@@ -174,7 +175,7 @@ jobs:
               ('tools/ci/__init__.py', 61, 'd4ca8c8ec9228fafe30fae7d4532c4ac4455661dc92f75d2428f9d7779dba462'),
               ('tools/ci/python.py', 4094, 'f203b780f78a8c5a0c0cd8a443439f927e4012f6f5a2d85fe580e284ecde1afa'),
               ('tools/ci/resolve_builder.py', 7983, '58824c0b8a8cb969bae988379de273dad5e9948726299c553c4ab1b55f203e68'),
-              ('tools/ci/images.toml', 1339, '8765f7b74ba07fd0f92df853d4b5323b5f7ce351484de5c58c061b06b3561e02'),
+              ('tools/ci/images.toml', 1502, '1b3d9b534fdf4fde26d304726acf47411c12be11e5bb213c7028a75546ea39a7'),
           )
 
           class NoRedirect(HTTPRedirectHandler):
@@ -246,7 +247,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 15
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8
+      image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
     outputs:
       engine_runtime_only: ${{ steps.engine-mode.outputs.engine_runtime_only }}
       signal_provider_only: ${{ steps.engine-mode.outputs.signal_provider_only }}
@@ -448,21 +449,21 @@ jobs:
           echo "complete=$complete" >> "$GITHUB_OUTPUT"
           python3 -I tools/ci/python.py tools/apps/app_release.py "${args[@]}" | tee app-release-plan.json
           collection=
-          if [[ $GITHUB_REF == refs/heads/main ]]; then
+          if [[ $GITHUB_REF == refs/heads/stable ]]; then
             collection=default
           elif [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
             collection=${REQUESTED_COLLECTION:-default}
           fi
           echo "collection=$collection" >> "$GITHUB_OUTPUT"
-          if [[ ( $GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main ) \
+          if [[ ( $GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/stable ) \
                 || ${REQUESTED_PUBLISH:-false} == true ]]; then
             matrix=$(python3 -I tools/ci/python.py tools/apps/app_release.py --architecture-matrix \
               --ref "$GITHUB_REF" --event "$GITHUB_EVENT_NAME" \
               --architectures "$REQUESTED_ARCHITECTURES" \
               --main-architectures "$MAIN_ARCHITECTURES")
             echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-            if [[ $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF != refs/heads/main ]]; then
-              printf 'manual app publication is restricted to main\n' >&2
+            if [[ $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF != refs/heads/stable ]]; then
+              printf 'manual app publication is restricted to stable\n' >&2
               exit 1
             fi
             echo 'publish=true' >> "$GITHUB_OUTPUT"
@@ -528,7 +529,7 @@ jobs:
           set -euo pipefail
           [[ $GITHUB_SHA =~ ^[0-9a-f]{40}$ ]]
           [[ $(git rev-parse HEAD) == "$GITHUB_SHA" ]]
-          [[ $GITHUB_REF == refs/heads/main ]]
+          [[ $GITHUB_REF == refs/heads/stable ]]
           [[ $GITHUB_EVENT_NAME == push || $GITHUB_EVENT_NAME == workflow_dispatch ]]
           # Registry transitions enforce per-app/per-target version monotonicity.
           # Advancing main must not invalidate an already-running immutable build.
@@ -1046,7 +1047,7 @@ jobs:
     # matching uname -m. Reuse admitted portable pools rather than pinning
     # the release lock to the first architecture's saturated test runners.
     # A single-architecture release still needs its matching native pool.
-    runs-on: ${{ contains(fromJSON(needs.plan.outputs.matrix).include.*.arch, 'x86_64') && contains(fromJSON(needs.plan.outputs.matrix).include.*.arch, 'aarch64') && 'runner-native-portable' || fromJSON(needs.plan.outputs.matrix).include[0].runner }}
+    runs-on: ${{ contains(fromJSON(needs.plan.outputs.matrix).include.*.arch, 'x86_64') && contains(fromJSON(needs.plan.outputs.matrix).include.*.arch, 'aarch64') && 'runner-large' || fromJSON(needs.plan.outputs.matrix).include[0].runner }}
     container:
       # This public, immutable image is pulled before any release authorization.
       # It contains no compiler or build toolchain and needs no registry secret.
@@ -1269,7 +1270,7 @@ jobs:
   recover-publication-97894:
     # Same protected workflow/audience as normal publication. The source and
     # archive IDs/digests are reviewed constants, never dispatch parameters.
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.recover_97894 == 'true'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/stable' && github.event.inputs.recover_97894 == 'true'
     # Existing provisioned verifier policy contains only native x86_64 tools.
     runs-on: runner
     container:
@@ -1287,7 +1288,7 @@ jobs:
           FORGEJO_ARTIFACT_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          [[ $GITHUB_REF == refs/heads/main && $GITHUB_EVENT_NAME == workflow_dispatch ]]
+          [[ $GITHUB_REF == refs/heads/stable && $GITHUB_EVENT_NAME == workflow_dispatch ]]
           [[ $(git rev-parse HEAD) == "$GITHUB_SHA" ]]
           python3 -I tools/ci/python.py tools/apps/recover_app_publication.py prepare             --manifest tools/apps/publication-recovery-97894.json             --preserved "$RUNNER_TEMP/recovery-97894" --release release
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4

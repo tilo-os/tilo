@@ -3,8 +3,8 @@
 //! that cannot turn on says why.
 
 use super::*;
-use crate::shell::quick_settings::radio::WifiProblem;
 use parking_lot::Mutex;
+use tilo_quick_settings::radio::WifiProblem;
 
 /// `NetworkManager` and the kernel's kill switch, as far as Wi-Fi on/off
 /// goes: its flag, a soft block (which turning the flag off sets, and

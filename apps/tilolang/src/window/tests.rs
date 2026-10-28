@@ -1373,7 +1373,7 @@ fn the_list_renders_only_the_rows_it_shows() {
     assert_eq!(
         rows.borrow().rendered(),
         {
-            let mut sorted = shown.clone();
+            let mut sorted = shown;
             sorted.sort();
             sorted
         },

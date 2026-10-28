@@ -17,7 +17,10 @@
 //! the download continues in the background and the result arrives as a
 //! notification.
 
+#[cfg(target_os = "linux")]
 mod prepared;
+#[cfg(not(target_os = "linux"))]
+mod prepared_elsewhere;
 mod recovery_key;
 mod semantic;
 mod session;
@@ -718,9 +721,13 @@ pub struct OnboardingView {
     portable_home: Option<crate::onboarding_portable_home::Pending>,
     portable_applications: Option<crate::onboarding_portable_applications::Pending>,
     browser: Option<crate::onboarding_browser::Pending>,
+    #[cfg(target_os = "linux")]
     prepared_secret_queued: bool,
+    #[cfg(target_os = "linux")]
     prepared_worker: Option<crate::onboarding_prepared::Worker>,
+    #[cfg(target_os = "linux")]
     prepared_home_password: Option<([u8; 32], Zeroizing<Vec<u8>>)>,
+    #[cfg(target_os = "linux")]
     prepared_review: Option<crate::onboarding_prepared::Pending>,
     #[cfg(target_os = "linux")]
     peer: Option<crate::onboarding_peer::Peer>,
@@ -930,6 +937,26 @@ impl OnboardingView {
         )
     }
 
+    /// Whether something the person started bringing over (their home, apps,
+    /// browser or a migration) still waits to finish.
+    fn carries_pending_work(&self) -> bool {
+        self.portable_home
+            .as_ref()
+            .is_some_and(crate::onboarding_portable_home::Pending::pending)
+            || self
+                .portable_applications
+                .as_ref()
+                .is_some_and(crate::onboarding_portable_applications::Pending::pending)
+            || self
+                .browser
+                .as_ref()
+                .is_some_and(crate::onboarding_browser::Pending::pending)
+            || self
+                .migration
+                .as_ref()
+                .is_some_and(crate::onboarding_migration::Migration::pending)
+    }
+
     fn new_in_session(
         identity_dir: PathBuf,
         session: SessionPaths,
@@ -995,6 +1022,7 @@ impl OnboardingView {
             view.flow.begin_existing();
         }
         view.load_prepared_setup(&identity_dir);
+        #[cfg(target_os = "linux")]
         if context == OnboardingContext::FullSystem {
             view.migration = view
                 .session
@@ -1005,22 +1033,7 @@ impl OnboardingView {
         view.identity_dir = Some(identity_dir);
         if !view.prepared_pending {
             view.restore_pending_progress_from_disk();
-            if (view
-                .portable_home
-                .as_ref()
-                .is_some_and(crate::onboarding_portable_home::Pending::pending)
-                || view
-                    .portable_applications
-                    .as_ref()
-                    .is_some_and(crate::onboarding_portable_applications::Pending::pending)
-                || view
-                    .browser
-                    .as_ref()
-                    .is_some_and(crate::onboarding_browser::Pending::pending)
-                || view
-                    .migration
-                    .as_ref()
-                    .is_some_and(crate::onboarding_migration::Migration::pending))
+            if view.carries_pending_work()
                 && !view.recovery_only
                 && !view.flow.is_done()
                 && let Some(directory) = view.identity_dir.as_ref()
@@ -1093,9 +1106,13 @@ impl OnboardingView {
             portable_home: None,
             portable_applications: None,
             browser: None,
+            #[cfg(target_os = "linux")]
             prepared_secret_queued: false,
+            #[cfg(target_os = "linux")]
             prepared_worker: None,
+            #[cfg(target_os = "linux")]
             prepared_home_password: None,
+            #[cfg(target_os = "linux")]
             prepared_review: None,
             #[cfg(target_os = "linux")]
             peer: None,
@@ -2088,6 +2105,7 @@ impl OnboardingView {
                 Screen::Done => (3, t("onboarding-stage-backup")),
             }
         };
+        let region_label = stage.clone(); // names the page's scroll region
         let body: Box<dyn Widget> = if self.prepared_pending {
             self.prepared_body(theme)
         } else {
@@ -2242,6 +2260,7 @@ impl OnboardingView {
             // the form card and recovery copy; the full-height 672 px dialog
             // retains room for the acknowledgement and Continue action.
             .with_compact_bottom_content_inset(520.0, 0.0)
+            .with_label(region_label)
             .with_child(Box::new(content));
         let scroll = if fill_panel {
             scroll.fill_parent_height()
@@ -2490,7 +2509,7 @@ impl OnboardingView {
                         KEY_PREPARED_IMPORT,
                     )
                     .role(ui::widget::ButtonRole::Primary)
-                    .with_enabled(self.prepared_worker.is_none()),
+                    .with_enabled(!self.prepared_working()),
             )]);
         }
         match self.flow.screen() {
@@ -3020,9 +3039,12 @@ impl OnboardingView {
                 theme,
             ));
         }
-        if self.prepared_worker.is_some() {
+        if self.prepared_working() {
             body = body.push(paragraph(&t("onboarding-prepared-working"), theme));
-        } else if let Some(peer) = &self.peer {
+            return Box::new(body);
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(peer) = &self.peer {
             // The package arrives over the peer transport, so there is no
             // password to type. Show the same code the preparing computer
             // shows; a person compares them before approving this computer
@@ -3036,14 +3058,14 @@ impl OnboardingView {
             } else {
                 body = body.push(paragraph(&t("onboarding-prepared-peer-waiting"), theme));
             }
-        } else {
-            body = body.push(Box::new(secret_input(
-                "onboarding.prepared.password",
-                &self.connect_passphrase,
-                &t("onboarding-prepared-password"),
-                &t("onboarding-prepared-password"),
-            )));
+            return Box::new(body);
         }
+        body = body.push(Box::new(secret_input(
+            "onboarding.prepared.password",
+            &self.connect_passphrase,
+            &t("onboarding-prepared-password"),
+            &t("onboarding-prepared-password"),
+        )));
         Box::new(body)
     }
 
@@ -5043,11 +5065,13 @@ impl Widget for OnboardingView {
         let child = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
 
-        // Keep a readable measure on large displays and shrink all the way to
-        // a phone-like viewport. The body scrolls vertically when its copy is
-        // taller than the bounded setup surface.
+        // A readable measure on large displays, shrinking to a phone-like
+        // one; the body scrolls when its copy is taller than the panel. The
+        // width is definite so a page is measured at the width it is laid
+        // out at (as the display's width under a maximum, the ready page's
+        // paragraph measured a line short and overflowed on wide displays).
         if let Ok(mut cs) = taffy.style(child).cloned() {
-            cs.size.width = taffy::Dimension::percent(1.0);
+            cs.size.width = taffy::Dimension::length(PANEL_MAX_WIDTH);
             // Pages with little content should own only the space they need.
             // The scroll viewport above caps longer pages, so this still
             // cannot exceed the safe laptop-height panel.
@@ -5069,7 +5093,7 @@ impl Widget for OnboardingView {
             // previously put tall restore pages flush against (or beyond)
             // the physical display edge despite the parent's safety gutter.
             cs.min_size.height = taffy::Dimension::length(0.0);
-            cs.max_size.width = taffy::Dimension::length(PANEL_MAX_WIDTH);
+            cs.max_size.width = taffy::Dimension::percent(1.0);
             cs.max_size.height = taffy::Dimension::length(panel_height);
             cs.flex_basis = taffy::Dimension::auto();
             cs.flex_grow = 0.0;
@@ -5242,7 +5266,7 @@ impl Widget for OnboardingView {
         // The codecs worker and status watcher only raise `codec_changed`,
         // and nearby pairing reports through its child and a status file;
         // nothing wakes the compositor for them, so look while they run.
-        let polling = self.prepared_worker.is_some()
+        let polling = self.prepared_working()
             || self
                 .migration
                 .as_ref()
@@ -5443,6 +5467,7 @@ mod tests {
     mod current_identity {
         include!("onboarding_current_identity_tests.rs");
     }
+    mod ready_focus;
     #[test]
     fn completed_browser_continuation_skips_future_first_use_and_rejects_tampering() {
         let (home, directory, declaration) = crate::onboarding_browser::tests::fixture();

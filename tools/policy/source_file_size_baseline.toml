@@ -81,14 +81,14 @@
 "crates/sdk/ui-core/src/app/history_tests.rs" = 8500
 "crates/sdk/ui-core/src/app/native_runner.rs" = 5500
 "crates/sdk/ui-core/src/bound_dispatch.rs" = 5500
-"crates/sdk/ui-core/src/collaboration/broker.rs" = 14000
+"crates/collab/collaboration/src/broker.rs" = 13500
 "crates/sdk/ui-core/src/headless.rs" = 15000
 "crates/sdk/ui-core/src/history_mode/integration_tests.rs" = 4000
 "crates/sdk/ui-core/src/launch.rs" = 3500
 "crates/sdk/ui-core/src/offscreen.rs" = 5000
 "crates/sdk/ui-core/src/presence/mod.rs" = 4000
 "crates/sdk/ui-core/src/presence/render.rs" = 3500
-"crates/sdk/ui-core/src/record.rs" = 6000
+"crates/sdk/ui-core/src/record.rs" = 5500
 "crates/sdk/ui-core/src/text_render.rs" = 5500
 "crates/sdk/ui-core/src/ui_graph.rs" = 5000
 "crates/sdk/ui-core/src/widget/activity_timeline.rs" = 6500
@@ -115,8 +115,8 @@
 "crates/session/desktop-surface/src/activity/pane_tests.rs" = 3500
 "crates/session/desktop-surface/src/notifications/center.rs" = 3500
 "crates/session/desktop/src/workspace_settings.rs" = 6000
-"crates/session/greeter/src/greeter_app.rs" = 4500
 "crates/session/installer/src/installer_app.rs" = 7500
+"crates/session/quick-settings/src/root.rs" = 4000
 "crates/session/shell/examples/redraw_bench.rs" = 7000
 "crates/session/shell/src/bin/shots/driver.rs" = 4492
 "crates/session/shell/src/bin/shots/scenario.rs" = 6500
@@ -130,7 +130,7 @@
 "crates/session/shell/src/network/actor.rs" = 6500
 "crates/session/shell/src/onboarding_view.rs" = 10000
 "crates/session/shell/src/shell/broker_services.rs" = 3500
-"crates/session/shell/src/shell/chrome_state.rs" = 5000
+"crates/session/shell/src/shell/chrome_state.rs" = 4500
 "crates/session/shell/src/shell/device_fabric.rs" = 5000
 "crates/session/shell/src/shell/device_fabric_runtime/mod.rs" = 11000
 "crates/session/shell/src/shell/foreign.rs" = 8500
@@ -144,7 +144,6 @@
 "crates/session/shell/src/shell/peer_presence.rs" = 4500
 "crates/session/shell/src/shell/portal_dialog.rs" = 3500
 "crates/session/shell/src/shell/projection_overlay.rs" = 3500
-"crates/session/shell/src/shell/quick_settings/root.rs" = 4000
 "crates/session/shell/src/shell/remote_audio.rs" = 3500
 "crates/session/shell/src/shell/search/mod.rs" = 4000
 "crates/session/shell/src/shell/search/providers/actions.rs" = 9500

@@ -560,7 +560,7 @@ impl ResourceRoot {
             _alive: alive,
             dispatch,
             saved,
-            save: super::saves::SaveIndicator::new(saves),
+            save: super::saves::SaveIndicator::new(saves, title),
             reactions: super::reactions::ReactionsIndicator::default(),
             permissions: None,
             write: None,

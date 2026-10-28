@@ -178,6 +178,61 @@ fn floating_clock_cursor_exposes_buttons_and_drag_state() {
     );
 }
 
+/// The floating timer is a Panel: the floating material's ground, not the
+/// raised band a field well stands on. It painted `surfaces.raised` with a
+/// literal 18 px radius until this test: the tone of a control inside a
+/// window, floating over the desktop with nothing holding it off the ground.
+#[test]
+fn the_floating_timer_stands_on_the_floating_material() {
+    let theme = Theme::default();
+    let mut bar = floating_clock();
+    bar.clock_overlay_pos = Some(Point::new(300.0, 200.0));
+    let activity = ClockActivity {
+        label: "Tea".into(),
+        remaining_secs: 125,
+        overlay: true,
+        ..Default::default()
+    };
+    let (width, height) = (800u32, 400u32);
+    let mut scene = Scene::new();
+    bar.draw_clock_overlay(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut TextRenderer::new(),
+        &theme,
+        &activity,
+    );
+    let panel = bar.clock_overlay_rect;
+    assert!(
+        panel.x0 >= 0.0
+            && panel.y0 >= 0.0
+            && panel.x1 <= f64::from(width)
+            && panel.y1 <= f64::from(height),
+        "the timer stands inside the frame: {panel:?}"
+    );
+    let rgba = ui::offscreen::OffscreenRenderer::new(width, height).render(&scene, Color::BLACK);
+    // Inside the panel: below the headline and the timecode, above the action
+    // row that starts 56 px from its foot, clear of the grip.
+    let inside = ui::offscreen::OffscreenRenderer::sample(
+        &rgba,
+        width,
+        ui::num::u32_of_f64(panel.x0 + 24.0),
+        ui::num::u32_of_f64(panel.y0 + 78.0),
+    );
+    let ground = ui::chrome::ChromeRole::Panel.surface(&theme).to_rgba8();
+    assert_eq!(
+        inside,
+        (ground.r, ground.g, ground.b, ground.a),
+        "the timer's body is the floating material's ground"
+    );
+    let raised = theme.tokens.colors.surfaces.raised.to_rgba8();
+    assert_ne!(
+        inside,
+        (raised.r, raised.g, raised.b, raised.a),
+        "the timer is not a raised band inside content"
+    );
+}
+
 #[test]
 fn floating_clock_accessibility_announces_time_and_focus() {
     let mut bar = floating_clock();

@@ -1,14 +1,15 @@
 //! The people who may open the system volume, as `tilo-auth boot-people`
 //! lists them from the volume's `tilo-signin` tokens.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::glyphs::Glyphs;
 
 /// The longest name the boot screen draws; a longer one is cut, never wrapped.
 const NAME_LIMIT: usize = 64;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum SecretKind {
     Pin,
     Password,
@@ -40,7 +41,7 @@ impl SecretKind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Person {
     pub uid: u32,
     pub name: String,

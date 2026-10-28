@@ -14107,6 +14107,22 @@ impl Drop for BrokerThreadShutdown {
     }
 }
 
+/// Say where the broker listens and whether what apps write there reaches
+/// the room.
+fn log_bound(socket_path: &Path, wired: bool) {
+    tracing::info!(
+        peer_sync = wired,
+        "capnp broker: bound {} for native SDK access ({})",
+        socket_path.display(),
+        if wired {
+            "edits from apps on this socket will reach the room"
+        } else {
+            "LOCAL ONLY — no peer network, so edits from apps on this \
+             socket stay on this machine"
+        },
+    );
+}
+
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the state handles are clones moved into the broker thread"
@@ -14153,17 +14169,7 @@ pub(super) fn spawn_configured(
     // failure surfaces only via a log line.
     let (std_listener, socket_custody) = bind_owned_socket(socket_path)?;
     std_listener.set_nonblocking(true)?; // tokio's reactor requires this for `from_std`.
-    tracing::info!(
-        peer_sync = wired,
-        "capnp broker: bound {} for native SDK access ({})",
-        socket_path.display(),
-        if wired {
-            "edits from apps on this socket will reach the room"
-        } else {
-            "LOCAL ONLY — no peer network, so edits from apps on this \
-             socket stay on this machine"
-        },
-    );
+    log_bound(socket_path, wired);
 
     let attached_state = Arc::clone(&state);
     let fanout_for_thread = Arc::clone(fanout);

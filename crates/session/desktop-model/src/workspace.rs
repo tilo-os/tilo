@@ -83,7 +83,7 @@ pub struct Workspace {
     /// map keyed by shortcut id, so they reach every desktop the workspace
     /// reaches.
     #[serde(default)]
-    pub shortcuts: Vec<tilo_automation::Shortcut>,
+    pub shortcuts: Vec<tilo_automation::SavedShortcut>,
     /// Which of the saver's devices took the latest fire time of each
     /// scheduled shortcut, so a schedule runs once across them. Projected
     /// beside the shortcuts, one map key per schedule.
@@ -134,7 +134,7 @@ struct StoredWorkspace {
     #[serde(default)]
     effect_receipts: Vec<WorkspaceEffectReceipt>,
     #[serde(default)]
-    shortcuts: Vec<tilo_automation::Shortcut>,
+    shortcuts: Vec<tilo_automation::SavedShortcut>,
     #[serde(default)]
     schedule_claims: Vec<tilo_automation::ScheduleClaim>,
     #[serde(default)]

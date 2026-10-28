@@ -111,6 +111,16 @@ mod cases {
         assert_eq!(w.rt.read(&c, "value").unwrap(), Value::Int(1));
     }
 
+    /// The suites run on each engine by naming it in `TILOLANG_ENGINE`; a run that names an
+    /// engine this build lacks fails here instead of passing on wasmi.
+    #[test]
+    fn the_suite_runs_on_the_engine_it_names() {
+        let named = std::env::var(tilolang_runtime::engine::ENGINE_VARIABLE).ok();
+        let w = World::new();
+        let running = w.rt.engine().kind();
+        assert_eq!(running.name(), named.as_deref().unwrap_or("wasmi"));
+    }
+
     #[test]
     fn memory_growth_past_the_limit_traps() {
         let w = World::new();

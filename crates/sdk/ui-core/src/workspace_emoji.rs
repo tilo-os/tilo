@@ -5,7 +5,7 @@
 //! opens that record and registers it for the window ([`register`]) against
 //! the window's wake scope, as it registers the window's content store;
 //! any view, widget or text layout of the window then reads it with
-//! [`current`] or [`emoji`] and draws `:name:` as the picture, with no
+//! [`current`] or [`emoji`](fn@emoji) and draws `:name:` as the picture, with no
 //! plumbing of its own. Where the workspace has no emoji of a name, or the
 //! window none registered, `:name:` stays text.
 //!

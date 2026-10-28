@@ -433,7 +433,7 @@ pub struct Settings {
     pub show_comments: bool,
     pub preferred_quality: String,
     /// How fast the video plays: 1.0 is the video's own speed. The speeds a
-    /// person can choose are [`PLAYBACK_SPEEDS`](crate::app::PLAYBACK_SPEEDS).
+    /// person can choose are `PLAYBACK_SPEEDS`.
     #[serde(default = "default_speed")]
     pub playback_speed: f32,
     /// The caption track the person chose, by language code, or `None` for no

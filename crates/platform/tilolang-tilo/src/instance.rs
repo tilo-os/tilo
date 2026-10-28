@@ -21,6 +21,8 @@
 //! resource are what presence reports; a destructive action a person runs offers Undo; a
 //! primary action a person runs shows what it made.
 
+#[cfg(feature = "room")]
+pub mod room;
 pub mod rows;
 pub mod wire;
 

@@ -607,24 +607,27 @@ fn shoot_picture_cards(shoot: &impl Fn(&mut FrameHarness, &str), settle: Duratio
     );
     let mut harness = FrameHarness::for_root(State::new(), stage(), (1440, 900), Theme::dark());
     shoot(&mut harness, "bar-pictures.png");
-    let shown = harness.root_mut::<Stage>();
+    let mut shown = harness.root_mut::<Stage>();
     let (anchor, area) = (shown.bar.own_avatar_rect(), shown.rect);
     shown.profile.toggle(&own_edit_model(), anchor, area);
+    drop(shown);
     shoot(&mut harness, "profile-own-edit.png");
     // Your card as a page shows it once your Discord account is linked:
     // its handle with Unlink, and the control hints' switch below.
-    let shown = harness.root_mut::<Stage>();
+    let mut shown = harness.root_mut::<Stage>();
     shown.profile.close();
     let _ = shown.profile.take_choice();
     shown.profile.toggle(&own_linked_model(), anchor, area);
+    drop(shown);
     shoot(&mut harness, "profile-own-linked.png");
     // A fresh stage: Ada's card opens from her face on the bar.
     let mut harness = FrameHarness::for_root(State::new(), stage(), (1440, 900), Theme::dark());
     harness.settle_for_capture(settle);
-    let shown = harness.root_mut::<Stage>();
+    let mut shown = harness.root_mut::<Stage>();
     let anchor = shown.bar.face_rect("key-a").expect("Ada's face on the bar");
     let area = shown.rect;
     shown.profile.toggle(&other_model(), anchor, area);
+    drop(shown);
     shoot(&mut harness, "profile-other.png");
     // Ada linked her Discord account: her card says so, and she wears its
     // avatar, which her profile took from Discord.
@@ -634,7 +637,7 @@ fn shoot_picture_cards(shoot: &impl Fn(&mut FrameHarness, &str), settle: Duratio
     );
     let mut harness = FrameHarness::for_root(State::new(), stage(), (1440, 900), Theme::dark());
     harness.settle_for_capture(settle);
-    let shown = harness.root_mut::<Stage>();
+    let mut shown = harness.root_mut::<Stage>();
     let anchor = shown.bar.face_rect("key-a").expect("Ada's face on the bar");
     let area = shown.rect;
     let mut linked = other_model();
@@ -646,6 +649,7 @@ fn shoot_picture_cards(shoot: &impl Fn(&mut FrameHarness, &str), settle: Duratio
         }];
     }
     shown.profile.toggle(&linked, anchor, area);
+    drop(shown);
     shoot(&mut harness, "profile-other-linked.png");
 
     let mut harness =
@@ -681,17 +685,19 @@ fn main() {
         if variant != "dark" {
             continue;
         }
-        let stage = harness.root_mut::<Stage>();
+        let mut stage = harness.root_mut::<Stage>();
         let (anchor, area) = (stage.bar.workspace_menu_rect(), stage.rect);
         stage.workspace.toggle(&workspace_model(), anchor, area);
+        drop(stage);
         shoot(&mut harness, "workspace-menu.png");
 
-        let stage = harness.root_mut::<Stage>();
+        let mut stage = harness.root_mut::<Stage>();
         stage.workspace.close();
         let (anchor, area) = (stage.bar.own_avatar_rect(), stage.rect);
         stage
             .profile
             .toggle(&profile_model(discord(unlinked())), anchor, area);
+        drop(stage);
         shoot(&mut harness, "profile.png");
 
         harness
@@ -711,10 +717,11 @@ fn main() {
             )));
         shoot(&mut harness, "profile-linked.png");
 
-        let stage = harness.root_mut::<Stage>();
+        let mut stage = harness.root_mut::<Stage>();
         stage.profile.close();
         let _ = stage.profile.take_choice();
         stage.people_open = true;
+        drop(stage);
         shoot(&mut harness, "people.png");
     }
     // The count on the bell, whole inside the bar: on a 1440x900 page, and

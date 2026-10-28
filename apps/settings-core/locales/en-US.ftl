@@ -200,6 +200,7 @@ shortcut-explore-workspace-history = Explore workspace history
 shortcut-guide = Keyboard shortcuts
 shortcut-stop-remote-input = Stop all remote input
 shortcut-toggle-mouse-keys = Toggle mouse keys
+shortcut-toggle-screen-reader = Turn the screen reader on or off
 shortcut-name-search = Search everywhere
 shortcut-name-workspace-overview = Overview
 shortcut-name-lock = Lock screen
@@ -2063,6 +2064,8 @@ net-wake-saved = Wake configuration saved. Physical wake remains unverified.
 # Copy used by Settings panes and their status/error branches.
 a11y-shared-caption = Tilo apps use these shared accessibility settings.
 a11y-shared-title = Across Tilo
+a11y-sign-in = Use at the login screen
+a11y-sign-in-desc = The login screen starts with the screen reader, text size, contrast, language and keyboard layout you choose
 a11y-text-size = Text size
 accounts-form-caption = These details are saved for this account.
 accounts-nextcloud-calendars = Connect calendars

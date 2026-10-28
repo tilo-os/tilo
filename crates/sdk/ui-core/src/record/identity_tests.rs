@@ -78,7 +78,7 @@ fn file_identity_follows_the_file_not_its_path_or_bytes() {
         write(&file, b"%PDF-1.7 synced");
         let fs_id = uuid::Uuid::new_v4();
         let path = std::ffi::CString::new(file.as_os_str().as_encoded_bytes()).unwrap();
-        let name = std::ffi::CString::new(file_identity::ATTRIBUTE).unwrap();
+        let name = std::ffi::CString::new(fs_protocol::RECORD_ID_XATTR).unwrap();
         // SAFETY: NUL-terminated strings and a 16-byte value.
         let rc = unsafe {
             libc::setxattr(

@@ -9,7 +9,7 @@
 //! conversion works with the network off and in a room with no server. Money
 //! is the one quantity Tilo cannot convert honestly — a rate is a fact about
 //! the moment, not a definition — so currency is a category that says so
-//! ([`Dimension::Currency::rates_note`]) rather than a table of stale numbers.
+//! (`Dimension::Currency::rates_note`) rather than a table of stale numbers.
 
 /// A unit: how it is written, what it is called, and how to reach the
 /// quantity's base unit and come back.

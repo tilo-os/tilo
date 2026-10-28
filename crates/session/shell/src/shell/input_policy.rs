@@ -249,7 +249,7 @@ pub struct ChordMods {
 }
 
 impl ChordMods {
-    /// The mask carried by an xkbcommon-style bitfield — the encoding the peer-sync wire protocol uses for [`crate::network::streaming::InputEvent::Key`].
+    /// The mask carried by an xkbcommon-style bitfield — the encoding the peer-sync wire protocol uses for [`tilo_window_share::streaming::InputEvent::Key`].
     pub fn from_xkb_bits(bits: u32) -> Self {
         Self {
             shift: bits & 0x1 != 0,
@@ -2545,6 +2545,31 @@ pub fn is_mouse_keys_toggle(event: &WindowEvent, modifiers: Modifiers) -> bool {
             chord_key_for_logical(&key.logical_key),
             ChordMods::from(&modifiers),
         ) == Some(crate::shell::fixed_chords::FixedChordAction::ToggleMouseKeys)
+}
+
+/// Feed `event` to the screen reader chord: `true` when it turns the screen
+/// reader on or off. Keys held when the seat loses focus are forgotten.
+pub fn screen_reader_chord_toggles(
+    chord: &mut ui::screen_reader_chord::ScreenReaderChord,
+    event: &WindowEvent,
+    modifiers: Modifiers,
+    now: std::time::Instant,
+) -> bool {
+    use ui::screen_reader_chord::{ChordEvent, ChordKey, ChordModifiers};
+    match event {
+        WindowEvent::KeyboardInput { event: key, .. } => chord.key(ChordEvent {
+            key: ChordKey::from_winit(key),
+            modifiers: ChordModifiers::from_winit(modifiers.state()),
+            pressed: key.state == ElementState::Pressed,
+            repeat: key.repeat,
+            at: now,
+        }),
+        WindowEvent::Focused(false) => {
+            chord.reset();
+            false
+        }
+        _ => false,
+    }
 }
 
 /// Is `event` a press of the configured session-lock binding?

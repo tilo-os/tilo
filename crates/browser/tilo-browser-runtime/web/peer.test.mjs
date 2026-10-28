@@ -1299,6 +1299,19 @@ test('leaving, cancelling and timing out pending room admission settle browser n
 });
 
 
+test('a room’s reports go through the page’s peer in the destination’s room, by its runtime id', async () => {
+  const runtime = fakeRuntime();
+  const peer = await connect(options(runtime, memoryStore(), {live: false, voice: false}));
+  const named = [];
+  runtime.peer.id = 7;
+  runtime.peer.sendFeedbackThrough = id => named.push(id);
+  peer.sendFeedbackThrough({runtimeId: 9});
+  assert.deepEqual(named, [9]);
+  assert.throws(() => peer.sendFeedbackThrough({}), /connected peer/);
+  await peer.dispose();
+  assert.throws(() => peer.sendFeedbackThrough({runtimeId: 9}), /connected peer/);
+});
+
 test('feedback startup waits for owner admission and never joins another room', async () => {
   const runtime = fakeRuntime();
   const peer = await connect(options(runtime, memoryStore(), {live: false, voice: false}));

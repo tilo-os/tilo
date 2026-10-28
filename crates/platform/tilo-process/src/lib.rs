@@ -11,6 +11,7 @@
 pub mod child;
 #[cfg(feature = "native-editor")]
 pub mod editor;
+pub mod environment;
 pub mod job;
 pub use tilo_platform_caps::{Availability, availability, available};
 #[cfg(unix)]

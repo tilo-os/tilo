@@ -172,6 +172,15 @@ impl Committer for HostHandle {
             action.encode().map_err(|error| error.to_string())
         })
     }
+
+    fn need(&self, ticket: u64) -> Result<tilo_actions::ActionNeed, String> {
+        with_host(self.id, |host| {
+            host.store
+                .committed(ticket)
+                .map(|action| action.need())
+                .ok_or_else(|| format!("no committed action {ticket}"))
+        })
+    }
 }
 
 pub(crate) fn value_of(

@@ -129,23 +129,21 @@ pub(crate) fn configure(
     destination: FeedbackDestination,
 ) -> Result<(), String> {
     CONFIGURED.with_borrow_mut(|configured| configured.insert(id));
-    match FEEDBACK.get() {
-        Some(code) => (code.configure)(id, peer, reporter, owner, destination),
-        None => {
-            PENDING.with_borrow_mut(|pending| {
-                pending.insert(
-                    id,
-                    Pending {
-                        peer,
-                        reporter,
-                        owner,
-                        destination,
-                    },
-                )
-            });
-            Ok(())
-        }
+    if let Some(code) = FEEDBACK.get() {
+        return (code.configure)(id, peer, reporter, owner, destination);
     }
+    PENDING.with_borrow_mut(|pending| {
+        pending.insert(
+            id,
+            Pending {
+                peer,
+                reporter,
+                owner,
+                destination,
+            },
+        )
+    });
+    Ok(())
 }
 
 /// The code is in: the destinations configured meanwhile are selected.
@@ -202,11 +200,13 @@ pub(crate) fn pump(id: u32) {
 
 /// Ask the owner for a fresh admission; whether it was asked.
 pub(crate) fn readmit(peer: u32) -> bool {
+    let peer = crate::feedback_route::carrier(peer);
     configured(peer) && FEEDBACK.get().is_some_and(|code| (code.readmit)(peer))
 }
 
 /// Peer `id` went away.
 pub(crate) fn forget(id: u32) {
+    crate::feedback_route::forget(id);
     PENDING.with_borrow_mut(|pending| pending.remove(&id));
     if CONFIGURED.with_borrow_mut(|configured| configured.remove(&id))
         && let Some(code) = FEEDBACK.get()
@@ -217,6 +217,7 @@ pub(crate) fn forget(id: u32) {
 
 /// The model the owner of peer `peer`'s destination lends its reporters.
 pub(crate) fn owner_model(peer: u32) -> Option<(Models, String)> {
+    let peer = crate::feedback_route::carrier(peer);
     if !configured(peer) {
         return None;
     }
@@ -251,9 +252,12 @@ pub(crate) fn register_feedback_startup(peer: u32, startup: Startup) -> Result<(
         startups.insert(peer, startup);
         Ok(())
     })?;
-    // A desktop that mounted first takes it up on its next frame.
-    if let Some(wake) = WAKES.with_borrow_mut(|wakes| wakes.remove(&peer)) {
-        wake();
+    // A desktop that mounted first takes it up on its next frame, as do
+    // the desktops in other rooms whose reports this peer carries.
+    for desktop in std::iter::once(peer).chain(crate::feedback_route::desktops(peer)) {
+        if let Some(wake) = WAKES.with_borrow_mut(|wakes| wakes.remove(&desktop)) {
+            wake();
+        }
     }
     Ok(())
 }
@@ -274,5 +278,18 @@ pub(crate) fn forget_feedback_startup(peer: u32) {
 
 /// The startup registered for `peer`, for the desktop that mounts with it.
 pub(crate) fn take_startup(peer: u32) -> Option<Startup> {
-    STARTUPS.with_borrow_mut(|startups| startups.remove(&peer))
+    let carrier = crate::feedback_route::carrier(peer);
+    STARTUPS.with_borrow_mut(|startups| startups.remove(&carrier))
+}
+
+/// Peer `desktop`'s reports go through peer `carrier`, which is in the
+/// destination's room; a desktop already waiting takes up a startup the
+/// carrier holds on its next frame.
+pub(crate) fn send_through(desktop: u32, carrier: u32) {
+    crate::feedback_route::send_through(desktop, carrier);
+    if STARTUPS.with_borrow(|startups| startups.contains_key(&carrier))
+        && let Some(wake) = WAKES.with_borrow_mut(|wakes| wakes.remove(&desktop))
+    {
+        wake();
+    }
 }

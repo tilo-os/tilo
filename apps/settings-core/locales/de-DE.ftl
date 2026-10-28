@@ -200,6 +200,7 @@ shortcut-explore-workspace-history = Arbeitsbereichsverlauf erkunden
 shortcut-guide = Tastenkürzel
 shortcut-stop-remote-input = Alle Ferneingaben beenden
 shortcut-toggle-mouse-keys = Maustasten umschalten
+shortcut-toggle-screen-reader = Bildschirmleser ein- oder ausschalten
 shortcut-name-search = Überall suchen
 shortcut-name-workspace-overview = Übersicht
 shortcut-name-lock = Bildschirm sperren
@@ -2063,6 +2064,8 @@ net-wake-saved = Aufweckkonfiguration gespeichert. Das tatsächliche Aufwecken w
 # Copy used by Settings panes and their status/error branches.
 a11y-shared-caption = Tilo-Apps verwenden diese gemeinsamen Einstellungen zur Barrierefreiheit.
 a11y-shared-title = Überall in Tilo
+a11y-sign-in = Auf dem Anmeldebildschirm verwenden
+a11y-sign-in-desc = Der Anmeldebildschirm startet mit dem Bildschirmleser, der Textgröße, dem Kontrast, der Sprache und der Tastaturbelegung, die du wählst
 a11y-text-size = Textgröße
 accounts-form-caption = Diese Angaben werden für dieses Konto gespeichert.
 accounts-nextcloud-calendars = Kalender verbinden

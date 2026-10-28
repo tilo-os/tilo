@@ -36,7 +36,7 @@
 //! answers and where it runs, and Accept and Reject. What is sent is not a
 //! footnote — every part and its whole text stand above the decision, so the
 //! person reads exactly what leaves before it does. The view is built from
-//! [`Column`], [`Text`] and [`Button`] and paints no control of its own.
+//! `Column`, `Text` and `Button` and paints no control of its own.
 
 use serde::{Deserialize, Serialize};
 use tilo_resource::{Edit, EditOp, Path, Segment};
