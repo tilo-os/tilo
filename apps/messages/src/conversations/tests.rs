@@ -312,3 +312,51 @@ fn the_agent_operations_are_offered_to_agents_as_reads_and_verbs() {
         assert!(spec.contract.reaches_agents(), "{id} is for agents");
     }
 }
+
+/// What the record holds is what the window shows, live and in a past
+/// version, where the person's contacts and accounts are not read.
+#[test]
+fn a_past_version_reads_and_shows_its_messages() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = app();
+    deliver(
+        &mut app,
+        json!({"from": "Ada", "body": "Marker kumquat parade",
+               "date": "2026-10-11T09:30:00Z"}),
+    );
+    let past = app.versions().pop().unwrap().hash;
+    deliver(
+        &mut app,
+        json!({"from": "Grace", "body": "Later words", "date": "2026-10-12T09:30:00Z"}),
+    );
+    app.settle();
+    let live = |app: &mut TestApp<MessagesShell>| {
+        app.harness()
+            .a11y_nodes()
+            .iter()
+            .flat_map(|(_, node)| [node.label(), node.value()])
+            .flatten()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let shown = live(&mut app);
+    assert!(shown.contains("Ada"), "{shown}");
+    assert!(shown.contains("Marker kumquat parade"), "{shown}");
+    assert!(shown.contains("Grace"), "{shown}");
+    assert!(!shown.contains("Your people, together"), "{shown}");
+
+    app.effect(&MessagesEffect::OpenConversation {
+        conversation: "Ada".into(),
+    })
+    .expect("the record's conversation opens");
+    app.settle();
+    let shown = live(&mut app);
+    assert!(shown.contains("Conversation with Ada"), "{shown}");
+
+    let then = app.past_version(&[past]).unwrap().texts().join("\n");
+    assert!(then.contains("Ada"), "{then}");
+    assert!(then.contains("Marker kumquat parade"), "{then}");
+    assert!(!then.contains("Grace"), "{then}");
+    assert!(!then.contains("Your people, together"), "{then}");
+}
