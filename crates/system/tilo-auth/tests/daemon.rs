@@ -28,6 +28,7 @@ use tilo_auth::luks;
 use tilo_auth::protocol::{Refusal, Reply, Request};
 use tilo_auth::record::{Attention, Record, SecretKind, Store};
 use tilo_auth::recovery::RecoveryKey;
+use tilo_auth::rollback_set::RollbackSet;
 use tilo_auth::secret::Secret;
 use tilo_auth::userkey::UserKey;
 use tilo_auth::wrapper::{Kind, Outcome, Tpm};
@@ -80,6 +81,10 @@ impl Legacy for OldPasswords {
         Ok(self.passwords.lock().unwrap().get(name).map(String::as_str) == Some(typed))
     }
 
+    fn has_password(&self, name: &str) -> anyhow::Result<bool> {
+        Ok(self.passwords.lock().unwrap().contains_key(name))
+    }
+
     fn lock_password(&self, name: &str) -> anyhow::Result<()> {
         self.passwords.lock().unwrap().remove(name);
         self.locked.lock().unwrap().push(name.to_owned());
@@ -129,7 +134,31 @@ impl Machine {
             handoff: None,
             volume_key: None,
             sessions: self.path("sessions"),
+            rollback_set: RollbackSet {
+                sysroot: self.path("sysroot"),
+                rollback_state: self.path("rollback/state.json"),
+                cmdline: self.path("cmdline"),
+            },
         }
+    }
+
+    /// A deployment the machine can boot, with or without `pam_tilo`'s
+    /// service in its `/etc`.
+    fn deployment(&self, name: &str, pam_tilo: bool) {
+        let pam = self
+            .path("sysroot/ostree/deploy/default/deploy")
+            .join(name)
+            .join("etc/pam.d");
+        std::fs::create_dir_all(&pam).unwrap();
+        if pam_tilo {
+            std::fs::write(pam.join("tilo-auth"), "auth sufficient pam_tilo.so\n").unwrap();
+        }
+    }
+
+    /// What bootc does to a deployment that leaves the rollback set.
+    fn prune(&self, name: &str) {
+        std::fs::remove_dir_all(self.path("sysroot/ostree/deploy/default/deploy").join(name))
+            .unwrap();
     }
 
     fn daemon(&self) -> Daemon {
@@ -302,6 +331,8 @@ fn machine(with_tpm: bool, old: &[(&str, &str)], ada_uid: u32) -> Option<Machine
         "wheel:x:10:ada\ntilo-identity:x:960:ada\n",
     )
     .unwrap();
+
+    std::fs::write(dir.path().join("cmdline"), "root=/dev/vda3 quiet\n").unwrap();
 
     let device = dir.path().join("disk.img");
     let f = std::fs::File::create(&device).unwrap();
@@ -965,4 +996,94 @@ fn the_socket_answers_with_the_peers_own_rights() {
             .unwrap(),
         refused(Refusal::NotPermitted)
     );
+}
+
+#[test]
+fn the_old_password_hash_stays_while_an_image_before_pam_tilo_can_boot() {
+    let m = machine!(true, &[("ada", "123456")]);
+    m.deployment("aaaa.0", false);
+    m.deployment("bbbb.0", true);
+    let daemon = m.daemon();
+
+    // ada moves onto her user key; the image she came from keeps her hash.
+    assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
+    assert!(m.record(ADA.uid).unwrap().enrolled());
+    assert!(
+        m.old.locked().is_empty(),
+        "the old image still needs her hash"
+    );
+    assert!(m.old.has_password("ada").unwrap());
+
+    // The kept hash is no second way in: once her secret changes, only the
+    // new one is hers here, though the old password database still holds the
+    // old one.
+    assert_eq!(
+        reply(daemon.handle(
+            ADA,
+            Request::SetSecret {
+                user: "ada".into(),
+                current: Some(secret("123456")),
+                recovery: None,
+                new: secret("2468"),
+            },
+        )),
+        Reply::success()
+    );
+    assert!(m.old.verify("ada", "123456").unwrap());
+    assert_eq!(
+        verify(&daemon, ADA, "ada", "123456").error,
+        Some(Refusal::Wrong)
+    );
+    assert!(m.old.locked().is_empty());
+
+    // The old image leaves the rollback set: the next start locks it, once.
+    m.prune("aaaa.0");
+    m.daemon().settle_old_passwords();
+    assert_eq!(m.old.locked(), ["ada"]);
+    m.daemon().settle_old_passwords();
+    assert_eq!(verify(&daemon, ADA, "ada", "2468"), Reply::success());
+    assert_eq!(m.old.locked(), ["ada"]);
+}
+
+#[test]
+fn the_old_password_hash_stays_until_the_booted_update_is_confirmed() {
+    let m = machine!(true, &[("ada", "123456")]);
+    m.deployment("bbbb.0", true);
+    std::fs::write(m.path("cmdline"), "root=/dev/vda3 tilo.generation=8\n").unwrap();
+    let state = |confirmed| tilo_rollback::confirm::State {
+        nv_index: 0x0150_0016,
+        nv_base: 0,
+        last_confirmed: Some(confirmed),
+        foreign_keyslots: Vec::new(),
+    };
+    let rollback_state = m.path("rollback/state.json");
+    tilo_rollback::confirm::save_state(&rollback_state, &state(7)).unwrap();
+    let daemon = m.daemon();
+
+    assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
+    assert!(m.old.locked().is_empty(), "generation 8 is not confirmed");
+
+    // Confirmed: the next sign-in locks it.
+    tilo_rollback::confirm::save_state(&rollback_state, &state(8)).unwrap();
+    assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
+    assert_eq!(m.old.locked(), ["ada"]);
+}
+
+#[test]
+fn a_hash_back_after_rolling_back_and_forward_locks_again() {
+    let m = machine!(true, &[("ada", "123456")]);
+    m.deployment("bbbb.0", true);
+    let daemon = m.daemon();
+    assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
+    assert_eq!(m.old.locked(), ["ada"]);
+
+    // An older image's /etc, carried forward, brings the hash back.
+    m.old
+        .passwords
+        .lock()
+        .unwrap()
+        .insert("ada".into(), "123456".into());
+    m.daemon().settle_old_passwords();
+    assert_eq!(m.old.locked(), ["ada", "ada"]);
+    assert!(!m.old.has_password("ada").unwrap());
 }

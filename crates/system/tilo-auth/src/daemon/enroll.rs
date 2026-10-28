@@ -82,19 +82,13 @@ impl Daemon {
             "tilo-authd: uid {} signs in with their user key from now on",
             account.uid
         );
-        if let Err(e) = self.legacy.lock_password(&account.name) {
-            eprintln!(
-                "tilo-authd: could not remove uid {}'s old password hash: {e:#}",
-                account.uid
-            );
-        }
         self.after_sign_in(work, account, record, &key, Some(typed));
         Ok(())
     }
 
     /// What a successful sign-in can finish: holding the key for the session,
-    /// the admin's system-volume keyslot and the wrapping of the TPM lockout
-    /// authorisation.
+    /// locking the old password hash, the admin's system-volume keyslot and
+    /// the wrapping of the TPM lockout authorisation.
     pub(super) fn after_sign_in(
         &self,
         work: &Work,
@@ -104,6 +98,7 @@ impl Daemon {
         typed: Option<&str>,
     ) {
         self.hold(account.uid, key.clone());
+        self.settle_old_password(&record, self.cfg.rollback_set.needs_old_passwords());
         match self.accounts.is_admin(account) {
             Ok(true) => {}
             Ok(false) => return,
@@ -148,6 +143,62 @@ impl Daemon {
             },
             None,
         );
+    }
+
+    /// Lock the old password hash of everyone whose secret this daemon
+    /// checks, once nothing this machine could boot would check it instead.
+    /// Run at start, so a lock that waited happens at the first boot where it
+    /// may.
+    pub fn settle_old_passwords(&self) {
+        let records = match self.store.all() {
+            Ok(records) => records,
+            Err(e) => {
+                eprintln!("tilo-authd: {e:#}");
+                return;
+            }
+        };
+        if !records.iter().any(Record::enrolled) {
+            return;
+        }
+        let needed = self.cfg.rollback_set.needs_old_passwords();
+        for record in &records {
+            self.settle_old_password(record, needed.clone());
+        }
+    }
+
+    /// While an image from before `pam_tilo` can still boot, it checks the old
+    /// hash in its own sign-in, so the hash stays until the booted update is
+    /// confirmed and no such image is left to boot. Nothing on this image
+    /// checks it meanwhile: `pam_tilo` answers for everyone this daemon knows.
+    fn settle_old_password(&self, record: &Record, needed: Option<String>) {
+        if !record.enrolled() {
+            return;
+        }
+        match self.legacy.has_password(&record.name) {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(e) => {
+                eprintln!(
+                    "tilo-authd: could not tell whether uid {} has an old password hash: {e:#}",
+                    record.uid
+                );
+                return;
+            }
+        }
+        if let Some(why) = needed {
+            eprintln!(
+                "tilo-authd: keeping uid {}'s old password hash for an older image: {why}",
+                record.uid
+            );
+            return;
+        }
+        match self.legacy.lock_password(&record.name) {
+            Ok(()) => eprintln!("tilo-authd: locked uid {}'s old password hash", record.uid),
+            Err(e) => eprintln!(
+                "tilo-authd: could not remove uid {}'s old password hash: {e:#}",
+                record.uid
+            ),
+        }
     }
 
     fn add_system_slot(
