@@ -19,6 +19,27 @@ impl Checker<'_> {
         if ex.ty.is_error() || want.is_error() || ex.ty.same(want) {
             return ex;
         }
+        // A resource of one of a union's types is a value of the union.
+        if ex.ty.fits(want) {
+            return Ex {
+                ty: want.clone(),
+                ..ex
+            };
+        }
+        if let Ty::Option(inner) = want
+            && ex.ty.fits(inner)
+        {
+            let ex = Ex {
+                ty: (**inner).clone(),
+                ..ex
+            };
+            return Self::some(ex, want);
+        }
+        // A resource that names a container is that container where a list goes.
+        if matches!(want, Ty::List(_)) && self.held_of(&ex.ty).is_some() {
+            let read = self.unhold(ex, span);
+            return self.coerce(read, want, span);
+        }
         if let Ty::Option(inner) = want
             && ex.ty.same(inner)
         {
@@ -134,6 +155,20 @@ impl Checker<'_> {
                         None => Ex::error(),
                     };
                 }
+                // `notes.notes`: a named root of an imported package.
+                if let Some(path) = dotted(base)
+                    && self.names_import(base)
+                    && let Some(import) = self.env.find_import(&path.join("."))
+                    && let Some((_, ty_id)) =
+                        import.named_roots.iter().find(|(n, _)| *n == name.name)
+                    && let Some(info) = self
+                        .env
+                        .types
+                        .iter()
+                        .find(|t| t.key.app == import.app && t.id == *ty_id)
+                {
+                    return Self::root_ref(&info.key.app, &info.id, &info.key);
+                }
                 if self.names_import(base) {
                     self.err(
                         "E026",
@@ -222,6 +257,17 @@ impl Checker<'_> {
                 "`now` is the time of this invocation, which only an action has; pass a Time to anything else",
             );
             return Ex::error();
+        }
+        // A named root of this package: `notes`.
+        if let Some(key) = self
+            .env
+            .named_roots
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, k)| k.clone())
+            && let Some(info) = self.env.type_info(&key)
+        {
+            return Self::root_ref(&info.key.app, &info.id, &key);
         }
         if name == "space" {
             self.err(
@@ -367,7 +413,7 @@ impl Checker<'_> {
                 ),
                 Ty::Text,
             ),
-            Ty::Record(_) => Ex::host(Imp::RefId, vec![v], Ty::Text),
+            Ty::Record(_) | Ty::Union(_) => Ex::host(Imp::RefId, vec![v], Ty::Text),
             Ty::Principal => Ex::host(Imp::PrincipalName, vec![v], Ty::Text),
             other => {
                 let t = self.show(other);
@@ -417,14 +463,19 @@ impl Checker<'_> {
             );
             return Ex::error();
         };
+        Self::root_ref(&info.key.app, &info.id, &info.key)
+    }
+
+    /// The workspace's resource of the root type `key` (id `ty_id`): `root-<type id>`.
+    fn root_ref(app: &str, ty_id: &str, key: &crate::types::TypeKey) -> Ex {
         Ex::host(
             Imp::RefLit,
             vec![
-                Ex::str(&info.key.app),
-                Ex::str(&info.id),
-                Ex::str(&format!("root-{}", info.id)),
+                Ex::str(app),
+                Ex::str(ty_id),
+                Ex::str(&format!("root-{ty_id}")),
             ],
-            Ty::Record(info.key.clone()),
+            Ty::Record(key.clone()),
         )
     }
 
@@ -611,7 +662,7 @@ impl Checker<'_> {
                 let e = Ex::host(Imp::PrincipalEq, vec![l, r], Ty::Bool);
                 if eq { e } else { negate(e) }
             }
-            Ty::Record(_) => {
+            Ty::Record(_) | Ty::Union(_) => {
                 let e = Ex::host(Imp::RefEq, vec![l, r], Ty::Bool);
                 if eq { e } else { negate(e) }
             }
@@ -727,6 +778,12 @@ impl Checker<'_> {
                     Ex::host(imp, vec![b, Ex::str(&f.id)], raw_ty),
                     f.ty.clone(),
                 )
+            }
+            Ty::Union(keys) => {
+                let t = self.show(&b.ty);
+                let first = keys.first().map_or("T", |k| k.name.as_str());
+                self.err("E021", name.span, format!("a value of {t} is one of several types, so `.{}` depends on which: take it apart by its type first, `match x {{ v: {first} => v.{}, ... }}`", name.name, name.name));
+                Ex::error()
             }
             other => {
                 let t = self.show(&other);

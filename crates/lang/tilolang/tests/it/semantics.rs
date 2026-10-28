@@ -193,15 +193,14 @@ fn options_are_taken_apart_only_by_match() {
     );
 }
 
-const SHAPES: &str = "enum Shape {\n    dot\n    line(len: Int)\n    box(w: Int, h: Int)\n}\n";
+const SHAPES: &str = "enum Shape {\n    dot\n    line\n    box\n}\n";
 
-// USER REQUIREMENT (2026-10-20): "Sum types: `enum Name { a, b(x: T, y: U), c }` with payload
-// fields; values written as dot literals `.a`, `.b(x: 1, y: \"z\")`, resolved from the expected
-// type (and `Name.a` when there is no expected type)."
+// An enum's cases are plain names (cases that hold data are types of their own, joined in a
+// union: `unions.rs`). Values are dot literals resolved from the expected type, or `Shape.dot`.
 #[test]
 fn enums_build_from_dot_literals_and_match_takes_them_apart() {
     let src = format!(
-        "{SHAPES}type Pic {{\n    shape: Shape\n    last: Option<Shape>\n}}\nfn area(s: Shape) -> Int {{\n    match s {{\n        .dot => 0,\n        .line(n) => n,\n        .box(w, h) => {{\n            let a = w * h\n            a\n        }}\n    }}\n}}\nfn make(big: Bool) -> Shape {{\n    if big {{ .box(w: 2, h: 3) }} else {{ .line(len: 1) }}\n}}\nfn named() -> Int {{\n    let s = Shape.box(w: 1, h: 1)\n    let d = Shape.dot\n    if s == d {{\n        return 0\n    }}\n    area(s)\n}}\naction draw(p: Pic) {{\n    p.last = .some(p.shape)\n    p.shape = .dot\n}}"
+        "{SHAPES}type Pic {{\n    shape: Shape\n    last: Option<Shape>\n}}\nfn area(s: Shape) -> Int {{\n    match s {{\n        .dot => 0,\n        .line => 1,\n        .box => {{\n            let a = 2 * 2\n            a\n        }}\n    }}\n}}\nfn make(big: Bool) -> Shape {{\n    if big {{ .box }} else {{ .line }}\n}}\nfn named() -> Int {{\n    let s = Shape.box\n    let d = Shape.dot\n    if s == d {{\n        return 0\n    }}\n    area(s)\n}}\naction draw(p: Pic) {{\n    p.last = .some(p.shape)\n    p.shape = .dot\n}}"
     );
     assert!(codes(&src).is_empty(), "{:?}", codes(&src));
 }
@@ -209,7 +208,7 @@ fn enums_build_from_dot_literals_and_match_takes_them_apart() {
 #[test]
 fn an_enum_field_is_a_register_with_its_first_variant_as_default() {
     let c = crate::common::compile_body(&format!(
-        "{SHAPES}type Pic {{\n    shape: Shape\n    other: Shape = .line(len: 3)\n}}"
+        "{SHAPES}type Pic {{\n    shape: Shape\n    other: Shape = .line\n}}"
     ));
     let pic = c.meta.types.iter().find(|t| t.name == "Pic").expect("Pic");
     let shape = &pic.fields[0];
@@ -218,15 +217,8 @@ fn an_enum_field_is_a_register_with_its_first_variant_as_default() {
     let default = shape.default.clone().expect("a default");
     assert_eq!(default["variant"], c.ids.get("Shape.dot").expect("an id"));
     let other = pic.fields[1].default.clone().expect("a default");
-    let len = c.ids.get("Shape.line.len").expect("an id");
-    assert_eq!(other["fields"][len], 3);
-    assert!(
-        !codes("enum E {\n    a(x: Int)\n}\ntype T {\n    e: E\n}").is_empty(),
-        "a first variant with payload needs an explicit default"
-    );
-    let e = &c.meta.enums[0];
-    assert_eq!(e.variants.len(), 3);
-    assert_eq!(e.variants[2].fields[1].name, "h");
+    assert_eq!(other["variant"], c.ids.get("Shape.line").expect("an id"));
+    assert_eq!(c.meta.enums[0].variants.len(), 3);
 }
 
 // USER REQUIREMENT (2026-10-20): "One `if`: `if cond { ... } else { ... }` is an expression whose

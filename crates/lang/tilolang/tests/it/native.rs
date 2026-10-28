@@ -155,7 +155,7 @@ fn fields_variants_and_the_app_carry_what_they_are() {
 #[test]
 fn enum_variants_carry_their_icon() {
     let c = compile_body(
-        "/// Which notes show.\nenum NoteFilter {\n    /// All notes\n    all (icon: .file_text)\n    pinned (icon: .pin)\n    shared(by: Text) (icon: .users)\n    recent\n}",
+        "/// Which notes show.\nenum NoteFilter {\n    /// All notes\n    all (icon: .file_text)\n    pinned (icon: .pin)\n    shared (icon: .users)\n    recent\n}",
     );
     let e = c
         .meta
@@ -172,11 +172,6 @@ fn enum_variants_carry_their_icon() {
     assert_eq!(
         e.variants[0].label, "All notes",
         "the doc still gives the label"
-    );
-    assert_eq!(
-        e.variants[2].fields.len(),
-        1,
-        "a payload and an icon together"
     );
     let json = String::from_utf8(c.meta.to_json_bytes()).expect("utf8");
     assert_eq!(

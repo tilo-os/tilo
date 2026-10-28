@@ -27,4 +27,5 @@ mod room;
 mod scenarios;
 mod surface;
 mod sync;
+mod unions;
 mod upgrade;

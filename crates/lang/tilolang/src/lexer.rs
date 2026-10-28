@@ -88,6 +88,8 @@ pub enum Tok {
     QDot,
     /// `??`: an Option's value, or a fallback.
     QQ,
+    /// `|`, between the cases of a union type.
+    Pipe,
 }
 
 impl Tok {
@@ -102,6 +104,7 @@ impl Tok {
             Self::Calendar(_) => "a date".into(),
             Self::QDot => "`?.`".into(),
             Self::QQ => "`??`".into(),
+            Self::Pipe => "`|`".into(),
             Self::Str(_) => "a string".into(),
             Self::Ref(_) => "a reference".into(),
             Self::Doc(_) => "a doc comment".into(),
@@ -564,6 +567,7 @@ impl Lexer<'_> {
             (b'/', _) => (Tok::Slash, 1),
             (b'%', _) => (Tok::Percent, 1),
             (b'#', _) => (Tok::Hash, 1),
+            (b'|', _) => (Tok::Pipe, 1),
             _ => {
                 let ch = self
                     .src

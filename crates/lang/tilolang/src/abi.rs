@@ -100,6 +100,7 @@ imports! {
     RecSetH = "rec_set_h" ([H, H, H] -> []);
     RefLit = "ref_lit" ([H, H, H] -> [H]);
     RefEq = "ref_eq" ([H, H] -> [I32]);
+    RefIs = "ref_is" ([H, H] -> [I32]);
     RefId = "ref_id" ([H] -> [H]);
 
     Invoker = "invoker" ([] -> [H]);

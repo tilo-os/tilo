@@ -34,6 +34,12 @@ pub struct PackageMeta {
     /// lists and opens.
     #[serde(default)]
     pub roots: Vec<String>,
+    /// The named roots (`root notes: Notes`): what other packages reach as `alias.notes`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub named_roots: Vec<NamedRootMeta>,
+    /// `type Name = T` of a type that is not a container: another name for `T`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<AliasMeta>,
     /// The view a window of each type uses unless changed (`default view v for T`).
     #[serde(default)]
     pub default_views: Vec<DefaultViewMeta>,
@@ -43,6 +49,20 @@ pub struct PackageMeta {
     /// Named seed data (`scenario "name" { ... }`), each run by its hidden action.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scenarios: Vec<ScenarioMeta>,
+}
+
+/// A named root: its name and its type's id.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamedRootMeta {
+    pub name: String,
+    pub ty: String,
+}
+
+/// `type Name = T`: the name and the type it names, as metadata writes types.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AliasMeta {
+    pub name: String,
+    pub ty: String,
 }
 
 /// A `scenario`: its name and the hidden action (listed in `actions` with `scenario: true`)
@@ -110,6 +130,9 @@ pub struct TypeMeta {
     /// defaults when it has none.
     #[serde(default, skip_serializing_if = "SearchMeta::is_empty")]
     pub search: SearchMeta,
+    /// `type Notes = Collection<Note>`: a resource that is its one field.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub holder: bool,
 }
 
 /// What search, a list's filters and agents offer of a type (search.md, "What a type declares"):

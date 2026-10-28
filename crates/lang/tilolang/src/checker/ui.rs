@@ -244,6 +244,7 @@ impl Checker<'_> {
     /// or the index for plain values).
     fn ui_for(&mut self, var: &str, iter: &ast::Expr, body: &[UiStmt], parent: LocalId) {
         let list = self.expr(iter, None);
+        let list = self.unhold(list, iter.span);
         let Some(elem) = self.element_of(&list.ty, iter.span) else {
             return;
         };

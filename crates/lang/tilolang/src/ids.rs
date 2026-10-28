@@ -285,6 +285,13 @@ pub fn declared_names(m: &Module) -> Vec<String> {
         match item {
             Item::Use(_) | Item::Root(_) | Item::DefaultView(_) | Item::RowView(_) => {}
             Item::Scenario(s) => out.push(scenario_key(&s.name)),
+            Item::Alias(a) => {
+                out.push(a.name.name.clone());
+                let container = matches!(&a.ty.kind, crate::ast::TypeExprKind::Generic(g, _) if matches!(g.name.as_str(), "Collection" | "Set" | "Map"));
+                if container {
+                    out.push(format!("{}.{}", a.name.name, crate::resolve::HOLDER_FIELD));
+                }
+            }
             Item::Type(t) => {
                 out.push(t.name.name.clone());
                 for f in &t.fields {

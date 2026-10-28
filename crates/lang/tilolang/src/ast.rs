@@ -34,6 +34,9 @@ pub struct AppHeader {
 pub enum Item {
     Use(UseDecl),
     Type(TypeDecl),
+    /// `type Name = T`: a name for a type. A container (`Collection<Note>`) named so is a
+    /// resource holding it; any other type is another name for it.
+    Alias(AliasDecl),
     Enum(EnumDecl),
     /// `root T`: a type with one resource per workspace, which the launcher opens.
     Root(RootDecl),
@@ -128,9 +131,21 @@ pub struct VariantDecl {
     pub span: Span,
 }
 
+/// `type Notes = Collection<Note>`, `type Channel = TextChannel | Thread`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AliasDecl {
+    pub node: NodeId,
+    pub doc: Vec<String>,
+    pub name: Ident,
+    pub ty: TypeExpr,
+    pub span: Span,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct RootDecl {
     pub node: NodeId,
+    /// `root notes: Notes`: the name code reaches the root by (`notes`, `alias.notes`).
+    pub name: Option<Ident>,
     pub ty: TypeExpr,
     pub span: Span,
 }
@@ -193,6 +208,8 @@ pub enum TypeExprKind {
     /// `(T) -> View`: what a parameter of a view takes when it is given a lambda or a block
     /// with an item.
     Fn(Vec<TypeExpr>, Box<TypeExpr>),
+    /// `TextChannel | Thread`: a resource of any of these types.
+    Union(Vec<TypeExpr>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -540,8 +557,11 @@ pub struct LetBind {
 /// `.b(x, y)`: a variant and names for its payload fields, in order (`_` ignores one).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pattern {
+    /// The variant (`.some`), or for a type pattern the name the value is bound to.
     pub variant: Ident,
     pub binds: Vec<Ident>,
+    /// `t: TextChannel`: the case of a union, by its type.
+    pub ty: Option<TypeExpr>,
     pub span: Span,
 }
 

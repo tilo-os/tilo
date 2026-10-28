@@ -396,6 +396,8 @@ impl<'d> Derive<'d> {
             .and_then(|obj| type_at(self.doc, obj))
             .unwrap_or_else(|| schema.id.clone());
         sink.put_text(path, TYPE, &ty)?;
+        // An item of a collection of several types is its stored type's.
+        let schema = lookup(&ty).unwrap_or(schema);
         for field in &schema.fields {
             match field.kind {
                 MergeKind::Collection => self.collection(sink, path, field, obj)?,
@@ -622,6 +624,13 @@ impl<'d> Derive<'d> {
             members.push((key.clone(), id.clone()));
             let child = format!("{path}/{}:{id}", field.id);
             sink.put_text(&child, KEY, &key)?;
+            // A collection of a union's types: each item is its stored type's.
+            let item_schema = item_schema.or_else(|| {
+                item_obj
+                    .as_ref()
+                    .and_then(|o| type_at(self.doc, o))
+                    .and_then(|t| lookup(&t))
+            });
             let Some(item_schema) = item_schema else {
                 continue;
             };
@@ -783,7 +792,14 @@ impl<'d> Derive<'d> {
         let child = format!("{resource}/{}:{id}", field.id);
         let list = member_list(resource, &field.id);
         let before = sink.text(&child, KEY)?;
-        let item_schema = field.record.as_deref().and_then(lookup);
+        // A collection of a union's types: the item's stored type, as it was or is now.
+        let item_schema = match field.record.as_deref().and_then(lookup) {
+            Some(schema) => Some(schema),
+            None => match &now {
+                Some((_, Some(obj))) => type_at(self.doc, obj).and_then(|t| lookup(&t)),
+                _ => sink.text(&child, TYPE)?.and_then(|t| lookup(&t)),
+            },
+        };
         match (before, now) {
             (Some(key), None) => {
                 sink.remove_entry(&list, &(key.clone(), id.to_owned()))?;
@@ -882,7 +898,11 @@ impl<'d> Derive<'d> {
             });
         if let Some(key) = sink.text(path, KEY)? {
             // Out of the columns as it was, and out of its list: put back below as it is.
-            if let Some(item_schema) = field.record.as_deref().and_then(lookup) {
+            let item_schema = match field.record.as_deref().and_then(lookup) {
+                Some(schema) => Some(schema),
+                None => sink.text(path, TYPE)?.and_then(|t| lookup(&t)),
+            };
+            if let Some(item_schema) = item_schema {
                 Self::scope_columns(sink, (parent, coll), path, item_schema, (&key, false))?;
             }
             sink.remove_entry(&member_list(parent, coll), &(key, id.to_owned()))?;

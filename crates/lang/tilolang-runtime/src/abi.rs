@@ -85,6 +85,7 @@ imports! {
     (RecSetH, "rec_set_h", "iii", ""),
     (RefLit, "ref_lit", "iii", "i"),
     (RefEq, "ref_eq", "ii", "i"),
+    (RefIs, "ref_is", "ii", "i"),
     (RefId, "ref_id", "i", "i"),
 
     (Invoker, "invoker", "", "i"),
