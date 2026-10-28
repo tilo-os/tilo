@@ -2364,6 +2364,7 @@ pub fn invalidate_app_cache() {
     APP_CACHE_EPOCH.fetch_add(1, Ordering::Release);
     APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
     *cache = None;
+    drop(cache);
     *lock(&APP_CACHE_STAMP) = None;
 }
 

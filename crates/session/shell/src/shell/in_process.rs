@@ -1440,9 +1440,42 @@ mod tests {
     /// of deleting it one character at a time, which is what a person does.
     /// The checks read the published accessible selection, so the route is the
     /// one a screen reader and an agent also take.
+    /// An Editor tab `tab` showing the file at `path`, with the keyboard on
+    /// its document.
+    fn focused_editor_on(
+        inputs: &crate::shell::hosted_inputs::HostedTileInputs,
+        tab: u64,
+        path: &std::path::Path,
+    ) -> ui::headless::FrameHarness {
+        inputs.bind_document(
+            tab,
+            crate::shell::hosted_inputs::HostedDocument {
+                provider_id: "org.nirios.Editor",
+                path: path.canonicalize().unwrap(),
+            },
+        );
+        let mut editor = mount_tab(
+            inputs,
+            tab,
+            crate::shell::state::AppKind::Other("Editor".into()),
+        );
+        assert!(
+            editor
+                .wait_for_named("editor_view", tilo_test_env::hang_bound())
+                .is_ok(),
+            "Editor tab {tab} shows its document"
+        );
+        assert!(
+            editor
+                .perform_named("editor_view", &ui::a11y::Action::Focus)
+                .is_ok(),
+            "the keyboard reaches tab {tab}'s document"
+        );
+        editor
+    }
+
     #[test]
     fn the_hosted_editor_selects_copies_and_pastes_through_the_keyboard() {
-        use ui::a11y::Action as SemanticAction;
         use ui::headless::Action;
 
         let profile = tempfile::tempdir().unwrap();
@@ -1460,30 +1493,7 @@ mod tests {
         let line = "moor at the east quay\n";
         let source = folder.path().join("harbour-plan.txt");
         std::fs::write(&source, line).unwrap();
-        inputs.bind_document(
-            81,
-            crate::shell::hosted_inputs::HostedDocument {
-                provider_id: "org.nirios.Editor",
-                path: source.canonicalize().unwrap(),
-            },
-        );
-        let mut editor = mount_tab(
-            &inputs,
-            81,
-            crate::shell::state::AppKind::Other("Editor".into()),
-        );
-        assert!(
-            editor
-                .wait_for_named("editor_view", tilo_test_env::hang_bound())
-                .is_ok(),
-            "the Editor tab shows its document"
-        );
-        assert!(
-            editor
-                .perform_named("editor_view", &SemanticAction::Focus)
-                .is_ok(),
-            "the keyboard reaches the document"
-        );
+        let mut editor = focused_editor_on(&inputs, 81, &source);
 
         let outcome = ui::headless::driver::drive(
             &mut editor,
@@ -1509,30 +1519,7 @@ mod tests {
         let drafted = "";
         let destination = folder.path().join("tide-notes.txt");
         std::fs::write(&destination, drafted).unwrap();
-        inputs.bind_document(
-            82,
-            crate::shell::hosted_inputs::HostedDocument {
-                provider_id: "org.nirios.Editor",
-                path: destination.canonicalize().unwrap(),
-            },
-        );
-        let mut second = mount_tab(
-            &inputs,
-            82,
-            crate::shell::state::AppKind::Other("Editor".into()),
-        );
-        assert!(
-            second
-                .wait_for_named("editor_view", tilo_test_env::hang_bound())
-                .is_ok(),
-            "the second Editor tab shows its document"
-        );
-        assert!(
-            second
-                .perform_named("editor_view", &SemanticAction::Focus)
-                .is_ok(),
-            "the keyboard reaches the second document"
-        );
+        let mut second = focused_editor_on(&inputs, 82, &destination);
 
         // Paste the copied line into the empty destination: one command that
         // writes text a character-by-character route would have typed.

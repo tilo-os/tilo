@@ -85,7 +85,7 @@ impl ShellNetwork {
             Ok(true) => self.schedule_native_owner_publication(room),
             Ok(false) => {}
             Err(error) => {
-                tracing::warn!(%room, %error, "the workspace's layout record was not made")
+                tracing::warn!(%room, %error, "the workspace's layout record was not made");
             }
         }
     }

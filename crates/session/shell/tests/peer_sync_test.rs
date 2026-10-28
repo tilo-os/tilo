@@ -623,6 +623,40 @@ fn report_tab_push_work(samples: usize, work: Vec<(usize, usize)>) {
     eprintln!("pushed-tab-work samples={samples} batches={batches} changes={changes}");
 }
 
+/// `mutation` of `room`'s layout record, written by `device` as its
+/// `sequence`th write, published on the room's topic as the record travels.
+fn layout_push(
+    room: RoomId,
+    device: [u8; 32],
+    sequence: u64,
+    mutation: &collab_types::DocumentMutation,
+) -> NetCmd {
+    use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
+    NetCmd::Publish {
+        at: tokio::time::Instant::now(),
+        ws: WS,
+        msg: NeighbourMsg::AppDocument {
+            peer: 7,
+            app_id: DESKTOP_APP.into(),
+            cluster_id: room.to_string(),
+            record_id: DESKTOP_RECORD.into(),
+            envelope: Box::new(collab_types::SignedOp::new_unsigned(
+                mutation.encode().expect("a mutation encodes"),
+                collab_types::document_artifact_id(DESKTOP_APP, &room.to_string(), DESKTOP_RECORD),
+                collab_types::Ed25519PublicKey::from_bytes(device),
+                collab_types::document_attestation_id(
+                    DESKTOP_APP,
+                    &room.to_string(),
+                    DESKTOP_RECORD,
+                ),
+                collab_types::OpKind::Change,
+                std::time::SystemTime::now(),
+                sequence,
+            )),
+        },
+    }
+}
+
 /// Two devices share one room over real Iroh. Device A opens, moves and
 /// closes tabs; each change is pushed the way the room's layout record
 /// travels (what A wrote to the record since it last sent, as one
@@ -630,7 +664,6 @@ fn report_tab_push_work(samples: usize, work: Vec<(usize, usize)>) {
 /// incremental change in one received message.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pushed_tab_change_reaches_the_other_device_in_one_incremental_batch() {
-    use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
     const SALT_A: u16 = 0xA0A0;
     const SALT_B: u16 = 0xB0B0;
     const SAMPLES: usize = 100;
@@ -650,28 +683,8 @@ async fn a_pushed_tab_change_reaches_the_other_device_in_one_incremental_batch()
     b.set_salt_override(SALT_B);
     b.join_room("Placeholder", room).expect("joins the room");
 
-    let publish = |sequence: u64, mutation: &collab_types::DocumentMutation| NetCmd::Publish {
-        at: tokio::time::Instant::now(),
-        ws: WS,
-        msg: NeighbourMsg::AppDocument {
-            peer: 7,
-            app_id: DESKTOP_APP.into(),
-            cluster_id: room.to_string(),
-            record_id: DESKTOP_RECORD.into(),
-            envelope: Box::new(collab_types::SignedOp::new_unsigned(
-                mutation.encode().expect("a mutation encodes"),
-                collab_types::document_artifact_id(DESKTOP_APP, &room.to_string(), DESKTOP_RECORD),
-                collab_types::Ed25519PublicKey::from_bytes(A_DEVICE),
-                collab_types::document_attestation_id(
-                    DESKTOP_APP,
-                    &room.to_string(),
-                    DESKTOP_RECORD,
-                ),
-                collab_types::OpKind::Change,
-                std::time::SystemTime::now(),
-                sequence,
-            )),
-        },
+    let publish = |sequence: u64, mutation: &collab_types::DocumentMutation| {
+        layout_push(room, A_DEVICE, sequence, mutation)
     };
     let mut receive = async |b: &mut WorkspaceTree, want: &[u64]| {
         let mut batches = 0;

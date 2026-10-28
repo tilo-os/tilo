@@ -1679,7 +1679,8 @@ mod tests {
 
     #[test]
     fn a_later_member_never_receives_a_name_withdrawn_before_it_joined() {
-        for withdrawal in [Withdrawal::Unnamed] {
+        {
+            let withdrawal = Withdrawal::Unnamed;
             let mut room = shared_then_withdrawn(withdrawal);
             let (joiner, mut joiner_rep) = joining(&room, 3, false);
             let received = ask_everyone(&mut room, &mut joiner_rep, 3);
@@ -1729,7 +1730,8 @@ mod tests {
 
     #[test]
     fn a_member_who_was_given_a_name_keeps_it_archived_once_a_later_member_joins() {
-        for withdrawal in [Withdrawal::Unnamed] {
+        {
+            let withdrawal = Withdrawal::Unnamed;
             let mut room = shared_then_withdrawn(withdrawal);
             let (_, mut joiner_rep) = joining(&room, 3, false);
             ask_everyone(&mut room, &mut joiner_rep, 3);
@@ -1761,7 +1763,8 @@ mod tests {
 
     #[test]
     fn the_persons_own_new_device_is_given_the_rooms_whole_history() {
-        for withdrawal in [Withdrawal::Unnamed] {
+        {
+            let withdrawal = Withdrawal::Unnamed;
             let mut room = shared_then_withdrawn(withdrawal);
             let (_, mut joiner_rep) = joining(&room, 3, false);
             ask_everyone(&mut room, &mut joiner_rep, 3);

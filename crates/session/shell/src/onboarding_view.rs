@@ -937,6 +937,26 @@ impl OnboardingView {
         )
     }
 
+    /// Whether something the person started bringing over (their home, apps,
+    /// browser or a migration) still waits to finish.
+    fn carries_pending_work(&self) -> bool {
+        self.portable_home
+            .as_ref()
+            .is_some_and(crate::onboarding_portable_home::Pending::pending)
+            || self
+                .portable_applications
+                .as_ref()
+                .is_some_and(crate::onboarding_portable_applications::Pending::pending)
+            || self
+                .browser
+                .as_ref()
+                .is_some_and(crate::onboarding_browser::Pending::pending)
+            || self
+                .migration
+                .as_ref()
+                .is_some_and(crate::onboarding_migration::Migration::pending)
+    }
+
     fn new_in_session(
         identity_dir: PathBuf,
         session: SessionPaths,
@@ -1013,22 +1033,7 @@ impl OnboardingView {
         view.identity_dir = Some(identity_dir);
         if !view.prepared_pending {
             view.restore_pending_progress_from_disk();
-            if (view
-                .portable_home
-                .as_ref()
-                .is_some_and(crate::onboarding_portable_home::Pending::pending)
-                || view
-                    .portable_applications
-                    .as_ref()
-                    .is_some_and(crate::onboarding_portable_applications::Pending::pending)
-                || view
-                    .browser
-                    .as_ref()
-                    .is_some_and(crate::onboarding_browser::Pending::pending)
-                || view
-                    .migration
-                    .as_ref()
-                    .is_some_and(crate::onboarding_migration::Migration::pending))
+            if view.carries_pending_work()
                 && !view.recovery_only
                 && !view.flow.is_done()
                 && let Some(directory) = view.identity_dir.as_ref()
