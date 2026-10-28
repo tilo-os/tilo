@@ -155,6 +155,13 @@ jobs:
     env:
       # The complete suite passes in the quality lane's 2 CPU / 3 GiB job limit.
       CARGO_BUILD_JOBS: '2'
+      # ci-fast carries the pinned compiler but not every target the workspace
+      # pins (it copies one toolchain); rustup would stop to download one when
+      # the invariants build their fixture, and a stalled toolchain download
+      # used this job's whole timeout before any invariant returned. The native
+      # fixtures need no extra target: use the installed toolchain, and let a
+      # genuinely missing component fail in seconds.
+      RUSTUP_AUTO_INSTALL: '0'
     container:
       image: registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1
     steps:
