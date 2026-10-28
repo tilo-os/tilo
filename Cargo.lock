@@ -2644,6 +2644,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-actions",
+ "tilo-app-state",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-clock",

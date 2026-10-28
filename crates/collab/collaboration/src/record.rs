@@ -391,6 +391,8 @@ fn normalise(path: &Path) -> PathBuf {
 }
 
 mod file_identity;
+pub mod save;
+pub use save::RecordSaveStatus;
 
 /// FNV-1a, 64-bit: a fixed algorithm, unlike a library's default hasher, so
 /// the directory names it produces stay stable.
