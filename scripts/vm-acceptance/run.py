@@ -413,6 +413,9 @@ def main() -> int:
                     help="run one part of the suite (SHARDS) in a session of its own: only its areas' "
                     "checks run, and the checks that judge the whole session (SESSION_JUDGES) judge "
                     "this one; with none of its checks selected, nothing boots")
+    ap.add_argument("--budgets", choices=("gate", "report"), default="gate",
+                    help="gate: a measurement over its budget fails its check; report: it is recorded as "
+                         "over-budget and the run still passes (core.BudgetExceeded)")
     ap.add_argument("--idle-seconds", type=int, default=30)
     ap.add_argument("--memory-mb", type=int, default=4608)
     ap.add_argument("--cpus", type=int, default=6)
@@ -516,7 +519,7 @@ def main() -> int:
         "commit": want_commit, "commit_short": (want_commit or "unknown")[:9],
         "commit_subject": git("log", "-1", "--format=%s", want_commit) if want_commit else None,
         "vm": vm_name, "vm_memory_mb": args.memory_mb, "vm_cpus": args.cpus, "gl": args.gl,
-        "slot": args.slot, "outputs": outputs, "budgets": BUDGETS,
+        "slot": args.slot, "outputs": outputs, "budgets": BUDGETS, "budget_mode": args.budgets,
         "host_mem_available_mb_at_start": mem_available_mb(),
     }
     results: list[core.Result] = []
@@ -575,7 +578,8 @@ def main() -> int:
         # A VM this run created without --gl renders in software: no GPU for R05 to judge.
         facts["software_rendering"] = created and not args.gl
         meta["renderer"], meta["display"] = facts["renderer"], facts["display"]
-        config = {"budgets": BUDGETS, "outputs": outputs, "idle_seconds": args.idle_seconds, "locale": "en"}
+        config = {"budgets": BUDGETS, "budget_mode": args.budgets, "outputs": outputs,
+                  "idle_seconds": args.idle_seconds, "locale": "en"}
         ctx = Context(vm, out, config)
         ctx.facts.update(facts)
         de = "de" in args.locales.split(",")
@@ -637,9 +641,11 @@ def main() -> int:
                 print(f"records: none written: {exc}", file=sys.stderr)
     expected = sum(r.status == "xfail" for r in results)
     skipped = sum(r.status == "skip" for r in results)
+    over = [r.id for r in results if r.status == "over-budget"]
     print(f"\n{doc['overall'].upper()}: {sum(r.status == 'pass' for r in results)}/{len(results)} checks pass"
           + (f", {expected} expected failure(s)" if expected else "")
-          + (f", {skipped} skipped" if skipped else ""))
+          + (f", {skipped} skipped" if skipped else "")
+          + (f", over budget (reported): {', '.join(over)}" if over else ""))
     print(f"report: {out / 'report.md'}")
     return 0 if doc["overall"] == "pass" else 1
 

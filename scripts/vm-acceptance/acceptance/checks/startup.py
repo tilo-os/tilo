@@ -565,7 +565,7 @@ def warm_opens(ctx, res):
     launches = WARM_LAUNCHES
     ctx.reset()
     ctx.vm.input("move", str(next(_NUDGE)), "300")
-    problems, unobserved, summary = [], [], {}
+    problems, over, unobserved, summary = [], [], [], {}
     # The compositor's anonymous RSS after each open has closed, in order: what an open
     # and close leaves behind in it.
     shell_anon: list[float] = []
@@ -603,13 +603,13 @@ def warm_opens(ctx, res):
             unobserved.append(f"{app}: the session log holds no compositor launch timing for {untimed} "
                               f"of {len(results)} opens")
         if opens and median(opens) > budget:
-            problems.append(f"{app} took {median(opens)} ms (median of {len(opens)}) from the open request "
+            over.append(f"{app} took {median(opens)} ms (median of {len(opens)}) from the open request "
                             f"to its first frame, over its {budget} ms budget on {kind} rendering "
                             f"(process start to first frame: median {median(starts)} ms; "
                             f"before it: {describe_before_main(summary[app]['median_ms'])})")
         target = kpi_p95_target(f"app.open.warm_ms.{short}")
         if kind == "gpu" and opens and target is not None and p95(opens) > target:
-            problems.append(f"{app} took {p95(opens)} ms (p95 of {len(opens)}) from the open request to its "
+            over.append(f"{app} took {p95(opens)} ms (p95 of {len(opens)}) from the open request to its "
                             f"first frame on a GPU, over the KPI's {target:.0f} ms")
     # Then one app over and over, unmeasured: the session must outlive it and the app open
     # every time. Its RSS stays out of `shell_anon`, whose slope is a KPI over the series above.
@@ -636,9 +636,10 @@ def warm_opens(ctx, res):
         unobserved.append(f"the compositor's anonymous RSS was read after {len(shell_anon)} closes, "
                           "too few for its growth per open")
     if problems:
-        raise CheckFailed("; ".join(problems + unobserved))
+        raise CheckFailed("; ".join(problems + over + unobserved))
     if unobserved:
-        raise Unobservable("; ".join(unobserved))
+        raise Unobservable("; ".join(over + unobserved))
+    core.judge([], over)
 
 
 @check("A16", "apps", "Every Tilo app the run launched drew its first frame within its budget")
@@ -654,7 +655,7 @@ def every_launch(ctx, res):
     res.metrics.update(launches=len(startups), apps=apps, history_opens=opens)
     if not startups:
         raise Unobservable("no app logged an APP-STARTUP line in the session's logs")
-    problems = app_startup.over_budget(startups) + app_startup.history_over_budget(opens)
+    over = app_startup.over_budget(startups) + app_startup.history_over_budget(opens)
     # A failed check keeps no files, so the slowest late launch's own phases go into the
     # failure text: which marks the first frame waited on, and whether the window named
     # its adapter (a launch with no adapter line is judged on the hardware budget).
@@ -663,7 +664,7 @@ def every_launch(ctx, res):
         slowest = max(late, key=lambda s: s["total_ms"])
         unnamed = (f" ({slowest['app']} logged no `tilo-gpu: window adapter` line before it)"
                    if slowest["renderer"] == "unknown" else "")
-        problems.append(f"slowest late launch{unnamed}: {slowest['line'][:1500]}")
+        over.append(f"slowest late launch{unnamed}: {slowest['line'][:1500]}")
         # The broker's own account of that app's joins (`COLLAB-JOIN`): a join slower on the
         # app's side than here waited for the broker's thread.
         joins = [line[line.index("COLLAB-JOIN"):] for line in ctx.vm.exec(
@@ -671,11 +672,9 @@ def every_launch(ctx, res):
                      check=False).splitlines()
                  if "COLLAB-JOIN" in line and slowest["app"] in line]
         if joins:
-            problems.append(f"the broker's joins for {slowest['app']}: {'; '.join(joins[-3:])}")
-    if "so.tilo.notes" not in apps:
-        problems.append("so.tilo.notes logged no APP-STARTUP line")
-    if problems:
-        raise CheckFailed("; ".join(problems))
+            over.append(f"the broker's joins for {slowest['app']}: {'; '.join(joins[-3:])}")
+    problems = [] if "so.tilo.notes" in apps else ["so.tilo.notes logged no APP-STARTUP line"]
+    core.judge(problems, over)
     res.detail = f"{len(startups)} launches of {len(apps)} apps within budget"
 
 

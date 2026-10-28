@@ -4523,13 +4523,18 @@ evidence = ["/target/vm-acceptance/**"]
 timeout_secs = 10800
 cost = "heavy"
 default = false
-on = ["dispatch"]
+# A release candidate is verified by it (heavy) and gates on what works; its budgets are
+# reported (budgets = "report", tools/ci/vm-acceptance.sh), and vm-acceptance-perf compares
+# its records without holding the candidate.
+heavy = true
+on = ["stable", "dispatch"]
 
 [check.dispatch_inputs]
 swap = "none"
 only = ""
 outputs = "1920x1080@1,1280x800@1.25"
 gl = "auto"
+budgets = "report"
 
 # A broken update falls back by itself: this tree's dev image installed to a disk and
 # booted under KVM, an update staged on it that waits at a disk unlock prompt nobody
