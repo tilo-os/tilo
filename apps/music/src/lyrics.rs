@@ -158,11 +158,11 @@ async fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
 ///   metadata. [`lrclib_url`] / [`lrclib_search_url`] normalise both before
 ///   querying, so `Californication (Official Music Video)` by
 ///   `Red Hot Chili Peppers - Topic` actually resolves.
-/// - **retry + backoff + timeout** — a transient network blip or an LRCLIB
-///   rate-limit (429 / 5xx) is retried a couple of times with backoff behind
-///   an 8 s per-request timeout.
-/// - **cache** — a resolved result (hit *or* miss) is memoised by normalised
+/// - **timeout** — each request is bounded by an 8 s timeout.
+/// - **cache** — an answer (hit *or* miss) is memoised by normalised
 ///   identity, so a revisit / prefetch is instant and never re-hammers LRCLIB.
+///   A request LRCLIB could not answer (the network, 429, 5xx) is not an
+///   answer and is not cached: the next visit asks again.
 /// - **fallback** — an exact `/api/get` miss (`YouTube` durations rarely match
 ///   to the second) falls back to `/api/search`.
 #[cfg(feature = "live")]
@@ -173,7 +173,7 @@ async fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
         CacheEntry::Miss => return None,
         CacheEntry::Absent => {}
     }
-    let result = live_fetch_uncached(meta).await;
+    let result = live_fetch_uncached(meta).await.ok()?;
     cache_put(key, result.clone());
     result
 }
@@ -194,11 +194,11 @@ fn lrclib_client() -> Option<&'static tilo_net::Client> {
 }
 
 #[cfg(feature = "live")]
-async fn live_fetch_uncached(meta: &TrackMeta) -> Option<Lyrics> {
-    let client = lrclib_client()?;
+async fn live_fetch_uncached(meta: &TrackMeta) -> Result<Option<Lyrics>, Unreachable> {
+    let client = lrclib_client().ok_or(Unreachable)?;
     // 1. Exact match by (normalised) track/artist/album/duration.
-    if let Some(l) = lrclib_from_object(client, &lrclib_url(meta)).await {
-        return Some(l);
+    if let Some(l) = lrclib_from_object(client, &lrclib_url(meta)).await? {
+        return Ok(Some(l));
     }
     // 2. Fuzzy search fallback — YouTube durations rarely match LRCLIB's to the
     //    second, so `/api/get` frequently 404s. `/api/search` returns candidates
@@ -206,56 +206,63 @@ async fn live_fetch_uncached(meta: &TrackMeta) -> Option<Lyrics> {
     lrclib_from_search(client, meta).await
 }
 
-/// GET `url` as text, retrying a couple of times with linear backoff on a
-/// *transient* failure (a network error, a 429 rate-limit, or a 5xx). A 404 or
-/// any other definitive non-success returns `None` immediately so the caller
-/// moves on to the next strategy rather than burning retries on a real miss.
+/// LRCLIB could not be asked (the network, a rate limit, a server error):
+/// unlike a miss, this says nothing about the track, so it is not cached.
 #[cfg(feature = "live")]
-async fn get_text_retry(client: &tilo_net::Client, url: &str) -> Option<String> {
-    use tilo_net::StatusCode;
+struct Unreachable;
+
+/// GET `url` as text: `Ok(None)` when LRCLIB answered that it has nothing.
+#[cfg(feature = "live")]
+async fn get_text(client: &tilo_net::Client, url: &str) -> Result<Option<String>, Unreachable> {
     const MAX_LYRICS_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
-    for attempt in 0..3u32 {
-        let backoff = std::time::Duration::from_millis(300 * u64::from(attempt + 1));
-        match client.get(url).send().await {
-            Ok(resp) => {
-                let status = resp.status();
-                if status == StatusCode::NOT_FOUND {
-                    return None; // a real miss — don't retry, let the fallback run
-                }
-                if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                    ui::rt::sleep(backoff).await;
-                    continue; // transient — back off and retry
-                }
-                if !status.is_success() {
-                    return None;
-                }
-                match resp.bytes_limited(MAX_LYRICS_RESPONSE_BYTES).await {
-                    Ok(body) => return Some(String::from_utf8_lossy(&body).into_owned()),
-                    Err(tilo_net::NetError::TooLarge { .. }) => return None,
-                    Err(_) => ui::rt::sleep(backoff).await,
-                }
-            }
-            Err(_) => ui::rt::sleep(backoff).await,
-        }
+    let resp = client.get(url).send().await.map_err(|_| Unreachable)?;
+    let status = resp.status();
+    if status == tilo_net::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+        return Err(Unreachable);
     }
-    None
+    if !status.is_success() {
+        return Ok(None);
+    }
+    match resp.bytes_limited(MAX_LYRICS_RESPONSE_BYTES).await {
+        Ok(body) => Ok(Some(String::from_utf8_lossy(&body).into_owned())),
+        Err(tilo_net::NetError::TooLarge { .. }) => Ok(None),
+        Err(_) => Err(Unreachable),
+    }
 }
 
 /// Parse a single LRCLIB record (from `/api/get`) into [`Lyrics`], preferring
 /// synced over plain. `None` on a 404 / empty record.
 #[cfg(feature = "live")]
-async fn lrclib_from_object(client: &tilo_net::Client, url: &str) -> Option<Lyrics> {
-    let body = get_text_retry(client, url).await?;
-    let json: serde_json::Value = serde_json::from_str(&body).ok()?;
-    lyrics_from_record(&json)
+async fn lrclib_from_object(
+    client: &tilo_net::Client,
+    url: &str,
+) -> Result<Option<Lyrics>, Unreachable> {
+    let Some(body) = get_text(client, url).await? else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|json| lyrics_from_record(&json)))
 }
 
 /// Search LRCLIB by track + artist and return the best candidate's lyrics.
 #[cfg(feature = "live")]
-async fn lrclib_from_search(client: &tilo_net::Client, meta: &TrackMeta) -> Option<Lyrics> {
+async fn lrclib_from_search(
+    client: &tilo_net::Client,
+    meta: &TrackMeta,
+) -> Result<Option<Lyrics>, Unreachable> {
     let url = lrclib_search_url(meta);
-    let body = get_text_retry(client, &url).await?;
-    let arr: serde_json::Value = serde_json::from_str(&body).ok()?;
+    let Some(body) = get_text(client, &url).await? else {
+        return Ok(None);
+    };
+    Ok(best_candidate(&body))
+}
+
+/// The best of LRCLIB's search candidates: the first with synced lyrics,
+/// else the first with plain ones.
+#[cfg(feature = "live")]
+fn best_candidate(body: &str) -> Option<Lyrics> {
+    let arr: serde_json::Value = serde_json::from_str(body).ok()?;
     let list = arr.as_array()?;
     // Prefer the first candidate carrying synced lyrics; else the first plain.
     for rec in list {
