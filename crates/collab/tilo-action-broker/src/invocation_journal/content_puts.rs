@@ -113,45 +113,48 @@ impl ContentPutsStore {
         let complete = bytes
             .iter()
             .rposition(|byte| *byte == b'\n')
-            .map_or(0, |at| at + 1);
-        if bytes[complete..].iter().any(|byte| *byte != 0) {
+            .map_or(0, |at| at.saturating_add(1));
+        let (bytes, torn) = bytes
+            .split_at_checked(complete)
+            .ok_or("content put attribution is corrupt or unsupported")?;
+        if torn.iter().any(|byte| *byte != 0) {
             return Err("content put attribution is corrupt or unsupported".into());
         }
-        let bytes = &bytes[..complete];
         // The first line is the snapshot once the file was compacted; a file
         // whose writes all predate that holds one bare put per line.
-        let snapshot_len = match bytes.starts_with(b"{\"version\"") {
-            true => {
-                let line = bytes
-                    .split_inclusive(|byte| *byte == b'\n')
-                    .next()
-                    .ok_or("content put attribution is corrupt or unsupported")?;
-                let snapshot: PutSnapshot = serde_json::from_slice(line.trim_ascii())
-                    .map_err(|_| "content put attribution is corrupt or unsupported")?;
-                if !matches!(snapshot.version, 1..=VERSION) {
-                    return Err("content put attribution version unsupported".into());
-                }
-                line.len()
+        let snapshot_len = if bytes.starts_with(b"{\"version\"") {
+            let line = bytes
+                .split_inclusive(|byte| *byte == b'\n')
+                .next()
+                .ok_or("content put attribution is corrupt or unsupported")?;
+            let snapshot: PutSnapshot = serde_json::from_slice(line.trim_ascii())
+                .map_err(|_| "content put attribution is corrupt or unsupported")?;
+            if !matches!(snapshot.version, 1..=VERSION) {
+                return Err("content put attribution version unsupported".into());
             }
-            false => 0,
+            line.len()
+        } else {
+            0
         };
         let compacted = snapshot_len != 0;
+        let (snapshot, puts) = bytes
+            .split_at_checked(snapshot_len)
+            .ok_or("content put attribution is corrupt or unsupported")?;
         let mut appended = Vec::new();
-        for line in bytes[snapshot_len..].split(|byte| *byte == b'\n') {
+        for line in puts.split(|byte| *byte == b'\n') {
             if line.is_empty() {
                 continue;
             }
-            let put: ContentPutRecord = match compacted {
-                true => {
-                    let appended: Appended = serde_json::from_slice(line)
-                        .map_err(|_| "content put attribution is corrupt or unsupported")?;
-                    if appended.version != VERSION {
-                        return Err("content put attribution version unsupported".into());
-                    }
-                    appended.put
+            let put: ContentPutRecord = if compacted {
+                let appended: Appended = serde_json::from_slice(line)
+                    .map_err(|_| "content put attribution is corrupt or unsupported")?;
+                if appended.version != VERSION {
+                    return Err("content put attribution version unsupported".into());
                 }
-                false => serde_json::from_slice(line)
-                    .map_err(|_| "content put attribution is corrupt or unsupported")?,
+                appended.put
+            } else {
+                serde_json::from_slice(line)
+                    .map_err(|_| "content put attribution is corrupt or unsupported")?
             };
             appended.push(put);
         }
@@ -159,7 +162,7 @@ impl ContentPutsStore {
             return Self::of(&appended);
         }
         Ok(Self {
-            snapshot: bytes[..snapshot_len].to_vec(),
+            snapshot: snapshot.to_vec(),
             appended,
             len: complete as u64,
         })
@@ -259,7 +262,7 @@ impl ContentPutsStore {
             return Err("content put attribution storage limit reached".into());
         }
         self.len = snapshot.len() as u64;
-        self.snapshot = snapshot.clone();
+        self.snapshot.clone_from(&snapshot);
         self.appended.clear();
         Ok(Staged::Replace {
             name: CONTENT_PUTS_FILE,
