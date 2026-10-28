@@ -797,10 +797,7 @@ impl HexView {
 }
 
 impl Widget for HexView {
-    ui::provides!(
-        dyn ui::widget::Findable,
-        dyn ui::widget::controls::ActionControls
-    );
+    ui::provides!(dyn ui::widget::Findable);
 
     fn sync(&mut self, _doc: &AppModel, _path: &ModelPath) {
         // Drain a closed file chooser first, so a freshly opened buffer is
@@ -1420,14 +1417,6 @@ impl HexView {
 /// `edit` as the field edit of the record's bytes it is.
 fn byte_edit(edit: &BufferEdit) -> Option<ui::tilo_resource::Edit<HexEditor>> {
     HexEditor::paths().bytes.perform(edit).ok()
-}
-
-impl ui::widget::controls::ActionControls for HexView {
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.children_mut()
-            .into_iter()
-            .find_map(ui::widget::controls::take_control_invocation)
-    }
 }
 
 #[cfg(test)]

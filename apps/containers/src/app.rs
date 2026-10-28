@@ -1659,8 +1659,6 @@ pub(crate) fn past_tense(action: Action) -> &'static str {
 // =====================================================================
 
 impl Widget for ContainersApp {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
-
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
         for child in self.children_mut() {
             child.settle(edits, path);
@@ -1913,27 +1911,6 @@ impl Widget for ContainersApp {
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
-    }
-}
-
-impl ui::widget::controls::ActionControls for ContainersApp {
-    fn install_control_custody(
-        &mut self,
-        domain: &ui::ControlDomain,
-        attachment: ui::control_custody::CustodyAttachment,
-    ) {
-        for child in self.children_mut() {
-            ui::widget::controls::install_control_custody(child, domain, attachment);
-        }
-    }
-
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        for child in self.children_mut() {
-            if let Some(invocation) = ui::widget::controls::take_control_invocation(child) {
-                return Some(invocation);
-            }
-        }
-        None
     }
 }
 

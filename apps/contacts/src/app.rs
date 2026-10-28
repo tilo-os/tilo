@@ -1843,10 +1843,7 @@ impl ui::undo::UndoControl for ContactsApp {
 }
 
 impl Widget for ContactsApp {
-    ui::provides!(
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::undo::UndoControl
-    );
+    ui::provides!(dyn ui::undo::UndoControl);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(editor) = &self.account_editor {
@@ -2213,16 +2210,6 @@ impl Widget for ContactsApp {
             dirty |= dialog.take_structure_dirty();
         }
         dirty
-    }
-}
-
-impl ui::widget::controls::ActionControls for ContactsApp {
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        // This capability owns the whole mounted subtree, including modal
-        // table/selection/footer controls and the contextual menu.
-        self.children_mut()
-            .into_iter()
-            .find_map(ui::widget::controls::take_control_invocation)
     }
 }
 

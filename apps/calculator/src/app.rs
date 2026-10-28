@@ -1217,7 +1217,6 @@ impl ui::history_mode::capability::PresentsHistoryEntries for CalculatorApp {
 
 impl Widget for CalculatorApp {
     ui::provides!(
-        dyn ui::widget::controls::ActionControls,
         dyn ui::history_mode::capability::PresentsHistoryEntries,
         dyn ui::application_view::ApplicationViewState
     );
@@ -1757,8 +1756,6 @@ impl Widget for CalculatorApp {
         self.area == Rect::ZERO
     }
 }
-
-impl ui::widget::controls::ActionControls for CalculatorApp {}
 
 impl ui::widget::AppWidget for CalculatorApp {
     fn app_kind(&self) -> ui::widget::AppKind {
