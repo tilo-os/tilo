@@ -113,6 +113,7 @@ pub mod portable_storage;
 #[cfg(unix)]
 pub mod private_actions;
 pub mod record;
+pub mod state;
 
 // The clock, background work, wake routing and host inputs, under the paths
 // the toolkit names them by (`ui::time`, `ui::background`, `ui::wake`,
