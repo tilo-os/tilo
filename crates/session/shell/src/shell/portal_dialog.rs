@@ -17,6 +17,7 @@
     clippy::significant_drop_tightening,
     reason = "this bounded state machine mirrors several fixed portal dialog shapes; its keyboard, pointer, cancellation, paging, and conflict paths have direct controller tests"
 )]
+#![deny(clippy::too_many_arguments)]
 
 pub(crate) mod authentication_actions;
 
