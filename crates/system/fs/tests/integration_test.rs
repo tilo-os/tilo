@@ -1075,6 +1075,10 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a mount creates, chmods and lists a link, a script and a dangling target, then checks all three again after a restart"
+)]
 async fn fuse_keeps_a_link_and_a_files_permission_bits() {
     require_fuse!();
     tilo_test_env::within("the real-FUSE link and mode test", async {
@@ -1133,10 +1137,12 @@ async fn fuse_keeps_a_link_and_a_files_permission_bits() {
             0o755,
             "the executable bit a chmod asked for must survive",
         );
-        assert_ne!(
-            std::fs::metadata(root.join("link-rel")).unwrap().mode() & 0o777,
-            0,
-            "a link reports a mode",
+        assert!(
+            std::fs::symlink_metadata(root.join("link-rel"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "a chmod on a sibling does not turn the link into a file",
         );
         std::fs::set_permissions(
             root.join("script.sh"),
