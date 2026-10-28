@@ -1047,3 +1047,7 @@ attention-deferred = { $count } beiseitegelegt
 attention-pill-one = { $count } wartet
 attention-pill = { $count } warten
 action-document-replaced = Diese Aktion wurde nicht ausgeführt, weil ihr Dokument erneut geöffnet oder ersetzt wurde. Versuche es im aktuellen Dokument erneut.
+
+# Spoken when Ctrl+Super+Enter (or both volume keys held) turns the screen reader on or off.
+screen-reader-turned-on = Bildschirmleser an
+screen-reader-turned-off = Bildschirmleser aus

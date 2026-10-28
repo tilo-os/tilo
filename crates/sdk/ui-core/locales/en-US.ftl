@@ -426,6 +426,10 @@ secret-prompt-pins-differ = The new PINs don’t match
 secret-prompt-keypad-delete = Delete
 secret-prompt-keypad-enter = Done
 
+# Spoken when Ctrl+Super+Enter (or both volume keys held) turns the screen reader on or off.
+screen-reader-turned-on = Screen reader on
+screen-reader-turned-off = Screen reader off
+
 # Authentication surfaces share the system theme and catalog.
 lock-welcome-back = Welcome back
 
