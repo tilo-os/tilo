@@ -237,30 +237,30 @@ class AttributionTests(unittest.TestCase):
 
 
 
-def undo_toast(title, body="Select to undo, or press Ctrl+Shift+T later", **fields):
+def undo_toast(title, body="", **fields):
     return {"title": title, "body": body, "severity": "Info", "persistent": False, **fields}
 
 
 class UndoCloseTests(unittest.TestCase):
-    def test_only_captured_titles_match_independent_of_reopen_binding(self):
+    def test_only_captured_titles_match(self):
         titles = {"Wine File", "Wine Mono Installer"}
-        for heading, body in [
-            ("Closed Wine File", "Select to undo, or press Ctrl+Shift+T later"),
-            ("Closed Wine Mono Installer", "Select to undo, or press Alt+R later"),
-            ("Closed Wine Mono Installer", "Select to undo"),
-            ("Wine Mono Installer geschlossen", "Zum Rückgängigmachen auswählen oder später Strg+Umschalt+T drücken"),
-            ("Wine File geschlossen", "Zum Rückgängigmachen auswählen"),
-        ]:
-            with self.subTest(heading=heading, body=body):
-                self.assertTrue(any(apps._is_undo_close(undo_toast(heading, body), title) for title in titles))
+        for heading in ["Closed Wine File", "Closed Wine Mono Installer",
+                        "Wine Mono Installer geschlossen", "Wine File geschlossen"]:
+            with self.subTest(heading=heading):
+                self.assertTrue(any(apps._is_undo_close(undo_toast(heading), title) for title in titles))
+
+    def test_a_group_close_names_its_tab_count(self):
+        self.assertTrue(apps._is_undo_close(undo_toast("Closed 3 tabs"), "Wine File", 3))
+        self.assertTrue(apps._is_undo_close(undo_toast("3 Tabs geschlossen"), "Wine File", 3))
+        self.assertFalse(apps._is_undo_close(undo_toast("Closed Wine File"), "Wine File", 3))
 
     def test_unrelated_titles_and_non_undo_messages_are_rejected(self):
         for heading, body in [
-            ("Closed Notes", "Select to undo, or press Super+Shift+T later"),
-            ("Closed Wine File backup", "Select to undo"),
-            ("Wine File crashed", "Select to undo, or press Super+Shift+T later"),
+            ("Closed Notes", ""),
+            ("Closed Wine File backup", ""),
+            ("Wine File crashed", ""),
             ("Closed Wine File", "Wine File crashed"),
-            ("Wine File updated", "Select to undo"),
+            ("Wine File updated", ""),
         ]:
             with self.subTest(heading=heading, body=body):
                 self.assertFalse(apps._is_undo_close(undo_toast(heading, body), "Wine File"))
@@ -270,10 +270,10 @@ class UndoCloseTests(unittest.TestCase):
             with self.subTest(fields=fields):
                 self.assertFalse(apps._is_undo_close(undo_toast("Closed Wine File", **fields), "Wine File"))
 
-    def test_missing_or_empty_titles_cannot_match_a_reopen_hint(self):
+    def test_missing_or_empty_titles_cannot_match(self):
         for title in [None, "", "   "]:
             with self.subTest(title=title):
-                self.assertFalse(apps._is_undo_close(undo_toast("Closed ", "Select to undo, or press Super+Shift+T later"), title))
+                self.assertFalse(apps._is_undo_close(undo_toast("Closed "), title))
         for heading in [None, ""]:
             self.assertFalse(apps._is_undo_close(undo_toast(heading), "Wine File"))
 
@@ -338,7 +338,7 @@ class CloseNotificationRegressionTests(unittest.TestCase):
                 self.assertEqual([g["id"] for g in ctx.groups], [1])
 
     def test_unrelated_errors_persistent_and_crash_notifications_still_fail(self):
-        for toast in [undo_toast("Closed Notes", "Select to undo, or press Super+Shift+T later"),
+        for toast in [undo_toast("Closed Notes"),
                       undo_toast("Closed Wine File", severity="Error"),
                       undo_toast("Closed Wine Mono Installer", persistent=True),
                       undo_toast("Wine File crashed", "Exited unexpectedly")]:
@@ -462,8 +462,7 @@ class LateWindowCloseTests(unittest.TestCase):
         self.assertEqual(metrics["lingering_after_close"], [])
 
     def test_owned_multitab_group_uses_exact_localized_group_toast(self):
-        for heading, body in [("Closed 2 tabs", "Select to undo"),
-                              ("2 Tabs geschlossen", "Zum Rückgängigmachen auswählen oder später Strg+Umschalt+T drücken")]:
+        for heading, body in [("Closed 2 tabs", ""), ("2 Tabs geschlossen", "")]:
             class GroupToast(CloseFixture):
                 def invoke(self, provider, action):
                     super().invoke(provider, action)
