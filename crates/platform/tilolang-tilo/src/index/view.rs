@@ -33,6 +33,15 @@ pub struct View<'a> {
     pub overlay: &'a Overlay,
 }
 
+/// A resource holding text, as [`View::every_text`] lists it.
+#[derive(Clone, Debug)]
+pub struct Texts {
+    pub path: String,
+    pub schema: &'static TypeSchema,
+    /// Its texts that are not blank, in field order.
+    pub texts: Vec<String>,
+}
+
 /// The path of the item `id` of the collection `field` of `resource`.
 #[must_use]
 pub fn child(resource: &str, field: &str, id: &str) -> String {
@@ -199,6 +208,73 @@ impl View<'_> {
             }
         }
         Ok(None)
+    }
+
+    /// Every resource holding a text that is not blank, by path, with its schema and those
+    /// texts in field order ([`Texts`]): what search finds of the package. One pass over the index's
+    /// fields; a resource the open writes touched is read through them.
+    ///
+    /// # Errors
+    /// The index cannot be read or is corrupt.
+    pub fn every_text(&self) -> Result<Vec<Texts>, IndexError> {
+        let mut out = Vec::new();
+        let mut seen = BTreeSet::new();
+        for held in self.snapshot.texted()? {
+            if self.overlay.touched(&held.path) {
+                seen.insert(held.path.clone());
+                if let Some(found) = self.texts_at(&held.path)? {
+                    out.push(found);
+                }
+                continue;
+            }
+            let Some(schema) = held.ty.as_deref().and_then(lookup) else {
+                continue;
+            };
+            let texts: Vec<String> = schema
+                .fields
+                .iter()
+                .filter(|f| f.kind == MergeKind::Text)
+                .filter_map(|f| held.texts.get(&f.id))
+                .filter(|text| !text.trim().is_empty())
+                .cloned()
+                .collect();
+            if !texts.is_empty() {
+                out.push(Texts {
+                    path: held.path,
+                    schema,
+                    texts,
+                });
+            }
+        }
+        let made: Vec<String> = self
+            .overlay
+            .typed()
+            .filter(|path| !seen.contains(*path))
+            .map(str::to_owned)
+            .collect();
+        if !made.is_empty() {
+            for path in made {
+                if let Some(found) = self.texts_at(&path)? {
+                    out.push(found);
+                }
+            }
+            out.sort_by(|a, b| a.path.cmp(&b.path));
+        }
+        Ok(out)
+    }
+
+    /// The resource at `path` as [`Self::every_text`] lists it, read through the open writes:
+    /// none when it is gone or holds no text.
+    fn texts_at(&self, path: &str) -> Result<Option<Texts>, IndexError> {
+        let Some(schema) = self.type_of(path)?.as_deref().and_then(lookup) else {
+            return Ok(None);
+        };
+        let texts = self.texts(path, schema)?;
+        Ok((!texts.is_empty()).then(|| Texts {
+            path: path.to_owned(),
+            schema,
+            texts,
+        }))
     }
 
     /// The texts of the resource at `path`, in field order, that are not blank: what search

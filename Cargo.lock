@@ -21863,7 +21863,6 @@ dependencies = [
  "tilo-history",
  "tilo-render-protocol",
  "tilo-resource",
- "tilo-search",
  "tilolang",
  "tilolang-runtime",
  "toml 1.0.6+spec-1.1.0",
