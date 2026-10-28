@@ -40,7 +40,7 @@ pub(crate) mod frozen_root;
 pub use frozen_root::FrozenRootPreview;
 pub(crate) mod host;
 pub mod pending_controls;
-pub use coverage::{BinaryVersion, HistoricalGap, HistoricalSupport, TextRendering, TypeHistory};
+pub use coverage::{HistoricalGap, HistoricalSupport, TypeHistory};
 pub use preview::*;
 pub use registration::*;
 

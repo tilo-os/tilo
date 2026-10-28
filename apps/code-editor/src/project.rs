@@ -136,8 +136,7 @@ fn minted(cx: &mut ActionCx) -> Id {
     children = Project::places,
     available = Project::available,
     load = Project::load_texts,
-    read_content_in_doc = Project::content,
-    history_text
+    read_content_in_doc = Project::content
 )]
 impl Project {
     /// New file
