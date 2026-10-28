@@ -15,7 +15,6 @@ pub type LinkPopover = FilterMenu<PageEntry>;
 
 static SPEC: MenuSpec = MenuSpec {
     width: 220.0,
-    row_height: 26.0,
     // Keeps the popover small for big workspaces; the user can keep typing
     // to narrow the result.
     max_rows: 8,

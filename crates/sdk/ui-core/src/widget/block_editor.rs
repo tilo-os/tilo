@@ -2998,9 +2998,7 @@ impl BlockEditor {
             && let Some((index, byte)) = self.slash_anchor_caret
             && let Some(line) = self.blocks.get(index).map(|block| &block.line)
         {
-            let caret = line
-                .caret_rect(theme, byte)
-                .inflate(0.0, f64::from(theme.tokens.spacing.s1) / 2.0);
+            let caret = line.caret_rect(theme, byte);
             self.slash_menu
                 .set_caret(caret, self.popover_bounds.or(self.overlay_viewport));
         }
@@ -3008,9 +3006,7 @@ impl BlockEditor {
             && let Some((index, byte)) = self.link_anchor_caret
             && let Some(line) = self.blocks.get(index).map(|block| &block.line)
         {
-            let caret = line
-                .caret_rect(theme, byte)
-                .inflate(0.0, f64::from(theme.tokens.spacing.s1) / 2.0);
+            let caret = line.caret_rect(theme, byte);
             self.link_popover
                 .set_caret(caret, self.popover_bounds.or(self.overlay_viewport));
         }

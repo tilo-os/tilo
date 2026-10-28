@@ -76,4 +76,27 @@ pub use tilo_search::{Frecency, ListIndex, MAX_FIELD_RANK, Matching, fold_char, 
 /// search of a large index finds nothing until it is in.
 pub use tilo_search::{engine_generation, engine_ready};
 
+/// The rows of a short list that answer `query`, best first, ranked by
+/// `index` the way every list search ranks; rows that rank alike keep the
+/// list's order, so a list does not reshuffle while a word is typed. An
+/// empty query keeps every row in order.
+pub fn ranked_rows<'a, R>(
+    index: &ListIndex,
+    query: &str,
+    rows: impl IntoIterator<Item = R>,
+) -> Vec<usize>
+where
+    R: IntoIterator<Item = (&'a str, FieldWeight)>,
+{
+    use tilo_sort::CompactSort as _;
+    let mut ranked: Vec<(i32, usize)> = index
+        .ranks(query, rows)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(at, rank)| rank.map(|rank| (rank, at)))
+        .collect();
+    ranked.compact_sort_by_key(|&(rank, _)| std::cmp::Reverse(rank));
+    ranked.into_iter().map(|(_, at)| at).collect()
+}
+
 pub mod system;

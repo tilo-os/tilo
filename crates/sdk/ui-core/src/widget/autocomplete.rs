@@ -241,6 +241,11 @@ pub struct SuggestionList {
     metrics: ListMetrics,
     /// The width the rows need, from the latest paint.
     content_width: f64,
+    /// The narrowest the panel is, whatever its anchor and rows need.
+    min_width: f64,
+    /// A band its owner paints at the top of the panel, above the rows (a
+    /// picker's own filter field).
+    header: f64,
 }
 
 impl Default for SuggestionList {
@@ -266,7 +271,44 @@ impl SuggestionList {
             role: TextRole::Body,
             metrics: ListMetrics::stock(),
             content_width: 0.0,
+            min_width: 0.0,
+            header: 0.0,
         }
+    }
+
+    /// Never narrower than `width`, so a picker over short labels keeps
+    /// room for its field and hints.
+    #[must_use]
+    pub fn with_min_width(mut self, width: f64) -> Self {
+        self.set_min_width(width);
+        self
+    }
+
+    /// See [`Self::with_min_width`].
+    pub fn set_min_width(&mut self, width: f64) {
+        self.min_width = width.max(0.0);
+    }
+
+    /// Keep a band `height` tall at the top of the panel, above the rows,
+    /// for its owner to paint in ([`Self::header_rect`]).
+    pub fn set_header(&mut self, height: f64) {
+        self.header = height.max(0.0);
+    }
+
+    /// The header band ([`Self::set_header`]) inside the panel, inset like
+    /// the rows. `None` with nothing to show or no band.
+    pub fn header_rect(&self) -> Option<Rect> {
+        if self.header <= 0.0 {
+            return None;
+        }
+        let panel = self.rect()?;
+        let m = &self.metrics;
+        Some(Rect::new(
+            panel.x0 + m.inset,
+            panel.y0 + m.inset,
+            panel.x1 - m.inset,
+            panel.y0 + m.inset + self.header,
+        ))
     }
 
     /// Set the rows' labels in `role` (a code completion's labels are Code).
@@ -392,6 +434,12 @@ impl SuggestionList {
         self.anchor = anchor;
     }
 
+    /// The rect the list opens from.
+    #[must_use]
+    pub fn anchor(&self) -> Rect {
+        self.anchor
+    }
+
     /// The bounds the list stays inside, normally the window.
     pub fn set_viewport(&mut self, viewport: Rect) {
         self.viewport = Some(viewport);
@@ -444,7 +492,7 @@ impl SuggestionList {
         } else {
             self.visible_count()
         };
-        let height = f64_of_usize(rows) * m.row + 2.0 * m.inset;
+        let height = f64_of_usize(rows) * m.row + 2.0 * m.inset + self.header;
         let viewport = self
             .viewport
             .unwrap_or(Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6));
@@ -452,6 +500,7 @@ impl SuggestionList {
             .anchor
             .width()
             .max(self.content_width)
+            .max(self.min_width)
             .min(viewport.width().max(1.0));
         Some(
             crate::widget::floating_surface::place_anchored(
@@ -468,7 +517,7 @@ impl SuggestionList {
     /// Row `visible` (0 = the first in view) inside `panel`.
     fn row_in(&self, panel: Rect, visible: usize) -> Rect {
         let m = &self.metrics;
-        let y0 = panel.y0 + m.inset + f64_of_usize(visible) * m.row;
+        let y0 = panel.y0 + m.inset + self.header + f64_of_usize(visible) * m.row;
         Rect::new(panel.x0 + m.inset, y0, panel.x1 - m.inset, y0 + m.row)
     }
 
@@ -606,7 +655,12 @@ impl SuggestionList {
             }
             return;
         }
-        let rows = panel.inset(-m.inset);
+        let rows = Rect::new(
+            panel.x0 + m.inset,
+            panel.y0 + m.inset + self.header,
+            panel.x1 - m.inset,
+            panel.y1 - m.inset,
+        );
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &rows);
         let mut ctx = PaintCtx::new(scene, transform, text, theme);
         for visible in 0..self.visible_count() {
