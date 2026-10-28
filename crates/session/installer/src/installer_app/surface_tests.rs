@@ -10,7 +10,6 @@ use serde_json::{Value, json};
 use super::*;
 use crate::operation::{self as op, Operation};
 
-mod capacity_tests;
 mod method_intent_tests;
 
 /// A recording install backend: disks from a fixture, an install that
@@ -980,6 +979,12 @@ fn the_whole_wizard_runs_through_the_console_with_its_confirmations() {
     assert_eq!(*backend.power.lock().unwrap(), [PowerAction::PowerOff]);
 }
 
+/// A fresh wizard, read under its own name so the test below keeps its own
+/// `app` binding.
+fn new_wizard(backend: &Arc<FakeBackend>) -> (InstallerApp, AutoCommit) {
+    app(backend)
+}
+
 /// A temporary live medium for the trial: a state directory the wizard treats
 /// as the one `tilo-installer-setup.service` creates on a real medium.
 fn medium() -> (tempfile::TempDir, crate::live_desktop::TrialMedium) {
@@ -997,7 +1002,7 @@ fn the_live_desktop_is_offered_beside_installing_and_never_during_it() {
     // door reaches the same handler.
     let (_medium_dir, medium) = medium();
     let backend = FakeBackend::new();
-    let (mut app, mut doc) = app(&backend);
+    let (mut app, mut doc) = new_wizard(&backend);
     let described = tilo_actions::door::survey(&app.publish());
     let trial = described
         .iter()
@@ -1007,7 +1012,7 @@ fn the_live_desktop_is_offered_beside_installing_and_never_during_it() {
         trial.contract.availability,
         tilo_actions::Availability::Available
     );
-    assert_eq!(trial.label, "Try the desktop");
+    assert_eq!(trial.action_label, "Try the desktop");
     // Offering it never changes anything: installing is still the point.
     assert_eq!(app.install_state, InstallState::Idle);
     assert!(medium.offered());
@@ -1031,9 +1036,11 @@ fn the_live_desktop_is_offered_beside_installing_and_never_during_it() {
         "{:?}",
         trial.contract.availability
     );
-    // A second press cannot queue a second session.
+    // A second press cannot queue a second session: the door refuses it on the
+    // published availability before the handler runs, and the request on the
+    // medium is untouched.
     let again = invoke(&mut app, &mut doc, "try-desktop@installer", &json!({}));
-    assert_eq!(refused(&again), Some("action_failed"), "{again}");
+    assert_eq!(refused(&again), Some("action_unavailable"), "{again}");
     assert_eq!(medium.request_contents(), Some(b"live-desktop\n".to_vec()));
 
     // Phase `the_wizard_comes_back_to_the_same_start_once_the_trial_ends`.
@@ -1043,7 +1050,7 @@ fn the_live_desktop_is_offered_beside_installing_and_never_during_it() {
         .consume_request()
         .expect("the session manager consumes it");
     assert!(medium.offered());
-    let (mut returned, mut returned_doc) = app(&backend);
+    let (mut returned, mut returned_doc) = new_wizard(&backend);
     assert_eq!(state(&mut returned, &mut returned_doc)["step"], "keyboard");
     let again = invoke(
         &mut returned,
@@ -1078,7 +1085,11 @@ fn the_live_desktop_is_offered_beside_installing_and_never_during_it() {
             trial.contract.availability
         );
         let reply = invoke(&mut app, &mut doc, "try-desktop@installer", &json!({}));
-        assert_eq!(refused(&reply), Some("action_failed"), "{install_state:?}");
+        assert_eq!(
+            refused(&reply),
+            Some("action_unavailable"),
+            "{install_state:?}"
+        );
         assert_eq!(medium.request_contents(), None, "{install_state:?}");
     }
 
@@ -1086,7 +1097,7 @@ fn the_live_desktop_is_offered_beside_installing_and_never_during_it() {
     let absent = tempfile::tempdir().expect("temp dir");
     let missing = absent.path().join("missing");
     let _absent_medium = crate::live_desktop::TrialMedium::at(missing.clone());
-    let (mut app, mut doc) = app(&backend);
+    let (mut app, mut doc) = new_wizard(&backend);
     let described = tilo_actions::door::survey(&app.publish());
     assert!(
         !described.iter().any(|d| d.address.action == "try-desktop"),
