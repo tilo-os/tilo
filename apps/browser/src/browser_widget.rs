@@ -5313,6 +5313,15 @@ impl BrowserWidget {
         for (spec, asking) in [
             (E::ReadPage { frame: None }, &["frame"][..]),
             (
+                E::FindPageElement {
+                    role: None,
+                    name: None,
+                    nth: None,
+                    frame: None,
+                },
+                &["role", "name", "nth", "frame"][..],
+            ),
+            (
                 E::ClickPage {
                     element: element.clone(),
                     frame: None,

@@ -71,6 +71,10 @@ constexpr size_t kMaxAudioPackets = 16;
 // The widest picture the page op paints, matching the app's own bound: a
 // wider request is a malformed command, never a larger answer.
 constexpr int CAPTURE_MAX_WIDTH = 1600;
+// The longest accessible name and role words a find matches, matching the
+// app's own bounds: a longer one is a malformed command, never a wider match.
+constexpr size_t MAX_FIND_NAME = 512;
+constexpr size_t MAX_FIND_ROLE = 40;
 // Bounded, opt-in startup geometry evidence; never includes page content.
 void TraceGeometry(const char* stage,int tab,int width=0,int height=0,double scale=0) {
   static const bool enabled=[] {const char* value=std::getenv("TILO_WEBVIEW_PROFILE");return value && std::strcmp(value,"trace")==0;}();
@@ -2518,8 +2522,8 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     if(action!="outline" && action!="click" && action!="fill" && action!="select" && action!="fill_files" && action!="press" && action!="submit" &&
        action!="changes" && action!="at" && action!="settle" && action!="console" && action!="network" &&
        action!="reader" && action!="pointer" && action!="hover" && action!="drag" && action!="path" &&
-       action!="scroll" && action!="pointer_rest" && action!="capture")return false;
-    const bool elementless=action=="outline" || action=="press" || action=="changes" || action=="at" || action=="settle" ||
+       action!="scroll" && action!="pointer_rest" && action!="capture" && action!="find")return false;
+    const bool elementless=action=="find" || action=="outline" || action=="press" || action=="changes" || action=="at" || action=="settle" ||
       action=="console" || action=="network" || action=="reader" || action=="pointer" || action=="hover" ||
       action=="drag" || action=="path" || action=="scroll" || action=="pointer_rest" || action=="capture";
     if(action=="pointer") {
@@ -2545,6 +2549,21 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     // A frame is named as the outline printed it, or not at all.
     if(d->HasKey("frame") && (!type("frame",VTYPE_STRING) || d->GetString("frame").empty() || d->GetString("frame").length()>16))return false;
     if(action=="at" && (!number("x") || !number("y") || Number(d,"x")<0 || Number(d,"y")<0 || Number(d,"x")>100000 || Number(d,"y")>100000))return false;
+    // A find says what to look for — a role, a name, or both, each bounded,
+    // and the number among equal matches when it names one — and a find that
+    // says none of it is a caller's mistake answered here rather than a
+    // command to kill the engine over: the answer says what a find needs.
+    if(action=="find") {
+      const auto word=[&](const char* key,size_t most) {
+        return !d->HasKey(key) || (type(key,VTYPE_STRING) && !d->GetString(key).empty() && d->GetString(key).ToString().size()<=most);
+      };
+      const bool asks=word("role",MAX_FIND_ROLE) && word("name",MAX_FIND_NAME) && (d->HasKey("role") || d->HasKey("name")) &&
+        (!d->HasKey("nth") || (type("nth",VTYPE_INT) && d->GetInt("nth")>=1 && d->GetInt("nth")<=1000));
+      if(!asks) {
+        RefuseOnThread(d,"A find needs a role, a name, or both, such as name=\"Email\" or role=button name=\"Remove\", and a number from 1 among equal matches");
+        return false;
+      }
+    }
     if(action=="settle" && (!type("quiet_ms",VTYPE_INT) || !type("timeout_ms",VTYPE_INT) || d->GetInt("quiet_ms")<50 ||
        d->GetInt("timeout_ms")<d->GetInt("quiet_ms") || d->GetInt("timeout_ms")>20000))return false;
     if((action=="console" || action=="network") && (!number("since") || Number(d,"since")<0))return false;

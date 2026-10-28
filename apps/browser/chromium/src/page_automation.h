@@ -2033,6 +2033,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     if(!PrivateText() && !world_frame_.number.empty()) command->SetString("frame",world_frame_.number);
     for(const char* key:{"element","text","key","lease","history_scope"}) if(pending_->command->HasKey(key)) command->SetString(key,pending_->command->GetString(key));
     for(const char* key:{"cross_origin","secret","native_caret","enabled"}) if(pending_->command->HasKey(key)) command->SetBool(key,pending_->command->GetBool(key));
+    // A find names what to look for, so the words it matches travel with it.
+    for(const char* key:{"role","name"}) if(pending_->command->HasKey(key)) command->SetString(key,pending_->command->GetString(key));
+    if(pending_->command->HasKey("nth")) command->SetInt("nth",static_cast<int>(pending_->command->GetInt("nth")));
     for(const char* key:{"x","y"}) if(pending_->command->HasKey(key)) command->SetDouble(key,Number(pending_->command,key));
     for(const char* key:{"quiet_ms","timeout_ms"}) if(pending_->command->HasKey(key)) command->SetInt(key,pending_->command->GetInt(key));
     if(pending_->command->HasKey("expires_ms")) command->SetDouble("expires_ms",Number(pending_->command,"expires_ms"));
@@ -2263,6 +2266,11 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     if(action=="fill") { FillResult(value);return; }
     // A read runs none of the page's code, so it cannot have led anywhere.
     if(action=="outline" || action=="changes") { pending_->navigation="none";Succeed(Text(value,"message"),Text(value,"outline"));return; }
+    // A find reads the page as either of those does: it runs none of the
+    // page's code, so it cannot have led anywhere, and what it found is its
+    // answer's findings.
+    if(action=="find") { pending_->navigation="none";
+      Succeed(Text(value,"message"),std::nullopt,value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr);return; }
     if(action=="fill_files") { FileTarget(value);return; }
     // A picture of the page is taken after the page says where the area is:
     // the page's own box, never one the caller made up.
