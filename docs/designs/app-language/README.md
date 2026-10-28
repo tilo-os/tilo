@@ -7,11 +7,11 @@ native UI come from the system.
 ## The model
 
 - **Resources** are the data: a note, a mail, a video. Each is a typed record.
-- **Each resource lives somewhere.** Notes live in the workspace. Mail lives on the mail
-  server, videos on YouTube. Where a resource lives decides who has the final say on it.
+- **Each resource has an origin:** the server with the authoritative copy. Notes: the workspace
+  host. Mail: the IMAP server. Videos: YouTube.
 - **Capabilities** are what can be done with resources: get them, search them, change them
-  through actions. Whatever holds a resource offers its capabilities. For notes that's the
-  workspace; for mail it's the code that talks to the mail server.
+  through actions. A resource's capabilities reach its origin: for notes, the workspace host;
+  for mail, the IMAP server, through the mail app's connection.
 - **Actions** are the only way to change a resource. They're typed, attributed to who did
   them, undoable, and checked against permissions.
 - **Views** show resources. They're plain functions of resources. Every resource type has a
@@ -68,8 +68,8 @@ which people, agents and automations can find, read and pin.
   the lesser of what the person may do and what its author is trusted with.
 - Views produce native components, drawn by the shared UI host (one renderer for every app),
   so an app costs a few megabytes, not a toolkit.
-- Changes are CRDT-backed and replay identically everywhere; what lives outside the workspace
-  follows the outside service's rules.
+- Changes are CRDT-backed and replay identically everywhere; resources with an outside
+  origin follow that service's rules.
 - A package can declare **scenarios**: named seed data for screenshots, tests and benchmarks.
   They never touch a person's data; a real first launch starts empty.
 

@@ -13,7 +13,7 @@ Nothing new beyond workspace-model.md, canvas.md and agent-ux.md:
 - **A kept view goes into an app of your own** and can be reused on other resources ("do the
   same for the product video"), shared and versioned. Someone else's view runs with the lesser
   of their authority and yours.
-- **Outside services** are types that live there, with get and search capabilities
+- **Outside services** are types whose origin is the service, with get and search capabilities
   (convergence.md §5). The YouTube app has `Video`, `Channel`, `Playlist` and a player view.
 
 ## 2. Interaction
