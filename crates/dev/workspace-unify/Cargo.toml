@@ -190,7 +190,7 @@ doc = false
 "codex-0_3_0" = { package = "codex", version = "^0.3.0", default-features = false, features = ["default", "numeral-systems", "styling"] }
 "collab-fixtures" = { path = "../../../crates/collab/collab-fixtures", default-features = false, features = [] }
 "collab-types" = { path = "../../../crates/collab/collab-types", default-features = false, features = [] }
-"collaboration" = { path = "../../../crates/collab/collaboration", default-features = false, features = ["default", "local-daemons"] }
+"collaboration" = { path = "../../../crates/collab/collaboration", default-features = false, features = ["broker-transport", "default", "local-daemons", "native", "test-support"] }
 "color-0_3_3" = { package = "color", version = "^0.3.3", default-features = false, features = ["bytemuck", "std"] }
 "color_quant-1_1_0" = { package = "color_quant", version = "^1.1.0", default-features = false, features = [] }
 "colorchoice-1_0_4" = { package = "colorchoice", version = "^1.0.4", default-features = false, features = [] }
@@ -247,7 +247,7 @@ doc = false
 "der-0_8_1" = { package = "der", version = "^0.8.1", default-features = false, features = ["alloc", "oid", "pem", "std", "zeroize"] }
 "der-parser-10_0_0" = { package = "der-parser", version = "^10.0.0", default-features = false, features = ["bigint", "default", "num-bigint", "std"] }
 "deranged-0_5_6" = { package = "deranged", version = "^0.5.6", default-features = false, features = ["default", "powerfmt", "serde"] }
-"derive_more-2_1_1" = { package = "derive_more", version = "^2.1.1", default-features = false, features = ["add", "add_assign", "debug", "default", "deref", "deref_mut", "display", "from", "from_str", "into", "into_iterator", "std", "try_from", "try_into"] }
+"derive_more-2_1_1" = { package = "derive_more", version = "^2.1.1", default-features = false, features = ["add", "add_assign", "as_ref", "debug", "default", "deref", "deref_mut", "display", "from", "from_str", "into", "into_iterator", "std", "try_from", "try_into"] }
 "des-0_9_0" = { package = "des", version = "^0.9.0", default-features = false, features = [] }
 "desktop-policy" = { path = "../../../crates/system/desktop-policy", default-features = false, features = ["default", "host-storage"] }
 "diatomic-waker-0_2_3" = { package = "diatomic-waker", version = "^0.2.3", default-features = false, features = ["alloc", "default"] }
@@ -481,6 +481,8 @@ doc = false
 "i_overlay-9_0_0" = { package = "i_overlay", version = "^9.0.0", default-features = false, features = [] }
 "i_shape-5_0_0" = { package = "i_shape", version = "^5.0.0", default-features = false, features = [] }
 "i_tree-0_19_0" = { package = "i_tree", version = "^0.19.0", default-features = false, features = [] }
+"iai-callgrind-0_16_1" = { package = "iai-callgrind", version = "^0.16.1", default-features = false, features = ["benchmark", "default", "iai-callgrind-runner"] }
+"iai-callgrind-runner-0_16_1" = { package = "iai-callgrind-runner", version = "^0.16.1", default-features = false, features = ["api"] }
 "iana-time-zone-0_1_65" = { package = "iana-time-zone", version = "^0.1.65", default-features = false, features = ["fallback"] }
 "icu_collator-2_3_1" = { package = "icu_collator", version = "^2.3.1", default-features = false, features = ["compiled_data", "default"] }
 "icu_collator_data-2_3_0" = { package = "icu_collator_data", version = "^2.3.0", default-features = false, features = [] }
@@ -901,7 +903,7 @@ doc = false
 "rustfft-6_4_1" = { package = "rustfft", version = "^6.4.1", default-features = false, features = ["avx", "default", "neon", "sse"] }
 "rusticata-macros-4_1_0" = { package = "rusticata-macros", version = "^4.1.0", default-features = false, features = [] }
 "rustix-0_38_44" = { package = "rustix", version = "^0.38.44", default-features = false, features = ["alloc", "default", "event", "fs", "libc-extra-traits", "mm", "pipe", "process", "std", "system", "thread", "use-libc-auxv"] }
-"rustix-1_1_4" = { package = "rustix", version = "^1.1.4", default-features = false, features = ["alloc", "default", "event", "fs", "mm", "net", "pipe", "process", "shm", "std", "stdio", "system", "termios", "time"] }
+"rustix-1_1_4" = { package = "rustix", version = "^1.1.4", default-features = false, features = ["alloc", "default", "event", "fs", "mm", "net", "pipe", "process", "shm", "std", "stdio", "system", "termios", "thread", "time"] }
 "rustix-linux-procfs-0_1_1" = { package = "rustix-linux-procfs", version = "^0.1.1", default-features = false, features = ["default", "std"] }
 "rustls-0_23_46" = { package = "rustls", version = "^0.23.46", default-features = false, features = ["log", "logging", "ring", "std", "tls12"] }
 "rustls-cert-file-reader-0_4_2" = { package = "rustls-cert-file-reader", version = "^0.4.2", default-features = false, features = [] }
@@ -1184,7 +1186,7 @@ doc = false
 "tilo-lock" = { path = "../../../crates/platform/tilo-lock", default-features = false, features = [] }
 "tilo-lockdown-policy" = { path = "../../../crates/session/tilo-lockdown-policy", default-features = false, features = [] }
 "tilo-media" = { path = "../../../crates/platform/tilo-media", default-features = false, features = ["decode", "default", "encode", "pipewire", "realtime", "test-support", "voice"] }
-"tilo-messaging" = { path = "../../../crates/platform/tilo-messaging", default-features = false, features = [] }
+"tilo-messaging" = { path = "../../../crates/platform/tilo-messaging", default-features = false, features = ["room"] }
 "tilo-messaging-protocol" = { path = "../../../crates/system/messaging-protocol", default-features = false, features = ["default", "signal-broker", "sms-dbus", "whatsapp-sdk"] }
 "tilo-mime" = { path = "../../../crates/platform/tilo-mime", default-features = false, features = [] }
 "tilo-model-client" = { path = "../../../crates/agent/model-client", default-features = false, features = ["default", "runtime-client"] }
@@ -1263,6 +1265,7 @@ doc = false
 "tilo-ui" = { path = "../../../crates/sdk/ui-core", default-features = false, features = ["broker-transport", "default", "dmabuf-import", "gpu-video", "local-daemons", "mpris", "native", "portal", "priority-contacts", "realtime-video", "syntax-definitions", "test-support", "ux-bench", "webview-adblock"] }
 "tilo-ui-graph" = { path = "../../../crates/dev/ui-graph", default-features = false, features = [] }
 "tilo-ui-host" = { path = "../../../crates/platform/tilo-ui-host", default-features = false, features = [] }
+"tilo-ui-kms" = { path = "../../../crates/sdk/ui-kms", default-features = false, features = [] }
 "tilo-ui-paint" = { path = "../../../crates/sdk/ui-paint", default-features = false, features = [] }
 "tilo-unicode-emoji" = { path = "../../../crates/platform/tilo-unicode-emoji", default-features = false, features = [] }
 "tilo-unlock-protocol" = { path = "../../../crates/collab/tilo-unlock-protocol", default-features = false, features = [] }
@@ -1670,7 +1673,7 @@ doc = false
 "derive_builder_core-0_20_2" = { package = "derive_builder_core", version = "^0.20.2", default-features = false, features = ["lib_has_std"] }
 "derive_builder_macro-0_20_2" = { package = "derive_builder_macro", version = "^0.20.2", default-features = false, features = ["lib_has_std"] }
 "derive_more-2_1_1" = { package = "derive_more", version = "^2.1.1", default-features = false, features = ["add", "add_assign", "debug", "default", "deref", "deref_mut", "display", "from", "from_str", "into", "into_iterator", "std", "try_from", "try_into"] }
-"derive_more-impl-2_1_1" = { package = "derive_more-impl", version = "^2.1.1", default-features = false, features = ["add", "add_assign", "debug", "default", "deref", "deref_mut", "display", "from", "from_str", "into", "into_iterator", "try_from", "try_into"] }
+"derive_more-impl-2_1_1" = { package = "derive_more-impl", version = "^2.1.1", default-features = false, features = ["add", "add_assign", "as_ref", "debug", "default", "deref", "deref_mut", "display", "from", "from_str", "into", "into_iterator", "try_from", "try_into"] }
 "derive_utils-0_15_1" = { package = "derive_utils", version = "^0.15.1", default-features = false, features = [] }
 "diatomic-waker-0_2_3" = { package = "diatomic-waker", version = "^0.2.3", default-features = false, features = ["alloc", "default"] }
 "digest-0_10_7" = { package = "digest", version = "^0.10.7", default-features = false, features = ["alloc", "block-buffer", "const-oid", "core-api", "default", "mac", "oid", "std", "subtle"] }
@@ -1821,6 +1824,7 @@ doc = false
 "hyper-rustls-0_27_7" = { package = "hyper-rustls", version = "^0.27.7", default-features = false, features = ["http1", "http2", "log", "logging", "native-tokio", "ring", "rustls-native-certs", "tls12", "webpki-roots", "webpki-tokio"] }
 "hyper-util-0_1_20" = { package = "hyper-util", version = "^0.1.20", default-features = false, features = ["client", "client-legacy", "client-proxy", "client-proxy-system", "default", "http1", "http2", "server", "server-auto", "server-graceful", "service", "tokio"] }
 "hypher-0_1_7" = { package = "hypher", version = "^0.1.7", default-features = false, features = ["afrikaans", "albanian", "alloc", "assamese", "belarusian", "bengali", "bulgarian", "catalan", "croatian", "czech", "danish", "default", "dutch", "english", "estonian", "finnish", "french", "full", "galician", "georgian", "german", "greek", "gujarati", "hindi", "hungarian", "icelandic", "italian", "kannada", "kurmanji", "latin", "lithuanian", "malayalam", "marathi", "mongolian", "norwegian", "oriya", "panjabi", "polish", "portuguese", "russian", "sanskrit", "serbian", "slovak", "slovenian", "spanish", "swedish", "tamil", "telugu", "turkish", "turkmen", "ukrainian"] }
+"iai-callgrind-macros-0_6_1" = { package = "iai-callgrind-macros", version = "^0.6.1", default-features = false, features = [] }
 "iana-time-zone-0_1_65" = { package = "iana-time-zone", version = "^0.1.65", default-features = false, features = ["fallback"] }
 "icu_collections-2_3_0" = { package = "icu_collections", version = "^2.3.0", default-features = false, features = ["alloc", "serde"] }
 "icu_locale_core-2_3_0" = { package = "icu_locale_core", version = "^2.3.0", default-features = false, features = ["alloc", "serde", "zerovec"] }
@@ -2023,6 +2027,8 @@ doc = false
 "primeorder-0_13_6" = { package = "primeorder", version = "^0.13.6", default-features = false, features = [] }
 "primeorder-0_14_0" = { package = "primeorder", version = "^0.14.0", default-features = false, features = ["alloc", "basepoint-table", "std"] }
 "proc-macro-crate-3_4_0" = { package = "proc-macro-crate", version = "^3.4.0", default-features = false, features = [] }
+"proc-macro-error-attr2-2_0_0" = { package = "proc-macro-error-attr2", version = "^2.0.0", default-features = false, features = [] }
+"proc-macro-error2-2_0_1" = { package = "proc-macro-error2", version = "^2.0.1", default-features = false, features = ["default", "syn-error"] }
 "proc-macro-hack-0_5_20_deprecated" = { package = "proc-macro-hack", version = "^0.5.20+deprecated", default-features = false, features = [] }
 "proc-macro2-1_0_106" = { package = "proc-macro2", version = "^1.0.106", default-features = false, features = ["default", "proc-macro", "span-locations"] }
 "profiling-1_0_17" = { package = "profiling", version = "^1.0.17", default-features = false, features = [] }
