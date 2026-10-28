@@ -25,6 +25,8 @@ pub mod room_hold;
 #[cfg(test)]
 mod room_hold_tests;
 #[cfg(target_os = "linux")]
+mod tilolang_hosts;
+#[cfg(target_os = "linux")]
 pub(crate) mod window_doors;
 #[cfg(test)]
 use launch_records::register_trusted_service_launch;
@@ -3872,6 +3874,13 @@ fn launch_fitting(
         (document, uri),
     )?;
     stage_continuity(&app, room, &mut command);
+    // A tilolang app whose process serves a window door is its windows alone: a tilolang host
+    // runs their instances (`tilolang_hosts`).
+    #[cfg(target_os = "linux")]
+    if door.is_some() && tilolang_hosts::runs_in_host(&app) {
+        command.args.push(tilolang_hosts::HOSTED_ARG.to_owned());
+        window_doors::host_instances(&app, room);
+    }
     apply_launch_context(context, (document, uri), &mut command)?;
     if let Some(handoff) = media_handoff {
         attach_media_handoff(&mut command, handoff);
@@ -5521,11 +5530,14 @@ fn start_launch(
         // The child cannot exec the launcher (and therefore cannot reach the
         // public Wayland socket) until both registries above are complete.
         #[cfg(target_os = "linux")]
+        let mut tilolang = None;
+        #[cfg(target_os = "linux")]
         let door_end = window_door.as_mut().and_then(|door| {
-            let (end, waiting) = door.serve(child.id());
+            let (end, waiting, hosted) = door.serve(child.id());
             for token in waiting {
                 events.startup.started(Some(token), child.id());
             }
+            tilolang = hosted;
             end
         });
         let local_gate = matches!(launch_gate, SupervisedLaunchGate::Local(_));
@@ -5578,6 +5590,20 @@ fn start_launch(
                 },
             });
             return;
+        }
+
+        // A tilolang app's window: its instance runs in the host of its workspace and author.
+        #[cfg(target_os = "linux")]
+        if let Some(hosted) = &tilolang
+            && let Some(identity) = &command.service_identity
+            && let Some(room) = RoomId::parse(&identity.workspace_id)
+            && let Some(instance) = command
+                .env
+                .iter()
+                .find(|(key, _)| key == "TILO_CONTINUITY_INSTANCE")
+                .and_then(|(_, value)| value.parse::<u64>().ok())
+        {
+            tilolang_hosts::first_window(hosted, room, instance, child.id());
         }
 
         // Drain both pipes concurrently. A GUI normally keeps both streams

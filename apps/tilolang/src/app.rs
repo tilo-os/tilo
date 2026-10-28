@@ -120,6 +120,13 @@ impl ResourceApp for TlApp {
     /// record is had, the platform's loading state meanwhile).
     fn opening(cx: &OpeningCx<'_>) -> Option<Box<dyn OpeningView>> {
         crate::i18n::ensure();
+        // A tilolang host runs the instance: the window presents it, and reads no record.
+        #[cfg(target_os = "linux")]
+        if crate::hosted::is_hosted() {
+            return Some(Box::new(crate::hosted::HostedWindow::new(
+                crate::hosted::window_instance(),
+            )));
+        }
         let meta = hosted()?;
         let indexes = indexes(&cx.files())?;
         Some(Box::new(
@@ -136,6 +143,18 @@ impl ResourceApp for TlApp {
 
     fn view(cx: &mut ViewCx<Room>) -> Element {
         crate::i18n::ensure();
+        #[cfg(target_os = "linux")]
+        if crate::hosted::is_hosted() {
+            let opened = cx
+                .take_lent::<ui::framework::Opened>()
+                .and_then(|opened| opened.take::<crate::hosted::HostedWindow>());
+            return match opened {
+                Some(window) => window,
+                None => Box::new(crate::hosted::HostedWindow::new(
+                    crate::hosted::window_instance(),
+                )),
+            };
+        }
         let Some(meta) = hosted() else {
             return Box::new(ui::widget::EmptyState::new(crate::i18n::t(
                 "tilolang-open-failed",

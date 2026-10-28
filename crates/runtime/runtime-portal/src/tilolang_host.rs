@@ -34,7 +34,17 @@ pub const DOOR_FD_ENV: &str = "TILO_SVC_TILOLANG_HOST_FD";
 /// author, keyed by package inside.
 pub const STORAGE_ENV: &str = "TILO_TILOLANG_HOST_STORAGE";
 
+/// The variable the launcher sets for a tilolang app's window whose instance a tilolang host
+/// runs: the window presents what the instance sends over the patch connection its window door
+/// carries (`crate::windows::PATCH_VERB`), and holds none of the app's data.
+pub const HOSTED_ENV: &str = "TILO_TILOLANG_HOSTED";
+
 pub const INSTANCE_VERB: &[u8] = b"instance";
+
+/// The verb the host says on its door when an instance ended (its window closed, or it never
+/// opened): the window's instance, in decimal. The session stops a host once its last instance
+/// ended; the host names no app.
+pub const ENDED_VERB: &[u8] = b"ended";
 
 /// The largest request: a few names and numbers.
 pub const MAX_MESSAGE: usize = 4096;
@@ -280,6 +290,57 @@ pub fn receive_instance(door: &Descriptor) -> io::Result<Option<(InstanceRequest
     }
 }
 
+/// Say on the host's end of `door` that the instance of the window `instance` ended.
+///
+/// # Errors
+/// The socket's error, or [`io::ErrorKind::Unsupported`] off Linux.
+pub fn send_ended(door: &Descriptor, instance: u64) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsFd as _;
+        let instance = instance.to_string();
+        crate::jobs::send(door.as_fd(), &[ENDED_VERB, instance.as_bytes()], &[])
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (door, instance);
+        Err(unsupported())
+    }
+}
+
+/// The next instance the host behind the session's `door` says ended; `None` at end of file,
+/// when the host is gone.
+///
+/// # Errors
+/// The socket's error, or a message that is no ended instance.
+pub fn receive_ended(door: &Descriptor) -> io::Result<Option<u64>> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsFd as _;
+        let mut buffer = [0_u8; 64];
+        let Some((length, _fds)) = crate::jobs::receive(door.as_fd(), &mut buffer)? else {
+            return Ok(None);
+        };
+        let message = buffer.get(..length).unwrap_or_default();
+        match crate::jobs::decode(message)[..] {
+            [verb, instance] if verb == ENDED_VERB => std::str::from_utf8(instance)
+                .ok()
+                .and_then(|instance| instance.parse().ok())
+                .map(Some)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no instance")),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the host said something other than an ended instance",
+            )),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = door;
+        Err(unsupported())
+    }
+}
+
 #[cfg(all(test, target_os = "linux"))]
 #[allow(clippy::unwrap_used, reason = "test fixtures")]
 mod tests {
@@ -314,6 +375,15 @@ mod tests {
             receive_instance(&host).unwrap().is_none(),
             "closed door ends"
         );
+    }
+
+    #[test]
+    fn an_ended_instance_crosses_the_door_back() {
+        let (shell, host) = pair().unwrap();
+        send_ended(&host, 42).unwrap();
+        assert_eq!(receive_ended(&shell).unwrap(), Some(42));
+        drop(host);
+        assert_eq!(receive_ended(&shell).unwrap(), None, "the host is gone");
     }
 
     #[test]

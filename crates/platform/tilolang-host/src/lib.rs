@@ -75,6 +75,8 @@ struct Running {
 /// instances running meanwhile keep producing frames.
 struct Opening {
     app: String,
+    /// The window's instance.
+    instance: u64,
     stage: Stage,
     /// The window's connection, until the instance runs.
     window: Option<Channel>,
@@ -120,6 +122,8 @@ pub struct TilolangHost {
     scope: tilo_wake::WakeScope,
     running: Vec<Running>,
     opening: Vec<Opening>,
+    /// The windows whose instances ended since the session was last told.
+    ended: Vec<u64>,
 }
 
 impl TilolangHost {
@@ -139,6 +143,7 @@ impl TilolangHost {
             scope,
             running: Vec::new(),
             opening: Vec::new(),
+            ended: Vec::new(),
         }
     }
 
@@ -196,7 +201,7 @@ impl TilolangHost {
         let window = Channel::from_socket(fds.window).map_err(AdmitError::Window)?;
         let (sender, decoded) = std::sync::mpsc::channel();
         let (module, len, wake) = (fds.module, request.module_len, Arc::clone(&self.wake));
-        let app = request.app.clone();
+        let (app, instance) = (request.app.clone(), request.instance);
         std::thread::Builder::new()
             .name("tilolang-module".into())
             .spawn(move || {
@@ -206,6 +211,7 @@ impl TilolangHost {
             .map_err(AdmitError::Window)?;
         self.opening.push(Opening {
             app,
+            instance,
             stage: Stage::Module {
                 request,
                 broker: fds.broker,
@@ -229,6 +235,7 @@ impl TilolangHost {
     ) {
         self.opening.push(Opening {
             app: spec.app.clone(),
+            instance: spec.instance,
             stage: Stage::Joining {
                 spec,
                 bundle,
@@ -427,6 +434,7 @@ impl TilolangHost {
         let mut changed = false;
         let mut opening = std::mem::take(&mut self.opening);
         let mut started = Vec::new();
+        let mut ended = Vec::new();
         opening.retain_mut(|open| {
             if open
                 .window
@@ -437,6 +445,7 @@ impl TilolangHost {
                     app = open.app,
                     "an instance's window closed before it opened"
                 );
+                ended.push(open.instance);
                 changed = true;
                 return false;
             }
@@ -448,12 +457,14 @@ impl TilolangHost {
                 }
                 Err(error) => {
                     tracing::error!(app = open.app, %error, "an instance did not start");
+                    ended.push(open.instance);
                     changed = true;
                     false
                 }
             }
         });
         self.opening = opening;
+        self.ended.extend(ended);
         for (hosted, watched) in started {
             changed = true;
             self.add(hosted, Some(watched));
@@ -483,6 +494,7 @@ impl TilolangHost {
             changed |= running.hosted.turn();
         }
         let before = self.running.len();
+        let ended = &mut self.ended;
         self.running.retain_mut(|running| {
             let open = running
                 .window
@@ -495,10 +507,16 @@ impl TilolangHost {
                     instance = running.hosted.spec().instance,
                     "instance ended: its window closed"
                 );
+                ended.push(running.hosted.spec().instance);
             }
             open
         });
         changed || self.running.len() != before
+    }
+
+    /// The windows whose instances ended since this was last asked: closed, or never opened.
+    pub fn take_ended(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.ended)
     }
 
     /// Whether the host runs no instance and opens none.

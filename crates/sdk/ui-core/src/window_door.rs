@@ -205,6 +205,11 @@ mod transport {
         let Some((encoded, fds)) = runtime_portal::windows::receive_open(door)? else {
             return Ok(None);
         };
+        opening(&encoded, fds).map(Some)
+    }
+
+    /// The window request `encoded` asks for, with the connections `fds` it came with.
+    fn opening(encoded: &[u8], fds: Vec<Descriptor>) -> std::io::Result<WindowOpening> {
         let request: WindowRequest = serde_json::from_slice(&encoded)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
         let expected = usize::from(request.collaboration) + usize::from(request.shell_ui);
@@ -221,13 +226,56 @@ mod transport {
             None
         };
         let shell_ui = if request.shell_ui { fds.next() } else { None };
-        Ok(Some(WindowOpening {
+        Ok(WindowOpening {
             request,
             collaboration,
             shell_ui,
             #[cfg(feature = "native")]
             arriving: None,
-        }))
+        })
+    }
+
+    /// The patch connections the shell sent for windows of a tilolang app whose instances a
+    /// tilolang host runs, by window instance, until each window takes its own; and the
+    /// windows waiting for theirs.
+    #[derive(Default)]
+    struct Patches {
+        arrived: std::collections::HashMap<u64, Descriptor>,
+        waiting: std::collections::HashMap<u64, crate::WakeHandle>,
+    }
+
+    static PATCHES: Mutex<Option<Patches>> = Mutex::new(None);
+
+    fn patches<T>(with: impl FnOnce(&mut Patches) -> T) -> T {
+        let mut patches = PATCHES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        with(patches.get_or_insert_with(Patches::default))
+    }
+
+    /// The patch connection of the window `instance`, once the shell sent it; until then,
+    /// `wake` is woken when it arrives.
+    #[must_use]
+    pub fn take_patch(instance: u64, wake: crate::WakeHandle) -> Option<Descriptor> {
+        patches(|patches| {
+            let patch = patches.arrived.remove(&instance);
+            if patch.is_none() {
+                patches.waiting.insert(instance, wake);
+            } else {
+                patches.waiting.remove(&instance);
+            }
+            patch
+        })
+    }
+
+    fn patch_arrived(instance: u64, patch: Descriptor) {
+        let waiting = patches(|patches| {
+            patches.arrived.insert(instance, patch);
+            patches.waiting.remove(&instance)
+        });
+        if let Some(wake) = waiting {
+            wake.wake();
+        }
     }
 
     /// The door the launcher handed this process, once (see
@@ -259,14 +307,28 @@ mod transport {
         });
         tilo_rt::spawn_thread("tilo-window-door", move || {
             loop {
-                match receive(&door) {
-                    Ok(Some(opening)) => {
+                let received =
+                    runtime_portal::windows::receive_message(&door).and_then(|message| {
+                        Ok(match message {
+                            Some(runtime_portal::windows::Message::Open(encoded, fds)) => {
+                                Some(Some(opening(&encoded, fds)?))
+                            }
+                            Some(runtime_portal::windows::Message::Patch(instance, patch)) => {
+                                patch_arrived(instance, patch);
+                                Some(None)
+                            }
+                            None => None,
+                        })
+                    });
+                match received {
+                    Ok(Some(Some(opening))) => {
                         let mut pending = PendingWindow::new(opening);
                         pending.reopen = Some(Arc::clone(&reopen));
                         if !reopen(pending) {
                             return;
                         }
                     }
+                    Ok(Some(None)) => {}
                     Ok(None) => return,
                     Err(error) if error.kind() == std::io::ErrorKind::Unsupported => return,
                     Err(error) => {
