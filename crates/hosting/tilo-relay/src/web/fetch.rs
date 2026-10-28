@@ -171,6 +171,7 @@ async fn member_of(web: &Web, user: [u8; 32]) -> Vec<Room> {
         .map(|(id, workspace)| (*id, workspace.clone()))
         .collect();
     let mut rooms = Vec::new();
+    let own_user = web.sessions.context().relay.identity.user_public_key;
     for (id, workspace) in workspaces {
         let workspace = workspace.lock().await;
         if workspace
@@ -179,7 +180,7 @@ async fn member_of(web: &Web, user: [u8; 32]) -> Vec<Room> {
         {
             return Vec::new();
         }
-        if workspace.governed_user_roots.contains(&user) {
+        if workspace.admits_person(&user, &own_user) {
             rooms.push(Room(id));
         }
     }

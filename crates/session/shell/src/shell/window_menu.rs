@@ -886,11 +886,17 @@ mod tests {
         };
         let rows = window_menu_rows(&shareable, &config);
         let shown = labels(&rows);
-        let moved = shown
-            .iter()
-            .position(|l| *l == "Move to workspace")
-            .expect("Move to workspace");
-        assert_eq!(shown.get(moved + 1), Some(&"Share with Lounge"));
+        for moves in ["Move to workspace", "Move to display"] {
+            let moved = shown.iter().position(|l| *l == moves).expect(moves);
+            let share = shown
+                .iter()
+                .position(|l| *l == "Share with Lounge")
+                .expect("Share with Lounge");
+            assert!(moved < share, "{shown:?}");
+        }
+        // The last of the moves and widths, then Share.
+        let width = shown.iter().position(|l| *l == "Width").expect("Width");
+        assert_eq!(shown.get(width + 1), Some(&"Share with Lounge"));
         let shared = WindowMenuFacts {
             sharing: Some(WindowSharing {
                 place: "Lounge".into(),

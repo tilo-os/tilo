@@ -323,6 +323,18 @@ pub(crate) fn is_automerge_chunk(bytes: &[u8]) -> bool {
 }
 
 impl WorkspaceRuntime {
+    /// Whether the person whose root is `user` is admitted to this room as
+    /// a person of its own, on a relay whose owner is `own_user`: a member
+    /// its governance names, the relay owner in a room of their own devices,
+    /// or the person whose own room this is ([`tilo_relay_protocol::own_room`]).
+    /// What [`crate::room_access`] admits their devices by.
+    #[must_use]
+    pub fn admits_person(&self, user: &[u8; 32], own_user: &[u8; 32]) -> bool {
+        self.governed_user_roots.contains(user)
+            || (self.admission == crate::room_access::AdmissionMode::SameOwner && user == own_user)
+            || tilo_relay_protocol::own_room_workspace_id_matches(user, self.store.workspace_id())
+    }
+
     /// Build a runtime for a bound workspace. Loads the snapshot
     /// from disk if pinned + present.
     ///
