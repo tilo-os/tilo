@@ -128,5 +128,31 @@ class NextestPolicyTests(unittest.TestCase):
         names = [line.split("=", 1)[0] for line in output.splitlines()]
         self.assertEqual(names, ["GOLDEN_FILTER", "PUSH_ONLY_FILTER", "MICRO_VM_FILTER"])
 
+    def test_every_composed_filter_is_defined_by_the_shared_file(self) -> None:
+        # A removed key must not leave a `$..._FILTER` reference behind:
+        # nextest parses the composed expression, and an empty `not ()` is a
+        # missing expression (exit 94) before any test is selected.
+        defined = {
+            f"{key.upper()}_FILTER"
+            for key in tomllib.loads(FILTERS.read_text(encoding="utf-8"))
+        }
+        consumers = [
+            REPO / ".forgejo" / "workflows" / "check.yml",
+            REPO / ".forgejo" / "workflows" / "ci-nightly.yml",
+            REPO / "tools" / "ci" / "local-affected.sh",
+        ]
+        referenced: set[str] = set()
+        for path in consumers:
+            text = path.read_text(encoding="utf-8")
+            # A consumer may also define a filter for one step of its own.
+            defined.update(re.findall(r"(?m)^\s*([A-Z][A-Z0-9_]*_FILTER)\s*[:=]", text))
+            referenced.update(re.findall(r"\b([A-Z][A-Z0-9_]*_FILTER)\b", text))
+        self.assertEqual(referenced - defined, set())
+        # An empty term is what nextest rejects, so no consumer may compose
+        # one even if every name it mentions is defined.
+        for path in consumers:
+            with self.subTest(consumer=path.name):
+                self.assertNotRegex(path.read_text(encoding="utf-8"), r"not\s*\(\s*\)")
+
 if __name__ == "__main__":
     unittest.main()
