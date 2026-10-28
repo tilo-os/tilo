@@ -1002,7 +1002,12 @@ impl ShellNetwork {
                         && !tree.pending_placements.contains(room)
                 })
                 .collect();
-            (tree.holds_room(room), through_hosts)
+            // A room already being joined (a site's join waiting for its
+            // host) is not entered again: that join goes on by itself.
+            (
+                tree.holds_room(room) || tree.is_joining(room),
+                through_hosts,
+            )
         };
         // The first room this session holds through another device's host:
         // until then it has only rooms of its own, waiting for or placed on
