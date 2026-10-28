@@ -1926,7 +1926,7 @@ const TV_UA: &str = "Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) AppleWebKit/538.1 
 /// URL was fetched under the iOS UA — a client it was not signed for, which the
 /// rule above exists to prevent.
 #[cfg(all(feature = "audio", feature = "live"))]
-const ANDROID_VR_UA: &str = crate::backend::android_vr::USER_AGENT;
+const ANDROID_VR_UA: &str = "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip";
 
 /// Pick the `User-Agent` for fetching a media URL.
 ///

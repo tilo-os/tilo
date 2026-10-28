@@ -3804,7 +3804,7 @@ impl MusicApp {
                         match crate::audio::OfflineDownload::start(
                             cache_track.clone(),
                             stream.url.clone(),
-                            stream.fallback_url.clone(),
+                            None,
                             self.media_cache_root.clone(),
                         ) {
                             Ok(download) => {
@@ -3896,10 +3896,7 @@ impl MusicApp {
         self.active_resolve_request = None;
         if self.pb.current.as_deref() == Some(track_id) {
             self.playback_error = None;
-            // Prefer the rangeable proxy URL; the engine falls back to the
-            // direct googlevideo URL if the proxy yields no bytes.
-            self.audio
-                .load_with_fallback(&stream.url, stream.fallback_url.as_deref());
+            self.audio.load(&stream.url);
             if self.playhead_ms > 0.0 {
                 self.audio.seek_ms(self.playhead_ms as u64);
             }
