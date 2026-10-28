@@ -86,6 +86,9 @@ struct InvitationRequest {
 /// The app a guest's link opens full tab.
 const WRITER: &str = "so.tilo.word-processor";
 
+/// How often the avatars the persistent room's bridge published are swept.
+const AVATAR_SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+
 /// The body of `POST /rooms/<id>/admit`.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -732,6 +735,8 @@ impl Service {
         let Some(kind) = sniff(&bytes).filter(|_| bytes.len() <= MAX_AVATAR_BYTES) else {
             return Self::error(StatusCode::NOT_FOUND, "not found");
         };
+        // A picture a page asks for again is one still worn: a sweep keeps it.
+        persistent.avatar_served(name);
         let mut response = Response::new(full(bytes));
         let headers = response.headers_mut();
         headers.insert(header::CONTENT_TYPE, header::HeaderValue::from_static(kind));
@@ -1074,6 +1079,34 @@ async fn serve(service: Arc<Service>, socket: tokio::net::TcpStream, peer: Socke
         .await;
 }
 
+/// The avatars the room's bridge published are content-addressed and nothing
+/// ever removed one: a bridge that stopped, or a person who changed their
+/// picture, left every one it ever published on the volume. A sweep drops
+/// what nothing wrote or served for a month, at a walking pace; a page that
+/// still shows one fetches it again, and the bridge publishes it again.
+fn sweep_avatars(persistent: Option<Arc<persistent::Persistent>>) {
+    let Some(persistent) = persistent else {
+        return;
+    };
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(AVATAR_SWEEP_EVERY);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // The first sweep waits a period: a host starting up has just
+        // published the pictures its pages show.
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            let swept = Arc::clone(&persistent);
+            match tokio::task::spawn_blocking(move || swept.sweep_avatars()).await {
+                Ok(0) | Err(_) => {}
+                Ok(dropped) => {
+                    eprintln!("tilo-room-service: dropped {dropped} avatars nothing served");
+                }
+            }
+        }
+    });
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -1165,6 +1198,7 @@ async fn main() -> Result<()> {
             move |id| lookup.room(id).map(|room| room.port),
         ));
     }
+    sweep_avatars(service.persistent.as_ref().map(Arc::clone));
     // As a container's first process nothing stops it but a handled signal;
     // the persistent room's relay is then told to close its store cleanly.
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())

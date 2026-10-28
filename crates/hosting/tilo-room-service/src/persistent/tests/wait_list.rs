@@ -947,3 +947,5 @@ async fn the_room_s_door_keeps_a_mail_in_the_room_s_state_until_it_is_sent() {
     })
     .await;
 }
+
+mod avatars;

@@ -5,6 +5,14 @@
 /// The largest avatar published.
 pub const MAX_AVATAR_BYTES: usize = 1024 * 1024;
 
+/// How long a published avatar stays on the volume after it was last
+/// written or served: nothing lists the directory, so a sweep cannot tell a
+/// picture nobody wears from one linked in a message that went out an hour
+/// ago. A month covers a bridge retrying a post and a page served from a
+/// cache; what goes comes back, at its same URL, from the blob the bridge
+/// keeps.
+pub const SWEEP_AGE: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 60 * 60);
+
 /// The image type of `bytes` by its magic bytes, if it is one we publish.
 #[must_use]
 pub fn sniff(bytes: &[u8]) -> Option<&'static str> {

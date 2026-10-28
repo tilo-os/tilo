@@ -1502,6 +1502,59 @@ impl Persistent {
         self.shared.avatar_path(name)
     }
 
+    /// Say the avatar `name` was served just now, so a sweep keeps it: the
+    /// file's own modification time is the only place the directory
+    /// remembers that.
+    pub fn avatar_served(&self, name: &str) {
+        let Some(path) = self.avatar_path(name) else {
+            return;
+        };
+        if let Ok(file) = std::fs::File::options().write(true).open(&path) {
+            let _ = file.set_modified(std::time::SystemTime::now());
+        }
+    }
+
+    /// Drop the published avatars nothing wrote or served for
+    /// [`SWEEP_AGE`](tilo_relay_protocol::public_avatars::SWEEP_AGE), and say
+    /// how many went: a bridge that stopped, or a person who changed their
+    /// picture, would otherwise leave every one it ever published here.
+    ///
+    /// What goes comes back from the bridge's own blob the next time it
+    /// publishes it, at the same content-addressed URL.
+    pub fn sweep_avatars(&self) -> usize {
+        let dir = self.shared.dir.join("avatars");
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return 0;
+        };
+        let Some(before) = std::time::SystemTime::now()
+            .checked_sub(tilo_relay_protocol::public_avatars::SWEEP_AGE)
+        else {
+            return 0;
+        };
+        let mut dropped: usize = 0;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str().filter(|name| is_avatar_name(name)) else {
+                continue;
+            };
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            let last = metadata.modified().ok();
+            if !metadata.is_file() || last.is_none_or(|last| last >= before) {
+                continue;
+            }
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => dropped = dropped.saturating_add(1),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    eprintln!("tilo-room-service: could not drop avatar {name}: {error}");
+                }
+            }
+        }
+        dropped
+    }
+
     fn admit_address(
         &self,
         ip: IpAddr,

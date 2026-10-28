@@ -2,10 +2,16 @@
 //! `/avatars/<blake3>`. Only avatars of authors whose content a bot
 //! actually sent out are published; the URL is content-addressed and
 //! nothing lists the directory.
+//!
+//! Publishing is content-addressed, so a person who changes their picture
+//! leaves the last one behind, and a bridge that stops publishing leaves
+//! them all. Nothing here removes one: the host that *serves* the directory
+//! owns the sweep ([`SWEEP_AGE`]), because serving is what tells a picture
+//! somebody still wants from one nothing shows any more.
 
 use std::path::PathBuf;
 
-pub use tilo_relay_protocol::public_avatars::{MAX_AVATAR_BYTES, sniff};
+pub use tilo_relay_protocol::public_avatars::{MAX_AVATAR_BYTES, SWEEP_AGE, is_avatar_name, sniff};
 
 /// Why an avatar was not published.
 #[derive(Debug)]
@@ -68,6 +74,15 @@ impl PublicAvatars {
         }
         Ok(format!("{}/{name}", self.base_url))
     }
+
+    /// Where `dir` keeps the avatar `name`, when `name` is a published name
+    /// and the file is there.
+    #[must_use]
+    pub fn served(dir: &std::path::Path, name: &str) -> Option<PathBuf> {
+        is_avatar_name(name)
+            .then(|| dir.join(name))
+            .filter(|path| path.is_file())
+    }
 }
 
 #[cfg(test)]
@@ -90,13 +105,20 @@ mod tests {
             std::fs::read(dir.path().join("avatars").join(&name)).unwrap(),
             PNG
         );
+        // Publishing it again names the same file, and writes it once.
         assert_eq!(avatars.publish(PNG).unwrap(), url);
+        assert_eq!(
+            std::fs::read_dir(dir.path().join("avatars"))
+                .unwrap()
+                .count(),
+            1
+        );
     }
 
     #[test]
     fn oversized_or_non_image_avatars_are_refused() {
         let dir = tempfile::tempdir().unwrap();
-        let avatars = PublicAvatars::new(dir.path().to_owned(), "https://x/avatars").unwrap();
+        let avatars = PublicAvatars::new(dir.path().join("avatars"), "https://x/avatars").unwrap();
         let mut big = PNG.to_vec();
         big.resize(MAX_AVATAR_BYTES + 1, 0);
         assert!(matches!(avatars.publish(&big), Err(AvatarError::TooLarge)));
@@ -104,5 +126,24 @@ mod tests {
             avatars.publish(b"<svg/>"),
             Err(AvatarError::NotAnImage)
         ));
+        assert_eq!(
+            std::fs::read_dir(dir.path().join("avatars"))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn only_a_name_that_is_a_hash_is_served() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(PublicAvatars::served(dir.path(), "../etc/passwd").is_none());
+        assert!(PublicAvatars::served(dir.path(), &"A".repeat(64)).is_none());
+        assert!(PublicAvatars::served(dir.path(), &"ab".repeat(32)).is_none());
+        std::fs::write(dir.path().join("ab".repeat(32)), PNG).unwrap();
+        assert_eq!(
+            PublicAvatars::served(dir.path(), &"ab".repeat(32)),
+            Some(dir.path().join("ab".repeat(32)))
+        );
     }
 }

@@ -1235,6 +1235,21 @@ impl FsBlobs {
         self.path(blake3).is_some_and(|path| path.is_file())
     }
 
+    /// Publish the kept blob `blake3` as an avatar at the host's public
+    /// avatar URL, unless an avatar under its hash is already published.
+    ///
+    /// # Errors
+    /// This host publishes no avatars, or owns no blob `blake3`.
+    pub fn publish(&self, blake3: &str) -> Result<(), String> {
+        let public = self.public.as_ref().ok_or("this host publishes no blobs")?;
+        let path = self.path(blake3).ok_or("not a hash")?;
+        let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
+        public
+            .publish(&bytes)
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+
     /// Let go of the blob `blake3`; nothing when it is not kept.
     ///
     /// # Errors
@@ -1274,11 +1289,6 @@ impl tilo_connector::BlobAccess for FsBlobs {
     }
 
     fn publish(&self, blake3: &str) -> Result<(), String> {
-        let public = self.public.as_ref().ok_or("this host publishes no blobs")?;
-        let bytes = self.read(blake3).ok_or("no such blob")?;
-        public
-            .publish(&bytes)
-            .map(drop)
-            .map_err(|error| error.to_string())
+        FsBlobs::publish(self, blake3)
     }
 }

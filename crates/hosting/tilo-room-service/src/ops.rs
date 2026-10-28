@@ -375,6 +375,7 @@ impl Ops {
         );
         let rooms = room_states(&self.state);
         relay(&mut out, &rooms);
+        kept_files(&mut out, &rooms);
         let mut dirs = vec![self.state.join(TEXTFILE_DIR)];
         dirs.extend(rooms.iter().map(|room| room_textfile_dir(room)));
         textfiles(&mut out, &dirs);
@@ -531,6 +532,71 @@ fn relay(out: &mut String, rooms: &[PathBuf]) {
             "",
             age.as_secs(),
         );
+    }
+}
+
+/// What the files hosts write for a room take, which nothing bounded from
+/// outside before: the avatars a public host publishes (`<room>/avatars/
+/// <blake3>`, as the room service lays them out) and the records its relay
+/// keeps for members (`<room>/relay/envelopes/<root>.json`,
+/// `profiles/<root>.json`).
+fn kept_files(out: &mut String, rooms: &[PathBuf]) {
+    // Avatars sit beside the relay's state, in the room service's own
+    // directory; the records sit under the relay's.
+    let named = |sub: &'static str, room: &Path| {
+        let at = match sub {
+            // `<state>/<room>/relay` -> `<state>/<room>`.
+            "avatars" => room.parent().map(Path::to_path_buf),
+            _ => Some(room_relay_root(room)),
+        };
+        at.unwrap_or_default().join(sub)
+    };
+    let dirs: [&str; 3] = ["avatars", "envelopes", "profiles"];
+    for sub in dirs {
+        let taken = rooms.iter().fold((0u64, 0u64), |(files, bytes), room| {
+            let Ok(entries) = std::fs::read_dir(named(sub, room)) else {
+                return (files, bytes);
+            };
+            entries
+                .flatten()
+                // Only the files a host writes there: an operator's own are
+                // not what this measures.
+                .filter(|entry| {
+                    let name = entry.file_name();
+                    let Some(name) = name.to_str() else {
+                        return false;
+                    };
+                    if sub == "avatars" {
+                        tilo_relay_protocol::public_avatars::is_avatar_name(name)
+                    } else {
+                        // `<64 lowercase hex>.json`, as `Envelopes` names one.
+                        name.strip_suffix(".json").is_some_and(|root| {
+                            root.len() == 64
+                                && root
+                                    .bytes()
+                                    .all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f'))
+                        })
+                    }
+                })
+                .filter_map(|entry| entry.metadata().ok())
+                .filter(std::fs::Metadata::is_file)
+                .fold((files, bytes), |(files, bytes), metadata| {
+                    (
+                        files.saturating_add(1),
+                        bytes.saturating_add(metadata.len()),
+                    )
+                })
+        });
+        // `avatars` -> `tilo_rooms_avatar_files`, `envelopes` -> `..._envelope_files`.
+        let stem = format!("tilo_rooms_{}", sub.trim_end_matches('s'));
+        for (suffix, help, value) in [
+            ("files", "Files kept on the volume.", taken.0),
+            ("bytes", "Bytes those files take.", taken.1),
+        ] {
+            let name = format!("{stem}_{suffix}");
+            metric(out, "gauge", &name, help);
+            sample(out, &name, "", value);
+        }
     }
 }
 
@@ -692,6 +758,50 @@ mod tests {
         let ops = Ops::new(dir.path().to_owned(), Mode::Normal);
         assert!(!ops.mode().allows_spectators());
         assert!(mode_command(dir.path(), &["nonsense".into()]).is_err());
+    }
+
+    #[test]
+    fn the_page_says_what_the_avatars_and_member_records_take() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path();
+        // A room's directory as the service and its relay lay it out: the
+        // service's own `avatars`, and the relay's state under `relay`.
+        let room = crate::room::relay_state(&state.join("room"));
+        let relay = room_relay_root(&room);
+        let avatars = room
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default()
+            .join("avatars");
+        for (dir, name, bytes) in [
+            (&avatars, "ab".repeat(32), 12),
+            (&avatars, "cd".repeat(32), 30),
+            (
+                &relay.join("envelopes"),
+                format!("{}.json", "ef".repeat(32)),
+                7,
+            ),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join(name), vec![0u8; bytes]).unwrap();
+        }
+        // Neither a record this host wrote nor a name it publishes: counted
+        // by nothing.
+        std::fs::write(avatars.join("notes.txt"), b"x").unwrap();
+        std::fs::write(relay.join("envelopes").join("notes.json"), b"x").unwrap();
+        std::fs::create_dir_all(relay.join("profiles")).unwrap();
+        let ops = Ops::new(state.to_owned(), Mode::Normal);
+        let page = ops.render(0);
+        for line in [
+            "tilo_rooms_avatar_files 2",
+            "tilo_rooms_avatar_bytes 42",
+            "tilo_rooms_envelope_files 1",
+            "tilo_rooms_envelope_bytes 7",
+            "tilo_rooms_profile_files 0",
+            "tilo_rooms_profile_bytes 0",
+        ] {
+            assert!(page.contains(line), "missing {line:?} in\n{page}");
+        }
     }
 
     #[test]
