@@ -40,7 +40,6 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use iroh::address_lookup::{
     AddrFilter, AddressLookup, AddressLookupBuilder, EndpointData, Item, PkarrPublisher,
@@ -49,14 +48,6 @@ use iroh::address_lookup::{
 use iroh::{Endpoint, Watcher as _};
 use n0_future::boxed::BoxStream;
 use tilo_lock::MutexRecover as _;
-
-/// How often the gate reads the endpoint's home relay, or, in a test that
-/// has to watch a gate stay shut, how often it looks. A resting desktop
-/// stops: the gate task ends with its endpoint.
-#[cfg(not(test))]
-const POLL: Duration = Duration::from_secs(5);
-#[cfg(test)]
-const POLL: Duration = Duration::from_millis(200);
 
 /// The lookups of a session endpoint: number 0's publisher behind the gate,
 /// number 0's resolver always.
@@ -85,8 +76,9 @@ impl AddressLookupBuilder for Watchonly {
 ///
 /// Opening is the endpoint's own report of its home relay: it turns true when
 /// `tilo_endpoint_reachability::Reachability` adds a relay, and false when
-/// it takes the last one back. The gate task ends with the endpoint, so a
-/// desktop whose endpoint is closed keeps no timer.
+/// it takes the last one back. The gate wakes only when that report changes
+/// and keeps no timer: a resting desktop's gate sleeps until a relay comes
+/// up, and the task ends with the endpoint.
 #[derive(Clone, Debug, Default)]
 pub struct Gate {
     open: Arc<AtomicBool>,
@@ -108,13 +100,13 @@ impl Gate {
         self.held.lock_recover().is_some()
     }
 
-    fn open_for(&self, endpoint: &Endpoint, publisher: &dyn AddressLookup) {
+    fn open_for(&self, id: iroh::EndpointId, publisher: &dyn AddressLookup) {
         self.open.store(true, Ordering::Relaxed);
         let held = self.held.lock_recover().clone();
         if let Some(data) = held {
             publisher.publish(&data);
         }
-        tracing::debug!(id = %endpoint.id(), "publishing this device to number 0's directory");
+        tracing::debug!(%id, "publishing this device to number 0's directory");
     }
 }
 
@@ -129,28 +121,37 @@ impl AddressLookupBuilder for Gate {
         let resolver = PkarrResolver::n0_dns().into_address_lookup(endpoint)?;
         // The gate task holds the publisher it opens; the endpoint's lookup
         // list only ever sees the switch in front of it.
-        let watched = endpoint.clone();
+        let id = endpoint.id();
+        let mut relays = endpoint.home_relay_status();
+        let closed = endpoint.closed();
         let gate = self.clone();
         let opening: Arc<Box<dyn AddressLookup>> = Arc::new(Box::new(publisher));
         let waking = opening.clone();
-        // The endpoint's own runtime drives the watch, and the task ends
-        // with it: a desktop whose endpoint is closed keeps no timer.
+        // The endpoint's own runtime drives the watch. It wakes when the
+        // home relay's status changes, never on a clock, and ends when the
+        // endpoint closes or its relay transport goes away; it keeps no
+        // endpoint handle of its own.
         tokio::spawn(async move {
-            let mut relays = watched.home_relay_status();
+            let mut closed = std::pin::pin!(closed);
             loop {
                 let up = relays
                     .get()
                     .iter()
                     .any(iroh::endpoint::RelayStatus::is_connected);
                 match (up, gate.is_open()) {
-                    (true, false) => gate.open_for(&watched, waking.as_ref().as_ref()),
+                    (true, false) => gate.open_for(id, waking.as_ref().as_ref()),
                     (false, true) => gate.open.store(false, Ordering::Relaxed),
                     _ => {}
                 }
-                if watched.is_closed() {
+                let changed =
+                    n0_future::future::or(async { relays.updated().await.is_ok() }, async {
+                        closed.as_mut().await;
+                        false
+                    })
+                    .await;
+                if !changed {
                     return;
                 }
-                let _ = tokio::time::timeout(POLL, relays.updated()).await;
             }
         });
         Ok(Switched {
@@ -249,7 +250,9 @@ mod tests {
         assert!(reachability.is_dormant(), "the relays wait for something");
         assert!(gate.is_holding(), "iroh's record waits in the gate");
         assert!(!gate.is_open(), "nothing publishes from a resting desktop");
-        tokio::time::sleep(super::POLL).await;
+        // Nothing would open the gate now: give a gate that wrongly
+        // published a held record the time to show it.
+        tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(
             !gate.is_open(),
             "a held record is not a reason to sign the device in"
