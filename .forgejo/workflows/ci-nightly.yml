@@ -93,7 +93,7 @@ jobs:
           - arch: x86_64
             runner: runner-disk-100g
           - arch: aarch64
-            runner: runner-disk-100g-arm64
+            runner: runner-large-arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     container:
@@ -101,7 +101,7 @@ jobs:
       # (.config/visual-goldens-image).
       image: ${{ needs.builder.outputs.image }}
     env:
-      # Both disk-class slots have the memory for four compiler processes;
+      # Both native slots have the memory for four compiler processes;
       # one left the aarch64 workspace build alone at 130 minutes.
       CARGO_BUILD_JOBS: "4"
       CARGO_INCREMENTAL: "0"
