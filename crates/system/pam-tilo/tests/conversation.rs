@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex};
 const PAM_SUCCESS: c_int = 0;
 const PAM_PERM_DENIED: c_int = 6;
 const PAM_AUTH_ERR: c_int = 7;
+const PAM_AUTHINFO_UNAVAIL: c_int = 9;
 const PAM_MAXTRIES: c_int = 11;
 const PAM_AUTHTOK_ERR: c_int = 20;
 const PAM_PROMPT_ECHO_OFF: c_int = 1;
@@ -279,11 +280,11 @@ fn chauthtok(pam: &Libpam) -> Phase {
     pam.chauthtok
 }
 
-/// The shipped shape: the daemon's answer is final, and only when it cannot
-/// answer does the rest of the stack (here, a module that accepts anything)
-/// get a say.
+/// The shipped shape: the daemon's answer is final, and so is its silence;
+/// only someone it does not know is left to the rest of the stack (here, a
+/// module that accepts anything).
 const SIGN_IN: &str = "\
-auth [success=done authinfo_unavail=ignore ignore=ignore default=die] @MODULE@ socket=@SOCKET@
+auth [success=done ignore=ignore default=die] @MODULE@ socket=@SOCKET@
 auth required pam_permit.so
 ";
 
@@ -382,7 +383,7 @@ fn asking_about_someone_else_is_refused() {
 }
 
 #[test]
-fn without_the_daemon_the_rest_of_the_stack_decides_and_nothing_is_asked_twice() {
+fn without_the_daemon_nothing_else_checks_a_secret_and_nothing_is_asked() {
     let dir = tempfile::tempdir().unwrap();
     let out = run(
         dir.path(),
@@ -392,11 +393,44 @@ fn without_the_daemon_the_rest_of_the_stack_decides_and_nothing_is_asked_twice()
         &[],
         authenticate,
     );
-    assert_eq!(out.status, PAM_SUCCESS);
+    assert_eq!(out.status, PAM_AUTHINFO_UNAVAIL);
     assert!(
         out.person.prompts.is_empty(),
         "the module asked before knowing it could check"
     );
+}
+
+#[test]
+fn a_daemon_that_cannot_answer_leaves_no_old_password_check_behind_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let daemon = Daemon::start(
+        dir.path(),
+        verify_answer(json!({"ok": false, "error": "unavailable"})),
+    );
+    let out = run(
+        dir.path(),
+        &daemon.socket,
+        SIGN_IN,
+        "ada",
+        &["123456"],
+        authenticate,
+    );
+    assert_eq!(out.status, PAM_AUTHINFO_UNAVAIL);
+}
+
+#[test]
+fn without_the_daemon_no_old_password_is_changed_either() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run(
+        dir.path(),
+        &dir.path().join("no-such-socket"),
+        PASSWORD,
+        "ada",
+        &[],
+        chauthtok,
+    );
+    assert_eq!(out.status, PAM_AUTHINFO_UNAVAIL);
+    assert!(out.person.prompts.is_empty());
 }
 
 #[test]
@@ -419,7 +453,7 @@ fn someone_the_daemon_does_not_know_is_left_to_the_rest_of_the_stack() {
 
 const GREETER: &str = "\
 auth sufficient @MODULE@ socket=@SOCKET@ boot_sign_in=test
-auth [success=done authinfo_unavail=ignore ignore=ignore default=die] @MODULE@ socket=@SOCKET@
+auth [success=done ignore=ignore default=die] @MODULE@ socket=@SOCKET@
 ";
 
 #[test]
@@ -467,7 +501,7 @@ fn without_a_boot_sign_in_the_greeter_asks_for_the_secret() {
 }
 
 const PASSWORD: &str = "\
-password [success=done authinfo_unavail=ignore ignore=ignore default=die] @MODULE@ socket=@SOCKET@
+password [success=done ignore=ignore default=die] @MODULE@ socket=@SOCKET@
 password required pam_permit.so
 ";
 
@@ -557,7 +591,7 @@ const SURFACES: [&str; 4] = ["greetd", "tilo-unlock", "polkit-1", "sudo"];
 /// What authselect makes of password-auth and system-auth on the image:
 /// `pam_tilo`'s answer is final, and nothing behind it accepts anyone here.
 const DISTRO_AUTH: &str = "\
-auth [success=done authinfo_unavail=ignore ignore=ignore default=die] @MODULE@ socket=@SOCKET@
+auth [success=done ignore=ignore default=die] @MODULE@ socket=@SOCKET@
 auth required pam_deny.so
 account required pam_permit.so
 password required pam_permit.so
