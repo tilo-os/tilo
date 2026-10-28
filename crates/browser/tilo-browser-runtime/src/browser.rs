@@ -1286,13 +1286,11 @@ fn present_component(
     crate::app_loans::lend(&mut context);
     let loaders = Rc::new(RefCell::new(Vec::new()));
     let image_owners = crate::page_content::ImageOwners::default();
-    let window_content =
-        crate::page_content::serve_window(&context.wake_handle(), &loaders, &image_owners);
+    crate::page_content::serve_window(&context.wake_handle(), &loaders, &image_owners);
     let component = definition
         .instantiate(context, target, restore)
         .map_err(error)?;
     let checkout = component.record().clone();
-    *window_content.borrow_mut() = component.content();
     Ok(Presentation {
         root: Root::Component(Box::new(component)),
         stores,

@@ -244,7 +244,7 @@ fn a_store_a_served_window_builds_later_loads_through_its_host() {
     let destination = std::rc::Rc::clone(&loaders);
     ImageStore::serve_window(
         &window.handle(),
-        std::rc::Rc::new(move |max_dimension| {
+        std::rc::Rc::new(move |max_dimension, _: &ServedWindow| {
             let (store, loader) = ImageStore::host_driven_with_max_dimension(max_dimension);
             destination.borrow_mut().push(loader);
             store

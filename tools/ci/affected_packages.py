@@ -179,6 +179,7 @@ QUALITY_ONLY_CONTROL_INPUTS = {
     ),
 }
 NATIVE_RUNNERS = runner_labels.NATIVE
+LARGE_RUNNERS = runner_labels.LARGE
 GLOBAL_FILES = {
     "Cargo.toml",
     "Cargo.lock",
@@ -248,10 +249,27 @@ UNRECORDED_TEST_SECONDS = 20
 # packages' tests; the type-check shards above are unaffected.
 TEST_SHARD_SECONDS = 500
 MAX_TEST_SHARDS = 4
+# ci-arm-1 keeps one arm64 slot, and it answers both the native and the large
+# arm64 label, so the shards of one arm64 run execute one after another: a
+# fourth job there only adds a queue behind one runner. Arm test jobs are
+# therefore fewer and, balanced over the same packages, larger; the slot's
+# 40 GiB carries them.
+MAX_TEST_SHARDS_ARM = 2
 # A tested package heavier than this (structural cost plus weighted recorded
 # test seconds) gets a test job of its own, so it builds and tests beside the
-# balanced shards instead of lengthening one of them.
+# balanced shards instead of lengthening one of them. Arm test jobs are
+# balanced as a whole instead (see MAX_TEST_SHARDS_ARM).
 DEDICATED_TEST_WEIGHT = 1_000
+# A test job links every binary of the packages it carries, several at a time
+# under CARGO_BUILD_JOBS, and the native class's 16 GiB job limit is sized for
+# the structural cost one shard should hold (SHARD_COST_BUDGET). A shard of a
+# whole-workspace run carries about twice that and was killed by the kernel
+# mid-build (exit 137) on every shard above 3,400 cost; those shards ask for
+# the large class (40 GiB) instead, the way the shell shard always did: its own
+# test binaries are the tree's largest link (Cargo.toml declares 48 GiB for
+# them), so a shard that carries it asks for the large class at any size.
+LARGE_TEST_SHARD_COST = 2 * SHARD_COST_BUDGET
+LARGE_TEST_PACKAGES = frozenset({"shell"})
 # Suites whose tests fsync heavily: fs's durability, checked-restore and
 # release-matrix tests over real FUSE (with fs-native), and the
 # host suites that commit a durable Store, owner journal or relay journal on
@@ -814,10 +832,20 @@ def useful_shard_count(names: set[str], packages: dict[str, dict], maximum: int)
     return min(max(1, maximum), len(names), cost_limited)
 
 
-def useful_test_shard_count(names: set[str], test_seconds: dict[str, int]) -> int:
+def useful_test_shard_count(names: set[str], test_seconds: dict[str, int],
+                            maximum: int | None = None) -> int:
     total = sum(expected_test_seconds(name, test_seconds) for name in names)
     time_limited = max(1, (total + TEST_SHARD_SECONDS - 1) // TEST_SHARD_SECONDS)
-    return min(MAX_TEST_SHARDS, max(1, len(names)), time_limited)
+    return min(MAX_TEST_SHARDS if maximum is None else maximum,
+               max(1, len(names)), time_limited)
+
+
+def test_shard_runner(shard: dict, arch: str) -> str:
+    """The class a test shard asks for: large when its links exceed the native one."""
+    names = set(shard["packages"].split()[1::2])
+    if shard["estimated_cost"] > LARGE_TEST_SHARD_COST or names & LARGE_TEST_PACKAGES:
+        return LARGE_RUNNERS[arch]
+    return NATIVE_RUNNERS[arch]
 
 
 def android_apps(packages: dict[str, dict]) -> set[str]:
@@ -1064,21 +1092,33 @@ def make_plan(
             check_rows.append({**shard, "arch": arch, "runner": runner, "check_runner": runner, **placement})
     # Test shards cover the tested packages and scoped readers, split by
     # recorded test time. Packages too heavy to share a job get their own
-    # shards, which start first; the rest balance around them.
+    # shards, which start first; the rest balance around them. Arm shards are
+    # balanced as one set (MAX_TEST_SHARDS_ARM).
     test_units = (tested | scoped_tests.keys()) & selected
-    dedicated = dedicated_test_shards(tested & selected, packages, test_seconds)
-    shared_units = test_units - {shard["packages"].split()[1] for shard in dedicated}
-    test_shards = dedicated + balance(
-        shared_units, packages, useful_test_shard_count(shared_units, test_seconds or {}),
-        test_seconds, TEST_SHARD_APART)
-    for index, shard in enumerate(test_shards, 1):
-        shard["shard"] = index
-    if selected and not test_shards:
-        # Keep the aggregate's test result applicable: one row whose steps skip.
-        test_shards = [{"shard": 1, "packages": "", "package_count": 0,
-                        "estimated_cost": 0, "recorded_test_seconds": 0}]
 
-    def test_row(shard: dict, arch: str, runner: str) -> dict:
+    def test_shards_for(arch: str) -> list[dict]:
+        if arch == "aarch64":
+            shards = balance(test_units, packages,
+                             useful_test_shard_count(test_units, test_seconds or {},
+                                                     MAX_TEST_SHARDS_ARM),
+                             test_seconds, TEST_SHARD_APART)
+        else:
+            dedicated = dedicated_test_shards(tested & selected, packages, test_seconds)
+            shared_units = test_units - {shard["packages"].split()[1] for shard in dedicated}
+            shards = dedicated + balance(
+                shared_units, packages, useful_test_shard_count(shared_units, test_seconds or {}),
+                test_seconds, TEST_SHARD_APART)
+        for index, shard in enumerate(shards, 1):
+            shard["shard"] = index
+        if selected and not shards:
+            # Keep the aggregate's test result applicable: one row whose steps skip.
+            shards = [{"shard": 1, "packages": "", "package_count": 0,
+                       "estimated_cost": 0, "recorded_test_seconds": 0}]
+        return shards
+
+    test_shards = {arch: test_shards_for(arch) for arch in runners}
+
+    def test_row(shard: dict, arch: str) -> dict:
         shard_names = set(shard["packages"].split()[1::2])
         test_names = sorted(tested & shard_names)
         scoped_names = sorted(scoped_tests.keys() & shard_names)
@@ -1092,13 +1132,17 @@ def make_plan(
                      **qualified_native.placement(root, shard_names, arch)}
         certify = any(Path(packages[name]["manifest_path"]).resolve().parent.parent == root.resolve() / "apps"
                       and name != "agent" for name in test_names)
+        # The shard's own class: a whole-workspace shard, or one carrying the
+        # tree's largest test link, needs memory the native class does not have
+        # (test_shard_runner).
+        runner = test_shard_runner(shard, arch)
         return {**shard, "arch": arch, "runner": runner, "check_runner": runner, **placement,
                 "certify": certify,
                 "test_packages": " ".join(f"-p {name}" for name in test_names),
                 "scoped_tests": json.dumps(scoped, separators=(",", ":")) if scoped else ""}
 
-    matrix = [test_row(shard, arch, runner)
-              for arch, runner in runners.items() for shard in test_shards]
+    matrix = [test_row(shard, arch)
+              for arch, shards in test_shards.items() for shard in shards]
     # Hermetic suites outside Cargo follow their declared inputs; explicit full
     # runs and pushes to main (all_suites) run every one of them.
     suites = (path_suites.select(suite_manifest, changes, run_all=force_full or all_suites)
@@ -1156,7 +1200,8 @@ def make_plan(
         "estimated_cost": sum(package_cost(packages[name]) for name in selected),
         "requested_shards": shard_count,
         "shard_count": effective_shards,
-        "test_shard_count": len(matrix) // len(runners) if matrix else 0,
+        # The most test jobs any one architecture runs (arm runs fewer).
+        "test_shard_count": max((len(shards) for shards in test_shards.values()), default=0),
         "matrix": {"include": matrix},
         # Clippy's lint result is architecture-independent; lint each package
         # set once, on x86_64.

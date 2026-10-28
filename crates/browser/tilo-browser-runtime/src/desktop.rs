@@ -1190,7 +1190,7 @@ impl Tiles {
                 self.inputs.provider_admin.clone(),
             )?;
         }
-        let window_content = crate::page_content::serve_window(
+        crate::page_content::serve_window(
             &context.wake_handle(),
             &self.shared.images,
             &self.shared.image_owners,
@@ -1199,7 +1199,6 @@ impl Tiles {
             .instantiate(context, target, restore)
             .map_err(|error| error.to_string())?;
         crate::capture_declarations::note(definition.app_id(), component.capture_protected());
-        *window_content.borrow_mut() = component.content();
         let woken = Arc::clone(&self.shared.woken);
         let wakers = Arc::clone(&self.shared.wakers);
         let notify = Arc::clone(&self.notify);

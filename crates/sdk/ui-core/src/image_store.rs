@@ -496,31 +496,61 @@ impl NativeLoader {
     }
 }
 
+/// A window a host serves ([`ImageStore::serve_window`]), as the host's
+/// factory sees it: what the stores it builds draw for.
+#[derive(Clone, Default)]
+pub struct ServedWindow {
+    content: std::rc::Rc<std::cell::RefCell<Option<tilo_content::ContentStore>>>,
+}
+
+impl ServedWindow {
+    /// The content store the window reads its record's content from, once
+    /// the window is built: where its pictures' bytes are read and, when
+    /// they are not here yet, asked for, on the window's own content
+    /// requests. `None` before then, and for a window that reads none.
+    #[must_use]
+    pub fn content(&self) -> Option<tilo_content::ContentStore> {
+        self.content.borrow().clone()
+    }
+}
+
 /// How a host builds one window's image stores: a store whose loading the
-/// host drives, for the decoded-image bound the store asked for.
-pub type HostImageFactory = std::rc::Rc<dyn Fn(u32) -> ImageStore>;
+/// host drives, for the decoded-image bound the store asked for, drawing for
+/// the window it is built in.
+pub type HostImageFactory = std::rc::Rc<dyn Fn(u32, &ServedWindow) -> ImageStore>;
+
+/// A window's wake scope, the factory serving it and what it draws for.
+type Serving = (WakeHandle, HostImageFactory, ServedWindow);
 
 thread_local! {
     /// The factories hosts keep for their windows, by each window's wake
     /// scope ([`ImageStore::serve_window`]).
-    static HOST_FACTORIES: std::cell::RefCell<Vec<(WakeHandle, HostImageFactory)>> =
+    static HOST_FACTORIES: std::cell::RefCell<Vec<Serving>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// The factory serving the window whose code is running, if its host keeps
-/// one. Windows that closed since are let go.
-fn host_factory() -> Option<HostImageFactory> {
-    factory_of(&WakeHandle::new())
+/// The serving of the window whose code is running, if its host keeps one.
+fn host_factory() -> Option<(HostImageFactory, ServedWindow)> {
+    serving_of(&WakeHandle::new())
 }
 
-/// The factory serving `window`, if its host keeps one.
-fn factory_of(window: &WakeHandle) -> Option<HostImageFactory> {
+/// The serving of `window`, if its host keeps one. Windows that closed
+/// since are let go.
+fn serving_of(window: &WakeHandle) -> Option<(HostImageFactory, ServedWindow)> {
     HOST_FACTORIES.with_borrow_mut(|kept| {
-        kept.retain(|(kept, _)| kept.same_open_scope(kept));
+        kept.retain(|(kept, _, _)| kept.same_open_scope(kept));
         kept.iter()
-            .find(|(kept, _)| kept.same_open_scope(window))
-            .map(|(_, factory)| std::rc::Rc::clone(factory))
+            .find(|(kept, _, _)| kept.same_open_scope(window))
+            .map(|(_, factory, served)| (std::rc::Rc::clone(factory), served.clone()))
     })
+}
+
+/// `window` is built, reading its record's content from `content`: the
+/// pictures its host loads for it are read, and asked for, there.
+pub(crate) fn window_built(window: &WakeHandle, content: Option<tilo_content::ContentStore>) {
+    if let Some((_, served)) = serving_of(window) {
+        *served.content.borrow_mut() = content;
+    }
 }
 
 impl ImageStore {
@@ -533,17 +563,19 @@ impl ImageStore {
     /// a browser page leaves to the host: its pictures would never show.
     pub fn serve_window(window: &WakeHandle, factory: HostImageFactory) {
         HOST_FACTORIES.with_borrow_mut(|kept| {
-            kept.retain(|(kept, _)| kept.same_open_scope(kept) && !kept.same_open_scope(window));
-            kept.push((window.clone(), factory));
+            kept.retain(|(kept, _, _)| kept.same_open_scope(kept) && !kept.same_open_scope(window));
+            kept.push((window.clone(), factory, ServedWindow::default()));
         });
     }
 
     /// Serve `successor`, a window opened in `window`'s place (the window a
     /// record opens in once it is had, another record opened here), the way
     /// `window` is served: it shows in the same host, which never built it.
-    /// Nothing changes for a window no host serves.
+    /// Its stores draw for it, not for `window`: their pictures are read and
+    /// asked for on its own content, also after `window` closed. Nothing
+    /// changes for a window no host serves.
     pub fn serve_successor(window: &WakeHandle, successor: &WakeHandle) {
-        if let Some(factory) = factory_of(window) {
+        if let Some((factory, _)) = serving_of(window) {
             Self::serve_window(successor, factory);
         }
     }
@@ -557,8 +589,8 @@ impl ImageStore {
     /// clamped to 1..=4 so one store cannot monopolise the background pool.
     /// A window its host serves ([`Self::serve_window`]) gets the host's.
     pub fn with_workers(fetch: &Fetcher, workers: usize) -> Self {
-        if let Some(factory) = host_factory() {
-            return factory(THUMBNAIL_MAX_DIMENSION);
+        if let Some((factory, window)) = host_factory() {
+            return factory(THUMBNAIL_MAX_DIMENSION, &window);
         }
         Self::with_decode_options(fetch, workers, THUMBNAIL_MAX_DIMENSION)
     }
@@ -569,8 +601,8 @@ impl ImageStore {
     /// total cache memory limits remain the same as for the thumbnail store.
     pub fn with_max_dimension(fetch: &Fetcher, max_dimension: u32) -> Self {
         let max_dimension = max_dimension.clamp(1, IMAGE_MAX_DIMENSION);
-        if let Some(factory) = host_factory() {
-            return factory(max_dimension);
+        if let Some((factory, window)) = host_factory() {
+            return factory(max_dimension, &window);
         }
         Self::with_decode_options(fetch, DEFAULT_IMAGE_WORKERS, max_dimension)
     }
