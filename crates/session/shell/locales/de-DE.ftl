@@ -3053,6 +3053,7 @@ agent-quick-mode-answer-line = An Ort und Stelle antworten
 agent-quick-mode-task-line = Das als Aufgabe ausführen
 agent-quick-about-selection = Zu deiner Auswahl in { $app }: „{ $selection }“
 agent-quick-about-window = Zu { $app }; nichts ist ausgewählt
+agent-quick-about-resource = Zu { $resource } in { $app }
 agent-quick-accessible-name = Agent-Verfasser
 agent-quick-shots-context = Zu deiner Auswahl in Notes: „[tilo OS](search for the tilo homepage)“
 agent-quick-shots-draft = Wohin führt dieser Link?
