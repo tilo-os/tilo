@@ -98,6 +98,8 @@ pub mod frame;
 pub mod fs_authority;
 pub mod gpu_frames;
 pub mod graphics_notice;
+#[cfg(feature = "hosted-test-control")]
+pub mod heap_profile;
 pub mod heap_trim;
 pub(crate) mod held_layers;
 pub mod history_narrative;

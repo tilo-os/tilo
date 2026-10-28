@@ -3,6 +3,15 @@
 #[cfg(target_os = "linux")]
 mod linux_main;
 
+/// Hands every allocation straight to glibc unless `PPROF_ALLOC_SAMPLE_RATE`
+/// was set when the compositor started; then it also samples the live heap by
+/// call site (`shell::shell::heap_profile`).
+#[cfg(all(target_os = "linux", feature = "hosted-test-control"))]
+#[global_allocator]
+static HEAP_PROFILE: pprof_alloc::PprofAlloc = pprof_alloc::PprofAlloc::new()
+    .with_pprof()
+    .with_pprof_sample_rate_from_env(0);
+
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {
     linux_main::run()
