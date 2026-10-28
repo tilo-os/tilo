@@ -173,7 +173,8 @@ pub(super) fn is_trigger(text: &str) -> bool {
         "when focus ",
         "when someone joins ",
         "when a file changes in ",
-        "when a \"",
+        "when a ",
+        "when \"",
     ]
     .iter()
     .any(|prefix| text.starts_with(prefix))

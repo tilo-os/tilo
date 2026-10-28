@@ -596,8 +596,11 @@ fn title(shared: &Shared<'_>, step: &Step) -> String {
         StepKind::ForEach { item, .. } => format!("for each {item} in"),
         StepKind::SetVar { name, .. } => format!("set {name}"),
         StepKind::Ask { param } => format!("ask for {}", param.description),
-        StepKind::Ai { prompt, .. } => format!("ask AI {prompt}"),
-        StepKind::Task { instruction, .. } => format!("tell SaaSy {instruction}"),
+        // What the agent is asked is free text, so it is in quotation marks
+        // like every other text; what the step takes and may do follow it as
+        // the notes any other step's fields are.
+        StepKind::Ai { prompt, .. } => format!("ask AI {}", quoted(prompt)),
+        StepKind::Task { instruction, .. } => format!("tell SaaSy {}", quoted(instruction)),
     }
 }
 
@@ -1180,6 +1183,7 @@ pub fn parse(shared: &Shared<'_>, text: &str) -> Result<Parsed, TextParseError> 
 fn split_colon(text: &str) -> Option<(&str, &str)> {
     let mut quoted_text = false;
     let mut escaped = false;
+    let mut brackets = 0usize;
     for (index, ch) in text.char_indices() {
         if quoted_text {
             if escaped {
@@ -1193,9 +1197,15 @@ fn split_colon(text: &str) -> Option<(&str, &str)> {
         }
         match ch {
             '"' => quoted_text = true,
-            ':' if text
-                .get(index.saturating_add(1)..)
-                .is_some_and(|after| after.starts_with(' ')) =>
+            // A dictionary's entry separates its name from its value with the
+            // same colon a block's condition follows, so only a colon outside
+            // every list and dictionary is the condition's.
+            '{' | '[' => brackets = brackets.saturating_add(1),
+            '}' | ']' => brackets = brackets.saturating_sub(1),
+            ':' if brackets == 0
+                && text
+                    .get(index.saturating_add(1)..)
+                    .is_some_and(|after| after.starts_with(' ')) =>
             {
                 let head = text.get(..index)?;
                 let tail = text.get(index.saturating_add(1)..)?.trim_start();
@@ -1670,19 +1680,40 @@ impl Reader<'_> {
                 .map_err(|message| TextParseError::at(number, message))?;
             StepKind::SetVar { name, value }
         } else if phrase.starts_with("ask AI ") {
-            let words = text_of(body.get(phrase.len()..).unwrap_or_default())
-                .map_err(|message| TextParseError::at(number, message))?;
+            // What the agent is asked is quoted, so the whole line is read
+            // from the head rather than from the phrase: a phrase that stops
+            // inside the words would not find the closing quotation mark.
+            let asked = body.strip_prefix("ask AI ").unwrap_or_default();
+            let (prompt, after) =
+                text_at(asked).map_err(|message| TextParseError::at(number, message))?;
+            let input = match after.trim_start() {
+                "" => None,
+                after => Some(
+                    binding_of(
+                        after.strip_prefix("of ").ok_or_else(|| {
+                            TextParseError::at(
+                                number,
+                                format!("`{}` follows the prompt", after.trim()),
+                            )
+                        })?,
+                        targets,
+                    )
+                    .map_err(|message| TextParseError::at(number, message))?,
+                ),
+            };
             StepKind::Ai {
-                prompt: words,
+                prompt,
                 output: None,
-                input: None,
+                input,
             }
         } else if opens_block(phrase) {
-            let words = text_of(body.get(phrase.len()..).unwrap_or_default())
-                .map_err(|message| TextParseError::at(number, message))?;
+            let told = body.strip_prefix("tell SaaSy ").unwrap_or_default();
+            let (instruction, after) =
+                text_at(told).map_err(|message| TextParseError::at(number, message))?;
+            let allow = rules_of(after).map_err(|message| TextParseError::at(number, message))?;
             StepKind::Task {
-                instruction: words,
-                allow: Vec::new(),
+                instruction,
+                allow,
                 output: None,
             }
         } else {
@@ -2190,6 +2221,29 @@ fn seconds_of(text: &str) -> Result<u64, String> {
         .trim()
         .parse()
         .map_err(|_| "that is not a number of seconds".to_owned())
+}
+
+/// The rules that follow what an agent is told, each introduced by `may`. A
+/// rule's own words never contain `may`, so that is where one ends and the
+/// next begins.
+fn rules_of(text: &str) -> Result<Vec<Rule>, String> {
+    let mut rules = Vec::new();
+    let mut rest = text.trim();
+    while !rest.is_empty() {
+        let Some(after) = rest.strip_prefix("may ") else {
+            return Err(format!("`{rest}` is not a rule: write `may act on PLACE`"));
+        };
+        let (next, tail) = match after.find(" may ") {
+            Some(at) => (
+                after.get(..at).unwrap_or_default(),
+                after.get(at.saturating_add(1)..).unwrap_or_default(),
+            ),
+            None => (after, ""),
+        };
+        rules.push(rule_of(next.trim())?);
+        rest = tail.trim();
+    }
+    Ok(rules)
 }
 
 fn rule_of(text: &str) -> Result<Rule, String> {
