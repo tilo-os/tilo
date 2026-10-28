@@ -17,7 +17,7 @@ use smithay::reexports::drm as drm_re;
 use drm_re::control::{Device as ControlDevice, ResourceHandle, connector, property};
 use settings_store::hardware::HdrUnavailable;
 
-use crate::wayland::edid::HdrDisplayInfo;
+use tilo_wayland_ext::edid::HdrDisplayInfo;
 
 /// Look up one named property on a KMS object, with its current value.
 pub(super) fn find_property<D, T>(

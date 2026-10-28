@@ -21,7 +21,7 @@
 //! `HdrDisplayInfo::default_sdr()` rather than panicking, so a bogus
 //! checksum just falls back to SDR).
 
-use crate::collab::colorimetry::{ColorPrimaries, TransferCharacteristics};
+use neighbour_wire::colorimetry::{ColorPrimaries, TransferCharacteristics};
 
 /// The bits of the EDID that matter for color-management-v1.
 ///

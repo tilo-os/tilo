@@ -1220,9 +1220,9 @@ impl CardHandle {
     pub fn read_hdr_display_info(
         &self,
         connector_name: &str,
-    ) -> Option<crate::wayland::edid::HdrDisplayInfo> {
+    ) -> Option<tilo_wayland_ext::edid::HdrDisplayInfo> {
         let edid = std::fs::read(self.connector_sysfs(connector_name).join("edid")).ok()?;
-        let info = crate::wayland::edid::parse_hdr_display_info(&edid);
+        let info = tilo_wayland_ext::edid::parse_hdr_display_info(&edid);
         info.supported_transfers
             .contains(&crate::collab::colorimetry::TransferCharacteristics::SmpteSt2084)
             .then_some(info)
@@ -1422,7 +1422,7 @@ fn read_monitor_identity(
     connector_name: &str,
 ) -> Option<settings_store::hardware::MonitorIdentity> {
     let edid = std::fs::read(connector_sysfs(card_path, connector_name).join("edid")).ok()?;
-    crate::wayland::edid::parse_monitor_identity(&edid)
+    tilo_wayland_ext::edid::parse_monitor_identity(&edid)
 }
 
 /// Ask the hardware what is connected now; `force_probe` is on since a
@@ -4079,7 +4079,7 @@ pub struct ScanoutBuild {
     /// EDID identity of the monitor on this connector, when it has one.
     pub monitor: Option<settings_store::hardware::MonitorIdentity>,
     /// The sink's HDR description, when its EDID advertises PQ.
-    pub hdr_display: Option<crate::wayland::edid::HdrDisplayInfo>,
+    pub hdr_display: Option<tilo_wayland_ext::edid::HdrDisplayInfo>,
     /// The configured mode this output was brought up under, if any.
     pub mode_intent: Option<settings_store::hardware::OutputMode>,
     /// The crtc this output was modeset onto, so a later hotplug can pick one still free.

@@ -21336,9 +21336,9 @@ fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder)
 struct PublishedOutputColors {
     described: Vec<(
         crate::compositor::backend::OutputId,
-        Option<crate::wayland::color_management::OutputDescription>,
+        Option<tilo_wayland_ext::color_management::OutputDescription>,
     )>,
-    /// [`crate::wayland::color_management::ColorManagerState::output_objects`]
+    /// [`tilo_wayland_ext::color_management::ColorManagerState::output_objects`]
     /// at that time; `None` before the first publish.
     objects: Option<u64>,
 }
@@ -21356,7 +21356,7 @@ fn publish_output_colors(
     backend: &dyn crate::compositor::backend::Backend,
     published: &mut PublishedOutputColors,
 ) {
-    use crate::wayland::color_management::OutputDescription;
+    use tilo_wayland_ext::color_management::OutputDescription;
     let outputs = backend.outputs();
     // Read before `update_outputs` takes the object list: an object created
     // after this read is counted next time and published then.

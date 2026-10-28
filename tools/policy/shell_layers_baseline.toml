@@ -37,10 +37,12 @@ crates = [
     "tilo-polkit-agent",
     "tilo-relay-shell",
     "tilo-tray-host",
+    "tilo-wayland-ext",
 ]
 
 # What an extracted crate may reach anyway, and why.
 [extracted.allow]
+"tilo-wayland-ext" = { "smithay" = "It implements Wayland protocol handlers: smithay's wayland_server dispatch traits and surface data map are what a handler is written against; it uses only smithay's wayland frontend, no renderer or backend" }
 
 # Workspace crates with a non-dev dependency on the shell, and why.
 [shell_dependants]
@@ -242,3 +244,4 @@ grandfathered = [
 "host-fs" = "Uninstalling an app (shell::app_list) moves its program file and a Flatpak's data to the Trash, never deleting them; host-fs is the one Trash implementation, which Files and Backups already use, and brings only the trash crate and tilo-paths with it"
 "osk" = "The on-screen keyboard's own widget, which an offscreen capture draws in place of the keyboard client's surface it has no client for (shell::shots_keyboard): the layouts, key geometry and paint stay the keyboard app's, and the shell adds no code but the panel it docks it in, so a shot and a touch screen place the keyboard by one rule; it brings ui, taffy and vello, which the shell already depends on"
 "tilo-winit-x11" = "The hosted backend's winit with X11 turned on, split out so hakari keeps X11 out of the shared app runtime; it adds no code beyond winit, which the shell already depends on as tilo-winit"
+"tilo-wayland-ext" = "The color-management-v1 handlers and the EDID parsing, carved out of the shell so the compositor does not rebuild them; it brings neighbour-wire and smithay, which the shell already depends on"

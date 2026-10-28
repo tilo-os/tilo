@@ -20,7 +20,7 @@
 //! `set_image_description`, applied on `wl_surface.commit`); the
 //! pending and current values live in `SurfaceData::data_map` under
 //! [`ColorManagementSurfaceData`], flipped by the commit hook in
-//! [`crate::compositor::state::State`].
+//! the compositor state.
 
 use std::sync::{Arc, Mutex};
 
@@ -48,10 +48,10 @@ use wayland_protocols::wp::color_management::v1::server::{
     wp_image_description_v1::{self, Cause as ImageCause, WpImageDescriptionV1},
 };
 
-use crate::collab::colorimetry::{
+use neighbour_wire::colorimetry::{
     ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,
 };
-use crate::collab::hdr_metadata::{ContentLightLevel, Hdr10Metadata, MasteringDisplayColorVolume};
+use neighbour_wire::hdr_metadata::{ContentLightLevel, Hdr10Metadata, MasteringDisplayColorVolume};
 
 /// The maximum protocol version we support. Bump on staging churn.
 ///
@@ -239,7 +239,7 @@ impl ColorManagerState {
     /// display. Keeps the advertised-capability defaults but skips
     /// registering the Wayland global.
     #[must_use]
-    #[cfg(any(test, feature = "hosted-test-control"))]
+    #[cfg(test)]
     pub fn for_test() -> Self {
         Self::default()
     }
@@ -538,7 +538,7 @@ impl OutputDescription {
 
     /// An output driven with a PQ BT.2020 signal: the sink's EDID primaries
     /// and luminance as the mastering volume, SDR white at `sdr_white_nits`.
-    pub fn hdr_pq(display: &crate::wayland::edid::HdrDisplayInfo, sdr_white_nits: f32) -> Self {
+    pub fn hdr_pq(display: &crate::edid::HdrDisplayInfo, sdr_white_nits: f32) -> Self {
         let to_st2086 = |micro: u32| -> u16 {
             u16::try_from(micro.checked_div(20).unwrap_or(0).min(50_000)).unwrap_or(50_000)
         };
@@ -562,7 +562,7 @@ impl OutputDescription {
         )]
         let reference_luminance = sdr_white_nits.clamp(1.0, 10_000.0).round() as u32;
         Self {
-            colorimetry: crate::collab::hdr_metadata::HdrConfig::pq_reference().colorimetry(),
+            colorimetry: Colorimetry::hdr10(),
             hdr: Some(Hdr10Metadata { mastering, light }),
             reference_luminance,
         }
@@ -1516,53 +1516,53 @@ macro_rules! delegate_color_management {
         smithay::reexports::wayland_server::delegate_global_dispatch!($ty:
             [
                 wayland_protocols::wp::color_management::v1::server::wp_color_manager_v1::WpColorManagerV1: ()
-            ] => $crate::wayland::color_management::ColorManagerState
+            ] => $crate::color_management::ColorManagerState
         );
         smithay::reexports::wayland_server::delegate_dispatch!($ty:
             [
                 wayland_protocols::wp::color_management::v1::server::wp_image_description_creator_icc_v1::WpImageDescriptionCreatorIccV1: ()
-            ] => $crate::wayland::color_management::ColorManagerState
+            ] => $crate::color_management::ColorManagerState
         );
         smithay::reexports::wayland_server::delegate_dispatch!($ty:
             [
                 wayland_protocols::wp::color_management::v1::server::wp_color_manager_v1::WpColorManagerV1: ()
-            ] => $crate::wayland::color_management::ColorManagerState
+            ] => $crate::color_management::ColorManagerState
         );
         smithay::reexports::wayland_server::delegate_dispatch!($ty:
             [
                 wayland_protocols::wp::color_management::v1::server::wp_image_description_creator_params_v1::WpImageDescriptionCreatorParamsV1:
-                    std::sync::Arc<$crate::wayland::color_management::ParametricBuilder>
-            ] => $crate::wayland::color_management::ColorManagerState
+                    std::sync::Arc<$crate::color_management::ParametricBuilder>
+            ] => $crate::color_management::ColorManagerState
         );
         smithay::reexports::wayland_server::delegate_dispatch!($ty:
             [
                 wayland_protocols::wp::color_management::v1::server::wp_image_description_v1::WpImageDescriptionV1:
-                    $crate::wayland::color_management::ImageDescriptionData
-            ] => $crate::wayland::color_management::ColorManagerState
+                    $crate::color_management::ImageDescriptionData
+            ] => $crate::color_management::ColorManagerState
         );
         smithay::reexports::wayland_server::delegate_dispatch!($ty:
             [
                 wayland_protocols::wp::color_management::v1::server::wp_color_management_surface_v1::WpColorManagementSurfaceV1:
-                    $crate::wayland::color_management::ColorManagementSurfaceUserData
-            ] => $crate::wayland::color_management::ColorManagerState
+                    $crate::color_management::ColorManagementSurfaceUserData
+            ] => $crate::color_management::ColorManagerState
         );
         smithay::reexports::wayland_server::delegate_dispatch!($ty:
             [
                 wayland_protocols::wp::color_management::v1::server::wp_color_management_surface_feedback_v1::WpColorManagementSurfaceFeedbackV1:
-                    $crate::wayland::color_management::ColorManagementSurfaceFeedbackData
-            ] => $crate::wayland::color_management::ColorManagerState
+                    $crate::color_management::ColorManagementSurfaceFeedbackData
+            ] => $crate::color_management::ColorManagerState
         );
         smithay::reexports::wayland_server::delegate_dispatch!($ty:
             [
                 wayland_protocols::wp::color_management::v1::server::wp_color_management_output_v1::WpColorManagementOutputV1:
-                    $crate::wayland::color_management::ColorManagementOutputData
-            ] => $crate::wayland::color_management::ColorManagerState
+                    $crate::color_management::ColorManagementOutputData
+            ] => $crate::color_management::ColorManagerState
         );
         smithay::reexports::wayland_server::delegate_dispatch!($ty:
             [
                 wayland_protocols::wp::color_management::v1::server::wp_image_description_info_v1::WpImageDescriptionInfoV1:
-                    $crate::wayland::color_management::ImageDescriptionData
-            ] => $crate::wayland::color_management::ColorManagerState
+                    $crate::color_management::ImageDescriptionData
+            ] => $crate::color_management::ColorManagerState
         );
     };
 }
@@ -1653,13 +1653,13 @@ mod tests {
     #[test]
     fn an_hdr_output_describes_pq_bt2020_with_its_edid_volume() {
         {
-            let display = crate::wayland::edid::HdrDisplayInfo {
+            let display = crate::edid::HdrDisplayInfo {
                 display_primaries: [(708_000, 292_000), (170_000, 797_000), (131_000, 46_000)],
                 white_point: (312_700, 329_000),
                 max_luminance_cd_m2: 800,
                 max_frame_average_luminance_cd_m2: 350,
                 min_luminance_micro_cd_m2: 500,
-                ..crate::wayland::edid::HdrDisplayInfo::default_sdr()
+                ..crate::edid::HdrDisplayInfo::default_sdr()
             };
             let description = OutputDescription::hdr_pq(&display, 250.0);
             assert_eq!(

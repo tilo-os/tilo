@@ -374,9 +374,9 @@ impl DeclaredOpacity {
     ) -> crate::compositor::foreign::DmabufCommit {
         let colorimetry = states
             .data_map
-            .get::<crate::wayland::color_management::ColorManagementSurfaceData>()
+            .get::<tilo_wayland_ext::color_management::ColorManagementSurfaceData>()
             .and_then(
-                crate::wayland::color_management::ColorManagementSurfaceData::current_colorimetry,
+                tilo_wayland_ext::color_management::ColorManagementSurfaceData::current_colorimetry,
             )
             .map(|(colorimetry, _)| colorimetry);
         let viewport = *states
@@ -495,7 +495,7 @@ use crate::compositor::tab_binding;
 use crate::network::input_firewall::{Denial, RemoteInputFirewall};
 use crate::network::protocol::{PeerId as MsgPeerId, SurfaceId};
 use crate::network::streaming::{InputEvent, RemoteAction, RemoteInputSink, ShareRegistry};
-use crate::wayland::color_management::ColorManagerState;
+use tilo_wayland_ext::color_management::ColorManagerState;
 
 use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
 use smithay::backend::input::KeyState;
@@ -1128,7 +1128,7 @@ pub struct State {
     /// `wp_color_manager_v1` state — advertised primaries/transfers/features
     /// plus the registered global id. HDR clients bind it, query
     /// capabilities, and attach parametric image descriptions; the
-    /// flatpak-share encoder reads the current per-surface description through [`crate::wayland::color_management::surface_current_colorimetry`].
+    /// flatpak-share encoder reads the current per-surface description through [`tilo_wayland_ext::color_management::surface_current_colorimetry`].
     pub color_manager: ColorManagerState,
     /// `wp_fractional_scale_manager_v1` state — lets `HiDPI` clients ask the
     /// compositor for their surface's preferred fractional scale (a
@@ -5783,7 +5783,7 @@ impl CompositorHandler for State {
         // `wp_color_management_surface_v1.set_image_description` becomes
         // the wire-tagged colorimetry the share session reports on stream_start; unset clears the override so the config-driven default wins again.
         if let Some(session) = self.active_sessions.get(&surface_id).cloned() {
-            match crate::wayland::color_management::surface_current_colorimetry(surface) {
+            match tilo_wayland_ext::color_management::surface_current_colorimetry(surface) {
                 Some((color, hdr)) => session.set_color_override(color, hdr),
                 None => session.clear_color_override(),
             }
@@ -8504,7 +8504,7 @@ impl AsRef<ColorManagerState> for State {
 }
 
 // `wp_color_manager_v1` + friends live outside smithay's delegate wrappers, hand-rolled in `wayland::color_management`; this macro wires their `Dispatch`/`GlobalDispatch`.
-crate::delegate_color_management!(State);
+tilo_wayland_ext::delegate_color_management!(State);
 
 #[cfg(test)]
 mod popup_geometry_tests;

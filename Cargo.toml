@@ -412,6 +412,7 @@ members = [
     "crates/session/tilo-lockdown-policy",
     "crates/session/tilo-unlock-helper",
     "crates/session/tray-host",
+    "crates/session/wayland-ext",
 
     # System
     "crates/system/account-custody",

@@ -15368,6 +15368,7 @@ dependencies = [
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-wallpapers",
+ "tilo-wayland-ext",
  "tilo-winit",
  "tilo-winit-x11",
  "tokio",
@@ -21114,6 +21115,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-wayland-ext"
+version = "0.1.0"
+dependencies = [
+ "neighbour-wire",
+ "settings-store",
+ "smithay",
+ "wayland-protocols",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-web-desktop"
 version = "0.1.0"
 dependencies = [
@@ -25180,7 +25192,6 @@ dependencies = [
  "potential_utf",
  "ppv-lite86",
  "proc-macro2",
- "profiling",
  "quick-xml 0.41.0",
  "quote",
  "rand 0.10.1",
@@ -26631,6 +26642,7 @@ dependencies = [
  "tilo-typst-fonts",
  "tilo-ui",
  "tilo-ui-graph",
+ "tilo-ui-host",
  "tilo-ui-macros",
  "tilo-ui-paint",
  "tilo-unicode-emoji",
@@ -26646,6 +26658,7 @@ dependencies = [
  "tilo-vmd",
  "tilo-wake",
  "tilo-wallpapers",
+ "tilo-wayland-ext",
  "tilo-web-desktop",
  "tilo-web-search",
  "tilo-wet-media",

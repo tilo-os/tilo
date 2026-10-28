@@ -93,7 +93,7 @@ pub struct Output {
 /// sits, cd/m².
 #[derive(Clone, Debug, PartialEq)]
 pub struct OutputHdr {
-    pub display: crate::wayland::edid::HdrDisplayInfo,
+    pub display: tilo_wayland_ext::edid::HdrDisplayInfo,
     pub sdr_white_nits: f32,
 }
 

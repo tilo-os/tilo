@@ -299,6 +299,8 @@ fs-protocol = { path = "../../system/fs-protocol" }
 # The neighbour wire vocabulary (`NeighbourMsg`) and its retention rules,
 # shared with every other peer that speaks the collaboration protocol.
 neighbour-wire = { path = "../../collab/neighbour-wire" }
+# The color-management-v1 handlers and the EDID parsing behind them.
+tilo-wayland-ext = { path = "../wayland-ext" }
 channel-crypto = { path = "../../collab/channel-crypto" }
 # The reusable video-streaming stack (encode/decode, per-share frame transport
 # substrate, throttle). `network::{encoder,
