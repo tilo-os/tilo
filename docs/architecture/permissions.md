@@ -303,3 +303,10 @@ granted to the app at install and through portals, and it is never what a
 person grants an agent. "May the agent send mail" is a grant on Mail's send
 action. Whether the mail app may reach its server is the sandbox's business.
 See [security.md](security.md).
+
+A shell environment's file commands meet both and stay one model each: `mv`
+typed in a guest, or an agent's `move`, is the environment record's Outside
+action, which the door decides for the actor like any other; the verb then
+admits the paths it names only within the environment's own `FsPath` grants,
+read with the same `decide_capability`, and refuses the whole invocation
+otherwise ([ush.md](../app-model/ush.md)).
