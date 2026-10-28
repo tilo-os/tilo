@@ -1071,6 +1071,7 @@ fn saved_facts(ui: &Ui, shortcut: &Shortcut) -> Element {
 fn editor_pane(ui: &Ui, follow: Rc<RefCell<Box<dyn FnMut()>>>) -> Element {
     let builder = ui.clone();
     let editor = ui.editor.clone();
+    let as_text = ui.as_text.clone();
     let body = Keyed::new(
         move || {
             // Derive before keying, so a frame that only synchronizes (a
@@ -1080,11 +1081,7 @@ fn editor_pane(ui: &Ui, follow: Rc<RefCell<Box<dyn FnMut()>>>) -> Element {
             }
             // Reading the program as text is a different page, so it is
             // part of what the pane is keyed on.
-            format!(
-                "{}|{}",
-                editor.with(EditorInput::structure),
-                builder.as_text.get()
-            )
+            format!("{}|{}", editor.with(EditorInput::structure), as_text.get())
         },
         move || {
             let content = builder.editor.with(|input| build_page(&builder, input));
