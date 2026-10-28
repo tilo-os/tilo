@@ -7,10 +7,15 @@ use taffy::TaffyTree;
 use winit::event::Modifiers;
 use winit::keyboard::SmolStr;
 
+/// `logical_key` pressed; a character key types itself, as a keyboard does.
 fn key_press(logical_key: Key) -> WindowEvent {
+    let text = match &logical_key {
+        Key::Character(c) => Some(c.clone()),
+        _ => None,
+    };
     crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
         logical_key,
-        None,
+        text,
         ElementState::Pressed,
     ))
 }
@@ -92,33 +97,6 @@ fn palette_card_geometry_and_rows() {
         );
     }
 
-    /// Pins that nothing may reserve a slot for a kbd chip in the query row.
-    fn input_row_layout_gives_the_query_the_full_trailing_width() {
-        const ROW_W: f64 = 640.0;
-        const EDGE: f64 = 12.0;
-        let palette = CommandPalette::new();
-        let layout = palette.compute_input_layout(Rect::new(0.0, 0.0, ROW_W, 56.0));
-        assert!(
-            layout.icon_rect.width() >= 24.0 && layout.icon_rect.width() <= 40.0,
-            "leading icon slot must be 24..=40 px wide; got {}",
-            layout.icon_rect.width()
-        );
-        assert!(
-            layout.input_rect.x0 > layout.icon_rect.x1,
-            "input must start after the icon"
-        );
-        assert!(
-            layout.input_rect.x1 <= ROW_W - EDGE,
-            "input must stay inside the row's trailing inset"
-        );
-        assert_eq!(
-            ROW_W - layout.input_rect.x1,
-            EDGE,
-            "the query runs to the trailing inset — no reserved chip slot \
-         between it and the row edge",
-        );
-    }
-
     fn row_at_finds_visible_row_inside_the_post_layout_rect() {
         let mut p = CommandPalette::new();
         p.push(CommandEntry::new("a", "Alpha"));
@@ -192,7 +170,6 @@ fn palette_card_geometry_and_rows() {
     large_text_palette_reserves_painted_rows_and_scales_fonts_once();
     each_row_is_as_tall_as_its_content();
     palette_card_is_a_panel();
-    input_row_layout_gives_the_query_the_full_trailing_width();
     row_at_finds_visible_row_inside_the_post_layout_rect();
     the_card_ends_with_its_last_row_and_no_footer();
 }
@@ -682,33 +659,31 @@ fn query_editing_follows_the_caret_selection_and_ime() {
         let mut p = CommandPalette::new();
         p.set_focus(true);
         p.set_query("hello");
-        assert_eq!(p.query_selection.cursor, 5);
+        assert_eq!(p.field.selection_anchor_focus_or_caret().1, 5);
         dispatch(&mut p, &key_press(Key::Named(NamedKey::ArrowLeft)));
-        assert_eq!(p.query_selection.cursor, 4);
+        assert_eq!(p.field.selection_anchor_focus_or_caret().1, 4);
         dispatch(&mut p, &key_press(Key::Named(NamedKey::Home)));
-        assert_eq!(p.query_selection.cursor, 0);
+        assert_eq!(p.field.selection_anchor_focus_or_caret().1, 0);
     }
 
     fn backspace_deletes_at_caret_not_end() {
         let mut p = CommandPalette::new();
         p.set_focus(true);
         p.set_query("abc");
-        p.query_selection.cursor = 1;
-        p.query_selection.anchor = 1;
+        p.field.set_selection(1, 1);
         dispatch(&mut p, &key_press(Key::Named(NamedKey::Backspace)));
         assert_eq!(p.query(), "bc");
-        assert_eq!(p.query_selection.cursor, 0);
+        assert_eq!(p.field.selection_anchor_focus_or_caret().1, 0);
     }
 
     fn typing_inserts_at_caret() {
         let mut p = CommandPalette::new();
         p.set_focus(true);
         p.set_query("ac");
-        p.query_selection.cursor = 1;
-        p.query_selection.anchor = 1;
+        p.field.set_selection(1, 1);
         dispatch(&mut p, &key_press(Key::Character(SmolStr::new("b"))));
         assert_eq!(p.query(), "abc");
-        assert_eq!(p.query_selection.cursor, 2);
+        assert_eq!(p.field.selection_anchor_focus_or_caret().1, 2);
     }
 
     fn ctrl_a_selects_query() {
@@ -720,19 +695,18 @@ fn query_editing_follows_the_caret_selection_and_ime() {
         Dispatch::new()
             .modifiers(mods_state)
             .send(&mut p, &key_press(Key::Character(SmolStr::new("a"))));
-        assert_eq!(p.query_selection.anchor, 0);
-        assert_eq!(p.query_selection.cursor, 5);
+        assert_eq!(p.field.selection_anchor_focus_or_caret().0, 0);
+        assert_eq!(p.field.selection_anchor_focus_or_caret().1, 5);
     }
 
     fn typing_replaces_selection() {
         let mut p = CommandPalette::new();
         p.set_focus(true);
         p.set_query("hello");
-        p.query_selection.anchor = 1;
-        p.query_selection.cursor = 4;
+        p.field.set_selection(1, 4);
         dispatch(&mut p, &key_press(Key::Character(SmolStr::new("i"))));
         assert_eq!(p.query(), "hio");
-        assert_eq!(p.query_selection.cursor, 2);
+        assert_eq!(p.field.selection_anchor_focus_or_caret().1, 2);
     }
 
     ime_preedit_is_visible_but_filters_only_after_atomic_commit();

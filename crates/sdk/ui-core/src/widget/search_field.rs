@@ -179,6 +179,9 @@ pub struct SearchField {
     /// Standing in a floating panel's header: no fill, no outline
     /// ([`crate::widget::primitives::FloatingPanel`]).
     embedded: bool,
+    /// What the field is asking for, drawn dim before the text ("New
+    /// name:") while a step collects a value in it.
+    prompt: Option<String>,
 }
 
 impl SearchField {
@@ -228,6 +231,7 @@ impl SearchField {
             applied: None,
             placeholder: "Search".to_owned(),
             embedded: false,
+            prompt: None,
         }
     }
 
@@ -273,6 +277,12 @@ impl SearchField {
     #[must_use]
     pub fn scope_token(&self) -> Option<&str> {
         self.scope_token.as_deref()
+    }
+
+    /// Where the scope token was last drawn; empty without one.
+    #[must_use]
+    pub fn scope_token_rect(&self) -> Rect {
+        self.scope_token_rect
     }
 
     /// `true` once after the user removed the scope token (its × or
@@ -337,6 +347,34 @@ impl SearchField {
     /// placed in its header slot.
     pub fn set_embedded(&mut self, embedded: bool) {
         self.embedded = embedded;
+    }
+
+    /// Ask for a value with `prompt` drawn dim before the text, or `None`
+    /// for a plain query.
+    pub fn set_prompt(&mut self, prompt: Option<String>) {
+        self.prompt = prompt;
+    }
+
+    #[must_use]
+    pub fn prompt(&self) -> Option<&str> {
+        self.prompt.as_deref()
+    }
+
+    /// What the field holds, which decides its keyboard and how it reads
+    /// to an input method; a secret is masked, kept off the clipboard and
+    /// never read out ([`TextInput::set_secret`]).
+    pub fn set_input_kind(&mut self, kind: TextInputKind, secret: bool) {
+        self.input.set_secret(secret);
+        self.input.set_kind(if secret {
+            TextInputKind::Password
+        } else {
+            kind
+        });
+    }
+
+    /// Select `anchor..cursor` (bytes) of the text.
+    pub fn set_selection(&mut self, anchor: usize, cursor: usize) {
+        self.input.set_selection(anchor, cursor);
     }
 
     #[must_use]
@@ -593,6 +631,38 @@ impl SearchField {
         width + 4.0
     }
 
+    /// Draw the prompt after `lead` px of the text's start; the width it
+    /// takes.
+    fn draw_prompt(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        lead: f64,
+    ) -> f64 {
+        let Some(prompt) = self.prompt.as_deref().filter(|p| !p.is_empty()) else {
+            return 0.0;
+        };
+        let style = theme.text(TextRole::Body);
+        let heading = format!("{prompt}:");
+        let max = (self.rect.width() * 0.5).max(0.0);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a field's width in logical pixels is far inside f32's range"
+        )]
+        let shown = text_renderer.elide_to_width_style(&heading, max as f32, &style);
+        let (w, h) = text_renderer.measure_style(&shown, None, &style);
+        let top = centered_text_top(self.rect.y0, self.rect.height(), f64::from(h));
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine composition is float matrix math and cannot overflow"
+        )]
+        let at = transform * Affine::translate((self.rect.x0 + ICON_GUTTER + lead, top));
+        text_renderer.draw_style(scene, &shown, theme.text_dim, at, None, &style);
+        f64::from(w) + f64::from(theme.tokens.spacing.s2)
+    }
+
     fn press_at(&self, point: Point) -> Press {
         if self.scope_token_rect.contains(point) {
             Press::ScopeToken
@@ -751,7 +821,8 @@ impl Widget for SearchField {
         self.leading
             .draw_with_stroke(scene, transform, icon_rect, theme.text_dim, 1.5);
 
-        let token_w = self.draw_scope_token(scene, transform, text_renderer, theme);
+        let mut token_w = self.draw_scope_token(scene, transform, text_renderer, theme);
+        token_w += self.draw_prompt(scene, transform, text_renderer, theme, token_w);
         if token_w > 0.0 {
             // The text starts after the token; the input re-lays its line.
             self.input
