@@ -842,6 +842,7 @@ impl WakeTally {
     }
 }
 
+mod listing;
 mod lock_media;
 mod lock_view;
 use lock_media::{LOCK_MEDIA_REFRESH, lock_media_changed, lock_now_playing, send_lock_transport};
@@ -3386,6 +3387,9 @@ struct FrameBuilderControlState<'a> {
     /// Where an `actions_invoke` leaves the address it resolved, for its
     /// execution in the same request; fixtures that run nothing omit it.
     resolved: Option<&'a std::cell::RefCell<Option<ResolvedInvocation>>>,
+    /// The paged listings in flight, read on their first page; fixtures
+    /// that keep none omit it, and each page reads its listing afresh.
+    listings: Option<&'a super::listing_snapshots::ListingSnapshots>,
 }
 
 impl FrameBuilderControlState<'_> {
@@ -3425,118 +3429,6 @@ impl FrameBuilderControlState<'_> {
         drop(tree);
         drop(chrome);
         displays
-    }
-
-    /// The action listing for `query` through the *same* provider registry
-    /// that feeds the Ctrl+K palette — but rendering nothing. With `page`,
-    /// that page of it ([`test_control::ListingRequest`]); without, all of it.
-    /// Only the answered rows become JSON: describing every row of a large
-    /// catalogue cost more than building it.
-    fn listing(
-        &self,
-        query: &str,
-        include_programmatic: bool,
-        page: Option<&test_control::ListingRequest>,
-    ) -> Result<serde_json::Value, test_control::ActionRefusal> {
-        let (doc, root) = self.doc.ok_or_else(|| {
-            test_control::ActionRefusal::listing_failed("control state has no live document")
-        })?;
-        let chrome_handle = self.fb.chrome_handle();
-        // The borrow lives only for the closure; `ActionCatalog` owns its results
-        // outright, so the catalogue outlives the guards it was built through.
-        let (catalog, launcher, complete) = with_action_gate(&chrome_handle, |chrome, gate| {
-            let args = crate::shell::search::QueryArgs {
-                needle: query,
-                scope: crate::shell::chrome_state::SearchScope::All,
-                active_provider_id: None,
-                wanted_kinds: &[],
-                chrome,
-                doc,
-                doc_root: root,
-            };
-            let first_use_gate = super::admin_control::FirstUseVisibility {
-                base: gate,
-                first_use: self.fb.host().onboarding_active(),
-            };
-            let catalog =
-                self.fb
-                    .host()
-                    .action_catalog_query(&args, &first_use_gate, include_programmatic);
-            let launcher = self.fb.host().launcher_answer(&args, page, &first_use_gate);
-            // Read after the query, which may itself have started the work
-            // that leaves the listing incomplete.
-            let complete = self.fb.host().action_listing_complete(&args);
-            (catalog, launcher, complete)
-        })
-        .map_err(test_control::ActionRefusal::listing_failed)?;
-        // A paged listing is an agent's: apps' own resources and actions
-        // first, files only when asked.
-        let mut catalog = catalog;
-        if let Some(page) = page {
-            catalog.arrange(&page.kinds, page.files);
-        }
-        let fingerprint = test_control::listing_fingerprint(catalog.addresses());
-        let window = page
-            .map(|page| page.window(catalog.len(), fingerprint))
-            .transpose()?;
-        let compact = page.is_some_and(|page| !page.detail.is_full());
-        let rows = window
-            .as_ref()
-            .map_or(0..catalog.len(), |window| window.rows.clone());
-        let actions: Vec<serde_json::Value> = catalog
-            .enumerate_rows(rows)
-            .into_iter()
-            .map(|a| {
-                let hierarchy = a.hierarchy.as_ref();
-                let mut row = serde_json::json!({
-                    "provider": a.resource.provider,
-                    "id": a.resource.id,
-                    "kind": a.kind.id(),
-                    "operation_kind": a.operation_kind,
-                    "title": a.title,
-                    "subtitle": a.subtitle,
-                    "score": a.score,
-                    // What to pass; empty for the nullary majority. A parameter list describes
-                    // an invocation, it is not one, so enumeration stays side-effect-free.
-                    "params": params_json(&a.params),
-                    "contract": a.contract,
-                    // The provider resolves identity from its authenticated source;
-                    // opaque invocation IDs and presentation labels stay independent.
-                    "application": hierarchy.map(|value| &value.application),
-                    "room": hierarchy.map(|value| &value.room),
-                    "record": hierarchy.map(|value| &value.record),
-                    "resource": hierarchy.map(|value| &value.resource),
-                    "semantic_identity": hierarchy.and_then(|value| value.semantic_identity.as_ref()),
-                    "operation": hierarchy.map(|value| &value.operation),
-                });
-                if compact && let Some(row) = row.as_object_mut() {
-                    row.remove("contract");
-                }
-                row
-            })
-            .collect();
-        let mut answer = serde_json::Map::new();
-        answer.insert("query".into(), query.into());
-        answer.insert("count".into(), actions.len().into());
-        answer.insert("actions".into(), actions.into());
-        if let Some(launcher) = launcher {
-            answer.insert("launcher".into(), launcher);
-        }
-        if let Some(window) = window {
-            window.describe(&mut answer);
-        }
-        // Which listing this is — the identity its cursors are cut from — and
-        // whether it is final. `truncated` says this page is not all of the
-        // listing; `complete: false` says the listing itself is not all there
-        // yet: an index build or an app's directory page that would add to it
-        // is still on its way. `wait_ms` waits for that.
-        answer.insert("revision".into(), format!("{fingerprint:016x}").into());
-        answer.insert(
-            "complete".into(),
-            (complete && catalog.completion().complete).into(),
-        );
-        answer.insert("completion".into(), serde_json::json!(catalog.completion()));
-        Ok(serde_json::Value::Object(answer))
     }
 }
 
@@ -4525,6 +4417,9 @@ struct TestControlCtx {
     /// The address an `actions_invoke` resolved while it was dispatched,
     /// which the same request then runs without resolving it again.
     resolved_invocation: std::cell::RefCell<Option<ResolvedInvocation>>,
+    /// The `actions_enumerate` listings being paged, each read once on its
+    /// first page ([`super::listing_snapshots`]).
+    listing_snapshots: super::listing_snapshots::ListingSnapshots,
 }
 
 /// One `actions_invoke` address as its request's dispatch resolved it:
@@ -4558,6 +4453,7 @@ impl TestControlCtx {
             pending_snapshot: None,
             deferred_snapshot_reply: None,
             resolved_invocation: std::cell::RefCell::new(None),
+            listing_snapshots: super::listing_snapshots::ListingSnapshots::default(),
         }
     }
 
@@ -6536,6 +6432,7 @@ fn dispatch_control_command(
                 lock: Some(lock),
                 seat: Some(state),
                 resolved: Some(&ctx.resolved_invocation),
+                listings: Some(&ctx.listing_snapshots),
             };
             test_control::dispatch_command(&cmd, &state)
         }
@@ -20192,6 +20089,7 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
+                listings: None,
             };
             let animating = state.chrome_state_json()["animating"].clone();
             assert!(
@@ -20267,6 +20165,7 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
+                listings: None,
             }
             .chrome_state_json()["displays"]
                 .clone()
@@ -20314,6 +20213,7 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
+                listings: None,
             };
             let chrome = state.chrome_state_json();
             let overlays = chrome
@@ -20350,6 +20250,7 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
+                listings: None,
             };
 
             let scope = &state.chrome_state_json()["search_resource_scope"];
@@ -20433,6 +20334,7 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
+                listings: None,
             };
             let answer = state.enumerate_actions("").expect("enumerated actions");
             let row = answer["actions"]
@@ -20463,6 +20365,7 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
+                listings: None,
             };
             let tree = state.workspace_tree_json(false).to_value();
             let workspaces = tree
@@ -20488,6 +20391,7 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
+                listings: None,
             };
             let (resp, actions) = test_control::dispatch_command(
                 &test_control::Command::StateDump {
@@ -20527,6 +20431,7 @@ mod tests {
             lock: None,
             seat: None,
             resolved: None,
+            listings: None,
         };
         let whole = state.enumerate_actions("").expect("the whole listing");
         let ids = |answer: &serde_json::Value| -> Vec<String> {
@@ -20604,6 +20509,7 @@ mod tests {
             lock: None,
             seat: None,
             resolved: None,
+            listings: None,
         };
         // The tree as the reply carries it; the chrome beside it is not history.
         let dump = |include_history| {
@@ -20700,6 +20606,7 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
+                listings: None,
             };
             let tree = state.workspace_tree_json(false).to_value();
             let found = tree
@@ -20733,6 +20640,7 @@ mod tests {
                 lock: Some(&lock),
                 seat: None,
                 resolved: None,
+                listings: None,
             };
             let chrome = state.chrome_state_json();
             let auth = chrome
@@ -20759,6 +20667,7 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
+                listings: None,
             };
 
             let presence = &state.chrome_state_json()["presence"];
@@ -20843,6 +20752,7 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
+                listings: None,
             };
             let rows = state
                 .sharing_json()
@@ -21069,6 +20979,7 @@ mod tests {
             lock: None,
             seat: None,
             resolved: None,
+            listings: None,
         };
         let icons = state.chrome_state_json()["tab_icons"].clone();
         crate::compositor::toplevel_icon::forget(surface);

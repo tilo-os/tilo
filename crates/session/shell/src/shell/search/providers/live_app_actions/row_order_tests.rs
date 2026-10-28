@@ -79,10 +79,12 @@ fn equal_rows_come_in_title_order() {
         doc: &doc,
         doc_root: &automerge::ROOT,
     };
-    *provider.surface_snapshot.borrow_mut() = Some(LiveAppActionsProvider::build_local_snapshot(
-        &broker,
-        &LiveAppActionsProvider::build_scope(&ctx),
-        &provider.build_probe,
+    *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(
+        LiveAppActionsProvider::build_local_snapshot(
+            &broker,
+            &LiveAppActionsProvider::build_scope(&ctx),
+            &provider.build_probe,
+        ),
     ));
     drop(broker);
     let page = provider.query_page(ctx, None, SearchBudget::PALETTE);

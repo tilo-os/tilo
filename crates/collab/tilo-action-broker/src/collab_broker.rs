@@ -502,6 +502,16 @@ impl AppActionBroker {
         });
     }
 
+    /// Publish `surface` for its connection as an app's `publishActions`
+    /// does: an unchanged surface moves nothing.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn publish_surface_for_test(&self, surface: crate::collab_broker_capnp::PublishedSurface) {
+        let _ = self.state.while_live(|state| {
+            state.publish_surface_for_test(surface);
+            Ok(())
+        });
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn replace_published_surfaces_for_test(
         &self,

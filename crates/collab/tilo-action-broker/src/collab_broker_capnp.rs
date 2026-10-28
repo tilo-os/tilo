@@ -17,6 +17,7 @@ mod approved_checks;
 mod external_moderation;
 mod local_document_action;
 mod subscriptions;
+mod surface_publication;
 pub use approved_checks::{ApprovedCheckContext, ApprovedCheckServices};
 mod execution_activity;
 #[cfg(test)]
@@ -4485,13 +4486,6 @@ impl CapnpBrokerState {
         drop(publications);
     }
 
-    /// Record that a published surface changed: the generation moves and
-    /// every launch waiting for its app to publish wakes.
-    fn surfaces_changed(&self) {
-        self.surface_changes
-            .send_modify(|generation| *generation = generation.wrapping_add(1));
-    }
-
     /// Wake every launch waiting for its app's invocation stream after one
     /// opened or closed. Retained projections do not depend on streams, so
     /// the generation stays.
@@ -4513,6 +4507,7 @@ impl CapnpBrokerState {
         self.action_directory_bridge.clone()
     }
 
+    #[track_caller]
     fn refresh_action_directory_root_snapshot(&self) {
         let mut roots = self
             .action_directory_roots
@@ -4523,6 +4518,13 @@ impl CapnpBrokerState {
         if let Ok(mut snapshot) = self.action_directory_root_snapshot.lock() {
             snapshot.roots = roots;
             snapshot.generation = snapshot.generation.wrapping_add(1);
+            tracing::debug!(
+                target: "tilo::publications",
+                generation = snapshot.generation,
+                roots = snapshot.roots.len(),
+                cause = %std::panic::Location::caller(),
+                "action directory roots changed"
+            );
         }
     }
 
@@ -6367,9 +6369,16 @@ impl CapnpBrokerState {
 
     /// Record that a pending or completed invocation changed, waking every
     /// [`Self::invocation_changes`] waiter.
+    #[track_caller]
     fn invocation_changed(&self) {
         self.invocation_generation
             .send_modify(|generation| *generation = generation.wrapping_add(1));
+        tracing::debug!(
+            target: "tilo::publications",
+            generation = *self.invocation_generation.borrow(),
+            cause = %std::panic::Location::caller(),
+            "invocation statuses changed"
+        );
     }
 
     /// A receiver that sees every later invocation change; what it has seen
@@ -10714,14 +10723,13 @@ impl channel_handle::Server for CapnpChannelHandle {
                 tables.remove(&peer_id);
             }
             state.launchable.retain(&surface);
-            state
+            let previous = state
                 .surfaces
                 .lock()
                 .map_err(|_| capnp::Error::failed("action surface registry unavailable".into()))?
-                .insert(peer_id, surface);
+                .insert(peer_id, surface.clone());
             state.advance_witness_publication(peer_id, WitnessPublicationKind::Surface);
-            state.surfaces_changed();
-            state.publish_action_catalogue();
+            state.surface_republished(peer_id, &surface, previous.as_ref());
             if offers {
                 state.launch_published(peer_id);
             }
@@ -10783,14 +10791,13 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .map_err(|_| capnp::Error::failed("action surface registry unavailable".into()))?
                 .insert(peer_id, table);
             state.launchable.retain(&surface);
-            state
+            let previous = state
                 .surfaces
                 .lock()
                 .map_err(|_| capnp::Error::failed("action surface registry unavailable".into()))?
-                .insert(peer_id, surface);
+                .insert(peer_id, surface.clone());
             state.advance_witness_publication(peer_id, WitnessPublicationKind::Surface);
-            state.surfaces_changed();
-            state.publish_action_catalogue();
+            state.surface_republished(peer_id, &surface, previous.as_ref());
             if offers {
                 state.launch_published(peer_id);
             }

@@ -1,10 +1,15 @@
 //! Dynamic provider backed by the resource/action surfaces live Tilo apps
 //! publish through the session collaboration broker.
 
+#[path = "live_app_actions/directory_pages.rs"]
+mod directory_pages;
+#[path = "live_app_actions/held_listings.rs"]
+mod held_listings;
+
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
@@ -75,8 +80,10 @@ const MAX_DIRECTORY_ROOTS_PER_QUERY: usize = 16;
 /// search corpus.  They are deliberately a small first stage before remote
 /// and local actions.
 const MAX_JOB_ROWS_PER_QUERY: usize = 4;
-/// Directory responses are an acceleration cache, not a second unbounded
-/// replica of every connected application's action namespace.
+/// How many search pages are kept: an acceleration cache, not a second
+/// unbounded replica of every connected application's action namespace.
+/// Each connection's listing is kept apart from them, for as long as the
+/// connection ([`directory_pages::DirectoryPages`]).
 const MAX_RETAINED_DIRECTORY_PAGES: usize = 64;
 /// How many resources an enumeration opens below the roots, and how deep.
 /// Notes' pages (and their blocks) are the motivating case: a bounded,
@@ -275,7 +282,13 @@ pub(crate) use super::live_app_jobs::{job_control_target, job_subtitle};
 pub struct LiveAppActionsProvider {
     broker: AppActionBroker,
     action_sessions: ActionSessionSource,
-    directory_pages: RefCell<HashMap<DirectoryCacheKey, CataloguePage>>,
+    /// Each connection's listing, and the search pages beside it
+    /// ([`directory_pages::DirectoryPages`]).
+    directory_pages: RefCell<directory_pages::DirectoryPages>,
+    /// The surfaces and directory roots the cached pages were fetched for,
+    /// by connection: a change to one connection's publication retires that
+    /// connection's pages only.
+    directory_publications: RefCell<HashMap<u64, directory_pages::DirectoryPublication>>,
     directory_pending: RefCell<HashMap<DirectoryCacheKey, PendingDirectoryPage>>,
     /// Pages of resources below a root, fetched only while enumerating.
     nested_pages: RefCell<HashMap<NestedCacheKey, CataloguePage>>,
@@ -305,11 +318,22 @@ pub struct LiveAppActionsProvider {
     /// identity, so an open palette lists the page, but not of the cursor
     /// revision: a cursor waiting on that page stays valid and resumes at it.
     directory_appended: Cell<u64>,
-    surface_snapshot: RefCell<Option<SurfaceSnapshot>>,
+    /// The local index of published actions, shared with the listings that
+    /// page through it ([`held_listings::HeldListing`]): a rebuild replaces it, never
+    /// edits it in place.
+    surface_snapshot: RefCell<Option<Rc<SurfaceSnapshot>>>,
     surface_build: RefCell<Option<Receiver<SurfaceSnapshot>>>,
     /// The long-lived index worker, started by the first rebuild.
     index_worker: RefCell<Option<mpsc::Sender<IndexJob>>>,
-    auxiliary_snapshot: RefCell<Option<AuxiliarySnapshot>>,
+    /// The palette's current remote projection, shared like
+    /// [`Self::surface_snapshot`].
+    auxiliary_snapshot: RefCell<Option<Rc<AuxiliarySnapshot>>>,
+    /// What recent queries' first pages read, for their continuations.
+    held: RefCell<VecDeque<held_listings::HeldListing>>,
+    /// The publications' generation the current catalogue query's first
+    /// page read: its local index is judged current against that, since a
+    /// republication after it shows on the next query.
+    listed_generation: Cell<Option<u64>>,
     projection: Cell<QueryProjection>,
     /// The persistent index of apps' content: an app's view of a resource
     /// it holds is that provider's row, so one resource is one row.
@@ -589,9 +613,7 @@ fn deadline_after(duration: std::time::Duration) -> std::time::Instant {
 }
 
 impl LiveAppActionsProvider {
-    fn directory_pages_mut(
-        &self,
-    ) -> std::cell::RefMut<'_, HashMap<DirectoryCacheKey, CataloguePage>> {
+    fn directory_pages_mut(&self) -> std::cell::RefMut<'_, directory_pages::DirectoryPages> {
         self.pages_epoch.set(self.pages_epoch.get().wrapping_add(1));
         self.directory_pages.borrow_mut()
     }
@@ -692,7 +714,10 @@ impl LiveAppActionsProvider {
         Self {
             action_sessions: ActionSessionSource::new(broker.clone()),
             broker,
-            directory_pages: RefCell::new(HashMap::new()),
+            directory_pages: RefCell::new(directory_pages::DirectoryPages::new(
+                MAX_RETAINED_DIRECTORY_PAGES,
+            )),
+            directory_publications: RefCell::new(HashMap::new()),
             directory_pending: RefCell::new(HashMap::new()),
             nested_pages: RefCell::new(HashMap::new()),
             nested_pending: RefCell::new(HashMap::new()),
@@ -717,6 +742,8 @@ impl LiveAppActionsProvider {
             surface_build: RefCell::new(None),
             index_worker: RefCell::new(None),
             auxiliary_snapshot: RefCell::new(None),
+            held: RefCell::new(VecDeque::new()),
+            listed_generation: Cell::new(None),
             projection: Cell::new(QueryProjection::All),
             app_content: RefCell::new(None),
             #[cfg(test)]
@@ -977,7 +1004,7 @@ impl LiveAppActionsProvider {
         let receiver = self.surface_build.borrow_mut().take();
         if let Some(receiver) = receiver {
             match receiver.try_recv() {
-                Ok(snapshot) => *self.surface_snapshot.borrow_mut() = Some(snapshot),
+                Ok(snapshot) => *self.surface_snapshot.borrow_mut() = Some(Rc::new(snapshot)),
                 Err(TryRecvError::Empty) => *self.surface_build.borrow_mut() = Some(receiver),
                 Err(TryRecvError::Disconnected) => {}
             }
@@ -1161,7 +1188,7 @@ impl LiveAppActionsProvider {
             None,
             None,
         );
-        let previous = self.surface_snapshot.replace(Some(temporary));
+        let previous = self.surface_snapshot.replace(Some(Rc::new(temporary)));
         let previous_projection = self.projection.replace(QueryProjection::LocalOnly);
         let results = self.query(*ctx);
         self.projection.set(previous_projection);
@@ -1176,16 +1203,40 @@ impl LiveAppActionsProvider {
             self.broker.surfaces_generation(),
             self.broker.action_directory_root_page(None, 0).generation,
         );
-        if self.directory_source_generation.replace(source) != source {
-            // A native edit can change Undo availability without changing the
-            // query, publisher or action address. Retire both old pages and
-            // outstanding replies before observing their previous contracts.
+        if self.directory_source_generation.replace(source) == source {
+            return;
+        }
+        // A native edit can change Undo availability without changing the
+        // query, publisher or action address: a connection whose publication
+        // changed has its pages and outstanding replies retired before its
+        // previous contracts are observed. Every other connection keeps its
+        // listing, so one app republishing never empties the rest.
+        let now = directory_pages::publications(&self.broker);
+        let previous = self.directory_publications.replace(now.clone());
+        let changed: HashSet<u64> = previous
+            .keys()
+            .chain(now.keys())
+            .copied()
+            .filter(|peer| previous.get(peer) != now.get(peer))
+            .collect();
+        if changed.is_empty() {
+            // A change the publications do not show: retire every page, as
+            // nothing tells which connection it was.
             self.directory_pages_mut().clear();
             self.directory_pending.borrow_mut().clear();
             self.directory_failures.borrow_mut().clear();
-            self.auxiliary_snapshot.borrow_mut().take();
-            self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.directory_pages_mut()
+                .retain(|key, _| !changed.contains(&key.0));
+            self.directory_pending
+                .borrow_mut()
+                .retain(|key, _| !changed.contains(&key.0));
+            self.directory_failures
+                .borrow_mut()
+                .retain(|key, _| !changed.contains(&key.0));
         }
+        self.auxiliary_snapshot.borrow_mut().take();
+        self.bump_directory_epoch("a publication changed");
     }
 
     fn poll_directory_pages_at(&self, now: Instant) {
@@ -1254,7 +1305,7 @@ impl LiveAppActionsProvider {
         });
         if self.poll_nested_pages(now) {
             self.auxiliary_snapshot.borrow_mut().take();
-            self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+            self.bump_directory_epoch("nested pages landed or gave up");
         }
         if !spent.is_empty() {
             self.directory_pages_mut().retain(|existing, _| {
@@ -1268,7 +1319,7 @@ impl LiveAppActionsProvider {
             // Retire the projection so the next observation requests a fresh
             // authorized page rather than treating cached emptiness as complete.
             self.auxiliary_snapshot.borrow_mut().take();
-            self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+            self.bump_directory_epoch("a directory reply failed, went stale or expired");
         }
         if !ready.is_empty() {
             self.land_directory_pages(ready);
@@ -1297,15 +1348,11 @@ impl LiveAppActionsProvider {
                         || existing.2 != key.2
                 });
             }
-            if !pages.contains_key(&key)
-                && pages.len() >= MAX_RETAINED_DIRECTORY_PAGES
-                && let Some(evicted) = pages.keys().next().cloned()
-            {
-                pages.remove(&evicted);
-            }
+            // Search pages make room for one another, least recently
+            // used first; a connection's listing is never displaced.
             pages.insert(key, page);
             if initial_page {
-                self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+                self.bump_directory_epoch("a first directory page landed");
             } else {
                 self.directory_appended
                     .set(self.directory_appended.get().wrapping_add(1));
@@ -1487,18 +1534,21 @@ impl LiveAppActionsProvider {
         self.directory_failures.borrow_mut().clear();
         // Dropping stale receivers explicitly cancels their shell-side
         // tickets. The LocalSet may still finish its bounded work, but cannot
-        // grow this UI cache or revive an old query's results.
+        // grow this UI cache or revive an old query's results. Each
+        // connection's listing (the empty query's pages) is not a query's:
+        // it stays whatever is searched for, so a listing asked for again
+        // between searches is still whole.
         self.directory_pages_mut()
-            .retain(|(_, _, cached_needle, _), _| cached_needle == &next);
+            .retain(|key, _| directory_pages::is_listing(key) || key.2 == next);
         self.directory_pending
             .borrow_mut()
-            .retain(|(_, _, cached_needle, _), _| cached_needle == &next);
+            .retain(|key, _| directory_pages::is_listing(key) || key.2 == next);
         self.nested_pages_mut()
             .retain(|(_, _, _, cached_needle), _| cached_needle == &next);
         self.nested_pending
             .borrow_mut()
             .retain(|(_, _, _, cached_needle), _| cached_needle == &next);
-        self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+        self.bump_directory_epoch("the directory query changed");
     }
 
     fn set_directory_context(&self, ctx: &SearchContext<'_>, needle: &str) {
@@ -1528,7 +1578,7 @@ impl LiveAppActionsProvider {
             pages.remove(&key);
             pending.remove(&key);
         }
-        self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+        self.bump_directory_epoch("directory pages were invalidated");
     }
 
     #[allow(
@@ -1548,11 +1598,7 @@ impl LiveAppActionsProvider {
         resume: &AuxiliaryResume,
     ) {
         let expand = self.enumerating.get() && ctx.chrome.search_resource_scope.is_none();
-        let scope = if expand {
-            format!("{}{ID_SEPARATOR}enumerating", Self::surface_scope(ctx))
-        } else {
-            Self::surface_scope(ctx)
-        };
+        let scope = self.auxiliary_scope(ctx);
         if self
             .auxiliary_snapshot
             .borrow()
@@ -1790,7 +1836,7 @@ impl LiveAppActionsProvider {
                 directory: None,
             });
         }
-        *self.auxiliary_snapshot.borrow_mut() = Some(AuxiliarySnapshot {
+        *self.auxiliary_snapshot.borrow_mut() = Some(Rc::new(AuxiliarySnapshot {
             revision: revision.to_string(),
             query: needle.to_string(),
             scope,
@@ -1798,7 +1844,7 @@ impl LiveAppActionsProvider {
             entries,
             pending_directory,
             next_resume,
-        });
+        }));
     }
 
     fn job_lifecycles(
@@ -1941,32 +1987,6 @@ impl LiveAppActionsProvider {
             on_begin_invoke: None,
             resource: None,
         }
-    }
-
-    /// What a cursor of this provider stays valid for: the local index,
-    /// the directory pages a walk starts from, publishers, actor and
-    /// locale. Pages appended behind a continuation leave it unchanged.
-    fn cursor_revision(&self, ctx: &SearchContext<'_>) -> String {
-        let scope = Self::surface_scope(ctx);
-        let source_generation = self.broker.surfaces_generation();
-        let ready = self
-            .surface_snapshot
-            .borrow()
-            .as_ref()
-            .is_some_and(|snapshot| {
-                snapshot.source_generation == source_generation && snapshot.scope == scope
-            });
-        format!(
-            "{}:{source_generation}:{}:{}:{}:{}:{}:{}",
-            if ready { "ready" } else { "indexing" },
-            self.directory_epoch.load(Ordering::Relaxed),
-            // Listing publishers is a memory read; it never asks an app.
-            self.directory_revision(ctx.chrome),
-            self.broker.statuses_generation(),
-            ctx.chrome.active_local_user(),
-            ctx.include_programmatic,
-            crate::shell::i18n::current_locale(),
-        )
     }
 
     /// Exact receipt reads use the actor-owned broker key, not the four-row
@@ -2245,39 +2265,6 @@ impl LiveAppActionsProvider {
         roots.sort_by_key(|root| root.peer_id);
         roots.dedup_by_key(|root| root.peer_id);
         (roots, revision)
-    }
-
-    /// What [`Self::directory_roots_in`] answers changes with, read without
-    /// opening a certified session: the broker's published surfaces and
-    /// directory roots, and per workspace its local Person and that Person's
-    /// identity files. Stamps and counters only, so the palette can ask on
-    /// every tick.
-    fn directory_revision(&self, chrome: &crate::shell::chrome_state::ChromeState) -> String {
-        use std::hash::{Hash as _, Hasher as _};
-        /// Moves on every call while some identity can't be trusted to its
-        /// stamp, so such a revision never matches the previous one.
-        static UNSETTLED: AtomicU64 = AtomicU64::new(0);
-        let rooms = chrome
-            .tree()
-            .desktop
-            .workspaces
-            .iter()
-            .map(crate::shell::state::Workspace::room)
-            .collect::<Vec<_>>();
-        let mut identities = std::collections::hash_map::DefaultHasher::new();
-        for room in rooms {
-            let name = room.to_string();
-            let Some(identity) = self.action_sessions.identity_revision(&name) else {
-                return format!("unsettled-{}", UNSETTLED.fetch_add(1, Ordering::Relaxed));
-            };
-            (name, chrome.local_user_for_room(&room), identity).hash(&mut identities);
-        }
-        format!(
-            "{}.{}.{:016x}",
-            self.broker.surfaces_generation(),
-            self.broker.action_directory_root_page(None, 0).generation,
-            identities.finish()
-        )
     }
 
     /// The drill-down scope for `resource` of the app `app_id` in the active
@@ -3153,6 +3140,7 @@ impl SearchProvider for LiveAppActionsProvider {
     fn begin_catalogue_query(&self) {
         self.directory_failures.borrow_mut().clear();
         self.directory_source_unavailable.set(false);
+        self.listed_generation.set(None);
     }
 
     fn query_incomplete_reason(
@@ -3172,7 +3160,11 @@ impl SearchProvider for LiveAppActionsProvider {
             .borrow()
             .as_ref()
             .is_none_or(|snapshot| {
-                snapshot.source_generation != self.broker.surfaces_generation()
+                snapshot.source_generation
+                    != self
+                        .listed_generation
+                        .get()
+                        .unwrap_or_else(|| self.broker.surfaces_generation())
                     || snapshot.scope != Self::surface_scope(ctx)
             })
         {
@@ -3229,6 +3221,10 @@ impl SearchProvider for LiveAppActionsProvider {
         self.enumerating.set(on);
     }
 
+    fn pages_itself(&self) -> bool {
+        true
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "the page owns one ordered budget across auxiliary and local retained projections, so split helpers would obscure cursor handoff"
@@ -3251,10 +3247,41 @@ impl SearchProvider for LiveAppActionsProvider {
             return self.job_control_page(&ctx, target, cursor, budget);
         }
         let needle = ctx.needle.trim().to_lowercase();
-        self.set_directory_context(&ctx, &needle);
-        self.apply_directory_invalidations();
-        self.poll_directory_pages();
-        let revision = self.cursor_revision(&ctx);
+        // A query takes in what has changed on its first page only, and its
+        // continuations page through what that page read: replies landing
+        // and apps republishing in between show up on the next query, never
+        // as a cursor gone stale mid-listing.
+        let (revision, surface) = match cursor {
+            None => {
+                self.set_directory_context(&ctx, &needle);
+                self.apply_directory_invalidations();
+                self.poll_directory_pages();
+                self.listed_generation
+                    .set(Some(self.broker.surfaces_generation()));
+                let revision = self.cursor_revision(&ctx);
+                let surface = self.surface_snapshot.borrow().clone();
+                self.hold_listing(&revision, Self::listing_reader(&ctx), surface.clone());
+                (revision, surface)
+            }
+            Some(cursor) => {
+                self.poll_appended_pages();
+                // The local index the cursor's listing pages through, if it
+                // is still held.
+                let held = self
+                    .held
+                    .borrow()
+                    .iter()
+                    .find(|listing| {
+                        listing.revision == cursor.revision
+                            && listing.reader == Self::listing_reader(&ctx)
+                    })
+                    .map(|listing| listing.surface.clone());
+                match held {
+                    Some(surface) => (cursor.revision.clone(), surface),
+                    None => return SearchPage::stale(self.cursor_revision(&ctx)),
+                }
+            }
+        };
         let scope = Self::surface_scope(&ctx);
         let (stage, after, resume) = match cursor {
             Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
@@ -3326,13 +3353,13 @@ impl SearchProvider for LiveAppActionsProvider {
         // remote directory rows). No palette page clones a full local corpus.
         // The registry invoked `search_revision` before this bounded page.
         // Do not fall back to cloning broker surfaces here on a cold source.
-        self.prepare_auxiliary_snapshot(&ctx, &needle, &revision, budget.max_work, &resume);
+        let projection =
+            self.listing_projection(&ctx, &needle, &revision, budget.max_work, &resume);
         let mut bytes = 0usize;
         let mut results = Vec::new();
         let mut work = 0usize;
         if stage == "aux" {
-            let snapshot = self.auxiliary_snapshot.borrow();
-            let Some(snapshot) = snapshot.as_ref() else {
+            let Some(snapshot) = projection.as_deref() else {
                 return SearchPage::exhausted(revision, Vec::new());
             };
             let mut position = after;
@@ -3466,8 +3493,7 @@ impl SearchProvider for LiveAppActionsProvider {
             return Self::live_page(revision, results, "local", local_offset, &needle, &scope);
         }
         let (found, candidates) = {
-            let snapshot = self.surface_snapshot.borrow();
-            let Some(snapshot) = snapshot.as_ref() else {
+            let Some(snapshot) = surface.as_deref() else {
                 return SearchPage::exhausted(revision, results);
             };
             // A completed projection may belong to the preceding palette scope
@@ -3592,7 +3618,7 @@ mod tests {
         }
     }
 
-    fn chrome() -> crate::shell::chrome_state::Chrome {
+    pub(super) fn chrome() -> crate::shell::chrome_state::Chrome {
         let mut workspace_tree = WorkspaceTree::default();
         workspace_tree
             .desktop
@@ -3646,12 +3672,13 @@ mod tests {
             query_scope: Some(SearchScope::All),
             ..context("", &state, &doc)
         };
-        *provider.surface_snapshot.borrow_mut() =
-            Some(LiveAppActionsProvider::build_local_snapshot(
+        *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(
+            LiveAppActionsProvider::build_local_snapshot(
                 &broker,
                 &LiveAppActionsProvider::build_scope(&ctx),
                 &provider.build_probe,
-            ));
+            ),
+        ));
         let (_, ready) = registry.query_catalogue(&args, true);
         assert!(ready.complete);
         broker.replace_published_surfaces_for_test(Vec::new());
@@ -3699,12 +3726,13 @@ mod tests {
             query_scope: Some(SearchScope::All),
             ..context("", &state, &doc)
         };
-        *provider.surface_snapshot.borrow_mut() =
-            Some(LiveAppActionsProvider::build_local_snapshot(
+        *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(
+            LiveAppActionsProvider::build_local_snapshot(
                 &broker,
                 &LiveAppActionsProvider::build_scope(&ctx),
                 &provider.build_probe,
-            ));
+            ),
+        ));
         let mut registry = SearchRegistry::new();
         registry.register(provider.clone());
         let args = QueryArgs {
@@ -3932,7 +3960,7 @@ mod tests {
         }
     }
 
-    fn exported(label: &str, action: &str) -> tilo_actions::ActionDescriptor {
+    pub(super) fn exported(label: &str, action: &str) -> tilo_actions::ActionDescriptor {
         tilo_actions::ActionDescriptor {
             semantic_identity: None,
             address: tilo_actions::ActionAddress::new(format!("resource:{action}"), action),
@@ -4134,13 +4162,13 @@ mod tests {
                 .semantic_identity
                 .is_none()
         );
-        *provider.surface_snapshot.borrow_mut() = Some(SurfaceSnapshot::new(
+        *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(SurfaceSnapshot::new(
             broker.surfaces_generation(),
             String::new(),
             entries,
             None,
             None,
-        ));
+        )));
         assert_eq!(
             provider.action_hierarchy(&id).unwrap().semantic_identity,
             Some(identity)
@@ -4163,7 +4191,7 @@ mod tests {
         crate::shell::broker_services::test_broker_with_membership(chrome.borrow().tree_handle())
     }
 
-    fn page(rows: Vec<CatalogueRow>, next_cursor: Vec<u8>) -> CataloguePage {
+    pub(super) fn page(rows: Vec<CatalogueRow>, next_cursor: Vec<u8>) -> CataloguePage {
         CataloguePage {
             revision: "r1".into(),
             exhausted: next_cursor.is_empty(),
@@ -4174,7 +4202,7 @@ mod tests {
         }
     }
 
-    fn local_action(label: &str, action: &str) -> PublishedAction {
+    pub(super) fn local_action(label: &str, action: &str) -> PublishedAction {
         PublishedAction {
             semantic_identity: None,
             resource: format!("resource:{action}"),
@@ -4256,12 +4284,13 @@ mod tests {
             ..context("", &state, &doc)
         };
         // The index worker builds this off the main loop.
-        *provider.surface_snapshot.borrow_mut() =
-            Some(LiveAppActionsProvider::build_local_snapshot(
+        *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(
+            LiveAppActionsProvider::build_local_snapshot(
                 &broker,
                 &LiveAppActionsProvider::build_scope(&ctx),
                 &provider.build_probe,
-            ));
+            ),
+        ));
         let mut registry = SearchRegistry::new();
         registry.register(provider);
         let args = crate::shell::search::QueryArgs {
@@ -4391,12 +4420,13 @@ mod tests {
         let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
         let doc = AutoCommit::new();
         let ctx = context("Inspect playback", &state, &doc);
-        *provider.surface_snapshot.borrow_mut() =
-            Some(LiveAppActionsProvider::build_local_snapshot(
+        *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(
+            LiveAppActionsProvider::build_local_snapshot(
                 &broker,
                 &LiveAppActionsProvider::build_scope(&ctx),
                 &provider.build_probe,
-            ));
+            ),
+        ));
         let before = provider.query_page(ctx, None, SearchBudget::PALETTE);
         assert_eq!(
             before.results.len(),
@@ -4537,7 +4567,7 @@ mod tests {
                     initial_page: true,
                 },
             );
-            *provider.auxiliary_snapshot.borrow_mut() = Some(AuxiliarySnapshot {
+            *provider.auxiliary_snapshot.borrow_mut() = Some(std::rc::Rc::new(AuxiliarySnapshot {
                 revision: "r1".into(),
                 query: "read".into(),
                 scope: String::new(),
@@ -4548,7 +4578,7 @@ mod tests {
                 entries: Vec::new(),
                 pending_directory: Vec::new(),
                 next_resume: None,
-            });
+            }));
             match outcome {
                 "refused" => sender.complete(Err(ActionHostError::NotPermitted)),
                 "stale" => {
@@ -4595,7 +4625,15 @@ mod tests {
 
         provider.poll_directory_pages_at(deadline + Duration::from_secs(3));
 
-        assert_eq!(provider.directory_pages.borrow()[&key].revision, "r1");
+        assert_eq!(
+            provider
+                .directory_pages
+                .borrow()
+                .get(&key)
+                .map(|page| page.revision.clone())
+                .as_deref(),
+            Some("r1")
+        );
         assert!(provider.directory_pending.borrow().is_empty());
         assert_eq!(
             provider
@@ -4620,7 +4658,7 @@ mod tests {
                 initial_page: true,
             },
         );
-        *provider.auxiliary_snapshot.borrow_mut() = Some(AuxiliarySnapshot {
+        *provider.auxiliary_snapshot.borrow_mut() = Some(std::rc::Rc::new(AuxiliarySnapshot {
             revision: "r1".into(),
             query: "read".into(),
             scope: String::new(),
@@ -4631,7 +4669,7 @@ mod tests {
             entries: Vec::new(),
             pending_directory: Vec::new(),
             next_resume: None,
-        });
+        }));
 
         provider.poll_directory_pages_at(deadline + Duration::from_secs(3));
 
@@ -4872,7 +4910,7 @@ mod tests {
                     "directory{ID_SEPARATOR}7{ID_SEPARATOR}r1{ID_SEPARATOR}resource:one{ID_SEPARATOR}one"
                 )
             );
-            *provider.auxiliary_snapshot.borrow_mut() = Some(AuxiliarySnapshot {
+            *provider.auxiliary_snapshot.borrow_mut() = Some(std::rc::Rc::new(AuxiliarySnapshot {
                 revision,
                 query: "open".into(),
                 scope,
@@ -4892,7 +4930,7 @@ mod tests {
                     .collect(),
                 pending_directory: Vec::new(),
                 next_resume: None,
-            });
+            }));
             let budget = SearchBudget {
                 max_results: 1,
                 max_bytes: usize::MAX,
@@ -5183,12 +5221,13 @@ mod tests {
         let doc = AutoCommit::new();
         let state = chrome.borrow();
         let ctx = context("", &state, &doc);
-        *provider.surface_snapshot.borrow_mut() =
-            Some(LiveAppActionsProvider::build_local_snapshot(
+        *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(
+            LiveAppActionsProvider::build_local_snapshot(
                 &broker,
                 &LiveAppActionsProvider::build_scope(&ctx),
                 &provider.build_probe,
-            ));
+            ),
+        ));
         let page = provider.query_page(ctx, None, SearchBudget::PALETTE);
         assert_eq!(page.results.len(), 1);
         assert!(page.results.iter().all(|row| row.id != id));
@@ -5248,12 +5287,13 @@ mod tests {
         let doc = AutoCommit::new();
         let chrome_state = chrome.borrow();
         let ctx = context("", &chrome_state, &doc);
-        *provider.surface_snapshot.borrow_mut() =
-            Some(LiveAppActionsProvider::build_local_snapshot(
+        *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(
+            LiveAppActionsProvider::build_local_snapshot(
                 &broker,
                 &LiveAppActionsProvider::build_scope(&ctx),
                 &provider.build_probe,
-            ));
+            ),
+        ));
         let preview = provider.query_page(ctx, None, SearchBudget::PALETTE);
         drop(chrome_state);
         assert!(preview.results.iter().all(|row| row.id != id));
@@ -5630,12 +5670,13 @@ mod tests {
         let doc = AutoCommit::new();
         let chrome = chrome.borrow();
         let ctx = context("", &chrome, &doc);
-        *provider.surface_snapshot.borrow_mut() =
-            Some(LiveAppActionsProvider::build_local_snapshot(
+        *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(
+            LiveAppActionsProvider::build_local_snapshot(
                 &broker,
                 &LiveAppActionsProvider::build_scope(&ctx),
                 &provider.build_probe,
-            ));
+            ),
+        ));
         let id = LiveAppActionsProvider::result_id(&surface, &surface.actions[0]);
         assert_eq!(
             provider
@@ -5677,12 +5718,13 @@ mod tests {
                 .results
                 .is_empty()
         );
-        *provider.surface_snapshot.borrow_mut() =
-            Some(LiveAppActionsProvider::build_local_snapshot(
+        *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(
+            LiveAppActionsProvider::build_local_snapshot(
                 &broker,
                 &LiveAppActionsProvider::build_scope(&ctx),
                 &provider.build_probe,
-            ));
+            ),
+        ));
         let fresh = provider.query_page(ctx, None, SearchBudget::PALETTE);
         assert_eq!(fresh.results.len(), 1);
         assert_eq!(
@@ -5711,12 +5753,13 @@ mod tests {
         let doc = AutoCommit::new();
         let chrome = chrome.borrow();
         let ctx = context("", &chrome, &doc);
-        *provider.surface_snapshot.borrow_mut() =
-            Some(LiveAppActionsProvider::build_local_snapshot(
+        *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(
+            LiveAppActionsProvider::build_local_snapshot(
                 &broker,
                 &LiveAppActionsProvider::build_scope(&ctx),
                 &provider.build_probe,
-            ));
+            ),
+        ));
         let id = LiveAppActionsProvider::result_id(&surface, &surface.actions[0]);
         assert_eq!(
             provider
@@ -5782,12 +5825,13 @@ mod tests {
         {
             let chrome = chrome.borrow();
             let ctx = context("", &chrome, &doc);
-            *provider.surface_snapshot.borrow_mut() =
-                Some(LiveAppActionsProvider::build_local_snapshot(
+            *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(
+                LiveAppActionsProvider::build_local_snapshot(
                     &broker,
                     &LiveAppActionsProvider::build_scope(&ctx),
                     &provider.build_probe,
-                ));
+                ),
+            ));
         }
         let mut old_peer = broker.capture_invocations_for_test(7);
         let mut new_peer = broker.capture_invocations_for_test(8);
@@ -5865,13 +5909,13 @@ mod tests {
             .replace_published_surfaces_for_test(vec![published]);
         let index = Some(index_actions(&entries, false));
         let machine_index = Some(index_actions(&entries, true));
-        *provider.surface_snapshot.borrow_mut() = Some(SurfaceSnapshot::new(
+        *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(SurfaceSnapshot::new(
             provider.broker.surfaces_generation(),
             LiveAppActionsProvider::surface_scope(&ctx),
             entries,
             index,
             machine_index,
-        ));
+        )));
         let page = provider.query_page(
             ctx,
             None,
@@ -6389,6 +6433,14 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "live_app_actions/listing_tests.rs"]
+mod listing_tests;
+
+#[cfg(test)]
+#[path = "live_app_actions/snapshot_tests.rs"]
+mod snapshot_tests;
 
 #[cfg(test)]
 #[path = "live_app_actions/job_progress_tests.rs"]
