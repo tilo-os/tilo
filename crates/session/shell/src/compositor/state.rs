@@ -9230,6 +9230,9 @@ mod tick_hook_tests {
         const HOST: PeerId = 0xAAAA;
         const MEMBER: PeerId = 0xCCCC;
         const SURFACE: SurfaceId = 0x7e57_0000_0093;
+        // A share starts once what this machine encodes is known, which the
+        // compositor reads on a worker; read it here first.
+        tilo_window_share::flatpak_share::read_encoders();
         let mut state = make_state();
         let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = Arc::clone(&sent);
@@ -9294,6 +9297,9 @@ mod tick_hook_tests {
         const HOST: PeerId = 0xAAAA;
         const VIEWER: PeerId = 0xBBBB;
         const SURFACE: SurfaceId = 0x7e57_0000_0091;
+        // A share starts once what this machine encodes is known, which the
+        // compositor reads on a worker; read it here first.
+        tilo_window_share::flatpak_share::read_encoders();
         let mut state = make_state();
         let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = Arc::clone(&sent);
@@ -9363,6 +9369,9 @@ mod tick_hook_tests {
         const HOST: PeerId = 0xAAAA;
         const VIEWER: PeerId = 0x5eed_1017;
         const SURFACE: SurfaceId = 0x7e57_0000_1017;
+        // A share starts once what this machine encodes is known, which the
+        // compositor reads on a worker; read it here first.
+        tilo_window_share::flatpak_share::read_encoders();
         let mut state = make_state();
         let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = Arc::clone(&sent);
