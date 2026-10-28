@@ -25,7 +25,7 @@ class TTomlTests(unittest.TestCase):
         config = t_matrix.load(ROOT)
         checks = {check["name"]: check for check in config["check"]}
         self.assertNotIn("policy", checks, "the policy suite runs as one check per step")
-        for step in t_toml.policy_steps.load(ROOT):
+        for step in t_toml.policy_steps.expanded(ROOT):
             with self.subTest(step=step.name):
                 if step.covered_by:
                     self.assertIn(step.run, " ".join(checks[step.covered_by]["run"].split()))
@@ -39,7 +39,8 @@ class TTomlTests(unittest.TestCase):
                 # history get t's .git; the checks of the tree read the files as they are,
                 # through an index of them where they use Git.
                 self.assertEqual(check.get("git", False), step.history)
-                self.assertEqual(check.get("writable_sources", False), step.tests)
+                # A test file run in a copy of its inputs writes to that copy.
+                self.assertEqual(check.get("writable_sources", False), step.tests and not step.pruned)
                 self.assertEqual(step.check.startswith("policy/tests/"), step.tests)
 
     def test_security_reads_the_paths_its_invariants_name_and_no_others(self):
