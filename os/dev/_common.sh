@@ -237,6 +237,15 @@ composefs_sealed_digest() {
   { sed -n "s/.*is '\(sha512:\)\{0,1\}\([0-9a-f]\{128\}\)'.*/\2/p" "$1" 2>/dev/null || true; } | tail -1
 }
 
+# `podman run` flags that give files a build container writes to bind mounts this user's
+# ownership. Rootless, --userns=keep-id does it; as root (a build container's root, such as
+# the rcargo builder's, whose user namespace maps only 65536 ids) there is nothing to keep,
+# and keep-id would make podman copy and re-own each image layer, which fails there on ids
+# outside that range.
+keep_id_args() {
+  [ "$(id -u)" -eq 0 ] || printf '%s\n' --userns=keep-id
+}
+
 warn_slow_podman_storage() {
   local root="${CONTAINERS_STORAGE_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/containers/storage}"
   [ "$(cat "$root/overlay/.has-mount-program" 2>/dev/null)" = true ] || return 0
