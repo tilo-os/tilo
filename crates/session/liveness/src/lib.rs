@@ -71,9 +71,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use calloop::LoopHandle;
 use parking_lot::{Condvar, Mutex};
 use serde::{Deserialize, Serialize};
-use calloop::LoopHandle;
 
 mod capture;
 mod main_thread_files;
@@ -82,7 +82,6 @@ mod wake_trace;
 pub use main_thread_files::{FileWalk, STORAGE_WAIT};
 
 pub use wake_trace::record as trace_wake;
-
 
 /// Removes the socket it names once the server that bound it is gone.
 struct UnlinkOnDrop(PathBuf);
@@ -954,7 +953,7 @@ fn capture_thread(tid: i32) -> Option<String> {
 /// dump that started meanwhile (the liveness stall report, which leaves a
 /// thread in a seccomp wait alone) would otherwise keep it held for that
 /// dump's whole wait and then this capture's.
-pub(super) fn capture_held_thread(tid: i32) -> Result<String, String> {
+pub(crate) fn capture_held_thread(tid: i32) -> Result<String, String> {
     let deadline = Instant::now()
         .checked_add(HELD_CAPTURE_WAIT)
         .unwrap_or_else(Instant::now);
