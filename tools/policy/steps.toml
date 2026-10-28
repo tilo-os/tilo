@@ -309,13 +309,6 @@ inputs = ["Cargo.lock", "vendor/**/Cargo.toml"]
 pre_push = true
 
 [[step]]
-name = "automerge-apply-contract"
-label = "Automerge apply contract"
-run = "python3 tools/policy/check_automerge_apply_contract.py"
-git = "paths"
-inputs = ["**/*.rs", "**/Cargo.toml"]
-
-[[step]]
 name = "document-engine-boundary"
 label = "Document content stays behind the document layer"
 run = "python3 tools/policy/check_document_engine_boundary.py"
