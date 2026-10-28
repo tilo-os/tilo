@@ -9870,6 +9870,8 @@ pub fn run() {
     if boot_network || local_broker_due {
         crate::shell::launcher::hold_launches();
     }
+    // Window labels and tiles are served the installed apps from memory.
+    crate::shell::launcher::load_installed_apps();
     let identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
     // Settings can request a small, typed set of contextual tools through a
     // connected descriptor. The shell owns package resolution and launching;
