@@ -279,6 +279,10 @@ impl LaunchSession {
 /// No native owner is open; the room is fenced; its join was refused; or
 /// it will never be enrolled here: it holds no committed enrollment and is
 /// neither being placed, joined nor enrolled.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the room status source is read on every turn of the wait, up to its return"
+)]
 pub(super) fn committed_device(
     session: &LaunchSession,
     tree: &crate::shell::state::WorkspaceTreeHandle,
