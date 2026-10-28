@@ -2611,6 +2611,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "collaboration"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "collab-types",
+ "fnv",
+ "fs-protocol",
+ "hex",
+ "runtime-collab",
+ "serde_json",
+ "tilo-actions",
+ "tilo-files",
+ "tilo-lock",
+ "tracing",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "color"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -20712,6 +20731,7 @@ dependencies = [
  "channel-crypto",
  "chrono",
  "collab-types",
+ "collaboration",
  "cosmic-text",
  "durable-store",
  "ed25519-dalek 3.0.0",
