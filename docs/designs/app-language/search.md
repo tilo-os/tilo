@@ -292,7 +292,12 @@ as search's:
 - **The document loads when it is needed:** for the first write, for a view that reads a
   field the index lacks, or in the background after the first frame. Opening never waits for the
   whole document.
-- **Where it lives, for now.** The index should belong to the platform's storage service, since apps
+- **Text search is the system's, now.** The shell already keeps a persistent index of what
+  apps hold (`app_content_index`), which apps publish into over their broker route and which
+  answers even when an app is closed. An app's own search box and an agent program's `find` are
+  scoped queries against it. No app keeps a text-search index of its own.
+- **Where the list index lives, for now.** The typed list index (columns, filters, pages) should
+  belong to the platform's storage service, since apps
   own no storage and search must read it without a second copy. Today that service holds the
   committed documents only of rooms a workspace host governs. Every other room (minted on this
   device, joined by direct invite, the person's own) is opened by the app itself, from its own
