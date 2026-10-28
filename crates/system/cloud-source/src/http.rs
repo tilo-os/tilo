@@ -102,6 +102,20 @@ pub fn read_bounded(body: impl Read, declared: Option<u64>, limit: usize) -> Res
     Ok(bytes)
 }
 
+/// Read a JSON body of at most `limit` bytes, by [`read_bounded`].
+///
+/// # Errors
+/// What [`read_bounded`] returns, and [`Error::InvalidResponse`] for a body
+/// that is not one JSON value of type `T`.
+pub fn read_json<T: serde::de::DeserializeOwned>(
+    body: impl Read,
+    declared: Option<u64>,
+    limit: usize,
+) -> Result<T> {
+    let bytes = read_bounded(body, declared, limit)?;
+    serde_json::from_slice(&bytes).map_err(|_| Error::InvalidResponse("json"))
+}
+
 /// Reads exactly `len` bytes and no more; an early end of stream is
 /// [`io::ErrorKind::UnexpectedEof`], so a cut-off body never passes for a
 /// short file.
@@ -232,6 +246,18 @@ pub fn parse_rfc3339(text: &str) -> Option<SystemTime> {
     chrono::DateTime::parse_from_rfc3339(text.trim())
         .ok()
         .map(SystemTime::from)
+}
+
+/// `time` in RFC 3339 UTC, to the second: `2024-05-01T12:30:45Z`.
+#[must_use]
+pub fn format_rfc3339(time: SystemTime) -> String {
+    chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// `time` in RFC 3339 UTC, to the millisecond: `2024-05-01T12:30:45.123Z`.
+#[must_use]
+pub fn format_rfc3339_millis(time: SystemTime) -> String {
+    chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 /// An HTTP-date (`Sun, 06 Nov 1994 08:49:37 GMT`). `None` for anything else.
@@ -525,6 +551,16 @@ mod tests {
         assert!(parse_rfc3339("2024-01-01T00:00:00").is_none());
         assert!(parse_rfc3339("2015-05-12 15:50:38").is_none());
         assert!(parse_rfc3339("yesterday").is_none());
+        assert_eq!(format_rfc3339(leap), "2024-02-29T23:59:59Z");
+        assert_eq!(format_rfc3339_millis(leap), "2024-02-29T23:59:59.999Z");
+        assert_eq!(
+            format_rfc3339(SystemTime::UNIX_EPOCH),
+            "1970-01-01T00:00:00Z"
+        );
+        assert_eq!(
+            format_rfc3339_millis(parse_rfc3339("2017-09-14T12:34:53.912Z").unwrap()),
+            "2017-09-14T12:34:53.912Z"
+        );
         let date = parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT").unwrap();
         assert_eq!(
             date.duration_since(SystemTime::UNIX_EPOCH)

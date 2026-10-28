@@ -219,7 +219,7 @@ impl DriveItem {
             modified: self
                 .last_modified_date_time
                 .as_deref()
-                .and_then(crate::time::parse),
+                .and_then(cloud_source::http::parse_rfc3339),
             revision: self.e_tag.clone().map(Revision::new),
             hashes: self
                 .file
@@ -281,7 +281,7 @@ impl Version {
             modified: self
                 .last_modified_date_time
                 .as_deref()
-                .and_then(crate::time::parse),
+                .and_then(cloud_source::http::parse_rfc3339),
             size: self.size,
             author: self
                 .last_modified_by
@@ -354,7 +354,10 @@ mod tests {
             item.revision.unwrap().as_str(),
             "\"{86EB4C8E-D20D-46B9-AD41-23B8868DDA8A},1\""
         );
-        assert_eq!(item.modified, crate::time::parse("2016-03-21T20:01:37Z"),);
+        assert_eq!(
+            item.modified,
+            cloud_source::http::parse_rfc3339("2016-03-21T20:01:37Z"),
+        );
     }
 
     #[test]

@@ -7,7 +7,6 @@ use std::time::{Duration, SystemTime};
 
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{HeaderMap, SET_COOKIE};
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zeroize::Zeroizing;
 
@@ -32,30 +31,22 @@ pub fn client(timeout: Duration) -> Result<Client, reqwest::Error> {
         .build()
 }
 
-/// Why a body could not be read as JSON.
-#[derive(Debug)]
-pub enum BodyError {
-    TooLarge,
-    Read,
-    Json,
-}
-
-/// Read at most [`MAX_JSON_BYTES`] and parse them.
-pub fn read_json<T: DeserializeOwned>(response: Response) -> Result<T, BodyError> {
-    let bytes = read_bounded(response)?;
-    serde_json::from_slice(&bytes).map_err(|_| BodyError::Json)
-}
-
-/// Read at most [`MAX_JSON_BYTES`] of a body, by
-/// [`cloud_source::http::read_bounded`].
-pub fn read_bounded(response: Response) -> Result<Vec<u8>, BodyError> {
+/// Read at most [`MAX_JSON_BYTES`] of a body and parse them.
+///
+/// # Errors
+/// What [`cloud_source::http::read_json`] returns.
+pub fn read_json<T: serde::de::DeserializeOwned>(response: Response) -> cloud_source::Result<T> {
     let declared = response.content_length();
-    cloud_source::http::read_bounded(response, declared, MAX_JSON_BYTES).map_err(
-        |error| match error {
-            cloud_source::Error::TooLarge => BodyError::TooLarge,
-            _ => BodyError::Read,
-        },
-    )
+    cloud_source::http::read_json(response, declared, MAX_JSON_BYTES)
+}
+
+/// Read at most [`MAX_JSON_BYTES`] of a body.
+///
+/// # Errors
+/// What [`cloud_source::http::read_bounded`] returns.
+pub fn read_bounded(response: Response) -> cloud_source::Result<Vec<u8>> {
+    let declared = response.content_length();
+    cloud_source::http::read_bounded(response, declared, MAX_JSON_BYTES)
 }
 
 pub fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {

@@ -83,7 +83,6 @@ pub mod auth;
 #[cfg(feature = "fake-server")]
 pub mod fake;
 pub mod http;
-pub mod time;
 mod upload;
 
 use api::{DriveItem, split_id};
@@ -269,7 +268,7 @@ impl ICloudDrive {
             .header("Content-Type", "application/json")
             .header("Content-Length", "0");
         let response = self.send(&session, request)?;
-        let info: auth::AccountInfo = read_json(response)?;
+        let info: auth::AccountInfo = http::read_json(response)?;
         let cookies = Cookies::from_header(&session.cookie);
         let (drive, docs) = info.check_web_access(&cookies).map_err(Error::from)?;
         let services = Services {
@@ -303,12 +302,12 @@ impl ICloudDrive {
             .post(url)
             .header("Content-Type", "application/json")
             .body(body.to_string());
-        read_json(self.send(&session, request)?)
+        http::read_json(self.send(&session, request)?)
     }
 
     fn get<T: DeserializeOwned>(&self, url: Url) -> Result<T> {
         let session = self.session()?;
-        read_json(self.send(&session, self.inner.http.get(url))?)
+        http::read_json(self.send(&session, self.inner.http.get(url))?)
     }
 
     /// The details of one item, without children.
@@ -378,7 +377,7 @@ impl ICloudDrive {
             .as_deref()
             .or(item.date_changed.as_deref())
             .or(item.date_created.as_deref())
-            .and_then(time::parse);
+            .and_then(cloud_source::http::parse_rfc3339);
         let name = item.full_name().nfc().collect();
         Item {
             parents,
@@ -556,12 +555,6 @@ fn valid_name(name: &str) -> Result<()> {
 fn is_icloud_host(url: &Url) -> bool {
     url.host_str()
         .is_some_and(|host| host == "icloud.com" || host.ends_with(".icloud.com"))
-}
-
-fn read_json<T: DeserializeOwned>(response: Response) -> Result<T> {
-    let declared = response.content_length();
-    let bytes = cloud_source::http::read_bounded(response, declared, http::MAX_JSON_BYTES)?;
-    serde_json::from_slice(&bytes).map_err(|_| Error::InvalidResponse("json"))
 }
 
 /// `base` + `/path`, keeping `base`'s own path.
@@ -766,7 +759,11 @@ impl CloudSource for ICloudDrive {
 
 /// The current time as docws wants it.
 fn now_millis() -> u64 {
-    time::millis(SystemTime::now())
+    SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 #[cfg(test)]

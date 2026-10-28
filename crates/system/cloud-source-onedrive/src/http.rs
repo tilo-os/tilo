@@ -154,6 +154,5 @@ pub fn failure(response: Response) -> Failure {
 /// Read a bounded JSON body.
 pub fn read_json<T: DeserializeOwned>(response: Response) -> Result<T> {
     let declared = response.content_length();
-    let body = cloud_source::http::read_bounded(response, declared, MAX_JSON_BYTES)?;
-    serde_json::from_slice(&body).map_err(|_| Error::InvalidResponse("JSON body"))
+    cloud_source::http::read_json(response, declared, MAX_JSON_BYTES)
 }

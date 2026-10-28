@@ -325,7 +325,7 @@ impl State {
             "path_display": node.display,
         });
         if let (Some(version), Some(object)) = (&node.current, value.as_object_mut()) {
-            let modified = crate::time::format(version.modified);
+            let modified = cloud_source::http::format_rfc3339(version.modified);
             object.insert("rev".into(), json!(version.rev));
             object.insert("size".into(), json!(version.bytes.len()));
             object.insert("server_modified".into(), json!(modified));
@@ -341,7 +341,7 @@ impl State {
     }
 
     fn version_metadata(id: &str, display: &str, version: &Version) -> Value {
-        let modified = crate::time::format(version.modified);
+        let modified = cloud_source::http::format_rfc3339(version.modified);
         json!({
             "name": name_of(display),
             "id": id,

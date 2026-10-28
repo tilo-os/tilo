@@ -667,8 +667,8 @@ impl State {
             "name": node.name,
             "eTag": node.etag(),
             "size": size,
-            "createdDateTime": crate::time::format(node.created),
-            "lastModifiedDateTime": crate::time::format(node.modified),
+            "createdDateTime": cloud_source::http::format_rfc3339_millis(node.created),
+            "lastModifiedDateTime": cloud_source::http::format_rfc3339_millis(node.modified),
             "webUrl": format!("https://onedrive.example/{}", encode_segment(id)),
             "createdBy": {"user": {"displayName": "Ada Lovelace"}},
         });
@@ -1099,7 +1099,7 @@ impl State {
             .map(|version| {
                 json!({
                     "id": version.id,
-                    "lastModifiedDateTime": crate::time::format(version.modified),
+                    "lastModifiedDateTime": cloud_source::http::format_rfc3339_millis(version.modified),
                     "size": version.bytes.len(),
                     "lastModifiedBy": {"user": {"displayName": "Ada Lovelace"}},
                 })
@@ -1289,7 +1289,7 @@ impl State {
             200,
             &json!({
                 "uploadUrl": format!("{}/upload/{session}", self.base),
-                "expirationDateTime": crate::time::format(in_an_hour()),
+                "expirationDateTime": cloud_source::http::format_rfc3339_millis(in_an_hour()),
                 "nextExpectedRanges": ["0-"],
             }),
         )
@@ -1317,7 +1317,7 @@ impl State {
         let Some(session) = self.uploads.get(session_id).cloned() else {
             return error(404, "itemNotFound");
         };
-        let expiry = crate::time::format(in_an_hour());
+        let expiry = cloud_source::http::format_rfc3339_millis(in_an_hour());
         match request.method.as_str() {
             "GET" => json_reply(
                 200,
