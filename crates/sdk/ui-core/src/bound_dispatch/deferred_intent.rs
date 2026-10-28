@@ -17,7 +17,7 @@ pub(crate) struct DeferredIntent {
 
 impl DeferredIntent {
     pub(crate) fn capture(spec: &ActionSpec) -> Result<Self, DoorError> {
-        let ActionInput::Deferred { type_id, .. } = &spec.input else {
+        let ActionInput::Deferred { type_id } = spec.input() else {
             return Err(Self::stale());
         };
         spec.validate_json(&serde_json::Map::new())
@@ -41,7 +41,7 @@ impl DeferredIntent {
             kind: spec.kind,
             operation_type: spec.operation_type.clone(),
             contract: spec.contract.clone(),
-            type_id: type_id.clone(),
+            type_id: type_id.to_owned(),
             draft,
         })
     }

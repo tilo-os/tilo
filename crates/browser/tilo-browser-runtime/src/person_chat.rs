@@ -21,23 +21,54 @@ struct PagePrivate {
     room: String,
 }
 
+/// The page's door while it is in a room: what [`ask_private`] asks.
+static DOOR: std::sync::RwLock<Option<PagePrivate>> = std::sync::RwLock::new(None);
+
 /// Make the room `room`, through `handle`, the page's door to private
 /// conversations.
 pub(crate) fn install(handle: PeerHandle, room: &str) {
-    ui::person_chat::install_transport(Some(std::sync::Arc::new(PagePrivate {
+    let door = PagePrivate {
         handle,
         room: room.to_owned(),
-    })));
+    };
+    set_door(Some(door.clone()));
+    ui::person_chat::install_transport(Some(std::sync::Arc::new(door)));
 }
 
 /// The page left its room: no door, and nothing kept from it.
 pub(crate) fn uninstall() {
+    set_door(None);
     ui::person_chat::install_transport(None);
 }
 
+fn set_door(door: Option<PagePrivate>) {
+    use tilo_lock::RwLockRecover as _;
+    *DOOR.write_recover() = door;
+}
+
+/// What the room answered one private operation.
+pub type PrivateAnswer =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<PrivateReply, String>> + Send>>;
+
+/// Ask the room the page is in for one private operation, as the device
+/// its session proved: the door a service the bundle lends an app
+/// (Messages' Tilo messages) carries its conversations through. Fails
+/// while the page is in no room.
+pub fn ask_private(operation: PrivateOperation) -> PrivateAnswer {
+    use tilo_lock::RwLockRecover as _;
+    let door = DOOR.read_recover().clone();
+    Box::pin(async move {
+        let door = door.ok_or("the page is in no room")?;
+        let answer = door.exchange(operation).await;
+        // What came of it shows in the next frame of every desktop.
+        crate::browser::wake_desktops();
+        answer
+    })
+}
+
 impl PagePrivate {
-    /// One operation; a refusal is an error that says nothing of why.
-    async fn ask(&self, operation: PrivateOperation) -> Result<PrivateReply, String> {
+    /// One operation, answered as the room answered it.
+    async fn exchange(&self, operation: PrivateOperation) -> Result<PrivateReply, String> {
         let (reply, answer) = tokio::sync::oneshot::channel();
         self.handle.private_then(
             PrivateCall {
@@ -48,7 +79,12 @@ impl PagePrivate {
                 let _ = reply.send(answer);
             }),
         )?;
-        match answer.await.map_err(|_| "peer session closed")?? {
+        answer.await.map_err(|_| "peer session closed")?
+    }
+
+    /// One operation; a refusal is an error that says nothing of why.
+    async fn ask(&self, operation: PrivateOperation) -> Result<PrivateReply, String> {
+        match self.exchange(operation).await? {
             PrivateReply::Refused => Err("the room refused the private operation".into()),
             reply => Ok(reply),
         }

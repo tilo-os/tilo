@@ -131,7 +131,7 @@ impl ShellOverlayHost {
     /// records index alongside the registry. Split out of [`Self::new`],
     /// which was otherwise dominated by this one flat setup block.
     pub(super) fn build_search_registry(
-        qs_actions: std::rc::Rc<dyn crate::shell::quick_settings::actions::QsActions>,
+        qs_actions: std::rc::Rc<dyn tilo_quick_settings::actions::QsActions>,
         session_action_policy: crate::shell::search::providers::SessionActionPolicy,
     ) -> (
         crate::shell::search::SearchRegistry,
@@ -155,7 +155,7 @@ impl ShellOverlayHost {
         let qs_action_slot = std::rc::Rc::new(
             crate::shell::search::providers::actions::SharedQsDispatcher::new(
                 qs_actions,
-                crate::shell::quick_settings::actions::QsActionAvailability::detect(),
+                tilo_quick_settings::actions::QsActionAvailability::detect(),
             ),
         );
         search_registry.register(std::rc::Rc::new(
@@ -256,8 +256,8 @@ impl ShellOverlayHost {
     pub fn new(content: Box<dyn Widget>) -> Self {
         #[cfg(test)]
         crate::shell::test_support::ambient_start("overlay production inputs");
-        let qs_actions: std::rc::Rc<dyn crate::shell::quick_settings::actions::QsActions> =
-            std::rc::Rc::new(crate::shell::quick_settings::actions::RealQsActions);
+        let qs_actions: std::rc::Rc<dyn tilo_quick_settings::actions::QsActions> =
+            std::rc::Rc::new(tilo_quick_settings::actions::RealQsActions);
         let session_action_policy = crate::shell::search::providers::SessionActionPolicy::default();
         let (search_registry, room_records, qs_action_slot, files) =
             Self::build_search_registry(qs_actions.clone(), session_action_policy.clone());
@@ -280,7 +280,7 @@ impl ShellOverlayHost {
                     settings_store::hardware::DesktopControlsConfig::load(),
                 ),
                 qs_root: QuickSettingsRoot::load_persisted(),
-                qs_refresh: crate::shell::quick_settings::refresh::QsRefresh::new(),
+                qs_refresh: crate::shell::quick_settings_refresh::QsRefresh::new(),
                 qs_actions,
                 qs_action_slot,
                 room_activity: crate::shell::room_activity::RoomActivityPane::new_persistent(),
@@ -311,12 +311,12 @@ impl ShellOverlayHost {
     }
 
     pub(crate) fn with_fixture_content(content: Box<dyn Widget>) -> Self {
-        let qs_actions: std::rc::Rc<dyn crate::shell::quick_settings::actions::QsActions> =
-            std::rc::Rc::new(crate::shell::quick_settings::actions::UnavailableQsActions);
+        let qs_actions: std::rc::Rc<dyn tilo_quick_settings::actions::QsActions> =
+            std::rc::Rc::new(tilo_quick_settings::actions::UnavailableQsActions);
         let qs_action_slot = std::rc::Rc::new(
             crate::shell::search::providers::actions::SharedQsDispatcher::new(
                 qs_actions.clone(),
-                crate::shell::quick_settings::actions::QsActionAvailability::default(),
+                tilo_quick_settings::actions::QsActionAvailability::default(),
             ),
         );
         let mut search_registry = crate::shell::search::SearchRegistry::new();
@@ -348,7 +348,7 @@ impl ShellOverlayHost {
                 qs_root: QuickSettingsRoot::with_config(
                     settings_store::hardware::QuickSettingsConfig::default(),
                 ),
-                qs_refresh: crate::shell::quick_settings::refresh::QsRefresh::without_os_reads(),
+                qs_refresh: crate::shell::quick_settings_refresh::QsRefresh::without_os_reads(),
                 qs_actions,
                 qs_action_slot,
                 room_activity: crate::shell::room_activity::RoomActivityPane::with_local_user(
@@ -575,7 +575,7 @@ impl ShellOverlayHost {
             qs_navigation_release_pending: false,
             qs_slider_touch: ui::widget::SliderTouch::default(),
             now_playing_source: inputs.now_playing,
-            now_playing_card: crate::shell::quick_settings::now_playing::NowPlayingCard::new(),
+            now_playing_card: crate::shell::now_playing_panel::NowPlayingCard::new(),
             now_playing_preferred: None,
             now_playing_tick: std::cell::Cell::new(None),
             desk: desk::DeskState::default(),

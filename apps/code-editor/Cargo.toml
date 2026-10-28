@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
+benchmarks = ["ui/test-support"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
@@ -55,6 +56,7 @@ sha2.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+iai-callgrind = "=0.16.1"
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
@@ -62,6 +64,11 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 [[test]]
 name = "it"
 path = "tests/it.rs"
+
+[[bench]]
+name = "typing"
+harness = false
+required-features = ["benchmarks"]
 
 [lints]
 workspace = true

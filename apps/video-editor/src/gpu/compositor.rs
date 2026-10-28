@@ -262,35 +262,82 @@ impl VideoCompositor {
         let (w, h) = (width.max(1), height.max(1));
         let layers = preview::plan_layers(project, playhead);
         let last = self.accumulate(device, queue, w, h, &layers, sources);
-        let accum = self.accum.as_ref().expect("accum built by accumulate");
-
-        // `copy_texture_to_buffer` requires each row to start on a
-        // COPY_BYTES_PER_ROW_ALIGNMENT boundary, so the staging buffer is
-        // padded and the rows are re-packed after the map.
-        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let unpadded = w * 4;
-        let padded = unpadded.div_ceil(align) * align;
         // Re-use the buffer whenever the output size is unchanged, which is
         // every frame of an export and every frame of a preview that is not
         // being resized.
         if !matches!(self.readback, Some((_, rw, rh)) if rw == w && rh == h) {
-            self.readback = Some((
-                device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("video-composite-readback"),
-                    size: u64::from(padded) * u64::from(h),
-                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                    mapped_at_creation: false,
-                }),
-                w,
-                h,
-            ));
+            self.readback = Some((readback_buffer(device, w, h), w, h));
         }
         let staging = &self
             .readback
             .as_ref()
             .expect("readback buffer just ensured")
             .0;
+        self.copy_out(device, queue, last, staging);
 
+        let slice = staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            tx.send(r).ok();
+        });
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        rx.recv().expect("readback channel").expect("readback map");
+        unpad(staging, w, h)
+    }
+
+    /// [`Self::render_rgba`] without waiting for the GPU: the frame is
+    /// composited and its read-back started, and [`PendingFrame::try_take`]
+    /// has the pixels once the GPU hands them over. A browser page cannot
+    /// wait for its GPU, so its preview and export composite this way.
+    pub fn render_rgba_later(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        project: &Project,
+        playhead: f64,
+        width: u32,
+        height: u32,
+        sources: &mut dyn FrameSource,
+    ) -> PendingFrame {
+        let (w, h) = (width.max(1), height.max(1));
+        let layers = preview::plan_layers(project, playhead);
+        let last = self.accumulate(device, queue, w, h, &layers, sources);
+        // A buffer of its own: the last one may still be mapped by whoever
+        // has not taken its pixels yet.
+        let buffer = readback_buffer(device, w, h);
+        self.copy_out(device, queue, last, &buffer);
+        let mapped = Arc::new(std::sync::Mutex::new(None));
+        let done = mapped.clone();
+        buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+            if let Ok(mut slot) = done.lock() {
+                *slot = Some(r.is_ok());
+            }
+        });
+        // Native wgpu calls the callback only from a poll; a page calls it
+        // from its event loop, and this does nothing there.
+        let _ = device.poll(wgpu::PollType::Poll);
+        PendingFrame {
+            buffer,
+            width: w,
+            height: h,
+            mapped,
+        }
+    }
+
+    /// Copy the finished accumulation target `last` into `staging`.
+    #[expect(
+        clippy::expect_used,
+        reason = "the accumulation is built by accumulate just before"
+    )]
+    fn copy_out(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        last: usize,
+        staging: &wgpu::Buffer,
+    ) {
+        let accum = self.accum.as_ref().expect("accum built by accumulate");
+        let (w, h) = (accum.width, accum.height);
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("video-composite-readback"),
         });
@@ -305,7 +352,7 @@ impl VideoCompositor {
                 buffer: staging,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(padded),
+                    bytes_per_row: Some(padded_row(w)),
                     rows_per_image: Some(h),
                 },
             },
@@ -316,27 +363,6 @@ impl VideoCompositor {
             },
         );
         queue.submit([enc.finish()]);
-
-        let slice = staging.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| {
-            tx.send(r).ok();
-        });
-        let _ = device.poll(wgpu::PollType::wait_indefinitely());
-        rx.recv().expect("readback channel").expect("readback map");
-
-        let mapped = slice.get_mapped_range();
-        let row = unpadded as usize;
-        let mut out = Vec::with_capacity(row * h as usize);
-        // The buffer holds exactly `h` padded rows, each at least `row` long.
-        for padded_row in mapped.chunks(padded as usize).take(h as usize) {
-            if let Some(pixels) = padded_row.get(..row) {
-                out.extend_from_slice(pixels);
-            }
-        }
-        drop(mapped);
-        staging.unmap();
-        out
     }
 
     /// Raster a title at the frame size and upload it, re-using the upload
@@ -808,6 +834,78 @@ fn build_gpu(device: &wgpu::Device) -> Gpu {
 }
 
 /// Upload a tightly-packed RGBA8 picture into a fresh texture.
+/// `copy_texture_to_buffer` requires each row to start on a
+/// `COPY_BYTES_PER_ROW_ALIGNMENT` boundary, so the staging buffer is padded
+/// and the rows are re-packed after the map.
+fn padded_row(width: u32) -> u32 {
+    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    (width * 4).div_ceil(align) * align
+}
+
+fn readback_buffer(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("video-composite-readback"),
+        size: u64::from(padded_row(width)) * u64::from(height),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    })
+}
+
+/// The tightly packed pixels of a mapped `staging` buffer, which it unmaps.
+fn unpad(staging: &wgpu::Buffer, width: u32, height: u32) -> Vec<u8> {
+    let slice = staging.slice(..);
+    let mapped = slice.get_mapped_range();
+    let row = (width * 4) as usize;
+    let mut out = Vec::with_capacity(row * height as usize);
+    // The buffer holds exactly `height` padded rows, each at least `row` long.
+    for padded in mapped
+        .chunks(padded_row(width) as usize)
+        .take(height as usize)
+    {
+        if let Some(pixels) = padded.get(..row) {
+            out.extend_from_slice(pixels);
+        }
+    }
+    drop(mapped);
+    staging.unmap();
+    out
+}
+
+/// A composite whose pixels are on their way back from the GPU
+/// ([`VideoCompositor::render_rgba_later`]).
+pub struct PendingFrame {
+    buffer: wgpu::Buffer,
+    width: u32,
+    height: u32,
+    /// Set once the map finished: whether it worked.
+    mapped: Arc<std::sync::Mutex<Option<bool>>>,
+}
+
+impl PendingFrame {
+    /// The frame's size.
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// The tightly packed RGBA once the GPU has handed it over: `None` while
+    /// it has not, `Some(Err)` when the read-back failed.
+    pub fn try_take(&self) -> Option<Result<Vec<u8>, String>> {
+        let mapped = self.mapped.lock().ok().and_then(|slot| *slot)?;
+        if !mapped {
+            return Some(Err("the GPU could not hand the frame back".into()));
+        }
+        Some(Ok(unpad(&self.buffer, self.width, self.height)))
+    }
+}
+
+impl Drop for PendingFrame {
+    fn drop(&mut self) {
+        // A page keeps a dropped buffer until its garbage collector runs;
+        // one per composite would pile up.
+        self.buffer.destroy();
+    }
+}
+
 pub fn upload_rgba(
     device: &wgpu::Device,
     queue: &wgpu::Queue,

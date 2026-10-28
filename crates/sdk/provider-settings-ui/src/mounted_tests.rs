@@ -557,6 +557,76 @@ fn mounted_agent_models_are_chosen_and_sent_back_to_the_default() {
 }
 
 #[test]
+fn mounted_each_kind_of_interaction_runs_on_its_own_model_or_the_default() {
+    let backend = Arc::new(FakeAdminBackend::default());
+    let mut profile = ProviderProfile::google_vertex("project-a", "global", "gemini-2.5-pro");
+    profile
+        .models
+        .push(agent_provider_config::ModelDescriptor::new(
+            "gemini-2.5-flash",
+        ));
+    let provider = profile.id.clone();
+    backend.state.lock_recover().config.upsert(profile);
+    let mut app = mount(backend);
+    app.harness().resize((1800, 6000)).unwrap();
+    app.settle();
+    // Every kind has a picker, and every picker starts on the default.
+    for kind in Interaction::ALL {
+        let picker = format!("agent-kind-choose-{}", kind.id());
+        assert_eq!(
+            rendered_enabled(app.harness().root_widget(), &picker),
+            Some(true),
+            "{} has a picker",
+            kind.id()
+        );
+    }
+    // A model the provider does not offer is refused, as for an agent.
+    assert!(
+        app.effect(&ProviderEffect::SetInteractionModel {
+            kind: "one_shot".into(),
+            provider: Some(provider.clone()),
+            model: Some("not-offered".into()),
+        })
+        .is_err()
+    );
+    // A short answer runs on the small model while a task keeps the larger.
+    app.effect(&ProviderEffect::SetInteractionModel {
+        kind: "one_shot".into(),
+        provider: Some(provider.clone()),
+        model: Some("gemini-2.5-flash".into()),
+    })
+    .unwrap();
+    app.settle();
+    let chosen = config(&mut app).interaction_models["one_shot"].clone();
+    assert_eq!(
+        (chosen.profile.as_str(), chosen.model.as_str()),
+        (provider.as_str(), "gemini-2.5-flash")
+    );
+    assert!(
+        !config(&mut app).interaction_models.contains_key("task"),
+        "choosing one kind leaves the others on the default"
+    );
+    // A kind with no choice of its own follows the default again.
+    app.effect(&ProviderEffect::SetInteractionModel {
+        kind: "one_shot".into(),
+        provider: None,
+        model: None,
+    })
+    .unwrap();
+    app.settle();
+    assert!(config(&mut app).interaction_models.is_empty());
+    // A kind this build does not know is refused rather than stored.
+    assert!(
+        app.effect(&ProviderEffect::SetInteractionModel {
+            kind: "teleport".into(),
+            provider: Some(provider),
+            model: Some("gemini-2.5-flash".into()),
+        })
+        .is_err()
+    );
+}
+
+#[test]
 fn mounted_test_connection_lists_models_to_choose_from_and_says_why_it_failed() {
     let backend = Arc::new(FakeAdminBackend::default());
     let mut app = mount(backend.clone());

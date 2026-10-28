@@ -1,4 +1,4 @@
-//! `Banner` — an inline, semantic alert strip. Unlike a [`super::toast::Toast`]
+//! `Banner` — an inline, semantic alert strip. Unlike a `super::toast::Toast`
 //! (transient, auto-expiring) a banner is a *persistent* in-flow message the
 //! person resolves or dismisses: "You're offline — changes will sync when you
 //! reconnect", "This file has unsaved changes", "You're in a private window".

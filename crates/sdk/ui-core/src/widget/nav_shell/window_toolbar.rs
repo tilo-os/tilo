@@ -594,20 +594,17 @@ impl NavShell {
             // Nothing of the headers to show: the shell still owns the
             // slots, so the bar's own buttons (Back to the first screen)
             // stay the shell's.
-            let ours = self.shell_bar.owns() || self.shell_bar.may_declare();
-            if ours && !self.shell_bar.declared {
+            // Which buttons are the shell's plans no part of the window, so
+            // taking them rebuilds nothing.
+            if self.shell_bar.owns() || self.shell_bar.may_declare() {
                 self.shell_bar.declared = true;
-                self.slots_changed();
             }
             if self.shell_bar.owns() {
                 self.shell_bar.declare(None);
             }
             return;
         };
-        if !self.shell_bar.declared {
-            self.shell_bar.declared = true;
-            self.slots_changed();
-        }
+        self.shell_bar.declared = true;
         let mut toolbar = self.window_toolbar();
         toolbar.location = self.shell_location();
         Self::push_window_actions(&mut toolbar, slots.into_iter().map(|(action, ..)| action));

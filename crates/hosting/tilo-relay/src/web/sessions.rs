@@ -81,6 +81,9 @@ enum Admit {
 
 pub(crate) struct Session {
     pub(crate) peer: AuthenticatedPeer,
+    /// The page keeps it beside the room it is in, only to deliver for it
+    /// ([`super::SessionFinish::background`]): nobody is online by it.
+    background: bool,
     token: [u8; 32],
     expires: Instant,
     last_poll: Mutex<Instant>,
@@ -214,6 +217,7 @@ impl Sessions {
         self: &Arc<Self>,
         handshake: &[u8; 16],
         ack2: &HelloAck2,
+        background: bool,
     ) -> Result<SessionGrant, SessionError> {
         let pending = lock(&self.handshakes)
             .remove(handshake)
@@ -234,6 +238,7 @@ impl Sessions {
         let (end, mut ended) = watch::channel(false);
         let session = Arc::new(Session {
             peer: peer.clone(),
+            background,
             token,
             expires: Instant::now()
                 .checked_add(SESSION_TTL)
@@ -436,12 +441,14 @@ impl Sessions {
     }
 
     /// Open sessions per person (user root). A public host counts people
-    /// from it, and tells its one spectator person's sessions apart.
+    /// from it (its seats, faces and counts), and tells its one spectator
+    /// person's sessions apart. A background session counts nobody: a page
+    /// keeps it here while its person is in a room elsewhere.
     pub(crate) fn online_users(&self) -> std::collections::BTreeMap<[u8; 32], usize> {
         let mut online = std::collections::BTreeMap::new();
         for session in lock(&self.live)
             .values()
-            .filter(|session| session.is_open())
+            .filter(|session| session.is_open() && !session.background)
         {
             let count = online
                 .entry(session.peer.user_public_key)

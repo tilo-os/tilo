@@ -10,6 +10,7 @@ use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tilo_lock::MutexRecover as _;
 
+mod frame_demand;
 mod held_frame;
 mod ime;
 #[cfg(target_os = "linux")]
@@ -203,345 +204,7 @@ struct AppHandler {
 }
 
 #[cfg(test)]
-mod floating_source_focus_tests {
-    use super::*;
-
-    type FocusEvents = std::rc::Rc<std::cell::RefCell<Vec<(Option<String>, bool)>>>;
-
-    #[derive(Default)]
-    struct FocusProbe {
-        events: FocusEvents,
-        drawable_ids: Vec<&'static str>,
-        request: Option<crate::floating_surface::FloatingSurfaceRequest>,
-    }
-
-    impl crate::widget::AppWidget for FocusProbe {
-        fn app_kind(&self) -> crate::widget::AppKind {
-            crate::widget::AppKind::Editor
-        }
-        fn app_title(&self) -> &str {
-            "Focus probe"
-        }
-        fn app_icon(&self) -> crate::widget::IconDescriptor {
-            crate::widget::IconDescriptor::Named("chat".into())
-        }
-    }
-
-    impl crate::widget::FloatingSurfaceProvider for FocusProbe {
-        fn take_floating_surface_request(
-            &mut self,
-        ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
-            self.request.take()
-        }
-
-        fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
-            self.events
-                .borrow_mut()
-                .push((id.map(|id| format!("ime:{id}")), false));
-        }
-
-        fn draw_floating_surface(
-            &mut self,
-            id: &str,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _text: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &crate::PresenceCtx,
-        ) -> bool {
-            if !self.drawable_ids.contains(&id) {
-                return false;
-            }
-            self.events
-                .borrow_mut()
-                .push((Some(format!("draw:{id}")), false));
-            true
-        }
-
-        fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
-            self.events
-                .borrow_mut()
-                .push((id.map(|id| format!("input:{id}")), false));
-        }
-        fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
-            (id == "a").then(|| {
-                crate::a11y::AccessNode::new(crate::a11y::Role::Button)
-                    .with_hashed_key("source-a-send")
-                    .with_action_target("source-a-send")
-            })
-        }
-        fn perform_floating_surface_accessibility_action(
-            &mut self,
-            id: &str,
-            target: &str,
-            action: &crate::a11y::Action,
-            _state: &mut crate::widget::Edits<'_>,
-            _path: &automerge::ObjId,
-        ) -> bool {
-            let accepted = id == "a"
-                && target == "source-a-send"
-                && matches!(action, crate::a11y::Action::Activate);
-            if accepted {
-                self.events.borrow_mut().push((Some(target.into()), true));
-            }
-            accepted
-        }
-        fn floating_surface_ime(&self, id: &str) -> Option<(crate::ime::InputContent, KurboRect)> {
-            (id == "a").then_some((
-                crate::ime::InputContent::TEXT,
-                KurboRect::new(-700.0, 500.0, -699.0, 520.0),
-            ))
-        }
-        fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
-            self.events
-                .borrow_mut()
-                .push((id.map(str::to_owned), focused));
-        }
-    }
-
-    impl Widget for FocusProbe {
-        crate::provides!(dyn crate::widget::FloatingSurfaceProvider);
-
-        fn sync(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) {}
-
-        fn build_layout(
-            &mut self,
-            taffy: &mut TaffyTree<()>,
-            _: &Theme,
-            _: &mut HashMap<NodeId, *mut dyn Widget>,
-        ) -> NodeId {
-            use crate::widget::TaffyTreeExt as _;
-            taffy.leaf_node(taffy::Style::default())
-        }
-
-        fn name(&self) -> &'static str {
-            "FocusProbe"
-        }
-    }
-
-    #[test]
-    fn retained_inactive_tab_forwards_exact_draw_and_ime_source_through_the_host_chain() {
-        use crate::widget::{GroupRow, TabDescriptor, TileContent, WindowGroup, WindowWidth};
-        let probe = FocusProbe {
-            drawable_ids: vec!["a", "b"],
-            request: Some(crate::floating_surface::FloatingSurfaceRequest {
-                id: "b".into(),
-                title: "Conversation".into(),
-                role: crate::floating_surface::FloatingRole::Conversation,
-                source: crate::floating_surface::FloatingSource::AppRegion {
-                    app_id: "chat".into(),
-                    region: KurboRect::new(0.0, 0.0, 500.0, 500.0),
-                },
-                preferred_size: vello::kurbo::Size::new(500.0, 500.0),
-                aspect_ratio: None,
-                initial_rect: None,
-                presentation_rect: None,
-                tracking_source: None,
-            }),
-            ..Default::default()
-        };
-        let events = std::rc::Rc::clone(&probe.events);
-        let group = WindowGroup::new(
-            1,
-            vec![
-                (
-                    TabDescriptor::new(1, "Primary"),
-                    TileContent::App(Box::new(FocusProbe::default())),
-                ),
-                (
-                    TabDescriptor::new(2, "Conversation"),
-                    TileContent::App(Box::new(probe)),
-                ),
-            ],
-            1,
-            WindowWidth::Normal,
-        );
-        let mut root = GroupRow::new(vec![group]);
-        assert_eq!(root.take_floating_surface_request().unwrap().id, "b");
-        assert!(root.take_floating_surface_request().is_none());
-        root.on_floating_surface_ime_source_changed(Some("b"));
-        forward_native_surface_focus(&mut root, Some("b"), &WindowEvent::Focused(true));
-        // The selected tab does not own either floating presentation. The
-        // exact pass must reach the retained app through its AppWidget loan.
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        assert!(root.draw_floating_surface(
-            "b",
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::default(),
-            &crate::PresenceCtx::empty()
-        ));
-        assert!(!root.draw_floating_surface(
-            "missing",
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::default(),
-            &crate::PresenceCtx::empty()
-        ));
-        root.on_floating_surface_ime_source_changed(None);
-        assert_eq!(
-            *events.borrow(),
-            vec![
-                (Some("ime:b".into()), false),
-                (Some("b".into()), true),
-                (Some("draw:b".into()), false),
-                (None, false),
-            ]
-        );
-    }
-
-    #[test]
-    fn secondary_accessibility_dispatch_reaches_only_the_declared_source_control() {
-        let mut root = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(
-            FocusProbe::default(),
-        )));
-        let access = root.floating_surface_accessibility("a").unwrap();
-        let tree = crate::accesskit_bridge::surface_tree_update(
-            Some(&access),
-            vello::kurbo::Point::ZERO,
-            1.0,
-        );
-        let target_node = tree
-            .nodes
-            .iter()
-            .find(|(_, node)| node.role() == accesskit::Role::Button)
-            .map(|(id, _)| *id)
-            .unwrap();
-        let request = accesskit::ActionRequest {
-            action: accesskit::Action::Click,
-            target_node,
-            target_tree: accesskit::TreeId::ROOT,
-            data: None,
-        };
-        let mut state = automerge::AutoCommit::new();
-        assert!(!dispatch_native_surface_accessibility(
-            &mut root,
-            "b",
-            &request,
-            &mut crate::widget::Edits::lend(&mut state),
-            &automerge::ROOT,
-        ));
-        assert!(dispatch_native_surface_accessibility(
-            &mut root,
-            "a",
-            &request,
-            &mut crate::widget::Edits::lend(&mut state),
-            &automerge::ROOT,
-        ));
-    }
-
-    #[test]
-    fn reused_native_surface_restores_focus_without_a_new_focus_event() {
-        let probe = FocusProbe::default();
-        let events = std::rc::Rc::clone(&probe.events);
-        let mut root =
-            crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(probe)));
-        let mut lifecycle = NativeFloatingSurfaceLifecycle {
-            adopted: true,
-            suspended: false,
-            focused: true,
-        };
-        forward_native_surface_focus(&mut root, Some("a"), &WindowEvent::Focused(true));
-
-        for cycle in 1..=2 {
-            lifecycle.suspend(&mut root, "a");
-            assert!(lifecycle.suspended);
-            assert!(!lifecycle.focused);
-            assert!(!lifecycle.adopted);
-            assert_eq!(events.borrow().last(), Some(&(Some("a".into()), false)));
-
-            // The retained native window is still the seat's focus owner.
-            // There is no second Focused(true) edge for the runner to receive.
-            lifecycle.resume(&mut root, "a", true);
-            assert!(
-                lifecycle.focused,
-                "Float cycle {cycle} must reconcile the retained window's actual focus"
-            );
-            assert!(!lifecycle.suspended);
-            assert!(!lifecycle.adopted);
-            assert_eq!(
-                events.borrow().last(),
-                Some(&(Some("a".into()), true)),
-                "the retained editor must receive the same focus as its native window"
-            );
-            lifecycle.adopted = true;
-        }
-    }
-
-    #[test]
-    fn reused_native_surface_does_not_restore_focus_after_the_host_moves_it() {
-        let probe = FocusProbe::default();
-        let events = std::rc::Rc::clone(&probe.events);
-        let mut root =
-            crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(probe)));
-        let mut lifecycle = NativeFloatingSurfaceLifecycle {
-            focused: true,
-            ..Default::default()
-        };
-        lifecycle.suspend(&mut root, "a");
-        events.borrow_mut().clear();
-
-        lifecycle.resume(&mut root, "a", false);
-
-        assert!(!lifecycle.focused);
-        assert!(!lifecycle.suspended);
-        assert_eq!(
-            *events.borrow(),
-            vec![(Some("a".into()), false)],
-            "resume must report the host's current focus, even if the editor was previously focused"
-        );
-    }
-
-    #[test]
-    fn secondary_window_ime_uses_source_focus_and_local_coordinates() {
-        let probe = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(
-            FocusProbe::default(),
-        )));
-        let source = KurboRect::new(-800.0, 200.0, -300.0, 700.0);
-        let state = secondary_ime_state(&probe, "a", source, true).unwrap();
-        assert_eq!(
-            (state.x, state.y, state.width, state.height),
-            (100, 300, 1, 20)
-        );
-        assert!(secondary_ime_state(&probe, "a", source, false).is_none());
-        assert!(secondary_ime_state(&probe, "b", source, true).is_none());
-    }
-
-    #[test]
-    fn secondary_accesskit_event_keeps_originating_native_window() {
-        let window_id = winit::window::WindowId::dummy();
-        let event: UserEvent = accesskit_winit::Event {
-            window_id,
-            window_event: accesskit_winit::WindowEvent::InitialTreeRequested,
-        }
-        .into();
-        assert!(
-            matches!(event, UserEvent::AccessKit { window_id: source, event: accesskit_winit::WindowEvent::InitialTreeRequested } if source == window_id)
-        );
-    }
-
-    #[test]
-    fn native_focus_forwarding_preserves_surface_identity() {
-        let probe = FocusProbe::default();
-        let events = std::rc::Rc::clone(&probe.events);
-        let mut root =
-            crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(probe)));
-        forward_native_surface_focus(&mut root, Some("agent-a"), &WindowEvent::Focused(true));
-        forward_native_surface_focus(&mut root, Some("agent-b"), &WindowEvent::Focused(true));
-        forward_native_surface_focus(&mut root, Some("agent-a"), &WindowEvent::Focused(false));
-        assert_eq!(
-            *events.borrow(),
-            vec![
-                (Some("agent-a".into()), true),
-                (Some("agent-b".into()), true),
-                (Some("agent-a".into()), false),
-            ]
-        );
-    }
-}
+mod floating_source_focus_tests;
 
 #[cfg(target_os = "macos")]
 impl AppHandler {
@@ -2539,6 +2202,7 @@ impl AppHandler {
         if self.surface_suspended {
             return;
         }
+        crate::input_frame::frame_started();
         if first_primary_frame {
             // The frame budget local reads get is one refresh of the display
             // the window opens on.
@@ -2717,7 +2381,8 @@ impl AppHandler {
         // dirty, whose damage the frame collects below. Only what damage
         // cannot describe repaints the whole window: a rebuilt tree, moved
         // geometry, a resized surface, and layers drawn over the widgets.
-        let mut full_redraw_required = app.layout.structure_dirty;
+        let mut repaint_why = crate::input_frame::RepaintWhy::default();
+        let mut full_redraw_required = repaint_why.note("structure", app.layout.structure_dirty);
         // Armed for this frame: each rebuild it does clears it unless the
         // widgets behind it described the change (a long list mounting the
         // rows a scroll brought near).
@@ -2731,7 +2396,7 @@ impl AppHandler {
         mark_first_frame("first-frame-record-done");
         floating_content_changed |= record_changed;
         // A different record is a different document under the same tree.
-        full_redraw_required |= record_changed;
+        full_redraw_required |= repaint_why.note("record", record_changed);
 
         let __prof_frame_start = app.profiler.as_ref().map(|_| crate::time::now());
         // Drain model notifications and advance update-driven widgets before
@@ -2852,7 +2517,8 @@ impl AppHandler {
                 && app.layout.last_layout_logical == layout_before.1
                 && (app.layout.rebuilds == layout_before.0 || app.layout.frame_rebuilds_described)
         });
-        full_redraw_required |= structure_rebuilt || (geometry_changed && moved_from.is_none());
+        full_redraw_required |= repaint_why.note("rebuilt", structure_rebuilt)
+            | repaint_why.note("moved", geometry_changed && moved_from.is_none());
         if geometry_changed {
             // A rebuild marks it in `rebuild_structure`; a moved control
             // under a still pointer has not seen it either.
@@ -2876,15 +2542,18 @@ impl AppHandler {
         damage_regions.clear();
         // Presented pixels lost geometry to a GPU scratch overflow; damage
         // cannot describe where.
-        full_redraw_required |= render.take_full_repaint();
-        full_redraw_required |= app.debug_mode
-            || app.actions.action_palette.is_some()
-            || app.input.tooltip_host.needs_frame()
-            || app.input.tooltip_host.visible().is_some()
-            || app
-                .profiler
-                .as_ref()
-                .is_some_and(crate::profiling::FrameProfiler::hud_enabled);
+        full_redraw_required |= repaint_why.note("render", render.take_full_repaint());
+        full_redraw_required |= repaint_why.note(
+            "overlay",
+            app.debug_mode
+                || app.actions.action_palette.is_some()
+                || app.input.tooltip_host.needs_frame()
+                || app.input.tooltip_host.visible().is_some()
+                || app
+                    .profiler
+                    .as_ref()
+                    .is_some_and(crate::profiling::FrameProfiler::hud_enabled),
+        );
         // The worker resets scenes before returning them to this pool; the
         // pre-seeded scenes are empty too.
 
@@ -2908,6 +2577,7 @@ impl AppHandler {
         let culled = culling.is_some();
         let cull_frame = culling.as_mut().map(crate::draw_cull::Culling::begin);
         let draw_phase = slow_event::phase("draw");
+        crate::room_sync::frame_drawing();
         let drawn = draw_frame_content_with(
             app,
             &mut scene,
@@ -2939,10 +2609,11 @@ impl AppHandler {
         #[cfg(target_os = "linux")]
         {
             self.decorations.draw(app, over, transform);
-            full_redraw_required |= self.decorations.take_repaint();
+            full_redraw_required |=
+                repaint_why.note("decorations", self.decorations.take_repaint());
         }
         self.slot_bar.draw(app, over, transform);
-        full_redraw_required |= self.slot_bar.take_repaint();
+        full_redraw_required |= repaint_why.note("slot-bar", self.slot_bar.take_repaint());
         let decorated = over.encoding().draw_tags.len() != before_decorations;
         // Culled, the floating surfaces drawn into the frame's scenes reach
         // its scene once they are composed into it.
@@ -2969,7 +2640,7 @@ impl AppHandler {
             crate::time::now(),
         );
         over.append(self.presence_layer.scene(), None);
-        full_redraw_required |= presence_damage.is_none();
+        full_redraw_required |= repaint_why.note("presence", presence_damage.is_none());
         let content_draw_tags = over.encoding().draw_tags.len();
 
         if let Some(p) = app.profiler.as_mut() {
@@ -3018,8 +2689,10 @@ impl AppHandler {
         // frame, or one erased since the last, covers pixels no widget's
         // damage reports. (The presence layer reports its own.)
         top_layer |= over.encoding().draw_tags.len() != content_draw_tags;
-        full_redraw_required |=
-            top_layer || std::mem::replace(&mut self.top_layer_drawn, top_layer);
+        full_redraw_required |= repaint_why.note(
+            "layer",
+            top_layer || std::mem::replace(&mut self.top_layer_drawn, top_layer),
+        );
 
         // Animated widgets update their visual bounds while drawing (for
         // example, an indeterminate progress segment records its old and new
@@ -3040,22 +2713,32 @@ impl AppHandler {
             damage_regions.extend(
                 spinner_damage.map(|slot| slot.scale_from_origin(1.0 / f64::from(scale_factor))),
             );
-            // Moved geometry repaints the window unless every move is a
-            // scroll's content moving with it; rows a long list mounted or
-            // let go of in it are damage beside the copy.
+            // Moved geometry with no scroll copying repaints what moved,
+            // where it was and where it is, as far as a widget's paint reaches
+            // past its box (a row mounted again in place, a field that grew).
+            // With a scroll copying, every move must be a scroll's content
+            // moving with it, and rows a long list mounted or let go of in
+            // it are damage beside the copy; anything else repaints the
+            // window.
             if let Some(before) = &moved_from {
-                let moves = (!offers.is_empty()).then(|| {
-                    crate::scroll_copy::moves_besides(
-                        before,
-                        &crate::damage::widget_boxes(root),
-                        &offers,
-                    )
-                });
-                match moves {
-                    Some(moves) if moves.besides.is_empty() => {
-                        damage_regions.extend(moves.carried);
-                    }
-                    _ => full_redraw_required = true,
+                let moves = crate::scroll_copy::moves_besides(
+                    before,
+                    &crate::damage::widget_boxes(root),
+                    &offers,
+                );
+                if offers.is_empty() {
+                    let reach = crate::scroll_copy::EFFECT_REACH;
+                    damage_regions.extend(
+                        moves
+                            .besides
+                            .iter()
+                            .map(|rect| rect.inflate(reach, reach))
+                            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0),
+                    );
+                } else if moves.besides.is_empty() {
+                    damage_regions.extend(moves.carried);
+                } else {
+                    full_redraw_required = repaint_why.note("moves", true);
                 }
             }
             // Peer marks and a header bar paint over the content without
@@ -3091,6 +2774,9 @@ impl AppHandler {
                     window,
                 )
             {
+                if !full_redraw_required {
+                    repaint_why.note("marks", true);
+                }
                 full_redraw_required = true;
                 damage_regions.clear();
             } else {
@@ -3229,6 +2915,11 @@ impl AppHandler {
                 crate::native_scenario::log::emit_json("tilo-physical-frame", row);
             }
 
+            let key_record = crate::input_frame::submitted(if full_redraw_required {
+                crate::input_frame::Repaint::Full(repaint_why)
+            } else {
+                crate::input_frame::Repaint::Damage(&damage_regions)
+            });
             let req = RenderRequest::Frame {
                 cpu_frame_id,
                 scene,
@@ -3240,11 +2931,7 @@ impl AppHandler {
                 full_redraw: full_redraw_required,
                 partial,
                 backdrop,
-                on_present: self.dev_reload_timing.take().map(|timing| {
-                    let submitted = crate::time::wall();
-                    Box::new(move |presented| timing.record(submitted, presented))
-                        as crate::render_thread::PresentHook
-                }),
+                on_present: present_hook(self.dev_reload_timing.take(), key_record),
             };
             record_main_stage(&mut native_main_stages, MainStage::AfterHudRequest);
             if let Some((origin, entered)) = native_redraw_entry {
@@ -3266,6 +2953,7 @@ impl AppHandler {
                 RenderRequest::Shutdown { .. } => None,
             };
             announce_frame(window);
+            frame_demand::submitted(full_redraw_required.then_some(repaint_why));
             let (send_result, send_bounds) = crate::render_thread::timing::around(
                 crate::render_thread::timing::enabled(),
                 || render.render_tx.send(req),
@@ -3529,11 +3217,13 @@ impl AppHandler {
             None
         };
         self.note_host_appearance_event(&event);
+        crate::input_frame::key_dispatched(&event);
         let admitted = self.route_window_event(
             window_id,
             event,
             native_input_isolation::EventOrigin::Platform,
         );
+        crate::input_frame::event_handled();
         if let Some(input) = physical_input {
             let mut row = crate::physical_input_trace::Trace::effect(
                 input,
@@ -4037,6 +3727,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let Some(window) = self.window.clone() else {
             return;
         };
+        // Both volume keys have been held long enough, or a finger rested.
+        if self.app.tick_screen_reader(crate::time::now()) {
+            window.request_redraw();
+        }
         if std::mem::take(&mut self.primary_preedit_clear_pending) {
             self.primary_preedit_active = false;
             self.app.floating.pending_ime_ids.clear();
@@ -4415,11 +4109,28 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             self.held_frame = None;
             request_primary_redraw();
         }
+        // A turning waiting spinner (`crate::room_sync`) takes its next pose:
+        // a frame paints it and damages its slot alone, with no sync, no
+        // layout and no frames between poses.
+        let spinner_pose = crate::room_sync::next_pose();
+        let spinner_due = spinner_pose.is_some_and(|at| at <= crate::time::now());
+        if spinner_due {
+            request_primary_redraw();
+        }
+        // A control a bound component's permissions let run only until a
+        // grant ends is shown otherwise from then: a frame walks the tree
+        // again ([`App::permissions_change_at`]).
+        let permissions_change_at = app.permissions_change_at();
+        if permissions_change_at.is_some_and(|at| at <= crate::time::now()) {
+            request_primary_redraw();
+        }
         let scheduled_deadline = scheduled_deadline
             .into_iter()
+            .chain(spinner_pose.filter(|_| !spinner_due))
             .chain(tooltip_reveal.filter(|_| !tooltip_pending))
             .chain(self.typing_step_at)
             .chain(self.held_frame)
+            .chain(permissions_change_at)
             .min();
 
         // A widget asking for a frame is served whatever the motion setting.
@@ -4530,7 +4241,48 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     .then(|| crate::time::now() + Duration::from_millis(50)),
             )
             .chain(self.occluded_tick_at)
+            .chain(self.app.screen_reader_deadline())
             .min();
+        if frame_demand::enabled() {
+            let mut askers = Vec::new();
+            if widget_animation {
+                askers.extend(
+                    animation_schedule::animating_leaves(self.app.root_widget.as_ref())
+                        .into_iter()
+                        .map(|leaf| format!("animating:{leaf}")),
+                );
+                askers.extend(
+                    crate::motion::frames_wanted_by(crate::time::now())
+                        .into_iter()
+                        .map(|wish| format!("motion:{wish}")),
+                );
+                if self.slot_bar.needs_frame() {
+                    askers.push("slot-bar".to_owned());
+                }
+            }
+            if needs_frame && !widget_animation {
+                askers.push("presence".to_owned());
+            }
+            if spinner_due {
+                askers.push("room-sync-spinner".to_owned());
+            }
+            if held_due {
+                askers.push("held-frame".to_owned());
+            }
+            if tooltip_pending {
+                askers.push("tooltip".to_owned());
+            }
+            if scheduled_due {
+                askers.push(format!(
+                    "deadline:{}",
+                    animation_schedule::waking_leaves(self.app.root_widget.as_ref()).join("+")
+                ));
+            }
+            if retry_due || auxiliary_retry_due {
+                askers.push("render-retry".to_owned());
+            }
+            frame_demand::asked(askers);
+        }
         match deadline {
             Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -4860,7 +4612,9 @@ impl AppHandler {
         if self.slot_bar.route(&mut self.app, window, &event) {
             return;
         }
-        self.dispatch_touch_pointer_events(window, &event);
+        if self.dispatch_touch_pointer_events(window, &event) {
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => self.close_primary_window(window),
             WindowEvent::Resized(_) => {
@@ -4930,11 +4684,18 @@ impl AppHandler {
         self.close_primary_window(window);
     }
 
-    fn dispatch_touch_pointer_events(&mut self, window: &Arc<Window>, event: &WindowEvent) {
+    /// The pointer events a finger makes, ahead of its own touch events.
+    /// `true` when the built-in screen reader took the finger instead
+    /// ([`App::explore_by_touch`]): nothing else sees it then.
+    fn dispatch_touch_pointer_events(&mut self, window: &Arc<Window>, event: &WindowEvent) -> bool {
         let WindowEvent::Touch(touch) = event else {
-            return;
+            return false;
         };
         let scale = window.scale_factor();
+        if self.app.explore_by_touch(touch, scale) {
+            window.request_redraw();
+            return true;
+        }
         let app = &self.app;
         let pointer_events = self.touch_pointer.events_claimed(touch, |position| {
             app.touch_claim_at(vello::kurbo::Point::new(
@@ -4944,6 +4705,7 @@ impl AppHandler {
         });
         self.dispatch_touch_pointer(window, touch.device_id, pointer_events);
         self.settle_touch_modality();
+        false
     }
 
     /// Lay out for touch once every gesture begun has landed: until then a
@@ -5169,6 +4931,13 @@ impl App {
                 .flatten()
         };
         tilo_startup_metrics::mark("run-settings-watched");
+        {
+            // A change of an outside authority the window's permissions
+            // follow (the host's view of the app's action authority) moves
+            // the permissions' revision on and wakes the loop to show it.
+            let _entry = self.enter_wake_scope();
+            crate::permissions::wake_on_outside_change(crate::wake::WakeHandle::new());
+        }
         let host_appearance = {
             let _entry = self.enter_wake_scope();
             setup(proxy.clone());
@@ -5337,6 +5106,26 @@ fn sync_safe_area(app: &mut App, window: &Arc<Window>) {
     }
     #[cfg(not(target_os = "android"))]
     let _ = (app, window);
+}
+
+/// What the render thread calls once it presented a frame: the dev reload's
+/// timing and the key record ([`crate::input_frame`]) the frame answers.
+fn present_hook(
+    reload: Option<super::DevReloadTiming>,
+    key: Option<Box<dyn FnOnce() + Send>>,
+) -> Option<crate::render_thread::PresentHook> {
+    if reload.is_none() && key.is_none() {
+        return None;
+    }
+    let submitted = crate::time::wall();
+    Some(Box::new(move |presented| {
+        if let Some(timing) = reload {
+            timing.record(submitted, presented);
+        }
+        if let Some(key) = key {
+            key();
+        }
+    }))
 }
 
 /// A due `next_wake_deadline` runs sync. Present only when that sync

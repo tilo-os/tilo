@@ -167,6 +167,12 @@ impl MagnifierStep {
     pub fn from_id(id: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|step| step.id() == id)
     }
+
+    /// Whether holding the key keeps stepping: zooming does, while a toggle
+    /// would flicker on and off with every repeat.
+    pub const fn is_edge(self) -> bool {
+        !matches!(self, Self::Toggle)
+    }
 }
 
 /// `remembered` as a zoom the toggle can turn on at: off or nothing yet

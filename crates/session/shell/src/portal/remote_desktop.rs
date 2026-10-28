@@ -44,9 +44,9 @@ use zbus::object_server::SignalEmitter;
 use zbus::zvariant::OwnedFd;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
-use crate::network::streaming::RemoteAction;
 #[cfg(target_os = "linux")]
 use crate::shell::state::{Capability, Expiry};
+use tilo_window_share::streaming::RemoteAction;
 
 use super::PortalCaller;
 use super::lifecycle::PortalLifecycle;

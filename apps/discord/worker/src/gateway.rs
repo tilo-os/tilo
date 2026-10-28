@@ -540,7 +540,7 @@ impl Gateway {
                 if let Some(emit) = self
                     .guild
                     .as_ref()
-                    .filter(|_| self.ours(data))
+                    .filter(|_| self.ours(data) && !self.ctx.posted_by_self(data))
                     .and_then(|g| g.message_updated(data))
                 {
                     self.emit(emit);
@@ -656,7 +656,11 @@ impl Gateway {
         {
             return;
         }
-        self.emit(emit);
+        // The worker's own post comes back as nothing, though it still
+        // counts as seen.
+        if !self.ctx.posted_by_self(data) {
+            self.emit(emit);
+        }
         let newer = self.state.last_seen.get(&channel).is_none_or(|seen| {
             snowflake_ms(&seen.message) <= snowflake_ms(&id) && seen.message != id
         });

@@ -197,6 +197,11 @@ async fn run_server_session(
     mut receive: RecvStream,
 ) -> Result<(), ComputeSessionError> {
     let peer = authenticate_server(&protocol, &mut send, &mut receive).await?;
+    // The session's loop below also waits on outbound deliveries and
+    // authority changes; a frame read inside it would be dropped half-read
+    // whenever one of those won the race, and the rest of the stream then
+    // reads as garbage. The control stream is read by a task of its own.
+    let (mut inbound, _reader) = spawn_compute_reader(receive);
     let host_person = crate::host_authority::HostOperation::ComputeControl
         .permits(&protocol.identity.user_public_key, &peer.user_public_key);
     let streams = tokio::spawn(accept_streams(
@@ -239,7 +244,10 @@ async fn run_server_session(
                     let Some(outgoing) = outgoing else { break Ok(()); };
                     write_compute(&mut send, &outgoing).await?;
                 }
-                incoming = read_compute(&mut receive) => {
+                incoming = inbound.recv() => {
+                    // The reader ends only after handing over the error
+                    // that ended it.
+                    let Some(incoming) = incoming else { break Ok(()); };
                     let incoming = incoming?;
                     // The host's person drives its compute, never an agent
                     // of theirs: asked per message, so an agent registered
@@ -703,6 +711,29 @@ pub(crate) fn next_queue_sequence() -> u64 {
         })
 }
 
+/// Read `receive`'s compute messages on a task of their own until the first
+/// error, which is handed over last. A frame is never half-read by a
+/// waiter that was cancelled: the reader is the only one reading, and the
+/// task ends with the returned guard.
+fn spawn_compute_reader(
+    mut receive: RecvStream,
+) -> (
+    mpsc::Receiver<Result<ComputeEnvelope, ComputeSessionError>>,
+    AbortOnDrop,
+) {
+    let (delivered, deliveries) = mpsc::channel(COMPUTE_OUTBOUND_CAPACITY);
+    let reader = AbortOnDrop(tokio::spawn(async move {
+        loop {
+            let read = read_compute(&mut receive).await;
+            let ended = read.is_err();
+            if delivered.send(read).await.is_err() || ended {
+                break;
+            }
+        }
+    }));
+    (deliveries, reader)
+}
+
 async fn read_compute(receive: &mut RecvStream) -> Result<ComputeEnvelope, ComputeSessionError> {
     let bytes = read_frame(receive, MAX_COMPUTE_FRAME_BYTES).await?;
     Ok(postcard::from_bytes(&bytes)?)
@@ -860,16 +891,7 @@ impl ComputeClient {
         }
         let final_ack = auth::build_hello_ack2(&own_signing_key, &acknowledgement.server_nonce);
         write_frame(&mut send, &postcard::to_allocvec(&final_ack)?).await?;
-        let (delivered, deliveries) = mpsc::channel(COMPUTE_OUTBOUND_CAPACITY);
-        let reader = AbortOnDrop(tokio::spawn(async move {
-            loop {
-                let read = read_compute(&mut receive).await;
-                let ended = read.is_err();
-                if delivered.send(read).await.is_err() || ended {
-                    break;
-                }
-            }
-        }));
+        let (deliveries, reader) = spawn_compute_reader(receive);
         Ok(Self {
             relay_peer,
             own_device,

@@ -1062,9 +1062,19 @@ impl LauncherServices for NativeLauncher {
         )
     }
     fn person_initiated(&self, app_id: &str) -> bool {
-        self.0.as_ref().is_some_and(|tree| {
-            crate::compositor::activation::person_initiated(&tree.read(), app_id)
-        })
+        // A person's input reaches an app through the Linux compositor's
+        // windows; elsewhere no window of the app took it.
+        #[cfg(target_os = "linux")]
+        {
+            self.0.as_ref().is_some_and(|tree| {
+                crate::compositor::activation::person_initiated(&tree.read(), app_id)
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = app_id;
+            false
+        }
     }
     fn launch(
         &self,
@@ -2288,6 +2298,38 @@ impl tilo_action_broker::services::OwnDeviceActions for NativeOwnDevice {
             .invoke_own_device(person, checked, request)
             .map_err(|reason| tilo_actions::remote::ActionHostError::Refused { reason })
     }
+
+    fn ask_person(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        question: &tilo_actions::remote::ConfirmationQuestion,
+    ) -> Result<
+        tilo_actions::remote::Pending<
+            Result<tilo_actions::remote::Confirmation, tilo_actions::remote::ActionHostError>,
+        >,
+        tilo_actions::remote::ActionHostError,
+    > {
+        let Some(person) = caller.user_public_key() else {
+            return Err(tilo_actions::remote::ActionHostError::NotPermitted);
+        };
+        let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(*person);
+        if caller.principal() != &tilo_actions::remote::CallerPrincipal::Person(person) {
+            return Err(tilo_actions::remote::ActionHostError::NotPermitted);
+        }
+        let Some(room) = crate::shell::state::RoomId::parse(&question.room)
+            .filter(|room| self.0.workspace_of_room(*room).is_some())
+        else {
+            return Err(tilo_actions::remote::ActionHostError::ConfirmationRequired);
+        };
+        // The token names the answer they gave; the host binds it to the one
+        // invocation it asked about.
+        let witness = hex::encode(question.id);
+        self.0.ask_person(question, room).map(|asked| {
+            asked.map(|answer| {
+                answer.map(|_| tilo_actions::remote::Confirmation::Witnessed(witness))
+            })
+        })
+    }
 }
 
 /// Where this session keeps closed apps' launchable actions. Unit tests
@@ -2647,16 +2689,16 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
                         return published;
                     }
                     runtime_collab::WorkspaceControlInput::PointerMotion { x, y } => {
-                        crate::network::InputEvent::PointerMotion { x, y }
+                        tilo_window_share::streaming::InputEvent::PointerMotion { x, y }
                     }
                     runtime_collab::WorkspaceControlInput::PointerButton { button, pressed } => {
-                        crate::network::InputEvent::PointerButton { button, pressed }
+                        tilo_window_share::streaming::InputEvent::PointerButton { button, pressed }
                     }
                     runtime_collab::WorkspaceControlInput::Key {
                         keycode,
                         pressed,
                         modifiers,
-                    } => crate::network::InputEvent::Key {
+                    } => tilo_window_share::streaming::InputEvent::Key {
                         keysym: keycode,
                         pressed,
                         modifiers,
@@ -2672,7 +2714,7 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
                                 ));
                             }
                         };
-                        crate::network::InputEvent::KeyboardFocus { surface, focused }
+                        tilo_window_share::streaming::InputEvent::KeyboardFocus { surface, focused }
                     }
                 };
                 let published = this

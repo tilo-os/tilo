@@ -3935,25 +3935,55 @@ mod tests {
         }
     }
 
+    /// Each scenario and the control its ordinary owner must be able to use
+    /// in it, in every theme and at both widths.
+    const OWNER_CASES: [(&str, &str); 14] = [
+        ("wide", "Flatpak repositories"),
+        ("account-setup", "Trust and moderation"),
+        ("account-remotes", "Browse apps"),
+        ("remotes", "Browse apps"),
+        ("remotes-disabled", "Enable source"),
+        ("search-notes", "Notes"),
+        ("updates", "Update all"),
+        ("detail", "Show technical details"),
+        ("detail-technical", "Hide technical details"),
+        ("detail-blocked", "Show technical details"),
+        ("flatpak-detail", "Install"),
+        ("flatpak-installed", "Open"),
+        ("error", "Refresh apps"),
+        ("offline", "Refresh apps"),
+    ];
+
+    /// The cases are walked in this many shares, each its own test: one
+    /// after another, three themes and two widths of fourteen scenarios took
+    /// over a minute.
+    const OWNER_SHARES: usize = 4;
+
     #[test]
-    fn ordinary_owner_store_controls_and_optional_offscreen_review() {
+    fn ordinary_owner_store_controls_and_optional_offscreen_review_share_0() {
+        ordinary_owner_store_controls_and_optional_offscreen_review(0);
+    }
+
+    #[test]
+    fn ordinary_owner_store_controls_and_optional_offscreen_review_share_1() {
+        ordinary_owner_store_controls_and_optional_offscreen_review(1);
+    }
+
+    #[test]
+    fn ordinary_owner_store_controls_and_optional_offscreen_review_share_2() {
+        ordinary_owner_store_controls_and_optional_offscreen_review(2);
+    }
+
+    #[test]
+    fn ordinary_owner_store_controls_and_optional_offscreen_review_share_3() {
+        ordinary_owner_store_controls_and_optional_offscreen_review(3);
+    }
+
+    /// This share walks every `OWNER_SHARES`th case from the `share`th; the
+    /// four shares together walk every case.
+    fn ordinary_owner_store_controls_and_optional_offscreen_review(share: usize) {
         let output = std::env::var_os("TILO_STORE_REVIEW_DIR").map(std::path::PathBuf::from);
-        for (scenario, action) in [
-            ("wide", "Flatpak repositories"),
-            ("account-setup", "Trust and moderation"),
-            ("account-remotes", "Browse apps"),
-            ("remotes", "Browse apps"),
-            ("remotes-disabled", "Enable source"),
-            ("search-notes", "Notes"),
-            ("updates", "Update all"),
-            ("detail", "Show technical details"),
-            ("detail-technical", "Hide technical details"),
-            ("detail-blocked", "Show technical details"),
-            ("flatpak-detail", "Install"),
-            ("flatpak-installed", "Open"),
-            ("error", "Refresh apps"),
-            ("offline", "Refresh apps"),
-        ] {
+        for &(scenario, action) in OWNER_CASES.iter().skip(share).step_by(OWNER_SHARES) {
             let (_environment, _directory, mut app) = inspected_store();
             app.with_surface(|store: &mut StoreApp| {
                 store.worker = None;

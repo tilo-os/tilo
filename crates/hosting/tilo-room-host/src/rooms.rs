@@ -38,6 +38,8 @@ pub use content::{ContentKeeper, RoomContent};
 mod desktop_writes;
 #[cfg(test)]
 mod device_rejoin_tests;
+#[cfg(test)]
+mod hard_stop_tests;
 pub(crate) use desktop_writes::writes_desktop;
 mod listing;
 mod member_records;
@@ -784,6 +786,12 @@ pub(crate) struct RoomServices {
     /// What the join answers say the host is: a certified host, or the
     /// governing device serving its own rooms.
     pub(crate) mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode,
+    /// The device's own sessions with its person's other hosts, when a
+    /// network runs beside this host ([`crate::host::PersonsHostSessions`]).
+    pub(crate) persons_hosts: Option<Arc<dyn crate::host::PersonsHostSessions>>,
+    /// Each device whose session to this host authenticated: a host it
+    /// dials and could not reach is dialled again then.
+    pub(crate) arrivals: crate::federation::Arrivals,
 }
 
 /// The rooms this relay governs.
@@ -794,9 +802,11 @@ pub struct Rooms {
 
 /// [`Rooms`] for whoever must not keep them alive: the browser plane, which
 /// hands sessions the calls of the rooms this relay carries.
+#[cfg(feature = "web")]
 #[derive(Clone)]
 pub struct WeakRooms(std::sync::Weak<RoomsInner>);
 
+#[cfg(feature = "web")]
 impl WeakRooms {
     /// The rooms, while the relay still has them.
     #[must_use]
@@ -939,6 +949,7 @@ impl std::fmt::Debug for Rooms {
 
 impl Rooms {
     /// These rooms, held without keeping them alive.
+    #[cfg(feature = "web")]
     #[must_use]
     pub fn downgrade(&self) -> WeakRooms {
         WeakRooms(Arc::downgrade(&self.inner))

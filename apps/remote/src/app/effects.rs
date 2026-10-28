@@ -58,44 +58,7 @@ impl RemoteApp {
                 self.apply(Action::EditConnection(connection));
                 done()
             }
-            RemoteEffect::Connect { connection } => {
-                if self.pending_resource_operation.is_some() {
-                    return Err("another remote operation is still running".into());
-                }
-                let Some(saved) = self.workspace.get(connection) else {
-                    return Err("saved connection no longer exists".into());
-                };
-                let readiness = connection_readiness(saved);
-                if !readiness.can_connect() {
-                    let reason = if readiness == TransportReadiness::InvalidProfile {
-                        saved
-                            .profile_issue()
-                            .unwrap_or_else(|| readiness.detail(saved.kind))
-                    } else {
-                        readiness.detail(saved.kind)
-                    };
-                    return Err(reason.to_string());
-                }
-                self.open_session(connection);
-                let status = self.session.borrow().status();
-                match status {
-                    Some(SessionStatus::Connecting) => {
-                        self.pending_resource_operation = Some(PendingResourceOperation::Connect {
-                            reply: Some(cx.reply()),
-                            connection_id: connection,
-                            session_generation: self.session_generation,
-                        });
-                        Ok(ui::framework::Effected::Pending)
-                    }
-                    Some(SessionStatus::Connected) => done(),
-                    Some(SessionStatus::Failed(message) | SessionStatus::Unavailable(message)) => {
-                        Err(message)
-                    }
-                    Some(SessionStatus::Closed) | None => {
-                        Err("remote transport did not start".into())
-                    }
-                }
-            }
+            RemoteEffect::Connect { connection } => self.connect(connection, cx),
             RemoteEffect::SendText { connection, text } => {
                 if self.pending_resource_operation.is_some() {
                     return Err("another remote operation is still running".into());
@@ -401,5 +364,50 @@ impl RemoteApp {
                 }
             }
         })
+    }
+}
+
+impl RemoteApp {
+    /// Open the saved `connection` and answer with how the transport went:
+    /// pending while it dials, done once it is connected, else why not.
+    fn connect(
+        &mut self,
+        connection: crate::model::ConnectionId,
+        cx: &mut ui::framework::EffectCx<crate::resource::Remote, Self>,
+    ) -> ui::framework::EffectAnswer {
+        if self.pending_resource_operation.is_some() {
+            return Err("another remote operation is still running".into());
+        }
+        let Some(saved) = self.workspace.get(connection) else {
+            return Err("saved connection no longer exists".into());
+        };
+        let readiness = connection_readiness(saved);
+        if !readiness.can_connect() {
+            let reason = if readiness == TransportReadiness::InvalidProfile {
+                saved
+                    .profile_issue()
+                    .unwrap_or_else(|| readiness.detail(saved.kind))
+            } else {
+                readiness.detail(saved.kind)
+            };
+            return Err(reason.to_string());
+        }
+        self.open_session(connection);
+        let status = self.session.borrow().status();
+        match status {
+            Some(SessionStatus::Connecting) => {
+                self.pending_resource_operation = Some(PendingResourceOperation::Connect {
+                    reply: Some(cx.reply()),
+                    connection_id: connection,
+                    session_generation: self.session_generation,
+                });
+                Ok(ui::framework::Effected::Pending)
+            }
+            Some(SessionStatus::Connected) => Ok(ui::framework::Effected::done()),
+            Some(SessionStatus::Failed(message) | SessionStatus::Unavailable(message)) => {
+                Err(message)
+            }
+            Some(SessionStatus::Closed) | None => Err("remote transport did not start".into()),
+        }
     }
 }

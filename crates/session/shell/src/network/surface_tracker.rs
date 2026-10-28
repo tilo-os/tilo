@@ -20,11 +20,11 @@ pub enum CapturePath {
 }
 
 impl CapturePath {
-    /// Convert to the diagnostics-side enum for [`crate::diagnostics::PeerSurfaceMetrics::set_capture_path`].
-    pub fn to_metrics_path(self) -> crate::diagnostics::CapturePath {
+    /// Convert to the diagnostics-side enum for [`tilo_window_share::diagnostics::PeerSurfaceMetrics::set_capture_path`].
+    pub fn to_metrics_path(self) -> tilo_window_share::diagnostics::CapturePath {
         match self {
-            CapturePath::ShmReadback => crate::diagnostics::CapturePath::ShmReadback,
-            CapturePath::DmabufDirect => crate::diagnostics::CapturePath::DmabufDirect,
+            CapturePath::ShmReadback => tilo_window_share::diagnostics::CapturePath::ShmReadback,
+            CapturePath::DmabufDirect => tilo_window_share::diagnostics::CapturePath::DmabufDirect,
         }
     }
 }

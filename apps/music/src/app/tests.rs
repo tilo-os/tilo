@@ -665,7 +665,8 @@ pub(super) fn hosted_click(app: &mut MusicApp, doc: &mut AutoCommit, at: Point) 
         at.y + hosted_origin.y - origin.y,
     );
     frame.relayout();
-    let (owned, state) = frame.root_and_state_mut::<MusicApp>();
+    let mut parts = frame.root_and_state_mut::<MusicApp>();
+    let (owned, state) = parts.split();
     *app = std::mem::take(owned);
     *doc = std::mem::take(&mut state.doc);
 }
@@ -4514,9 +4515,7 @@ fn artist_and_album_pages_navigate_and_play() {
         }
         // The album header's Play plays the whole album in track order.
         let play = page_widget(&app, "music.page.Play");
-        send(&mut app, &cursor_at(play.center()), &mut doc);
-        send(&mut app, &press(MouseButton::Left), &mut doc);
-        send(&mut app, &released(MouseButton::Left), &mut doc);
+        hosted_click(&mut app, &mut doc, play.center());
         assert_eq!(
             app.pb.queue,
             ["yt:al_one", "yt:al_two", "yt:al_three"],
@@ -4665,13 +4664,12 @@ fn playback_failure_does_not_advertise_retry_of_an_at_most_once_invocation() {
     else {
         panic!("the actual resolver failure must settle its pending invocation");
     };
-    let contract = crate::actions::MusicEffect::Play {
+    let play = crate::actions::MusicEffect::Play {
         track: "tk_g1".into(),
         queued: None,
     }
-    .bound()
-    .contract;
-    assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
+    .bound();
+    assert_eq!(play.contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
     assert!(!error.retryable);
     assert!(error.message.contains("Premium eligibility"));
 }

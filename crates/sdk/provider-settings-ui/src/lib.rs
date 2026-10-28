@@ -8,7 +8,7 @@ use agent_provider_config::management::{CredentialStatus, ProviderAdmin, Provide
 use agent_provider_config::presets::{Authentication, Preset};
 use agent_provider_config::protocol::{ErrorKind, ModelError};
 use agent_provider_config::{
-    AgentModel, EndpointLocation, ModelDescriptor, ModelRequestLimits, ProviderConfig,
+    AgentModel, EndpointLocation, Interaction, ModelDescriptor, ModelRequestLimits, ProviderConfig,
     ProviderProfile, ProviderProtocol,
 };
 use std::collections::HashMap;
@@ -42,6 +42,65 @@ const fn identity<A: serde::Serialize>(
 ) -> ActionRef<ProviderEffect, A> {
     action
 }
+
+/// A model picker's choice as the effect that records it: the choice names
+/// a provider and one of its models, or neither, which lets the kind or
+/// agent follow the default again.
+struct ModelChoiceBinds {
+    kind: String,
+}
+
+impl ui::tilo_resource::Binds<ProviderEffect, String> for ModelChoiceBinds {
+    fn action_id(&self) -> &'static str {
+        ProviderEffect::SET_INTERACTION_MODEL.id()
+    }
+    fn arguments(
+        &self,
+        input: String,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+        let chosen = match input.split_once('\u{1}') {
+            Some((provider, model)) => ProviderEffect::SetInteractionModel {
+                kind: self.kind.clone(),
+                provider: Some(provider.to_owned()),
+                model: Some(model.to_owned()),
+            },
+            None => ProviderEffect::SetInteractionModel {
+                kind: self.kind.clone(),
+                provider: None,
+                model: None,
+            },
+        };
+        Ok(ui::tilo_resource::Effect::arguments(&chosen))
+    }
+}
+
+/// Record on `config` the model chosen for `kind`, or with neither provider
+/// nor model let that kind follow the default again.
+fn choose_interaction_model(
+    config: &mut ProviderConfig,
+    kind: &str,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<(), String> {
+    let kind = Interaction::from_id(kind).ok_or_else(|| t("agent-kind-unknown"))?;
+    config
+        .set_interaction_model(kind, chosen_model(provider, model)?)
+        .map_err(|_| t("agent-model-gone"))
+}
+
+/// A picker's choice as a chosen model: both the provider and its model, or
+/// neither, which lets the agent or kind follow the default again.
+fn chosen_model(
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<Option<AgentModel>, String> {
+    match (provider, model) {
+        (Some(profile), Some(model)) => Ok(Some(AgentModel { profile, model })),
+        (None, None) => Ok(None),
+        _ => Err(t("agent-model-choice-incomplete")),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum ProviderEffect {
@@ -125,6 +184,17 @@ pub enum ProviderEffect {
     SetAgentModel {
         #[param("The agent's id")]
         agent: String,
+        #[param("The provider's id")]
+        provider: Option<String>,
+        #[param("The model's id, one the provider offers")]
+        model: Option<String>,
+    },
+    /// Choose the model each kind of interaction runs on; omit both to let
+    /// that kind follow the default again.
+    #[effect(job, idempotent)]
+    SetInteractionModel {
+        #[param("`one_shot`, `task`, `subtask`, `request`, `classifier` or `dictation`")]
+        kind: String,
         #[param("The provider's id")]
         provider: Option<String>,
         #[param("The model's id, one the provider offers")]
@@ -472,6 +542,9 @@ impl<H: PanelBindings> ProviderPanel<H> {
         if let Some(agents) = self.agent_models_card() {
             sections.push(agents);
         }
+        if let Some(kinds) = self.interaction_models_card() {
+            sections.push(kinds);
+        }
         // Limits are per model: with no model yet the section would be a
         // paragraph about nothing.
         if self
@@ -672,23 +745,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
                 config.upsert(preset.profile());
             }
             ProviderEffect::SetProviderModel { provider, model } => {
-                let model = model.trim().to_owned();
-                if model.is_empty() || model.len() > 256 || model.contains(char::is_control) {
-                    return Err(t("agent-model-invalid"));
-                }
-                let listed = self
-                    .listed_models
-                    .get(&provider)
-                    .and_then(|listed| listed.as_ref().ok())
-                    .and_then(|models| models.iter().find(|listed| listed.id == model))
-                    .cloned();
-                let profile = find(&mut config, &provider)?;
-                if !profile.models.iter().any(|known| known.id == model) {
-                    profile
-                        .models
-                        .push(listed.unwrap_or_else(|| ModelDescriptor::new(model.clone())));
-                }
-                profile.default_model = Some(model);
+                self.choose_default_model(&mut config, &provider, &model)?;
             }
             ProviderEffect::SetProviderProtocol {
                 provider,
@@ -737,18 +794,47 @@ impl<H: PanelBindings> ProviderPanel<H> {
                 provider,
                 model,
             } => {
-                let chosen = match (provider, model) {
-                    (Some(profile), Some(model)) => Some(AgentModel { profile, model }),
-                    (None, None) => None,
-                    _ => return Err(t("agent-model-choice-incomplete")),
-                };
+                let chosen = chosen_model(provider, model)?;
                 config
                     .set_agent_model(&agent, chosen)
                     .map_err(|_| t("agent-model-gone"))?;
             }
+            ProviderEffect::SetInteractionModel {
+                kind,
+                provider,
+                model,
+            } => choose_interaction_model(&mut config, &kind, provider, model)?,
             _ => return Err("not a provider effect".into()),
         }
         Ok(config.sanitised())
+    }
+
+    /// Make `model` the default of `provider`, which offers it afterwards even
+    /// if it was written by hand rather than listed by the provider.
+    fn choose_default_model(
+        &self,
+        config: &mut ProviderConfig,
+        provider: &str,
+        model: &str,
+    ) -> Result<(), String> {
+        let model = model.trim();
+        if model.is_empty() || model.len() > 256 || model.contains(char::is_control) {
+            return Err(t("agent-model-invalid"));
+        }
+        let listed = self
+            .listed_models
+            .get(provider)
+            .and_then(|listed| listed.as_ref().ok())
+            .and_then(|models| models.iter().find(|listed| listed.id == model))
+            .cloned();
+        let profile = find(config, provider)?;
+        if !profile.models.iter().any(|known| known.id == model) {
+            profile
+                .models
+                .push(listed.unwrap_or_else(|| ModelDescriptor::new(model.to_owned())));
+        }
+        profile.default_model = Some(model.to_owned());
+        Ok(())
     }
 
     pub fn provider_notice(&mut self, outcome: Result<String, &String>) {
@@ -1272,6 +1358,61 @@ impl<H: PanelBindings> ProviderPanel<H> {
             ))));
         }
         Some(section(&t("agent-models-agents-title"), rows(body)))
+    }
+
+    /// The model each kind of interaction runs on, chosen among the models
+    /// the providers offer. A kind left alone follows the default.
+    #[must_use]
+    pub fn interaction_models_card(&self) -> Option<SettingsSection> {
+        let config = self.provider_config();
+        if !config
+            .profiles
+            .iter()
+            .any(|profile| !profile.models.is_empty())
+        {
+            return None;
+        }
+        let offered: Vec<(String, String)> = config
+            .profiles
+            .iter()
+            .filter(|profile| profile.enabled)
+            .flat_map(|profile| {
+                profile.models.iter().map(move |model| {
+                    let value = format!("{}\u{1}{}", profile.id, model.id);
+                    let label = t_args(
+                        "agent-kind-model-label",
+                        &[
+                            ("model", model.display_label().into()),
+                            ("provider", profile.display_label().into()),
+                        ],
+                    );
+                    (value, label)
+                })
+            })
+            .collect();
+        let can_admin = self.admits();
+        let mut body = vec![note(&t("agent-models-kinds-caption"))];
+        for kind in Interaction::ALL {
+            let selected = config
+                .interaction_models
+                .get(kind.id())
+                .map_or_else(String::new, |chosen| {
+                    format!("{}\u{1}{}", chosen.profile, chosen.model)
+                });
+            let label = t(&format!("agent-kind-{}", kind.id().replace('_', "-")));
+            let mut chooser = Dropdown::from_state(Vec::new(), &ui::LocalState::new(selected))
+                .with_id(&format!("agent-kind-choose-{}", kind.id()))
+                .with_accessible_name(&label)
+                .with_placeholder(&t("agent-kind-model-default"))
+                .with_enabled(can_admin);
+            chooser.set_value_options(offered.clone());
+            let kind = kind.id().to_owned();
+            body.push(field_row(
+                &label,
+                Box::new(self.cx.bind(chooser, ModelChoiceBinds { kind })),
+            ));
+        }
+        Some(section(&t("agent-models-kinds-title"), rows(body)))
     }
 
     pub fn request_limits_card(&self) -> SettingsSection {

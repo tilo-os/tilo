@@ -68,6 +68,7 @@ impl ComputeSandbox for ThumbnailSandbox {
         &self,
         invocation: ComputeSandboxInvocation<'_>,
     ) -> Result<CapturedRunOutput, String> {
+        use std::fmt::Write as _;
         use std::os::unix::process::ExitStatusExt;
         if invocation.entrypoint != ENTRYPOINT {
             return Err(format!("no catalogue command {}", invocation.entrypoint));
@@ -81,8 +82,10 @@ impl ComputeSandbox for ThumbnailSandbox {
                 0,
                 failed
                     .iter()
-                    .map(|failure| format!("thumbnail-batch: {failure}\n"))
-                    .collect::<String>()
+                    .fold(String::new(), |mut stderr, failure| {
+                        let _ = writeln!(stderr, "thumbnail-batch: {failure}");
+                        stderr
+                    })
                     .into_bytes(),
             ),
             Err(error) => (i32::from(error.exit_code()), error.to_string().into_bytes()),
@@ -779,7 +782,10 @@ async fn an_offloadable_action_runs_on_the_placed_device_and_returns_the_local_o
     .await;
     assert_eq!(
         refused,
-        Err(OffloadError::Action("input 2 is not an image".into()))
+        Err(OffloadError::Action(format!(
+            "the content {} is not an image",
+            blake3::hash(b"not a photograph").to_hex()
+        )))
     );
 
     // Only workspace files the invoker resolved can be inputs.

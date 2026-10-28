@@ -1076,6 +1076,21 @@ impl Messages {
         })
     }
 
+    /// How many top-level messages `channel` has in the parts before the
+    /// oldest held, as the head carries them ([`ChatPart::earlier`]); `None`
+    /// when the head does not say for every one of them (parts written
+    /// before parts carried counts).
+    #[must_use]
+    pub fn earlier_than_held(&self, channel: &Id) -> Option<usize> {
+        let (oldest, _) = self.parts.first()?;
+        let (_, newest) = self.parts.last()?;
+        (0..*oldest).try_fold(0_usize, |sum, index| {
+            let counts = newest.earlier.get(&index.to_string())?;
+            let count = counts.get(channel.as_str()).copied().unwrap_or_default();
+            Some(sum.saturating_add(usize::try_from(count).unwrap_or_default()))
+        })
+    }
+
     /// The top-level messages of `channel` after `mark`: counted in each
     /// part held, and in the parts between that are not, as the head
     /// carries them ([`ChatPart::earlier`]).

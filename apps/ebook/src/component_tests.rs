@@ -61,7 +61,7 @@ impl Fixture {
         let cache = PortableStorage::new(profile, DEVICE).unwrap();
         Self {
             records: ui::record::RecordOwners::portable(cache.clone())
-                .open(crate::definition().app_id, WORKSPACE)
+                .open(crate::definition().app_id(), WORKSPACE)
                 .unwrap(),
             views: Rc::new(InstanceViewStore::portable(cache, WORKSPACE).unwrap()),
             authority: SharedPermissions::new(PermissionContext::member("reader", Role::Owner)),
@@ -186,7 +186,7 @@ fn selection_actions(driver: &FrameHarness, _book: &str) -> Vec<String> {
             resource
                 .actions
                 .into_iter()
-                .map(|action| action.id)
+                .map(|action| action.id.clone())
                 .collect()
         })
         .unwrap_or_default()

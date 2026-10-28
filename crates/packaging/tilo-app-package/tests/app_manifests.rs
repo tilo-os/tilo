@@ -30,7 +30,8 @@ fn repo_root() -> PathBuf {
 /// Every apps/ directory that's a Cargo crate the workspace builds a binary
 /// for, i.e. every app. A crate there with no binary is a library of an app
 /// (an `apps/<name>-model` crate of its data, the parts an app loads from
-/// its engine library such as `settings-core`), not an app of its own.
+/// its engine library such as `settings-core`), not an app of its own; nor
+/// is a runtime bundle's.
 fn app_dirs() -> Vec<PathBuf> {
     let apps = repo_root().join("apps");
     let mut out: Vec<PathBuf> = std::fs::read_dir(&apps)
@@ -39,6 +40,9 @@ fn app_dirs() -> Vec<PathBuf> {
         .map(|e| e.path())
         .filter(|p| p.join("Cargo.toml").is_file())
         .filter(|p| builds_a_binary(p))
+        // A runtime bundle's binary (its `tilo-runtime.toml`: the tilolang
+        // runtime) is packed by that manifest as a runtime, not as an app.
+        .filter(|p| !p.join("tilo-runtime.toml").is_file())
         .collect();
     out.sort();
     assert!(

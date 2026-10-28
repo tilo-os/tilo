@@ -345,7 +345,8 @@ for artifact in \
     && ok "$artifact is carried into the release" \
     || bad "$artifact is absent from the release workflow"
 done
-grep -Fq 'runner: imager-linux-aarch64' "$workflow" \
+grep -Fq '"arch":"x86_64","runner":"runner-release"' "$workflow" \
+  && grep -Fq '"arch":"aarch64","runner":"runner-large-arm64"' "$workflow" \
   && grep -Fq 'runner: imager-macos-x86_64' "$workflow" \
   && grep -Fq 'runner: imager-macos-aarch64' "$workflow" \
   && grep -Fq 'runner: imager-windows-x86_64' "$workflow" \
@@ -382,7 +383,8 @@ grep -Fq 'tilo-imager-linux-aarch64.tar.gz' \
   || bad 'Homebrew does not cover the requested Linux/macOS architectures'
 
 grep -Fq 'tilo-os/homebrew-tilo' "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
-  && [ "$(grep -Fc 'brew tap tilo/tilo https://github.com/tilo-os/homebrew-tilo.git' "$workflow")" -eq 2 ] \
+  && [ "$(grep -Fc 'brew tap "$TILO_HOMEBREW_TAP_NAME" "${TILO_RELEASE_SERVER%/}/$TILO_HOMEBREW_TAP_REPOSITORY.git"' "$workflow")" -eq 2 ] \
+  && grep -Fq 'brew tap %s %s/%s.git' "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
   && ! grep -Fq 'code.tilo.so/tilo/homebrew-tilo.git' "$workflow" \
   && grep -Fq 'microsoft/winget-pkgs/pulls' "$repo/apps/imager/packaging/publish-winget.sh" \
   && grep -Fq -- '--retry 6 --retry-all-errors --retry-max-time 180' "$repo/apps/imager/packaging/publish-winget.sh" \
@@ -401,11 +403,19 @@ grep -Fq 'site-downloads:' "$workflow" \
   && grep -Fq '.linuxSigningFingerprint = $fingerprint' "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq '.channels.homebrew = "available"' "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq '.channels.winget = $winget_state' "$repo/apps/imager/packaging/publish-site-release.sh" \
-  && grep -Fq 'linuxX64Flatpak linuxArm64Flatpak linuxX64AppImage linuxArm64AppImage' \
+  && grep -Fq 'declared_downloads' \
+    "$repo/apps/imager/packaging/publish-site-release.sh" \
+  && grep -Fq 'release does not carry the %s artifact for %s %s' \
     "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq 'landing page does not expose required release asset' \
     "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq "'brew install --cask tilo-imager' 'brew install tilo-imager'" \
+    "$repo/apps/imager/packaging/publish-site-release.sh" \
+  && grep -Fq '.imager.homebrew.tap.command' \
+    "$repo/apps/imager/packaging/publish-site-release.sh" \
+  && grep -Fq '.imager.homebrew.tap.name // empty' \
+    "$repo/apps/imager/packaging/publish-site-release.sh" \
+  && grep -Fq 'landing page Homebrew tap does not match the release tap' \
     "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq 'TILO_RELEASE_REPOSITORY="$release_repository"' \
     "$repo/apps/imager/packaging/monitor-winget-acceptance.sh" \
@@ -413,6 +423,30 @@ grep -Fq 'site-downloads:' "$workflow" \
   && grep -Fq 'TILO_LINUX_SIGNING_FINGERPRINT: ${{ vars.IMAGER_LINUX_SIGNING_FINGERPRINT }}' "$workflow" \
   && ok 'landing-page manifest advances only through the gated release workflow' \
   || bad 'landing-page release publication is not wired'
+
+# The rendered-output gate has to see the tap line at all: a page that prints a
+# different tap than the release updated ships wrong instructions, and one that
+# prints none cannot be verified either.
+tap_page_dir="$(mktemp -d)"
+printf '<code>brew tap tilo/qos https://code.tilo.so/tilo/homebrew-qos.git</code>\n' \
+  > "$tap_page_dir/stale.html"
+printf '<code>brew tap tilo/tilo https://github.com/tilo-os/homebrew-tilo.git</code>\n' \
+  > "$tap_page_dir/current.html"
+release_server=https://github.com
+tap_repository=tilo-os/homebrew-tilo
+tap_name=tilo/tilo
+tap_command="brew tap $tap_name ${release_server%/}/${tap_repository}.git"
+stale_taps="$(grep -R -h -o -- 'brew tap [^<\"]*' "$tap_page_dir/stale.html" | sort -u || true)"
+current_taps="$(grep -R -h -o -- 'brew tap [^<\"]*' \
+  "$tap_page_dir/current.html" | sort -u || true)"
+rm -rf "$tap_page_dir"
+if [ "$stale_taps" = 'brew tap tilo/qos https://code.tilo.so/tilo/homebrew-qos.git' ] \
+   && [ "$stale_taps" != "$tap_command" ] \
+   && [ "$current_taps" = "$tap_command" ]; then
+  ok 'landing-page promotion refuses a rendered Homebrew tap the release did not publish'
+else
+  bad 'landing-page promotion can publish a Homebrew tap the release did not update'
+fi
 
 grep -Fq 'tilo-installer-medium-${{ matrix.arch }}' "$workflow" \
   && grep -Fq 'tilo-installer-catalog-v1.json' "$workflow" \
@@ -602,13 +636,13 @@ grep -Fq 'BOOT_SIGNAL="serial-getty"' "$boot_verify" \
   && ok 'serial-getty boot proof reports an explicit signal and nonzero wall time' \
   || bad 'serial-getty fallback can report a misleading zero-duration boot'
 
-[ "$(grep -Fc 'branches: ["main"]' "$workflow")" -eq 1 ] \
-  && grep -Fq "if: github.event_name != 'push' || github.ref != 'refs/heads/main'" "$workflow" \
+[ "$(grep -Fc 'branches: ["stable"]' "$workflow")" -eq 1 ] \
+  && [ "$(grep -Fc 'branches: ["main"]' "$workflow")" -eq 0 ] \
+  && grep -Fq "if: github.event_name != 'push' || github.ref != 'refs/heads/stable'" "$workflow" \
   && [ "$(grep -Fc 'pull_request:' "$workflow")" -eq 0 ] \
-  && grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
-  && grep -Fq 'runner":"imager-linux-aarch64"' "$workflow" \
+  && grep -Fq '"arch":"x86_64","runner":"runner-release"' "$workflow" \
+  && grep -Fq '"arch":"aarch64","runner":"runner-large-arm64"' "$workflow" \
   && grep -Fq 'runner":"runner-disk-100g"' "$workflow" \
-  && grep -Fq 'runner":"runner-disk-100g-arm64"' "$workflow" \
   && grep -Fq 'matrix: ${{ fromJSON(needs.plan.outputs.medium-matrix) }}' "$workflow" \
   && grep -Fq "github.event.inputs.installer_only != 'true'" "$workflow" \
   && grep -Fq './os/dev/assert-native-arch.sh "${{ matrix.arch }}"' "$workflow" \

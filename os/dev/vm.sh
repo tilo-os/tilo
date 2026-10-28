@@ -47,6 +47,8 @@
 #   ./os/dev/vm.sh pointer X Y                 move the absolute USB tablet in guest pixels
 #   ./os/dev/vm.sh click X Y [left|right|middle]
 #                                             move, press and release a pointer button
+#   ./os/dev/vm.sh tap X Y                     touch and lift one finger in guest pixels
+#                                             (TILO_VM_INPUT=touch)
 #   ./os/dev/vm.sh wait-greeter-return         prove UI logout returned to greetd
 #   ./os/dev/vm.sh shutdown                    request a clean guest shutdown over SSH
 #   ./os/dev/vm.sh cmd "HMP"                   raw QEMU monitor command
@@ -183,7 +185,7 @@ cmd_boot() {
   local args="$(machine_args) $(qemu_accel_args) -m $TILO_MEM -smp $TILO_SMP \
     $(pflash_args "$varstore") \
     $(virtio_disk "$disk" tilo-disk "$disk_serial") $attach_arg \
-    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22${TILO_VM_HOSTFWD:+,$TILO_VM_HOSTFWD} $(lan_qemu_args) $(input_qemu_args) \
+    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22${TILO_VM_HOSTFWD:+,$TILO_VM_HOSTFWD} $(lan_qemu_args) $(input_qemu_args) $(audio_qemu_args) \
     $(console_qemu_args) $credential_arg \
     -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
     -pidfile $TILO_PIDFILE -name tilo"
@@ -235,7 +237,7 @@ cmd_boot_installer() {
     $(pflash_args "$varstore") \
     $(virtio_disk "$work_disk" tilo-installer-medium tilo-installer-medium) \
     $(virtio_disk "$target" tilo-install-target tilo-install-target) \
-    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) \
+    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) $(audio_qemu_args) \
     $(console_qemu_args) $proof_arg \
     -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
     -pidfile $TILO_PIDFILE -name tilo-custom-installer"
@@ -269,7 +271,7 @@ cmd_boot_target() {
   local args="$(machine_args) $(qemu_accel_args) -m $TILO_MEM -smp $TILO_SMP \
     $(pflash_args "$varstore") \
     $(virtio_disk "$disk" tilo-install-target tilo-install-target) \
-    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) \
+    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) $(audio_qemu_args) \
     $(console_qemu_args) \
     -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
     -pidfile $TILO_PIDFILE -name tilo-target"
@@ -445,6 +447,29 @@ cmd_click() {
   hmp "mouse_button $mask" >/dev/null
   sleep 0.08
   hmp "mouse_button 0" >/dev/null
+}
+
+# One finger on the multitouch screen, which only QMP can drive. Its axes use
+# the same 0..32767 range as the tablet.
+cmd_tap() {
+  local x="${1:?usage: tap X Y}" y="${2:?usage: tap X Y}"
+  [ "$TILO_VM_INPUT" = touch ] || die "tap needs the touch screen (TILO_VM_INPUT=touch)"
+  [[ "$x" =~ ^[0-9]+$ && "$y" =~ ^[0-9]+$ ]] \
+    || die "tap coordinates must be non-negative integers"
+  [ "$x" -lt "$TILO_XRES" ] && [ "$y" -lt "$TILO_YRES" ] \
+    || die "tap coordinate ($x,$y) is outside ${TILO_XRES}x${TILO_YRES}"
+  local qx=$((x * 32767 / (TILO_XRES - 1))) qy=$((y * 32767 / (TILO_YRES - 1)))
+  # QEMU passes the tracking id on as given: the finger lifts with -1.
+  local finger='"slot":0,"tracking-id":1'
+  qmp '{"execute":"input-send-event","arguments":{"events":[
+    {"type":"mtt","data":{"type":"begin",'"$finger"',"axis":"x","value":'"$qx"'}},
+    {"type":"mtt","data":{"type":"data",'"$finger"',"axis":"x","value":'"$qx"'}},
+    {"type":"mtt","data":{"type":"data",'"$finger"',"axis":"y","value":'"$qy"'}},
+    {"type":"btn","data":{"down":true,"button":"touch"}}]}}'
+  sleep 0.08
+  qmp '{"execute":"input-send-event","arguments":{"events":[
+    {"type":"mtt","data":{"type":"end","slot":0,"tracking-id":-1,"axis":"x","value":'"$qx"'}},
+    {"type":"btn","data":{"down":false,"button":"touch"}}]}}'
 }
 
 # The greeter answers its console once its event loop runs; typed keys still
@@ -693,6 +718,7 @@ case "$sub" in
   keys) cmd_keys "$@";;
   pointer) cmd_pointer "$@";;
   click) cmd_click "$@";;
+  tap) cmd_tap "$@";;
   wait-greeter-return) cmd_wait_greeter_return "$@";;
   shutdown) cmd_shutdown "$@";;
   cmd) hmp "$*";;

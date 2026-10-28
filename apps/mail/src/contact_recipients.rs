@@ -55,8 +55,8 @@ impl Choice {
 
     fn row(&self) -> LiveRow {
         let mut action = self.effect().bound();
-        action.label = crate::i18n::t("mail-contact-prepare");
-        action.description = Some(self.label());
+        action.type_mut().label = crate::i18n::t("mail-contact-prepare");
+        action.type_mut().description = Some(self.label());
         LiveRow::new(self.id(), "mail.contact-draft", self.label()).operation(action)
     }
 }

@@ -45,7 +45,7 @@ use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction, Launchpad
 use tilo_desktop::overview::{OverviewHost, room_cards};
 use tilo_desktop::overview_panel::{OverviewPanel, OverviewPick};
 use tilo_desktop::profile_card::{
-    ProfileAction, ProfileCard, ProfileChoice, ProfileGroup, ProfileModel,
+    LazyProfileCard, ProfileAction, ProfileChoice, ProfileGroup, ProfileModel,
 };
 use tilo_desktop::shortcuts::{page_chord, page_shortcut_action};
 use tilo_desktop::strip_navigator::{StripFrame, StripNavigation, StripNavigator, Viewer};
@@ -575,7 +575,7 @@ pub(crate) struct BrowserShell {
     offers: HostOffers,
     requests: HostRequests,
     workspace_menu: WorkspaceMenu,
-    profile: ProfileCard,
+    profile: LazyProfileCard,
     /// Whose card the profile card shows, by roster id; `None` for the
     /// person's own.
     profile_of: Option<String>,
@@ -614,6 +614,9 @@ pub(crate) struct BrowserShell {
     /// them.
     hints: tilo_desktop::control_hints::ControlHints,
     hints_frame: tilo_desktop::control_hints::HintFrame,
+    /// The page's settings as the hints last took the person's record from
+    /// them.
+    hints_settings: Option<settings_store::SettingsStamp>,
     /// How the person points, as the page last learned it: hints name what
     /// a finger does once they touch the screen.
     interaction: ui::InteractionEnvironment,
@@ -751,7 +754,7 @@ impl BrowserShell {
             offers,
             requests,
             workspace_menu: WorkspaceMenu::new(),
-            profile: ProfileCard::new(),
+            profile: LazyProfileCard::new(),
             profile_of: None,
             people: CollaboratorsOverlay::default(),
             people_open: false,
@@ -769,6 +772,7 @@ impl BrowserShell {
             picker: crate::feedback_pick::PagePicker::default(),
             hints,
             hints_frame: tilo_desktop::control_hints::HintFrame::default(),
+            hints_settings: settings_store::stamp(),
             interaction: ui::InteractionEnvironment::default(),
             hints_painted_before: None,
         }
@@ -1154,7 +1158,7 @@ impl BrowserShell {
             .map(|feedback| {
                 feedback
                     .about(subject)
-                    .and_then(|()| feedback.services().begin_report(report))
+                    .and_then(|()| feedback.begin_report(report))
             });
         match started {
             Some(Ok(())) => match self.handle.read(tilo_desktop::feedback::composer_tab) {

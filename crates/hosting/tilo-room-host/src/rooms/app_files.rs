@@ -5,7 +5,7 @@
 //! room's `upload-app-file` action. The host keeps the file under its
 //! BLAKE3 hash and answers members asking the room for that hash with it,
 //! as it answers for any content the room's records reference
-//! ([`super::content`]). A member installs it only once the bytes hash to
+//! (`super::content`). A member installs it only once the bytes hash to
 //! what the room's version names, and only bound to that version's package
 //! root and publisher.
 

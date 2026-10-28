@@ -405,7 +405,7 @@ mod cases {
     fn a_non_image_is_named_and_the_rest_of_the_offloaded_job_completes() {
         let device = Device::new();
         let bad = b"not a picture".to_vec();
-        let inputs = vec![picture(32, 32, 9, image::ImageFormat::Png), bad.clone()];
+        let inputs = vec![picture(32, 32, 9, image::ImageFormat::Png), bad];
         let made = thumbnail_batch(&inputs);
         assert!(made[0].is_ok(), "the local batch still makes the good one");
         let failure = *made[1].as_ref().unwrap_err();

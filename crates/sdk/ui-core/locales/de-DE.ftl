@@ -71,6 +71,8 @@ window-toolbar-show-inspector = Inspektor einblenden
 window-toolbar-hide-inspector = Inspektor ausblenden
 window-share-to-channel = In Kanal teilen…
 window-stop-sharing-in = Teilen in { $place } beenden
+history-loading = Verlauf wird geladen…
+lazy-loading = Wird geladen…
 history-genesis = Erstellt
 history-edited-field = { $more ->
     [0] { $path } bearbeitet
@@ -239,6 +241,9 @@ arriving-retry = Erneut versuchen
 content-unavailable = Keines der verbundenen Geräte hat es
 room-sync-connecting = Verbinde mit { $workspace }…
 room-sync-connecting-unnamed = Verbinde…
+room-sync-unreachable = { $workspace } ist gerade nicht erreichbar
+room-sync-unreachable-unnamed = Der Host dieses Arbeitsbereichs ist gerade nicht erreichbar
+room-sync-unreachable-body = Das hier ist, was dieses Gerät hat. Deine Änderungen bleiben hier und werden synchronisiert, sobald der Host wieder da ist.
 room-sync-host-needs-update = Der Host dieses Arbeitsbereichs muss aktualisieren
 room-sync-host-needs-update-body = Bis dahin wird hier nichts synchronisiert. Deine Änderungen bleiben auf diesem Gerät und erreichen ihn danach.
 room-sync-device-needs-update = Tilo muss aktualisieren, um diesen Arbeitsbereich zu synchronisieren
@@ -644,6 +649,7 @@ save-status-not-saved-named = „{ $document }“ wurde nicht gespeichert
 save-status-not-saved-notice = Deine Änderungen sind noch in { $app }.
 save-status-saved = Gespeichert
 save-status-failed = Speichern fehlgeschlagen
+save-status-failed-detail = Deine letzten Änderungen sind noch nicht gespeichert.
 save-status-retry = Erneut versuchen
 
 # Suchleiste: das Band oben in einem Dokument, das darin sucht.
@@ -906,6 +912,11 @@ workspace-identity-required-title = Wähle, wer du hier bist
 workspace-identity-required-body = Dieser Arbeitsbereich muss wissen, wer darin arbeitet, bevor { $app } öffnen kann.
 workspace-identity-required-choose = Identität wählen
 
+# A form's date field: what it reads as with no date, its calendar, and the button that empties it.
+date-field-none = Kein Datum
+date-field-calendar = Kalender
+date-field-clear = Datum entfernen
+
 # Das Menü, das ein Rechtsklick oder langes Drücken auf bearbeitbarem Text öffnet.
 text-menu-cut = Ausschneiden
 text-menu-copy = Kopieren
@@ -1041,3 +1052,7 @@ attention-deferred = { $count } beiseitegelegt
 attention-pill-one = { $count } wartet
 attention-pill = { $count } warten
 action-document-replaced = Diese Aktion wurde nicht ausgeführt, weil ihr Dokument erneut geöffnet oder ersetzt wurde. Versuche es im aktuellen Dokument erneut.
+
+# Spoken when Ctrl+Super+Enter (or both volume keys held) turns the screen reader on or off.
+screen-reader-turned-on = Bildschirmleser an
+screen-reader-turned-off = Bildschirmleser aus

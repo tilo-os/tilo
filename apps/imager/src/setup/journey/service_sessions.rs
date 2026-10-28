@@ -353,7 +353,7 @@ impl Selection {
     pub(super) fn view(
         &self,
         accounts_enabled: bool,
-        bindings: impl Fn(String, Service, bool) + 'static + Clone,
+        actions: Option<&ui::framework::Actions<crate::resource::Imager>>,
     ) -> Element {
         if !accounts_enabled {
             return Box::new(Text::new(&super::t(
@@ -409,17 +409,19 @@ impl Selection {
                     &[("source", source.label.clone().into())],
                 );
                 let id = source.id.clone();
-                let change = bindings.clone();
-                body = body.push(Box::new(
+                body = body.push(Box::new(super::bound(
+                    actions,
                     Checkbox::from_state(&chosen)
                         .with_id(&format!(
                             "installer.session.{}.{}",
                             service.as_str(),
                             source.id
                         ))
-                        .with_label(label)
-                        .on_change(move |included| change(id.clone(), service, included)),
-                ));
+                        .with_label(label),
+                    super::InstallerPreviewEffect::SET_PREVIEW_SERVICE_SESSION.map(
+                        move |included: bool| (id.clone(), service.as_str().to_owned(), included),
+                    ),
+                )));
             }
         }
         Box::new(body)

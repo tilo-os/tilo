@@ -189,8 +189,8 @@ require_text /usr/lib/tmpfiles.d/tilo.conf "C  /var/lib/tilo/fs-capabilities.jso
 registry=/usr/share/tilo-apps/registry.toml
 require_file "$registry"
 require_text "$registry" 'id = "so.tilo.file-explorer"'
-# The package store names each tree by its signed package id, so read where
-# the row points instead of assuming a path.
+# The image store names each tree by its payload and each signed record by its
+# package id, so read where the row points instead of assuming a path.
 registry_field() {
   python3 - "$(at "$registry")" "$1" "$2" <<'PY'
 import pathlib
@@ -210,7 +210,7 @@ payload="$(registry_field so.tilo.file-explorer payload_root)" \
 manifest="$(registry_field so.tilo.file-explorer manifest_path)" \
   || die "registry has no manifest for Files"
 case "$payload" in
-  /usr/share/tilo-apps/pkgs/*) ;;
+  /usr/share/tilo-apps/trees/*) ;;
   *) die "Files payload $payload is outside the system package store" ;;
 esac
 case "$manifest" in
@@ -222,7 +222,7 @@ require_exec "$payload/bin/file-explorer"
 # The packer serializes a normalized manifest rather than preserving authoring
 # whitespace. Validate the installed TOML values, not one formatter's spacing.
 require_toml_string "$manifest" package.id "so.tilo.file-explorer"
-require_toml_string "$manifest" sandbox.services.tilo-fs "optional@10"
+require_toml_string "$manifest" sandbox.services.tilo-fs "optional@11"
 # The package names the exact runtime build it links, and the image ships it.
 runtime_version="$(python3 - "$(at "$manifest")" <<'PY'
 import pathlib, re, sys, tomllib

@@ -63,13 +63,14 @@
 //!      ISOs skip it. Only the secret-free settings the live installer applies
 //!      are offered; encryption and login secrets stay on the target device.
 //!   4. **Confirm** — a read-only review of every choice, an erase warning that
-//!      escalates for an internal / system disk, and the typed device-name gate.
+//!      escalates for an internal / system disk; Erase and write is the drive's
+//!      published write, for which the host asks the device name.
 //!   5. **Write / Install** — a real, byte-for-byte streaming copy with live
 //!      progress, then a read-back **verify** pass. (The caption reads "Write"
 //!      for a removable drive, "Install" for a disk install.)
 //!   6. **Done** — the verified / failed outcome, with a fresh-start affordance.
 //!
-//! Writing is doubly gated: the typed confirmation, then platform-native
+//! Writing is doubly gated: the host's typed confirmation, then platform-native
 //! authentication for a short-lived helper. The wizard, downloads, and
 //! customization remain in the user's unprivileged session.
 //!

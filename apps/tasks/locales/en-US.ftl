@@ -42,12 +42,13 @@ tasks-issue-description = Description
 tasks-issue-gone-title = This issue was deleted
 tasks-issue-gone-message = Undo brings it back.
 tasks-sub-issues = Sub-issues
+tasks-about = What this is about
 tasks-links = Links
 
 ## Projects and areas: the resource above the tasks
 tasks-projects = Projects and areas
 tasks-new-project = New project
-tasks-create = Create
+tasks-create-button = Create
 tasks-cancel = Cancel
 tasks-project-none = No projects or areas yet.
 tasks-field-kind = Kind
@@ -78,6 +79,7 @@ tasks-fact-goal = Goal: { $goal }
 tasks-fact-priority = Priority { $priority }
 tasks-fact-due = Due { $date }
 tasks-fact-cost = Spent { $spent } of { $budget }
+tasks-list-spend = { $status }, spent { $cost } { $currency }
 
 tasks-run = Agent
 tasks-run-chip = Task: { $state }
@@ -89,6 +91,11 @@ tasks-run-list-device = On { $device }
 tasks-run-list-cost = Cost { $cost }
 tasks-run-list-sub-tasks = { $closed } of { $total } sub-tasks closed
 tasks-run-agent = { $agent }: { $phase }
+tasks-run-spent = Spent { $cost } { $currency }
+tasks-run-spent-nothing = Cost no money
+tasks-run-used = used { $tokens } tokens
+tasks-run-model = on { $model }
+tasks-run-device = on { $device }
 tasks-run-not-started = waits for you to start it
 tasks-run-approved = starting
 tasks-run-accepted = started
@@ -119,6 +126,7 @@ tasks-thread-send-to-agent = Send to the agent
 tasks-message-to-run = To the agent
 tasks-message-read-by-run = Read by the agent
 tasks-message-from-run = From the agent
+tasks-message-lookup = Looked up
 
 ## History
 
@@ -136,6 +144,7 @@ tasks-resume-run = Let the agent go on with { $item }
 tasks-set-execution-budget = Changed how long the agent may work on { $item }
 tasks-send-message = Sent the agent a message on { $item }
 tasks-report-run = Reported progress on { $item }
+tasks-record-read = Read { $label } for { $item }
 tasks-incorporate = Read the messages on { $item }
 tasks-ask-confirmation = Asked before an action on { $item }
 tasks-answer-confirmation = Answered the agent on { $item }

@@ -1145,7 +1145,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         self.assertEqual(counts[("closure_control", "apps/sample/src/tests.rs")], 0)
         self.assertTrue(any("5 found, audited ceiling 0" in item.reason for item in violations))
 
-    def test_closure_run_buttons_of_composites_count_by_call_shape(self):
+    def test_closure_run_buttons_of_composites_count_by_builder_and_arity(self):
         header = (
             "use tilo_actions::ActionSpec;\n"
             "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
@@ -1158,12 +1158,32 @@ class AppResourceActionContractTests(unittest.TestCase):
             " Dialog::new().primary_action(\"Save\", save).secondary_action(\"Cancel\", || ());\n"
             " let items = vec![MenuItem::action(\"Copy\", copy), MenuItem::separator()];\n"
             " ListRow::new().action(Icon::X, \"Remove\", remove);\n"
+            " row.action(icon, label, intents.sender(intent));\n"
+            " row.action(icon_for(kind), \"Pin\", move |a, b| pin(a, b),);\n"
+            " card.hover_action(icon, \"Play\", || play());\n"
             " spec.action(\"go\");\n"
+            " toolbar.action(ToolbarAction { menu: true, ..action(UP, \"up\", t, true, false) });\n"
+            " tree.action(&id, \"activate\");\n"
             "}\n"
         )
         counts: dict[tuple[str, str], int] = {}
         contract.audit(root, counts)
         self.assertEqual(counts[("closure_action_button", "apps/sample/src/lib.rs")], 4)
+
+    def test_a_counted_builder_whose_arity_changes_fails(self):
+        root = self.fixture("")
+        widget = root / "crates/sdk/ui-core/src/widget/row.rs"
+        widget.parent.mkdir(parents=True)
+        widget.write_text(
+            "impl Row {\n"
+            " pub fn action(mut self, icon: Icon, on: impl FnMut() + 'static) -> Self { self }\n"
+            " pub fn hover_action(mut self, icon: Icon, label: String, on: impl Fn(&str, u8)) -> Self { self }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        violations = contract.unclassified_control_callbacks(root)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("`action` takes 2 arguments", violations[0].reason)
 
     def test_write_baseline_only_lowers_ceilings_unless_seeding_a_new_ratchet(self):
         root = self.fixture("")

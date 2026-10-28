@@ -199,6 +199,7 @@ granted to an app through the GlobalShortcuts portal.
 | Keyboard shortcuts | F1 |
 | Stop all remote input | Super+Esc |
 | Toggle mouse keys | Alt+Shift+Num Lock |
+| Turn the screen reader on or off | Super+Ctrl+Enter |
 <!-- fixed-shell-chords:end -->
 
 ## In the browser

@@ -478,6 +478,7 @@ desktop-app-unavailable = Application unavailable
 desktop-app-identity-unavailable = Application identity unavailable
 desktop-app-integration-unavailable = { $app }: application integration or required service unavailable
 desktop-app-no-adapter = No semantic application adapter; process-local pixels cannot be reconstructed
+desktop-search-copied = Copied
 desktop-view-switch-workspace = Switch to { $workspace }
 desktop-view-review-activity = Review workspace activity
 desktop-view-explore-activity = Explore workspace activity

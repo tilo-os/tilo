@@ -160,7 +160,7 @@ fn payload(
     scroll: f64,
 ) -> ui::application_view::ApplicationLocalView {
     ui::application_view::ApplicationLocalView {
-        app_id: notes::definition().app_id.into(), version: 1,
+        app_id: notes::definition().app_id().into(), version: 1,
         payload: serde_json::to_vec(&serde_json::json!({
             "selected_page": page, "active_tag": null, "drawer_open": false,
             "expanded_pages": [], "editor_scroll": scroll, "focus": focus,

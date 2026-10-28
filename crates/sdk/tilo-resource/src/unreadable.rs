@@ -36,7 +36,7 @@ pub(crate) fn parts<R: Resource>(id: &str, label: &str, reason: &str) -> tilo_ac
 pub fn withhold_document_actions(resource: &mut tilo_actions::Resource, reason: &str) {
     for spec in &mut resource.actions {
         if spec.kind == tilo_actions::OperationKind::Document {
-            spec.contract.availability = unavailable(reason);
+            spec.type_mut().contract.availability = unavailable(reason);
         }
     }
     for child in &mut resource.children {
@@ -51,7 +51,7 @@ pub(crate) fn withhold(
     mut spec: tilo_actions::ActionSpec,
     reason: &str,
 ) -> tilo_actions::ActionSpec {
-    spec.contract.availability = unavailable(reason);
+    spec.type_mut().contract.availability = unavailable(reason);
     spec
 }
 

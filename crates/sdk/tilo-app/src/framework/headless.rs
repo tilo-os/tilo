@@ -42,7 +42,7 @@ const TEST_DEVICE: &str = "test-device";
 /// shared disk it waits for every other writer's data to reach it, and a
 /// capture syncs on each staged edit. Elsewhere it is the system's
 /// temporary directory.
-pub(super) fn profile_directory() -> std::io::Result<tempfile::TempDir> {
+pub(crate) fn profile_directory() -> std::io::Result<tempfile::TempDir> {
     if let Some(memory) = tilo_paths::memory_temp_dir()
         && let Ok(directory) = tempfile::Builder::new()
             .prefix("tilo-profile-")
@@ -177,7 +177,7 @@ fn serve_kept<A: ResourceApp>(
     }
     for (provider, kept) in providers {
         let records = super::SettingsRecords::in_document(
-            A::ID,
+            super::app::hooks::<A>().id(),
             &kept,
             ui_core::storage::SettingsDocument::File(settings.to_path_buf()),
         );
@@ -436,9 +436,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let native =
             ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
         // A test thread may wait: the record is on the disk once installed.
-        let _installed =
-            ui_core::record::transfer::install(native.store(), A::ID, TEST_ROOM, document)
-                .map_err(operation)?;
+        let _installed = ui_core::record::transfer::install(
+            native.store(),
+            super::app::hooks::<A>().id(),
+            TEST_ROOM,
+            document,
+        )
+        .map_err(operation)?;
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
         Self::open(
             Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
@@ -454,7 +458,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// A new window of the app on a fresh profile that already holds
     /// `documents`, each a record a window of the app kept in the test room
-    /// ([`window_record`]): how an app that now keeps one record per room
+    /// (`window_record`): how an app that now keeps one record per room
     /// first opens where it used to keep one per window.
     pub fn with_window_records(documents: &mut [tilo_resource::Doc]) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
@@ -462,9 +466,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
             let native =
                 ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
             for document in documents {
-                let _installed =
-                    ui_core::record::transfer::install(native.store(), A::ID, TEST_ROOM, document)
-                        .map_err(operation)?;
+                let _installed = ui_core::record::transfer::install(
+                    native.store(),
+                    super::app::hooks::<A>().id(),
+                    TEST_ROOM,
+                    document,
+                )
+                .map_err(operation)?;
             }
         }
         Self::open(
@@ -494,7 +502,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
                 ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
             let _installed = ui_core::record::transfer::install_room_document(
                 native.store(),
-                A::ID,
+                super::app::hooks::<A>().id(),
                 TEST_ROOM,
                 document,
             )
@@ -640,7 +648,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn files(&self) -> ui_core::storage::AppFiles {
         ui_core::storage::AppFiles::at(ui_core::storage::AppPaths::under(
             self.profile.root().join("files"),
-            A::ID,
+            super::app::hooks::<A>().id(),
         ))
     }
 
@@ -648,7 +656,8 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// the running app follows: a write here is what another window, the
     /// Settings app or another of the person's devices writing them does.
     pub fn settings<T: ui_core::storage::SettingsSchema>(&self) -> ui_core::storage::Settings<T> {
-        ui_core::storage::Settings::for_app(A::ID).in_file(self.profile.settings())
+        ui_core::storage::Settings::for_app(super::app::hooks::<A>().id())
+            .in_file(self.profile.settings())
     }
 
     /// Change the participant's role while the app runs, as the record's
@@ -832,7 +841,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let outcome = self
             .harness()
             .with_widget_mut(|root: &mut ResourceRoot| root.run.open_here(&arguments))
-            .ok_or_else(|| format!("{} is not hosted here", A::TITLE))??;
+            .ok_or_else(|| format!("{} is not hosted here", super::app::hooks::<A>().title()))??;
         self.harness().relayout();
         outcome
             .get()
@@ -1811,6 +1820,15 @@ pub(super) fn surface_of<A: ResourceApp, S: 'static>(root: &mut ResourceRoot) ->
 
 impl<A: ResourceApp> Drop for HeadlessApp<A> {
     fn drop(&mut self) {
+        // A test that failed is unwinding: close the app without running
+        // its frames again, so whatever failed it cannot fail closing too
+        // and abort the whole test binary.
+        if std::thread::panicking() {
+            if let Some(mut harness) = self.harness.take() {
+                harness.close_components();
+            }
+            return;
+        }
         let _ = self.close();
     }
 }
@@ -1841,7 +1859,7 @@ impl Opening {
     fn of<A: ResourceApp>() -> Self {
         Self {
             definition: definition::<A>(),
-            id: A::ID,
+            id: super::app::hooks::<A>().id(),
             options: A::OPTIONS,
             flags: A::FLAGS,
             private_windows: A::PRIVATE_WINDOWS,
@@ -1989,7 +2007,7 @@ fn open_app(
     if !violations.is_empty() {
         return Err(LaunchError::Operation(format!(
             "{} publishes an action surface the host would refuse: {}",
-            definition.app_id,
+            definition.app_id(),
             violations
                 .iter()
                 .map(|violation| format!("{}: {}", violation.address, violation.reason))
@@ -2096,7 +2114,7 @@ fn published_ids<A: ResourceApp>(harness: &mut FrameHarness) -> PublishedIds {
         .with_widget_mut(|root: &mut ResourceRoot| {
             let typed = root.typed::<A::Resource>()?;
             let views = <A::Resource as Resource>::views(&typed.live.get());
-            Some(ids_of(typed.effects.specs(), views))
+            Some(ids_of(&typed.effects.specs(), views))
         })
         .flatten()
         .unwrap_or_default()
@@ -2106,11 +2124,11 @@ fn published_ids<A: ResourceApp>(harness: &mut FrameHarness) -> PublishedIds {
 /// every app's [`published_ids`].
 #[inline(never)]
 fn ids_of(
-    effects: Vec<tilo_actions::ActionSpec>,
+    effects: &[tilo_actions::ActionSpec],
     views: Vec<tilo_actions::ResourceViewSpec>,
 ) -> PublishedIds {
     (
-        effects.into_iter().map(|spec| spec.id).collect(),
+        effects.iter().map(|spec| spec.id.clone()).collect(),
         views.into_iter().map(|view| view.id).collect(),
     )
 }
@@ -2205,6 +2223,182 @@ fn strict_bindings() {
 fn published_here(resource: &mut tilo_actions::Resource) {
     resource.actions.retain(|spec| spec.provider().is_none());
     resource.children.iter_mut().for_each(published_here);
+}
+
+/// A host that runs documents of its own, mounted headlessly: for proving what the host adds to an
+/// app that is not a [`ResourceApp`] (tilolang runs other apps' packages in one window). The same
+/// opening as [`HeadlessApp`]: the real component runtime, storage, permissions and history, and the
+/// host's refusal of an action surface that breaks the contract.
+pub struct HostedApp {
+    harness: Option<FrameHarness>,
+    records: RecordStore,
+    checkout: RecordCheckout,
+    instance: u64,
+    _profile: Profile,
+}
+
+impl HostedApp {
+    /// The app `definition` as its owner `author` opens it on a fresh private profile.
+    ///
+    /// # Errors
+    /// Returns any launch, storage or construction failure, or the contract violation the live
+    /// host would refuse the app's action surface for.
+    pub fn open(
+        definition: &'static ui_core::application::ApplicationDefinition,
+        author: &str,
+    ) -> Result<Self, LaunchError> {
+        let profile = Profile::Temporary(
+            Rc::new(profile_directory().map_err(operation)?),
+            TEST_ROOM.to_owned(),
+            TEST_DEVICE.to_owned(),
+        );
+        Self::open_in(definition, author, profile)
+    }
+
+    /// The app `definition` as its owner `author` opens it on the profile `--data-dir
+    /// directory` opens: what a test opens again to see what an earlier window kept. Only one
+    /// writer may hold a profile.
+    ///
+    /// # Errors
+    /// As [`Self::open`].
+    pub fn open_data_dir(
+        definition: &'static ui_core::application::ApplicationDefinition,
+        author: &str,
+        directory: &std::path::Path,
+    ) -> Result<Self, LaunchError> {
+        Self::open_in(
+            definition,
+            author,
+            Profile::DataDir(directory.to_path_buf()),
+        )
+    }
+
+    fn open_in(
+        definition: &'static ui_core::application::ApplicationDefinition,
+        author: &str,
+        profile: Profile,
+    ) -> Result<Self, LaunchError> {
+        let opening = Opening {
+            definition,
+            id: definition.app_id(),
+            options: &[],
+            flags: &[],
+            private_windows: false,
+            launch_record: |_| None,
+            shot_viewport: |_| (1000, 700),
+        };
+        let opened = open_app(
+            &opening,
+            Launch {
+                profile,
+                role: Role::Owner,
+                author,
+                arguments: &[],
+                file: None,
+                handoff: None,
+                capture: None,
+            },
+            &mut |_| {},
+        )?;
+        Ok(Self {
+            harness: Some(opened.harness),
+            records: opened.records,
+            checkout: opened.checkout,
+            instance: opened.instance,
+            _profile: opened.profile,
+        })
+    }
+
+    /// The headless window.
+    ///
+    /// # Panics
+    /// Panics once the app is closed.
+    #[allow(clippy::expect_used, reason = "closing consumes the host")]
+    pub fn harness(&mut self) -> &mut FrameHarness {
+        self.harness.as_mut().expect("app is open")
+    }
+
+    /// Invoke `action` of the published `resource` through the host's door, as `invoker` (the
+    /// person at the window when `None`), within `ambient`: the task the invoker is carrying
+    /// out, recorded with every change it makes. Answers what the operation answered.
+    ///
+    /// # Errors
+    /// The door's refusal, or the operation's failure.
+    pub fn invoke(
+        &mut self,
+        invoker: Option<tilo_actions::ActionInvoker>,
+        ambient: Option<&tilo_actions::ActionContext>,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+        let address = BoundActionAddress {
+            instance_id: self.instance,
+            address: tilo_actions::ActionAddress::new(resource, action),
+        };
+        let (invocation, started) = self
+            .harness()
+            .start_bound_job_within(invoker, ambient, &address, arguments, confirmed)?;
+        let harness = self.harness();
+        if let Some(output) = started.completed() {
+            harness.relayout();
+            return Ok(output);
+        }
+        let finished = |harness: &FrameHarness| {
+            harness
+                .job_updates(invocation)
+                .iter()
+                .find(|update| update.is_terminal())
+                .cloned()
+        };
+        harness.wait_until(ui_core::time::Duration::from_secs(30), |harness| {
+            finished(harness).is_some()
+        });
+        match finished(harness) {
+            Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => Ok(output),
+            Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
+                Err(tilo_actions::DoorError::Failed(error.message))
+            }
+            Some(_) => Err(tilo_actions::DoorError::Failed("cancelled".into())),
+            None => Err(tilo_actions::DoorError::Failed(format!(
+                "`{action}` did not finish"
+            ))),
+        }
+    }
+
+    /// Read the app's record as it is now, after everything the window has committed.
+    ///
+    /// # Panics
+    /// Panics when the record cannot be read.
+    #[allow(
+        clippy::expect_used,
+        reason = "a record that cannot be read fails the test"
+    )]
+    pub fn read<R>(&mut self, read: impl FnOnce(&mut tilo_resource::Doc) -> R) -> R {
+        let harness = self.harness();
+        harness.relayout();
+        harness
+            .flush_component_records()
+            .expect("the window's changes reach the record");
+        self.records
+            .read(&self.checkout.id, |doc| read(&mut doc.clone()))
+            .expect("the record reads")
+    }
+
+    fn close(&mut self) -> Result<(), LaunchError> {
+        if let Some(mut harness) = self.harness.take() {
+            harness.flush_component_records().map_err(operation)?;
+            harness.close_components();
+        }
+        Ok(())
+    }
+}
+
+impl Drop for HostedApp {
+    fn drop(&mut self) {
+        let _ = self.close();
+    }
 }
 
 // Retained results come from the real framework semantic door.

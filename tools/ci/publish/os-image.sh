@@ -212,9 +212,11 @@ case ${1:-} in
     # env-runtime the OS image ships none; the dev image then ships env-runtime-dev-<arch>'s, built
     # from this run's image-rpms-<arch> and sealed with a throwaway key, trusted by it alone. Its
     # local model catalog is model-catalog-dev-<arch>'s, which names the runtimes of this tree.
-    # Its layers are dated by the OS image's clock (its base's and RPM snapshot's), not by the
-    # commit or the time they were built, so a dev layer whose content is the same is the same
-    # blob in the next build, and a publication sends it once.
+    # Its commit is its org.opencontainers.image.revision label, which adds no layer: publishing
+    # checks it, and the dev channel moves only forward along main by it. Its layers are dated
+    # by the OS image's clock (its base's and RPM snapshot's), not by the commit or the time they
+    # were built, so a dev layer whose content is the same is the same blob in the next build,
+    # and a publication sends it once.
     epoch=$(podman image inspect --format '{{index .Labels "org.tilo.source-date-epoch"}}' localhost/tilo:ci)
     [[ $epoch =~ ^[1-9][0-9]*$ ]] || die "the OS image carries no clock but '$epoch'"
     phase build
@@ -224,6 +226,7 @@ case ${1:-} in
       TILO_DEV_ENV_RUNTIME=/target/publish/env-runtime/dev/$arch \
       TILO_DEV_MODEL_CATALOG=/target/model-catalog/dev/$arch \
       TILO_DISTROBOX= TILO_OUTPUT=$scratch/dev-output TMPDIR=/var/tmp \
+      TILO_BUILD_ARGS="--label org.opencontainers.image.revision=$revision" \
       bash os/dev/build-dev-image.sh
     # Kept as the layers it added over the OS image's, composed with them: the OS image's
     # layers are the same blobs in both, stored and sent once.

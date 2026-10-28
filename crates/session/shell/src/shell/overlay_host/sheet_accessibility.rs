@@ -13,7 +13,7 @@
 use ui::a11y::{AccessNode, AccessState, Action, Politeness, Role};
 
 use super::{ChromeNotifications, ShellOverlayHost, fullscreen_hint, t};
-use crate::shell::quick_settings::WifiPasswordPrompt;
+use tilo_quick_settings::WifiPasswordPrompt;
 
 const WIFI_PASSWORD_PREFIX: &str = "wifi-password:";
 const FILE_PICKER_PREFIX: &str = "file-picker:";
@@ -97,10 +97,8 @@ impl ShellOverlayHost {
             && self.chrome.as_ref().is_some_and(|chrome| {
                 let state = chrome.borrow();
                 state.quick_settings.wifi_password.is_some()
-                    && state.quick_settings.current_level()
-                        == &crate::shell::quick_settings::QsLevel::Root
-                    && state.quick_settings.section
-                        == Some(crate::shell::quick_settings::QsSection::Wifi)
+                    && state.quick_settings.current_level() == &tilo_quick_settings::QsLevel::Root
+                    && state.quick_settings.section == Some(tilo_quick_settings::QsSection::Wifi)
             })
     }
 

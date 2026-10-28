@@ -214,6 +214,15 @@ generated three-file manifest to Microsoft's public community index. See
 `docs/imager-release-operations.md` for runner labels, protected variables and
 the Forgejo OIDC design for short-lived signing access.
 
+`IMAGER_HOMEBREW_TAP_REPOSITORY` and `IMAGER_HOMEBREW_TAP_NAME` name the tap
+the release updates and the tap people are told to run. The tap README, the
+native install tests and the landing page's Homebrew commands all read that one
+destination, and `docs/install-contract.json` publishes it so the site prints
+the tap this release actually advanced instead of a name of its own.
+`publish-site-release.sh` refuses to promote a page whose rendered commands
+name any other tap, and `scripts/check-install-contract.py` fails when the
+contract, the workflow and the formula and cask templates disagree.
+
 The landing-page manifest records the public release root and package-channel
 state separately from signed download availability. Homebrew is marked available only after its native
 install matrix passes. A newly opened WinGet submission is marked `submitted`,

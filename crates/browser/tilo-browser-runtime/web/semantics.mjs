@@ -396,7 +396,10 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
       // the selection and setting it again on every field each status
       // forced a layout per field and fired selection events on fields
       // nobody is in, all while the person types into one.
-      const shown=state=>!state.canonicalSelection||state.domSelection?.[0]===element.selectionStart&&state.domSelection?.[1]===element.selectionEnd;
+      // Only the field the page's focus is in can have had its selection
+      // moved since it was set; reading another field's selection forced
+      // a layout of the page for every field in the tree on each status.
+      const shown=state=>!state.canonicalSelection||(element!==document.activeElement&&state.domSelection)||state.domSelection?.[0]===element.selectionStart&&state.domSelection?.[1]===element.selectionEnd;
       if(editable&&!changed&&!element.tiloState.composing&&element.value===value&&shown(element.tiloState)){
         // Already shown.
       }else if(editable){

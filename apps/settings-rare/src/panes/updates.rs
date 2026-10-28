@@ -1028,7 +1028,7 @@ impl UpdatesModel {
         )
     }
 
-    /// [`UpdatesPane::with_parts`], plus the system control — the timer, the
+    /// `UpdatesPane::with_parts`, plus the system control — the timer, the
     /// rollback target and the rollback itself.
     ///
     /// Reads the control as it is built, on the calling thread: it is a

@@ -2,21 +2,21 @@
 //!
 //! Three places, one beside the other in the sidebar:
 //!
-//! * **What's new** ([`whats_new`]): the work sessions since this device
+//! * **What's new** (`whats_new`): the work sessions since this device
 //!   last looked, where you left off, the on-device summary and the morning
 //!   sources you chose. Leaving it, or marking it viewed, counts it seen.
-//! * **History** ([`history`]): every change, grouped by work group and
+//! * **History** (`history`): every change, grouped by work group and
 //!   day, narrowed by period, person and lens ([`Filter`]) and by the window
 //!   bar's search; a selected run of changes shows in the inspector
-//!   ([`detail`]) with what it touched and what can be done with it:
+//!   (`detail`) with what it touched and what can be done with it:
 //!   compare, undo, restore, name, split, merge.
-//! * **Replay** ([`replay`]): the workspace's layout at each recent change,
+//! * **Replay** (`replay`): the workspace's layout at each recent change,
 //!   stepped or played.
 //!
 //! The history is the workspace's, not the app's: the session reads it and
 //! serves it under [`wire::PROVIDER`], live, to whoever may read it. The app
 //! follows those reads ([`ui::framework::RecordEnv::query`]) and asks for
-//! changes through the same door ([`Provider`]). Its own record holds only
+//! changes through the same door (`Provider`). Its own record holds only
 //! which changes History shows.
 
 /// The application id.

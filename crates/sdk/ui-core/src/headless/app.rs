@@ -233,7 +233,7 @@ impl HeadlessApp {
     /// run stops at the first step that cannot be carried out.
     ///
     /// This is [`super::driver::drive`] — the same function `--headless-drive`
-    /// runs its steps through, on the same [`FrameHarness::perform_bound`], so
+    /// runs its steps through, on the same `FrameHarness::perform_bound`, so
     /// what a test proves here is what the app's own process does. The app is
     /// left where the last step put it, so a test keeps driving it or asserts
     /// on the state it reached.

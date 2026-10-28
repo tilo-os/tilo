@@ -34,7 +34,7 @@ class EngineRuntimeNameTests(unittest.TestCase):
         self.assertIn('--require-publisher "$(cat /usr/share/tilo/browser-runtime-publisher.hex)"', guard)
 
     def test_the_browser_install_link_requests_the_exact_declared_runtime(self):
-        source = (ROOT / "apps/browser/src/browser_widget.rs").read_text()
+        source = (ROOT / "apps/browser/src/browser_widget/engine_runtime.rs").read_text()
         match = re.search(r'const ENGINE_INSTALL_URI: &str =\s*"tilo-store:runtime/([^"\s]+)";', source)
         self.assertIsNotNone(match)
         owner, runtime = match.group(1).split("/", 1)

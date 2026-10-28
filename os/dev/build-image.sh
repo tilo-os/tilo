@@ -534,7 +534,16 @@ build_image() {
     base)
       [ "${TILO_REQUIRE_PCR_PREDICTION:-0}" != 1 ] || die "a publication dates its layers by its commit (TILO_LAYER_EPOCH=commit)"
       layer_epoch="$(tilo_image_epoch "$BASE_REF")" || die "could not read the creation time of $BASE_REF"
-      build_epoch="$layer_epoch" ;;
+      build_epoch="$layer_epoch"
+      # The package transactions run at the build's clock (os/scripts/dnf-fixed-time.sh),
+      # and rpm refuses a package signed after it as a header it cannot read: a snapshot
+      # holding packages signed since the base was made needs the snapshot's time. It
+      # changes only with the snapshot, so the cached layers still keep.
+      if [ -n "${RPMS_REF:-}" ]; then
+        local rpms_epoch
+        rpms_epoch="$(tilo_image_epoch "$RPMS_REF")" || die "could not read the creation time of $RPMS_REF"
+        [ "$rpms_epoch" -le "$build_epoch" ] || build_epoch="$rpms_epoch"
+      fi ;;
     *) die "TILO_LAYER_EPOCH must be commit or base, not '${TILO_LAYER_EPOCH}'" ;;
   esac
   if [ -n "${TILO_RAW_LAYER_EPOCH:-}" ]; then
@@ -618,7 +627,7 @@ compile_outside() {
     off) freshness=clean ;;
     *) die "TILO_COMPILER_CACHE must be local or off for os/image/compile.sh, not '$compiler_cache'" ;;
   esac
-  podman "${_tilo_podman_args[@]}" run --rm --security-opt label=disable --userns=keep-id \
+  podman "${_tilo_podman_args[@]}" run --rm --security-opt label=disable $(keep_id_args) \
     -v "$TILO_REPO:/src" -w /src \
     -v "$cache/cargo-home:/cargo-home" -v "$cache/target:/build-target" "${cache_args[@]}" \
     -v "$TILO_OUTPUT/compiled:/compiled" \

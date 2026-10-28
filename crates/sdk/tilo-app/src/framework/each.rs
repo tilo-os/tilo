@@ -560,14 +560,15 @@ impl<R: Resource> Each<R> {
         let mut menu = ContextMenu::new();
         let mut entries = Vec::new();
         for spec in &resource.actions {
+            let address = tilo_actions::ActionAddress::new(resource.id.as_str(), spec.id.as_str());
             let entry = if spec.contract.risk == tilo_actions::RiskLevel::Destructive {
-                MenuItem::destructive_action(spec.label.clone(), || {})
+                MenuItem::destructive_selection(spec.label.clone())
             } else {
-                MenuItem::action(spec.label.clone(), || {})
+                MenuItem::selection(spec.label.clone())
             };
-            menu.push(entry.with_enabled(!read_only));
+            menu.push(entry.for_action(address.clone()).with_enabled(!read_only));
             entries.push(MenuEntry {
-                address: tilo_actions::ActionAddress::new(resource.id.as_str(), spec.id.as_str()),
+                address,
                 prompts: !spec.params().is_empty(),
             });
         }

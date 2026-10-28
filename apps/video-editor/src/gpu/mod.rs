@@ -27,6 +27,10 @@ pub mod compositor;
 /// Decoded pictures from the real media engine — the source the editor uses.
 #[cfg(feature = "decode")]
 pub mod media_source;
+/// Decoded pictures from seekers that never wait — the source of a build
+/// without the `GStreamer` sessions, which is a browser page's.
+#[cfg(not(feature = "decode"))]
+pub mod seek_source;
 pub mod title;
 
 use std::collections::HashMap;
@@ -36,9 +40,28 @@ use vello::wgpu;
 
 use crate::model::MediaId;
 
-pub use compositor::{VideoCompositor, upload_rgba};
+pub use compositor::{PendingFrame, VideoCompositor, upload_rgba};
 #[cfg(feature = "decode")]
 pub use media_source::{Fetch, MediaFrameSource};
+#[cfg(not(feature = "decode"))]
+pub use seek_source::{Fetch, SeekFrameSource as MediaFrameSource};
+
+/// A cheap signature of the media a frame source indexes, so a caller can
+/// skip re-indexing when nothing changed: FNV-1a over each visual item's id
+/// and path, summed so the bin's order does not count.
+pub fn media_signature(project: &crate::model::Project) -> u64 {
+    let mut acc: u64 = 0;
+    for item in &project.media {
+        if !item.kind.is_visual() || item.kind.is_generated() {
+            continue;
+        }
+        let mut hasher = fnv::FnvHasher::default();
+        std::hash::Hasher::write(&mut hasher, item.id.as_bytes());
+        std::hash::Hasher::write(&mut hasher, item.path.as_bytes());
+        acc = acc.wrapping_add(std::hash::Hasher::finish(&hasher));
+    }
+    acc
+}
 
 /// A picture the compositor can sample, plus the size it was decoded at
 /// (which drives the aspect fit into the project frame).
@@ -189,6 +212,28 @@ impl HeadlessCompositor {
             sources,
         )
     }
+
+    /// [`Self::frame`] without waiting for the GPU, for a thread that may
+    /// not (a browser page's): the pixels arrive through the
+    /// [`PendingFrame`].
+    pub fn frame_later(
+        &mut self,
+        project: &crate::model::Project,
+        playhead: f64,
+        width: u32,
+        height: u32,
+        sources: &mut dyn FrameSource,
+    ) -> PendingFrame {
+        self.compositor.render_rgba_later(
+            &self.gpu.device,
+            &self.gpu.queue,
+            project,
+            playhead,
+            width,
+            height,
+            sources,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -328,6 +373,30 @@ mod tests {
         let cid = p.add_clip(t, mid, 0.0).unwrap();
         p.clip_mut(cid).unwrap().out_point = 10.0;
         (p, cid)
+    }
+
+    #[test]
+    fn a_composite_read_back_later_is_the_one_read_back_at_once() {
+        // A page cannot wait for its GPU, so its preview and export take the
+        // composite's pixels when they come back. They must be the very
+        // pixels the waiting path reads, or the page would export something
+        // other than what a desktop does.
+        let mut c = compositor();
+        let (p, _) = square_clip();
+        let at_once = c.frame(&p, 1.0, 40, 24, &mut green());
+        let later = c.frame_later(&p, 1.0, 40, 24, &mut green());
+        assert_eq!(later.size(), (40, 24));
+        let _ = c.gpu.device.poll(wgpu::PollType::wait_indefinitely());
+        let pixels = later
+            .try_take()
+            .expect("the read-back has landed after the wait")
+            .expect("the read-back worked");
+        assert_eq!(pixels.len(), 40 * 24 * 4);
+        assert!(pixels == at_once, "the pixels read back later differ");
+        assert!(
+            is_green(px(&pixels, 40, 20, 12)),
+            "the clip's picture is in the frame"
+        );
     }
 
     #[test]

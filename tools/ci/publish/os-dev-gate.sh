@@ -136,7 +136,12 @@ finish() {
   exit "$rc"
 }
 trap finish EXIT
-as_root="printf '%s\\n' '$TILO_PASS' | sudo -S -p ''"
+# The published disk has whatever accounts its publisher made, so the gate signs in as root with
+# a key of its own, which QEMU hands the guest as a systemd credential (vm.sh
+# TILO_VM_ROOT_KEY_FILE), on the published disk and on every image it restarts into.
+ssh-keygen -q -t ed25519 -N '' -C tilo-dev-gate -f "$TILO_RUN/gate-key"
+export TILO_VM_ROOT_KEY_FILE=$TILO_RUN/gate-key.pub TILO_SSH_IDENTITY=$TILO_RUN/gate-key TILO_USER=root
+as_root=
 "$vm" tool qemu-img create -f qcow2 -F qcow2 -b "$old" "$TILO_DISK" >/dev/null
 "$vm" boot "--$TILO_VM_DISPLAY"
 "$vm" wait

@@ -258,7 +258,9 @@ impl ShellOverlayHost {
             );
         }
         if let Some(action) = configured_action
-            && self.handle_desktop_chord(action, repeat, ui::tokens::MotionSource::Keyboard)
+            && self
+                .shortcut_action_outcome_as(action, repeat, ui::tokens::MotionSource::Keyboard)
+                .is_some()
         {
             *handled = true;
             return true;
@@ -642,7 +644,7 @@ impl ShellOverlayHost {
         for (request, outcome) in requested {
             let changed = match request {
                 crate::shell::chrome_state::WindowRequest::Shortcut(action) => {
-                    let changed = self.shortcut_action_outcome(action);
+                    let changed = self.shortcut_action_outcome_direct(action);
                     if changed.is_none() {
                         tracing::warn!(?action, "requested shortcut action has no desktop handler");
                     }
@@ -718,22 +720,102 @@ impl ShellOverlayHost {
         &mut self,
         action: settings_store::hardware::ShortcutAction,
     ) -> bool {
-        self.shortcut_action_outcome(action).is_some()
+        self.shortcut_action_outcome_as(action, false, ui::tokens::MotionSource::Action)
+            .is_some()
     }
 
     /// Run `action` once, as its chord does: whether it changed anything,
     /// or `None` when it is not a desktop shortcut the host runs. A desktop
     /// chord (a picker, a focus by number) counts as a change once handled.
-    fn shortcut_action_outcome(
+    ///
+    /// The shortcut catalogue says which action does what each shortcut does
+    /// ([`settings_store::hardware::ShortcutAction::action`]), so a key runs
+    /// the published action — the same one the palette's row, an agent and a
+    /// screen reader invoke. What the shell does not publish a row for yet
+    /// is still run here, so no chord loses its behaviour to a missing row.
+    ///
+    /// A key that acts once, like a move to the next window, acts on the
+    /// press and not again on every repeat of a held key.
+    fn shortcut_action_outcome_as(
+        &mut self,
+        action: settings_store::hardware::ShortcutAction,
+        repeat: bool,
+        source: ui::tokens::MotionSource,
+    ) -> Option<bool> {
+        if !Self::is_navigation_shortcut(action) {
+            return self
+                .handle_desktop_chord(action, repeat, source)
+                .then_some(true);
+        }
+        if repeat {
+            return Some(false);
+        }
+        self.with_motion(true, |host| host.run_shortcut_as_action(action))
+    }
+
+    /// Run `action` the way the desktop itself does, without going through
+    /// the action that publishes it: the chord's own code path, which is
+    /// what an action's request finally asks for here.
+    fn shortcut_action_outcome_direct(
         &mut self,
         action: settings_store::hardware::ShortcutAction,
     ) -> Option<bool> {
-        let source = ui::tokens::MotionSource::Action;
-        self.navigation_shortcut_outcome(action, false, source)
+        self.navigation_shortcut_outcome(action, false, ui::tokens::MotionSource::Action)
             .or_else(|| {
-                self.handle_desktop_chord(action, false, source)
+                self.handle_desktop_chord(action, false, ui::tokens::MotionSource::Action)
                     .then_some(true)
             })
+    }
+
+    /// The action `action` publishes, run; `None` when nothing publishes it.
+    fn run_shortcut_as_action(
+        &mut self,
+        action: settings_store::hardware::ShortcutAction,
+    ) -> Option<bool> {
+        let (provider, id) = action.action()?;
+        let invoked_by =
+            settings_store::InvokingAction::action(format!("shortcut.{}", action.id()));
+        if let Some(outcome) = self.run_published_action(provider, id, &invoked_by) {
+            return Some(outcome);
+        }
+        // The action door answered nothing: run the chord's own code rather
+        // than lose the key's behaviour to a row nobody published.
+        if Self::is_navigation_shortcut(action) {
+            return self.shortcut_action_outcome_direct(action);
+        }
+        self.run_desktop_action(action)
+    }
+
+    /// `outcome` with `run` started first when `moving`, so a key that moves
+    /// something animates like the chord it is.
+    fn with_motion<T>(&mut self, moving: bool, run: impl FnOnce(&mut Self) -> T) -> T {
+        if moving {
+            self.begin_motion(ui::tokens::MotionSource::Action);
+        }
+        run(self)
+    }
+
+    /// The desktop's own actions, as the palette's row for each runs them
+    /// ([`Self::run_desktop_chord_chrome`] holds the one implementation).
+    fn run_desktop_action(
+        &mut self,
+        action: settings_store::hardware::ShortcutAction,
+    ) -> Option<bool> {
+        use settings_store::hardware::ShortcutAction as A;
+        match action {
+            A::TabMenu => Some(self.open_focused_tab_context_menu()),
+            A::AskAgent => Some(self.press_ask_agent_chord(false)),
+            A::SaySomething => {
+                self.open_cursor_chat_on_request();
+                Some(true)
+            }
+            A::ReportProblem if !self.feedback_configured() => Some(false),
+            _ => {
+                let chrome = self.chrome.clone()?;
+                self.run_desktop_chord_chrome(&chrome, action);
+                Some(true)
+            }
+        }
     }
 
     /// Whether [`Self::navigation_shortcut_outcome`] handles `action`.

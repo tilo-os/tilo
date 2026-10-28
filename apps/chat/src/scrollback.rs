@@ -65,9 +65,29 @@ impl Scrollback {
 
 impl ChatApp {
     /// Whether the timeline in view reads back through the chat's parts:
-    /// a channel's, not a direct conversation's.
+    /// a channel's, not a direct conversation's, once one is in view, and
+    /// only while earlier parts may hold its messages.
     pub(crate) fn reads_back(&self) -> bool {
-        self.direct_person.is_none() && self.scrollback.loading()
+        // A window still choosing its channel (its record not read yet)
+        // shows no timeline to read back from.
+        self.direct_person.is_none()
+            && self.channel(&self.active_channel).is_some()
+            && self.scrollback.loading()
+            && self.earlier_may_hold_channel()
+    }
+
+    /// Whether the parts before those held may hold messages of the channel
+    /// in view: not when the head's counts of them say it has none there,
+    /// so a channel quiet before (or never used) reads nothing back.
+    fn earlier_may_hold_channel(&self) -> bool {
+        let pager = self.scrollback.pager.as_ref();
+        // A part asked for is shown arriving or unavailable whatever it holds.
+        if pager.is_some_and(|pager| !pager.chain().waited().is_empty()) {
+            return true;
+        }
+        self.held_messages()
+            .earlier_than_held(&Id::from_raw(self.active_channel.clone()))
+            != Some(0)
     }
 
     /// Read the reader's marks and the "new messages" line, as the record

@@ -478,7 +478,11 @@ impl ShellOverlayHost {
             desktop,
             |scene| {
                 self.draw_control_hints(scene, transform, text_renderer, theme);
-                None
+                // A hint's picture loops while it shows: each frame repaints
+                // what the hint painted, not the whole desktop.
+                self.control_hints
+                    .painted_rect()
+                    .map(|painted| vec![transform.transform_rect_bbox(painted)])
             },
         );
         overlay_part(above_quick_settings, "shell.tour", desktop, |scene| {
@@ -895,7 +899,7 @@ impl ShellOverlayHost {
 fn scene_phase(name: &'static str, since: std::time::Instant) -> std::time::Instant {
     let now = std::time::Instant::now();
     let took = now.duration_since(since);
-    crate::compositor::metrics::profile::record_phase(name, took, None);
+    tilo_frame_metrics::profile::record_phase(name, took, None);
     SECTION_SPANS.with(|spans| {
         let mut spans = spans.borrow_mut();
         // Bounded: a paint whose scene is not reported never drains them.

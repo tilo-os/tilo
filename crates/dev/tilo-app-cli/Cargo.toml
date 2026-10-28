@@ -74,6 +74,9 @@ tempfile.workspace = true
 tilo-test-env = { path = "../test-env" }
 # The outside-repository journey publishes into a real registry on loopback.
 registry-server = { path = "../../packaging/registry-server" }
+# A framework app's surface, reported in process as its binary's `--surface`.
+messages = { path = "../../../apps/messages" }
+ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 tokio = { workspace = true, features = ["rt"] }
 
 [lints]

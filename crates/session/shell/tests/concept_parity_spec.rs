@@ -742,7 +742,7 @@ fn quick_settings_renders_power_utility_white_slider_fill_and_wifi_drill_in() {
             let mut chrome = chrome.borrow_mut();
             chrome.quick_settings.radios.wifi_available = true;
             chrome.quick_settings.wifi = false;
-            chrome.open_quick_settings_section(shell::shell::quick_settings::QsSection::Wifi);
+            chrome.open_quick_settings_section(tilo_quick_settings::QsSection::Wifi);
         });
 
         // EXPECTED: root_fills != wifi_fills. CURRENT: equal (drill-in unwired).

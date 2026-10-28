@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 use vello::kurbo::{Point, Rect};
 
 use crate::network::protocol::{PeerId, SurfaceId};
-use crate::network::streaming::InputEvent;
 use crate::shell::input_policy::{ChordMods, InputCapture, chord_key_for_evdev, shell_owns_chord};
+use tilo_window_share::streaming::InputEvent;
 
 /// How long local input keeps the remote side out — the host reaching for their own input is an unambiguous takeover.
 pub const PHYSICAL_PRIORITY_WINDOW: Duration = Duration::from_millis(500);
@@ -1355,9 +1355,9 @@ mod tests {
 mod production_path {
     use super::*;
     use crate::compositor::state::State;
-    use crate::network::streaming::StreamingShare;
     use smithay::reexports::calloop::EventLoop;
     use smithay::reexports::wayland_server::Display;
+    use tilo_window_share::streaming::StreamingShare;
 
     const PEER: PeerId = 3;
     const SHARED: SurfaceId = 501;

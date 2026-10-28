@@ -242,12 +242,12 @@ impl AttachedView {
         let cache = PortableStorage::new("attached-views", DEVICE)?;
         let key = if checkout.id.is_package_primary() {
             StorageKey::Primary {
-                package: definition.app_id.into(),
+                package: definition.app_id().into(),
                 workspace: room.to_owned(),
             }
         } else {
             StorageKey::Record {
-                package: definition.app_id.into(),
+                package: definition.app_id().into(),
                 workspace: room.to_owned(),
                 record: checkout.id.as_str().into(),
             }
@@ -255,7 +255,7 @@ impl AttachedView {
         cache.hydrate(key, document, Some(me.as_bytes().to_vec()))?;
         let cache_kept = cache.clone();
         let records = RecordOwners::portable(cache.clone())
-            .open(definition.app_id, room)
+            .open(definition.app_id(), room)
             .map_err(|error| error.to_string())?;
         let views =
             Rc::new(InstanceViewStore::portable(cache, room).map_err(|error| error.to_string())?);
@@ -359,7 +359,9 @@ impl AttachedView {
         self.frame
             .resources()
             .into_iter()
-            .filter_map(|resource| permissions.permitted_resource(self.definition.app_id, resource))
+            .filter_map(|resource| {
+                permissions.permitted_resource(self.definition.app_id(), resource)
+            })
             .collect()
     }
 
@@ -441,7 +443,10 @@ impl AttachedView {
         confirmed: bool,
     ) -> Result<ActionOutput, DoorError> {
         let (_, started) = self.start_as(invoker, address, arguments, confirmed)?;
-        self.frame.relayout();
+        // It answers once what it caused in the app has landed: a reply the
+        // app asked a worker for in turn is applied as part of it, not of
+        // whatever is invoked next. A job it started answers by itself.
+        self.frame.settle_owed();
         Ok(started.completed().unwrap_or_default())
     }
 
@@ -465,7 +470,7 @@ impl AttachedView {
     ) -> Result<ActionOutput, DoorError> {
         let (invocation, started) = self.start_as(invoker, address, arguments, confirmed)?;
         if let Some(output) = started.completed() {
-            self.frame.relayout();
+            self.frame.settle_owed();
             return Ok(output);
         }
         let ended = |frame: &FrameHarness| {
@@ -475,8 +480,13 @@ impl AttachedView {
                 .find(|update| update.is_terminal())
                 .cloned()
         };
-        self.frame
-            .wait_until(within, |frame| ended(frame).is_some());
+        if self
+            .frame
+            .wait_until(within, |frame| ended(frame).is_some())
+        {
+            // What the job's end caused is applied before it answers too.
+            self.frame.settle_owed();
+        }
         match ended(&self.frame) {
             Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => Ok(output),
             Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
@@ -523,7 +533,7 @@ impl AttachedView {
         // whatever task the participant carries out.
         let ambient = self.context.clone().unwrap_or_default().enriched_by(
             &tilo_actions::ActionContext::default()
-                .with_app(self.definition.app_id, self.definition.title),
+                .with_app(self.definition.app_id(), self.definition.title()),
         );
         self.frame.start_bound_job_within(
             Some(invoker),
@@ -555,7 +565,7 @@ impl AttachedView {
         // The record this view draws is the one its actions are published
         // under: one of another app's, kept here, is reached through the
         // provider that keeps it.
-        let app = self.definition.app_id;
+        let app = self.definition.app_id();
         let resource = self
             .resources()
             .into_iter()
@@ -805,7 +815,7 @@ impl AttachedView {
             format!(
                 "{} is not a part of a chain {} keeps",
                 record.as_str(),
-                self.definition.app_id
+                self.definition.app_id()
             )
         })?;
         if !self.records.is_ready(record) && self.records.try_open_record(&checkout).is_err() {
@@ -815,7 +825,7 @@ impl AttachedView {
             };
             self.cache.hydrate(
                 StorageKey::Record {
-                    package: self.definition.app_id.into(),
+                    package: self.definition.app_id().into(),
                     workspace: self.room.clone(),
                     record: record.as_str().into(),
                 },

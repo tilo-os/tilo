@@ -21,7 +21,7 @@
 //! every page of device memory a closed window's textures touched in a memfd
 //! until something punches it out; a renderer on lavapipe registers its
 //! device with [`register_device`], and each trim hands the device's free
-//! ranges back to the kernel (`crate::shell::render::software_gpu_memory`).
+//! ranges back to the kernel (`tilo_output_passes::software_gpu_memory`).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -361,7 +361,7 @@ fn release_device_memory() {
         let start = Instant::now();
         #[cfg(target_os = "linux")]
         if let Some(released) =
-            crate::shell::render::software_gpu_memory::release_freed_memory(&device)
+            tilo_output_passes::software_gpu_memory::release_freed_memory(&device)
         {
             // A measurement line for the session log, like WORKSPACE-SWITCH.
             eprintln!(

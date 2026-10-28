@@ -23,6 +23,7 @@ TASKS = {
     'open-file': {'goal': 'Open Document-000.txt so its contents are displayed.', 'fixture': 'desktop', 'document': 0, 'efficient_steps': 12},
     'rename-workspace': {'goal': 'Rename the current workspace to Research.', 'fixture': 'desktop', 'efficient_steps': 10},
     'scroll-file': {'goal': 'Find Document-060.txt in Files and open it so its contents are displayed.', 'fixture': 'files', 'document': 60, 'efficient_steps': 18},
+    'copy-paste-file': {'goal': 'Copy all of Document-000.txt and paste it into Document-001.txt, so Document-001.txt shows Document-000.txt\'s text.', 'fixture': 'files', 'document': 1, 'pasted_from': 0, 'efficient_steps': 22},
 }
 VARIANTS = {'baseline': {}, 'compact': {'viewport': [800, 700]}, 'large-text': {'text_scale': 2}, 'light': {'theme': 'light'}}
 NAMED_KEYS = {name.lower(): name for name in ('Enter', 'Return', 'Tab', 'Escape', 'Esc', 'Space', 'Backspace', 'Delete', 'ArrowUp', 'Up', 'ArrowDown', 'Down', 'ArrowLeft', 'Left', 'ArrowRight', 'Right', 'Home', 'End')}
@@ -182,6 +183,10 @@ def oracle(task, response, inspection):
     number = TASKS[task]['document']
     title = f'Document-{number:03}.txt'
     expected = f'Fixture document {number}\n'
+    if 'pasted_from' in TASKS[task]:
+        # A paste is proven by the destination holding the source's text, not
+        # by the destination merely opening: arriving is the easy half.
+        expected = f'Fixture document {TASKS[task]["pasted_from"]}\n'
     semantics = visible_semantics(inspection)
     if any(n.get('role') == 'Dialog' or n.get('state', {}).get('modal') for n in semantics):
         return False

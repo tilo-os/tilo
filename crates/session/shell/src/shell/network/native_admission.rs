@@ -76,6 +76,21 @@ impl State {
         self.carried.lock_recover().is_some()
     }
 
+    /// Whether held inputs taken to be admitted again are still waiting
+    /// for their turn.
+    pub(super) fn owes_again(&self) -> bool {
+        !self.held.lock_recover().again.is_empty()
+    }
+
+    /// Whether an admission handed to the worker has not come back yet: its
+    /// end wakes the loop.
+    pub(super) fn admitting(&self) -> bool {
+        matches!(
+            *self.slot.lock_recover(),
+            Slot::Pending(_) | Slot::Admitting
+        )
+    }
+
     /// Keep `input` until a surface is named.
     pub(super) fn hold(&self, input: native_ingress::Input) {
         let mut held = self.held.lock_recover();

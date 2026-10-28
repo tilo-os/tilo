@@ -35,7 +35,7 @@ impl App {
         if encoded.type_id == crate::host_chrome::zoom::ZOOM_OPERATION {
             return self.accessibility.zoom.in_window();
         }
-        self.history_local_resources().iter().flat_map(|resource| &resource.actions).any(|action| matches!(&action.input, tilo_actions::ActionInput::Immediate(value) if value.as_ref() == encoded))
+        self.history_local_resources().iter().flat_map(|resource| &resource.actions).any(|action| matches!(action.input(), tilo_actions::ActionInput::Immediate(Some(value)) if value.as_ref() == encoded))
     }
     pub(super) fn with_native_presentation<R>(
         &mut self,
@@ -902,7 +902,7 @@ impl App {
         let intent = crate::standalone_history_host::history_control_binding(control)
             .invoke(())
             .map_err(|error| error.to_string())?;
-        crate::history_mode::embedded::run_door_control(history, &intent)
+        crate::history_mode::embedded::run_door_control(history.as_mut(), &intent)
             .map_err(|error| error.to_string())?;
         self.needs_sync = true;
         self.layout.layout_dirty = true;

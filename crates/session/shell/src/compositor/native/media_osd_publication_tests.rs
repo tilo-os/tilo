@@ -1,6 +1,6 @@
 use super::sync_quick_settings_from_osd;
-use crate::shell::chrome_state::QuickSettingsState;
 use crate::shell::osd::Osd;
+use tilo_quick_settings::QuickSettingsState;
 
 #[test]
 fn successful_level_osds_update_the_open_quick_settings_sliders() {

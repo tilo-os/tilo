@@ -11,7 +11,7 @@
 //! is enough to hold every unrelated target back for as long as it does.
 //!
 //! Readiness is therefore read along one path — the widgets from the root down
-//! to the one target named. Each of them must have [`Widget::presented`], the
+//! to the one target named. Each of them must have `Widget::presented`, the
 //! single latch the toolkit defines for "this stands in for something that has
 //! drawn", and the desktop as a whole must not be between two arrangements of
 //! its own, where a rectangle read now is a rectangle the caller never saw.
@@ -105,27 +105,61 @@ pub const MOVED: f64 = 0.5;
 
 /// Every widget from `root` down to the one published at `path`, root first.
 ///
-/// `path` is a published widget path from [`super::frame::walk_widget`]: each
-/// step names a widget and, in brackets, which child of that name it is. Steps
-/// are matched against the children in the order the tree lays them out, so a
-/// step that is not there is [`NotReady::NoSuchTarget`] and never a guess at
-/// its neighbour.
+/// `path` is a name [`super::frame::walk_widget`] published. Most are widget
+/// paths: each step names a widget and, in brackets, which child of that
+/// name it is, and the walk's own paths start with `root` itself. Steps are
+/// matched against the children in the order the tree lays them out, so a
+/// step that is not there is never a guess at its neighbour.
+///
+/// The other names are a widget's test id, or an affordance a widget paints
+/// itself and publishes through `Widget::test_rects` (the strip switcher's
+/// labels, the overview's cards): their chain ends at the widget that carries
+/// the id or paints the affordance, so it is that widget's presentation, and
+/// its parents', that a press is proven against.
 ///
 /// # Errors
 ///
-/// Returns [`NotReady::NoSuchTarget`] when a step of `path` names no child.
+/// Returns [`NotReady::NoSuchTarget`] when no widget publishes `path`.
 pub fn widget_chain<'a>(
     root: &'a dyn ui::widget::Widget,
     path: &str,
 ) -> Result<Vec<&'a dyn ui::widget::Widget>, NotReady> {
+    if let Some(chain) = path_chain(root, path) {
+        return Ok(chain);
+    }
+    let mut chain = Vec::new();
+    if publisher_chain(root, path, &mut chain) {
+        return Ok(chain);
+    }
+    Err(NotReady::NoSuchTarget)
+}
+
+/// The chain along the widget path `path`, which may start with `root`'s
+/// own step as the registry's walk writes it.
+fn path_chain<'a>(
+    root: &'a dyn ui::widget::Widget,
+    path: &str,
+) -> Option<Vec<&'a dyn ui::widget::Widget>> {
+    let mut steps: Vec<&str> = path.split('/').collect();
+    let names_root = |step: &str| step == root.name() || step == format!("{}[0]", root.name());
+    let root_has_child_named_so = |step: &str| {
+        let name = step.split_once('[').map_or(step, |(name, _)| name);
+        root.children().iter().any(|child| child.name() == name)
+    };
+    if steps
+        .first()
+        .is_some_and(|step| names_root(step) && !root_has_child_named_so(step))
+    {
+        steps.remove(0);
+    }
     let mut chain = vec![root];
     let mut level: &dyn ui::widget::Widget = root;
-    for step in path.split('/') {
+    for step in steps {
         let (name, index) = match step.split_once('[') {
             Some((name, rest)) => (name, rest.strip_suffix(']').unwrap_or(rest).parse().ok()),
             None => (step, Some(0)),
         };
-        let mut wanted: usize = index.ok_or(NotReady::NoSuchTarget)?;
+        let mut wanted: usize = index?;
         let mut found: Option<&dyn ui::widget::Widget> = None;
         for child in level.children() {
             if child.name() != name {
@@ -137,10 +171,39 @@ pub fn widget_chain<'a>(
             }
             wanted = wanted.saturating_sub(1);
         }
-        level = found.ok_or(NotReady::NoSuchTarget)?;
+        level = found?;
         chain.push(level);
     }
-    Ok(chain)
+    Some(chain)
+}
+
+/// Push the chain from `widget` down to the widget whose test id is `name`,
+/// or which paints an affordance it publishes as `name`, onto `chain`.
+/// Returns whether one was found; `chain` is left as it was if not.
+fn publisher_chain<'a>(
+    widget: &'a dyn ui::widget::Widget,
+    name: &str,
+    chain: &mut Vec<&'a dyn ui::widget::Widget>,
+) -> bool {
+    chain.push(widget);
+    let publishes = widget.test_id() == Some(name)
+        || widget.test_rects().iter().any(|(painted, rect)| {
+            rect.area() > 0.0
+                && (painted == name
+                    || name
+                        .strip_suffix(painted.as_str())
+                        .is_some_and(|parent| parent.ends_with('/')))
+        });
+    if publishes {
+        return true;
+    }
+    for child in widget.children() {
+        if publisher_chain(child, name, chain) {
+            return true;
+        }
+    }
+    chain.pop();
+    false
 }
 
 /// The nearest widget in `chain` that shows a stand-in for content which has
@@ -166,7 +229,11 @@ pub fn target_drawn<S: std::hash::BuildHasher>(
     if rect.area() <= 0.0 {
         return Err(NotReady::NotLaidOut);
     }
-    if unpresented(&widget_chain(root, path)?).is_some() {
+    // A name the registry holds that no widget publishes is one the root
+    // paints and registers itself (the overview's cards, the settings
+    // tabs): the root's presentation is what it stands on.
+    let chain = widget_chain(root, path).unwrap_or_else(|_| vec![root]);
+    if unpresented(&chain).is_some() {
         return Err(NotReady::Unpresented);
     }
     Ok(())
@@ -334,6 +401,8 @@ mod tests {
         name: &'static str,
         presented: bool,
         children: Vec<Node>,
+        /// An affordance it paints itself, as `Widget::test_rects` publishes.
+        paints: Option<(&'static str, Rect)>,
     }
 
     impl Node {
@@ -342,7 +411,13 @@ mod tests {
                 name,
                 presented,
                 children: Vec::new(),
+                paints: None,
             }
+        }
+
+        fn painting(mut self, affordance: &'static str, rect: Rect) -> Self {
+            self.paints = Some((affordance, rect));
+            self
         }
 
         fn parent(name: &'static str, presented: bool, children: Vec<Node>) -> Self {
@@ -350,6 +425,7 @@ mod tests {
                 name,
                 presented,
                 children,
+                paints: None,
             }
         }
     }
@@ -378,6 +454,13 @@ mod tests {
         fn presented(&self) -> bool {
             self.presented
         }
+
+        fn test_rects(&self) -> Vec<(String, Rect)> {
+            self.paints
+                .iter()
+                .map(|(name, rect)| ((*name).to_string(), *rect))
+                .collect()
+        }
     }
 
     /// A root, `Strips/Sheet`, where `Sheet` is unpresented when `sheet_drawn`
@@ -402,6 +485,56 @@ mod tests {
 
     fn settled() -> PressFacts {
         PressFacts::at(Some(7), false)
+    }
+
+    /// The registry a live desktop publishes for `root`.
+    fn published(root: &Node) -> HashMap<String, Rect> {
+        let mut registry = HashMap::new();
+        crate::shell::frame::walk_widget(root, "", &mut HashMap::new(), &mut registry);
+        registry
+    }
+
+    #[test]
+    fn every_name_the_walk_publishes_is_pressed_against_its_own_presentation() {
+        let handle = Rect::new(10.0, 20.0, 30.0, 60.0);
+        let desktop = |sheet_drawn| {
+            Node::parent(
+                "Root",
+                true,
+                vec![Node::parent(
+                    "Strips",
+                    true,
+                    vec![Node::leaf("Sheet", sheet_drawn).painting("sheet.handle", handle)],
+                )],
+            )
+        };
+        let drawn = desktop(true);
+        let mut registry = published(&drawn);
+        for name in [
+            "Root[0]/Strips[0]/Sheet[0]",
+            "Root[0]/Strips[0]/Sheet",
+            "sheet.handle",
+            "Root[0]/Strips[0]/Sheet[0]/sheet.handle",
+        ] {
+            assert!(registry.contains_key(name), "the walk publishes {name}");
+            // These widgets are never laid out; give each name the area a
+            // laid-out desktop would.
+            registry.insert(name.to_string(), handle);
+            assert!(
+                press_point(&drawn, &registry, &settled(), name).is_ok(),
+                "{name} is pressable once its widget has drawn"
+            );
+        }
+        let undrawn = desktop(false);
+        for name in ["Root[0]/Strips[0]/Sheet[0]", "sheet.handle"] {
+            let mut registry = published(&undrawn);
+            registry.insert(name.to_string(), handle);
+            assert_eq!(
+                press_point(&undrawn, &registry, &settled(), name),
+                Err(NotReady::Unpresented),
+                "{name} waits for the widget that paints it"
+            );
+        }
     }
 
     #[test]

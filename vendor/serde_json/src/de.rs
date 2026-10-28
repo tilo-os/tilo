@@ -2710,5 +2710,8 @@ pub fn from_str<'a, T>(s: &'a str) -> Result<T>
 where
     T: de::Deserialize<'a>,
 {
-    from_trait(read::StrRead::new(s))
+    // Tilo: read text as the bytes it is, so a type read from text and
+    // from bytes compiles one deserializer, not one per reader
+    // (TILO-PATCH.md).
+    from_slice(s.as_bytes())
 }

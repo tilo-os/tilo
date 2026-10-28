@@ -1,0 +1,444 @@
+//! What an agent does on the door beyond the published actions of the packages: run a block,
+//! run a flow, read the catalogue (implementation design 7.4).
+//!
+//! They are an [`Effect`] vocabulary published on the `tl:host` resource, so the desktop agent,
+//! the runtime door, shortcuts and grants reach them as they reach every other operation. The
+//! window answers them with [`Host::answer`]; what they change in the room they change through
+//! the runtime's own commits, which the window hands to the door like a press's.
+
+use serde_json::{Value as Json, json};
+use tilo_actions::ActionOutput;
+use tilo_resource::Effect;
+use tilolang_runtime::value::{ResourceRef, to_json};
+use tilolang_runtime::{AgentBlock, FlowOutcome, Principal, Resolution, UiNode};
+
+use crate::host::{Host, value_of};
+use crate::publish::Caller;
+
+/// The operations the host offers an agent.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "tilolang.host")]
+pub enum HostEffect {
+    /// Run a block.
+    ///
+    /// Evaluate a tilolang expression against every app of the room: a view block renders, a
+    /// value block is shown as data, and an action block runs or, when it needs a person's
+    /// approval, is recorded as a suggested invocation.
+    #[effect(returns)]
+    RunBlock {
+        #[param("The block's source, such as `letters.send(@letters.Draft:id)` or a view body")]
+        source: String,
+    },
+    /// Run a flow.
+    ///
+    /// Run a declared flow to its end, or until an action in it needs a person's approval.
+    #[effect(returns)]
+    RunFlow {
+        #[param("The flow, as `app.name` or its id")]
+        flow: String,
+        #[param("The flow's arguments by parameter name, as a JSON object; resources by id")]
+        args: String,
+    },
+    /// List the catalogue.
+    ///
+    /// The signatures of every type, action, view and flow of the room's apps, doc comments
+    /// included.
+    #[effect(kind = "read", returns)]
+    Catalogue,
+    /// Decide a suggestion.
+    ///
+    /// Approve or decline what an agent suggested and is waiting on: a suggested invocation
+    /// (the id `run-block` or a verb answered with), or a run waiting for approval (the id
+    /// `run-flow` answered with). Approving runs the action once, whoever asks and however
+    /// many devices answer. Only a person decides: an agent cannot approve what it suggested.
+    #[effect(returns, destructive)]
+    Resolve {
+        #[param("The suggested invocation's id, or the waiting run's id")]
+        target: String,
+        #[param("`approve` or `decline`")]
+        decision: String,
+    },
+}
+
+/// Showing what a search hit names. Each published resource offers it, bound to itself; the window
+/// answers it by opening the app at that resource.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "tilolang.open")]
+pub enum OpenEffect {
+    /// Open.
+    ///
+    /// Show this resource in the window: its app, with it selected.
+    #[effect(view, row)]
+    Open {
+        #[param("The resource's id")]
+        anchor: String,
+    },
+}
+
+/// What opening a resource asks of the window: the app to show, and the resource whose window to
+/// push on it (`open(r)`), when it is not the app's own root.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpenPlan {
+    pub app: String,
+    pub target: Option<tilolang_runtime::ResourceRef>,
+}
+
+fn tree_json(node: &UiNode) -> Json {
+    let props: serde_json::Map<String, Json> = node
+        .props
+        .iter()
+        .filter_map(|(name, value)| Some((name.clone(), to_json(value).ok()?)))
+        .collect();
+    let mut out = serde_json::Map::new();
+    out.insert("kind".to_owned(), json!(node.kind));
+    out.insert("key".to_owned(), json!(node.key));
+    if !props.is_empty() {
+        out.insert("props".to_owned(), Json::Object(props));
+    }
+    if !node.children.is_empty() {
+        out.insert(
+            "children".to_owned(),
+            node.children.iter().map(tree_json).collect(),
+        );
+    }
+    Json::Object(out)
+}
+
+/// How many items of a list or collection a read shows.
+const READ_ITEMS: usize = 200;
+
+/// How much of one text a read shows; a longer one says it was cut.
+const READ_TEXT_CHARS: usize = 100_000;
+
+/// Name each resource a projection holds (`{"type", "id", ...}`) by its published id too, the
+/// `item` a read or an action of the door takes.
+fn published_ids(value: &mut Json, app: &str) {
+    match value {
+        Json::Object(fields) => {
+            let id = fields
+                .get("id")
+                .and_then(Json::as_str)
+                .filter(|_| fields.contains_key("type"))
+                .map(|id| crate::publish::resource_id(app, id));
+            if let Some(id) = id {
+                fields.insert("item".into(), Json::String(id));
+            }
+            for nested in fields.values_mut() {
+                published_ids(nested, app);
+            }
+        }
+        Json::Array(items) => {
+            for nested in items {
+                published_ids(nested, app);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn output(value: Json) -> ActionOutput {
+    ActionOutput {
+        value: Some(value),
+        resources: Vec::new(),
+    }
+}
+
+impl Host {
+    /// Answer `effect` for `caller`, the principal the door admitted (the person at the window
+    /// when `None`). An agent's code is written by its own principal, so what it applies to
+    /// another app or outside asks a person first.
+    ///
+    /// # Errors
+    /// Why the block, the flow or its arguments were refused, or what the runtime failed with.
+    pub fn answer(
+        &self,
+        effect: HostEffect,
+        caller: Option<&Caller>,
+    ) -> Result<ActionOutput, String> {
+        let agent = &caller.map_or_else(
+            || self.viewer().clone(),
+            |caller| Principal::new(caller.actor.clone()),
+        );
+        if let Some(caller) = caller.filter(|caller| caller.agent) {
+            self.inner.admit_agent(&caller.actor);
+        }
+        match effect {
+            HostEffect::RunBlock { source } => {
+                let block = self
+                    .runtime()
+                    .run_agent_block(agent, &source)
+                    .map_err(|error| error.to_string())?;
+                Ok(output(match block {
+                    AgentBlock::Rejected(lines) => {
+                        return Err(format!("the block does not compile:\n{}", lines.join("\n")));
+                    }
+                    AgentBlock::View(tree) => json!({"kind": "view", "tree": tree_json(&tree)}),
+                    AgentBlock::Data(value) => json!({"kind": "data", "value": value}),
+                    AgentBlock::Invocation { record, resource } => json!({
+                        "kind": "invocation",
+                        "state": record.state,
+                        "action": record.name,
+                        "app": record.app,
+                        "result": record.result,
+                        "invocation": resource.id_string(),
+                    }),
+                }))
+            }
+            HostEffect::RunFlow { flow, args } => self.run_flow_source(agent, &flow, &args),
+            HostEffect::Resolve { target, decision } => {
+                if caller.is_some_and(|caller| caller.agent) {
+                    return Err("only a person decides what an agent suggested".to_owned());
+                }
+                self.resolve_suggestion(agent, &target, &decision)
+            }
+            HostEffect::Catalogue => Ok(output(Json::Array(
+                self.runtime()
+                    .catalogue()
+                    .iter()
+                    .filter(|signature| signature.app != tilolang::HOST_APP)
+                    .map(|signature| {
+                        json!({
+                            "app": signature.app,
+                            "name": signature.name,
+                            "signature": signature.render(),
+                        })
+                    })
+                    .collect(),
+            ))),
+        }
+    }
+
+    fn run_flow_source(
+        &self,
+        agent: &Principal,
+        flow: &str,
+        args: &str,
+    ) -> Result<ActionOutput, String> {
+        let (package, declared) = self
+            .packages()
+            .into_iter()
+            .find_map(|package| {
+                let found = package
+                    .meta
+                    .flows
+                    .iter()
+                    .find(|declared| {
+                        declared.id == flow
+                            || declared.name == flow
+                            || format!("{}.{}", package.meta.app, declared.name) == flow
+                    })
+                    .cloned();
+                found.map(|declared| (package, declared))
+            })
+            .ok_or_else(|| format!("no flow `{flow}`"))?;
+        let given: serde_json::Map<String, Json> = if args.trim().is_empty() {
+            serde_json::Map::new()
+        } else {
+            serde_json::from_str(args)
+                .map_err(|error| format!("the arguments are not a JSON object: {error}"))?
+        };
+        let mut values = Vec::new();
+        for param in &declared.params {
+            let json = given.get(&param.name).cloned().unwrap_or(Json::Null);
+            values.push(value_of(&self.inner, &package.meta, &json, &param.ty)?);
+        }
+        match self
+            .runtime()
+            .run_flow(agent, &declared.id, values)
+            .map_err(|error| error.to_string())?
+        {
+            FlowOutcome::Done(value) => Ok(output(
+                json!({"state": "done", "result": self.runtime().project(&value)}),
+            )),
+            FlowOutcome::Suspended(suggestion) => {
+                let shown = json!({
+                    "state": "suspended",
+                    "run": suggestion.run,
+                    "waiting_on": suggestion.action,
+                });
+                self.inner.suspended.borrow_mut().push_back(suggestion);
+                Ok(output(shown))
+            }
+        }
+    }
+
+    /// How to open the resource `anchor` (an id as [`publish_tree`](crate::publish::publish_tree)
+    /// publishes it): its app, and the deepest resource on the way to it whose type has a
+    /// default view, which is the window `open(r)` shows. A hit on something with no window of its
+    /// own (a message of a conversation) opens the window of what holds it.
+    ///
+    /// # Errors
+    /// The anchor names nothing in this room.
+    pub fn open_plan(&self, anchor: &str) -> Result<OpenPlan, String> {
+        use tilolang_runtime::store::Store as _;
+        let doc = anchor.split('/').next().unwrap_or_default();
+        let (package, _, _) = self
+            .records()
+            .into_iter()
+            .find(|(_, _, id)| id == doc)
+            .ok_or_else(|| format!("`{anchor}` is not in this room"))?;
+        let mut target = None;
+        let mut path = doc.to_owned();
+        for part in anchor.split('/').skip(1) {
+            path = format!("{path}/{part}");
+            let probe = ResourceRef::parse_id(&path, String::new())
+                .ok_or_else(|| format!("`{path}` is not a resource id"))?;
+            let ty = self
+                .store()
+                .type_of(&probe)
+                .map_err(|error| error.to_string())?;
+            if package.meta.default_view(&ty).is_some() {
+                target = ResourceRef::parse_id(&path, ty);
+            }
+        }
+        Ok(OpenPlan {
+            app: package.meta.app,
+            target,
+        })
+    }
+
+    /// What the room's resources hold, as an agent or a script reads it through the door's
+    /// `read`: with no `item`, every record of the room with its id, kind and title; with an
+    /// `item` (a published id, `tl:<app>:<id>`, an item of a record by its path), that resource
+    /// with its fields, each of the items it holds named by its published id.
+    ///
+    /// # Errors
+    /// The item names nothing in this room.
+    pub fn read_content(&self, item: Option<&str>) -> Result<Json, String> {
+        use crate::meta::MetaExt as _;
+        use tilolang_runtime::store::Store as _;
+        let Some(item) = item else {
+            let records = self
+                .records()
+                .into_iter()
+                .map(|(package, type_name, doc)| {
+                    json!({
+                        "item": crate::publish::resource_id(&package.meta.app, &doc),
+                        "kind": package.meta.kind_of(&type_name),
+                        "title": self.label_of(&doc),
+                    })
+                })
+                .collect::<Vec<_>>();
+            return Ok(json!({ "kind": "tilolang.room", "records": records }));
+        };
+        let unknown = || format!("no resource `{item}`; read the app for the records it holds");
+        let (app, path) = item
+            .strip_prefix("tl:")
+            .and_then(|rest| rest.split_once(':'))
+            .ok_or_else(unknown)?;
+        let package = self.package(app).ok_or_else(unknown)?;
+        let probe = ResourceRef::parse_id(path, String::new()).ok_or_else(unknown)?;
+        let ty = self.store().type_of(&probe).map_err(|_| unknown())?;
+        let at = ResourceRef::parse_id(path, ty).ok_or_else(unknown)?;
+        let options = tilolang_runtime::project::ProjectOptions {
+            max_items: READ_ITEMS,
+            max_text_chars: READ_TEXT_CHARS,
+            depth: 1,
+        };
+        let runtime = self.runtime();
+        let mut read = runtime.project_with(&tilolang_runtime::Value::resource(&at), options);
+        if let Some(Json::Object(fields)) = read.get_mut("fields") {
+            for (name, shown) in fields.iter_mut() {
+                // A collection projects as its size alone, which is what a prompt needs; a read
+                // is how an agent learns the ids of what the resource holds, so it lists them.
+                if let Ok(tilolang_runtime::Value::List(items)) = runtime.read(&at, name)
+                    && shown.get("items").is_none()
+                {
+                    *shown = self.listed(&items);
+                }
+            }
+        }
+        published_ids(&mut read, app);
+        if let Json::Object(fields) = &mut read {
+            fields.insert("label".into(), json!(self.label_at(&at)));
+            fields.insert("item".into(), json!(item));
+            let type_name = package
+                .meta
+                .type_named(&at.ty)
+                .map_or_else(|| at.ty.clone(), |declared| declared.name.clone());
+            fields.insert("kind".into(), json!(package.meta.kind_of(&type_name)));
+        }
+        Ok(read)
+    }
+
+    /// The resources of a collection as a read lists them: each with its type, id and label, up
+    /// to [`READ_ITEMS`], with the count of all of them.
+    fn listed(&self, items: &[tilolang_runtime::Value]) -> Json {
+        let shown: Vec<Json> = items
+            .iter()
+            .take(READ_ITEMS)
+            .map(|item| match item {
+                tilolang_runtime::Value::Ref(held) => {
+                    let mut listed = self.runtime().project_with(
+                        item,
+                        tilolang_runtime::project::ProjectOptions {
+                            max_items: READ_ITEMS,
+                            max_text_chars: READ_TEXT_CHARS,
+                            depth: 0,
+                        },
+                    );
+                    if let Json::Object(fields) = &mut listed {
+                        fields.insert("label".into(), json!(self.label_at(&held.target)));
+                    }
+                    listed
+                }
+                other => self.runtime().project(other),
+            })
+            .collect();
+        let mut listed = serde_json::Map::new();
+        listed.insert("count".into(), json!(items.len()));
+        listed.insert("items".into(), Json::Array(shown));
+        if items.len() > READ_ITEMS {
+            listed.insert("truncated".into(), json!(true));
+        }
+        Json::Object(listed)
+    }
+
+    fn resolve_suggestion(
+        &self,
+        approver: &Principal,
+        target: &str,
+        decision: &str,
+    ) -> Result<ActionOutput, String> {
+        let resolution = match decision.trim() {
+            "approve" => Resolution::Approve,
+            "decline" => Resolution::Decline,
+            other => return Err(format!("`{other}` is not approve or decline")),
+        };
+        let as_invocation = self
+            .invocation_ref(target)
+            .filter(|invocation| self.store().contains(&invocation.doc));
+        if let Some(invocation) = as_invocation {
+            let state = self
+                .runtime()
+                .resolve_invocation(&invocation, approver, resolution)
+                .map_err(|error| error.to_string())?;
+            return Ok(output(json!({"kind": "invocation", "state": state})));
+        }
+        match self
+            .runtime()
+            .resolve(&target.to_owned(), approver, resolution)
+            .map_err(|error| error.to_string())?
+        {
+            FlowOutcome::Done(value) => Ok(output(
+                json!({"kind": "run", "state": "done", "result": self.runtime().project(&value)}),
+            )),
+            FlowOutcome::Suspended(suggestion) => {
+                let shown = json!({
+                    "kind": "run",
+                    "state": "suspended",
+                    "run": suggestion.run,
+                    "waiting_on": suggestion.action,
+                });
+                self.inner.suspended.borrow_mut().push_back(suggestion);
+                Ok(output(shown))
+            }
+        }
+    }
+
+    /// The resource a recorded invocation named by `id` is, for a caller that holds its id.
+    #[must_use]
+    pub fn invocation_ref(&self, id: &str) -> Option<ResourceRef> {
+        ResourceRef::parse_id(id, tilolang::INVOCATION_TYPE.to_owned())
+    }
+}

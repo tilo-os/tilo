@@ -1217,7 +1217,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "open-app")
             .unwrap()
-            .contract;
+            .contract
+            .clone();
         assert!(matches!(
             native.result,
             ui::tilo_actions::ResultSpec::Json { .. }
@@ -1230,7 +1231,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "flatpak-open")
             .unwrap()
-            .contract;
+            .contract
+            .clone();
         assert_eq!(flatpak.result, ui::tilo_actions::ResultSpec::Job);
     }
 
@@ -1262,7 +1264,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "flatpak-open")
             .unwrap()
-            .contract;
+            .contract
+            .clone();
         assert_eq!(contract.result, ui::tilo_actions::ResultSpec::Job);
         let invocation = app
             .start_effect_on(&row, &StoreEffect::FlatpakOpen { app: id.clone() })
@@ -1344,7 +1347,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "refresh")
             .unwrap()
-            .contract;
+            .contract
+            .clone();
         assert_eq!(contract.result, ui::tilo_actions::ResultSpec::Job);
         let versions = app.versions().len();
         let invocation = app.start_effect(&StoreEffect::Refresh).unwrap();
@@ -1713,7 +1717,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "browse-remote")
             .unwrap()
-            .contract;
+            .contract
+            .clone();
         let before = browses.load(std::sync::atomic::Ordering::SeqCst);
         let invocation = app
             .start_effect_on(
@@ -1848,7 +1853,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "disable-remote")
             .unwrap()
-            .contract;
+            .contract
+            .clone();
         let invocation = app
             .start_effect_on(
                 remote,
@@ -1958,7 +1964,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "browse-remote")
             .unwrap()
-            .contract;
+            .contract
+            .clone();
         let invocation = app
             .start_effect_on(
                 remote,
@@ -1979,7 +1986,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "flatpak-install")
             .unwrap()
-            .contract;
+            .contract
+            .clone();
         let invocation = app
             .start_effect_on(
                 item_id,
@@ -2019,7 +2027,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "refresh-remotes")
             .unwrap()
-            .contract;
+            .contract
+            .clone();
         let invocation = app
             .start_effect_on("store:remotes", &StoreEffect::RefreshRemotes)
             .unwrap();
@@ -2107,7 +2116,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "browse-remote")
             .unwrap()
-            .contract;
+            .contract
+            .clone();
         assert_eq!(contract.result, ui::tilo_actions::ResultSpec::Job);
         let before = browses.load(std::sync::atomic::Ordering::SeqCst);
         let versions = app.versions().len();
@@ -2181,9 +2191,8 @@ mod tests {
             .actions
             .iter()
             .find(|action| action.id == "browse-remote")
-            .unwrap()
-            .contract
-            .clone();
+            .map(|action| action.contract.clone())
+            .unwrap();
         let invocation = app
             .start_effect_on(
                 remote,
@@ -2246,7 +2255,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "refresh")
             .unwrap()
-            .contract;
+            .contract
+            .clone();
         let invocation = app.start_effect(&StoreEffect::Refresh).unwrap();
         assert_valid_unit_job_completion(&mut app, invocation, &contract);
         assert_eq!(
@@ -2666,13 +2676,22 @@ mod reach_tests {
     use ui::framework::ResourceApp as _;
     use ui::framework::testing::{TestApp, unreachable_actions};
 
+    /// The scenarios are walked in this many shares, each its own test: one
+    /// after another, the thirty-odd scenarios took four minutes.
+    const SHARES: usize = 8;
+
     /// Every action the app publishes is reachable by address in a drive of
     /// each of its scenarios: none is advertised yet handled only by a
     /// click. The scenarios stage fixtures; the app someone opens acts on
-    /// this machine (its files, its processes), so it is not walked.
-    #[test]
-    fn a_drive_of_every_scenario_reaches_every_published_action() {
-        for scenario in super::StoreShell::scenarios() {
+    /// this machine (its files, its processes), so it is not walked. This
+    /// share walks every `SHARES`th scenario from the `share`th; the shares
+    /// together walk them all, a scenario added later included.
+    fn a_drive_of_every_scenario_reaches_every_published_action(share: usize) {
+        for scenario in super::StoreShell::scenarios()
+            .iter()
+            .skip(share)
+            .step_by(SHARES)
+        {
             let mut app = TestApp::<super::StoreShell>::drive(scenario)
                 .unwrap_or_else(|error| panic!("{scenario}: {error}"));
             assert_eq!(
@@ -2682,4 +2701,33 @@ mod reach_tests {
             );
         }
     }
+
+    macro_rules! shares {
+        ($($name:ident = $share:literal),+ $(,)?) => {
+            $(
+                #[test]
+                fn $name() {
+                    a_drive_of_every_scenario_reaches_every_published_action($share);
+                }
+            )+
+            /// Every share has its test.
+            #[test]
+            fn every_share_is_walked() {
+                let mut shares = vec![$($share),+];
+                shares.sort_unstable();
+                assert_eq!(shares, (0..SHARES).collect::<Vec<_>>());
+            }
+        };
+    }
+
+    shares!(
+        a_drive_of_every_scenario_reaches_every_published_action_share_0 = 0,
+        a_drive_of_every_scenario_reaches_every_published_action_share_1 = 1,
+        a_drive_of_every_scenario_reaches_every_published_action_share_2 = 2,
+        a_drive_of_every_scenario_reaches_every_published_action_share_3 = 3,
+        a_drive_of_every_scenario_reaches_every_published_action_share_4 = 4,
+        a_drive_of_every_scenario_reaches_every_published_action_share_5 = 5,
+        a_drive_of_every_scenario_reaches_every_published_action_share_6 = 6,
+        a_drive_of_every_scenario_reaches_every_published_action_share_7 = 7,
+    );
 }

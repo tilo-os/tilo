@@ -1004,10 +1004,11 @@ impl ChatApp {
         let in_call_only = |effect: ChatEffect| {
             let mut spec = effect.bound();
             if !in_call {
-                spec.contract.availability = ui::tilo_actions::Availability::Unavailable {
-                    code: "not_in_call".into(),
-                    reason: not_joined.clone(),
-                };
+                spec.type_mut().contract.availability =
+                    ui::tilo_actions::Availability::Unavailable {
+                        code: "not_in_call".into(),
+                        reason: not_joined.clone(),
+                    };
             }
             spec
         };

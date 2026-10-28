@@ -535,3 +535,83 @@ mod round2_tests {
         assert!(queue.failure.is_none());
     }
 }
+
+#[cfg(test)]
+mod committed_changes_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// What a window holds, and the room's next committed change as the
+    /// owner hands it over: changes that build on what the window holds.
+    fn held_and_delta() -> (AutoCommit, AutoCommit, Vec<u8>) {
+        let mut room = AutoCommit::new();
+        room.put(automerge::ROOT, "title", "notes").unwrap();
+        room.commit();
+        let held = room.fork();
+        let before = room.get_heads();
+        room.put(automerge::ROOT, "note", "new").unwrap();
+        room.commit();
+        let delta = room.save_after(&before);
+        (room, held, delta)
+    }
+
+    /// The ERROR lines logged while `run` runs on this thread.
+    fn errors_during(run: impl FnOnce()) -> String {
+        #[derive(Clone, Default)]
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Sink {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let sink = Sink::default();
+        let writer = sink.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::ERROR)
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, run);
+        String::from_utf8(sink.0.lock().unwrap().clone()).unwrap()
+    }
+
+    #[test]
+    fn committed_changes_that_build_on_held_history_apply_and_log_nothing() {
+        let (mut room, mut held, delta) = held_and_delta();
+        let mutation = DocumentMutation::Incremental(delta);
+        let mut changed = None;
+        let errors = errors_during(|| {
+            changed = Some(merge_committed_into_copy(&mut held, &mutation).unwrap());
+        });
+        assert_eq!(errors, "", "a valid delta logged an error");
+        assert_eq!(changed, Some(true));
+        assert!(held.get_missing_deps(&[]).is_empty());
+        assert_eq!(
+            super::super::sorted_heads(held.get_heads()),
+            super::super::sorted_heads(room.get_heads())
+        );
+    }
+
+    #[test]
+    fn a_truncated_delta_is_refused_whole() {
+        let (_, mut held, delta) = held_and_delta();
+        let before = held.get_heads();
+        for end in 1..delta.len() {
+            let mutation = DocumentMutation::Incremental(delta[..end].to_vec());
+            let refused = merge_committed_into_copy(&mut held, &mutation);
+            assert!(
+                matches!(refused, Err(RemoteApplyError::InvalidMutation(_))),
+                "truncated at {end}"
+            );
+            assert_eq!(
+                held.get_heads(),
+                before,
+                "truncated at {end}: nothing applied"
+            );
+        }
+    }
+}

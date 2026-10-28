@@ -29,7 +29,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 #[cfg(feature = "decode")]
 use std::path::PathBuf;
 use std::sync::Arc;
-#[cfg(feature = "decode")]
 #[cfg(any(feature = "decode", test))]
 use thumbnail::ThumbSize;
 use thumbnail::{ThumbKey, ThumbState, ThumbnailService};

@@ -78,6 +78,10 @@ printf '%s\n' '[    0.100000] host kernel: start' \
   '[   20.000000] host systemd[1]: after the initrd'
 [ -z "${TILO_TEST_DEVICE_TIMEOUT:-}" ] \
   || printf '[   66.000000] host systemd[1]: Timed out waiting for device %s.\n' "$TILO_TEST_DEVICE_TIMEOUT"
+[ -z "${TILO_TEST_SIGNIN_PEOPLE:-}" ] \
+  || printf '[   %s] host tilo-boot-signin[300]: tilo-boot-signin: 1 may sign in here\n' "$TILO_TEST_SIGNIN_PEOPLE"
+[ -z "${TILO_TEST_SIGNIN_FRAME:-}" ] \
+  || printf '[   %s] host tilo-boot-signin[300]: tilo-greeter: first frame of the boot sign-in\n' "$TILO_TEST_SIGNIN_FRAME"
 EOF
 cat >"$work/systemd-analyze" <<'EOF'
 #!/usr/bin/env bash
@@ -95,6 +99,23 @@ chmod +x "$work/systemctl" "$work/systemd-analyze" "$work/swapon" "$work/dmesg" 
 PATH="$work:$PATH" TILO_TEST_ACTIVE_US=19999000 \
   "$repo/os/tests/boot_performance_gate.sh" >"$work/pass"
 grep -Fq 'kernel+userspace reached usable greeter in 19.999s (budget: 20s)' "$work/pass"
+
+# The boot sign-in's first frame is timed from when it knew who may sign in.
+PATH="$work:$PATH" TILO_TEST_ACTIVE_US=19999000 TILO_TEST_SIGNIN_PEOPLE=16.000000 \
+  TILO_TEST_SIGNIN_FRAME=16.250000 "$repo/os/tests/boot_performance_gate.sh" >"$work/signin"
+grep -Fq 'boot sign-in first frame 250 ms after it knew who may sign in (budget: 300 ms)' "$work/signin"
+if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=19999000 TILO_TEST_SIGNIN_PEOPLE=16.000000 \
+  TILO_TEST_SIGNIN_FRAME=16.400000 "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/signin.err"; then
+  echo 'boot performance gate accepted a boot sign-in whose first frame came 400 ms late' >&2
+  exit 1
+fi
+grep -Fq 'first frame 400 ms after it knew who may sign in (budget: 300 ms)' "$work/signin.err"
+if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=19999000 TILO_TEST_SIGNIN_PEOPLE=16.000000 \
+  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/signin.err"; then
+  echo 'boot performance gate accepted a boot sign-in that never showed the greeter' >&2
+  exit 1
+fi
+grep -Fq 'the boot sign-in showed no frame of the greeter' "$work/signin.err"
 
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 TILO_TEST_REBUILT=systemd-hwdb-update.service \
   "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/rebuilt"; then

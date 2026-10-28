@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {chooseWorkspace, chosenWorkspace, enteredWorkspaces, rememberEntered} from './workspaces.mjs';
+import {chooseWorkspace, chosenWorkspace, enteredWorkspaces, joinViaHost, rememberEntered} from './workspaces.mjs';
 import {AdmissionError} from './admission.mjs';
 
 const USER = 'aa'.repeat(32);
@@ -46,6 +46,7 @@ async function fixture({boot, remembered = [], own = false, search = ''} = {}) {
     link: {format: route => `https://web.example/#/${route.target.scope.room}`}};
   const prepared = [];
   globalThis.__entryPageFixture = {page, mounted: [], identity: {userPublicKey: USER}, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
+    joinViaHost,
     boot: async options => { diagnostics = options.diagnostics; return boot ? boot(options, page) : page; }};
   rememberEntered({origin: ORIGIN, room: 'other', hostDevice: 'cd'.repeat(32), name: 'Other'});
   // Rooms an earlier visit kept as they were stored, whichever host held them.
@@ -60,6 +61,8 @@ async function fixture({boot, remembered = [], own = false, search = ''} = {}) {
     .replace("import {servedVersion, watchForUpdate} from './bundle-update.mjs';", "import {servedVersion} from './bundle-update.mjs';\nconst watchForUpdate = () => {};")
     .replace("import {rendererUnavailable} from './webgpu-safety.mjs';", 'const rendererUnavailable = async () => null;')
     .replace("import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './root-identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;')
+    .replace('isPublicHome, joinViaHost,', 'isPublicHome,')
+    .replace('const PAGE_BUILD', 'const joinViaHost = (...args) => globalThis.__entryPageFixture.joinViaHost(...args);\nconst PAGE_BUILD')
     .replace(/from '(\.\/[^']+)'/g, (_all, path) => `from '${new URL(path, import.meta.url).href}'`);
   // A fresh module per fixture; the nonce rides in the source since Bun refuses a fragment on a base64 data URL.
   const {startEntryPage} = await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// ${Math.random()}`).toString('base64')}`);
@@ -202,6 +205,27 @@ test('the person’s own desktop writes as their root identity and shows them by
   assert.ok(own, 'the desktop is told who its person is');
   assert.equal(own[1].user, USER);
   assert.ok(own[1].label && own[1].label !== 'Guest', own[1].label);
+});
+
+test('the home workspace’s peer that carries reports from another room asks for a background session', async () => {
+  let homePeer;
+  await fixture({boot: async (options, page) => { homePeer = options.deps.homePeer; return page; }});
+  const home = {name: 'Lounge', host: {origin: 'https://lounge.example'}, admission: 'https://lounge.example/'};
+  const joined = [];
+  const carrier = {room: 'LOUNGE'};
+  globalThis.__entryPageFixture.joinViaHost = async options => { joined.push(options); return carrier; };
+  assert.equal(await homePeer(home), null, 'a person the home never let in gets no peer there');
+  assert.deepEqual(joined, []);
+  localStorage.setItem('tilo-host-memberships', JSON.stringify({'https://lounge.example': {origin: 'https://lounge.example', room: 'LOUNGE', userPublicKey: USER}}));
+  assert.equal(await homePeer(home), carrier);
+  assert.equal(joined.length, 1);
+  // Not online by it: no seat, face or count in the home workspace; and
+  // nothing live or in calls, which only the room in front has.
+  assert.equal(joined[0].background, true);
+  assert.equal(joined[0].live, false);
+  assert.equal(joined[0].voice, false);
+  assert.equal(joined[0].workspace, home);
+  await assert.rejects(joined[0].wait({attempt: 0}), /did not let this device in/, 'it never waits at the door');
 });
 
 test('an embedded room offers no Invite it could not carry out', async () => {

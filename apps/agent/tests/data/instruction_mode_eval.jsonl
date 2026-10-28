@@ -1,0 +1,24 @@
+{"instruction": "Rewrite this paragraph so it is shorter", "context": "document", "app": "notes", "expected": "one-shot"}
+{"instruction": "Translate this into German", "context": "document", "app": "notes", "expected": "one-shot"}
+{"instruction": "Summarise what this says", "context": "document", "app": "reader", "expected": "one-shot"}
+{"instruction": "What does this word mean here?", "context": "document", "app": "notes", "expected": "one-shot"}
+{"instruction": "Make this sound friendlier", "context": "document", "app": "notes", "expected": "one-shot"}
+{"instruction": "Give me three titles for this", "context": "document", "app": "notes", "expected": "one-shot"}
+{"instruction": "Is there anything wrong with this sentence?", "context": "document", "app": "notes", "expected": "one-shot"}
+{"instruction": "Turn these notes into a list", "context": "document", "app": "notes", "expected": "one-shot"}
+{"instruction": "Which of these two versions is clearer?", "context": "document", "app": "notes", "expected": "one-shot"}
+{"instruction": "Write a reply to this message", "context": "message", "app": "chat", "expected": "one-shot"}
+{"instruction": "Explain this error to me", "context": "code", "app": "code", "expected": "one-shot"}
+{"instruction": "Say this in one sentence", "context": "document", "app": "notes", "expected": "one-shot"}
+{"instruction": "Put this in the document and send it", "context": "document", "app": "notes", "expected": "task"}
+{"instruction": "Replace every date in this document with next week", "context": "document", "app": "notes", "expected": "task"}
+{"instruction": "Find the invoice from March and summarise it", "context": "file", "app": "files", "expected": "task"}
+{"instruction": "Send this to Anna on chat", "context": "document", "app": "chat", "expected": "task"}
+{"instruction": "Add all of these to my calendar", "context": "document", "app": "calendar", "expected": "task"}
+{"instruction": "Rename the files in this folder to the date they were taken", "context": "file", "app": "files", "expected": "task"}
+{"instruction": "Look up the order and tell me when it arrives", "context": "mail", "app": "mail", "expected": "task"}
+{"instruction": "Create a note with the meeting notes from this call", "context": "document", "app": "notes", "expected": "task"}
+{"instruction": "Update every task in this list that is still open", "context": "document", "app": "tasks", "expected": "task"}
+{"instruction": "Check the calendar and move the meeting if it clashes", "context": "calendar", "app": "calendar", "expected": "task"}
+{"instruction": "Tidy up this folder and delete the empty notes", "context": "file", "app": "files", "expected": "task"}
+{"instruction": "Start a task for each item in this list", "context": "document", "app": "tasks", "expected": "task"}

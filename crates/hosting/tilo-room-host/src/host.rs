@@ -69,6 +69,34 @@ impl HostMode {
     }
 }
 
+/// The sessions a device already holds with the hosts of its person, on
+/// the person's continuity workspace, as its network keeps them.
+///
+/// A host keeps one session per device and workspace: a second
+/// subscription from the same device replaces the first. So the host a
+/// device runs never subscribes beside the device's network as the same
+/// device. It asks another host of its person its host operations
+/// ([`HOST_ACTIONS_PROVIDER`]) on the device's own session there instead.
+/// A certified host has no network beside it, and asks on a session of its
+/// own.
+///
+/// [`HOST_ACTIONS_PROVIDER`]: tilo_relay_session::rooms::HOST_ACTIONS_PROVIDER
+pub trait PersonsHostSessions: Send + Sync {
+    /// Ask the host `device` at `addr` `invoke` on this device's session of
+    /// its person's continuity workspace there, and answer its receipt.
+    fn ask(
+        &self,
+        device: [u8; 32],
+        addr: iroh_base::EndpointAddr,
+        invoke: tilo_actions::remote::InvokeRequest,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<tilo_actions::remote::ReceiptStatus, String>>
+                + Send,
+        >,
+    >;
+}
+
 /// What a host is opened with.
 #[derive(Clone)]
 pub struct HostConfig {
@@ -87,6 +115,10 @@ pub struct HostConfig {
     pub apps: Option<Arc<dyn AppServingPlane>>,
     /// Classifies co-edit bodies for every workspace the host opens.
     pub shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
+    /// The device's own sessions with its person's other hosts, for the
+    /// host a device runs ([`PersonsHostSessions`]); `None` for a host
+    /// with no network beside it.
+    pub persons_hosts: Option<Arc<dyn PersonsHostSessions>>,
 }
 
 impl HostConfig {
@@ -102,6 +134,7 @@ impl HostConfig {
             max_room_grants: None,
             apps: None,
             shell_payloads: crate::payloads::neighbour(),
+            persons_hosts: None,
         }
     }
 }
@@ -243,6 +276,7 @@ impl HostSessions {
             member_limits: cfg
                 .member_limits
                 .map(|limits| Arc::new(crate::member_limits::MemberLimits::new(limits))),
+            arrivals: crate::federation::Arrivals::default(),
         };
         let sessions = Self {
             endpoint: endpoint.clone(),
@@ -261,22 +295,7 @@ impl HostSessions {
             return Ok((sessions, None));
         };
         let rooms = crate::rooms::Rooms::open(
-            crate::rooms::RoomServices {
-                workspaces: workspaces.clone(),
-                access: sessions.access_writer(),
-                records: sessions.room_records(),
-                endpoint,
-                cert: identity.device_cert.clone(),
-                key: identity.device_signing_key.clone(),
-                revocations,
-                metrics: metrics.clone(),
-                max_pre_admissions: cfg
-                    .max_room_grants
-                    .unwrap_or(crate::rooms::DEFAULT_MAX_PRE_ADMISSIONS),
-                trust_policy: sessions.handler.trust_policy.clone(),
-                agents: sessions.handler.agents.clone(),
-                mode: cfg.mode.join_hint_mode(),
-            },
+            sessions.room_services(&cfg, &identity, endpoint, revocations),
             cfg.state_root.join("rooms"),
         )
         .await
@@ -288,6 +307,35 @@ impl HostSessions {
             .compactor
             .steward_with(Arc::new(rooms.clone()));
         Ok((sessions, Some(Governed { rooms, actions })))
+    }
+
+    /// What the rooms a host governs take from it: its sessions' registry,
+    /// access, records, identity and live trust, and `cfg`'s room settings.
+    fn room_services(
+        &self,
+        cfg: &HostConfig,
+        identity: &HostIdentity,
+        endpoint: Endpoint,
+        revocations: Arc<std::sync::RwLock<RevocationList>>,
+    ) -> crate::rooms::RoomServices {
+        crate::rooms::RoomServices {
+            workspaces: self.workspaces.clone(),
+            access: self.access_writer(),
+            records: self.room_records(),
+            endpoint,
+            cert: identity.device_cert.clone(),
+            key: identity.device_signing_key.clone(),
+            revocations,
+            metrics: self.metrics.clone(),
+            max_pre_admissions: cfg
+                .max_room_grants
+                .unwrap_or(crate::rooms::DEFAULT_MAX_PRE_ADMISSIONS),
+            trust_policy: self.handler.trust_policy.clone(),
+            agents: self.handler.agents.clone(),
+            mode: cfg.mode.join_hint_mode(),
+            persons_hosts: cfg.persons_hosts.clone(),
+            arrivals: self.handler.arrivals.clone(),
+        }
     }
 
     /// The writer of the host's governed workspace access.
@@ -934,6 +982,9 @@ pub struct RelayProtocol {
     pub agents: crate::peer::AgentRegistry,
     pub compactor: crate::compaction::Compactor,
     pub(crate) member_limits: Option<Arc<crate::member_limits::MemberLimits>>,
+    /// Told each device whose session here authenticated
+    /// ([`crate::federation::Arrivals`]).
+    pub(crate) arrivals: crate::federation::Arrivals,
 }
 
 impl RelayProtocol {
@@ -1051,6 +1102,7 @@ where
         }
     };
     ctx.metrics.inc_conns_authed();
+    ctx.arrivals.arrived(client_peer.device_public_key);
     let context = ctx.peer_context();
     if let Err(e) = Box::pin(run_peer_until(client_peer, closed, recv, send, context)).await {
         tracing::debug!("peer session ended with error: {e}");

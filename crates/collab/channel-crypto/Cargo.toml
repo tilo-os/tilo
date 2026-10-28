@@ -60,9 +60,14 @@ zeroize.workspace = true
 tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
 
 # OpenMLS reads randomness and the clock through JavaScript on wasm, and
-# refuses to build there without being told those APIs exist.
+# refuses to build there without being told those APIs exist. getrandom is
+# named for the same reason: its 0.2 line, which openmls_basic_credential
+# reaches through ed25519-dalek, has no wasm32-unknown-unknown backend unless
+# the `js` feature selects the page's `crypto.getRandomValues`, and a peer that
+# builds this crate alone does not build tilo-ui beside it to name that.
 [target.'cfg(target_family = "wasm")'.dependencies]
 openmls = { version = "0.9", features = ["js"] }
+getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
 
 [dev-dependencies]
 # Used in the integration test that wraps a ciphertext inside a

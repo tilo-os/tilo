@@ -230,12 +230,15 @@ impl ChatApp {
 
     /// Whether `person` is here now. The record keeps the status someone
     /// introduced themselves with, and nobody writes "Offline" when a tab
-    /// closes, so a departed visitor would read "Online" forever. While the
-    /// room answers who is present, that answer decides: present people keep
-    /// the away or busy they set, everyone else is offline. Without a room
-    /// (a chat on this device alone) the recorded status stands.
+    /// closes, so a departed visitor would read "Online" forever. While
+    /// presence answers who is present, that answer decides: present people
+    /// keep the away or busy they set, everyone else is offline — including
+    /// when the answer names nobody but this window's own person, which is
+    /// how a room that everybody has left reads. A window whose host has no
+    /// presence at all (a chat on this device alone) keeps the recorded
+    /// status.
     pub(crate) fn live_status(&self, person: &User) -> model::Presence {
-        if self.room_names.is_empty() {
+        if !self.room_presence_answers {
             return person.status;
         }
         let present = self.is_me(&person.id) || self.room_names.contains_key(&person.id);

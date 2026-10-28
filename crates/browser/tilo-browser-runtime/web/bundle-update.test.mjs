@@ -97,6 +97,11 @@ async function staleTab({served}) {
   const page = new EventTarget();
   const fetched = [];
   const saved = {fetch: globalThis.fetch, dispatchEvent: globalThis.dispatchEvent, splitReports: globalThis.splitReports};
+  // The loader says on the console why a module did not load: kept here,
+  // so an expected failure does not read as one in the test run.
+  const logged = [];
+  const savedError = console.error;
+  console.error = (...args) => logged.push(args.map(String).join(' '));
   globalThis.splitReports = reports;
   globalThis.dispatchEvent = event => page.dispatchEvent(event);
   globalThis.fetch = async url => {
@@ -116,17 +121,20 @@ async function staleTab({served}) {
     loader.load_calculator(7, 'slot');
     for (let i = 0; i < 20 && (reports.length === 0 || (!served && offers.length === 0)); i++) await settle();
     stop();
-    return {reports, offers, fetched, site};
+    return {reports, offers, fetched, site, logged};
   } finally {
+    console.error = savedError;
     Object.assign(globalThis, saved);
     rmSync(site, {recursive: true, force: true});
   }
 }
 
 test('a stale tab whose app module is gone is offered the reload into the deployed version', async () => {
-  const {reports, offers, fetched, site} = await staleTab({served: false});
+  const {reports, offers, fetched, site, logged} = await staleTab({served: false});
   // The window says it failed, and the page is told why.
   assert.deepEqual(reports, [['slot', false]]);
+  assert.equal(logged.length, 1);
+  assert.match(logged[0], /could not load tilo_browser_runtime\.calculator\.wasm.*HTTP 404/);
   assert.deepEqual(offers, [{running: OLD, deployed: NEW}]);
   // It never reached for the new version's files: one version per page.
   assert.ok(fetched.every(url => !url.includes(`/v/${NEW}/`)), fetched.join('\n'));
@@ -134,8 +142,9 @@ test('a stale tab whose app module is gone is offered the reload into the deploy
 });
 
 test('a stale tab whose version is still served opens the app with no offer', async () => {
-  const {reports, offers, fetched} = await staleTab({served: true});
+  const {reports, offers, fetched, logged} = await staleTab({served: true});
   assert.deepEqual(reports, [['slot', true]]);
+  assert.deepEqual(logged, []);
   assert.deepEqual(offers, []);
   assert.ok(fetched.every(url => !url.endsWith('/version.json')), fetched.join('\n'));
 });

@@ -1,7 +1,7 @@
 //! One window's own search: what the window holds and what can be done in
 //! it, read from the window itself.
 //!
-//! An app's search (its search control, the window bar's "Search <app>")
+//! An app's search (its search control, the window bar's "Search `<app>`")
 //! is about that window: the resources it publishes, what its own search
 //! providers find, and its actions. [`WindowSearch`] answers it from what
 //! the window publishes now ([`ui::widget::published_resources`] and
@@ -300,7 +300,7 @@ mod tests {
                 .with_action(action("rename", "Rename note"))
                 .with_action({
                     let mut open = action("open-note", "Open note");
-                    open.kind = OperationKind::View;
+                    open.type_mut().kind = OperationKind::View;
                     open
                 })
         };
@@ -402,7 +402,7 @@ mod tests {
     }
 
     fn unavailable(mut spec: ActionSpec, code: &str) -> ActionSpec {
-        spec.contract.availability = tilo_actions::Availability::Unavailable {
+        spec.type_mut().contract.availability = tilo_actions::Availability::Unavailable {
             code: code.into(),
             reason: code.into(),
         };

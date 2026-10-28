@@ -53,6 +53,10 @@ use std::sync::Arc;
 #[path = "editor_scroll.rs"]
 mod scroll;
 
+#[path = "editor_sync.rs"]
+mod sync;
+pub(super) use sync::SyncText;
+
 /// A pre-mutation request emitted by the editor surface.  Keeping the complete
 /// before/after snapshots here lets the app derive the compact action payload
 /// at the dispatch boundary, while the view itself remains a CRDT reader.
@@ -251,6 +255,8 @@ pub struct EditorView {
     text_obj: Option<ObjId>,
     /// Stable committed content witness; pending edits always bypass it.
     text_heads: Option<Vec<automerge::ChangeHash>>,
+    #[cfg(test)]
+    sync_text_reads: usize,
     /// Active language → grammar for highlighting.
     language: Language,
     /// Carets. Always at least one. Index 0 is primary.
@@ -262,6 +268,11 @@ pub struct EditorView {
     /// Wheel and touchpad motion and what the frames showed of the lines
     /// (`editor_scroll.rs`).
     scroll: scroll::Scroll,
+    /// The scenes of the lines in view, kept where they stand in the buffer
+    /// while the theme, the fonts, the geometry and each row's source and
+    /// spans hold (`editor_scroll.rs`). Presentation only: the buffer, the
+    /// carets and the diagnostics stay the state a frame paints from.
+    rows_kept: scroll::RowsKept,
     /// Measured monospace cell width of the `Code` role, resolved on every
     /// draw so it follows the theme and the text scale.
     cell_w: f64,
@@ -369,11 +380,14 @@ impl EditorView {
             highlight_cache: IncrementalHighlights::default(),
             text_obj: None,
             text_heads: None,
+            #[cfg(test)]
+            sync_text_reads: 0,
             language: Language::PlainText,
             carets: vec![Caret::at(0, 0)],
             scroll_y: 0.0,
             scroll_x: 0.0,
             scroll: scroll::Scroll::default(),
+            rows_kept: scroll::RowsKept::default(),
             cell_w: nominal.0,
             line_h: nominal.1,
             text_dy: 0.0,
@@ -860,6 +874,19 @@ impl EditorView {
             return None;
         }
         Some(self.cached_text.chars().skip(s).take(e - s).collect())
+    }
+
+    /// The primary caret as UTF-8 byte offsets into [`Self::text`], the space
+    /// an accessible text selection is published in: the anchor and the focus
+    /// in the order a screen reader reads them, which is where the selection
+    /// starts and where it ends.
+    fn accessible_caret(&self) -> (usize, usize) {
+        let caret = self.primary();
+        let focus = byte_of(&self.cached_text, caret.line, caret.col);
+        let anchor = caret
+            .anchor
+            .map_or(focus, |(line, col)| byte_of(&self.cached_text, line, col));
+        (anchor, focus)
     }
 
     /// Move the primary caret to a flat char index, collapsing multi-carets.
@@ -2139,7 +2166,13 @@ impl EditorView {
     /// Draw the caret(s) as a thin vertical stroke, blink-free for screenshot
     /// determinism, for whichever carets fall in the visible line range.
     /// No-op while the view isn't focused.
-    fn draw_carets(&self, scene: &mut Scene, transform: Affine, theme: &Theme, rows: &VisibleRows) {
+    fn draw_carets(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        rows: &VisibleRows,
+    ) -> Option<Rect> {
         let VisibleRows {
             gutter_w,
             code_x0,
@@ -2148,9 +2181,11 @@ impl EditorView {
             ..
         } = *rows;
         if !self.is_focused {
-            return;
+            return None;
         }
         let c = &theme.tokens.colors;
+        let stroke = Stroke::new(2.0);
+        let mut bounds: Option<Rect> = None;
         for (i, caret) in self.carets.iter().enumerate() {
             if caret.line < first_line || caret.line >= first_line + n_visible {
                 continue;
@@ -2170,14 +2205,15 @@ impl EditorView {
                 Point::new(x, y + inset),
                 Point::new(x, y + self.line_h - inset),
             );
-            scene.stroke(
-                &Stroke::new(2.0),
-                transform,
-                c.intent.you,
-                None,
-                &caret_line,
-            );
+            scene.stroke(&stroke, transform, c.intent.you, None, &caret_line);
+            // Enclose the actual stroke, including its width. Retain a full
+            // viewport fallback for geometry that cannot describe finite ink.
+            let ink = Rect::from_points(caret_line.p0, caret_line.p1)
+                .inflate(stroke.width / 2.0, stroke.width / 2.0);
+            let ink = if ink.is_finite() { ink } else { self.rect };
+            bounds = Some(bounds.map_or(ink, |old| old.union(ink)));
         }
+        bounds
     }
 
     /// Draw the completion popup: the toolkit's suggestion list, anchored
@@ -2727,24 +2763,7 @@ impl EditorView {
 
 impl Widget for EditorView {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        use automerge::transaction::Transactable;
-        self.collect_highlights();
-        let (state, _) = ui::doc::document_ref(state, path);
-        // Scroll and caret frames must not materialize the entire CRDT Text.
-        // A pending transaction has no stable content witness: always read it,
-        // including two different edits with the same pending-operation count.
-        let heads = (state.pending_ops() == 0).then(|| state.committed_heads());
-        if heads.is_some() && self.text_heads == heads {
-            return;
-        }
-        if let Some(t) = self.text_obj.clone() {
-            use automerge::ReadDoc;
-            let text = state.text(&t).unwrap_or_default();
-            if text != self.cached_text {
-                self.rebuild(&text);
-            }
-        }
-        self.text_heads = heads;
+        self.sync_observed(state, path, None);
     }
 
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
@@ -2959,16 +2978,24 @@ impl Widget for EditorView {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        Some(
-            ui::a11y::AccessNode::new(ui::a11y::Role::Document)
-                .with_name("Code editor")
-                .with_state(
-                    ui::a11y::AccessState::new()
-                        .focusable(true)
-                        .focused(self.is_focused)
-                        .multiline(true),
-                ),
-        )
+        let mut node = ui::a11y::AccessNode::new(ui::a11y::Role::Document)
+            .with_name("Code editor")
+            .with_state(
+                ui::a11y::AccessState::new()
+                    .focusable(true)
+                    .focused(self.is_focused)
+                    .multiline(true),
+            );
+        // What the document holds and where the caret is, for everything that
+        // reads the editor without looking at its pixels: a screen reader, an
+        // automation script, an agent, and the headless driver's checks.
+        // Nothing is bound to a buffer yet, so there is no text to publish.
+        if self.is_bound() {
+            node = node.with_value(self.cached_text.clone());
+            let (anchor, focus) = self.accessible_caret();
+            node = node.with_text_selection(anchor, focus);
+        }
+        Some(node)
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

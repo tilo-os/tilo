@@ -1781,7 +1781,7 @@ fn quick_settings_power_tile_and_drill_ins_own_their_pointer_input() {
     }
 
     fn a_long_open_section_scrolls_the_compact_panel_by_wheel() {
-        use crate::shell::quick_settings::{QsSection, WifiNetwork};
+        use tilo_quick_settings::{QsSection, WifiNetwork};
 
         let (vw, vh) = (960.0, 540.0);
         let wheel = ui::synthetic_input::mouse_wheel(0.0, -4.0);
@@ -1850,7 +1850,7 @@ fn open_notification_history(h: &mut AbsorbHarness, count: usize, vw: f64, vh: f
         state.overlays.quick_settings = true;
         state
             .quick_settings
-            .push_level(crate::shell::quick_settings::QsLevel::Notifications);
+            .push_level(tilo_quick_settings::QsLevel::Notifications);
         state.bump();
     }
     h.host.force_quick_settings_settled();
@@ -2003,11 +2003,11 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
         // it has classified the current Quick Settings level.
         h.host.handle_shell_quick_settings_drill_in_click(
             back.center(),
-            &crate::shell::quick_settings::QsLevel::Notifications,
+            &tilo_quick_settings::QsLevel::Notifications,
         );
         assert!(matches!(
             h.chrome.borrow().quick_settings.current_level(),
-            crate::shell::quick_settings::QsLevel::Root
+            tilo_quick_settings::QsLevel::Root
         ));
     }
 
@@ -2237,7 +2237,7 @@ fn render_notification_history_accessibility_matrix_at_1x() {
     reason = "an end-to-end test scenario that reads top to bottom"
 )]
 fn s1_review_fixtures_are_written_in_dark_and_light() {
-    use crate::shell::quick_settings::{BtDevice, QsSection, WifiNetwork};
+    use tilo_quick_settings::{BtDevice, QsSection, WifiNetwork};
     use ui::offscreen::OffscreenRenderer;
 
     fn net(ssid: &str, signal: u8, secure: bool, connected: bool) -> WifiNetwork {
@@ -2435,7 +2435,7 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
             assert_eq!(st.notification_history().len(), 3);
             st.overlays.quick_settings = true;
             st.quick_settings
-                .push_level(crate::shell::quick_settings::QsLevel::Notifications);
+                .push_level(tilo_quick_settings::QsLevel::Notifications);
             st.bump();
         }
         harness.host.force_quick_settings_settled();
@@ -2963,7 +2963,7 @@ fn notification_reader_native_keys_scroll_back_cancel_and_pointer_are_modal() {
     assert!(!h.host.notification_center.is_reading());
     assert!(matches!(
         h.chrome.borrow().quick_settings.current_level(),
-        crate::shell::quick_settings::QsLevel::Notifications
+        tilo_quick_settings::QsLevel::Notifications
     ));
     settle(&mut h, width, height);
     let read = h
@@ -2991,7 +2991,7 @@ fn notification_reader_native_keys_scroll_back_cancel_and_pointer_are_modal() {
     assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
     assert!(matches!(
         h.chrome.borrow().quick_settings.current_level(),
-        crate::shell::quick_settings::QsLevel::Root
+        tilo_quick_settings::QsLevel::Root
     ));
     assert_eq!(
         h.chrome
@@ -3954,24 +3954,24 @@ fn radio_details_use_native_keyboard_pointer_and_action_routes() {
             "Wi-Fi networks",
             "quick_settings_network_details",
             "quick-settings.network",
-            crate::shell::quick_settings::QsSection::Wifi,
+            tilo_quick_settings::QsSection::Wifi,
         ),
         (
             "Bluetooth devices",
             "quick_settings_bluetooth_details",
             "quick-settings.bluetooth",
-            crate::shell::quick_settings::QsSection::Bluetooth,
+            tilo_quick_settings::QsSection::Bluetooth,
         ),
     ] {
         for input in ["keyboard", "pointer", "accessibility", "semantic"] {
             let actions = super::qs_device_state_tests::Recorder::default();
             let mut h = build_harness_sized(1000.0, 980.0);
             h.host = h.host.with_qs_actions(Box::new(actions.clone()));
-            h.host.qs_root = crate::shell::quick_settings::root::QuickSettingsRoot::default();
+            h.host.qs_root = tilo_quick_settings::root::QuickSettingsRoot::default();
             {
                 let mut state = h.chrome.borrow_mut();
                 state.overlays.quick_settings = true;
-                state.quick_settings = crate::shell::chrome_state::QuickSettingsState::fixture();
+                state.quick_settings = tilo_quick_settings::QuickSettingsState::fixture();
                 state.quick_settings.radios.wifi_available = true;
                 state.quick_settings.bluetooth_available = true;
             }
@@ -3985,7 +3985,7 @@ fn radio_details_use_native_keyboard_pointer_and_action_routes() {
             );
             assert_eq!(
                 h.chrome.borrow().quick_settings.current_level(),
-                &crate::shell::quick_settings::QsLevel::Root
+                &tilo_quick_settings::QsLevel::Root
             );
             assert!(
                 actions.calls().is_empty(),

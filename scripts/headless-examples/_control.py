@@ -12,6 +12,14 @@ import socket
 import sys
 
 
+def hang_bound(otherwise: float) -> float:
+    """The shared test hang bound in seconds, as the Rust test running this
+    script passes it (`TILO_TEST_HANG_BOUND_SECS`), or `otherwise` when the
+    script runs by hand."""
+    secs = os.environ.get("TILO_TEST_HANG_BOUND_SECS")
+    return float(secs) if secs else otherwise
+
+
 def call(sock_path: str, payload: dict, timeout: float = 5.0) -> dict:
     """Send one command, read one response.
 

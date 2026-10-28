@@ -26,11 +26,13 @@ impl FrameHarness {
             &self.state.doc,
             &mut resources,
         );
+        let Some(mut palette) = self.new_action_palette() else {
+            // Search opens as asked once the palette's code is in.
+            self.palette_waiting.search = Some(request.clone());
+            return Ok(());
+        };
         let mut providers = crate::bound_dispatch::search_providers(self.root.as_ref());
         providers.push(Box::new(crate::search::OpenResourceSearch::new(&resources)));
-        let mut palette = Box::new(crate::action_palette::ActionPalette::with_host_text(
-            self.text.font_system.locale().to_owned(),
-        ));
         palette.load_open_resources(&resources);
         // The app's own actions, as the window host's palette lists them
         // (`App::open_action_palette`): search leads with what the app does.

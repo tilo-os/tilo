@@ -290,7 +290,7 @@ pub(crate) fn layout_map_order(
     root: NodeId,
     taffy: &TaffyTree<()>,
     restrictions: &crate::history_mode::embedded::FocusRestrictions,
-    history: Option<&crate::history_mode::host::HistoryHost>,
+    history: Option<&dyn crate::history_mode::host::HistoryChromeApi>,
     inspect: impl Fn(NodeId) -> Option<(bool, bool, bool)>,
 ) -> (Vec<NodeId>, bool) {
     use tilo_sort::CompactSort as _;
@@ -299,7 +299,7 @@ pub(crate) fn layout_map_order(
     let owned = history
         .map(|history| history.owned_nodes(taffy))
         .unwrap_or_default();
-    let captures = history.is_some_and(crate::history_mode::host::HistoryHost::captures_input);
+    let captures = history.is_some_and(|history| history.captures_input());
     let (mut order, trapped) = mapped_order(root, taffy, |node| {
         let allowed = restrictions.allows(node) && (!captures || owned.contains(&node));
         let (focusable, traps, hidden) = inspect(node).unwrap_or_default();
@@ -310,7 +310,7 @@ pub(crate) fn layout_map_order(
     }
     (
         order,
-        trapped || history.is_some_and(crate::history_mode::host::HistoryHost::review_is_open),
+        trapped || history.is_some_and(|history| history.review_is_open()),
     )
 }
 

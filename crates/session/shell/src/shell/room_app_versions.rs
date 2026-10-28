@@ -38,8 +38,8 @@ static CHECKED: LazyLock<
 > = LazyLock::new(Mutex::default);
 
 impl crate::shell::network::ShellNetwork {
-    /// Follow the versions of apps `room` runs ([`follow`]). Cheap: looks
-    /// at most every [`CHECK_EVERY`], and only at an owner already open.
+    /// Follow the versions of apps `room` runs (`follow`). Cheap: looks
+    /// at most every `CHECK_EVERY`, and only at an owner already open.
     /// Call every tick.
     pub fn follow_room_app_versions(&self, room: crate::shell::state::RoomId) {
         let now = std::time::Instant::now();

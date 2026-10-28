@@ -214,8 +214,8 @@ fn desktop_journey_usb_opens_existing_writer_without_alongside_authority() {
     assert!(
         resources
             .iter()
-            .any(|r| r.actions.iter().any(|a| a.id == "write")),
-        "existing writer owns review and write"
+            .any(|r| r.actions.iter().any(|a| a.id == "choose-drive")),
+        "the existing writer owns review and write"
     );
 }
 #[test]

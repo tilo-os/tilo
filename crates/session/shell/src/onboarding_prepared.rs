@@ -315,7 +315,7 @@ pub(crate) fn pending_at(home: &Path) -> bool {
     }
 }
 pub(crate) fn session_pending(identity_dir: &Path) -> bool {
-    let Some(home) = session_home() else {
+    let Some(home) = crate::onboarding::session_home() else {
         return false;
     };
     // A same-computer migration publishes its signed first-launch projection
@@ -364,11 +364,6 @@ pub(crate) fn take_tpm_secret() -> Option<zeroize::Zeroizing<Vec<u8>>> {
     secret.filter(|value| !value.is_empty() && value.len() <= 4096)
 }
 
-pub(crate) fn session_home() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-}
 impl Pending {
     pub(crate) fn open(home: &Path) -> io::Result<Self> {
         let home = home.canonicalize()?;

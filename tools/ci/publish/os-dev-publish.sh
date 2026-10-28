@@ -15,7 +15,7 @@
 # `image` moves tilo-vm:ARCH-ci, the architecture's dev channel, to it, only forward along main;
 # `disk` publishes the disk (os/dev/publish-dev-disk.sh), which `tilo-vm vm create` takes and
 # os-dev-gate-ARCH updates from, and moves tilo-vm:latest.
-# Logs in to registry.tilo.so with an identity token; the disks go to the generic packages with
+# Logs in to registry.tilo.so with an identity token (lib.sh registry_login); the disks go to the generic packages with
 # TILO_PACKAGES_TOKEN.
 set -euo pipefail
 here=$(dirname -- "${BASH_SOURCE[0]}")
@@ -49,7 +49,7 @@ auth=$scratch/registry-auth.json
 export REGISTRY_AUTH_FILE=$auth DOCKER_CONFIG=$scratch/docker
 mkdir -p "$DOCKER_CONFIG"
 login() {
-  id_token registry.tilo.so | skopeo login --authfile "$auth" -u oidc --password-stdin registry.tilo.so >/dev/null
+  registry_login registry.tilo.so "$auth"
   cp "$auth" "$DOCKER_CONFIG/config.json"
 }
 login

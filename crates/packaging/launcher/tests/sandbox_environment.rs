@@ -67,6 +67,7 @@ fn manifest() -> ManifestView {
             r#type: launcher::manifest::EntrypointType::Gui,
             gui_bin: None,
             cli_bin: None,
+            runtime: None,
         },
         sandbox: Sandbox {
             net: Net {

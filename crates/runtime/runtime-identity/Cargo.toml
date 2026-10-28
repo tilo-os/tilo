@@ -21,10 +21,8 @@ tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 runtime-portal = { version = "0.1.0", path = "../runtime-portal" }
 serde.workspace = true
 tokio = { workspace = true, features = ["io-util", "time"] }
-wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
 
 [dev-dependencies]
-postcard = { workspace = true, features = ["alloc"] }
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "test-util", "time"] }
 
 [target.'cfg(unix)'.dependencies]

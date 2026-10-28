@@ -6,8 +6,12 @@
 //! decoders, which the first web page image or decoded picture asks for,
 //! the model service's clients, which the first model request or provider
 //! settings change asks for, the pinned people overlay, which pinning
-//! who is here asks for, and the emoji catalogue, which the first picker,
-//! reaction name or `:name:` completion asks for.
+//! who is here asks for, the emoji catalogue, which the first picker,
+//! reaction name or `:name:` completion asks for, History, which the
+//! first window that registers it asks for, desktop search, which the
+//! desktop asks for as it first lays out, the notification centre,
+//! which opening it asks for, and stewarding the person's own room, which
+//! the page's first channel of it asks for.
 //!
 //! Like an app's `definition()` (`crate::split`), each export below is the
 //! only way to the code it hands over, so the splitter moves that code into
@@ -71,10 +75,6 @@ unsafe extern "C" {
     fn load_people_overlay(callback: Callback, data: *const c_void);
     #[link_name = "__wasm_split_00___people_overlay___00_import_c0c7a1e1c6874f57_roster"]
     fn people_overlay() -> tilo_browser_runtime::MakePinnedRoster;
-    #[link_name = "__wasm_split_load_emoji_4b8e2d6f1a9c7035_catalogue"]
-    fn load_emoji(callback: Callback, data: *const c_void);
-    #[link_name = "__wasm_split_00___emoji___00_import_4b8e2d6f1a9c7035_catalogue"]
-    fn emoji_catalogue() -> tilo_ui::emoji_catalogue::CatalogueFor;
 }
 
 #[unsafe(export_name = "__wasm_split_00___search___00_export_8c1f5e0d2b7a4936_engine")]
@@ -129,15 +129,6 @@ extern "C" fn export_model_clients() -> tilo_browser_runtime::MakeModelClients {
 )]
 extern "C" fn export_people_overlay() -> tilo_browser_runtime::MakePinnedRoster {
     tilo_browser_runtime::builtin_pinned_roster
-}
-
-#[unsafe(export_name = "__wasm_split_00___emoji___00_export_4b8e2d6f1a9c7035_catalogue")]
-#[allow(
-    improper_ctypes_definitions,
-    reason = "the function pointer only passes between Rust"
-)]
-extern "C" fn export_emoji_catalogue() -> tilo_ui::emoji_catalogue::CatalogueFor {
-    tilo_ui::emoji_catalogue::builtin_catalogue
 }
 
 /// Fetch the search engine's module, then install the engine.
@@ -219,17 +210,112 @@ fn fetch_people_overlay() {
     });
 }
 
-/// Fetch the emoji catalogue's module, then hand it to the toolkit.
-fn fetch_emoji() {
-    wasm_bindgen_futures::spawn_local(async {
-        if crate::split::load(load_emoji).await {
-            // SAFETY: the module that defines `emoji_catalogue` is loaded.
-            tilo_ui::emoji_catalogue::CATALOGUE.install(unsafe { emoji_catalogue() });
-            tilo_browser_runtime::refresh_mounts();
-        } else {
-            tilo_ui::emoji_catalogue::CATALOGUE.load_failed();
+/// Split out the code behind a toolkit surface that loads on first use
+/// (`tilo_ui::lazy_code`): `$code` is where the toolkit asks for it (a
+/// `LazyCode` or `Deferred`), `$builtin` the only expression that reaches
+/// it, which the splitter therefore moves into module `$name`; `$then`, if
+/// given, runs once it is installed. `register`
+/// tells `$code` how to fetch it; the fetch installs it and lays every mount
+/// out again so that what it changes shows.
+macro_rules! split_code {
+    ($(#[$meta:meta])* mod $module:ident: $ty:ty = $builtin:expr => $code:path, module = $name:literal, hash = $hash:literal $(, then = $then:path)?;) => {
+        $(#[$meta])*
+        mod $module {
+            use std::ffi::c_void;
+
+            use crate::split::Callback;
+
+            #[link(wasm_import_module = "./__wasm_split.js")]
+            #[allow(
+                improper_ctypes,
+                reason = "the function pointer only passes between Rust"
+            )]
+            unsafe extern "C" {
+                #[link_name = concat!("__wasm_split_load_", $name, "_", $hash, "_code")]
+                fn load_module(callback: Callback, data: *const c_void);
+                #[link_name = concat!("__wasm_split_00___", $name, "___00_import_", $hash, "_code")]
+                fn code() -> $ty;
+            }
+
+            #[unsafe(export_name = concat!("__wasm_split_00___", $name, "___00_export_", $hash, "_code"))]
+            #[allow(
+                improper_ctypes_definitions,
+                reason = "the function pointer only passes between Rust"
+            )]
+            extern "C" fn export() -> $ty {
+                $builtin
+            }
+
+            fn fetch() {
+                wasm_bindgen_futures::spawn_local(async {
+                    if crate::split::load(load_module).await {
+                        // SAFETY: the module that defines `code` is loaded.
+                        $code.install(unsafe { code() });
+                        $($then();)?
+                        tilo_browser_runtime::refresh_mounts();
+                    } else {
+                        $code.load_failed();
+                    }
+                });
+            }
+
+            pub(super) fn register() {
+                $code.defer(fetch);
+            }
         }
-    });
+    };
+}
+
+split_code! {
+    /// The emoji catalogue: the first picker, reaction name or `:name:`
+    /// completion asks for it.
+    mod emoji: tilo_ui::emoji_catalogue::CatalogueFor = tilo_ui::emoji_catalogue::builtin_catalogue
+        => tilo_ui::emoji_catalogue::CATALOGUE, module = "emoji", hash = "4b8e2d6f1a9c7035";
+}
+
+split_code! {
+    /// Feedback's custody and delivery: a page configured with a destination
+    /// asks for them.
+    mod feedback_code: tilo_browser_runtime::FeedbackCode = tilo_browser_runtime::builtin_feedback()
+        => tilo_browser_runtime::FEEDBACK, module = "feedback_service", hash = "9c3e5a17b2d4f860",
+        then = tilo_browser_runtime::feedback_arrived;
+}
+
+split_code! {
+    /// The profile card: the first card that opens asks for it.
+    mod profile_card: tilo_desktop::profile_card::MakeProfileCard = tilo_desktop::profile_card::builtin_profile_card()
+        => tilo_desktop::profile_card::PROFILE_CARD, module = "profile_card", hash = "5f81c2e94a3d07b6";
+}
+
+split_code! {
+    /// The action palette: the first window to lay out asks for it.
+    mod action_palette: tilo_ui::action_palette::MakeActionPalette = tilo_ui::action_palette::builtin_action_palette()
+        => tilo_ui::action_palette::ACTION_PALETTE, module = "action_palette", hash = "a26d9f4c1e0b8573";
+}
+
+split_code! {
+    /// Desktop search: the desktop asks for it as it first lays out.
+    mod desktop_search: tilo_desktop_search::MakeDesktopSearch = tilo_desktop_search::builtin_desktop_search()
+        => tilo_desktop_search::DESKTOP_SEARCH, module = "desktop_search", hash = "7be226dd82b8cdaa";
+}
+
+split_code! {
+    /// The notification centre: the first time it opens asks for it.
+    mod notification_centre: tilo_desktop_surface::notifications::MakeNotificationCentre = tilo_desktop_surface::notifications::builtin_notification_centre()
+        => tilo_desktop_surface::notifications::NOTIFICATION_CENTRE, module = "notification_centre", hash = "3d94b0e6a1c7f258";
+}
+
+split_code! {
+    /// Stewarding the person's own room: the first channel of it the page
+    /// takes up asks for it.
+    mod stewards: tilo_browser_peer::MakeStewards = tilo_browser_peer::builtin_stewards()
+        => tilo_browser_peer::STEWARDS, module = "stewards", hash = "ddbdc90ecc24a541";
+}
+
+split_code! {
+    /// History: the first window that registers it asks for it.
+    mod history: tilo_ui::history_mode::MakeHistory = tilo_ui::history_mode::builtin_history()
+        => tilo_ui::history_mode::HISTORY, module = "history", hash = "e1a7c5039b6d2f84";
 }
 
 /// How often the page looks again whether its first frame is up, or the
@@ -280,5 +366,12 @@ pub(crate) fn register() {
     tilo_ui::image_decoders::defer_image_decoders(fetch_page_images);
     tilo_browser_runtime::defer_model_clients(fetch_model_clients);
     tilo_browser_runtime::defer_people_overlay(fetch_people_overlay);
-    tilo_ui::emoji_catalogue::CATALOGUE.defer(fetch_emoji);
+    emoji::register();
+    history::register();
+    action_palette::register();
+    feedback_code::register();
+    profile_card::register();
+    desktop_search::register();
+    notification_centre::register();
+    stewards::register();
 }

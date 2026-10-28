@@ -73,7 +73,7 @@ impl ShellOverlayHost {
         // Above desktop content, below modal overlays and the permission
         // prompt, so a prompt always wins focus. Top inset keeps toasts
         // off the clock/tray.
-        let window_bars = self.window_bar_rects();
+        let window_bars = self.chrome_bar_rects(theme);
         if let Some(chrome) = self.chrome.as_ref() {
             let viewport = Rect::new(
                 area.x0,
@@ -176,7 +176,7 @@ impl ShellOverlayHost {
         {
             let ringing = NotificationStack::call_ringing(&ChromeNotifications::new(chrome));
             let top = f64::from(self.chrome_top_y);
-            let window_bars = self.window_bar_rects();
+            let window_bars = self.chrome_bar_rects(theme);
             let banners = &mut self.machine_banners;
             let edges = &mut self.call_edges;
             overlay_part(scene, "shell.machine-notices", desktop, |scene| {

@@ -418,7 +418,7 @@ fn orphaned_trees_go_unless_a_running_app_has_them_mounted() {
         running.display()
     ));
     let collected = store
-        .collect_orphans(&package_store::mounts::InUse::Known(mounts))
+        .collect_orphans(&package_store::mounts::InUse::known(mounts))
         .unwrap();
     assert!(!gone.exists() && !gone.with_extension("pkg").exists());
     assert_eq!(collected.removed.len(), 2, "{collected:?}");
@@ -443,7 +443,7 @@ fn orphaned_trees_go_unless_a_running_app_has_them_mounted() {
     );
     // Once the app closed, the next collection takes it.
     let collected = store
-        .collect_orphans(&package_store::mounts::InUse::Known(
+        .collect_orphans(&package_store::mounts::InUse::known(
             package_store::mounts::Mounts::default(),
         ))
         .unwrap();
@@ -451,13 +451,13 @@ fn orphaned_trees_go_unless_a_running_app_has_them_mounted() {
     // A mount table that cannot be read keeps everything.
     orphan(3);
     let collected = store
-        .collect_orphans(&package_store::mounts::InUse::Unknown("test".into()))
+        .collect_orphans(&package_store::mounts::InUse::unknown("test"))
         .unwrap();
     assert!(collected.removed.is_empty(), "{collected:?}");
 }
 
 fn nothing_mounted() -> package_store::mounts::InUse {
-    package_store::mounts::InUse::Known(package_store::mounts::Mounts::default())
+    package_store::mounts::InUse::known(package_store::mounts::Mounts::default())
 }
 
 #[test]

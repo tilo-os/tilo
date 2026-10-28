@@ -13,6 +13,16 @@
 use super::*;
 
 impl FrameHarness {
+    /// Drop the raw layout maps so no later frame re-solves a composition
+    /// whose widgets may have been replaced; the next frame rebuilds.
+    pub(super) fn discard_layout_tree(&mut self) {
+        self.serviced_layout = None;
+        self.bindings.clear();
+        self.node_map.clear();
+        self.layout_maps.clear();
+        self.layout_built = false;
+    }
+
     /// Every tree the layout maps can name: the app root, framework
     /// History's composition around it, the action palette and the
     /// standalone History chrome.
@@ -67,6 +77,60 @@ impl FrameHarness {
         self.discard_layout_tree();
         true
     }
+
+    /// Retire the maps before a model service's callbacks, as
+    /// [`Self::discard_layout_tree`] does, and hand them back to keep aside.
+    /// Nothing reads them while aside: until they are readmitted the tree
+    /// is retired exactly as if they were gone. Maps an earlier batch of
+    /// the same service set aside are handed back again.
+    pub(super) fn set_layout_aside(&mut self) -> Option<ServicedLayout> {
+        let kept = self.serviced_layout.take().or_else(|| {
+            self.layout_built.then(|| ServicedLayout {
+                bindings: std::mem::take(&mut self.bindings),
+                node_map: std::mem::take(&mut self.node_map),
+                layout_maps: std::mem::take(&mut self.layout_maps),
+                viewport: self.last_layout_viewport,
+            })
+        });
+        self.discard_layout_tree();
+        kept
+    }
+
+    /// Take back the maps a completed model service set aside, at the start
+    /// of the frame that readmits its tree, when nothing has built, retired
+    /// or asked for a fresh composition since. The frame's structure check
+    /// that follows walks the live tree against them before any pointer is
+    /// called through ([`Self::layout_maps_stale`]), as after input that ran
+    /// widget code: a widget the service replaced, reported or not, makes
+    /// the frame build the tree again. A service that changed nothing the
+    /// layout follows (a save landing) keeps the tree it had.
+    pub(super) fn readmit_serviced_layout(&mut self) {
+        let Some(kept) = self.serviced_layout.take() else {
+            return;
+        };
+        if !self.owner_service_layout_retired
+            || self.layout_built
+            || !self.node_map.is_empty()
+            || self.layout_requested
+            || self.pending_app_activation.is_some()
+        {
+            return;
+        }
+        self.bindings = kept.bindings;
+        self.node_map = kept.node_map;
+        self.layout_maps = kept.layout_maps;
+        self.last_layout_viewport = kept.viewport;
+        self.layout_built = true;
+    }
+}
+
+/// A retained layout's maps a model service set aside while its callbacks
+/// ran ([`FrameHarness::set_layout_aside`]).
+pub(super) struct ServicedLayout {
+    bindings: crate::bound_dispatch::BoundNodeMap,
+    node_map: HashMap<NodeId, *mut dyn Widget>,
+    layout_maps: crate::retained_widgets::Adopted,
+    viewport: Option<(u32, u32)>,
 }
 
 impl FrameHarness {

@@ -1,25 +1,25 @@
 //! Network: Wi-Fi, wired, VPN, hotspot and the saved connection profiles
 //! of this device, as `NetworkManager` reports them, and mobile data
-//! ([`mobile`]), whose card sits next to Wi-Fi.
+//! (`mobile`), whose card sits next to Wi-Fi.
 //!
-//! The pane opens on the Wi-Fi list ([`order`] says which networks it shows
+//! The pane opens on the Wi-Fi list (`order` says which networks it shows
 //! and in what order) with the controls under it, and drills into pages
 //! ([`crate::pages`]): every network in range, one network's page, the known
-//! networks, the VPNs and a VPN's page ([`vpn`]), the hotspot and the
+//! networks, the VPNs and a VPN's page (`vpn`), the hotspot and the
 //! advanced settings. Every page is the same model; the
 //! page on top of the window's trail says which one it composes.
 //!
 //! Every read and change may block on `nmcli` or the system bus for
 //! seconds, so none runs on the UI thread: the model reads a snapshot in the
 //! background when it is first needed and again after each change, and every
-//! change is a [`NetworkEffect`] (or a [`vpn::VpnEffect`]) that runs on a
+//! change is a [`NetworkEffect`] (or a `vpn::VpnEffect`) that runs on a
 //! worker and reports what happened. Passwords, keys and PINs live in
 //! process-local buffers that are zeroed once used; they never reach a
 //! document.
 //!
 //! A radio the device does not have is not offered: Wi-Fi and the hotspot
 //! without a Wi-Fi radio, airplane mode without a Wi-Fi radio or a modem
-//! ([`NetworkArea::statuses`]).
+//! (`NetworkArea::statuses`).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;

@@ -181,11 +181,89 @@ pub struct ConnectorEvent {
     pub payload: Map<String, Value>,
 }
 
+/// Something an application declared next to its actions, published as a
+/// change to a record of its own kind in the room (`mail.message`,
+/// `calendar.event`). The kind carries the declaring app, so no host code
+/// knows any one app's events.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AppEvent {
+    /// The room whose record announced it.
+    pub room: String,
+    pub app_id: String,
+    /// The announced event kind, such as `mail.message`.
+    pub kind: String,
+    /// What was declared about the event, as the app published it.
+    #[serde(default)]
+    pub payload: Map<String, Value>,
+}
+
+impl AppEvent {
+    /// What a record change announced, when its kind is the app's id, a dot
+    /// and an event kind, closed by `.event`: `so.tilo.mail` announcing
+    /// `mail.message` publishes the kind `so.tilo.mail.mail.message.event`.
+    /// The prefix is the app whose action the change invoked, so one app
+    /// cannot speak for another.
+    #[must_use]
+    pub fn of_change(change: &RecordEvent) -> Option<Self> {
+        // The app id is read off the change, not off the kind: an id has dots
+        // and a kind has dots, so the prefix decides which app spoke.
+        let Did::Verb(call) = &change.did else {
+            return None;
+        };
+        let app_id = call.action.app.as_str();
+        if app_id.is_empty() {
+            return None;
+        }
+        let kind = change
+            .kind
+            .strip_prefix(app_id)?
+            .strip_prefix(SEPARATOR)?
+            .strip_suffix(EVENT_KIND_SUFFIX)?
+            .to_owned();
+        if kind.is_empty() {
+            return None;
+        }
+        let mut payload = change.arguments.clone();
+        if let Some(item) = &change.item
+            && !payload.contains_key("record")
+        {
+            payload.insert("record".into(), Value::from(item.id.as_str()));
+        }
+        Some(Self {
+            room: change.room.clone(),
+            app_id: app_id.to_owned(),
+            kind,
+            payload,
+        })
+    }
+}
+
+/// What a firing of an app-event trigger binds as its event input: the
+/// application, the event it announced, and what it announced beside them —
+/// the app event's own fields, one level down from the record event's.
+#[must_use]
+pub fn app_event_object(declared: &AppEvent) -> Map<String, Value> {
+    let mut bound = Map::from_iter([
+        ("app_id".to_string(), Value::from(declared.app_id.as_str())),
+        ("kind".to_string(), Value::from(declared.kind.as_str())),
+    ]);
+    bound.extend(declared.payload.clone());
+    bound
+}
+
+/// What an application publishes an event as: a record kind closed by this
+/// suffix, after an app id and an event kind ([`AppEvent::of_change`]).
+const EVENT_KIND_SUFFIX: &str = ".event";
+
+/// The character `<app id>` and `<event kind>` are separated by.
+const SEPARATOR: char = '.';
+
 /// Either kind of event.
 #[derive(Clone, Copy, Debug)]
 pub enum Event<'a> {
     Record(&'a RecordEvent),
     Connector(&'a ConnectorEvent),
+    AppEvent(&'a AppEvent),
 }
 
 impl Event<'_> {
@@ -196,6 +274,12 @@ impl Event<'_> {
         match self {
             Self::Record(event) => event.change.clone(),
             Self::Connector(event) => format!("{}/{}/{}", event.app_id, event.source, event.id),
+            // Two declarations of the same app and kind are the same event
+            // announced twice.
+            Self::AppEvent(event) => {
+                let payload = serde_json::to_string(&event.payload).unwrap_or_default();
+                format!("app_event\0{}\0{}\0{payload}", event.app_id, event.kind)
+            }
         }
     }
 
@@ -211,13 +295,18 @@ impl Event<'_> {
                 "at_ms": event.at_ms,
                 "payload": Value::Object(event.payload.clone()),
             }),
+            Self::AppEvent(event) => json!({
+                "app_id": event.app_id,
+                "kind": event.kind,
+                "payload": Value::Object(event.payload.clone()),
+            }),
         }
     }
 
     pub(super) const fn caused_by(&self) -> Option<&Cause> {
         match self {
             Self::Record(event) => event.caused_by.as_ref(),
-            Self::Connector(_) => None,
+            Self::Connector(_) | Self::AppEvent(_) => None,
         }
     }
 }

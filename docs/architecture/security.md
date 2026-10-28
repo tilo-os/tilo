@@ -95,6 +95,8 @@ Parity with the per-app scopes it replaces: the same tier values in the same fil
 
 No GPU device node is in the default profile. A toolkit app's frames are drawn by the render service of its room (docs/architecture/app-rendering.md): the launcher connects the app to the compositor's render broker and names the app and its room before the sandbox starts (`TILO_SVC_RENDER_FD`), so the app cannot choose whose service draws it. The service treats every scene as hostile: one CPU pass validates it, against per-app limits, before any GPU work; targets and buffers are per surface of one app, and pooled scratch is dropped between apps. One service serves the person's private rooms; every other room has its own, so apps in a room with strangers share no device, cache or GPU memory with another room. The service runs as `shell __render-service` with only its broker socket, then confines itself: Landlock (render node read-write, fonts and driver libraries read, TCP denied) and seccomp without socket creation, connect or exec.
 
+A tilolang app's window also travels as component patches (`tilo_render_protocol::patch`, docs/architecture/app-rendering.md "Component patches"): what the UI host half receives is decoded once into its own memory and checked before any widget is built (components, props, events and bindings against the toolkit's catalogue; primitives the host builds; every size bounded; a per-window node budget), and a batch that fails is refused whole, the window showing the platform's error state. A connection is one window of one app, so a patch can only name nodes its own app sent. Today both halves run in the app's own process; the UI host process will hold them only once its surfaces can be attributed per app by the broker.
+
 Only an app that declares the `gpu` capability (web engines, video, games, 3D, ML) gets the compositor's render node — narrowed to that one node — with its loader pin (`launcher::gpu::granted`, `launcher::profile::GPU_DEVICE_PATHS`).
 
 ### Application audio output
@@ -252,7 +254,7 @@ other and the host's delegated agent try every governance, host and member
 action, the administration door, subscription, write, catalogue and
 compute door against the room that is not theirs, and
 every refusal is checked against that room's governance afterwards. t's
-`security-isolation` check runs it nightly and on
+`security-isolation-*` checks run it on release candidates and on
 demand with the room-access, admission, revocation and agent-confinement
 suites, against the default relay build and the `agents` build the room
 service ships.

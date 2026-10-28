@@ -231,3 +231,68 @@ fn dropping_old_ticket_after_cache_eviction_cannot_settle_same_url_again() {
     assert!(host.complete_decoded(&new, Some(pixels(3, 1))));
     assert_eq!(store.get("evicted").unwrap().width, 3);
 }
+
+/// A window's host serves every image store the window builds while its
+/// scope is entered, also one it builds long after it was constructed (a
+/// view part built once its room arrived): that store's pictures load
+/// through the host, and show. A store built outside the window is not the
+/// host's, and a closed window's host is let go.
+#[test]
+fn a_store_a_served_window_builds_later_loads_through_its_host() {
+    let mut window = WakeScope::new();
+    let loaders: std::rc::Rc<std::cell::RefCell<Vec<HostImageLoader>>> = std::rc::Rc::default();
+    let destination = std::rc::Rc::clone(&loaders);
+    ImageStore::serve_window(
+        &window.handle(),
+        std::rc::Rc::new(move |max_dimension, _: &ServedWindow| {
+            let (store, loader) = ImageStore::host_driven_with_max_dimension(max_dimension);
+            destination.borrow_mut().push(loader);
+            store
+        }),
+    );
+    let unused: Fetcher = Arc::new(|_| panic!("a served window's store never fetches itself"));
+    // The window's code runs again, frames after it was constructed.
+    let store = {
+        let _entry = window.enter();
+        ImageStore::new(&unused)
+    };
+    assert_eq!(loaders.borrow().len(), 1, "the host serves the later store");
+    let red = tilo_image_codec::DecodedImage {
+        rgba: [220, 60, 60, 255].repeat(64),
+        width: 8,
+        height: 8,
+    };
+    let url = "tilo-blob://dot";
+    let ticket = {
+        let mut loaders = loaders.borrow_mut();
+        let host = loaders.first_mut().expect("served");
+        let ticket = requested(&store, host, url);
+        assert!(host.complete_decoded(&ticket, Some(red)));
+        ticket
+    };
+    drop(ticket);
+    let picture = store.get(url).expect("the picture shows");
+    assert_eq!((picture.width, picture.height), (8, 8));
+
+    // Outside the window, a store is the toolkit's own.
+    let pumped = crate::background::Pumped::new();
+    {
+        let _executor = pumped.background().enter();
+        drop(ImageStore::new(&unused));
+    }
+    assert_eq!(loaders.borrow().len(), 1);
+
+    // A closed window's host serves nothing more.
+    window.close();
+    let other = WakeScope::new();
+    {
+        let _entry = other.enter();
+        let _executor = pumped.background().enter();
+        drop(ImageStore::new(&unused));
+    }
+    assert_eq!(loaders.borrow().len(), 1);
+    assert!(
+        HOST_FACTORIES.with_borrow(Vec::is_empty),
+        "closed windows are let go"
+    );
+}

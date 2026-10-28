@@ -210,6 +210,9 @@ pub(crate) struct Shared {
     /// Some of the members online and how many belong, as the room last
     /// reported them, for the site's directory.
     presence: std::sync::Mutex<(Vec<tilo_relay_protocol::directory::Face>, u32)>,
+    /// The people (user roots, hex) the room last counted online: each
+    /// already holds the seat another device of theirs would come in on.
+    online: std::sync::Mutex<std::collections::HashSet<String>>,
     /// The room takes people by invitation (`TILO_ROOMS_ADMISSION=invite`):
     /// its relay lets in only its members.
     invite_only: bool,
@@ -310,6 +313,7 @@ impl Shared {
             seats: std::sync::Mutex::new(Seats::new(max_guests)),
             watching: std::sync::Mutex::new(Seats::new(max_spectators)),
             presence: std::sync::Mutex::default(),
+            online: std::sync::Mutex::default(),
             invite_only: false,
             waits: std::sync::Mutex::new(JoinLimits::new(JoinRates::WAIT_LIST)),
             unlists: std::sync::Mutex::new(JoinLimits::new(JoinRates::WAIT_LIST_REMOVALS)),
@@ -340,11 +344,12 @@ impl Shared {
     }
 }
 
-/// What [`Persistent::admit_address`] took for a visitor: a seat, and a
-/// join at `at_ms` in the window of `ip_hash`.
+/// What [`Persistent::admit_address`] took for a visitor: a seat unless
+/// they hold one already, and a join at `at_ms` in the window of `ip_hash`.
 struct Admitted {
     ip_hash: String,
     at_ms: u64,
+    took_seat: bool,
 }
 
 pub struct Persistent {
@@ -930,8 +935,10 @@ impl Persistent {
                     spectators,
                     here,
                     members,
+                    online,
                 }) => {
                     *self.shared.presence.lock_recover() = (here, members);
+                    *self.shared.online.lock_recover() = online.into_iter().collect();
                     for (seats, online) in [
                         (&self.shared.seats, people),
                         (&self.shared.watching, spectators),
@@ -1458,7 +1465,9 @@ impl Persistent {
         limits: &std::sync::Mutex<JoinLimits>,
         seats: &std::sync::Mutex<Seats>,
     ) {
-        Self::release(seats);
+        if admitted.took_seat {
+            Self::release(seats);
+        }
         limits
             .lock_recover()
             .forget(&admitted.ip_hash, admitted.at_ms);
@@ -1473,6 +1482,7 @@ impl Persistent {
         ip: IpAddr,
         limits: &std::sync::Mutex<JoinLimits>,
         seats: &std::sync::Mutex<Seats>,
+        already_seated: bool,
     ) -> std::result::Result<Admitted, JoinRefusal> {
         let ip_hash = self.shared.hasher.hash(ip);
         let now = tilo_clock::unix_now_ms();
@@ -1485,10 +1495,11 @@ impl Persistent {
         {
             return Err(JoinRefusal::CoolingDown);
         }
-        if !seats
-            .lock()
-            .map_err(|_| JoinRefusal::Unavailable)?
-            .take(now)
+        if !already_seated
+            && !seats
+                .lock()
+                .map_err(|_| JoinRefusal::Unavailable)?
+                .take(now)
         {
             return Err(JoinRefusal::Full {
                 retry_after_secs: FULL_RETRY_SECS,
@@ -1503,12 +1514,15 @@ impl Persistent {
                     .map_err(|retry_after_secs| JoinRefusal::TooMany { retry_after_secs })
             });
         if let Err(refusal) = recorded {
-            Self::release(seats);
+            if !already_seated {
+                Self::release(seats);
+            }
             return Err(refusal);
         }
         Ok(Admitted {
             ip_hash,
             at_ms: now,
+            took_seat: !already_seated,
         })
     }
 
@@ -1535,7 +1549,15 @@ impl Persistent {
         {
             return Err(JoinRefusal::Removed);
         }
-        let admitted = self.admit_address(ip, &self.shared.joins, &self.shared.seats)?;
+        // A person already online (another device of theirs, such as the
+        // one a page keeps here to carry problem reports from elsewhere)
+        // is already seated: only the join window still applies.
+        let here = self
+            .shared
+            .online
+            .lock_recover()
+            .contains(&request.user_public_key);
+        let admitted = self.admit_address(ip, &self.shared.joins, &self.shared.seats, here)?;
         let unadmit = || Self::unadmit(&admitted, &self.shared.joins, &self.shared.seats);
         let token = hex::encode(rand::random::<[u8; 32]>());
         let token_sha256 = token_digest(&token);
@@ -1602,7 +1624,8 @@ impl Persistent {
                 "devicePublicKey must be 64 lowercase hex characters",
             ));
         }
-        let admitted = self.admit_address(ip, &self.shared.spectates, &self.shared.watching)?;
+        let admitted =
+            self.admit_address(ip, &self.shared.spectates, &self.shared.watching, false)?;
         let unadmit = || Self::unadmit(&admitted, &self.shared.spectates, &self.shared.watching);
         let (answer, origin, room) = self
             .ask(
@@ -1991,6 +2014,7 @@ mod tests {
                 spectators: 5,
                 here: Vec::new(),
                 members: 0,
+                online: Vec::new(),
             })
             .await;
         taken_in("the online count", || {
@@ -2002,6 +2026,44 @@ mod tests {
             Err(JoinRefusal::Full {
                 retry_after_secs: FULL_RETRY_SECS
             })
+        ));
+    }
+
+    #[tokio::test]
+    async fn another_device_of_a_person_online_takes_no_seat_from_a_newcomer() {
+        // Two seats: one person online, one seat free for a newcomer.
+        let (persistent, mut relay, _dir) = persistent(2, 1000).await;
+        relay
+            .report(&RoomEvent::Online {
+                people: 1,
+                spectators: 0,
+                here: Vec::new(),
+                members: 0,
+                online: vec![hex::encode([7; 32])],
+            })
+            .await;
+        taken_in("the person online", || persistent.online() == 1).await;
+        // A second device of theirs (a page keeping a peer here while it
+        // is in another room) comes in through the door: it is let in and
+        // holds no seat, as its person already holds one.
+        let joining = tokio::spawn({
+            let persistent = Arc::clone(&persistent);
+            async move { persistent.join(ip("203.0.113.1"), request(7)).await }
+        });
+        admit(&mut relay).await;
+        joining.await.unwrap().unwrap();
+        assert_eq!(persistent.shared.seats.lock_recover().held(), 0);
+        // So the newcomer still finds the free seat.
+        let newcomer = tokio::spawn({
+            let persistent = Arc::clone(&persistent);
+            async move { persistent.join(ip("203.0.113.2"), request(8)).await }
+        });
+        admit(&mut relay).await;
+        newcomer.await.unwrap().unwrap();
+        // And past the cap the door is full, for anyone not already here.
+        assert!(matches!(
+            persistent.join(ip("203.0.113.3"), request(9)).await,
+            Err(JoinRefusal::Full { .. })
         ));
     }
 
@@ -2045,6 +2107,7 @@ mod tests {
                 spectators: 0,
                 here: Vec::new(),
                 members: 0,
+                online: Vec::new(),
             })
             .await;
         relay
@@ -2053,6 +2116,7 @@ mod tests {
                 spectators: 0,
                 here: Vec::new(),
                 members: 0,
+                online: Vec::new(),
             })
             .await;
         taken_in("one guest leaving", || persistent.online() == 1).await;
@@ -2284,6 +2348,7 @@ mod tests {
                 spectators: 0,
                 here: vec![ada.clone()],
                 members: 12,
+                online: Vec::new(),
             })
             .await;
         taken_in("the presence", || {
@@ -2310,6 +2375,7 @@ mod tests {
                 spectators: 3,
                 here: Vec::new(),
                 members: 0,
+                online: Vec::new(),
             })
             .await;
         taken_in("the spectator count", || persistent.watching() == 3).await;
