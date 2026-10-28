@@ -396,6 +396,7 @@ members = [
     # Session
     "crates/session/color-pipeline",
     "crates/session/console-control",
+    "crates/session/onboarding-walk",
     "crates/session/control-cli",
     "crates/session/desktop-model",
     "crates/session/desktop-search",

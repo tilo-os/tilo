@@ -39,6 +39,8 @@ thiserror.workspace = true
 # Parses the slot user's package registry from a descriptor opened without following links.
 toml.workspace = true
 tilo-vm-protocol = { path = "../tilo-vm-protocol" }
+# Onboarding's controls and the walk through them, shared with the legacy stream.
+onboarding-walk = { path = "../../session/onboarding-walk" }
 console-control = { path = "../../session/console-control" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }

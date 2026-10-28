@@ -72,31 +72,6 @@ impl IdentityRequest {
     }
 }
 
-/// Onboarding's controls in the order a person goes through them: begin,
-/// accept that the identity is theirs to protect, create it, skip the
-/// backup (acknowledged), skip the optional codecs and the tour, enter.
-/// A checkbox is pressed once; a press toggles it.
-const ONBOARDING_PRESSES: [(&str, bool); 9] = [
-    ("onboarding.begin.card", false),
-    ("onboarding.understood.row", true),
-    ("onboarding.create.button", false),
-    ("onboarding.backup.skip-acknowledged.row", true),
-    ("onboarding.backup.continue.button", false),
-    ("onboarding.codecs.skip.button", false),
-    ("onboarding.tour.skip.button", false),
-    ("onboarding.tour.next.button", false),
-    ("onboarding.finish.button", false),
-];
-
-/// The next control to press among those `shown`, given those `pressed`.
-fn next_onboarding_press(shown: &[String], pressed: &[String]) -> Option<&'static str> {
-    ONBOARDING_PRESSES
-        .iter()
-        .filter(|(name, _)| shown.iter().any(|target| target == name))
-        .find(|(name, once)| !*once || !pressed.iter().any(|done| done == name))
-        .map(|(name, _)| *name)
-}
-
 /// The `onboarding.*` names in a `list_targets` answer.
 fn onboarding_target_names(reply: &str) -> Vec<String> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(reply) else {
@@ -112,9 +87,46 @@ fn onboarding_target_names(reply: &str) -> Vec<String> {
     targets
         .iter()
         .filter_map(|target| target.get("name")?.as_str())
-        .filter(|name| name.starts_with("onboarding."))
+        .filter(|name| name.starts_with(onboarding_walk::PREFIX))
         .map(str::to_owned)
         .collect()
+}
+
+/// A slot's session, as the onboarding walk sees it: its controls listed
+/// and pressed by name through the control socket.
+struct OnboardingScreen<'a> {
+    daemon: &'a mut Daemon,
+    session: &'a apply::Session,
+    /// Until when a control socket the session has not bound yet is waited for.
+    deadline: Instant,
+}
+
+impl onboarding_walk::Screen for OnboardingScreen<'_> {
+    type Error = DaemonError;
+
+    fn controls(&mut self) -> Result<Vec<String>, DaemonError> {
+        self.daemon.onboarding_targets(self.session, self.deadline)
+    }
+
+    fn press(&mut self, name: &'static str) -> Result<(), DaemonError> {
+        let request = serde_json::json!({ "op": "click_named", "name": name });
+        let reply = self
+            .daemon
+            .apply
+            .control(self.session, &["raw".to_owned(), request.to_string()])?;
+        if reply.exit_code != 0 {
+            return Err(DaemonError::DeviceIdentity {
+                slot: self.session.slot.clone(),
+                detail: format!("pressing {name}: {}", reply.stderr.trim()),
+            });
+        }
+        Ok(())
+    }
+
+    /// Onboarding is gone and its identity has certified the machine.
+    fn finished(&mut self, controls: &[String]) -> bool {
+        controls.is_empty() && self.daemon.apply.machine_identity().certified
+    }
 }
 
 /// In-VM build dirs `gc` keeps by default, most recently used first.
@@ -1516,32 +1528,22 @@ impl Daemon {
         let created = !self.apply.machine_identity().certified;
         let mut actions = Vec::new();
         if created {
-            let mut pressed = Vec::new();
-            let started = Instant::now();
-            let deadline = started.checked_add(ONBOARDING_TIMEOUT).unwrap_or(started);
-            loop {
-                let targets = self.onboarding_targets(&session, deadline)?;
-                if targets.is_empty() && self.apply.machine_identity().certified {
-                    break;
+            let now = Instant::now();
+            let mut screen = OnboardingScreen {
+                daemon: self,
+                session: &session,
+                deadline: now.checked_add(ONBOARDING_TIMEOUT).unwrap_or(now),
+            };
+            let pace = onboarding_walk::Pace {
+                timeout: ONBOARDING_TIMEOUT,
+                ..onboarding_walk::Pace::default()
+            };
+            onboarding_walk::walk(&mut screen, pace).map_err(|error| match error {
+                onboarding_walk::WalkError::Screen(error) => error,
+                unfinished @ onboarding_walk::WalkError::Unfinished { .. } => {
+                    fail(unfinished.to_string())
                 }
-                if started.elapsed() >= ONBOARDING_TIMEOUT {
-                    return Err(fail(format!(
-                        "onboarding did not finish within {}s; it still shows {targets:?} after pressing {pressed:?}",
-                        ONBOARDING_TIMEOUT.as_secs()
-                    )));
-                }
-                if let Some(target) = next_onboarding_press(&targets, &pressed) {
-                    let request = serde_json::json!({ "op": "click_named", "name": target });
-                    let reply = self
-                        .apply
-                        .control(&session, &["raw".to_owned(), request.to_string()])?;
-                    if reply.exit_code != 0 {
-                        return Err(fail(format!("pressing {target}: {}", reply.stderr.trim())));
-                    }
-                    pressed.push(target.to_owned());
-                }
-                std::thread::sleep(Duration::from_millis(300));
-            }
+            })?;
             actions.push(Action::CompleteOnboarding { created: true });
             // As after a throwaway: a layout made before the identity
             // belongs to the Unix user and hides every app launch.

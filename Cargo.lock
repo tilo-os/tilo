@@ -8619,6 +8619,7 @@ dependencies = [
  "image",
  "legacy-agent-protocol",
  "libc",
+ "onboarding-walk",
  "rustix 1.1.4",
  "serde",
  "serde_json",
@@ -11143,6 +11144,10 @@ checksum = "12f40cff3dde1b6087cc5d5f5d4d65712f34016a03ed60e9c08dcc392736b5b7"
 dependencies = [
  "asn1-rs",
 ]
+
+[[package]]
+name = "onboarding-walk"
+version = "0.1.0"
 
 [[package]]
 name = "once_cell"
@@ -21416,6 +21421,7 @@ dependencies = [
  "hex",
  "launcher",
  "libc",
+ "onboarding-walk",
  "os-actions",
  "package-store",
  "runtime-bundle",
@@ -26484,6 +26490,7 @@ dependencies = [
  "object 0.37.3",
  "object 0.39.1",
  "oid-registry",
+ "onboarding-walk",
  "once_cell",
  "oneshot",
  "opaque-debug",

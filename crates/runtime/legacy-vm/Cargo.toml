@@ -19,7 +19,7 @@ default = ["relay-stream"]
 # `tilo-legacy relay-stream`, for a relay's KVM worker. Off for crates that
 # only read the legacy app registry (environments' command shims), so they
 # do not link a video encoder.
-relay-stream = ["dep:image", "dep:tilo-callstream", "dep:tilo-relay-protocol"]
+relay-stream = ["dep:image", "dep:onboarding-walk", "dep:tilo-callstream", "dep:tilo-relay-protocol"]
 
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
@@ -28,6 +28,8 @@ fnv.workspace = true
 # `relay-stream`: a window screenshot's pixels, encoded as H.264 for a
 # relay's legacy window stream.
 image = { workspace = true, features = ["png"], optional = true }
+# `relay-stream`: the headless shell's onboarding, walked as tilo-vmd walks it.
+onboarding-walk = { path = "../../session/onboarding-walk", optional = true }
 tilo-callstream = { path = "../../collab/tilo-callstream", optional = true }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol", optional = true }
 legacy-agent-protocol = { path = "../legacy-agent-protocol" }

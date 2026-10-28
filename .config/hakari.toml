@@ -133,6 +133,8 @@ third-party = [
 #   workspace, which must not resolve the application workspace.
 # - tilo-advisory-lock is the builder image's sccache canary, compiled cold into
 #   an empty namespace (tools/ci/publish/ci-builder-canary.sh); it must stay small.
+# - onboarding-walk is standard library only; the tools that walk a session's
+#   onboarding depend on it without taking on the unified set.
 workspace-members = [
     # resolves the others' features and builds nothing (tools/ci/workspace_unify.py)
     "workspace-unify",
@@ -159,6 +161,8 @@ workspace-members = [
     "install-profile-model",
     # builder sccache canary
     "tilo-advisory-lock",
+    # standard library only
+    "onboarding-walk",
     # The [patch.crates-io] replacement for rustls-native-certs sits below
     # third-party crates the hack itself depends on (rustls-platform-verifier),
     # so depending on the hack would be a cycle.

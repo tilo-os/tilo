@@ -692,6 +692,7 @@ doc = false
 "object-0_37_3" = { package = "object", version = "^0.37.3", default-features = false, features = ["archive", "coff", "elf", "macho", "pe", "read_core", "unaligned", "xcoff"] }
 "object-0_39_1" = { package = "object", version = "^0.39.1", default-features = false, features = ["archive", "coff", "elf", "macho", "pe", "read", "read_core", "std", "unaligned", "xcoff"] }
 "oid-registry-0_8_1" = { package = "oid-registry", version = "^0.8.1", default-features = false, features = ["crypto", "default", "kdf", "nist_algs", "pkcs1", "pkcs12", "pkcs7", "pkcs9", "registry", "x509", "x962"] }
+"onboarding-walk" = { path = "../../../crates/session/onboarding-walk", default-features = false, features = [] }
 "once_cell-1_21_4" = { package = "once_cell", version = "^1.21.4", default-features = false, features = ["alloc", "critical-section", "default", "portable-atomic", "race", "std"] }
 "oneshot-0_1_13" = { package = "oneshot", version = "^0.1.13", default-features = false, features = ["async", "default", "std"] }
 "opaque-debug-0_3_1" = { package = "opaque-debug", version = "^0.3.1", default-features = false, features = [] }
@@ -3076,6 +3077,7 @@ doc = false
 "object-0_37_3" = { package = "object", version = "^0.37.3", default-features = false, features = ["archive", "coff", "elf", "macho", "pe", "read_core", "unaligned", "xcoff"] }
 "object-0_39_1" = { package = "object", version = "^0.39.1", default-features = false, features = ["archive", "coff", "elf", "macho", "pe", "read", "read_core", "std", "unaligned", "xcoff"] }
 "oid-registry-0_8_1" = { package = "oid-registry", version = "^0.8.1", default-features = false, features = ["crypto", "default", "kdf", "nist_algs", "pkcs1", "pkcs12", "pkcs7", "pkcs9", "registry", "x509", "x962"] }
+"onboarding-walk" = { path = "../../../crates/session/onboarding-walk", default-features = false, features = [] }
 "once_cell-1_21_4" = { package = "once_cell", version = "^1.21.4", default-features = false, features = ["alloc", "critical-section", "default", "portable-atomic", "race", "std"] }
 "oneshot-0_1_13" = { package = "oneshot", version = "^0.1.13", default-features = false, features = ["async", "default", "std"] }
 "opaque-debug-0_3_1" = { package = "opaque-debug", version = "^0.3.1", default-features = false, features = [] }
