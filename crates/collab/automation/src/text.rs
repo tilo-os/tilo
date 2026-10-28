@@ -38,12 +38,14 @@ use tilo_actions::remote::CatalogueRow;
 
 use crate::catalog::{ActionCatalog, ResourceTarget, kind_matches};
 use crate::path::StepPath;
-use crate::shortcut::{
-    Binding, Condition, Schedule, Selector, Shortcut, Step, StepKind, TriggerSpec,
-};
+use crate::shortcut::{Binding, Condition, Selector, Shortcut, Step, StepKind};
 use crate::template::is_identifier;
 use crate::{AGENT_APP_ID, AGENT_TRANSFORM_KIND};
 use tilo_actions::contract::ResultSpec;
+
+#[cfg(test)]
+mod tests;
+mod trigger;
 
 /// Most bytes a rendering of a shortcut may have, so a pathologically nested
 /// program cannot be turned into text without bound.
@@ -342,7 +344,7 @@ pub fn render(
         walk.line(0, &line)?;
     }
     for trigger in &shortcut.triggers {
-        let line = trigger_text(trigger);
+        let line = trigger::trigger_text(trigger);
         walk.line(0, &line)?;
     }
     let text = std::mem::take(&mut walk.text);
@@ -529,7 +531,7 @@ fn trailing(text: &str) -> bool {
     text.starts_with("result is ")
         || text.starts_with("each step may take ")
         || text.starts_with("may ")
-        || is_trigger(text)
+        || trigger::is_trigger(text)
 }
 
 /// The name a step's result is referred to by — the phrase the step reads
@@ -592,10 +594,13 @@ fn title(shared: &Shared<'_>, step: &Step) -> String {
         } => invoke_title(shared, action, resource),
         StepKind::If { .. } => "when".to_owned(),
         StepKind::ForEach { item, .. } => format!("for each {item} in"),
-        StepKind::SetVar { name, .. } => format!("set {name} to"),
+        StepKind::SetVar { name, .. } => format!("set {name}"),
         StepKind::Ask { param } => format!("ask for {}", param.description),
-        StepKind::Ai { prompt, .. } => format!("ask AI {prompt}"),
-        StepKind::Task { instruction, .. } => format!("tell SaaSy {instruction}"),
+        // What the agent is asked is free text, so it is in quotation marks
+        // like every other text; what the step takes and may do follow it as
+        // the notes any other step's fields are.
+        StepKind::Ai { prompt, .. } => format!("ask AI {}", quoted(prompt)),
+        StepKind::Task { instruction, .. } => format!("tell SaaSy {}", quoted(instruction)),
     }
 }
 
@@ -841,7 +846,7 @@ fn with_pointer(name: &str, pointer: &str) -> String {
 }
 
 /// A JSON value as the language writes it.
-fn literal_text(value: &Value) -> String {
+pub(super) fn literal_text(value: &Value) -> String {
     match value {
         Value::String(text) => quoted(text),
         Value::Number(number) => number.to_string(),
@@ -924,7 +929,7 @@ fn placeholder_binding(inner: &str) -> Option<Binding> {
     is_identifier(named).then_some(binding)
 }
 
-fn quoted(text: &str) -> String {
+pub(super) fn quoted(text: &str) -> String {
     serde_json::to_string(text).unwrap_or_else(|_| format!("\"{text}\""))
 }
 
@@ -1027,151 +1032,6 @@ fn segment_text(segment: &Segment) -> String {
 
 fn level_noun(level: Level) -> &'static str {
     level.noun()
-}
-
-fn trigger_text(trigger: &TriggerSpec) -> String {
-    match trigger {
-        TriggerSpec::Keyboard { chord } => format!("when someone presses {}", quoted(chord)),
-        TriggerSpec::Schedule {
-            schedule: Schedule::Interval { seconds },
-            catch_up,
-        } => format!("every {seconds} seconds{}", catch_up_text(*catch_up)),
-        TriggerSpec::Schedule {
-            schedule: Schedule::Calendar { at, weekdays },
-            catch_up,
-        } => calendar_text(*at, weekdays, *catch_up),
-        TriggerSpec::AppOpened { app_id } => {
-            format!("when the app opens {}", quoted(app_id))
-        }
-        TriggerSpec::WorkspaceJoined { room } => match room {
-            Some(room) => format!("when someone joins workspace {}", quoted(room)),
-            None => "when someone joins a workspace".to_owned(),
-        },
-        TriggerSpec::FileChanged { capability } => {
-            format!("when a file changes in {}", quoted(capability))
-        }
-        TriggerSpec::FocusMode { mode, transition } => format!(
-            "when focus {mode} is {}",
-            match transition {
-                crate::shortcut::FocusTransition::Enter => "entered",
-                crate::shortcut::FocusTransition::Leave => "left",
-            }
-        ),
-        TriggerSpec::NetworkChanged { network, connected } => {
-            let mut line = String::from("when the network changes");
-            if let Some(network) = network {
-                let _ = write!(line, " to {}", quoted(network));
-            }
-            if let Some(connected) = connected {
-                line.push_str(if *connected {
-                    " connected"
-                } else {
-                    " disconnected"
-                });
-            }
-            line
-        }
-        TriggerSpec::DeviceConnected { device_class } => {
-            format!("when a {} connects", quoted(device_class))
-        }
-        TriggerSpec::RecordChanged {
-            kind,
-            actions,
-            fields,
-            by,
-        } => {
-            let mut line = format!("when a {} changes", quoted(kind));
-            if !actions.is_empty() {
-                let _ = write!(line, " by {}", quoted_list(actions));
-            }
-            if !fields.is_empty() {
-                let _ = write!(line, " in {}", quoted_list(fields));
-            }
-            line.push_str(match by {
-                crate::shortcut::ActorFilter::Anyone => "",
-                crate::shortcut::ActorFilter::People => " by people",
-                crate::shortcut::ActorFilter::NotBots => " by anyone but a bot",
-            });
-            line
-        }
-        TriggerSpec::Connector {
-            app_id,
-            source,
-            filter,
-        } => {
-            let mut line = format!("when {} sends {}", quoted(app_id), quoted(source));
-            for (field, value) in filter {
-                let _ = write!(line, " where {field} is {}", literal_text(value));
-            }
-            line
-        }
-        TriggerSpec::IncomingMessage { app_id, from } => {
-            let mut line = String::from("when a message arrives");
-            if let Some(app_id) = app_id {
-                let _ = write!(line, " in {}", quoted(app_id));
-            }
-            if let Some(from) = from {
-                let _ = write!(line, " from {}", quoted(from));
-            }
-            line
-        }
-        TriggerSpec::NearbyDevice { device } => match device {
-            Some(device) => format!("when {} comes near", quoted(device)),
-            None => "when a device comes near".to_owned(),
-        },
-    }
-}
-
-/// A daily schedule, on the days it names.
-fn calendar_text(
-    at: crate::shortcut::TimeOfDay,
-    weekdays: &[crate::shortcut::Weekday],
-    catch_up: crate::shortcut::CatchUp,
-) -> String {
-    let days: Vec<&str> = weekdays.iter().map(|day| weekday_name(*day)).collect();
-    let when = if days.is_empty() {
-        "day".to_owned()
-    } else {
-        days.join(", ")
-    };
-    format!(
-        "every {when} at {:02}:{:02}{}",
-        at.hour,
-        at.minute,
-        catch_up_text(catch_up)
-    )
-}
-
-/// Several names as the text writes them: each in quotation marks, joined by
-/// `or`.
-fn quoted_list(names: &[String]) -> String {
-    names
-        .iter()
-        .map(|name| quoted(name))
-        .collect::<Vec<String>>()
-        .join(" or ")
-}
-
-fn catch_up_text(catch_up: crate::shortcut::CatchUp) -> &'static str {
-    match catch_up {
-        crate::shortcut::CatchUp::Skip => "",
-        crate::shortcut::CatchUp::RunOnce => ", running once for what was missed",
-    }
-}
-
-fn weekday_name(day: crate::shortcut::Weekday) -> &'static str {
-    use crate::shortcut::Weekday::{
-        Friday, Monday, Saturday, Sunday, Thursday, Tuesday, Wednesday,
-    };
-    match day {
-        Monday => "Monday",
-        Tuesday => "Tuesday",
-        Wednesday => "Wednesday",
-        Thursday => "Thursday",
-        Friday => "Friday",
-        Saturday => "Saturday",
-        Sunday => "Sunday",
-    }
 }
 
 /// The `on any <kind>` form of the same action: what a step reads when it
@@ -1323,6 +1183,7 @@ pub fn parse(shared: &Shared<'_>, text: &str) -> Result<Parsed, TextParseError> 
 fn split_colon(text: &str) -> Option<(&str, &str)> {
     let mut quoted_text = false;
     let mut escaped = false;
+    let mut brackets = 0usize;
     for (index, ch) in text.char_indices() {
         if quoted_text {
             if escaped {
@@ -1336,9 +1197,15 @@ fn split_colon(text: &str) -> Option<(&str, &str)> {
         }
         match ch {
             '"' => quoted_text = true,
-            ':' if text
-                .get(index.saturating_add(1)..)
-                .is_some_and(|after| after.starts_with(' ')) =>
+            // A dictionary's entry separates its name from its value with the
+            // same colon a block's condition follows, so only a colon outside
+            // every list and dictionary is the condition's.
+            '{' | '[' => brackets = brackets.saturating_add(1),
+            '}' | ']' => brackets = brackets.saturating_sub(1),
+            ':' if brackets == 0
+                && text
+                    .get(index.saturating_add(1)..)
+                    .is_some_and(|after| after.starts_with(' ')) =>
             {
                 let head = text.get(..index)?;
                 let tail = text.get(index.saturating_add(1)..)?.trim_start();
@@ -1373,12 +1240,12 @@ fn inside_quote(text: &str, at: usize) -> bool {
     quoted_text
 }
 
-/// `text` cut at each space outside a quoted text, shortest first, so the
-/// longest one that names something is the reading a line is given.
+/// `text` cut at each place one value can end outside a quoted text, shortest
+/// first, so the longest one that names something is the reading it is given.
 fn prefixes(text: &str) -> Vec<&str> {
     let spaces = text
         .char_indices()
-        .filter(|(index, ch)| *ch == ' ' && !inside_quote(text, *index))
+        .filter(|(index, ch)| ends_a_value(*ch) && !inside_quote(text, *index))
         .map(|(index, _)| index);
     spaces
         .chain(std::iter::once(text.len()))
@@ -1386,8 +1253,14 @@ fn prefixes(text: &str) -> Vec<&str> {
         .collect()
 }
 
+/// Whether a value may end just before `ch`: at a space, where the next word
+/// starts, and where a list's or a dictionary's members are separated.
+fn ends_a_value(ch: char) -> bool {
+    matches!(ch, ' ' | ',' | ']' | '}')
+}
+
 /// A quoted text, and what follows the closing quote.
-fn text_at(text: &str) -> Result<(String, &str), String> {
+pub(super) fn text_at(text: &str) -> Result<(String, &str), String> {
     let text = text.trim_start();
     let Some(rest) = text.strip_prefix('"') else {
         return Err("write the words inside quotation marks".to_owned());
@@ -1557,10 +1430,10 @@ impl Reader<'_> {
                 .push(rule_of(rest).map_err(|m| TextParseError::at(number, m))?);
             return Ok(Some(false));
         }
-        if is_trigger(text) {
+        if trigger::is_trigger(text) {
             shortcut
                 .triggers
-                .push(trigger_of(text).map_err(|m| TextParseError::at(number, m))?);
+                .push(trigger::trigger_of(text).map_err(|m| TextParseError::at(number, m))?);
             return Ok(Some(false));
         }
         Ok(None)
@@ -1732,9 +1605,10 @@ impl Read {
     }
 }
 
-/// Whether a phrase heads a step that its own block follows.
+/// Whether a phrase heads a step that its own block follows. What an agent is
+/// told is quoted on its own line, so it has no block under it.
 fn opens_block(phrase: &str) -> bool {
-    phrase.starts_with("for each ") || phrase.starts_with("tell ") || phrase == "when"
+    phrase.starts_with("for each ") || phrase == "when"
 }
 
 impl Reader<'_> {
@@ -1798,26 +1672,49 @@ impl Reader<'_> {
                 body: Vec::new(),
             }
         } else if let Some(name) = phrase.strip_prefix("set ") {
-            let name = read_name(name).ok_or_else(|| {
-                self.error(index, "a variable is a word like `total`, after `set`")
-            })?;
+            // A longer prefix of the line is tried first, so a phrase whose
+            // name is not one word yet is a prefix that names nothing.
+            let Some(name) = read_name(name.strip_suffix(" to").unwrap_or(name)) else {
+                return Ok(None);
+            };
             let value = binding_of(rest.strip_prefix("to ").unwrap_or(rest), targets)
                 .map_err(|message| TextParseError::at(number, message))?;
             StepKind::SetVar { name, value }
         } else if phrase.starts_with("ask AI ") {
-            let words = text_of(body.get(phrase.len()..).unwrap_or_default())
-                .map_err(|message| TextParseError::at(number, message))?;
+            // What the agent is asked is quoted, so the whole line is read
+            // from the head rather than from the phrase: a phrase that stops
+            // inside the words would not find the closing quotation mark.
+            let asked = body.strip_prefix("ask AI ").unwrap_or_default();
+            let (prompt, after) =
+                text_at(asked).map_err(|message| TextParseError::at(number, message))?;
+            let input = match after.trim_start() {
+                "" => None,
+                after => Some(
+                    binding_of(
+                        after.strip_prefix("of ").ok_or_else(|| {
+                            TextParseError::at(
+                                number,
+                                format!("`{}` follows the prompt", after.trim()),
+                            )
+                        })?,
+                        targets,
+                    )
+                    .map_err(|message| TextParseError::at(number, message))?,
+                ),
+            };
             StepKind::Ai {
-                prompt: words,
+                prompt,
                 output: None,
-                input: None,
+                input,
             }
-        } else if opens_block(phrase) {
-            let words = text_of(body.get(phrase.len()..).unwrap_or_default())
-                .map_err(|message| TextParseError::at(number, message))?;
+        } else if phrase.starts_with("tell SaaSy ") {
+            let told = body.strip_prefix("tell SaaSy ").unwrap_or_default();
+            let (instruction, after) =
+                text_at(told).map_err(|message| TextParseError::at(number, message))?;
+            let allow = rules_of(after).map_err(|message| TextParseError::at(number, message))?;
             StepKind::Task {
-                instruction: words,
-                allow: Vec::new(),
+                instruction,
+                allow,
                 output: None,
             }
         } else {
@@ -1882,6 +1779,15 @@ fn invocation(
             rest = after.trim_start().to_string();
             continue;
         }
+        if let Some(after) = rest.strip_prefix("on ") {
+            let (binding, tail) = binding_and_rest(shared, after, targets)
+                .map_err(|message| TextParseError::at(number, message))?;
+            if let StepKind::Invoke { resource, .. } = &mut step.kind {
+                *resource = Selector::FromBinding(binding);
+            }
+            rest = tail.trim_start().to_string();
+            continue;
+        }
         let Some((param, after)) = longest_param(&rest, &remaining) else {
             return Err(TextParseError::at(
                 number,
@@ -1912,7 +1818,7 @@ const AUTHOR: &str = "author";
 // ----------------------------------------------------------- the reader's ---
 
 /// The first word of `text`, and what follows it.
-fn split_word(text: &str) -> Option<(&str, &str)> {
+pub(super) fn split_word(text: &str) -> Option<(&str, &str)> {
     let text = text.trim_start();
     let end = text.find(' ')?;
     let (word, rest) = text.split_at(end);
@@ -2045,7 +1951,7 @@ fn pointer_of(text: &str) -> Option<String> {
     Some(pointer)
 }
 
-fn number_at(text: &str) -> Option<(Value, &str)> {
+pub(super) fn number_at(text: &str) -> Option<(Value, &str)> {
     let end = text
         .char_indices()
         .take_while(|(_, ch)| ch.is_ascii_digit() || matches!(ch, '-' | '+' | '.' | 'e' | 'E'))
@@ -2070,10 +1976,14 @@ fn list_at(
         }
         let (item, after) = binding_and_rest(shared, rest, targets)?;
         items.push(item);
-        let next = after
-            .trim_start()
-            .strip_prefix(',')
-            .ok_or_else(|| "separate a list's values with commas".to_owned())?;
+        // The last value ends at the list's own closer, which no comma
+        // separates; the loop reads the closer next.
+        let after = after.trim_start();
+        let next = match after.strip_prefix(',') {
+            Some(next) => next,
+            None if after.starts_with(']') => after,
+            None => return Err("separate a list's values with commas".to_owned()),
+        };
         owned.clear();
         owned.push_str(next);
     }
@@ -2099,10 +2009,13 @@ fn object_at(
             .trim_start();
         let (value, after) = binding_and_rest(shared, after, targets)?;
         members.insert(name, value);
-        let next = after
-            .trim_start()
-            .strip_prefix(',')
-            .ok_or_else(|| "separate a dictionary's entries with commas".to_owned())?;
+        // As in a list, the last entry ends at the dictionary's closer.
+        let after = after.trim_start();
+        let next = match after.strip_prefix(',') {
+            Some(next) => next,
+            None if after.starts_with('}') => after,
+            None => return Err("separate a dictionary's entries with commas".to_owned()),
+        };
         owned.clear();
         owned.push_str(next);
     }
@@ -2119,7 +2032,7 @@ fn template_of(words: String) -> Binding {
 
 /// A condition read from a whole line.
 fn condition_of(shared: &Shared<'_>, text: &str, targets: &Targets) -> Result<Condition, String> {
-    let (condition, rest) = condition_and_rest(shared, text, targets, 0)?;
+    let (condition, rest) = condition_or_rest(shared, text, targets, 0)?;
     if !rest.trim().is_empty() {
         return Err(format!("`{}` follows the condition", rest.trim()));
     }
@@ -2311,80 +2224,27 @@ fn seconds_of(text: &str) -> Result<u64, String> {
         .map_err(|_| "that is not a number of seconds".to_owned())
 }
 
-/// Whether a line declares a trigger.
-fn is_trigger(text: &str) -> bool {
-    [
-        "when someone presses ",
-        "every ",
-        "when the app opens ",
-        "when the network changes",
-        "when a message arrives",
-        "when a device comes near",
-        "when focus ",
-        "when someone joins ",
-        "when a file changes in ",
-    ]
-    .iter()
-    .any(|prefix| text.starts_with(prefix))
-}
-
-fn trigger_of(text: &str) -> Result<TriggerSpec, String> {
-    let text = text.trim();
-    if let Some(rest) = text.strip_prefix("when someone presses ") {
-        let (chord, after) = text_at(rest)?;
-        if !after.trim().is_empty() {
-            return Err(format!("`{}` follows the keys", after.trim()));
-        }
-        return Ok(TriggerSpec::Keyboard { chord });
-    }
-    if let Some(rest) = text.strip_prefix("when the app opens ") {
-        let (app_id, after) = text_at(rest)?;
-        if !after.trim().is_empty() {
-            return Err(format!("`{}` follows the app", after.trim()));
-        }
-        return Ok(TriggerSpec::AppOpened { app_id });
-    }
-    if let Some(rest) = text.strip_prefix("when focus ") {
-        let Some((mode, after)) = rest.split_once(" is ") else {
-            return Err("write `when focus MODE is entered` or `is left`".to_owned());
+/// The rules that follow what an agent is told, each introduced by `may`. A
+/// rule's own words never contain `may`, so that is where one ends and the
+/// next begins.
+fn rules_of(text: &str) -> Result<Vec<Rule>, String> {
+    let mut rules = Vec::new();
+    let mut rest = text.trim();
+    while !rest.is_empty() {
+        let Some(after) = rest.strip_prefix("may ") else {
+            return Err(format!("`{rest}` is not a rule: write `may act on PLACE`"));
         };
-        let transition = match after.trim() {
-            "entered" => crate::shortcut::FocusTransition::Enter,
-            "left" => crate::shortcut::FocusTransition::Leave,
-            other => return Err(format!("`{other}` is not `entered` or `left`")),
+        let (next, tail) = match after.find(" may ") {
+            Some(at) => (
+                after.get(..at).unwrap_or_default(),
+                after.get(at.saturating_add(1)..).unwrap_or_default(),
+            ),
+            None => (after, ""),
         };
-        return Ok(TriggerSpec::FocusMode {
-            mode: mode.trim().to_owned(),
-            transition,
-        });
+        rules.push(rule_of(next.trim())?);
+        rest = tail.trim();
     }
-    if let Some(rest) = text.strip_prefix("when someone joins ") {
-        if rest.trim() == "a workspace" {
-            return Ok(TriggerSpec::WorkspaceJoined { room: None });
-        }
-        let (room, after) = text_at(rest)?;
-        if !after.trim().is_empty() {
-            return Err(format!("`{}` follows the workspace", after.trim()));
-        }
-        return Ok(TriggerSpec::WorkspaceJoined { room: Some(room) });
-    }
-    if let Some(rest) = text.strip_prefix("when a file changes in ") {
-        let (capability, after) = text_at(rest)?;
-        if !after.trim().is_empty() {
-            return Err(format!("`{}` follows the folder", after.trim()));
-        }
-        return Ok(TriggerSpec::FileChanged { capability });
-    }
-    if text.starts_with("when the network changes") || text.starts_with("when a message arrives") {
-        return Err(format!(
-            "`{text}` says what changes but not what to match, which the text does not write yet"
-        ));
-    }
-    if let Some(rest) = text.strip_prefix("when a device comes near") {
-        let _ = rest;
-        return Ok(TriggerSpec::NearbyDevice { device: None });
-    }
-    Err(format!("`{text}` is not a trigger"))
+    Ok(rules)
 }
 
 fn rule_of(text: &str) -> Result<Rule, String> {
@@ -2638,338 +2498,5 @@ impl Reader<'_> {
         };
         let number = self.rows.get(index).map_or(1, |row| row.number);
         invocation(shared, row, phrase, body, targets, number).map(Some)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tilo_actions::action::{ExecutionLocus, OperationKind};
-    use tilo_actions::contract::ActionContract;
-    use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
-    use tilo_actions::params::ActionParam;
-    use tilo_actions::remote::{CatalogueResource, CatalogueRow};
-
-    const NOTES: &str = "so.tilo.notes";
-
-    fn row(
-        app: &str,
-        resource: &str,
-        kind: &str,
-        action: &str,
-        params: Vec<ActionParam>,
-    ) -> CatalogueRow {
-        CatalogueRow {
-            provider: format!("{app}#1"),
-            app_id: app.into(),
-            parent_resource: String::new(),
-            resource: CatalogueResource {
-                id: resource.into(),
-                kind: kind.into(),
-                label: resource.into(),
-                presentation: None,
-            },
-            action: Some(ActionDescriptor {
-                semantic_identity: None,
-                address: ActionAddress::new(resource, action),
-                resource_kind: kind.into(),
-                resource_label: kind.into(),
-                action_label: action.into(),
-                keywords: Vec::new(),
-                icon: None,
-                description: None,
-                locus: ExecutionLocus::ClientLocal,
-                kind: OperationKind::Document,
-                contract: ActionContract::default(),
-                input: InputSpec::None,
-                params,
-                view: None,
-            }),
-            has_children: false,
-            visibility: None,
-        }
-    }
-
-    fn catalog() -> ActionCatalog {
-        ActionCatalog::new(vec![
-            row(
-                NOTES,
-                "notes.folder:inbox",
-                "notes.folder",
-                "list",
-                Vec::new(),
-            ),
-            row(
-                NOTES,
-                "notes.note:1",
-                "notes.note",
-                "file",
-                vec![ActionParam::required("folder", ParamType::Text, "Folder")],
-            ),
-        ])
-    }
-
-    fn bare(app_id: &str) -> String {
-        app_id.rsplit('.').next().unwrap_or(app_id).to_owned()
-    }
-
-    fn step(name: &str, action: &str, resource: Selector, args: BTreeMap<String, Binding>) -> Step {
-        Step::new(
-            name,
-            StepKind::Invoke {
-                action: ActionKey::new(NOTES, "notes.note", action),
-                resource,
-                args,
-                appearance: None,
-            },
-        )
-    }
-
-    fn program() -> Shortcut {
-        Shortcut {
-            id: "filing".into(),
-            name: "File the notes".into(),
-            inputs: vec![ActionParam::required(
-                "folder",
-                ParamType::Text,
-                "Where they go",
-            )],
-            steps: vec![
-                step(
-                    "listed",
-                    "file",
-                    Selector::FirstOfKind("notes.note".into()),
-                    BTreeMap::from([("folder".to_owned(), Binding::Input("folder".into()))]),
-                ),
-                Step::new(
-                    "each",
-                    StepKind::ForEach {
-                        items: Binding::step("listed", "/titles"),
-                        item: "title".into(),
-                        body: vec![step(
-                            "filed",
-                            "file",
-                            Selector::Fixed("notes.note:1".into()),
-                            BTreeMap::from([("folder".to_owned(), Binding::Var("title".into()))]),
-                        )],
-                    },
-                ),
-            ],
-            step_timeout_secs: Some(30),
-            output: Some(Binding::step("filed", "")),
-            grant: Vec::new(),
-            triggers: vec![TriggerSpec::Keyboard {
-                chord: "super+shift+f".into(),
-            }],
-            saved_by: None,
-        }
-    }
-
-    #[test]
-    fn a_program_reads_back_as_the_program_it_was() {
-        let catalog = catalog();
-        let shared = Shared {
-            catalog: &catalog,
-            app_label: &bare,
-        };
-        let (text, outline) = match render(&shared, &program(), &BTreeMap::new()) {
-            Ok(rendered) => rendered,
-            Err(error) => panic!("{error}"),
-        };
-        assert!(text.contains("File the notes"), "{text}");
-        assert!(!outline.steps.is_empty());
-        let parsed = match parse(&shared, &text) {
-            Ok(parsed) => parsed,
-            Err(error) => panic!("{error}\n{text}"),
-        };
-        assert_eq!(parsed.shortcut.name, "File the notes");
-        assert_eq!(parsed.shortcut.steps.len(), 2);
-        assert_eq!(parsed.shortcut.step_timeout_secs, Some(30));
-        assert_eq!(parsed.shortcut.triggers, program().triggers);
-    }
-
-    #[test]
-    fn a_nested_block_is_indented_and_parsed_back_nested() {
-        let catalog = catalog();
-        let shared = Shared {
-            catalog: &catalog,
-            app_label: &bare,
-        };
-        let shortcut = Shortcut {
-            id: "branching".into(),
-            name: "Maybe file".into(),
-            inputs: vec![ActionParam::required(
-                "folder",
-                ParamType::Text,
-                "Where they go",
-            )],
-            steps: vec![Step::new(
-                "checked",
-                StepKind::If {
-                    cond: Condition::Truthy(Binding::Input("folder".into())),
-                    then: vec![step(
-                        "listed",
-                        "file",
-                        Selector::FirstOfKind("notes.note".into()),
-                        BTreeMap::from([("folder".to_owned(), Binding::Input("folder".into()))]),
-                    )],
-                    otherwise: Vec::new(),
-                },
-            )],
-            step_timeout_secs: None,
-            output: None,
-            grant: Vec::new(),
-            triggers: Vec::new(),
-            saved_by: None,
-        };
-        let (text, _) = match render(&shared, &shortcut, &BTreeMap::new()) {
-            Ok(rendered) => rendered,
-            Err(error) => panic!("{error}"),
-        };
-        // One level under the step is one level of the two spaces an indent is.
-        assert!(text.contains("\n  file"), "the branch is indented:\n{text}");
-        assert!(
-            !text.contains("\n    file"),
-            "the branch is one level under:\n{text}"
-        );
-        let parsed = match parse(&shared, &text) {
-            Ok(parsed) => parsed,
-            Err(error) => panic!("{error}\n{text}"),
-        };
-        let StepKind::If { then, .. } = &parsed.shortcut.steps[0].kind else {
-            panic!("the first step is the branch:\n{text}");
-        };
-        assert_eq!(then.len(), 1);
-    }
-
-    #[test]
-    fn a_tab_indent_is_refused_by_line() {
-        let catalog = catalog();
-        let shared = Shared {
-            catalog: &catalog,
-            app_label: &bare,
-        };
-        let Err(error) = parse(&shared, "shortcut \"x\"\n\twhen input \"a\" is set:\n") else {
-            panic!("a tab is not an indent the text writes");
-        };
-        assert_eq!(error.line, 2);
-    }
-
-    #[test]
-    fn a_line_that_is_not_a_step_names_itself() {
-        let catalog = catalog();
-        let shared = Shared {
-            catalog: &catalog,
-            app_label: &bare,
-        };
-        let Err(error) = parse(&shared, "shortcut \"x\"\nmow the lawn\n") else {
-            panic!("that is not a step");
-        };
-        assert_eq!(error.line, 2);
-    }
-
-    #[test]
-    fn an_edited_line_keeps_the_identity_of_the_steps_it_did_not_touch() {
-        let catalog = catalog();
-        let shared = Shared {
-            catalog: &catalog,
-            app_label: &bare,
-        };
-        let before = program();
-        let (text, _) = match render(&shared, &before, &BTreeMap::new()) {
-            Ok(rendered) => rendered,
-            Err(error) => panic!("{error}"),
-        };
-        // File one more note before the loop: the steps it already had are
-        // still the steps the document holds.
-        let edited = text.replace(
-            "for each title in",
-            "file on any Notes.note in notes Folder input folder\nfor each title in",
-        );
-        let edit = match edit(&shared, &before, &edited) {
-            Ok(edit) => edit,
-            Err(error) => panic!("{error}\n{edited}"),
-        };
-        assert_eq!(edit.shortcut.id, before.id);
-        assert_eq!(edit.shortcut.steps.len(), 3);
-        assert_eq!(edit.shortcut.steps[0].id, "listed");
-        assert_eq!(edit.shortcut.steps[1].id, "");
-        assert_eq!(edit.shortcut.steps[2].id, "each");
-        assert!(edit.removed.is_empty(), "{:?}", edit.removed);
-    }
-
-    #[test]
-    fn a_step_the_text_dropped_is_reported_as_leaving() {
-        let catalog = catalog();
-        let shared = Shared {
-            catalog: &catalog,
-            app_label: &bare,
-        };
-        let before = program();
-        let (text, _) = match render(&shared, &before, &BTreeMap::new()) {
-            Ok(rendered) => rendered,
-            Err(error) => panic!("{error}"),
-        };
-        let cut: Vec<&str> = text
-            .lines()
-            .filter(|line| !line.contains("for each title") && !line.starts_with("  "))
-            .collect();
-        let edited = cut.join("\n");
-        let edit = match edit(&shared, &before, &edited) {
-            Ok(edit) => edit,
-            Err(error) => panic!("{error}\n{edited}"),
-        };
-        assert_eq!(edit.shortcut.steps.len(), 1);
-        assert_eq!(edit.shortcut.steps[0].id, "listed");
-        assert_eq!(edit.removed, vec!["each".to_owned()]);
-    }
-
-    #[test]
-    fn a_problem_the_checker_reports_lands_on_the_line_that_states_the_step() {
-        let catalog = catalog();
-        let shared = Shared {
-            catalog: &catalog,
-            app_label: &bare,
-        };
-        // The loop's body files a note the step above never listed: the
-        // checker reads a name nothing set.
-        let shortcut = Shortcut {
-            id: "broken".into(),
-            name: "File the notes".into(),
-            inputs: Vec::new(),
-            steps: vec![Step::new(
-                "each",
-                StepKind::ForEach {
-                    items: Binding::step("listed", "/titles"),
-                    item: "title".into(),
-                    body: vec![step(
-                        "filed",
-                        "file",
-                        Selector::FirstOfKind("notes.note".into()),
-                        BTreeMap::from([("folder".to_owned(), Binding::Var("title".into()))]),
-                    )],
-                },
-            )],
-            step_timeout_secs: None,
-            output: None,
-            grant: Vec::new(),
-            triggers: Vec::new(),
-            saved_by: None,
-        };
-        let (text, outline) = match render(&shared, &shortcut, &BTreeMap::new()) {
-            Ok(rendered) => rendered,
-            Err(error) => panic!("{error}"),
-        };
-        let listed = StepPath::root().child(0).each(None).child(0);
-        let Some(line) = outline.line_of(&listed) else {
-            panic!("the body's step is on a line:\n{text}");
-        };
-        let stated = text.lines().nth(line - 1).unwrap_or_default();
-        assert!(
-            stated.trim_start().starts_with("file"),
-            "line {line}: {stated:?}"
-        );
-        assert!(outline.line_of(&StepPath::root()).is_none());
-        assert!(outline.line_of(&StepPath::output()).is_none());
     }
 }

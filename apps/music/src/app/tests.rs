@@ -4514,9 +4514,7 @@ fn artist_and_album_pages_navigate_and_play() {
         }
         // The album header's Play plays the whole album in track order.
         let play = page_widget(&app, "music.page.Play");
-        send(&mut app, &cursor_at(play.center()), &mut doc);
-        send(&mut app, &press(MouseButton::Left), &mut doc);
-        send(&mut app, &released(MouseButton::Left), &mut doc);
+        hosted_click(&mut app, &mut doc, play.center());
         assert_eq!(
             app.pb.queue,
             ["yt:al_one", "yt:al_two", "yt:al_three"],

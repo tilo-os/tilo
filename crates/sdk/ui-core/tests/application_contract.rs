@@ -1506,8 +1506,15 @@ mod save_status_fixture {
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
                 Some(RecordSaveStatus::Saved)
             );
+            // Presenting it measures and draws what shows the status; it
+            // rebuilds no layout tree, which would repaint the whole window
+            // after every keystroke's write.
             assert!(
-                self.tile.take_structure_dirty(),
+                !self.tile.take_structure_dirty(),
+                "a save status change is no structure change"
+            );
+            assert!(
+                self.tile.layout_needs_measure() && self.tile.needs_redraw(),
                 "the window must present the record becoming durable"
             );
             assert!(self.tile.next_wake_deadline().is_none());

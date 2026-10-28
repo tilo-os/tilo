@@ -340,6 +340,9 @@ pub struct FrameHarness {
     root_wake: root_wake::RootWake,
     owner_wake_queue: Option<crate::owner_wake::OwnerWakeQueue>,
     owner_service_layout_retired: bool,
+    /// The maps the last completed model service set aside, unread until
+    /// its readmission checks them against the live tree.
+    serviced_layout: Option<retained_layout::ServicedLayout>,
     /// A replaced composition seen by a focus capture before the next
     /// layout took it up: the next [`Self::take_composition_dirty`] still
     /// reports it.
@@ -1109,11 +1112,13 @@ impl FrameHarness {
             return Ok(());
         };
         let mut batch = queue.take_batch();
+        let mut aside = None;
         if batch.front().is_some() {
             // An unknown visitor can replace descendants before it locates the
-            // target. Retire physical maps BEFORE the first arbitrary callback.
+            // target. Retire physical maps BEFORE the first arbitrary callback;
+            // they stay aside, unread, for readmission to check.
             *attempted = true;
-            self.discard_layout_tree();
+            aside = self.set_layout_aside();
             self.last_layout_viewport = None;
             self.owner_service_layout_retired = true;
         }
@@ -1127,6 +1132,9 @@ impl FrameHarness {
             batch.complete_front();
             *completed += 1;
         }
+        // Only a service whose every callback returned keeps them; an error
+        // or an unwind drops them with this frame.
+        self.serviced_layout = aside;
         Ok(())
     }
 
@@ -1184,6 +1192,7 @@ impl FrameHarness {
     /// Drop the raw layout maps so no later frame re-solves a composition
     /// whose widgets may have been replaced; the next frame rebuilds.
     fn discard_layout_tree(&mut self) {
+        self.serviced_layout = None;
         self.bindings.clear();
         self.node_map.clear();
         self.layout_maps.clear();
@@ -1788,6 +1797,7 @@ impl FrameHarness {
             root_wake: root_wake::RootWake::new(),
             owner_wake_queue: None,
             owner_service_layout_retired: false,
+            serviced_layout: None,
             composition_replaced: false,
             remount: false,
             layout_requested: false,
@@ -3681,6 +3691,8 @@ impl FrameHarness {
         let resting_geometry = (self.pointer_replay.is_resting() && self.layout_built)
             .then(|| crate::pointer_replay::widget_geometry(self.root.as_ref()));
         self.swap_requested_component();
+        // Checked against the live tree below before anything reads them.
+        self.readmit_serviced_layout();
         let viewport_changed = self.last_layout_viewport != Some(self.viewport);
         self.presence_redraw = false;
         // A failed attempt mutates the tree as well as the requested viewport.

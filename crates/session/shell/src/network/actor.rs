@@ -198,7 +198,7 @@ struct SurfaceWireFrame {
 
 /// Versioned private-device traffic. It travels on the bidirectional
 /// streams of the gossip connection two devices already share (gossip uses
-/// unidirectional streams only, [`read_personal_fabric`]), and leaves the
+/// unidirectional streams only, `read_personal_fabric`), and leaves the
 /// legacy Postcard enum untouched.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum PersonalFabricPayload {

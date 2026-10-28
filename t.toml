@@ -5027,13 +5027,14 @@ heavy = true
 on = ["stable", "dispatch"]
 default = false
 
+# A wall-clock budget, reported on a candidate rather than gating it (not `heavy`; see the
+# perf groups).
 [[check]]
 name = "weekly-latency"
 cargo_packages = ["tilo-media"]
 inputs = []
 run = "cargo test --locked -p tilo-media --features realtime --test realtime -- --ignored --exact realtime_latency_per_frame --nocapture"
 cost = "heavy"
-heavy = true
 on = ["stable", "dispatch"]
 default = false
 
@@ -5526,10 +5527,15 @@ plan = "full"
 # (browser and stream measure a commit's desktop bundle: `t dispatch perf-stream --ref
 # <branch>`); the whole run with `t dispatch perf-scheduled`, and recorded with `t dispatch
 # perf-publish --publish` (inputs: accept, synthetic_series, synthetic_factor).
+#
+# None of them is `heavy`: a release candidate's verification gates on what works, and these
+# report. They still run when stable moves (`on`), and tools/ci/stable_cut.py runs them on a
+# candidate beside its heavy checks without waiting on them, since t's shared, GPU-less workers
+# measure the worker as much as the commit. They gate again once they run on dedicated or GPU
+# runners.
 
 [[check]]
 name = "perf-fs"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh fs"
@@ -5542,7 +5548,6 @@ default = false
 
 [[check]]
 name = "perf-agent"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh agent"
@@ -5556,7 +5561,6 @@ default = false
 
 [[check]]
 name = "perf-agent-native"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh agent-native"
@@ -5570,7 +5574,6 @@ default = false
 
 [[check]]
 name = "perf-footprint"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh footprint"
@@ -5584,7 +5587,6 @@ default = false
 
 [[check]]
 name = "perf-footprint-image"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh footprint-image"
@@ -5598,7 +5600,6 @@ default = false
 
 [[check]]
 name = "perf-latency"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh latency"
@@ -5612,7 +5613,6 @@ default = false
 
 [[check]]
 name = "perf-render"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh render"
@@ -5626,7 +5626,6 @@ default = false
 
 [[check]]
 name = "perf-wakeups"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh wakeups"
@@ -5639,7 +5638,6 @@ default = false
 
 [[check]]
 name = "perf-search"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh search"
@@ -5652,7 +5650,6 @@ default = false
 
 [[check]]
 name = "perf-hosting"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh hosting"
@@ -5666,7 +5663,6 @@ default = false
 
 [[check]]
 name = "perf-hosting-room"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh hosting-room"
@@ -5688,7 +5684,6 @@ default = false
 
 [[check]]
 name = "perf-browser"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh browser"
@@ -5708,7 +5703,6 @@ default = false
 
 [[check]]
 name = "perf-stream"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh stream"
@@ -5737,7 +5731,6 @@ outputs = ["/target/perf/compare/**"]
 # perf-publish writes the same comparison's records to the store.
 cache = false
 default = false
-heavy = true
 on = ["stable", "dispatch"]
 
 # The comparison again where the run holds TILO_PACKAGES_TOKEN, which may write tilo's generic
@@ -5986,6 +5979,7 @@ cache = false
 cost = "minutes"
 default = false
 
+# Reported on a candidate, never gating it (not `heavy`; see the perf groups above).
 [[check]]
 name = "vm-acceptance-perf"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
@@ -6023,7 +6017,6 @@ inputs = ["tools/perf/**", "scripts/vm-acceptance/selected_groups.py", "tools/up
 # vm-acceptance-perf-publish writes them to the store where it does.
 cache = false
 default = false
-heavy = true
 on = ["stable", "dispatch"]
 
 # vm-acceptance-perf where the run holds TILO_PACKAGES_TOKEN, which records the results.
@@ -6339,7 +6332,7 @@ outputs = ["/target/publish/web-entry/release/image.oci.tar", "/target/publish/w
 requires = ["arch=x86_64"]
 isolation = "vm"
 cost = "minutes"
-on = ["stable"]
+on = ["dispatch"]
 default = false
 cache = false
 
@@ -6353,7 +6346,7 @@ outputs = ["/target/publish/web-entry/release/payload.json", "/target/publish/we
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 requires = ["arch=any"]
-on = ["stable"]
+on = ["dispatch"]
 
 [[check]]
 name = "publish-web-entry"
@@ -6368,7 +6361,7 @@ id_token = ["registry.tilo.so"]
 env = { TILO_RELEASE_OUT = "/target/publish/web-entry/release" }
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "2GiB" }
-on = ["dispatch", "stable"]
+on = ["dispatch"]
 
 # The app registry server (crates/packaging/registry-server): x86_64 only, like the cluster it
 # runs in. Rust compiles inside the Containerfile; the image is tested before it is published, and
@@ -6867,6 +6860,8 @@ default = false
 # open tabs only when the web entry changed. `t dispatch cloud-deploy --ref stable` runs it at
 # once: `--input dry_run=true` stops before the commit, `--input revision=<commit> --input
 # allow_rollback=true` redeploys an older release. `t outputs cloud-deploy` has the plan.
+# Only when dispatched: production (tilo.coffee, eu1) is released by its own session, by hand
+# and independently of stable, so a push to stable never deploys it.
 [[check]]
 name = "cloud-deploy"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
@@ -6885,7 +6880,7 @@ secrets = ["INFRA_PROMOTION_TOKEN"]
 # A rollout and, when it fails, the rollback each wait up to the target's timeout and settle time.
 timeout_secs = 3600
 cost = "minutes"
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 default = false
 
 [check.dispatch_inputs]
