@@ -1166,6 +1166,7 @@ fn an_app_opening_in_the_room_is_let_author_its_own_records() {
     }
     open.store(false, std::sync::atomic::Ordering::Relaxed);
     app.join().expect("the opening app ran");
+    drop(door);
 }
 
 #[test]

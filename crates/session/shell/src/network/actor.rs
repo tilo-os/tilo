@@ -5856,6 +5856,76 @@ async fn host_keepalive(session: &RelayCoeditSession, pinged: &mut bool) -> bool
     true
 }
 
+/// The event a host's `inbound` frame is to the actor, `None` for one that
+/// is dropped: `replay` is whether the session was replaying when it came.
+fn host_event(
+    inbound: HostInbound,
+    ws: WorkspaceId,
+    host: EndpointId,
+    replaying: &std::sync::atomic::AtomicBool,
+    replay: bool,
+    native_scope: Option<&Arc<native_ingress::Scope>>,
+) -> Option<HostEvent> {
+    use std::sync::atomic::Ordering;
+    Some(match inbound {
+        HostInbound::Ready { .. } => {
+            replaying.store(false, Ordering::Release);
+            HostEvent::Ready
+        }
+        HostInbound::Live { from, frame } => HostEvent::Live { from, frame },
+        HostInbound::Member { device, active } => HostEvent::Member { device, active },
+        HostInbound::Voice(event) => HostEvent::Voice(event),
+        HostInbound::RecordOpened { channel, frames } => {
+            HostEvent::RecordOpened { channel, frames }
+        }
+        HostInbound::Committed { op } => HostEvent::Kept { op },
+        // Not kept: the write stays held, and the room's next
+        // session sends it again.
+        HostInbound::CommitRefused { reason, .. } => {
+            tracing::warn!(ws, host = %host, %reason, "the host did not keep a sealed write");
+            return None;
+        }
+        HostInbound::RemoteAction { from, frame } => {
+            let Ok(author) = EndpointId::from_bytes(&from) else {
+                return None;
+            };
+            HostEvent::Message {
+                author,
+                // Never deduplicated; see `handle_host_event`.
+                fingerprint: [0; 32],
+                replayed: false,
+                msg: NeighbourMsg::RemoteAction { frame },
+            }
+        }
+        HostInbound::RecordContent { from, frame } => record_content_event(&from, &frame)?,
+        HostInbound::Delta { author, data } if native_scope.is_some() => {
+            let Ok(msg) = postcard::from_bytes(&data) else {
+                return None;
+            };
+            HostEvent::NativeInput(native_scope?.input(author, replay, msg))
+        }
+        HostInbound::Delta { author, data }
+        | HostInbound::Presence {
+            author,
+            payload: data,
+        } => {
+            let Ok(author) = EndpointId::from_bytes(&author) else {
+                return None;
+            };
+            let fingerprint = message_fingerprint(&data);
+            let Ok(msg) = postcard::from_bytes(&data) else {
+                return None;
+            };
+            HostEvent::Message {
+                author,
+                fingerprint,
+                replayed: replay,
+                msg,
+            }
+        }
+    })
+}
+
 fn spawn_host_pump(
     ws: WorkspaceId,
     host: EndpointId,
@@ -5888,70 +5958,10 @@ fn spawn_host_pump(
                 break;
             };
             let replay = replaying.load(Ordering::Acquire);
-            let event = match inbound {
-                HostInbound::Ready { .. } => {
-                    replaying.store(false, Ordering::Release);
-                    HostEvent::Ready
-                }
-                HostInbound::Live { from, frame } => HostEvent::Live { from, frame },
-                HostInbound::Member { device, active } => HostEvent::Member { device, active },
-                HostInbound::Voice(event) => HostEvent::Voice(event),
-                HostInbound::RecordOpened { channel, frames } => {
-                    HostEvent::RecordOpened { channel, frames }
-                }
-                HostInbound::Committed { op } => HostEvent::Kept { op },
-                // Not kept: the write stays held, and the room's next
-                // session sends it again.
-                HostInbound::CommitRefused { reason, .. } => {
-                    tracing::warn!(ws, host = %host, %reason, "the host did not keep a sealed write");
-                    continue;
-                }
-                HostInbound::RemoteAction { from, frame } => {
-                    let Ok(author) = EndpointId::from_bytes(&from) else {
-                        continue;
-                    };
-                    HostEvent::Message {
-                        author,
-                        // Never deduplicated; see `handle_host_event`.
-                        fingerprint: [0; 32],
-                        replayed: false,
-                        msg: NeighbourMsg::RemoteAction { frame },
-                    }
-                }
-                HostInbound::RecordContent { from, frame } => {
-                    let Some(event) = record_content_event(&from, &frame) else {
-                        continue;
-                    };
-                    event
-                }
-                HostInbound::Delta { author, data } if native_scope.is_some() => {
-                    let Ok(msg) = postcard::from_bytes(&data) else {
-                        continue;
-                    };
-                    let Some(scope) = native_scope.as_ref() else {
-                        continue;
-                    };
-                    HostEvent::NativeInput(scope.input(author, replay, msg))
-                }
-                HostInbound::Delta { author, data }
-                | HostInbound::Presence {
-                    author,
-                    payload: data,
-                } => {
-                    let Ok(author) = EndpointId::from_bytes(&author) else {
-                        continue;
-                    };
-                    let fingerprint = message_fingerprint(&data);
-                    let Ok(msg) = postcard::from_bytes(&data) else {
-                        continue;
-                    };
-                    HostEvent::Message {
-                        author,
-                        fingerprint,
-                        replayed: replay,
-                        msg,
-                    }
-                }
+            let Some(event) =
+                host_event(inbound, ws, host, &replaying, replay, native_scope.as_ref())
+            else {
+                continue;
             };
             if tx
                 .send(InternalEvent::Host {

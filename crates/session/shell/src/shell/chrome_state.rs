@@ -1196,6 +1196,13 @@ impl ChromeState {
         }
     }
 
+    /// [`Self::request_surface_close`] for each of `surfaces`.
+    pub fn request_surface_closes(&mut self, surfaces: impl IntoIterator<Item = u64>) {
+        for surface in surfaces {
+            self.request_surface_close(surface);
+        }
+    }
+
     pub fn take_surface_close_requests(&mut self) -> Vec<u64> {
         std::mem::take(&mut self.close_surface_requests)
     }
