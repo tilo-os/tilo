@@ -3,7 +3,9 @@
 //!
 //! Every interaction runs through the production host path (`FrameHarness`
 //! sends the real winit events, then runs sync, layout and scene encoding), at
-//! the Yoga's logical viewport (2944x1840 physical at scale 2). Budgets only
+//! the Yoga's logical viewport (2944x1840 physical at scale 2). Each budget
+//! holds the CPU time the test thread, the one running the UI, spent on the
+//! step ([`Step`]), so it reads the same on a busy machine. Budgets only
 //! apply to optimised builds; a debug build prints the numbers and skips the
 //! assertions. Run with:
 //! `cargo test -p settings --release --test it perf_budget -- --nocapture`.
@@ -24,7 +26,7 @@
     reason = "a benchmark reports on stderr and fails loudly"
 )]
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use settings::SettingsApp;
 use settings::categories::Category;
@@ -33,14 +35,60 @@ use ui::headless::{Framed, viewport};
 const W: f32 = 1472.0;
 const H: f32 = 920.0;
 
-/// p50 / p99 / max of `samples` in microseconds.
-fn summary(label: &str, samples: &mut [u64]) -> (u64, u64) {
-    samples.sort_unstable();
-    let at = |q: f64| samples[((samples.len() - 1) as f64 * q).round() as usize];
-    let (p50, p99, max) = (at(0.5), at(0.99), samples[samples.len() - 1]);
+/// One measured step's start on both clocks: the wall clock, what the step
+/// took, and the test thread's CPU clock, what it cost the thread that runs
+/// the UI. The budgets hold the CPU figure: on a machine busy with other
+/// work wall time also counts every moment other processes held the core,
+/// so it reads a step that did no more work as several times its cost; CPU
+/// time still grows with every instruction the step runs.
+struct Step {
+    wall: Instant,
+    cpu: Option<Duration>,
+}
+
+impl Step {
+    fn start() -> Self {
+        Self {
+            cpu: ui::rt::thread_cpu_time(),
+            wall: Instant::now(),
+        }
+    }
+}
+
+/// Steps measured on both clocks, in microseconds.
+#[derive(Default)]
+struct Samples {
+    cpu: Vec<u64>,
+    wall: Vec<u64>,
+}
+
+impl Samples {
+    /// Add the step started at `t`, split over `per` events.
+    fn push_per(&mut self, t: &Step, per: u64) {
+        let wall = t.wall.elapsed();
+        // Wall time where the platform keeps no per-thread CPU clock.
+        let cpu = t
+            .cpu
+            .zip(ui::rt::thread_cpu_time())
+            .map_or(wall, |(start, now)| now.saturating_sub(start));
+        self.cpu.push(cpu.as_micros() as u64 / per);
+        self.wall.push(wall.as_micros() as u64 / per);
+    }
+}
+
+/// p50 / p99 / max of `samples`' CPU time in microseconds, with the wall
+/// time beside it; returns the CPU p50 and p99.
+fn summary(label: &str, samples: &mut Samples) -> (u64, u64) {
+    let stats = |samples: &mut [u64]| {
+        samples.sort_unstable();
+        let at = |q: f64| samples[((samples.len() - 1) as f64 * q).round() as usize];
+        (at(0.5), at(0.99), samples[samples.len() - 1])
+    };
+    let (p50, p99, max) = stats(&mut samples.cpu);
+    let (wall_p50, wall_p99, wall_max) = stats(&mut samples.wall);
     eprintln!(
-        "perf {label}: n={} p50={p50}us p99={p99}us max={max}us",
-        samples.len()
+        "perf {label}: n={} cpu p50={p50}us p99={p99}us max={max}us, wall p50={wall_p50}us p99={wall_p99}us max={wall_max}us",
+        samples.cpu.len()
     );
     (p50, p99)
 }
@@ -92,12 +140,12 @@ fn switch(app: &mut Framed<SettingsApp>, category: Category) {
 
 #[test]
 fn cold_start_to_first_frame() {
-    let mut samples = Vec::new();
+    let mut samples = Samples::default();
     for _ in 0..5 {
         let config = crate::support::ScratchConfig::new();
-        let t = Instant::now();
+        let t = Step::start();
         let app = mount(&config);
-        samples.push(t.elapsed().as_micros() as u64);
+        samples.push_per(&t, 1);
         drop(app);
     }
     let (p50, _) = summary("settings cold start (build + first frame)", &mut samples);
@@ -119,13 +167,13 @@ fn page_switch() {
     for c in cats {
         switch(&mut app, c);
     }
-    let mut samples = Vec::new();
+    let mut samples = Samples::default();
     Framed::harness_mut(&mut app).begin_profiling();
     for _ in 0..4 {
         for c in cats {
-            let t = Instant::now();
+            let t = Step::start();
             switch(&mut app, c);
-            samples.push(t.elapsed().as_micros() as u64);
+            samples.push_per(&t, 1);
             assert_eq!(app.selected(), c, "the switch must show the page");
         }
     }
@@ -153,13 +201,13 @@ fn drawn_pages_switch() {
     for c in cats {
         switch(&mut app, c);
     }
-    let mut samples = Vec::new();
+    let mut samples = Samples::default();
     Framed::harness_mut(&mut app).begin_profiling();
     for _ in 0..4 {
         for c in cats {
-            let t = Instant::now();
+            let t = Step::start();
             switch(&mut app, c);
-            samples.push(t.elapsed().as_micros() as u64);
+            samples.push_per(&t, 1);
             assert_eq!(app.selected(), c, "the switch must show the page");
         }
     }
@@ -184,12 +232,12 @@ fn globe_drag_frame() {
         h.targets().get("time.timezone-map").copied()
     });
     let c = globe.center();
-    let mut samples = Vec::new();
+    let mut samples = Samples::default();
     for i in 0..40 {
         let dx = if i % 2 == 0 { 60.0 } else { -60.0 };
-        let t = Instant::now();
+        let t = Step::start();
         h.drag_at((c.x, c.y), (c.x + dx, c.y + dx / 4.0));
-        samples.push(t.elapsed().as_micros() as u64 / 6);
+        samples.push_per(&t, 6);
     }
     let (p50, _) = summary("settings globe drag event", &mut samples);
     budget("globe drag event", p50, 4_000);
@@ -204,11 +252,11 @@ fn scroll_frame() {
     for _ in 0..3 {
         h.scroll(0.0, -1.0);
     }
-    let mut samples = Vec::new();
+    let mut samples = Samples::default();
     for i in 0..60 {
-        let t = Instant::now();
+        let t = Step::start();
         h.scroll(0.0, if i < 30 { -1.0 } else { 1.0 });
-        samples.push(t.elapsed().as_micros() as u64);
+        samples.push_per(&t, 1);
     }
     let (p50, _) = summary("settings scroll frame", &mut samples);
     budget("scroll frame", p50, 4_000);
@@ -226,10 +274,10 @@ fn keystroke_in_window_search() {
         search.open(ui::window_toolbar::SearchOffer::of(settings).into());
     }
     let mut query = String::new();
-    let mut samples = Vec::new();
+    let mut samples = Samples::default();
     for ch in "displaysoundnetwork".chars() {
         query.push(ch);
-        let t = Instant::now();
+        let t = Step::start();
         let settings: &mut SettingsApp = &mut app;
         search.drive(
             settings,
@@ -239,7 +287,7 @@ fn keystroke_in_window_search() {
             false,
         );
         Framed::harness_mut(&mut app).relayout();
-        samples.push(t.elapsed().as_micros() as u64);
+        samples.push_per(&t, 1);
     }
     let (p50, _) = summary("settings keystroke", &mut samples);
     budget("keystroke", p50, 4_000);
@@ -253,15 +301,15 @@ fn page_switch_attribution() {
     for c in [Category::Sound, Category::Displays, Category::Network] {
         switch(&mut app, c);
     }
-    let (mut select, mut layout) = (Vec::new(), Vec::new());
+    let (mut select, mut layout) = (Samples::default(), Samples::default());
     for _ in 0..5 {
         for c in [Category::Sound, Category::Displays, Category::Network] {
-            let t = Instant::now();
+            let t = Step::start();
             Framed::split(&mut app).0.select(c);
-            select.push(t.elapsed().as_micros() as u64);
-            let t = Instant::now();
+            select.push_per(&t, 1);
+            let t = Step::start();
             Framed::harness_mut(&mut app).relayout();
-            layout.push(t.elapsed().as_micros() as u64);
+            layout.push_per(&t, 1);
         }
     }
     summary("attribution select() (pane build)", &mut select);
@@ -285,12 +333,12 @@ fn resize_step() {
         h.resize((1472 - i, 920 - i)).unwrap();
     }
     h.begin_profiling();
-    let mut samples = Vec::new();
+    let mut samples = Samples::default();
     for i in 0..60u32 {
         let (w, hgt) = (1300 + (i * 7) % 170, 800 + (i * 5) % 110);
-        let t = Instant::now();
+        let t = Step::start();
         h.resize((w, hgt)).unwrap();
-        samples.push(t.elapsed().as_micros() as u64);
+        samples.push_per(&t, 1);
     }
     passes("resize step", &h.take_profile_samples());
     let (p50, _) = summary("settings resize step", &mut samples);
@@ -312,12 +360,12 @@ fn accessibility_tree_per_frame() {
         crate::support::click_category(&mut app, category);
         assert_eq!(crate::support::selected(&mut app), category);
         let h = app.harness();
-        let mut samples = Vec::new();
+        let mut samples = Samples::default();
         let mut nodes = 0;
         for _ in 0..10 {
-            let t = Instant::now();
+            let t = Step::start();
             nodes = h.a11y_nodes().len();
-            samples.push(t.elapsed().as_micros() as u64);
+            samples.push_per(&t, 1);
         }
         let p50 = summary(
             &format!("settings a11y tree ({category:?}, {nodes} nodes)"),
@@ -336,7 +384,7 @@ fn accessibility_tree_per_frame() {
 /// and resources after every event) and that gap is not fixed yet. Only the
 /// accessibility export is held to a budget.
 mod hosted {
-    use super::{Instant, budget, summary};
+    use super::{Samples, Step, budget, summary};
     use settings::SettingsShell;
     use ui::accesskit::Role;
     use ui::framework::testing::TestApp;
@@ -370,19 +418,19 @@ mod hosted {
         let mut app = hosted();
         let rows = tree_item_centres(&mut app);
         assert!(rows.len() > 6, "the sidebar lists the categories");
-        let (mut switch, mut tree) = (Vec::new(), Vec::new());
+        let (mut switch, mut tree) = (Samples::default(), Samples::default());
         for round in 0..3 {
             for (_, x, y) in rows.iter().skip(1).take(6) {
-                let t = Instant::now();
+                let t = Step::start();
                 app.harness().click_at(*x, *y);
                 app.settle();
                 if round > 0 {
-                    switch.push(t.elapsed().as_micros() as u64);
+                    switch.push_per(&t, 1);
                 }
-                let t = Instant::now();
+                let t = Step::start();
                 let nodes = app.harness().a11y_nodes().len();
                 if round > 0 {
-                    tree.push(t.elapsed().as_micros() as u64);
+                    tree.push_per(&t, 1);
                 }
                 let _ = nodes;
             }
@@ -400,16 +448,16 @@ mod hosted {
         app.harness().click_at(x, y);
         app.settle();
         app.harness().click_at(1460.0, 460.0);
-        let mut scroll = Vec::new();
+        let mut scroll = Samples::default();
         let mut phases: std::collections::BTreeMap<&'static str, (u128, usize)> =
             std::collections::BTreeMap::new();
         for i in 0..60 {
-            let t = Instant::now();
+            let t = Step::start();
             let ((), samples) = ui::tilo_resource::profiling::observe(|| {
                 app.harness().scroll(0.0, if i < 30 { -1.0 } else { 1.0 });
                 app.settle();
             });
-            scroll.push(t.elapsed().as_micros() as u64);
+            scroll.push_per(&t, 1);
             for sample in samples {
                 let entry = phases.entry(sample.phase).or_default();
                 entry.0 += sample.elapsed_ns;
@@ -437,25 +485,26 @@ mod hosted {
         for (label, x, y) in rows.iter().skip(1).take(5).cloned() {
             app.harness().click_at(x, y);
             app.settle();
-            let (mut resources, mut survey, mut encode) = (Vec::new(), Vec::new(), Vec::new());
+            let (mut resources, mut survey, mut encode) =
+                (Samples::default(), Samples::default(), Samples::default());
             let (mut bytes, mut actions) = (0, 0);
             for _ in 0..8 {
-                let t = Instant::now();
+                let t = Step::start();
                 let tree = app.harness().resources();
-                resources.push(t.elapsed().as_micros() as u64);
-                let t = Instant::now();
+                resources.push_per(&t, 1);
+                let t = Step::start();
                 let surveyed = ui::tilo_actions::door::survey(&tree);
                 let exported: Vec<ui::collaboration::ExportedAction> = surveyed
                     .iter()
                     .map(ui::collaboration::ExportedAction::from)
                     .collect();
-                survey.push(t.elapsed().as_micros() as u64);
-                let t = Instant::now();
+                survey.push_per(&t, 1);
+                let t = Step::start();
                 bytes = exported
                     .iter()
                     .map(|action| serde_json::to_vec(action).unwrap().len())
                     .sum::<usize>();
-                encode.push(t.elapsed().as_micros() as u64);
+                encode.push_per(&t, 1);
                 actions = exported.len();
             }
             eprintln!("surface [{label}]: {actions} actions, {bytes} bytes per publish");

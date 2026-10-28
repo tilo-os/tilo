@@ -210,11 +210,12 @@ fn fetch_people_overlay() {
 /// Split out the code behind a toolkit surface that loads on first use
 /// (`tilo_ui::lazy_code`): `$code` is where the toolkit asks for it (a
 /// `LazyCode` or `Deferred`), `$builtin` the only expression that reaches
-/// it, which the splitter therefore moves into module `$name`. `register`
+/// it, which the splitter therefore moves into module `$name`; `$then`, if
+/// given, runs once it is installed. `register`
 /// tells `$code` how to fetch it; the fetch installs it and lays every mount
 /// out again so that what it changes shows.
 macro_rules! split_code {
-    ($(#[$meta:meta])* mod $module:ident: $ty:ty = $builtin:expr => $code:path, module = $name:literal, hash = $hash:literal;) => {
+    ($(#[$meta:meta])* mod $module:ident: $ty:ty = $builtin:expr => $code:path, module = $name:literal, hash = $hash:literal $(, then = $then:path)?;) => {
         $(#[$meta])*
         mod $module {
             use std::ffi::c_void;
@@ -247,6 +248,7 @@ macro_rules! split_code {
                     if crate::split::load(load_module).await {
                         // SAFETY: the module that defines `code` is loaded.
                         $code.install(unsafe { code() });
+                        $($then();)?
                         tilo_browser_runtime::refresh_mounts();
                     } else {
                         $code.load_failed();
@@ -266,6 +268,14 @@ split_code! {
     /// completion asks for it.
     mod emoji: tilo_ui::emoji_catalogue::CatalogueFor = tilo_ui::emoji_catalogue::builtin_catalogue
         => tilo_ui::emoji_catalogue::CATALOGUE, module = "emoji", hash = "4b8e2d6f1a9c7035";
+}
+
+split_code! {
+    /// Feedback's custody and delivery: a page configured with a destination
+    /// asks for them.
+    mod feedback_code: tilo_browser_runtime::FeedbackCode = tilo_browser_runtime::builtin_feedback()
+        => tilo_browser_runtime::FEEDBACK, module = "feedback_service", hash = "9c3e5a17b2d4f860",
+        then = tilo_browser_runtime::feedback_arrived;
 }
 
 split_code! {
@@ -324,4 +334,5 @@ pub(crate) fn register() {
     tilo_browser_runtime::defer_people_overlay(fetch_people_overlay);
     emoji::register();
     history::register();
+    feedback_code::register();
 }

@@ -247,19 +247,21 @@ impl LateFeedback {
         {
             return Err("feedback reporter does not own this profile".into());
         }
-        startup
-            .install(Rc::clone(&self.store), &mut shared.feedback.borrow_mut())
-            .map_err(|error| error.to_string())?;
+        if shared.feedback.borrow().is_some() {
+            return Err("feedback is already installed".into());
+        }
+        let custody = crate::feedback_code::install(startup, Rc::clone(&self.store))?;
+        *shared.feedback.borrow_mut() = Some(custody);
         // The model this page may use also looks over reports before they
         // are sent; without one, the model the room's host lends its
         // reporters does, asked through the room.
         let lent = if self.models.is_available() {
             Some((self.models.clone(), self.model_name.clone()))
         } else {
-            crate::feedback_review::owner_model(self.peer)
+            crate::feedback_code::owner_model(self.peer)
         };
         if let (Some(feedback), Some((models, name))) = (shared.feedback.borrow().as_ref(), lent) {
-            feedback.services().set_models(models, name);
+            feedback.set_models(models, name);
         }
         Ok(())
     }
@@ -272,7 +274,7 @@ impl Shared {
         let Some(peer) = self.late_feedback.borrow().as_ref().map(|late| late.peer) else {
             return false;
         };
-        let Some(startup) = crate::feedback_delivery::take_startup(peer) else {
+        let Some(startup) = crate::feedback_code::take_startup(peer) else {
             return false;
         };
         let Some(late) = self.late_feedback.borrow_mut().take() else {
@@ -283,7 +285,7 @@ impl Shared {
 
     /// Take the page's feedback destination up once it is admitted.
     fn await_feedback(&self, late: LateFeedback) {
-        crate::feedback_delivery::wake_on_startup(late.peer, Arc::clone(&late.wake));
+        crate::feedback_code::wake_on_startup(late.peer, Arc::clone(&late.wake));
         *self.late_feedback.borrow_mut() = Some(late);
     }
 
@@ -299,7 +301,7 @@ impl Shared {
         let Err(error) = late.install(self, startup) else {
             return true;
         };
-        if late.tries < 3 && crate::feedback_delivery::readmit(late.peer) {
+        if late.tries < 3 && crate::feedback_code::readmit(late.peer) {
             late.tries = late.tries.saturating_add(1);
             self.await_feedback(late);
         } else {
@@ -313,7 +315,7 @@ impl Shared {
 #[derive(Clone, Default)]
 pub(crate) struct Shared {
     /// Trusted host custody, never configured from a launch URL or draft.
-    pub feedback: Rc<RefCell<Option<tilo_desktop::feedback::PrivateFeedback>>>,
+    pub feedback: Rc<RefCell<Option<Box<dyn crate::feedback_code::Custody>>>>,
     /// What installs feedback once the page holds a destination, when the
     /// desktop mounted before it did ([`Shared::adopt_feedback`]).
     late_feedback: Rc<RefCell<Option<LateFeedback>>>,
@@ -1313,7 +1315,7 @@ impl Tiles {
             .feedback
             .borrow()
             .as_ref()
-            .map(tilo_desktop::feedback::PrivateFeedback::services);
+            .map(|feedback| feedback.services());
         let mut component =
             (code.prepare)(services, &self.inputs.device, &self.inputs.author, instance)
                 .map_err(|error| error.to_string())?;

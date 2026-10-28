@@ -1072,7 +1072,7 @@ fn desktop_inputs(
             .map_err(error)?,
     );
     Ok(crate::desktop::Inputs {
-        feedback: config.peer.and_then(crate::feedback_delivery::take_startup),
+        feedback: config.peer.and_then(crate::feedback_code::take_startup),
         owners: RecordOwners::with_store(Rc::clone(dyn_store)),
         store: Rc::clone(dyn_store),
         views,

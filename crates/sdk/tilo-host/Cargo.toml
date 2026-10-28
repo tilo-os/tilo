@@ -21,7 +21,7 @@ test-support = ["tilo-dialogs/test-support", "tilo-clock/test-support"]
 # The native desktop services (`native::services`): each platform crate's
 # system backend, speech, and the backends below. Without it the crate is the
 # host vocabulary only, and a host installs its own `host::HostServices`.
-native = ["dep:tokio", "dep:jni", "dep:ndk-context", "dep:tilo-files", "dep:tilo-model-client"]
+native = ["dep:tokio", "dep:jni", "dep:ndk-context", "dep:tilo-files", "tilo-files/watch", "dep:tilo-model-client"]
 # Screen capture through the XDG Desktop Portal. Linux only: the native
 # runner turns it on for Linux targets, and it enables nothing elsewhere.
 # File choosers, OpenURI and location are platform crates' (`tilo-dialogs`,

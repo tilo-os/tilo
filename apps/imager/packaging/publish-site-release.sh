@@ -22,6 +22,18 @@ fingerprint="${fingerprint//[[:space:]]/}"
 [[ "$fingerprint" =~ ^([A-F0-9]{40}|[A-F0-9]{64})$ ]] \
   || { printf 'Linux signing fingerprint must be a full OpenPGP fingerprint\n' >&2; exit 2; }
 
+# The landing page names the Homebrew destination in the installation commands
+# it prints. Derive it from the destination the tap publisher pushes to and the
+# name it tells users to tap, so the page cannot advertise a tap the release
+# never updated.
+tap_repository="${TILO_HOMEBREW_TAP_REPOSITORY:-tilo-os/homebrew-tilo}"
+[[ "$tap_repository" =~ ^[A-Za-z0-9_.-]+/homebrew-[A-Za-z0-9_.-]+$ ]] \
+  || { printf 'Homebrew tap repository must be OWNER/homebrew-NAME\n' >&2; exit 2; }
+tap_name="${TILO_HOMEBREW_TAP_NAME:-tilo/tilo}"
+[[ "$tap_name" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+  || { printf 'Homebrew tap name must be OWNER/NAME\n' >&2; exit 2; }
+tap_command="brew tap $tap_name ${release_server%/}/${tap_repository}.git"
+
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 askpass="$work/askpass.sh"
@@ -105,6 +117,19 @@ jq --arg tag "$GITHUB_REF_NAME" --arg fingerprint "$fingerprint" \
   "$manifest" >"$manifest.next"
 mv "$manifest.next" "$manifest"
 cp docs/install-contract.json "$contract"
+# The contract carries the Homebrew destination the page prints, so it has to
+# describe the tap this promotion actually updates.
+contract_tap="$(jq -r '.imager.homebrew.tap.command // empty' "$contract")"
+contract_tap_name="$(jq -r '.imager.homebrew.tap.name // empty' "$contract")"
+contract_tap_repository="$(jq -r '.imager.homebrew.tap.repository // empty' "$contract")"
+[ "$contract_tap_repository" = "$tap_repository" ] \
+  || { printf 'install contract expects Homebrew tap %s but this release publishes %s\n' \
+         "$contract_tap_repository" "$tap_repository" >&2; exit 1; }
+[ "$contract_tap_name" = "$tap_name" ] \
+  || { printf 'install contract expects Homebrew tap name %s but this release taps %s\n' \
+         "$contract_tap_name" "$tap_name" >&2; exit 1; }
+[ "$contract_tap" = "$tap_command" ] \
+  || { printf 'install contract Homebrew tap command does not match the release tap\n' >&2; exit 1; }
 
 npm --prefix "$work/site" ci
 npm --prefix "$work/site" run test:release
@@ -133,6 +158,13 @@ for command in 'brew install --cask tilo-imager' 'brew install tilo-imager'; do
   grep -R -Fq -- "$command" "$work/site/dist" \
     || { printf 'landing page does not expose package-manager command: %s\n' "$command" >&2; exit 1; }
 done
+# A page that installs through a tap prints that tap. Require exactly the tap
+# this promotion updated and refuse any other, so a stale destination in the
+# site template cannot ship as the instructions people follow.
+rendered_taps="$(grep -R -h -o -- 'brew tap [^<"]*' "$work/site/dist" | sort -u || true)"
+[ "$rendered_taps" = "$tap_command" ] \
+  || { printf 'landing page Homebrew tap does not match the release tap: %s\n' \
+         "${rendered_taps:-none}" >&2; exit 1; }
 if [ "$winget_state" = available ]; then
   grep -R -Fq -- 'winget install Tilo.Imager' "$work/site/dist" \
     || { printf 'landing page hides an accepted WinGet release\n' >&2; exit 1; }

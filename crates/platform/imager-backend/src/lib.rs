@@ -92,6 +92,8 @@ pub mod home_transfer;
 pub mod icloud_setup;
 pub mod imager_model;
 #[cfg(target_os = "linux")]
+pub mod inode_changes;
+#[cfg(target_os = "linux")]
 pub mod installed_consumers;
 pub mod journey_media;
 pub mod journey_promotion;

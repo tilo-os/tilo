@@ -2524,7 +2524,7 @@ requires = ["arch=any"]
 requirement = { cores = 1, memory = "1GiB" }
 run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_web_example_shared_assets.py"
 hints = { builds = false }
-inputs = ["Cargo.toml", "crates/browser/tilo-browser-runtime/**", "examples/apps/**", "scripts/**", "tools/ci/**", "tools/tests/test_web_example_shared_assets.py", "tools/policy/run_unit_tests.py", "tools/policy/steps.py", "tools/policy/unit_test_inputs.py"]
+inputs = ["Cargo.toml", "crates/browser/tilo-browser-runtime/**", "examples/apps/**", "scripts/moq-browser/**", "tools/ci/**", "tools/tests/test_web_example_shared_assets.py", "tools/policy/run_unit_tests.py", "tools/policy/steps.py", "tools/policy/unit_test_inputs.py"]
 
 [[check]]
 name = "policy/tests/unit/whistle-cli-scope"

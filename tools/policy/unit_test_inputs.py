@@ -76,7 +76,9 @@ class Tree:
         word = word.strip().strip("/")
         if word.startswith("./"):
             word = word[2:]
-        if not word or word.startswith("../") or "${" in word or "$(" in word:
+        # A parent reference alone (`path.resolve(here, "../..")`) finds the top of the tree; it
+        # reads nothing there itself, so it names no directory.
+        if not word or word.startswith("../") or "${" in word or "$(" in word or not word.strip("./"):
             return None
         for base in ("", here):
             path = f"{base}/{word}" if base else word

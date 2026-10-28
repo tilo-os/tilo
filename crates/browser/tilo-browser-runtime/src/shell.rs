@@ -1154,7 +1154,7 @@ impl BrowserShell {
             .map(|feedback| {
                 feedback
                     .about(subject)
-                    .and_then(|()| feedback.services().begin_report(report))
+                    .and_then(|()| feedback.begin_report(report))
             });
         match started {
             Some(Ok(())) => match self.handle.read(tilo_desktop::feedback::composer_tab) {

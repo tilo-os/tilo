@@ -4,7 +4,10 @@
 //! Mirrors `tilo-app-package-cli::write_tapp`, kept local so this test crate does
 //! not depend on the `tilo-app-package-cli` binary crate.
 
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "each test and bench uses its own part of these helpers"
+)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -103,11 +106,16 @@ pub fn build_tapp_for(app_id: &str, payload_kib: usize) -> (Vec<u8>, PackageId) 
     write_app_payload_with_bulk(payload_dir.path(), payload_kib).unwrap();
     std::fs::write(payload_dir.path().join("share/owner.txt"), app_id).unwrap();
     let seed = app_id.bytes().fold(0u8, u8::wrapping_add);
-    let bulk: Vec<u8> = std::fs::read(payload_dir.path().join("share/data.bin"))
+    let mut bulk: Vec<u8> = std::fs::read(payload_dir.path().join("share/data.bin"))
         .unwrap()
         .into_iter()
         .map(|byte| byte ^ seed)
         .collect();
+    // The seed alone repeats (`bench19` and `bench91` sum alike), so two apps could share this
+    // blob: led by its app id, each app's bulk is its own.
+    for (byte, id) in bulk.iter_mut().zip(app_id.bytes()) {
+        *byte = id;
+    }
     std::fs::write(payload_dir.path().join("share/data.bin"), bulk).unwrap();
 
     let identity = SigningIdentity::from_signing_key(sk);

@@ -51,7 +51,7 @@ pub fn register_feedback_startup(
     peer: u32,
     startup: tilo_desktop::feedback::transport::Startup,
 ) -> Result<(), String> {
-    feedback_delivery::register_feedback_startup(peer, startup)
+    feedback_code::register_feedback_startup(peer, startup)
 }
 /// Prepare the runtime before anything runs in it; the module's start
 /// function calls it first.
@@ -94,9 +94,15 @@ mod crash;
 #[cfg(target_arch = "wasm32")]
 mod desktop;
 #[cfg(target_arch = "wasm32")]
+mod feedback_code;
+#[cfg(target_arch = "wasm32")]
 mod feedback_composer;
 #[cfg(target_arch = "wasm32")]
 mod feedback_crops;
+#[cfg(target_arch = "wasm32")]
+pub use feedback_code::{
+    FEEDBACK, FeedbackCode, builtin_feedback, code_arrived as feedback_arrived,
+};
 #[cfg(target_arch = "wasm32")]
 mod feedback_delivery;
 #[cfg(target_arch = "wasm32")]
