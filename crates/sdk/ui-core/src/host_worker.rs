@@ -9,10 +9,10 @@ use crate::{
 };
 
 #[cfg(unix)]
-pub mod private_actions;
+pub use ::collaboration::private_actions;
 
 #[cfg(unix)]
-pub mod managed_sender;
+pub use ::collaboration::managed_sender;
 
 pub use crate::invocation_scope::{
     PublishedInvocationAuthorizer, PublishedInvocationLease, PublishedInvocationRequest,

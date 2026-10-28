@@ -3365,6 +3365,28 @@ pub struct CallbackBinding {
     pub(crate) writes_as_author: bool,
 }
 
+impl crate::collaboration::native_initial::ComponentBinding for CallbackBinding {
+    type Entry = CallbackScopeGuard;
+    type EnterError = BoundDispatchError;
+    fn admission_route(&self) -> Option<crate::collaboration::RouteSpec> {
+        CallbackBinding::admission_route(self)
+    }
+    fn app_id(&self) -> &str {
+        &self.app_id
+    }
+    fn checkout(&self) -> &RecordCheckout {
+        &self.checkout
+    }
+    fn enter(&self) -> Result<CallbackScopeGuard, BoundDispatchError> {
+        CallbackBinding::enter(self)
+    }
+    fn merge_committed(&self, mutation: collab_types::DocumentMutation) -> Result<(), String> {
+        self.records
+            .merge_remote_document(&self.checkout, mutation)
+            .map(|_| ())
+    }
+}
+
 /// Private retained traversal request. The public Widget trait cannot expose a
 /// root/registry closure directly; only toolkit code can construct this request.
 type ComponentVisitor<'a> = dyn FnMut(
@@ -4313,7 +4335,8 @@ type ActiveRecord = (
 thread_local! {
     static ACTIVE: RefCell<Option<ActiveRecord>> = const { RefCell::new(None) };
 }
-pub(crate) struct CallbackScopeGuard {
+/// What entering a component's callback scope holds until it is dropped.
+pub struct CallbackScopeGuard {
     _wake: WakeScopeGuard,
     _device: ExecutingHostDevice,
     _person: ExecutingHostPerson,
@@ -4375,7 +4398,7 @@ impl CallbackBinding {
         &self,
         witness: Option<&crate::collaboration::PrimaryRouteWitness>,
     ) -> bool {
-        witness.is_some_and(|witness| self.matches_route(&witness.route))
+        witness.is_some_and(|witness| self.matches_route(witness.route()))
     }
     /// Whether `route` is the broker route this binding names.
     pub(crate) fn matches_route(&self, route: &crate::collaboration::RouteSpec) -> bool {

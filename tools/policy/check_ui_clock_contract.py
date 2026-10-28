@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Keep the UI toolkit's clock behind ``ui::time``.
 
-The toolkit (``crates/sdk/ui-core``) and its host services
-(``crates/sdk/tilo-host``) name their clock types through ``crate::time`` —
+The toolkit (``crates/sdk/ui-core``), its host services
+(``crates/sdk/tilo-host``) and the collab client under it
+(``crates/collab/collaboration``) name their clock types through
+``crate::time`` —
 defined once, in ``tilo-host``'s ``src/time.rs``, and re-exported by the
 toolkit — so that a host without a native process clock has one module to
 provide. Clippy enforces the calls (``Instant::now``/``SystemTime::now``) from
@@ -39,7 +41,11 @@ from rust_source import is_test_file, line_number, production_source  # noqa: E4
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CRATES = (Path("crates/sdk/ui-core"), Path("crates/sdk/tilo-host"))
+CRATES = (
+    Path("crates/sdk/ui-core"),
+    Path("crates/sdk/tilo-host"),
+    Path("crates/collab/collaboration"),
+)
 CLOCK_MODULE = Path("crates/sdk/tilo-host/src/time.rs")
 
 CLOCK_ITEM = r"(?:Instant|SystemTime|UNIX_EPOCH)"
