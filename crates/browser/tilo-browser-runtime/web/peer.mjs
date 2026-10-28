@@ -669,6 +669,11 @@ export function createLiveLayer(peer, runtime, room, {
  *                               with keys the room's steward hands it, and
  *                               writes nothing: no channel access request,
  *                               live join, presence, voice or `here`.
+ * @param options.background     `true`: the page keeps this peer beside the
+ *                               room in front, only to deliver for it
+ *                               (problem reports to its home workspace).
+ *                               The host counts nobody online by it: no
+ *                               seat, no face, no online count.
  */
 export async function connectPeer(options) {
   const {identity, custody, origin, store, profile} = options;
@@ -711,7 +716,7 @@ async function connect({
   profile, device, displayName = '', vaultStorage,
   fetch: fetcher, liveCarriers, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
   voice: voiceOptions = {}, requireExistingCertificate = false, namespaces = globalThis.localStorage,
-  watching = false,
+  watching = false, background = false,
 }) {
   if (watching) voiceOptions = false;
   userPublicKey ??= identity?.userPublicKey;
@@ -993,7 +998,7 @@ async function connect({
     }
     const record = storage ? undefined : await store.get(PEER_RECORD);
     peer = runtime.WasmPeer.start(
-      withStartFields(certified, {displayName, watching}),
+      withStartFields(certified, {displayName, watching, background: background || undefined}),
       custodyForWasm,
       storage ? JSON.stringify({profile, device}) : undefined,
       storage ? undefined : (record ?? undefined),
