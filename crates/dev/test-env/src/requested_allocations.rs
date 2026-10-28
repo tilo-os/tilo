@@ -40,7 +40,7 @@ fn observe(bytes: usize, allocation: bool) {
     let _ = STATS.try_with(|slot| {
         if let Some(mut state) = slot.get() {
             if allocation {
-                state.allocations += 1;
+                state.allocations = state.allocations.saturating_add(1);
                 state.requested = state.requested.saturating_add(bytes);
                 state.live = state.live.saturating_add(bytes);
             } else {

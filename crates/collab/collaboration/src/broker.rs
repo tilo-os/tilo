@@ -2572,6 +2572,12 @@ impl CollaborationManager {
 
     #[cfg(any(test, feature = "test-support"))]
     #[cfg(unix)]
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
     pub fn native_history_invocation_fixture_for_test(
         history: Vec<u8>,
     ) -> NativeHistoryInvocationFixture {
@@ -2581,6 +2587,12 @@ impl CollaborationManager {
     /// Wire/SDK ordering fixture only; not a native authority proof.
     #[cfg(any(test, feature = "test-support"))]
     #[cfg(unix)]
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
     pub fn native_initial_fixture_for_test(
         app: &str,
         room: Uuid,
@@ -2593,6 +2605,12 @@ impl CollaborationManager {
     /// This fixture does not establish native caller authority.
     #[cfg(any(test, feature = "test-support"))]
     #[cfg(unix)]
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
     pub fn native_initial_named_fixture_for_test(route: RouteSpec, history: Vec<u8>) -> Self {
         let (mut manager, _) =
             tests::native_initial_fixture(&route.app_id, route.cluster_id, history);
@@ -2616,6 +2634,12 @@ impl CollaborationManager {
     /// routes, so they never open.
     #[cfg(any(test, feature = "test-support"))]
     #[cfg(unix)]
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
     pub fn native_initial_named_invocation_fixture_for_test(
         route: RouteSpec,
         history: Vec<u8>,
@@ -2647,12 +2671,24 @@ impl CollaborationManager {
     /// standalone runtime admits it.
     #[cfg(any(test, feature = "test-support"))]
     #[cfg(unix)]
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
     pub fn connected_fixture_for_test(app: &str, room: Uuid) -> Self {
         tests::connected_manager_for(app, room)
     }
 
     #[cfg(any(test, feature = "test-support"))]
     #[cfg(unix)]
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
     pub fn native_initial_fixture_gated_for_test(
         app: &str,
         room: Uuid,
@@ -2665,6 +2701,12 @@ impl CollaborationManager {
     /// Socket-backed committed-read fixture; the probe observes real recheck requests.
     #[cfg(any(test, feature = "test-support"))]
     #[cfg(unix)]
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
     pub fn native_initial_parked_fixture_for_test(
         app: &str,
         room: Uuid,
@@ -2676,6 +2718,12 @@ impl CollaborationManager {
 
     #[cfg(any(test, feature = "test-support"))]
     #[cfg(unix)]
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
     pub fn native_refresh_fixture_for_test(
         app: &str,
         room: Uuid,
@@ -3024,6 +3072,12 @@ impl CollaborationManager {
     /// Real socket-backed SDK transport for App lifecycle integration tests.
     #[cfg(any(test, feature = "test-support"))]
     #[cfg(unix)]
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
     pub fn connected_for_lifecycle_test() -> Self {
         tests::connected_manager()
     }
@@ -3032,6 +3086,12 @@ impl CollaborationManager {
     /// runs, as the owner last set them.
     #[cfg(any(test, feature = "test-support"))]
     #[cfg(unix)]
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
     pub fn invocation_document_routes_for_test(&self) -> Vec<String> {
         let Backend::Transport(transport) = &self.backend else {
             panic!("a broker transport");
@@ -3049,6 +3109,12 @@ impl CollaborationManager {
     /// Retire the actual socket-backed capture generation, as a rejoin does.
     #[cfg(any(test, feature = "test-support"))]
     #[cfg(unix)]
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
     pub fn retire_document_capture_for_test(&self, route: &RouteSpec) {
         let Backend::Transport(transport) = &self.backend else {
             panic!("a broker transport");
@@ -3071,6 +3137,12 @@ impl CollaborationManager {
     /// those commands produced. Panics at the hang bound.
     #[cfg(any(test, feature = "test-support"))]
     #[cfg(unix)]
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
     pub fn wait_for_commands_for_test(&self) {
         let Backend::Transport(transport) = &self.backend else {
             panic!("a broker transport");
@@ -3097,6 +3169,12 @@ impl CollaborationManager {
     /// envelope the broker accepted, in order.
     #[cfg(any(test, feature = "test-support"))]
     #[cfg(unix)]
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
     pub fn capturing_for_test() -> (Self, Box<dyn Fn() -> Vec<SignedOp>>) {
         tests::capturing_manager()
     }
@@ -3106,6 +3184,12 @@ impl CollaborationManager {
     /// that receives each of its wakes.
     #[cfg(any(test, feature = "test-support"))]
     #[cfg(unix)]
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
     pub fn connecting_for_lifecycle_test() -> (Self, crate::wake::WakeScope, mpsc::Receiver<()>) {
         tests::connecting_manager()
     }
@@ -3115,6 +3199,12 @@ impl CollaborationManager {
     /// tests in one process don't race on `TILO_SVC_COLLAB_FD`.
     #[cfg(any(test, feature = "test-support"))]
     #[cfg(unix)]
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
     pub fn from_sdk_fd_for_test(fd: RawFd, app_id: &str, cluster_id: Uuid) -> Self {
         Self::from_sdk_fd_for_test_with_identity(fd, app_id, cluster_id, Vec::new())
     }
@@ -3123,6 +3213,12 @@ impl CollaborationManager {
     /// call with a caller-supplied identity blob.
     #[cfg(any(test, feature = "test-support"))]
     #[cfg(unix)]
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
     pub fn from_sdk_fd_for_test_with_identity(
         fd: RawFd,
         app_id: &str,
@@ -7036,6 +7132,15 @@ mod tests {
             reason = "only the fixtures are used outside tests"
         )
     )]
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::string_slice,
+        clippy::disallowed_methods,
+        reason = "the tests and the fixtures they share with the toolkit's tests are test code"
+    )]
     // The `Fake*` capnp-rpc mock servers below implement generated `Server`
     // traits by returning the concrete `Promise<T, capnp::Error>` capnp-rpc
     // expects, which is more specific than (though it does satisfy) the
@@ -7249,7 +7354,7 @@ mod tests {
         pub refused_action_publications: usize,
         pub action_directories: Vec<String>,
         pub refuse_action_directories: usize,
-        pub directory_attempts: Vec<std::time::Instant>,
+        pub directory_attempts: Vec<crate::time::Instant>,
         pub directory_ack: Option<Arc<tokio::sync::Notify>>,
         pub action_catalogue_fixture: Option<Vec<String>>,
         pub action_catalogue_subscriptions: usize,
@@ -7858,7 +7963,7 @@ mod tests {
         ) -> Promise<(), capnp::Error> {
             let request = params.get().unwrap();
             let mut captures = self.captures.lock().unwrap();
-            captures.directory_attempts.push(std::time::Instant::now());
+            captures.directory_attempts.push(crate::time::now());
             let refused = captures.refuse_action_directories > 0;
             if refused {
                 captures.refuse_action_directories -= 1;
@@ -12893,6 +12998,12 @@ mod tests {
 /// The fake broker and the managers the toolkit's App-driven tests stand up
 /// against it. Only for tests: nothing here is a native authority proof.
 #[cfg(all(feature = "test-support", unix))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "fixtures for the toolkit's tests"
+)]
 pub mod test_support {
     use super::{CollabRequest, CollaborationManager, RouteSpec, SdkConnectSource, tests};
     use std::os::fd::RawFd;
@@ -12945,7 +13056,6 @@ pub mod test_support {
     /// holds an action catalogue of `count` notebooks, larger than the
     /// worker's event budget: whether the route was admitted and the worker
     /// stayed healthy, and how many catalogue subscriptions it made.
-    #[must_use]
     pub fn ordinary_catalogue_manager(
         cluster: Uuid,
         count: usize,

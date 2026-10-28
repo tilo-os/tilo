@@ -1,6 +1,13 @@
 //! A native construction holding a named record's creation capture: what
 //! the record store's tests open the real canonical record path against
 //! (`ui::record`), not a permissive validator.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::future_not_send,
+    reason = "a fixture for the toolkit's tests"
+)]
 use super::{
     BridgeState, CONSTRUCTION, CollaborationManager, CommittedDocument, Construction,
     InitialReadBridge, NativeConstruction, QueuedSdkCommand, RouteSpec, SdkCommand,

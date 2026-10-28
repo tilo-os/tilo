@@ -206,15 +206,33 @@ impl Reads {
             })
     }
     #[cfg(any(test, feature = "test-support"))]
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
     pub fn close_for_test(&self, key: &str) -> Arc<AtomicBool> {
         self.pending(key).unwrap()
     }
     #[cfg(any(test, feature = "test-support"))]
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
     pub(crate) fn stage_for_test(&self, key: &str, read: CommittedDocument) {
         let ready = self.pending(key).unwrap();
         self.stage(key, &ready, read).unwrap();
     }
     #[cfg(any(test, feature = "test-support"))]
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
     pub(crate) fn refresh_for_test(&self, key: &str, read: CommittedDocument) {
         let applied = self.1.lock().unwrap().get(key).unwrap().merged.clone();
         assert!(applied.load(Ordering::Acquire));
@@ -515,6 +533,12 @@ impl CommittedDocument {
     /// A current capture of `bytes`: the changes since `base`, or the whole
     /// document when `base` is `None`.
     #[cfg(any(test, feature = "test-support"))]
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
     pub fn for_test(bytes: Vec<u8>, base: Option<Vec<automerge::ChangeHash>>) -> Self {
         let budget = ByteBudget::new();
         let length = bytes.len().max(1);
