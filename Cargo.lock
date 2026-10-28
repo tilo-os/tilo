@@ -17650,6 +17650,7 @@ dependencies = [
  "hyper-util",
  "iroh",
  "iroh-base",
+ "messages",
  "n0-future",
  "neighbour-wire",
  "postcard",
@@ -17668,11 +17669,13 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-clock",
+ "tilo-contact-directory",
  "tilo-desktop-model",
  "tilo-identity-host",
  "tilo-joined-room",
  "tilo-lock",
  "tilo-media",
+ "tilo-messaging",
  "tilo-moq",
  "tilo-net",
  "tilo-paint-stream",
@@ -17689,6 +17692,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "url",
+ "uuid",
  "web-time",
  "workspace-hack",
 ]
@@ -19243,7 +19247,9 @@ version = "0.1.0"
 dependencies = [
  "accounts",
  "tilo-contact-directory",
+ "tilo-relay-protocol",
  "tilo-resource",
+ "uuid",
  "workspace-hack",
  "zeroize",
 ]
@@ -21364,6 +21370,7 @@ dependencies = [
 name = "tilo-web-desktop"
 version = "0.1.0"
 dependencies = [
+ "accounts",
  "activity",
  "api-tester",
  "calculator",
@@ -21377,6 +21384,7 @@ dependencies = [
  "diffmerge",
  "ebook",
  "feeds",
+ "hex",
  "hex-editor",
  "maps",
  "messages",
@@ -21401,6 +21409,8 @@ dependencies = [
  "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-lock",
+ "tilo-messaging",
+ "tilo-relay-protocol",
  "tilo-search",
  "tilo-spellcheck",
  "tilo-ui",

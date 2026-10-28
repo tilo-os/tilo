@@ -1182,6 +1182,7 @@ impl Tiles {
             self.inputs.author.clone(),
         ));
         crate::person_records::provide(&mut context, &self.inputs.store)?;
+        crate::app_loans::lend(&mut context);
         // Only registered control panels receive the administration capability.
         if crate::host_services::provider_admin_app(definition.app_id()) {
             crate::host_services::provide_provider_admin(
