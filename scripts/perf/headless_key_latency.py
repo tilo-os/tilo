@@ -20,6 +20,7 @@ the panel itself and libinput, so it measures the compositor and the GPU, not
 the whole keyboard-to-photon path.
 
     cargo build --release -p shell --bin shell --features dev-overrides
+    cargo build --release -p tilo-cli --bin tilo
     cargo build --release -p shell --example latency_client
     scripts/perf/headless_key_latency.py --label after --out target/key-latency
     scripts/perf/headless_key_latency.py --compare before.json after.json
@@ -183,6 +184,13 @@ def stop_client(proc: subprocess.Popen) -> None:
             proc.stdout.close()
 
 
+def set_settings(shell: Path, profile: Path, section: str, values: dict) -> None:
+    """Merge `values` into `section` of the profile's settings, with the `tilo`
+    command built beside the shell, before the session starts and holds them."""
+    subprocess.run([str(shell.parent / "tilo"), "settings", "set", "--profile", str(profile),
+                    section, json.dumps(values)], check=True)
+
+
 def measure(args: argparse.Namespace) -> dict:
     bench = _bench()
     shell, client = Path(args.shell_bin), Path(args.client_bin)
@@ -196,13 +204,10 @@ def measure(args: argparse.Namespace) -> dict:
     (root / "home").mkdir(mode=0o700)
     ctl_path = root / "run" / "control.sock"
     env = session_env(root, args, ctl_path)
-    # The session's settings directory, as an installed session has it.
-    settings = root / "config" / "tilo" / "session" / "settings.json"
-    settings.parent.mkdir(parents=True)
     if args.hide_top_bar:
         # The desktop's bar over the windows everywhere (Settings,
         # Appearance, Desktop), not only over a maximized window.
-        settings.write_text(json.dumps({"desktop_controls": {"hide_top_bar": True}}))
+        set_settings(shell, root / "config" / "tilo", "desktop_controls", {"hide_top_bar": True})
     log = args.out / f"{args.label}.log"
     proc = client_proc = control = None
     try:

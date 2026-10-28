@@ -9,29 +9,21 @@
 //! number, so a change made in Settings lands everywhere at once and a reader
 //! between changes does no I/O at all.
 //!
-//! Changes arrive through the installed [`SettingsSource`]'s change signal
-//! when the host provides the document, else through the directory watch of
-//! [`crate::watch`]. Between changes the refresh thread sleeps with no
-//! timeout. Only a follower whose file watch could not start falls back to a
-//! slow stamp poll, so it still notices a write within [`POLL_INTERVAL`].
+//! Changes arrive through the [`SettingsSource`]'s change signal. Between
+//! changes the refresh thread sleeps with no timeout.
 //!
 //! [`generation`]: LiveSettings::generation
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use std::time::Duration;
 
 use serde_json::{Map, Value};
 
-use crate::{Listener, SectionDigest, SettingsSource, SettingsStamp};
+use crate::{Listener, SectionDigest, SettingsSource};
 use tilo_lock::MutexRecover as _;
-
-/// How often the document's stamp is compared by a follower that has no
-/// notification to wait for: a settings file whose watch could not start.
-pub const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// One version of the settings document.
 #[derive(Debug, Default)]
@@ -62,7 +54,7 @@ struct Inner {
     current: Mutex<Arc<Snapshot>>,
     changed: Condvar,
     generation: AtomicU64,
-    origin: Origin,
+    origin: Arc<dyn SettingsSource>,
     nudge: mpsc::Sender<()>,
     /// Kept for as long as the document is followed; dropping it ends the
     /// notifications and, with them, the refresh thread.
@@ -71,59 +63,24 @@ struct Inner {
 
 /// What tells the refresh thread to look.
 struct Notified {
-    /// How often to compare stamps when nothing rings: `None` while a watch
-    /// or a change signal reports every change.
-    poll: Option<Duration>,
-    _watch: Option<crate::watch::SettingsWatch>,
-    _listener: Option<Arc<Listener>>,
+    _listener: Arc<Listener>,
     degraded: Option<String>,
 }
 
-/// Where the document comes from.
-enum Origin {
-    Source(Arc<dyn SettingsSource>),
-    File(Option<PathBuf>),
-}
-
-impl Origin {
-    fn load(&self) -> Map<String, Value> {
-        match self {
-            Self::Source(source) => source.load(),
-            Self::File(Some(path)) => crate::load_at(path),
-            Self::File(None) => Map::new(),
-        }
-    }
-
-    fn stamp(&self) -> Option<SettingsStamp> {
-        match self {
-            Self::Source(source) => Some(SettingsStamp::Revision(source.revision())),
-            Self::File(Some(path)) => crate::stamp_at(path),
-            Self::File(None) => None,
-        }
-    }
-}
-
 impl LiveSettings {
-    /// Follow this process's settings document: the installed
-    /// [`SettingsSource`] when the host provides one, else the configured
-    /// settings file. `on_change` runs on the refresh thread after each new
-    /// generation is published, so it should only wake whoever reads it.
+    /// Follow this process's settings ([`crate::source`]). `on_change` runs
+    /// on the refresh thread after each new generation is published, so it
+    /// should only wake whoever reads it.
     ///
     /// The first snapshot is read on the calling thread, so it is current
     /// as soon as this returns.
     pub fn start(on_change: impl Fn() + Send + 'static) -> Self {
-        match crate::installed_source() {
-            Some(source) => Self::start_from(source, on_change),
-            None => Self::start_file(crate::settings_path(), on_change),
-        }
+        let source = crate::source()
+            .unwrap_or_else(|| Arc::new(crate::HostDocument::new(Map::new(), |_| Ok(()))));
+        Self::start_from(source, on_change)
     }
 
-    /// Follow the settings file at `path`, ignoring any installed source.
-    pub fn start_at(path: PathBuf, on_change: impl Fn() + Send + 'static) -> Self {
-        Self::start_file(Some(path), on_change)
-    }
-
-    /// Follow a host-provided document through its change signal.
+    /// Follow `source` through its change signal.
     pub fn start_from(
         source: Arc<dyn SettingsSource>,
         on_change: impl Fn() + Send + 'static,
@@ -137,46 +94,18 @@ impl LiveSettings {
         // The source rings whenever its revision changes (the
         // `SettingsSource::changes` contract), so nothing needs polling.
         let notified = Notified {
-            poll: None,
-            _watch: None,
-            _listener: Some(listener),
+            _listener: listener,
             degraded: None,
         };
-        Self::spawn(Origin::Source(source), (nudge, nudges), notified, on_change)
-    }
-
-    fn start_file(path: Option<PathBuf>, on_change: impl Fn() + Send + 'static) -> Self {
-        let (nudge, nudges) = mpsc::channel();
-        let watch = path.as_ref().map(|path| {
-            let notify = nudge.clone();
-            crate::watch::watch_settings_at(path, move || {
-                let _ = notify.send(());
-            })
-        });
-        let (watch, degraded) = match watch {
-            Some(Ok(watch)) => (Some(watch), None),
-            Some(Err(error)) => (None, Some(format!("file watch unavailable: {error}"))),
-            None => (None, None),
-        };
-        // Only a file nobody watches is polled; with no file at all there is
-        // nothing to look at.
-        let poll = (path.is_some() && watch.is_none()).then_some(POLL_INTERVAL);
-        let notified = Notified {
-            poll,
-            _watch: watch,
-            _listener: None,
-            degraded,
-        };
-        Self::spawn(Origin::File(path), (nudge, nudges), notified, on_change)
+        Self::spawn(source, (nudge, nudges), notified, on_change)
     }
 
     fn spawn(
-        origin: Origin,
+        origin: Arc<dyn SettingsSource>,
         (nudge, nudges): (mpsc::Sender<()>, mpsc::Receiver<()>),
         mut notified: Notified,
         on_change: impl Fn() + Send + 'static,
     ) -> Self {
-        let stamp = origin.stamp();
         let inner = Arc::new(Inner {
             current: Mutex::new(Arc::new(Snapshot {
                 generation: 0,
@@ -189,9 +118,8 @@ impl LiveSettings {
             notified: Mutex::new(None),
         });
         let weak = Arc::downgrade(&inner);
-        let poll = notified.poll;
         let worker = tilo_rt::spawn_thread("tilo-settings-live", move || {
-            follow(&weak, (stamp, poll), &nudges, &on_change);
+            follow(&weak, &nudges, &on_change);
         });
         if let Err(error) = worker {
             notified.degraded = Some(format!(
@@ -202,9 +130,8 @@ impl LiveSettings {
         Self(inner)
     }
 
-    /// Why changes may arrive late or not at all — no file watch (the stamp
-    /// poll still notices a write within [`POLL_INTERVAL`]) or no refresh
-    /// thread. `None` when changes arrive as they are made.
+    /// Why changes may not arrive at all: no refresh thread. `None` when
+    /// changes arrive as they are made.
     #[must_use]
     pub fn degraded(&self) -> Option<String> {
         self.0
@@ -263,9 +190,8 @@ impl LiveSettings {
         )
     }
 
-    /// Ask the refresh thread to re-read now rather than on the next poll —
-    /// for a caller that knows the document was written by a path that may
-    /// ring nothing.
+    /// Ask the refresh thread to re-read now, for a caller that knows the
+    /// document was written by a path that may ring nothing.
     pub fn refresh(&self) {
         let _ = self.0.nudge.send(());
     }
@@ -283,38 +209,16 @@ impl LiveSettings {
     }
 }
 
-/// The refresh thread: wait for a nudge (or, with `poll`, at most that
-/// long), re-read when told to or when the stamp moved, and publish a new
-/// generation only when the content changed. Without `poll` it sleeps until
-/// something rings. Ends when the last [`LiveSettings`] is dropped.
-fn follow(
-    inner: &Weak<Inner>,
-    (mut stamp, poll): (Option<SettingsStamp>, Option<Duration>),
-    nudges: &mpsc::Receiver<()>,
-    on_change: &dyn Fn(),
-) {
-    loop {
-        let asked = match poll {
-            Some(poll) => match nudges.recv_timeout(poll) {
-                Ok(()) => true,
-                Err(RecvTimeoutError::Timeout) => false,
-                Err(RecvTimeoutError::Disconnected) => return,
-            },
-            None => match nudges.recv() {
-                Ok(()) => true,
-                Err(mpsc::RecvError) => return,
-            },
-        };
+/// The refresh thread: wait for a nudge, re-read, and publish a new
+/// generation only when the content changed. Ends when the last
+/// [`LiveSettings`] is dropped.
+fn follow(inner: &Weak<Inner>, nudges: &mpsc::Receiver<()>, on_change: &dyn Fn()) {
+    while nudges.recv().is_ok() {
         // One read covers every notification queued so far.
         while nudges.try_recv().is_ok() {}
         let Some(inner) = inner.upgrade() else {
             return;
         };
-        let current = inner.origin.stamp();
-        if !asked && current == stamp {
-            continue;
-        }
-        stamp = current;
         let document = inner.origin.load();
         if publish(&inner, document) {
             on_change();
@@ -386,36 +290,6 @@ mod tests {
         values
     }
 
-    #[test]
-    fn an_atomic_rewrite_bumps_generation_once_and_updates_the_snapshot() {
-        let root = crate::tests::tmpdir();
-        let path = root.join("tilo").join("settings.json");
-        crate::update_section_at(&path, "display", display(1.0)).unwrap();
-        let live = LiveSettings::start_at(path.clone(), || {});
-        assert_eq!(live.generation(), 0);
-        assert_eq!(live.section("display"), display(1.0));
-
-        crate::update_section_at(&path, "display", display(1.5)).unwrap();
-        let snapshot = live.wait_for_change(0, tilo_test_env::hang_bound());
-        assert_eq!(snapshot.generation, 1);
-        assert_eq!(snapshot.section("display"), display(1.5));
-        // The watch reports writes in order, so once a later write is taken
-        // in, every notification of the earlier one has been handled.
-        let taken_in = |scale: f64| {
-            crate::update_section_at(&path, "display", display(scale)).unwrap();
-            tilo_test_env::wait_until(format_args!("the write of scale {scale}"), || {
-                live.section("display") == display(scale)
-            });
-            live.generation()
-        };
-        assert_eq!(taken_in(2.0), 2, "one write is one generation");
-
-        // A rewrite with identical content is not a change.
-        crate::update_section_at(&path, "display", display(2.0)).unwrap();
-        assert_eq!(taken_in(2.5), 3, "an identical rewrite is no generation");
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
     #[cfg(target_os = "linux")] // the thread's wakeups are read from /proc
     #[test]
     fn waiting_for_the_next_change_sleeps_until_it_comes() {
@@ -473,11 +347,6 @@ mod tests {
             LiveSettings::start_from(source.clone(), || {})
         });
         let looks = source.looks.load(Ordering::SeqCst);
-        assert_eq!(
-            live.0.notified.lock_recover().as_ref().unwrap().poll,
-            None,
-            "a follower of a ringing source has a stamp poll"
-        );
         crate::tests::blocked_count(&refresh);
         tilo_test_env::idle::assert_stays_asleep(&refresh, "follower of a ringing source");
         assert_eq!(
@@ -528,67 +397,5 @@ mod tests {
             BTreeSet::from(["input".to_string()])
         );
         assert!(follower.changed_sections(&live).is_empty());
-    }
-
-    #[test]
-    fn a_hand_edited_keyboard_layout_reaches_the_live_document_and_its_readers() {
-        let dir = crate::test_dir();
-        let paths = crate::SessionPaths::beside(dir.path().join("settings.json"));
-        let session = Arc::new(crate::SessionSettings::open(paths.clone()).unwrap());
-        // No copy watch in this test: the view polls the copy itself, as a
-        // host that could not watch it does.
-        let view = session
-            .host_view_polling_copy(std::time::Duration::from_millis(50))
-            .unwrap();
-        let live = LiveSettings::start_from(Arc::clone(&view), || {});
-        let mut follower = SectionFollower::new(&live);
-
-        let mut input = Map::new();
-        input.insert("keyboard_layout".into(), serde_json::json!("de"));
-        input.insert("keyboard_layouts".into(), serde_json::json!(["de"]));
-        crate::update_section_at(&paths.copy, "input", input).unwrap();
-        let snapshot = live.wait_for_change(0, tilo_test_env::hang_bound());
-
-        assert_eq!(
-            follower.changed_sections(&live),
-            BTreeSet::from(["input".to_string()])
-        );
-        let section = |document: &Map<String, Value>| match document.get("input") {
-            Some(Value::Object(section)) => section.clone(),
-            _ => Map::new(),
-        };
-        for document in [snapshot.document.clone(), view.load()] {
-            let config = crate::hardware::RichInputConfig::from_section(&section(&document));
-            let effective =
-                crate::keyboard_sources::effective(&config, crate::keyboard_sources::ALL);
-            assert_eq!(effective.keyboard_layouts, ["de"]);
-            assert_eq!(effective.keyboard_layout, "de");
-        }
-    }
-
-    #[test]
-    fn a_missing_file_reads_as_empty_and_its_creation_is_a_change() {
-        let root = crate::tests::tmpdir();
-        let path = root.join("tilo").join("settings.json");
-        let live = LiveSettings::start_at(path.clone(), || {});
-        let mut follower = SectionFollower::new(&live);
-        assert!(live.snapshot().document.is_empty());
-        assert!(follower.changed_sections(&live).is_empty());
-
-        crate::update_section_at(&path, "display", display(1.25)).unwrap();
-        let _ = live.wait_for_change(0, tilo_test_env::hang_bound());
-        assert_eq!(
-            follower.changed_sections(&live),
-            BTreeSet::from(["display".to_string()])
-        );
-
-        std::fs::remove_file(&path).unwrap();
-        let _ = live.wait_for_change(1, tilo_test_env::hang_bound());
-        assert!(live.snapshot().document.is_empty());
-        assert_eq!(
-            follower.changed_sections(&live),
-            BTreeSet::from(["display".to_string()])
-        );
-        std::fs::remove_dir_all(root).unwrap();
     }
 }

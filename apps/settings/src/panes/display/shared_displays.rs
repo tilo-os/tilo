@@ -413,8 +413,7 @@ mod tests {
             }
         }
         let profile = tempfile::tempdir().unwrap();
-        let mut model =
-            DisplayModel::detached(PaneCx::in_file(profile.path().join("settings.json")));
+        let mut model = DisplayModel::detached(PaneCx::in_profile(profile.path().to_path_buf()));
         let offline = devices().remove(0);
         let mut local = offline.clone();
         local.device = "local-peer".into();
@@ -505,8 +504,7 @@ mod tests {
     #[test]
     fn shared_canvas_numbers_follow_resolved_device_output_identity_and_order() {
         let profile = tempfile::tempdir().unwrap();
-        let mut model =
-            DisplayModel::detached(PaneCx::in_file(profile.path().join("settings.json")));
+        let mut model = DisplayModel::detached(PaneCx::in_profile(profile.path().to_path_buf()));
         let offline = devices().remove(0);
         let mut local = offline.clone();
         local.device = "local-peer".into();
@@ -604,8 +602,7 @@ mod tests {
     #[test]
     fn shared_display_offline_edits_preserve_hardware_and_revision_boundaries() {
         let profile = tempfile::tempdir().unwrap();
-        let mut model =
-            DisplayModel::detached(PaneCx::in_file(profile.path().join("settings.json")));
+        let mut model = DisplayModel::detached(PaneCx::in_profile(profile.path().to_path_buf()));
         model.person_devices = devices();
         let before = model.person_devices.clone();
         model
@@ -773,7 +770,7 @@ mod tests {
         for concurrent in [false, true] {
             let profile = tempfile::tempdir().unwrap();
             let mut model =
-                DisplayModel::detached(PaneCx::in_file(profile.path().join("settings.json")));
+                DisplayModel::detached(PaneCx::in_profile(profile.path().to_path_buf()));
             model.person_devices = devices();
             model.person_devices[0].online = true;
             model.device_displays = vec![settings_store::device_displays::DeviceDisplay {

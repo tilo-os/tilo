@@ -31,6 +31,8 @@ tilo-paths.workspace = true
 # The desktop's apps and actions (`tilo open`, `tilo action`, `tilo do`): the
 # control protocol's one client, shared with tilo-control.
 tilo-control = { path = "../../session/control-cli" }
+# `tilo settings`: the profile's settings, held or followed.
+settings-store = { path = "../settings-store" }
 
 [dev-dependencies]
 tempfile.workspace = true

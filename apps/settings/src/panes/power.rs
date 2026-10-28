@@ -1350,7 +1350,7 @@ mod tests {
     #[test]
     fn the_shown_page_reads_the_hardware_again_when_a_service_reports_a_change() {
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let control = Arc::new(FollowedPower::default());
         let area = PowerArea::over(Arc::clone(&control) as Arc<dyn PowerControl>);
         let mut pane = PowerPane::new(cx, &area);
@@ -1388,7 +1388,7 @@ mod tests {
     #[test]
     fn the_battery_shows_time_left_and_its_charge_history() {
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let area = PowerArea::new(&cx);
         let mut pane = PowerPane::new(cx, &area);
         let state = tilo_test_env::wait_for("the hardware is read", || area.state.get());
@@ -1545,7 +1545,7 @@ mod tests {
 
         {
             let profile = tempfile::tempdir().unwrap();
-            let cx = PaneCx::in_file(profile.path().join("settings.json"));
+            let cx = PaneCx::in_profile(profile.path().to_path_buf());
             let area = PowerArea::new(&cx);
             let mut pane = PowerPane::new(cx.clone(), &area);
             let deadline = tilo_test_env::hang_deadline();
@@ -1561,7 +1561,8 @@ mod tests {
             assert!(!pane.prefs().auto_suspend);
             assert_eq!(
                 pane.prefs().auto_suspend,
-                settings_store::power::AUTO_SUSPEND.get_at(&profile.path().join("settings.json"))
+                settings_store::power::AUTO_SUSPEND
+                    .get_in(&settings_store::profile(profile.path()))
             );
             let theme = Theme::dark();
             let mut taffy: TaffyTree<()> = TaffyTree::new();

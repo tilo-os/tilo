@@ -1369,7 +1369,7 @@ mod tests {
     #[test]
     fn an_unreadable_adapter_is_shown_as_an_error() {
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let control: Arc<dyn BluetoothControl> = Arc::new(Mock {
             calls: Mutex::new(vec![]),
             devices: vec![dev()],
@@ -1412,7 +1412,7 @@ mod tests {
     fn a_devices_details_stay_open_while_discovery_reads_the_devices_again() {
         let _settled = ui::motion::testing::settled();
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let control: Arc<dyn BluetoothControl> = Arc::new(Mock {
             calls: Mutex::new(vec![]),
             devices: vec![dev()],
@@ -1757,7 +1757,7 @@ mod tests {
         use crate::radios::Present;
 
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let area = BluetoothArea::new(&cx);
         assert!(
             area.statuses().is_empty(),
@@ -1834,7 +1834,7 @@ mod tests {
     #[test]
     fn a_device_connecting_by_itself_shows_while_the_page_is_open() {
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let control = Arc::new(Followed::default());
         control.devices.lock().unwrap().push(dev());
         let read = read_adapter_of(control.as_ref());
@@ -1891,7 +1891,7 @@ mod tests {
     #[test]
     fn discovery_wakes_the_window_only_while_bluez_is_not_followed() {
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let control = Arc::new(Followed::default());
         let read = read_adapter_of(control.as_ref());
         let mut model = BluetoothModel::with_read(cx, Arc::clone(&control) as _, read);

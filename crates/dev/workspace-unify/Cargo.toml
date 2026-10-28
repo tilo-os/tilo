@@ -967,7 +967,7 @@ doc = false
 "serial_test-3_4_0" = { package = "serial_test", version = "^3.4.0", default-features = false, features = ["async", "default", "logging"] }
 "settings" = { path = "../../../apps/settings", default-features = false, features = [] }
 "settings-sections" = { path = "../../../crates/system/settings-sections", default-features = false, features = [] }
-"settings-store" = { path = "../../../crates/system/settings-store", default-features = false, features = ["model", "test-support", "watch"] }
+"settings-store" = { path = "../../../crates/system/settings-store", default-features = false, features = ["model", "watch"] }
 "sevenz-rust2-0_24_1" = { package = "sevenz-rust2", version = "^0.24.1", default-features = false, features = ["bzip2"] }
 "sfv-0_15_0" = { package = "sfv", version = "^0.15.0", default-features = false, features = ["default", "parsed-types"] }
 "sha-crypt-0_6_0" = { package = "sha-crypt", version = "^0.6.0", default-features = false, features = ["alloc", "default", "getrandom", "password-hash"] }

@@ -408,10 +408,8 @@ mod tests {
     #[test]
     fn the_list_is_a_device_local_setting_that_survives_a_restart_within_its_budget() {
         let dir = tempfile::tempdir().unwrap();
-        let store = || {
-            ui::storage::Settings::<Stored>::for_app("so.tilo.browser")
-                .in_file(dir.path().join("settings.json"))
-        };
+        let store =
+            || ui::storage::Settings::<Stored>::for_app("so.tilo.browser").in_profile(dir.path());
         assert_eq!(store().scope(), ui::storage::Scope::DeviceLocal);
 
         let mut downloads = Downloads::load(store());

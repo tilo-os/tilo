@@ -759,8 +759,8 @@ mod tests {
     fn device_sync_lifecycle_persists_keys_peers_and_merges_additively() {
         {
             let dir = tempfile::tempdir().unwrap();
-            let document = dir.path().join("settings.json");
-            let store = PeerStore::new(Settings::for_app("so.tilo.tube").in_file(&document));
+            let document = dir.path().to_path_buf();
+            let store = PeerStore::new(Settings::for_app("so.tilo.tube").in_profile(&document));
             let record = PeerRecord {
                 id: "public-key".into(),
                 name: "Phone".into(),

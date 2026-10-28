@@ -166,7 +166,7 @@ pub const UI_SCALES: &[(&str, f64)] = &[
 
 /// Map a UI-scale factor to the closest offered label (defaults to "100%").
 pub(crate) fn ui_scale_label(scale: f64) -> &'static str {
-    // `total_cmp`, not `partial_cmp().unwrap()`: a hand-edited settings.json
+    // `total_cmp`, not `partial_cmp().unwrap()`: a hand-edited setting
     // could hold a non-finite scale, and this must degrade to "100%" rather
     // than panic the pane.
     UI_SCALES
@@ -746,7 +746,7 @@ mod tests {
     #[test]
     fn the_pane_follows_the_section_and_expresses_its_intent() {
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         cx.settings::<AppearancePrefs>()
             .set(&AppearancePrefs {
                 mode: "dark".into(),
@@ -816,7 +816,7 @@ mod tests {
         );
 
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let mut pane = AppearancePane::new(cx.clone(), LocalState::new(None));
         let hidden = pane
             .desktop
@@ -998,7 +998,7 @@ mod tests {
 
         let profile = tempfile::tempdir().unwrap();
         let mut pane = AppearancePane::new(
-            PaneCx::in_file(profile.path().join("settings.json")),
+            PaneCx::in_profile(profile.path().to_path_buf()),
             LocalState::new(None),
         );
         let theme = Theme::dark();
@@ -1046,7 +1046,7 @@ mod tests {
     #[test]
     fn the_wallpaper_picker_marks_the_chosen_picture() {
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let thumbnails: Vec<_> = tilo_wallpapers::all()
             .iter()
             .map(|wallpaper| {

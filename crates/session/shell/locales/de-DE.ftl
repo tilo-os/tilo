@@ -2403,7 +2403,7 @@ capture-uncapturable-selection = Diese Auswahl lässt sich nicht aufnehmen. Nimm
 capture-uncapturable-strip = Die Leiste lässt sich nicht aufnehmen. Nimm stattdessen den Bildschirm auf.
 capture-uncapturable-screen = Der Bildschirm lässt sich gerade nicht aufnehmen. Versuch es noch einmal.
 settings-not-saved-title = Einstellung nicht gespeichert
-settings-not-saved-body = Eine Änderung an deinen Einstellungen konnte nicht gespeichert werden, deshalb gilt wieder der vorherige Wert. Prüfe, ob auf dem Datenträger Platz frei ist, und versuche es dann erneut.
+settings-not-saved-body = Eine Änderung an deinen Einstellungen konnte noch nicht gespeichert werden. Sie gilt weiter und wird mit deiner nächsten Änderung erneut gespeichert. Prüfe, ob auf dem Datenträger Platz frei ist.
 idle-inhibit-unnamed-app = Eine App
 
 # Ein Bildschirmfoto an ein Gerät oder in die Dateien des Arbeitsbereichs senden

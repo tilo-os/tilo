@@ -2,7 +2,7 @@
 //! path, driven through each pane's production `sync` and read back from
 //! disk.
 //!
-//! The panes resolve the shared `settings.json` from `XDG_CONFIG_HOME`, so the
+//! The panes resolve the shared settings from `XDG_CONFIG_HOME`, so the
 //! environment is the interface here: each test points it at a fresh tree
 //! through `tilo_test_env::TestHome`, which serialises the tests on one lock
 //! and restores the prior environment afterwards, also when an assertion

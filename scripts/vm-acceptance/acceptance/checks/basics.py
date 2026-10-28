@@ -4,6 +4,7 @@ layout import, display arrangement and hotplug."""
 from __future__ import annotations
 
 import json
+import shlex
 
 from .. import core
 from ..core import CheckFailed, Unobservable, check, expect
@@ -143,7 +144,7 @@ def bluetooth(ctx, res):
 
 
 def _settings(ctx) -> dict:
-    raw = ctx.vm.exec('cat "$HOME/.config/tilo/session/settings.json" 2>/dev/null || echo "{}"')
+    raw = ctx.vm.exec('tilo settings dump 2>/dev/null || echo "{}"')
     return json.loads("\n".join(l for l in raw.splitlines() if not l.startswith("receipt:")) or "{}")
 
 
@@ -167,14 +168,15 @@ def write_input_settings(ctx, doc: dict, back_to: dict | None = None) -> None:
     else:
         reached = lambda k: k == back_to  # noqa: E731
         what = f"the seat keyboard back on {back_to.get('sources')}"
-        # The session takes in the leaves a write to its settings copy sets and leaves
-        # alone the ones it drops (writers merge sections, they never remove keys), so
-        # a leaf the check added and the snapshot did not have is cleared explicitly:
-        # null is the leaf's default, the layout the machine was set up with.
+        # Writers merge sections, they never remove keys, so a leaf the check added and
+        # the snapshot did not have is cleared explicitly: null is the leaf's default,
+        # the layout the machine was set up with.
         restored = doc.setdefault("input", {})
         for leaf in (_settings(ctx).get("input") or {}):
             restored.setdefault(leaf, None)
-    ctx.vm.write_home_file(".config/tilo/session/settings.json", json.dumps(doc, indent=2).encode())
+    for section, values in doc.items():
+        if isinstance(values, dict):
+            ctx.vm.exec(f"tilo settings set {shlex.quote(section)} {shlex.quote(json.dumps(values))}")
     ctx.wait_state(lambda s: reached((s.get("chrome") or {}).get("seat_keyboard") or {}), 10, what)
 
 

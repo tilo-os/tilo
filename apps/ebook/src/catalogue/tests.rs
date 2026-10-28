@@ -77,10 +77,10 @@ fn the_compressed_copy_reads_like_the_catalogue() {
 fn a_copy_is_kept_on_a_computer_and_not_in_a_browser_unless_the_person_says() {
     use ui::storage::Settings;
     let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("settings.json");
+    let file = dir.path().to_path_buf();
     let on = |device| {
         Settings::<CatalogueCopies>::for_app("so.tilo.ebook")
-            .in_file(&file)
+            .in_profile(&file)
             .on_device(device)
     };
     assert!(on(DeviceClass::Native).get().keep_catalogues);

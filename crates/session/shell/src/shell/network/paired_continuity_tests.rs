@@ -249,10 +249,8 @@ async fn paired_continuity_clipboard_requires_activation_and_filters_private_sel
         "DBUS_SESSION_BUS_ADDRESS",
         "unix:path=/nonexistent/tilo-continuity-test",
     );
-    let paths = settings_store::SessionPaths::beside(home.config().join("settings.json"));
-    let _settings = crate::shell::test_support::install_settings(Arc::new(
-        settings_store::SessionSettings::open(paths).unwrap(),
-    ));
+    let paths = home.config().to_path_buf();
+    let _settings = crate::shell::test_support::install_settings(settings_store::profile(&paths));
     settings_store::update_section(
         "continuity",
         serde_json::json!({
@@ -902,10 +900,9 @@ impl NativeEditorPair {
             home.env().set("TILO_HOME_PEERS_PATH", &peers);
             install_editor_package(&mut home);
             let (source, mut target) = mounted_editors(&home);
-            let paths = settings_store::SessionPaths::beside(home.config().join("settings.json"));
-            let settings = crate::shell::test_support::install_settings(Arc::new(
-                settings_store::SessionSettings::open(paths).unwrap(),
-            ));
+            let paths = home.config().to_path_buf();
+            let settings =
+                crate::shell::test_support::install_settings(settings_store::profile(&paths));
             settings_store::update_section(
                 "continuity",
                 serde_json::json!({

@@ -55,7 +55,7 @@ mod tests {
     #[test]
     fn the_audit_is_bounded_and_round_trips_through_the_settings() {
         let dir = tempfile::tempdir().unwrap();
-        let cx = crate::host::PaneCx::in_file(dir.path().join("settings.json"));
+        let cx = crate::host::PaneCx::in_profile(dir.path().to_path_buf());
         let mut policy = ContinuityPrivacy {
             enabled: true,
             ..ContinuityPrivacy::default()

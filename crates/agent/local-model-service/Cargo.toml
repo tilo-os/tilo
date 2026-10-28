@@ -111,6 +111,8 @@ zstd.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# The gateway the end-to-end test starts follows the settings it writes here.
+settings-store = { path = "../../system/settings-store" }
 wasmi = { version = "=1.1.0", default-features = false, features = ["std", "simd"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
