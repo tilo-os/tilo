@@ -1172,13 +1172,23 @@ globalThis.__tiloPage ||= (() => {
   // what it nearly said instead of being sent looking again.
   function findsNothing(role, name, all) {
     const asked = described(role, name);
+    // A find reads one document. A frame holds its own, so a caller told
+    // nothing matches is told where else to look rather than left believing
+    // the page holds none of it.
+    const elsewhere = [...document.querySelectorAll('iframe,frame')].map((element, index) => {
+      const label = clean(element.title || element.name, MAX_NAME);
+      return `frame=${index + 1}${label ? ` (${quote(label)})` : ''}`;
+    });
+    const frames = elsewhere.length
+      ? ` A frame is its own document: read it with read-page {${elsewhere.join(', ')}} or name it with frame, such as ${elsewhere[0].split(' ')[0]}`
+      : '';
     if (!all.length)
-      return failure('not_found', `Nothing on the page is ${asked}; the page shows no element an action can act on`);
+      return failure('not_found', `Nothing on the page is ${asked}; the page shows no element an action can act on.${frames}`);
     const scored = all.map(candidate => ({candidate, near: name ? closeness(candidate.label, name)
       : role ? closeness(candidate.kind, role) : 0}));
     scored.sort((a, b) => a.near - b.near);
     const nearest = scored.slice(0, MAX_FIND_NEAR).map(({candidate}) => candidate.line);
-    return failure('not_found', `Nothing on the page is ${asked}. The nearest are: ${nearest.join('; ')}`);
+    return failure('not_found', `Nothing on the page is ${asked}. The nearest are: ${nearest.join('; ')}.${frames}`);
   }
 
   // The element a stable description names, answered with its ref in this

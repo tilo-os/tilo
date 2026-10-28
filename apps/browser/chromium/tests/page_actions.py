@@ -1399,6 +1399,16 @@ class PageActions(unittest.TestCase):
         stale = self.page('fill', element=first, text='999')
         self.assertEqual((stale['ok'], stale['code']), (False, 'stale_element'), stale)
 
+    def test_a_find_reaches_inside_an_open_shadow_root(self):
+        self.h.navigate(self.url + '/form')
+        # The outline prints what a shadow root holds; a find reaches it the
+        # same way a read does, without the caller knowing there is a root.
+        found = self.find(role='button', name='Shadow button')
+        self.assertTrue(found['ok'], found)
+        self.assertEqual(found['data']['element'], self.ref(self.outline(), 'button "Shadow button"'))
+        self.ok('click', element=found['data']['element'])
+        self.assertIn('text "shadow clicked"', self.outline())
+
     def test_a_find_reads_a_frame_s_own_document(self):
         self.h.navigate(self.url + '/embed')
         outline = self.outline()
@@ -1414,9 +1424,12 @@ class PageActions(unittest.TestCase):
         # The frame's element belongs to the frame: the page cannot name it.
         wrong = self.page('fill', element=found['data']['element'], text='456')
         self.assertEqual((wrong['ok'], wrong['code']), (False, 'stale_element'), wrong)
-        # The page itself holds none of the frame's words.
+        # The page itself holds none of the frame's words, and a caller
+        # looking in the wrong document is told which frame holds them.
         absent = self.find(name='Security code')
         self.assertEqual((absent['ok'], absent['code']), (False, 'not_found'), absent)
+        self.assertIn(f'frame={frame}', absent['message'], absent)
+        self.assertIn('read it with read-page', absent['message'], absent)
 
 
 if __name__ == '__main__':
