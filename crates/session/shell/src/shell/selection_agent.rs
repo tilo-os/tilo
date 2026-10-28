@@ -216,14 +216,25 @@ impl SelectionSeed {
         if label.is_empty() {
             return None;
         }
-        Some(t_args(
-            "agent-quick-instruct",
-            &[
-                ("thing", label.into()),
-                ("app", self.app_label.clone().into()),
-            ],
-        ))
+        Some(naming_the_thing(&self.app_label, label))
     }
+}
+
+/// The composer's seed naming `thing`, in `app`: an instruction to finish, so
+/// the person's own words start on a fresh clause of it.
+///
+/// The catalogue's copy ends in a space for exactly that. Fluent drops it when
+/// it ends a message, so the boundary is restored here rather than left to the
+/// locale's luck.
+pub(crate) fn naming_the_thing(app: &str, thing: &str) -> String {
+    let mut seed = t_args(
+        "agent-quick-instruct",
+        &[("thing", thing.into()), ("app", app.into())],
+    );
+    if !seed.ends_with(char::is_whitespace) {
+        seed.push(' ');
+    }
+    seed
 }
 
 /// Where a pressed chord goes next.
@@ -527,6 +538,22 @@ mod tests {
         let nothing = SelectionSeed::new("so.tilo.notes", "Notes", None);
         assert_eq!(nothing.subject_json(), None);
         assert_eq!(nothing.instruction("Summarize"), "Summarize");
+    }
+
+    #[test]
+    fn instructing_names_the_resource_the_person_right_clicked_and_nothing_else_is_offered() {
+        let seed = SelectionSeed::new("so.tilo.word-processor", "Writer", Some(writer_selection()));
+        assert_eq!(
+            seed.asked_for().as_deref(),
+            Some("In Writer, Proposal: "),
+            "the resource the agent will be handed, and the app it is in"
+        );
+        for nothing in [
+            SelectionSeed::new("firefox", "Firefox", Some(SharedSelection::of_text("hi"))),
+            SelectionSeed::new("so.tilo.notes", "Notes", None),
+        ] {
+            assert_eq!(nothing.asked_for(), None, "there is nothing to act on");
+        }
     }
 
     #[test]

@@ -11,8 +11,7 @@ use super::ShellOverlayHost;
 use crate::shell::agent_quick_composer::{AgentQuickComposerOrigin, ComposerOwner};
 use crate::shell::certified_action_session::ActionSessionSource;
 use crate::shell::collab_broker::AppActionBroker;
-use crate::shell::i18n::t_args;
-use crate::shell::selection_agent::{AgentStart, ChordRoute, SelectionSeed};
+use crate::shell::selection_agent::{AgentStart, ChordRoute, SelectionSeed, naming_the_thing};
 
 impl ShellOverlayHost {
     /// `app_id` on shell-ui `connection` answers selection requests.
@@ -114,13 +113,7 @@ impl ShellOverlayHost {
             .selection_requests
             .window_of(app_id)
             .map(|resource| resource.label.clone())?;
-        Some(t_args(
-            "agent-quick-instruct",
-            &[
-                ("thing", resource.into()),
-                ("app", self.app_label(app_id).into()),
-            ],
-        ))
+        Some(naming_the_thing(&self.app_label(app_id), &resource))
     }
 
     /// The focused window offers no selection of its own: ask about the

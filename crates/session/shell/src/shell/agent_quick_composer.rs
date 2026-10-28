@@ -606,11 +606,15 @@ impl AgentQuickComposer {
         if !self.is_open() {
             return;
         }
-        if let Some(editor) = self.text_input() {
-            editor.set_text(text);
-            return;
+        // Seeded, not typed: the caret parks at the instruction's end and
+        // nothing after it autocorrects what the desktop wrote.
+        match self.text_input() {
+            Some(editor) => {
+                editor.set_text(text);
+                editor.end_autocorrection_run();
+            }
+            None => self.draft.set(text.to_owned()),
         }
-        self.draft.set(text.to_owned());
         self.refresh();
         self.focus_reset = true;
     }
@@ -1473,6 +1477,42 @@ mod tests {
             },
             phase,
         }
+    }
+
+    #[test]
+    fn instructing_leaves_a_composer_that_already_holds_it_open_and_sends_it_as_typed() {
+        let mut composer = AgentQuickComposer::default();
+        let mut doc = automerge::AutoCommit::new();
+        open(&mut composer, owner("tide"));
+        assert!(!composer.view.enabled.get(), "nothing to send yet");
+        composer.instruct("In Writer, Proposal: ");
+        assert!(
+            composer.view.enabled.get(),
+            "the instruction is the person's own text, ready to send"
+        );
+        // It is their text from then on: what they type follows it.
+        // `.set_text` seeds the field; the person's typing after it is theirs.
+        let typed = format!("{}tighten the opening", composer.draft.get());
+        edit(&mut composer, &mut doc, &typed);
+        let request = submit(&mut composer, &mut doc);
+        assert_eq!(
+            request.text, typed,
+            "the agent is told what the person typed on the instruction"
+        );
+        assert_eq!(
+            request.context, "Tide was renaming the release notes",
+            "what the request is about is still shown beside the field"
+        );
+        assert!(
+            composer.take_request().is_none(),
+            "one request at a time per agent"
+        );
+
+        // A composer that is not open has nothing to fill.
+        let mut closed = AgentQuickComposer::default();
+        closed.instruct("In Writer, Proposal: ");
+        assert!(!closed.is_open());
+        assert!(closed.draft.get().is_empty());
     }
 
     #[test]

@@ -1607,6 +1607,16 @@ impl TextInput {
         }
     }
 
+    /// End the typing run: the next word boundary does not autocorrect the
+    /// word before the caret. A host seeding the field with words the person
+    /// did not type calls this, so their first keystroke after it leaves the
+    /// seed alone.
+    pub fn end_autocorrection_run(&mut self) {
+        self.typing.close();
+        self.pending_autocorrection = None;
+        self.clear_suggestion();
+    }
+
     pub fn value(&self) -> &str {
         &self.text
     }
