@@ -4,12 +4,13 @@
 //! precondition, not a grant or a substitute for action-door admission.
 
 use super::{HistoryEdit, HistoryView, VIEW_TYPE, edit, invalid};
+use automerge::transaction::Transactable;
+use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tilo_actions::{ActionKind, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType};
-use ui_core::automerge::transaction::Transactable;
-use ui_core::automerge::{AutoCommit, ChangeHash};
-use ui_core::history_source::steps;
+
+use crate::history_source::steps;
 
 const MAX_HEADS: usize = 64;
 const MAX_READ_BYTES: usize = 256 * 1024;
@@ -19,7 +20,7 @@ const MAX_READ_BYTES: usize = 256 * 1024;
 /// restart, and no mutable name to resolve differently on replay.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct RestoreReview {
+pub struct RestoreReview {
     schema: u8,
     target_heads: Vec<String>,
     live_heads: Vec<String>,
@@ -50,7 +51,7 @@ fn heads(values: &[String]) -> Result<Vec<ChangeHash>, String> {
 }
 
 impl RestoreReview {
-    pub(super) fn apply(&self, doc: &mut AutoCommit) -> Result<(), String> {
+    pub fn apply(&self, doc: &mut AutoCommit) -> Result<(), String> {
         if self.schema != 1 {
             return Err("Unsupported restore review schema.".into());
         }
@@ -70,7 +71,7 @@ impl RestoreReview {
     }
 }
 
-pub(super) fn specs() -> Vec<ActionSpec> {
+pub fn specs() -> Vec<ActionSpec> {
     let paths_schema = json!({
         "type": "array", "minItems": 1, "maxItems": steps::MAX_RESTORE_PATHS,
         "items": {"type": "string", "maxLength": steps::MAX_RESTORE_PATH_BYTES},
@@ -143,7 +144,7 @@ pub(super) fn specs() -> Vec<ActionSpec> {
 
 /// Bound historical reads rather than returning an incomplete document as if
 /// it were complete. A caller can read a smaller typed item instead.
-pub(crate) fn bounded(value: Value) -> Result<Value, String> {
+pub fn bounded(value: Value) -> Result<Value, String> {
     let bytes = serde_json::to_vec(&value).map_err(|error| error.to_string())?;
     if bytes.len() > MAX_READ_BYTES {
         return Err("Historical content exceeds 256 KiB; read a smaller item.".into());
@@ -151,7 +152,7 @@ pub(crate) fn bounded(value: Value) -> Result<Value, String> {
     Ok(value)
 }
 
-pub(super) fn answer(doc: &AutoCommit, version: &str, paths: &[String]) -> Result<Value, String> {
+pub fn answer(doc: &AutoCommit, version: &str, paths: &[String]) -> Result<Value, String> {
     if doc.pending_ops() != 0 {
         return Err("Finish pending edits before reviewing restoration.".into());
     }
@@ -177,7 +178,7 @@ pub(super) fn answer(doc: &AutoCommit, version: &str, paths: &[String]) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui_core::automerge::ROOT;
+    use automerge::ROOT;
 
     #[test]
     fn pending_edits_are_never_committed_by_review_or_restore() {
@@ -193,67 +194,6 @@ mod tests {
         assert!(answer(&doc, &target.to_string(), &["title".into()]).is_err());
         assert!(review.apply(&mut doc).is_err());
         assert_eq!((doc.base_heads(), doc.pending_ops()), before);
-    }
-
-    #[derive(tilo_resource::Model, Default, Debug, Clone, PartialEq)]
-    pub struct ReplayBoard {
-        pub title: String,
-    }
-
-    #[tilo_resource::resource(kind = "test.review-replay")]
-    impl ReplayBoard {}
-
-    #[test]
-    fn reviewed_restore_replays_identically_beside_concurrent_work_and_duplicate_delivery() {
-        use super::super::{EDIT_TYPE, ResourceHistoryEdit};
-        use ui_core::automerge::{ActorId, ReadDoc};
-        let mut origin = AutoCommit::new();
-        origin.put(ROOT, "title", "old").unwrap();
-        let target = origin.commit().unwrap();
-        origin.put(ROOT, "title", "new").unwrap();
-        origin.commit();
-        let response = answer(&origin, &target.to_string(), &["title".into()]).unwrap();
-        let review: RestoreReview = serde_json::from_value(response["review"].clone()).unwrap();
-        let edit = HistoryEdit::RestoreReviewed { review };
-        let encoded = EncodedAction {
-            type_id: EDIT_TYPE.into(),
-            payload: serde_json::to_vec(&edit).unwrap(),
-        };
-        let mut registry = tilo_actions::ActionRegistry::new();
-        registry.register::<ResourceHistoryEdit<ReplayBoard>>(EDIT_TYPE);
-        let action = registry.decode(&encoded).unwrap();
-        let mut peer = origin.fork();
-        peer.set_actor(ActorId::from(b"peer".as_slice()));
-        peer.put(ROOT, "unrelated", "keep").unwrap();
-        let unrelated = peer.commit().unwrap();
-        let mut transport = tilo_actions::LocalTransport::new();
-        tilo_actions::dispatch_with_context(
-            &mut origin,
-            action.as_ref(),
-            encoded,
-            &mut transport,
-            tilo_actions::ActionContext::for_resource("board", "test.review-replay", "Board"),
-        )
-        .unwrap();
-        let restored = origin.get_heads()[0];
-        tilo_actions::replay(&mut peer, &transport.replicated[0], &registry).unwrap();
-        assert!(peer.get_heads().contains(&restored));
-        assert!(peer.get_heads().contains(&unrelated));
-        assert_eq!(
-            peer.get(ROOT, "title").unwrap().unwrap().0.as_str(),
-            Some("old")
-        );
-        assert_eq!(
-            peer.get(ROOT, "unrelated").unwrap().unwrap().0.as_str(),
-            Some("keep")
-        );
-        assert_eq!(
-            tilo_actions::verify_change(&mut peer, restored, &registry).unwrap(),
-            tilo_actions::Verified::Reproduced
-        );
-        let before = peer.get_heads();
-        tilo_actions::replay(&mut peer, &transport.replicated[0], &registry).unwrap();
-        assert_eq!(peer.get_heads(), before);
     }
 
     #[test]

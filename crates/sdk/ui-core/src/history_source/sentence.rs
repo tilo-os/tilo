@@ -52,15 +52,7 @@ impl collaboration::history_source::words::HistoryWords for ThreadWords {
 /// What a history row says about one change: what it did, else what its
 /// actor said they were doing. `None` when the entry says neither.
 pub fn step_summary(entry: &ActionContext) -> Option<String> {
-    if entry.what.is_some() {
-        return Some(sentence(entry));
-    }
-    entry
-        .purpose
-        .as_deref()
-        .map(str::trim)
-        .filter(|purpose| !purpose.is_empty())
-        .map(str::to_owned)
+    collaboration::history_source::verbs::step_summary(entry, &ThreadWords)
 }
 
 /// What one step did, said without anything it carried: an action by its
