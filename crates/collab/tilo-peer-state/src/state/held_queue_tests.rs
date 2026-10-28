@@ -145,7 +145,6 @@ fn a_held_message_whose_prerequisite_arrived_is_applied_when_its_place_is_needed
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(member.clone()),
                 revocations: vec![],
-                successions: Vec::new(),
             },
             now,
         )

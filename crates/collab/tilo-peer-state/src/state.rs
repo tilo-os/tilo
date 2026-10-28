@@ -63,11 +63,9 @@ pub use room_hosts::{ROOM_HOSTS_KEY, room_hosts_of};
 mod room_layout;
 mod room_name;
 mod room_settings;
-mod succession;
 use held::Held;
 pub use held::{MAX_HELD_BYTES, MAX_HELD_INPUTS};
 pub use native_publication::NativePublicationCut;
-pub use succession::succeeded_authority;
 mod resources;
 mod sealed_compaction;
 mod sealed_history;
@@ -594,10 +592,7 @@ impl StatePeer {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        if key.verifying_key().to_bytes() != self.core.authority.device_public_key {
-            return Err("governance writer is not pinned authority".into());
-        }
-        self.certificate(&self.core.authority.device_public_key, now)?;
+        self.require_governance_writer(key, now)?;
         if cert.user_public_key != self.core.authority.user_public_key {
             return Err("enrollment root mismatch".into());
         }
@@ -758,11 +753,30 @@ impl StatePeer {
     }
 
     fn require_governance_writer(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
-        if key.verifying_key().to_bytes() != self.core.authority.device_public_key {
-            return Err("governance writer is not pinned authority".into());
+        self.owner_device(&key.verifying_key().to_bytes(), now)
+            .map(drop)
+    }
+
+    /// `device`'s certificate when it is one of the owner's devices, current
+    /// at `now`: the room's governance is the owner's to write, from any
+    /// device their root certifies, so no one device of theirs is needed
+    /// and a revoked one hands nothing over.
+    fn owner_device(&self, device: &[u8; 32], now: SystemTime) -> Result<&DeviceCert, String> {
+        let cert = self.certificate(device, now)?;
+        if cert.user_public_key != self.core.authority.user_public_key {
+            return Err("governance writer is not the owner's device".into());
         }
-        self.certificate(&self.core.authority.device_public_key, now)?;
-        Ok(())
+        Ok(cert)
+    }
+
+    /// Whether `device` is a known, unrevoked device of the owner's, at no
+    /// particular time: for evidence a device of theirs signed earlier.
+    fn signed_by_owner(&self, device: &[u8; 32]) -> bool {
+        self.core
+            .certificates
+            .get(device)
+            .is_some_and(|cert| cert.user_public_key == self.core.authority.user_public_key)
+            && !self.core.revocations.is_revoked(device)
     }
 
     fn apply_governance_doc(
@@ -1721,14 +1735,13 @@ impl StatePeer {
         let cert = self.certificate(&source, now)?;
         let person = cert.user_public_key;
         let foreign = backend::member::foreign(cert, &self.core.authority);
-        // The pinned authority writes governance on its certificate alone:
-        // the invite's authority supplies the first governance before any
-        // roster exists, and a successor its root named in a revoked
-        // governor's place is on no roster until it writes itself there.
-        if source != self.core.authority.device_public_key {
+        // The owner's devices write governance on their certificate alone:
+        // the device this replica was joined through supplies the first
+        // governance before any roster exists.
+        if person != self.core.authority.user_public_key {
             self.role(&source, now)?;
         }
-        let pinned = hex::encode(self.core.authority.device_public_key);
+        let owner = self.core.authority.user_public_key;
         let from = hex::encode(source);
         // The one room admission the shell's workspace tree runs too.
         let room::AdmittedRoom {
@@ -1743,7 +1756,7 @@ impl StatePeer {
                     key: &from,
                     standing: room::Standing::Member { person, foreign },
                 },
-                authority: room::AuthorityPin::Device(&pinned),
+                owner: &owner,
                 now_ns: now_ns(now),
             },
             room_changes,
@@ -2279,7 +2292,7 @@ impl StatePeer {
         }
         // A member's write of the shared desktop is decided by what each of
         // its changes did ([`Self::check_shared_desktop`]).
-        let desktop_before = (source != self.core.authority.device_public_key
+        let desktop_before = (!self.signed_by_owner(&source)
             && tilo_desktop_model::shared_record::guard::is_shared_desktop(
                 &route.app,
                 &route.record,
@@ -2488,9 +2501,7 @@ impl StatePeer {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<(), String> {
-        if key.verifying_key().to_bytes() != self.core.authority.device_public_key {
-            return Err("only pinned authority may initialize fixture state".into());
-        }
+        self.require_governance_writer(key, now)?;
         self.receive(
             key.verifying_key().to_bytes(),
             NeighbourMsg::SyncResp {
@@ -2586,8 +2597,8 @@ impl StatePeer {
             envelope: Box::new(op),
         };
         let coverage = if let DocumentMutation::Snapshot(bytes) = &mutation {
-            if author.as_bytes() != &self.core.authority.device_public_key {
-                return Err("only pinned governor may publish a retained checkpoint".into());
+            if !self.signed_by_owner(author.as_bytes()) {
+                return Err("only the owner's device may publish a retained checkpoint".into());
             }
             let snapshot = AutoCommit::load(bytes).map_err(err)?;
             let mut watermarks = self
@@ -2890,7 +2901,7 @@ impl StatePeer {
         }
         Ok(Some((receipt, accepted)))
     }
-    /// The pinned governor's durable receipt for a route, as governance holds it.
+    /// The owner's durable receipt for a route, as governance holds it.
     fn durable_receipt(
         &self,
         app: &str,
@@ -2908,8 +2919,7 @@ impl StatePeer {
         if coverage.room != self.core.room
             || coverage.app != app
             || coverage.record != record
-            || coverage.author != self.core.authority.device_public_key
-            || self.core.revocations.is_revoked(&coverage.author)
+            || !self.signed_by_owner(&coverage.author)
         {
             return Err("durable receipt authority/route mismatch".into());
         }
@@ -3308,13 +3318,6 @@ impl StatePeer {
             // governed certificate rows. Reuse the normal verified import and
             // retain historical certificates already validated during restore.
             peer.import_governed_certificates(&doc, now)?;
-            if peer
-                .core
-                .revocations
-                .is_revoked(&peer.core.authority.device_public_key)
-            {
-                return Err("pinned authority device is revoked by governed policy".into());
-            }
             // Room-first admission is durable even before its exact Chat
             // checkpoint arrives. Validate present bindings here; the media
             // projection still requires every active prerequisite to be ready.
@@ -3474,9 +3477,7 @@ impl PeerPublicationMut<'_> {
         {
             return Err("publication cannot replace the session namespace".into());
         }
-        if key.verifying_key().to_bytes() != self.peer.core.authority.device_public_key {
-            return Err("publication requires pinned authority".into());
-        }
+        self.peer.require_governance_writer(key, now)?;
         self.peer.permissions(key.verifying_key().to_bytes(), now)?;
         if self.peer.incomplete_reason().is_some() {
             return Err("cannot publish incomplete encryption state".into());

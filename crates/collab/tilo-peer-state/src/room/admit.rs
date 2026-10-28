@@ -4,8 +4,8 @@
 //! receive the same room document — owner, capabilities, identities, media
 //! policy, coverage, durability, receipts and window contents — so both admit it
 //! here. What differs between them is only data: how the receiver identifies
-//! the sender ([`Writer`]), who it pinned as the governance writer
-//! ([`AuthorityPin`]). Each caller keeps its own storage and projection.
+//! the sender ([`Writer`]) and whose room it is. Each caller keeps its own
+//! storage and projection.
 //!
 //! The whole batch is refused or the whole candidate is returned: a partial
 //! merge would advance local heads past refused operations.
@@ -14,35 +14,6 @@ use tilo_action_policy::{ActionKind, Answer, Context, TreePath};
 
 use super::media;
 use tilo_desktop_model::projection::room_layout_choice;
-
-/// Who may change a room's governance, as the receiver pinned it from local,
-/// authenticated knowledge — an invite's signed authority, the person's own
-/// devices, or this machine. Never derived from the batch being admitted, so a
-/// first answer cannot make its sender the governor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AuthorityPin<'a> {
-    /// Exactly this transport key: the authority device an invite signed.
-    Device(&'a str),
-    /// Any device the transport authenticated as this person root.
-    Person(&'a [u8; 32]),
-    /// This machine governs the room: no remote sender may change governance.
-    Local,
-    /// No governor is known (the room was joined without an invite naming
-    /// one): nobody may change governance until an authority is pinned.
-    Unpinned,
-}
-
-impl AuthorityPin<'_> {
-    /// Whether `writer` is the pinned governance writer.
-    #[must_use]
-    pub fn admits(&self, writer: &Writer<'_>) -> bool {
-        match *self {
-            Self::Device(key) => key == writer.key,
-            Self::Person(person) => writer.person() == Some(person),
-            Self::Local | Self::Unpinned => false,
-        }
-    }
-}
 
 /// How the receiver knows the sender's standing in the room.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,8 +33,8 @@ pub enum Standing {
 /// The sender of a batch, as the receiver's transport authenticated it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Writer<'a> {
-    /// The authenticated sender key, spelt the way [`AuthorityPin::Device`]
-    /// and the topology registry name it.
+    /// The authenticated sender key, spelt the way the topology registry
+    /// names it.
     pub key: &'a str,
     pub standing: Standing,
 }
@@ -75,6 +46,14 @@ impl Writer<'_> {
             Standing::TransportAuthorized => None,
         }
     }
+
+    /// Whether the sender is a device of `owner`: the room's governance is
+    /// theirs to write, from any device their root certifies. The receiver
+    /// knows the owner from what it joined through, never from the batch,
+    /// so a first answer cannot make its sender the owner.
+    fn governs(&self, owner: &[u8; 32]) -> bool {
+        self.person() == Some(owner)
+    }
 }
 
 /// Everything [`admit_room_changes`] decides a batch against.
@@ -85,7 +64,8 @@ pub struct RoomAdmission<'a> {
     /// The room id as governance and capability scopes spell it.
     pub room: &'a str,
     pub source: Writer<'a>,
-    pub authority: AuthorityPin<'a>,
+    /// The room's owner, whose devices write its governance.
+    pub owner: &'a [u8; 32],
     /// The instant the batch is judged at, in nanoseconds since the Unix
     /// epoch: grant expiry, and the certificate a saved shortcut's proof
     /// carries. Not whole seconds: a certificate issued earlier in this
@@ -116,8 +96,10 @@ pub enum RoomRefusal {
     Malformed(String),
     /// The document names a different room than the one it answers.
     DeclaredRoomMismatch,
-    /// The batch changes governance and its sender is not the pinned writer.
+    /// The batch changes governance and its sender is not the owner's device.
     GovernanceWriter,
+    /// A member's membership change is not theirs to make.
+    Membership(String),
     /// The batch rewrites an effect receipt.
     ReceiptImmutable,
     Coverage(String),
@@ -135,11 +117,12 @@ impl std::fmt::Display for RoomRefusal {
         match self {
             Self::GovernanceMissing => f.write_str("room governance missing"),
             Self::WriteForbidden => f.write_str("room write forbidden"),
-            Self::Malformed(error) | Self::Coverage(error) | Self::Durability(error) => {
-                f.write_str(error)
-            }
+            Self::Malformed(error)
+            | Self::Coverage(error)
+            | Self::Durability(error)
+            | Self::Membership(error) => f.write_str(error),
             Self::DeclaredRoomMismatch => f.write_str("declared room mismatch"),
-            Self::GovernanceWriter => f.write_str("governance writer is not pinned authority"),
+            Self::GovernanceWriter => f.write_str("governance writer is not the owner's device"),
             Self::ReceiptImmutable => f.write_str("effect receipt is immutable"),
             Self::Media(error) => write!(f, "{error}"),
             Self::ShortcutAuthorship(shortcut) => write!(
@@ -156,7 +139,7 @@ impl std::error::Error for RoomRefusal {}
 /// room document must pass, in one place for every receiver.
 ///
 /// 1. The sender may make undoable changes on the room, unless it is the
-///    pinned governance writer (who may grant itself anything) — [`Standing`].
+///    owner's device (who may grant itself anything) — [`Standing`].
 /// 2. The batch decodes under the shared incoming limits ([`super::candidate`]).
 /// 3. Then [`check_candidate`].
 ///
@@ -167,7 +150,7 @@ pub fn admit_room_changes(
     input: RoomAdmission<'_>,
     changes: &[Vec<u8>],
 ) -> Result<AdmittedRoom, RoomRefusal> {
-    let governs = input.authority.admits(&input.source);
+    let governs = input.source.governs(input.owner);
     if !governs {
         may_write(input.before, input.room, &input.source, input.now_ns)?;
     }
@@ -178,7 +161,10 @@ pub fn admit_room_changes(
             let pruned = super::base::pruned(input.before, replaced);
             let candidate = super::candidate(pruned.as_ref().or(input.before), &changes)
                 .map_err(RoomRefusal::Malformed)?;
-            let media = check_candidate(&input, &candidate)?;
+            let membership = !governs
+                && !super::governance_unchanged(input.before, &candidate)
+                && membership_authorized(&input, &changes)?;
+            let media = checked(&input, &candidate, membership)?;
             Ok(AdmittedRoom {
                 candidate,
                 media,
@@ -189,7 +175,7 @@ pub fn admit_room_changes(
             let candidate = super::candidate(None, &changes).map_err(RoomRefusal::Malformed)?;
             // The receiver projects what it owns onto the base it adopts, so a
             // base leaving out or changing its entries holds only until then.
-            let media = checked(&input, &candidate)?;
+            let media = checked(&input, &candidate, false)?;
             Ok(AdmittedRoom {
                 candidate,
                 media,
@@ -208,8 +194,8 @@ pub fn admit_room_changes(
 /// 1. The document names this room ([`super::declared_room_mismatches`]).
 /// 2. A governance change — owner, capabilities, identities, media,
 ///    coverage, receipts, durability or import proposals — comes from the
-///    pinned writer ([`super::governance_unchanged`]).
-/// 3. The room's layout scope changes only by the pinned writer.
+///    owner's devices ([`super::governance_unchanged`]).
+/// 3. The room's layout scope changes only by the owner's devices.
 /// 4. Effect receipts are immutable ([`super::immutable_receipts`]).
 /// 5. Coverage and durable receipts never rewind
 ///    ([`crate::coverage::monotonic`], [`crate::durability::monotonic`]).
@@ -223,26 +209,54 @@ pub fn check_candidate(
     input: &RoomAdmission<'_>,
     candidate: &AutoCommit,
 ) -> Result<Option<media::RoomMediaV1>, RoomRefusal> {
-    checked(input, candidate)
+    checked(input, candidate, false)
 }
 
+/// A member's batch that changes governance, judged as a membership change
+/// where its writer made it ([`super::membership`]). Returns whether it was
+/// admitted as one.
+fn membership_authorized(
+    input: &RoomAdmission<'_>,
+    changes: &[Vec<u8>],
+) -> Result<bool, RoomRefusal> {
+    let (Some(before), Standing::Member { person, foreign }) =
+        (input.before, input.source.standing)
+    else {
+        return Err(RoomRefusal::GovernanceWriter);
+    };
+    let (at, after) = super::membership::position(before, changes).map_err(membership)?;
+    super::membership::authorize(input.room, &person, foreign, &at, &after, input.now_ns)
+        .map_err(membership)?;
+    Ok(true)
+}
+
+fn membership(refusal: super::membership::MembershipRefusal) -> RoomRefusal {
+    match refusal {
+        super::membership::MembershipRefusal::NotMembership => RoomRefusal::GovernanceWriter,
+        refusal => RoomRefusal::Membership(refusal.to_string()),
+    }
+}
+
+/// `membership`: the batch's governance change was admitted as its writer's
+/// membership change, so only what membership cannot touch is checked here.
 fn checked(
     input: &RoomAdmission<'_>,
     candidate: &AutoCommit,
+    membership: bool,
 ) -> Result<Option<media::RoomMediaV1>, RoomRefusal> {
     let RoomAdmission {
         before,
         room,
         source,
-        authority,
+        owner,
         now_ns,
     } = *input;
-    let governs = authority.admits(&source);
+    let governs = source.governs(owner);
     let declared = uuid::Uuid::parse_str(room).map_err(|_| RoomRefusal::DeclaredRoomMismatch)?;
     if super::declared_room_mismatches(candidate, declared) {
         return Err(RoomRefusal::DeclaredRoomMismatch);
     }
-    if !governs && !super::governance_unchanged(before, candidate) {
+    if !governs && !membership && !super::governance_unchanged(before, candidate) {
         return Err(RoomRefusal::GovernanceWriter);
     }
     if !governs {
@@ -250,11 +264,11 @@ fn checked(
             return Err(RoomRefusal::GovernanceWriter);
         }
         if before.map_or_else(Vec::new, crate::room_hosts_of) != crate::room_hosts_of(candidate) {
-            // The room's hosts are its governor's to name.
+            // The room's hosts are its owner's to name.
             return Err(RoomRefusal::GovernanceWriter);
         }
     }
-    // Every writer, the governor included: it relays and merges what members
+    // Every writer, the owner's devices included: it relays and merges what members
     // write, so who sent a batch says nothing about who saved a shortcut.
     saved_shortcuts_proven(before, candidate, room, now_ns)?;
     if !super::immutable_receipts(before, candidate) {

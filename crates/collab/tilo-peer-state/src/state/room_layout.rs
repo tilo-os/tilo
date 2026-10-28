@@ -259,14 +259,13 @@ mod tests {
         Ok(())
     }
 
-    /// Only the governor sets the layout scope: a member's change to it is
-    /// refused, whatever it says.
+    /// Any device of the owner sets the layout scope.
     #[test]
     #[expect(
         clippy::panic_in_result_fn,
         reason = "the regression returns setup errors and asserts actual production outcomes"
     )]
-    fn a_member_cannot_change_the_rooms_layout_scope() -> TestResult {
+    fn another_device_of_the_owner_changes_the_rooms_layout_scope() -> TestResult {
         use automerge::transaction::Transactable as _;
         let (mut peer, governor, _, caller, now) = crate::admission_tests::seeded();
         assert!(
@@ -288,13 +287,12 @@ mod tests {
             .map(|change| change.raw_bytes().to_vec())
             .collect();
         let room = peer.room().to_owned();
-        let refused = peer.receive_from(
+        peer.receive_from(
             crate::TransportOrigin::RetainedRelayDelta(caller.device_public_key),
             crate::NeighbourMsg::SyncResp { changes, room },
             now,
-        );
-        assert!(refused.is_err(), "{refused:?}");
-        assert_eq!(peer.governance().room_layout(), RoomLayout::Personal);
+        )?;
+        assert_eq!(peer.governance().room_layout(), RoomLayout::Shared);
         Ok(())
     }
 }

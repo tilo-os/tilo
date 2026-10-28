@@ -90,7 +90,6 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(laptop.cert.clone()),
             revocations: Vec::new(),
-            successions: Vec::new(),
         },
     );
     publish(
@@ -472,7 +471,6 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(laptop.cert.clone()),
             revocations: Vec::new(),
-            successions: Vec::new(),
         },
     );
     publish(
@@ -622,7 +620,6 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(laptop.cert.clone()),
             revocations: Vec::new(),
-            successions: Vec::new(),
         },
     );
 

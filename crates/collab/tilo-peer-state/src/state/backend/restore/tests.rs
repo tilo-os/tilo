@@ -19,10 +19,9 @@ use ed25519_dalek::SigningKey;
 
 #[test]
 fn coverage_ahead_of_its_checkpoint_stays_restorable() {
-    let (mut governor, key, member, _, now) = crate::admission_tests::seeded();
+    let (mut governor, key, _, _, now) = crate::admission_tests::seeded();
     governor.select_admission_v5().unwrap();
     let authority = key.verifying_key().to_bytes();
-    let member = member.verifying_key().to_bytes();
     let mut receiver = governor.clone();
     let floors = receiver.replay_floors();
     let original = receiver.document("test.app", "tab:1").unwrap();
@@ -34,18 +33,6 @@ fn coverage_ahead_of_its_checkpoint_stays_restorable() {
         .publish_document("test.app", "tab:1", document.save(), &key, now)
         .unwrap();
     let room = governor.room_message();
-    let mut refused = receiver.clone();
-    assert!(
-        refused
-            .receive_from_report(
-                TransportOrigin::RetainedRelayDelta(member),
-                room.clone(),
-                now
-            )
-            .is_err(),
-        "a member cannot advance the governor's coverage"
-    );
-    assert_eq!(refused.durable().unwrap(), receiver.durable().unwrap());
     receiver
         .receive_from_report(TransportOrigin::RetainedRelayDelta(authority), room, now)
         .unwrap();
@@ -478,8 +465,7 @@ fn complete_bounded_restore_document_byte_limit_spans_room_and_all_documents() {
     clippy::similar_names,
     reason = "`root` and `room` are the domain's own names"
 )]
-fn complete_bounded_restore_preserves_local_revocation_union_and_rejects_governed_host_revocation()
-{
+fn complete_bounded_restore_preserves_local_revocation_union_and_survives_a_revoked_host() {
     let (peer, _, now) = media_fixture();
     let bytes = peer.durable().unwrap();
     let root = SigningKey::from_bytes(&[1; 32]);
@@ -531,10 +517,7 @@ fn complete_bounded_restore_preserves_local_revocation_union_and_rejects_governe
     room.put(ROOT, media::FIELD, media::encode(&policy).unwrap())
         .unwrap();
     durable.base.room_bytes = Some(room.save());
-    assert!(matches!(
-        checked(&postcard::to_allocvec(&durable).unwrap(), &peer, now),
-        Err(BoundedPeerError::Invalid(
-            BoundedPeerInvalid::AuthorityRevoked
-        ))
-    ));
+    // The device the replica was joined through being revoked hands
+    // nothing over: the owner's other devices govern, so the state restores.
+    assert!(checked(&postcard::to_allocvec(&durable).unwrap(), &peer, now).is_ok());
 }

@@ -137,11 +137,9 @@ impl StatePeer {
         publisher: [u8; 32],
         now: SystemTime,
     ) -> Result<(), AdmissionError> {
-        if publisher != self.core.authority.device_public_key {
-            return Err("native publication governor is not pinned authority".into());
-        }
-        self.certificate(&publisher, now)?;
-        Ok(())
+        self.owner_device(&publisher, now)
+            .map(drop)
+            .map_err(AdmissionError::from)
     }
 
     pub(super) fn resolve_origin(

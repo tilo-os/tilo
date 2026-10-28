@@ -339,14 +339,19 @@ fn members() -> (
     (peer, key, members, now)
 }
 #[test]
-fn room_media_only_exact_live_governor_can_change_policy() {
+fn room_media_policy_changes_only_from_the_owners_devices() {
     let (mut peer, authority, members, now) = members();
     let value = policy(&peer);
+    // The third member is another device of the owner's.
+    let [editor, viewer, own] = members;
+    assert_eq!(own.1.user_public_key, peer.authority().user_public_key);
+    let members = [editor, viewer];
     for (key, _) in &members {
         let before = peer.durable().unwrap();
         assert!(install_policy(&mut peer, key, now, &value).is_err());
         assert_eq!(before, peer.durable().unwrap());
     }
+    install_policy(&mut peer, &own.0, now, &value).unwrap();
     install_policy(&mut peer, &authority, now, &value).unwrap();
     for (key, _) in members {
         for delete in [false, true] {
@@ -682,7 +687,6 @@ fn room_media_verified_independent_revocation_denies_before_promotion() {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(members[0].1.clone()),
             revocations: vec![revoked.clone()],
-            successions: Vec::new(),
         },
         now,
     )

@@ -60,7 +60,6 @@ fn hello(
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(cert),
             revocations,
-            successions: Vec::new(),
         },
     );
 }
