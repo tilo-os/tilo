@@ -128,6 +128,29 @@ deny = [
     { crate = "opentelemetry-http", reason = "exports spans and metrics off the device" },
     { crate = "opentelemetry-datadog", reason = "exports spans and metrics off the device" },
     { crate = "opentelemetry-zipkin", reason = "exports spans and metrics off the device" },
+    # Two RustCrypto generations are in the lock: the current one, which iroh
+    # uses, and the previous one, which third-party crates still pull in. Only
+    # those upstreams may depend on the old one, so it leaves the lock when the
+    # last of them migrates instead of gaining direct users here. tilo-crypto's
+    # sha2 0.10 feeds authenticode, which has no release on digest 0.11.
+    { crate = "ed25519-dalek:<3", wrappers = ["openmls_basic_credential", "openmls_rust_crypto"], reason = "old RustCrypto generation" },
+    { crate = "x25519-dalek:<3", wrappers = ["hpke-rs-rust-crypto"], reason = "old RustCrypto generation" },
+    { crate = "rand:<0.10", wrappers = [
+        "davey", "librespot-connect", "librespot-core", "librespot-discovery", "librespot-playback", "lipsum",
+        "num-bigint-dig", "oauth2", "proptest", "rand_distr", "rustypipe", "smithay", "tantivy-columnar", "tungstenite",
+    ], reason = "old RustCrypto generation" },
+    { crate = "rand_core:<0.10", wrappers = [
+        "crypto-bigint", "crypto-common", "curve25519-dalek", "ed25519-dalek", "elliptic-curve", "ff", "frost-core",
+        "frost-ed25519", "frost-rerandomized", "group", "openmls_basic_credential", "openmls_rust_crypto", "rand",
+        "rand_chacha", "rand_xorshift", "rsa", "signature", "snow", "x25519-dalek",
+    ], reason = "old RustCrypto generation" },
+    { crate = "rand_chacha:<0.10", wrappers = ["lipsum", "openmls_rust_crypto", "proptest", "rand"], reason = "old RustCrypto generation" },
+    { crate = "sha2:<0.11", wrappers = [
+        "davey", "ed25519-dalek", "frost-ed25519", "mysql_common", "oauth2", "p256", "p384",
+        "rig-core", "scrypt", "smithay", "snow", "tilo-crypto",
+    ], reason = "old RustCrypto generation" },
+    { crate = "hmac:<0.13", wrappers = ["davey", "hkdf", "librespot-core", "librespot-discovery", "pbkdf2", "rfc6979"], reason = "old RustCrypto generation" },
+    { crate = "chacha20poly1305:<0.11", wrappers = ["hpke-rs-rust-crypto", "openmls_rust_crypto", "snow"], reason = "old RustCrypto generation" },
 ]
 
 [sources]

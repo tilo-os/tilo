@@ -302,13 +302,6 @@ inputs = ["Cargo.toml", "**/Cargo.toml", ".config/hakari.toml", "**/*.rs"]
 pre_push = true
 
 [[step]]
-name = "crypto-generation"
-label = "Own crates use one RustCrypto generation"
-run = "python3 tools/policy/check_crypto_generation.py"
-inputs = ["Cargo.lock", "vendor/**/Cargo.toml"]
-pre_push = true
-
-[[step]]
 name = "document-engine-boundary"
 label = "Document content stays behind the document layer"
 run = "python3 tools/policy/check_document_engine_boundary.py"
