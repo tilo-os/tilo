@@ -1,0 +1,20 @@
+name: Mirror the checkout to a stable path
+description: >-
+  On a persistent runner that shares one CARGO_TARGET_DIR between jobs, mirror
+  the checkout into the same directory every time and export it as SRC. Cargo
+  keys path packages by their relative path and build scripts embed absolute
+  ones, so a target directory shared across changing checkout paths reruns
+  stale build scripts against directories that no longer exist. Files are
+  compared by content, so unchanged files keep their modification times and
+  builds stay incremental. Steps that build use `working-directory: ${{ env.SRC }}`.
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        src="$HOME/src/${GITHUB_REPOSITORY//\//-}"
+        mkdir -p "$src"
+        rsync --recursive --links --checksum --delete "$GITHUB_WORKSPACE/" "$src/"
+        echo "SRC=$src" >> "$GITHUB_ENV"
