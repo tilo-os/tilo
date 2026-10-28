@@ -477,9 +477,9 @@ pub async fn next_document_on(
         pending.extend(peer.drain());
         let found = pending
             .iter()
-            .position(|event| {
-                matches!(event, PeerEvent::Document(document) if document.route == *route)
-            })
+            .position(
+                |event| matches!(event, PeerEvent::Document(document) if document.route == *route),
+            )
             .and_then(|index| match pending.remove(index) {
                 PeerEvent::Document(document) => document.mutation(),
                 _ => None,
