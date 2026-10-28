@@ -1356,8 +1356,8 @@ cryptsetup close e2e-target
 
     def first_frame(self, lines: str) -> None:
         """Item 13: the greeter's first frame in the initrd within 300 ms of the moment
-        tilo-boot-signin knows who may sign in, when Plymouth's sign-in screen appeared (the
-        same measure as os/tests/boot_performance_gate.sh)."""
+        tilo-boot-signin knows who may sign in, when Plymouth's own sign-in screen used to
+        appear (the same measure as os/tests/boot_performance_gate.sh)."""
         stamps = {}
         for line in lines.splitlines():
             match = re.match(r"\[\s*([0-9.]+)\]", line)
@@ -1724,7 +1724,7 @@ def report(runs: list[Run], out: Path, withheld: list[Path]) -> int:
         "10": "The boot sign-in speaks when the comforts token turns the screen reader on",
         "11": "With a touch screen and no keyboard, the secret is tapped on the on-screen keyboard",
         "12": "The boot sign-in and the greeter after switch-root show the same card",
-        "13": "The boot sign-in's first frame comes within 300 ms of when Plymouth's appeared",
+        "13": "The boot sign-in's first frame comes within 300 ms of knowing who may sign in",
     }
     if any(r.variant == "rollback" for r in runs):
         names["9"] = "Rollback to an image from before pam_tilo still signs in with the old password"

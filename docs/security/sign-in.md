@@ -105,8 +105,8 @@ The person then sees the ordinary login screen.
 ### 3.2 Unverified boot or no TPM: the login screen comes first
 
 When the system volume can't open by itself, the boot shows the login screen in the
-initrd: the same layout, the same account pictures, the same factors as the real
-one. The secret typed there:
+initrd: the same layout and the same factors as the real one. The secret typed
+there:
 
 1. releases the person's user key (§4),
 2. opens the system volume through that person's keyslot, a LUKS slot whose key is
@@ -127,18 +127,11 @@ capture the PIN (§7.4).
 
 On a machine without a TPM, the secret must be a strong passphrase.
 
-Until §3.4 lands, Plymouth draws the initrd login screen. It draws each person's
-face as the login screen does before anyone signs in: the initials of their name in the colour their account name derives
-(`tilo-face`), in the login screen's colours and sizes (`look.json`, which the
-greeter's own test keeps current). It shows no account picture. A picture would
+The initrd login screen is the greeter (§3.4). It shows each person as the login
+screen does before anyone signs in, without an account picture. A picture would
 have to sit in the volume header beside the name, readable by anyone holding the
 disk, and the header carries only what the list of people needs: uid, account
-name, display name and the kind of secret. Names, initials and messages are set
-in the login screen's face, which the initrd carries cut from the greeter's own
-font file to the two weights the login screen uses for them (the
-`93tilo-boot-face` dracut module). Plymouth has no fallback face, so a display
-name in a script that face lacks is shown as the account name instead
-(`glyphs.txt`, which the build writes from the face).
+name, display name and the kind of secret.
 
 ### 3.3 What the person sees
 
@@ -153,9 +146,9 @@ name in a script that face lacks is shown as the account name instead
 
 The login screen in the initrd is the greeter itself, so it has the greeter's screen
 reader, touch input, on-screen keyboard, larger text and high contrast. It isn't a
-drawing of the greeter. Plymouth stays for the splash before and after it. The
-Plymouth sign-in layout, its cut-down faces and the test that keeps it matching the
-greeter are removed once the greeter replaces them.
+drawing of the greeter. Plymouth stays for the splash before and after it, and for
+the volume's own questions after "Can't sign in". It draws no sign-in of its own
+and carries no font: its text is pre-rendered.
 
 **Processes.** `tilo-boot-signin` keeps everything that decides:
 
@@ -164,8 +157,8 @@ greeter are removed once the greeter replaces them.
 - the calls to `tilo-auth boot-unlock`;
 - "Can't sign in" and the other ways in.
 
-It starts the greeter as a child in boot mode, connected by a socket pair. That
-replaces the Plymouth message protocol behind the same `flow::Screen`. Over the
+It starts the greeter as a child in boot mode, connected by a socket pair, behind
+the same `flow::Screen` the console fallback implements. Over the
 socket the greeter receives the people, the prompt and the notes. It returns the
 person picked and the secret typed. It never talks to the TPM, the volume or
 `tilo-auth`.
@@ -247,15 +240,18 @@ token as preferences only.
 
 **Budgets.** The boot performance gate on the reference VM checks two things:
 
-- The first frame of the login screen arrives within 300 ms of the sign-in screen
-  Plymouth shows today, measured from when the volume is found.
+- The first frame of the login screen arrives within 300 ms of the moment
+  `tilo-boot-signin` knows who may sign in, which is when Plymouth's own sign-in
+  screen used to appear.
 - The initrd's growth stays within what the gate records for it. The greeter in
   boot mode is built without its media stack (GStreamer, PipeWire) and stripped,
   and the gate fails a build that grows it past the recorded size.
 
-**If the greeter can't start** (no KMS device, the host fails), the supervisor
-asks through systemd's password agents on the console, as it does today without
-Plymouth. It is never left without a way in.
+**If the greeter can't start** (no KMS device, the host fails), or stops
+answering, the supervisor ends Plymouth and asks through systemd's password agents
+on the console, as on a machine without Plymouth. Plymouth's own agent would take
+an empty answer as no answer, so "Can't sign in" could not be chosen through it.
+The screen is never left without a way in.
 
 **Tests.** The signin-e2e check runs the boot sign-in with the screen reader turned
 on by the comforts token. QEMU's audio goes to a WAV file, and the check fails if
