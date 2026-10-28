@@ -162,7 +162,7 @@ impl RoomRecord {
         use collaboration::record::save::{open_stored, open_with_committed_read, room_document};
         let route = manager
             .primary_route()
-            .map(|joined| joined.route.clone())
+            .map(|joined| joined.route().clone())
             .ok_or_else(|| RoomError::Open("the connection joined no route".to_owned()))?;
         let room = route.cluster_id.to_string();
         let store = room_document(documents, &route.app_id, &room)
