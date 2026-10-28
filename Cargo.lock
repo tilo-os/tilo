@@ -23217,6 +23217,8 @@ dependencies = [
  "strsim",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-actions",
+ "tilo-advisory-lock",
  "tilo-app-package",
  "tilo-app-state",
  "tilo-clock",

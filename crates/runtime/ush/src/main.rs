@@ -40,10 +40,10 @@ fn main() -> ExitCode {
         "quarantine" => guest::quarantine(rest),
         "restart" => guest::restart(),
         "tilo" | "app" | "store" | "system" => guest::host_cli(&prog_name, rest),
-        "undo" => guest::undo_file_action(rest),
+        "history" => guest::file_history(rest),
         // The file actions: GNU's names, answered here so each invocation is
-        // one action the environment's grants are checked against and the
-        // recoverable history can take back.
+        // one action of the environment record's, checked against its grants
+        // and undone from its History.
         "cp" | "mv" | "rm" | "mkdir" | "rmdir" | "ln" | "truncate" | "touch" | "append" => {
             guest::file_action(&prog_name, rest)
         }
@@ -90,7 +90,6 @@ fn dispatch(args: &[String]) -> anyhow::Result<i32> {
         Some("scan") => guest::scan(rest),
         Some("guard") => guest::guard(rest),
         Some("quarantine") => guest::quarantine(rest),
-        Some("undo") => guest::undo_file_action(rest),
         Some("history") => guest::file_history(rest),
         Some("version") => Ok(guest::version(rest)),
         Some(name) if ush::file_actions::cli::Tool::of(name).is_some() => {
@@ -122,9 +121,11 @@ Inside a guest:
   guard status
   quarantine list | add PATH | restore PATH
   restart
-  cp | mv | rm | mkdir | rmdir | ln | truncate   one action each, undoable
+  cp | mv | rm | mkdir | rmdir | ln | truncate | touch | append
+                                   one action each on the environment,
+                                   undone from its History; --json
   history [--json]                 what was removed or replaced, and its id
-  undo file-action ID              put one back
+  history restore ID               put one back
   version status | log | show | diff | restore
                                    a file's own history: revisions, their
                                    contents, what changed, and a checked
@@ -900,60 +901,126 @@ explain when the host does not offer them.\n";
         Ok(0)
     }
 
-    /// The file actions, as a program and its arguments whether or not a broker
-    /// is there to check them.
+    /// A file command, whether or not a broker is there to take it.
     ///
-    /// Inside a guest the supervisor answers ([`Request::FileAction`]): it holds
-    /// the environment record, so it is the only place the grants can be read.
-    /// Outside one — the device's own login shell, where the guest's `cp` is
-    /// some `/run/ush/bin/cp` on `PATH` — there is no record to check, so the
-    /// same action runs here, with the same recoverable history under
-    /// `~/.local/share/ush/recoverable`.
+    /// Inside a guest it is the environment record's verb
+    /// ([`Request::FileAction`]): the supervisor holds the record, invokes the
+    /// verb as the person, and carries it out, so it is in the environment's
+    /// History and undone from there. Outside one — the device's own login
+    /// shell — there is no record, so the same plan runs here with the
+    /// person's own permissions as its only bound, keeping what it replaces
+    /// under `~/.local/share/ush/recoverable`.
+    ///
+    /// `--json` prints one object instead of a sentence: the action, its
+    /// entry and how many operations it did, or `error` and why.
     pub fn file_action(name: &str, args: &[String]) -> anyhow::Result<i32> {
-        use ush::file_actions::{Recoverable, cli, perform};
+        use ush::file_actions::cli;
 
         let Some(tool) = cli::Tool::of(name) else {
             anyhow::bail!("{name} is not a file action this runtime answers");
         };
-        let action = match cli::parse(tool, args) {
+        let (json, args) = cli::take_json(args);
+        let action = match cli::parse(tool, &args) {
             Ok(action) => action,
-            Err(error) => {
-                eprintln!("{error}");
-                return Ok(1);
-            }
+            Err(error) => return Ok(file_refused(json, name, &error.to_string())),
         };
-        // Defined once per run of the shell, on the guest's own /run; the guest's
-        // /var is the environment's, so the history outlives the session there.
-        if broker_socket().exists() {
-            return Ok(report_file_action(ask(&Request::FileAction { action })?));
-        }
-        let home = tilo_paths::xdg::data_home().unwrap_or_else(|| PathBuf::from("/nonexistent"));
-        let history = Recoverable::at(history_dir(&home));
-        match perform(&action, &ush::policy::Policy::unbounded(), &history, None) {
-            Ok(outcome) => Ok(report_file_action(Response::FileAction {
-                id: outcome.id,
-                operations: outcome.done.len(),
-            })),
-            Err(error) => {
-                eprintln!("{name}: {error}");
-                Ok(1)
-            }
-        }
+        run_file_action(name, action, json)
     }
 
-    /// `ush history [--json]` — what this environment removed or replaced, and
-    /// what `undo file-action ID` can put back.
-    pub fn file_history(args: &[String]) -> anyhow::Result<i32> {
-        use ush::file_actions::Recoverable;
+    /// Carry out `action` for the command `name`, through the broker inside
+    /// a guest, here outside one.
+    fn run_file_action(
+        name: &str,
+        action: ush::file_actions::FileAction,
+        json: bool,
+    ) -> anyhow::Result<i32> {
+        use ush::file_actions::{Recoverable, anchored, perform};
 
+        let verb = action.verb();
+        let cwd = std::env::current_dir()?;
+        let action = anchored(action, &cwd);
+        if broker_socket().exists() {
+            return Ok(match ask(&Request::FileAction { action })? {
+                Response::FileAction { id, operations } => {
+                    file_done(json, verb, Some(&id), operations)
+                }
+                Response::Denied { reason } => file_refused(json, name, &reason),
+                other => report(other),
+            });
+        }
         let home = tilo_paths::xdg::data_home().unwrap_or_else(|| PathBuf::from("/nonexistent"));
-        let history = Recoverable::at(history_dir(&home));
-        let json = args.iter().any(|a| a == "--json");
-        let entries: Vec<_> = history
-            .entries()
-            .into_iter()
-            .filter(|entry| entry.op == "keep")
-            .collect();
+        let store = Recoverable::at(store_dir(&home));
+        let policy = ush::policy::Policy::unbounded();
+        let done = match &action {
+            ush::file_actions::FileAction::Restore(op) => store
+                .entry(&op.kept)
+                .ok_or_else(|| format!("{}: nothing kept under that id", op.kept))
+                .and_then(|entry| {
+                    store
+                        .restore(&op.kept, &entry.path)
+                        .map(|()| 1)
+                        .map_err(|error| error.to_string())
+                }),
+            action => perform(action, &policy, &store, None)
+                .map(|done| done.len())
+                .map_err(|(error, _)| error.to_string()),
+        };
+        Ok(match done {
+            Ok(operations) => file_done(json, verb, None, operations),
+            Err(reason) => file_refused(json, name, &reason),
+        })
+    }
+
+    /// Say what a file command did; `entry` names it in the environment's
+    /// History when it was the record's action.
+    fn file_done(json: bool, verb: &str, entry: Option<&str>, operations: usize) -> i32 {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({"action": verb, "entry": entry, "operations": operations})
+            );
+            return 0;
+        }
+        let word = if operations == 1 {
+            "operation"
+        } else {
+            "operations"
+        };
+        if entry.is_some() {
+            println!("done ({operations} {word}); undo it from the environment's History");
+        } else {
+            println!("done ({operations} {word}); `history` lists what it kept aside");
+        }
+        0
+    }
+
+    fn file_refused(json: bool, name: &str, reason: &str) -> i32 {
+        if json {
+            println!("{}", serde_json::json!({"action": name, "error": reason}));
+        } else {
+            eprintln!("{name}: {reason}");
+        }
+        1
+    }
+
+    /// `history [--json]` — what this environment's file actions removed or
+    /// replaced and kept aside, each with its id; `history restore ID` puts
+    /// one back, as the record's `restore` action inside a guest.
+    pub fn file_history(args: &[String]) -> anyhow::Result<i32> {
+        use ush::file_actions::{FileAction, Recoverable, RestoreOp, cli};
+
+        let (json, args) = cli::take_json(args);
+        if let [verb, id] = args.as_slice()
+            && verb == "restore"
+        {
+            let action = FileAction::Restore(RestoreOp { kept: id.clone() });
+            return run_file_action("history restore", action, json);
+        }
+        if !args.is_empty() {
+            anyhow::bail!("usage: history [--json] | history restore ID");
+        }
+        let home = tilo_paths::xdg::data_home().unwrap_or_else(|| PathBuf::from("/nonexistent"));
+        let entries = Recoverable::at(store_dir(&home)).kept();
         if json {
             println!("{}", serde_json::to_string_pretty(&entries)?);
             return Ok(0);
@@ -965,7 +1032,7 @@ explain when the host does not offer them.\n";
         for entry in entries {
             println!("{:<22} {}", entry.id, entry.path.display());
         }
-        println!("\n`undo file-action ID` puts one back.");
+        println!("\n`history restore ID` puts one back.");
         Ok(0)
     }
 
@@ -978,65 +1045,14 @@ explain when the host does not offer them.\n";
         ush::version::run(args)
     }
 
-    /// `undo file-action ID` — the second half of what `rm` printed.
-    pub fn undo_file_action(args: &[String]) -> anyhow::Result<i32> {
-        let id = match args {
-            [verb, id] if verb == "file-action" => id,
-            _ => anyhow::bail!("usage: undo file-action ID"),
-        };
-        if broker_socket().exists() {
-            return Ok(report_file_action(ask(&Request::UndoFileAction {
-                id: id.clone(),
-            })?));
-        }
-        let home = tilo_paths::xdg::data_home().unwrap_or_else(|| PathBuf::from("/nonexistent"));
-        let history = ush::file_actions::Recoverable::at(history_dir(&home));
-        let Some(entries) = history.undo_set(id) else {
-            anyhow::bail!("{id}: no such action in the recoverable history");
-        };
-        ush::file_actions::undo(&entries, &history)?;
-        println!("undid {id} ({} operations)", entries.len());
-        Ok(0)
-    }
-
-    /// Where the recoverable history is, decided by the same rule the broker
+    /// Where the recoverable store is, decided by the same rule the broker
     /// uses: the environment's own `/var` inside a guest, the person's data
     /// directory outside one.
-    fn history_dir(outside_home: &Path) -> PathBuf {
+    fn store_dir(outside_home: &Path) -> PathBuf {
         if broker_socket().exists() {
             PathBuf::from(ush::file_actions::RECOVERABLE_DIR)
         } else {
             outside_home.join("ush/recoverable")
-        }
-    }
-
-    /// Report a file action's answer the way the person's shell sees it.
-    fn report_file_action(resp: Response) -> i32 {
-        match resp {
-            Response::FileAction { id, operations } => {
-                let word = if operations == 1 {
-                    "operation"
-                } else {
-                    "operations"
-                };
-                // What was done, and the one thing that takes it back.
-                println!("done ({operations} {word}); `undo file-action {id}` puts it back");
-                0
-            }
-            Response::Undone { id, operations } => {
-                let word = if operations == 1 {
-                    "operation"
-                } else {
-                    "operations"
-                };
-                println!("undid {id} ({operations} {word})");
-                0
-            }
-            Response::Denied { reason } => {
-                eprintln!("refused: {reason}");
-                1
-            }
-            other => report(other),
         }
     }
 
@@ -1053,7 +1069,7 @@ explain when the host does not offer them.\n";
             // Each one is a shim in the guest's bin directory, and none of
             // them is mistaken for a legacy app's command.
             for name in [
-                "cp", "mv", "rm", "mkdir", "rmdir", "ln", "truncate", "touch", "append", "undo",
+                "cp", "mv", "rm", "mkdir", "rmdir", "ln", "truncate", "touch", "append",
             ] {
                 assert!(
                     ush::GUEST_COMMANDS.contains(&name),

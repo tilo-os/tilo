@@ -105,15 +105,10 @@ pub enum Request {
         args: Vec<String>,
         cwd: PathBuf,
     },
-    /// One file action (`cp`, `mv`, `rm`, `mkdir`, `rmdir`, `ln`,
-    /// `truncate`) checked against the environment's grants and carried out
-    /// on the host's filesystem, which is what the guest's grants bind.
+    /// One file command (`cp`, `mv`, `rm`, …, `history restore`): the
+    /// environment record's verb, invoked as the session's person.
     FileAction {
         action: crate::file_actions::FileAction,
-    },
-    /// Undo one invocation by the id the answer to it carried.
-    UndoFileAction {
-        id: String,
     },
 }
 
@@ -141,14 +136,8 @@ pub enum Response {
     Perms {
         entries: Vec<PermEntry>,
     },
-    /// The file action ran; `id` names its entry in the recoverable history,
-    /// which `undo file-action ID` takes.
+    /// The file action ran as the record's entry `id`, undone from History.
     FileAction {
-        id: String,
-        operations: usize,
-    },
-    /// Undo put the tree back.
-    Undone {
         id: String,
         operations: usize,
     },
@@ -393,7 +382,7 @@ impl NetworkStatus {
 #[derive(Debug, Clone)]
 pub struct EnvironmentHandle {
     /// The environment's own `/var` state, as the guest sees it bound at
-    /// `/var/lib` and `/var/cache` — where its recoverable history lives.
+    /// `/var/lib` and `/var/cache` — where its recoverable store lives.
     pub var_dir: PathBuf,
     pub records: Records,
     pub key: String,
@@ -440,6 +429,10 @@ pub struct BrokerState {
     /// The session's egress, which takes host grants at once. `None` where
     /// no guest network was built (tests of the policy surface).
     pub egress: Option<Arc<tilo_egress::Egress>>,
+    /// The session's person, by principal id: who its file commands are by.
+    pub person: String,
+    /// This device, as the environment's file actions name it.
+    pub device: String,
 }
 
 impl std::fmt::Debug for BrokerState {
@@ -518,7 +511,6 @@ impl BrokerState {
             }
             Request::LegacyLaunch { app, args, cwd } => self.legacy_launch(&app, args, &cwd),
             Request::FileAction { action } => crate::file_actions::brokered(self, &action),
-            Request::UndoFileAction { id } => crate::file_actions::brokered_undo(self, &id),
         }
     }
 
@@ -999,6 +991,8 @@ pub struct Broker {
     address: SocketAddress,
     shared: Arc<Shared>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// Carries out the record's file actions for this device as they arrive.
+    files: Option<std::thread::JoinHandle<()>>,
     connections: Arc<Mutex<Vec<std::thread::JoinHandle<()>>>>,
     /// Anything connected. Only the guest can reach the socket, and its first
     /// process asks for status before it becomes the shell.
@@ -1030,6 +1024,7 @@ impl Broker {
         let thread_connections = Arc::clone(&connections);
         let connected = Arc::new(AtomicBool::new(false));
         let thread_connected = Arc::clone(&connected);
+        let files = crate::file_actions::watch::spawn(Arc::clone(&state), Arc::clone(&shared))?;
         let thread = std::thread::Builder::new()
             .name("tilo-ush-accept".into())
             .spawn(move || {
@@ -1080,6 +1075,7 @@ impl Broker {
             address,
             shared,
             thread: Some(thread),
+            files: Some(files),
             connections,
             connected,
         })
@@ -1118,6 +1114,9 @@ impl Drop for Broker {
             for connection in connections.drain(..) {
                 let _ = connection.join();
             }
+        }
+        if let Some(files) = self.files.take() {
+            let _ = files.join();
         }
         let _ = std::fs::remove_file(&self.address.path);
     }
@@ -1179,10 +1178,10 @@ fn serve_connection(stream: UnixStream, state: &Arc<Mutex<BrokerState>>, shared:
 /// it (its guest's connection, a command's pipes and exit, `stopping`), so an
 /// idle connection, a silent host command and an update waiting for another
 /// all sleep until something happens.
-struct Shared {
+pub(crate) struct Shared {
     stop: AtomicBool,
     /// Rung once, when the broker stops, and never drained.
-    stopping: WakeFd,
+    pub(crate) stopping: WakeFd,
     host_updates: HostUpdateGate,
 }
 
@@ -1200,7 +1199,7 @@ impl Shared {
         self.stopping.ring();
     }
 
-    fn stopped(&self) -> bool {
+    pub(crate) fn stopped(&self) -> bool {
         self.stop.load(Ordering::Acquire)
     }
 }
@@ -1246,7 +1245,7 @@ impl HostUpdateGate {
     }
 }
 
-const fn pollfd(fd: RawFd, events: libc::c_short) -> libc::pollfd {
+pub(crate) const fn pollfd(fd: RawFd, events: libc::c_short) -> libc::pollfd {
     libc::pollfd {
         fd,
         events,
@@ -1256,7 +1255,7 @@ const fn pollfd(fd: RawFd, events: libc::c_short) -> libc::pollfd {
 
 /// One `poll(2)`. A signal returns early with nothing ready; the caller's
 /// loop looks again.
-fn poll_fds(fds: &mut [libc::pollfd], timeout: Option<Duration>) -> std::io::Result<()> {
+pub(crate) fn poll_fds(fds: &mut [libc::pollfd], timeout: Option<Duration>) -> std::io::Result<()> {
     let count = libc::nfds_t::try_from(fds.len()).map_err(std::io::Error::other)?;
     // Round up, so a timed-out poll means the time really passed.
     let millis = timeout.map_or(-1, |timeout| {
@@ -1923,6 +1922,8 @@ pub(crate) mod tests {
             builder,
             landlock: "not attempted".into(),
             egress: None,
+            person: "person-ada".into(),
+            device: "this-device".into(),
         }
     }
 
