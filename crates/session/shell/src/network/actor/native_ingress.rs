@@ -321,13 +321,15 @@ impl ActorState {
             return;
         };
         self.native_routes.serial = serial;
-        // A room this device hosts itself has no host to reach: its apps'
-        // empty states are their own from the start, as in a workspace that
-        // syncs with no host.
-        if self
-            .host_identity
-            .as_ref()
-            .is_some_and(|identity| connect.hosted_here(identity))
+        // A room pinned to this device, on a device that runs no host of its
+        // own, has no host to reach: its apps' empty states are their own
+        // from the start, as in a workspace that syncs with no host. With a
+        // host here, its session joins that host in process.
+        if self.local_host.is_none()
+            && self
+                .host_identity
+                .as_ref()
+                .is_some_and(|identity| connect.hosted_here(identity))
         {
             self.native_routes.remove(ws);
             crate::shell::room_sync::forget(ws);
@@ -352,16 +354,17 @@ impl ActorState {
         let Some(identity) = self.host_identity.as_ref() else {
             return;
         };
-        let hosted_here: Vec<u64> = self
+        let unhosted_here: Vec<u64> = self
             .native_routes
             .entries
             .iter()
+            .filter(|_| self.local_host.is_none())
             .filter(|(_, route)| route.connect.hosted_here(identity))
             .map(|(&ws, _)| ws)
             .collect();
-        for ws in hosted_here {
-            // It became this device's own since it was connected (the
-            // identity arrived after it): nothing to dial.
+        for ws in unhosted_here {
+            // It became pinned to this device, which runs no host, since it
+            // was connected (the identity arrived after it): nothing to dial.
             self.native_routes.remove(ws);
             crate::shell::room_sync::forget(ws);
         }
