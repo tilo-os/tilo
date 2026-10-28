@@ -1015,9 +1015,23 @@ fn the_text_view_shows_the_same_steps_in_the_same_order() {
         .lines()
         .any(|line| line.starts_with("    ") && line.trim_start().starts_with(char::is_numeric));
     assert!(indented, "a block's steps are indented under it: {text}");
+    // The text names each step by what it does, in the same order the
+    // blocks show, and the nested step is under its block.
+    let order: Vec<usize> = ["If", "create", "list"]
+        .iter()
+        .map(|substance| {
+            text.find(substance).unwrap_or_else(|| {
+                panic!("{substance} is in the text, in order: {text}");
+            })
+        })
+        .collect();
     assert!(
-        program.steps.iter().all(|step| text.contains(&step.id)),
-        "every step's id is in the text: {text}"
+        order.is_sorted(),
+        "the text keeps the program's order: {text}"
+    );
+    assert!(
+        text.contains("    1. create on notes.folder:inbox"),
+        "the condition's step is indented under it: {text}"
     );
 
     // Going back to the blocks keeps the draft exactly as it was.
