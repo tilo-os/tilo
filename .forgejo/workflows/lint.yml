@@ -1,25 +1,19 @@
 name: CI / fast quality
 
-# Compilation-heavy warnings, Clippy, docs, and release-size gates run weekly.
-# This path runs on every change.
+# Compilation-heavy warnings, Clippy, docs, and release-size gates run weekly
+# (ci-weekly-quality.yml) or in t; this cheap path runs on every main commit so
+# the format, dependency and policy gates of the commit being promoted have a
+# result. Main is not gated, so a red result here blocks only the promotion.
 on:
-  # Main keeps a result for every commit. Task branches get theirs from the
-  # pull_request event, which fires when a PR opens and on every update; a
-  # branch push would repeat the same job on the same commit.
   push:
     branches: ["main"]
-  pull_request:
-    # Stacked PRs (a PR whose base is another task branch) get the
-    # same gate; affected-package selection diffs against that base, so each
-    # layer tests its own change.
-    branches: ["main", "pr/sdk-*", "codex/**"]
   workflow_dispatch:
 
 concurrency:
-  # A newer commit on a pull request replaces its older run: the lander only
-  # reads the current head. Pushes keep one run per commit.
-  group: lint-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Only the newest main commit is promoted, so a superseded run is cancelled
+  # with the rest of its push's work. A dispatch is never cancelled.
+  group: lint-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 jobs:
   quality:

@@ -1,18 +1,22 @@
 name: CI / affected packages
 
-# Pull requests and pushes check affected reverse dependencies on native x86,
-# and test changed packages, their direct dependants (up to one shard's cost;
-# see REVERSE_TEST_COST_BUDGET) and contract suites. Full native coverage remains
-# mandatory in ci-nightly.yml; this job is the short feedback path.
+# Main is allowed to be unstable, so a commit is never gated before it lands;
+# this workflow measures it after the fact and decides whether `stable` may
+# advance to it (the `promote` job). Selection diffs against the last promoted
+# commit, `stable`, rather than the parent, so intermediate commits are skipped:
+# the plan covers everything main gained since the last good state, which is
+# what `stable` would receive. A newer push cancels the run it supersedes, so
+# one push of a batch runs.
+#
+# Affected reverse dependencies are checked on native x86; changed packages,
+# their direct dependants (up to one shard's cost, REVERSE_TEST_COST_BUDGET) and
+# contract suites are tested there too. Full native coverage, both
+# architectures and the aarch64 artifact builds remain mandatory in
+# ci-nightly.yml; this workflow is the short feedback path.
 # Manual dispatch validates the complete workspace on both native architectures.
 on:
   push:
     branches: ["main"]
-  pull_request:
-    # Stacked PRs (a PR whose base is another task branch) get the
-    # same gate; affected-package selection diffs against that base, so each
-    # layer tests its own change.
-    branches: ["main", "pr/sdk-*", "codex/**"]
   workflow_dispatch:
     inputs:
       builder_image:
@@ -21,10 +25,13 @@ on:
         type: string
 
 concurrency:
-  # A newer commit on a pull request replaces its older run: the lander only
-  # reads the current head. Pushes keep one run per commit.
-  group: check-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Only the newest main commit is interesting: a push that supersedes an
+  # in-flight run cancels it, so a burst of merges costs one run instead of
+  # one per commit. The cancelled run's commit is still covered, because the
+  # surviving run's plan diffs against `stable`, not against a parent.
+  # A dispatch is never cancelled: it asks for a full qualification.
+  group: check-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 env:
   CARGO_BUILD_JOBS: "4"
@@ -104,37 +111,25 @@ jobs:
       tapp_required: ${{ steps.plan.outputs.tapp_required }}
       tapp_apps: ${{ steps.plan.outputs.tapp_apps }}
     steps:
-      # A pull request merges onto main below, which deepens its shallow
-      # checkout as far as the merge needs; a merge cannot work in a blob-less
-      # clone, whose missing blobs the forge does not serve by ID.
       - name: Checkout head for change selection
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: ${{ github.event_name == 'pull_request' && 1 || 0 }}
-          filter: ${{ github.event_name != 'pull_request' && 'blob:none' || '' }}
+          fetch-depth: 0
+          filter: blob:none
 
-      - name: Fetch comparison base
+      # The comparison base is the last commit main promoted, not the commit
+      # before this one: commits main skipped over are covered by the same
+      # diff, so a batch of pushes is planned once.
+      - name: Fetch the promoted base
         shell: bash
         run: |
-          if [ '${{ github.event_name }}' = workflow_dispatch ]; then
-            # Refresh main explicitly so a dispatch always compares against the
-            # current integration branch.
-            git fetch origin \
-              +refs/heads/main:refs/remotes/origin/main
-          else
-            base='${{ github.event.pull_request.base.sha }}'
-            if [ -z "$base" ] || [ "$base" = "null" ]; then
-              base='${{ github.event.before }}'
-            fi
-            if [ -n "$base" ] &&
-               [ "$base" != "0000000000000000000000000000000000000000" ] &&
-               ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-              git fetch origin "$base"
-            fi
-          fi
+          git fetch origin \
+            +refs/heads/stable:refs/remotes/origin/stable \
+            +refs/heads/main:refs/remotes/origin/main \
+            +refs/tags/*:refs/tags/* || true
 
-      # Pull requests test the head merged onto main's current tip, and every
-      # other job merges this same main commit.
+      # A dispatch may run on any ref, so it merges that ref onto main first.
+      # A push to main already is main's tip and needs no merge.
       - name: Merge onto main
         id: merge
         uses: ./.forgejo/actions/merge-main
@@ -152,10 +147,9 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           PULL_REQUEST_BASE: ${{ steps.merge.outputs.main }}
-          PUSH_BEFORE: ${{ github.event.before }}
+          STABLE_REF: origin/stable
           RUN_ATTEMPT: ${{ github.run_attempt }}
           HEAD_SHA: ${{ github.sha }}
-          LANDER_LOGIN: qos-integrator
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash tools/ci/select.sh
 
@@ -685,7 +679,7 @@ jobs:
     needs: [builder, select, security]
     # wasm32 output is host-independent; main still qualifies it on x86.
     # The portable label admits only qualified x86 general and ARM large slots.
-    runs-on: ${{ github.event_name == 'push' && 'runner' || 'runner-native-portable' }}
+    runs-on: runner
     timeout-minutes: 90
     env:
       CARGO_BUILD_JOBS: '4'
@@ -804,114 +798,9 @@ jobs:
           read -r -a pins <<< "$PINS"
           ./os/dev/verify-snapshot-pins.sh "${pins[@]}"
 
-  # The tapps of the apps a pull request affects, against their size budgets
-  # (tools/perf/tapp-size-budget/; docs/measurements/app-package-size.md).
-  # Release / apps holds every main commit to the same budgets, but only after
-  # the merge, where an app over its budget stops every app from publishing.
-  # The select job picks at most a few affected apps, those closest
-  # to a budget, so a toolkit change does not package the whole collection.
-  # Each architecture packages them exactly as Release / apps does, with its
-  # profile and compiler-cache namespace, so an unchanged runtime is a cache hit.
-  tapps:
-    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.tapp_required == 'true' }}
-    needs: [builder, select, security]
-    name: tapps / ${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            runner: runner-large
-          - arch: aarch64
-            runner: runner-large-arm64
-    container:
-      image: ${{ needs.builder.outputs.image }}
-    env:
-      # As Release / apps: sccache must not download an unused +stable
-      # toolchain while identifying the image's pinned rustup proxy.
-      RUSTUP_AUTO_INSTALL: "0"
-      CARGO_PROFILE_RELEASE_LTO: thin
-      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
-      # Release / apps' compiler-cache namespace (its TILO_SCCACHE_KEY_PREFIX,
-      # which tools/ci/sccache.sh turns into these), read by the runner's
-      # sccache server when this job's first compile starts it.
-      SCCACHE_GHA_VERSION: tilo/apps/v2/${{ matrix.arch }}
-      SCCACHE_DIRECT: "false"
-    steps:
-      - name: Checkout exact change
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          fetch-depth: 1
-
-      - name: Merge onto the tested main
-        uses: ./.forgejo/actions/merge-main
-        with:
-          main: ${{ needs.select.outputs.main }}
-
-      - name: Validate native architecture
-        run: ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
-
-      - name: Prepare Rust build caches
-        uses: ./.forgejo/actions/prepare-rust-build
-
-      - name: Package the selected tapps
-        env:
-          TILO_RELEASE_APPS: ${{ needs.select.outputs.tapp_apps }}
-          # Cargo records unit/rmeta/codegen timing without changing compile flags.
-          EXTRA_CARGO_ARGS: --timings
-        run: |
-          # A failed build must not upload a previous command's timing report.
-          rm -f target/cargo-timings/cargo-timing.html
-          # As Release / apps: every core, bounded by 2 GiB of memory per job.
-          cpus=$(nproc)
-          if read -r quota period 2>/dev/null < /sys/fs/cgroup/cpu.max && [[ $quota != max ]]; then
-            cpus=$(( (quota + period - 1) / period ))
-          fi
-          memory=$(( $(sed -n 's/^MemTotal: *\([0-9]*\) kB$/\1/p' /proc/meminfo) << 10 ))
-          if read -r limit 2>/dev/null < /sys/fs/cgroup/memory.max && [[ $limit =~ ^[0-9]+$ ]]; then
-            (( limit < memory )) && memory=$limit
-          fi
-          jobs=$(( memory / (2 << 30) ))
-          (( jobs > cpus )) && jobs=$cpus
-          (( jobs < 1 )) && jobs=1
-          export CARGO_BUILD_JOBS=$jobs
-          # sccache hashes every CARGO_* variable rustc sees. This workflow's
-          # own (warnings as errors, test-profile debuginfo, colour) are not
-          # Release / apps' and would miss every entry its main builds wrote.
-          unset CARGO_PROFILE_DEV_DEBUG CARGO_PROFILE_TEST_DEBUG CARGO_TERM_COLOR \
-            CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS
-          bash tools/ci/measure.sh "package tapps ${{ matrix.arch }}" -- \
-            bash scripts/ci-run.sh "package-apps.sh ($TILO_RELEASE_APPS)" -- \
-            dist/apps/package-apps.sh
-
-      - name: Report package compiler cache
-        if: always()
-        run: |
-          if [[ -n ${RUSTC_WRAPPER:-} && -x $RUSTC_WRAPPER ]]; then
-            "$RUSTC_WRAPPER" --show-stats || echo 'compiler cache statistics unavailable'
-          else
-            echo 'compiler cache disabled; no hit rate established'
-          fi
-
-      - name: Selected tapps within their size budget
-        run: >-
-          python3 tools/perf/tapp_size_ratchet.py measure dist/app-release
-          --arch "${{ matrix.arch }}" --summary "$GITHUB_STEP_SUMMARY"
-
-      - name: Save package compiler timings
-        if: always()
-        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
-        with:
-          name: package-compiler-timings-${{ matrix.arch }}
-          path: target/cargo-timings/cargo-timing.html
-          retention-days: 7
-          if-no-files-found: error
-
   checks:
     if: always()
-    needs: [builder, select, security, test, check, clippy, android, wasm, suites, vendored, pins, tapps]
+    needs: [builder, select, security, test, check, clippy, android, wasm, suites, vendored, pins]
     runs-on: runner-quality
     timeout-minutes: 10
     container:
@@ -937,8 +826,6 @@ jobs:
           ANDROID_REQUIRED: ${{ needs.select.outputs.android_required }}
           WASM_RESULT: ${{ needs.wasm.result }}
           WASM_REQUIRED: ${{ needs.select.outputs.wasm_required }}
-          TAPPS_RESULT: ${{ needs.tapps.result }}
-          TAPPS_REQUIRED: ${{ needs.select.outputs.tapp_required }}
           EVENT_NAME: ${{ github.event_name }}
           SECURITY_REQUIRED: ${{ needs.select.outputs.security_required }}
           RUST_REQUIRED: ${{ needs.select.outputs.rust_required }}
@@ -1001,14 +888,6 @@ jobs:
               exit 1
               ;;
           esac
-          case "$TAPPS_REQUIRED:$TAPPS_RESULT" in
-            true:success) ;;
-            false:skipped) ;;
-            *)
-              echo '::error::Affected tapps are over their size budgets, failed to package, or applicability is invalid.'
-              exit 1
-              ;;
-          esac
           case "$EVENT_NAME:$PINS_REQUIRED:$PINS_RESULT" in
             pull_request:true:success)
               echo 'Snapshot pins verified: signed and bound to this source; Rust and security suites run on main after the merge.' >> "$GITHUB_STEP_SUMMARY"
@@ -1033,37 +912,30 @@ jobs:
               ;;
           esac
 
-      # Reuse this runner for the main-branch receipt, including failed gates.
-      # PRs finish after aggregation without another checkout or note write.
-      # The aggregate above is the gate; the receipt is evidence of it. A forge
-      # outage while recording must not turn a passed gate red (the lander
-      # reverts red merges), and a missing receipt already fails closed in
-      # `receipt.sh verify`, so both receipt steps may fail without the job.
-      - name: Checkout CI receipt tool
-        id: receipt-checkout
-        if: >-
-          always() &&
-          github.ref == 'refs/heads/main'
-        continue-on-error: true
+  # Main is unstable by policy, so this is where a commit becomes stable: the
+  # aggregate above decides what "green" means for this commit, and this job
+  # fast-forwards the promotion ref to exactly the commit the run tested.
+  # Nothing is built or published here; the release workflows run from stable.
+  # A tooling tree that classified the commit (or one that its own change
+  # predates) cannot promote it, so the run is cancelled rather than queued
+  # behind a foreign push.
+  # Requires the STABLE_PUSH_TOKEN secret (docs/ci/stable-promotion.md).
+  promote:
+    needs: [checks]
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.checks.result == 'success' }}
+    runs-on: runner-quality
+    timeout-minutes: 10
+    concurrency:
+      group: promote-stable
+      cancel-in-progress: false
+    steps:
+      - name: Checkout the promoted commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          # The receipt step pushes a git note with these credentials, so this
-          # checkout keeps the write-capable repository token. Every other
-          # checkout reads this public repository with the job token.
-          token: ${{ secrets.REGISTRY_TOKEN }}
-          # Recording needs the tested commit and the receipt script, not
-          # ancestry or other branches. receipt.sh fetches its notes ref.
-          fetch-depth: 1
-          fetch-tags: false
-          sparse-checkout: tools/ci/receipt.sh
-          sparse-checkout-cone-mode: false
-      - name: Record an observable CI receipt without touching a branch
-        if: always() && steps.receipt-checkout.outcome == 'success'
-        continue-on-error: true
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Fast-forward stable to the tested commit
         env:
-          SELECT_RESULT: ${{ needs.select.result }}
-          SECURITY_RESULT: ${{ needs.security.result }}
-          AFFECTED_RESULT: ${{ steps.aggregate.outcome }}
-        run: >-
-          tools/ci/receipt.sh record "$GITHUB_SHA" "$GITHUB_RUN_ID"
-          "$SELECT_RESULT" "$SECURITY_RESULT" "$AFFECTED_RESULT" origin
+          STABLE_PUSH_TOKEN: ${{ secrets.STABLE_PUSH_TOKEN }}
+        run: python3 tools/ci/promote_stable.py --target "$GITHUB_SHA"
