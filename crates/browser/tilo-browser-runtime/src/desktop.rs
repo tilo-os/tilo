@@ -1451,7 +1451,7 @@ impl TileSource for Tiles {
                 // manifest's `arrival-skeleton`) until it presents.
                 let host = TileHost::from_component(component);
                 match &tab.tile {
-                    ui::widget::TileContent::LocalApp { app_id, .. } => host.with_arrival_shape(
+                    TileContent::LocalApp { app_id, .. } => host.with_arrival_shape(
                         ui::application::registry::declared_arrival_shape(app_id),
                     ),
                     _ => host,
