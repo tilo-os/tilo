@@ -41,7 +41,10 @@
 //! ([`over_budget`]): a recorded local check, not a test, since times depend on the machine
 //! and its load.
 
+mod engines;
 mod thread;
+
+pub use engines::compute_package;
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -56,7 +59,9 @@ use tilolang::source::{compile_dirs, dependency_order};
 use tilolang::{Compiled, SeededEntropy};
 use tilolang_runtime::meta::Meta;
 use tilolang_runtime::value::{ResourceRef, Value};
-use tilolang_runtime::{Decision, EngineProfile, Principal, Translation, UiNode, ViewInstance};
+use tilolang_runtime::{
+    Decision, EngineConfig, EngineKind, EngineProfile, Principal, Translation, UiNode, ViewInstance,
+};
 
 use crate::action::{Authorship, DynAction, DynEdit};
 use crate::host::{Host, Opening};
@@ -77,8 +82,10 @@ pub struct BenchConfig {
     pub samples: usize,
     /// How long the idle scenario waits.
     pub idle: Duration,
-    /// How the process's wasm engine translates modules.
-    pub translation: Translation,
+    /// The process's wasm engine.
+    pub engine: EngineConfig,
+    /// What to measure beyond the package's scenarios, to compare engines.
+    pub workloads: EngineWorkloads,
     /// Whether to count where the time of calls into wasm goes (it costs a clock read per
     /// import).
     pub profile: bool,
@@ -90,6 +97,18 @@ pub struct BenchConfig {
     /// Check the records against section 4.1's budgets ([`over_budget`]).
     pub budgets: bool,
     pub env: Env,
+}
+
+/// The measurements that compare engines ([`engines`]).
+#[derive(Clone, Debug, Default)]
+pub struct EngineWorkloads {
+    /// Compiling, and opening in a process that has not compiled the modules yet; `--engine`
+    /// turns it on.
+    pub cold: bool,
+    /// The tilolang compute workload (`--compute`).
+    pub compute: bool,
+    /// The image filter library built at this path (`--library PATH`).
+    pub library: Option<PathBuf>,
 }
 
 /// The environment fields of a record.
@@ -1102,12 +1121,11 @@ struct Sized<'a> {
 
 impl Sized<'_> {
     fn record(&self, scenario: &str, unit: &'static str, samples: Vec<f64>, extra: Json) -> Record {
-        let translation = match self.config.translation {
-            Translation::Lazy => "lazy",
-            Translation::Eager => "eager",
-        };
-        let mut meta =
-            json!({"items": self.n, "package": self.meta.app, "translation": translation});
+        let mut meta = engines::engine_meta(self.config.engine);
+        if let Some(m) = meta.as_object_mut() {
+            m.insert("items".into(), json!(self.n));
+            m.insert("package".into(), json!(self.meta.app));
+        }
         if let (Some(m), Json::Object(extra)) = (meta.as_object_mut(), extra) {
             m.extend(extra.into_iter().filter(|(_, v)| !v.is_null()));
         }
@@ -1145,11 +1163,9 @@ impl Sized<'_> {
 /// # Errors
 /// The package does not compile or a scenario fails.
 pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Record>, String> {
-    let translation = tilolang_runtime::set_translation(config.translation);
-    if translation != config.translation {
-        return Err(format!(
-            "the process's engine already translates {translation:?}"
-        ));
+    let engine = tilolang_runtime::configure(config.engine)?;
+    if engine != config.engine {
+        return Err(format!("the process's engine is already {engine:?}"));
     }
     let compiling = Instant::now();
     let packages = compile(&config.package)?;
@@ -1184,6 +1200,9 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         samples: vec![compiled_in],
         meta: json!({"package": meta.app, "packages": packages.len()}),
     });
+    for record in engines::workloads(config, &packages, &short)? {
+        out.push(record);
+    }
     // A room of `n` items seeded as `base`, its indexes kept from an earlier session.
     let sized = |n: usize, base: Doc| -> Result<Sized<'_>, String> {
         let (index, index_build) = prepare_index(&base, &packages)?;
@@ -1206,6 +1225,9 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         }
         for record in open(&sized)? {
             out.push(record);
+        }
+        if config.workloads.cold {
+            out.push(engines::start(&sized)?);
         }
         if config.open_only {
             continue;
@@ -1291,6 +1313,10 @@ fn memory(sized: &Sized<'_>, isolation: &Isolation) -> Result<Record, String> {
         .env(MEMORY_ROOM, &room)
         .env(MEMORY_PACKAGE, &sized.config.package)
         .env(MEMORY_INDEX, index.path())
+        .env(
+            tilolang_runtime::engine::ENGINE_VARIABLE,
+            sized.config.engine.kind.name(),
+        )
         .output();
     let _ = std::fs::remove_file(&room);
     let output = output.map_err(|e| format!("the memory process: {e}"))?;
@@ -1882,11 +1908,12 @@ impl Recorder<'_> {
     }
 }
 
-/// `tilolang bench <package> [--sizes 10,1000,10000] [--samples N] [--idle SECONDS]`.
+/// `tilolang bench <package> [--sizes 10,1000,10000] [--samples N] [--idle SECONDS]
+/// [--engine wasmi|cranelift|winch] [--compute] [--library PATH]`.
 /// Prints one JSON record per line.
 #[must_use]
 pub fn main(args: &[String]) -> std::process::ExitCode {
-    if let Some(measured) = memory_child() {
+    if let Some(measured) = memory_child().or_else(engines::compile_child) {
         return match measured {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(error) => {
@@ -1920,7 +1947,8 @@ fn parse(args: &[String]) -> Result<BenchConfig, String> {
         sizes: vec![10, 1000, 10_000],
         samples: 20,
         idle: Duration::from_secs(10),
-        translation: Translation::default(),
+        engine: EngineConfig::default(),
+        workloads: EngineWorkloads::default(),
         profile: false,
         memory: std::env::current_exe().ok().map(|program| Isolation {
             program,
@@ -1953,8 +1981,16 @@ fn parse(args: &[String]) -> Result<BenchConfig, String> {
                 config.idle =
                     Duration::from_secs_f64(value()?.parse().map_err(|e| format!("{e}"))?);
             }
+            "--engine" => {
+                let name = value()?;
+                config.engine.kind = EngineKind::from_name(&name)
+                    .ok_or_else(|| format!("unknown engine {name} (wasmi, cranelift, winch)"))?;
+                config.workloads.cold = true;
+            }
+            "--compute" => config.workloads.compute = true,
+            "--library" => config.workloads.library = Some(PathBuf::from(value()?)),
             "--translation" => {
-                config.translation = match value()?.as_str() {
+                config.engine.translation = match value()?.as_str() {
                     "lazy" => Translation::Lazy,
                     "eager" => Translation::Eager,
                     other => return Err(format!("unknown translation {other}")),
