@@ -22,13 +22,22 @@ import {localized} from './arrival.mjs';
  * the share of a wait that is random either way. */
 export const BACKOFF = {firstMs: 2000, factor: 2, capMs: 5 * 60 * 1000, jitter: 0.2};
 
+/** `start`, `factor`, `capMs` and `jitter` of a wait series, shaped like
+ * [`BACKOFF`]. */
+const shape = start => ({
+  firstMs: start.firstMs, factor: start.factor, capMs: start.capMs, jitter: start.jitter ?? BACKOFF.jitter,
+});
+
 /** How long to wait before try `attempt` (0 for the first wait): exponential
- * from `BACKOFF.firstMs`, ±`BACKOFF.jitter`, never past `BACKOFF.capMs`. */
-export function backoffDelay(attempt, random = Math.random) {
+ * from `start.firstMs` (by default [`BACKOFF`]), ±`jitter`, never past
+ * `capMs`. The wait is random so a room full of pages that lost one host do
+ * not all come back in the same tick. */
+export function backoffDelay(attempt, random = Math.random, start = BACKOFF) {
+  const {firstMs, factor, capMs, jitter} = shape(start);
   const steps = Math.max(0, Math.floor(attempt));
-  const base = Math.min(BACKOFF.capMs, BACKOFF.firstMs * BACKOFF.factor ** steps);
-  const jittered = base * (1 + BACKOFF.jitter * (2 * random() - 1));
-  return Math.round(Math.min(BACKOFF.capMs, jittered));
+  const base = Math.min(capMs, firstMs * factor ** steps);
+  const jittered = base * (1 + jitter * (2 * random() - 1));
+  return Math.round(Math.min(capMs, jittered));
 }
 
 /** Why the page waits, from the last `error` and whether the browser is

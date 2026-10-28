@@ -26,6 +26,7 @@ import {createAgents} from './agents.mjs';
 import {openChannelVault} from './channel-vault.mjs';
 import {createMembership, createWorkspaces} from './membership.mjs';
 import {createPresencePublisher, createRemotePresence} from './live-presence.mjs';
+import {backoffDelay} from './reconnect.mjs';
 import {createFallbackTransport, createLiveCarriers} from './live-fallback.mjs';
 import {createSpeakers} from './live-speakers.mjs';
 import {createLiveTransport, LIVE_PATH, LIVE_ROOT} from './live-transport.mjs';
@@ -49,6 +50,10 @@ export {
 export {joinViaHost, listedWorkspaces, spectate, workspaceAt} from './workspaces.mjs';
 
 const CERTIFICATE = 'certificate';
+/** Per record, how many unread preview ops a member's stream may leave: a
+ * frame reads and drops them, so this only bounds a page that stopped
+ * drawing while a peer kept typing. */
+const MAX_PENDING_PREVIEWS = 256;
 /** What this page's WebCodecs decodes, probed once. */
 let probed;
 const probedCodecs = () => (probed ??= decodableCodecs());
@@ -156,7 +161,10 @@ function expiresWithinADay(stored) {
 }
 /** Ask for a new live grant this long before the current one expires. */
 const GRANT_RENEW_MS = 60_000;
-const LIVE_RETRY_MS = [250, 1000, 3000, 10_000];
+/** Rejoining the live plane: the first wait and the longest, exponential
+ * between, each jittered by `reconnect.mjs` (`backoffDelay`) so the members
+ * of a room whose relay restarted do not all come back in the same tick. */
+const LIVE_RETRY = {firstMs: 250, factor: 4, capMs: 10_000, jitter: 0.2};
 /** A member's track may be announced a moment after the member: retry a
  * subscription that ended while the member is still present. */
 const SUBSCRIBE_RETRY_MS = [100, 250, 1000, 3000];
@@ -266,6 +274,7 @@ export function createLiveLayer(peer, runtime, room, {
   now = () => performance.now(), wallNow = () => Date.now(),
   setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
   clearTimer = handle => globalThis.clearTimeout(handle),
+  random = Math.random,
 } = {}) {
   const remotes = new Map();
   const participants = new Map();
@@ -344,7 +353,14 @@ export function createLiveLayer(peer, runtime, room, {
     previews.set(publisherId, perRecord);
     const key = recordKey(decoded.record);
     if (decoded.kind === 'preview') {
-      perRecord.set(key, [...(perRecord.get(key) ?? []), ...decoded.ops]);
+      // A keystroke arrives as its own preview op, so a record's list grows
+      // in place; each frame reads its tail and drops what it applied
+      // (`appliedPreview`). Copying the whole list per op was quadratic, and
+      // a peer that typed without stopping grew it without bound.
+      const pending = perRecord.get(key) ?? [];
+      if (!perRecord.has(key)) perRecord.set(key, pending);
+      for (const op of decoded.ops) pending.push(op);
+      if (pending.length > MAX_PENDING_PREVIEWS) pending.splice(0, pending.length - MAX_PENDING_PREVIEWS);
       emit('preview', {publisher: publisherId, record: decoded.record, seq: decoded.seq, ops: decoded.ops});
     } else if (decoded.kind === 'previewEnd') {
       perRecord.delete(key);
@@ -461,7 +477,7 @@ export function createLiveLayer(peer, runtime, room, {
     } catch (error) {
       if (stopped) return;
       setState('unavailable');
-      const delay = LIVE_RETRY_MS[Math.min(retry, LIVE_RETRY_MS.length - 1)];
+      const delay = backoffDelay(retry, random, LIVE_RETRY);
       retry += 1;
       renewTimer = setTimer(() => connect(), delay);
     }
@@ -488,7 +504,7 @@ export function createLiveLayer(peer, runtime, room, {
     if (renewTimer !== undefined) clearTimer(renewTimer);
     dropSession();
     retry = Math.max(retry, 1);
-    renewTimer = setTimer(() => connect(), LIVE_RETRY_MS[0]);
+    renewTimer = setTimer(() => connect(), backoffDelay(0, random, LIVE_RETRY));
   }
   function rotate() {
     if (stopped) return;

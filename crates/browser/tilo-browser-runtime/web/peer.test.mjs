@@ -368,6 +368,36 @@ test('a lost live session reconnects with a fresh grant', async () => {
   await peer.dispose();
 });
 
+test('a room of members that lost the live plane comes back at jittered waits, not one tick', async () => {
+  const timers = [];
+  const session = {closed: new Promise(() => {}), close() {}, publishPresence: () => true, watchMembers() {}, subscribePresence() { return () => {}; }, subscribeOps() { return () => {}; }};
+  let attempts = 0;
+  const layer = createLiveLayer({liveGrant: async () => { attempts++; throw new Error('the relay is restarting'); }}, fakeRuntime(), ROOM, {
+    endpoint: 'test', carriers: {connect: async () => session},
+    setTimer: (callback, delay) => {timers.push(delay); return timers.length;}, clearTimer() {},
+    // A whole room's worth of pages, each with its own random draw.
+    random: () => 0.5,
+  });
+  await until(() => attempts === 1, 'the refused grant');
+  assert.equal(timers.at(-1), 250, 'the first wait is the live series\'s, centred');
+  const waits = new Set();
+  for (const draw of [0, 0.1, 0.37, 0.5, 0.9, 1]) {
+    timers.length = 0;
+    const jittered = createLiveLayer({liveGrant: async () => { throw new Error('restarting'); }}, fakeRuntime(), ROOM, {
+      endpoint: 'test', carriers: {connect: async () => session},
+      setTimer: (callback, delay) => {timers.push(delay); return timers.length;}, clearTimer() {},
+      random: () => draw,
+    });
+    await until(() => timers.length, 'the first wait');
+    waits.add(timers.at(-1));
+    jittered.stop();
+  }
+  assert.ok(waits.size > 1, `one tick for the whole room: ${[...waits]}`);
+  assert.ok([...waits].every(ms => ms >= 200 && ms <= 300), `within a fifth either way: ${[...waits]}`);
+  assert.ok(attempts >= 1);
+  layer.stop();
+});
+
 test('late decryption cannot revive a departed or rejoined publisher', async () => {
   const runtime = fakeRuntime();
   const liveCarriers = fakeCarriers();
@@ -964,6 +994,44 @@ test('a member focusing a record subscribes its typing previews there', async ()
   }), performance.now());
   await until(() => session.opsSubscribers.size, 'the focused record subscription');
   assert.ok(session.opsSubscribers.has(`${OTHER}/${runtime.liveRecordTrack(JSON.stringify(record))}`));
+  await peer.dispose();
+});
+
+test('a record\'s preview ops grow in place and stay bounded while nobody applies them', async () => {
+  const runtime = fakeRuntime();
+  const liveCarriers = fakeCarriers();
+  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
+  await until(() => peer.live.state === 'live', 'the live layer');
+  const [session] = liveCarriers.connects;
+  session.memberWatcher(OTHER, true);
+  const record = {app: 'so.tilo.word-processor', record: 'main'};
+  peer.live.watchRecord(record);
+  const track = runtime.liveRecordTrack(JSON.stringify(record));
+  // A remote state exists once its member's presence arrived.
+  session.presenceSubscribers.get(OTHER)(sealedFrame({
+    seq: 1, sentAtMs: Date.now(), focus: record, pointer: null, selection: null, drag: null,
+  }), performance.now());
+  await until(() => peer.live.remoteState().length, 'the member');
+  // `watchRecord` subscribes once the member's presence focused it.
+  await until(() => session.opsSubscribers.has(`${OTHER}/${track}`), 'the record subscription');
+  const send = sequence => session.opsSubscribers.get(`${OTHER}/${track}`)(sealedFrame({
+    kind: 'preview', record, seq: sequence, ops: [{kind: 'insert', at: String(sequence), text: 'x'}],
+  }));
+  // A single op arrives as one frame, thousands of times: no page reads
+  // remoteState here, so nothing drops what landed.
+  for (let sequence = 1; sequence <= 2000; sequence++) send(sequence);
+  // Opening a sealed frame is asynchronous (the keys are awaited).
+  await until(() => Object.keys(peer.live.remoteState()[0].previews).length, 'the previews');
+  await settle();
+  const sent2000 = () => {
+    const [record] = Object.values(peer.live.remoteState()[0].previews);
+    return record?.at(-1);
+  };
+  await until(() => sent2000()?.at === '2000', 'every op to land');
+  const [previews] = Object.values(peer.live.remoteState()[0].previews);
+  assert.ok(previews.length <= 256, `bounded to ${previews.length}`);
+  // The newest op is still there: a drop trims from the front.
+  assert.deepEqual(previews.at(-1), {kind: 'insert', at: '2000', text: 'x'});
   await peer.dispose();
 });
 

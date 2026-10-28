@@ -58,6 +58,18 @@ test('the waits grow twice as long from 2 s, up to 5 min, each within a fifth ei
   assert.equal(backoffDelay(40, () => 1), BACKOFF.capMs, 'never past the cap, jitter or not');
 });
 
+test('another wait series gets its own shape, still jittered and capped', () => {
+  // The live layer's: 250 ms, then 4x up to 10 s.
+  const live = {firstMs: 250, factor: 4, capMs: 10_000, jitter: 0.2};
+  const middle = Array.from({length: 5}, (_, attempt) => backoffDelay(attempt, () => 0.5, live));
+  assert.deepEqual(middle, [250, 1000, 4000, 10_000, 10_000]);
+  assert.equal(backoffDelay(0, () => 0, live), 200);
+  assert.equal(backoffDelay(0, () => 1, live), 300);
+  assert.equal(backoffDelay(9, () => 1, live), 10_000, 'never past its own cap');
+  // A shape without a jitter falls back to the shared share.
+  assert.equal(backoffDelay(0, () => 0, {firstMs: 100, factor: 2, capMs: 1000}), Math.round(100 * (1 - BACKOFF.jitter)));
+});
+
 test('a wait counts down, then the page tries, and says so', async () => {
   const {reconnect, view, advance} = harness();
   const waiting = reconnect.wait({reason: 'unreachable', attempt: 2, origin: 'https://lounge.example/a?b'});
