@@ -524,6 +524,12 @@ installer-preview-target-report-missing-architecture = The report does not say w
 
 installer-preview-target-report-unsupported-architecture = Tilo has no build for the architecture named in that report.
 
+installer-preview-target-architecture-unsupported-processor-size = Tilo needs a 64-bit processor with at least 4 GiB of memory, so it cannot run on a 32-bit computer. Choose a 64-bit computer.
+
+installer-preview-target-architecture-unsupported-byte-order = Tilo stores and shares its documents in a little-endian format, so it cannot run on this big-endian computer. Choose a little-endian computer.
+
+installer-preview-target-architecture-unsupported-graphics = No graphics driver for Vulkan compute exists for this computer’s processor, so Tilo cannot draw. Choose a computer with an AMD, Intel, NVIDIA or Qualcomm graphics card.
+
 
 installer-preview-target-busy = Finish choosing a report before choosing another.
 

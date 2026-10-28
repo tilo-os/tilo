@@ -258,6 +258,109 @@ fn imported_report_must_name_a_supported_architecture_and_model() {
     );
 }
 
+/// A computer Tilo can never run on is refused with the reason, not only the
+/// absence of an image. The three boundaries are the issue's: 32-bit, a
+/// big-endian byte order, and a processor with no Vulkan compute driver.
+#[test]
+fn architecture_boundaries_state_why_tilo_cannot_run_there() {
+    let boundaries: [(&[&str], &str); 3] = [
+        (
+            &["i686", "i386", "armv7hl", "armhf"],
+            "installer-preview-target-architecture-unsupported-processor-size",
+        ),
+        (
+            &["s390x", "ppc64"],
+            "installer-preview-target-architecture-unsupported-byte-order",
+        ),
+        (
+            &["sparc64"],
+            "installer-preview-target-architecture-unsupported-graphics",
+        ),
+    ];
+    for (architectures, key) in boundaries {
+        for architecture in architectures {
+            assert_eq!(
+                crate::release::unqualified_architecture(architecture),
+                Some(key),
+                "{architecture} is refused with its reason"
+            );
+        }
+    }
+
+    // A 64-bit little-endian architecture Tilo has not built or boot-tested is
+    // not refused as impossible: it has no image yet, and the page says so.
+    for architecture in ["riscv64", "ppc64le", "x86_64", "aarch64"] {
+        assert_eq!(
+            crate::release::unqualified_architecture(architecture),
+            None,
+            "{architecture} is limited by its catalog, not by the processor"
+        );
+        for selected in [
+            crate::release::bundled_releases_for_arch(architecture),
+            crate::release::bundled_internal_releases_for_arch(architecture).map(|_| Vec::new()),
+        ] {
+            assert!(
+                selected.is_ok(),
+                "{architecture} resolves to a selection instead of an error"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_selected_or_imported_architecture_boundary_is_refused_with_its_reason() {
+    let text = |key: &str| crate::setup::strings::t(key);
+    let mut preview = preview();
+    preview
+        .apply(InstallerPreviewEffect::ContinuePreview)
+        .unwrap();
+    for (field, value) in [
+        ("manufacturer", "Prepared Vendor"),
+        ("model", "Prepared Laptop 14"),
+        ("variant", "PREPARED-BOARD"),
+    ] {
+        preview
+            .apply(InstallerPreviewEffect::SetTargetIdentityField {
+                field: field.into(),
+                value: value.into(),
+            })
+            .unwrap();
+    }
+    assert_eq!(
+        preview.apply(InstallerPreviewEffect::SetTargetArchitecture {
+            architecture: "ppc64".into(),
+        }),
+        Err("installer-preview-target-report-unsupported-architecture")
+    );
+    assert_eq!(
+        preview.target.projection()["error"],
+        serde_json::json!(text(
+            "installer-preview-target-architecture-unsupported-byte-order"
+        )),
+        "the page names the boundary, and the selection is unchanged"
+    );
+    assert_ne!(preview.target.architecture(), "ppc64");
+
+    // An imported report from that computer says the same thing, before the
+    // medium could be prepared for a processor Tilo cannot use.
+    let bytes = report(Some("i686"), vec![supported_graphics()])
+        .to_json()
+        .unwrap();
+    assert_eq!(
+        preview
+            .target
+            .import_bytes(Some("thirtytwobit.json".into()), &bytes),
+        Err("installer-preview-target-report-unsupported-architecture")
+    );
+    assert_eq!(
+        preview.target.projection()["error"],
+        serde_json::json!(text(
+            "installer-preview-target-architecture-unsupported-processor-size"
+        ))
+    );
+    assert_eq!(preview.target.projection()["source"], "declared-model");
+}
+
 #[test]
 fn an_unsupported_essential_component_blocks_preparation_before_identity() {
     let mut preview = preview();

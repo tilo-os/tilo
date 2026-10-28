@@ -105,11 +105,14 @@ impl Target {
             .unwrap_or(&self.architecture)
     }
 
-    /// Select the other supported architecture for a named model. An imported
-    /// report keeps its own observation architecture; replacing the evidence
-    /// is an explicit choice, not an edit behind it.
+    /// Select the other architecture for a named model. An imported report
+    /// keeps its own observation architecture; replacing the evidence is an
+    /// explicit choice, not an edit behind it. An architecture Tilo can never
+    /// run on is refused with the boundary that rules it out, before any
+    /// catalog lookup says merely that no image exists.
     pub(super) fn set_architecture(&mut self, architecture: String) -> Result<(), &'static str> {
-        if !crate::release::SUPPORTED_ARCHITECTURES.contains(&architecture.as_str()) {
+        if let Some(boundary) = crate::release::unqualified_architecture(&architecture) {
+            self.error = Some(t(boundary));
             return Err("installer-preview-target-report-unsupported-architecture");
         }
         if let Some(report) = &self.report {
@@ -231,17 +234,15 @@ impl Target {
             return Err("installer-preview-target-report-invalid");
         }
         match report.architecture.as_deref() {
-            Some(architecture)
-                if crate::release::SUPPORTED_ARCHITECTURES.contains(&architecture) =>
-            {
-                self.architecture = architecture.to_string();
-            }
-            Some(_) => {
-                self.error = Some(t(
-                    "installer-preview-target-report-unsupported-architecture",
-                ));
-                return Err("installer-preview-target-report-unsupported-architecture");
-            }
+            Some(architecture) => match crate::release::unqualified_architecture(architecture) {
+                // A report from a computer Tilo can never run on says why,
+                // rather than only that no build exists for it.
+                Some(boundary) => {
+                    self.error = Some(t(boundary));
+                    return Err("installer-preview-target-report-unsupported-architecture");
+                }
+                None => self.architecture = architecture.to_string(),
+            },
             None => {
                 self.error = Some(t("installer-preview-target-report-missing-architecture"));
                 return Err("installer-preview-target-report-missing-architecture");
@@ -546,6 +547,13 @@ impl Target {
             ));
         }
         rows.push(Box::new(architectures));
+        if let Some(boundary) = crate::release::unqualified_architecture(self.architecture()) {
+            rows.push(Box::new(
+                Text::new(&t(boundary))
+                    .with_id("installer.target.architecture-boundary")
+                    .with_live(ui::a11y::Politeness::Polite),
+            ));
+        }
         rows.push(Box::new(
             Text::new(&t("installer-preview-target-scan-hint"))
                 .with_role(TextRole::Caption)
