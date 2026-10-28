@@ -19,20 +19,14 @@ pub fn device_identity() -> anyhow::Result<SigningIdentity> {
     Ok(SigningIdentity::from_signing_key(key))
 }
 
-/// A publisher identity file, `{"secret_key_hex": "…"}` — the format
-/// `tilo-runtime-bundle key generate` writes and CI keeps in a secret.
+/// A publisher key file ([`registry_types::key_file`]), as
+/// `tilo-runtime-bundle key generate` writes it and CI keeps it in a secret.
 ///
 /// # Errors
 ///
-/// Reading or parsing the file, or a key that isn't 32 bytes of hex.
+/// Reading the file, or a file that is no key file.
 pub fn identity_file(path: &Path) -> anyhow::Result<SigningIdentity> {
-    #[derive(serde::Deserialize)]
-    struct File {
-        secret_key_hex: String,
-    }
-    let file: File = serde_json::from_slice(&std::fs::read(path)?)?;
-    let seed: [u8; 32] = hex::decode(file.secret_key_hex.trim())?
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("{}: the secret key is not 32 bytes", path.display()))?;
-    Ok(SigningIdentity::from_seed(&seed))
+    Ok(SigningIdentity::from_signing_key(
+        registry_types::key_file::load(path)?,
+    ))
 }

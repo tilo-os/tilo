@@ -17,6 +17,8 @@ name = "tilo-runtime-update"
 path = "src/main.rs"
 
 [dependencies]
+# The publisher key file the feed is signed with.
+registry-types = { path = "../registry-types" }
 ed25519-dalek.workspace = true
 hex.workspace = true
 serde.workspace = true
