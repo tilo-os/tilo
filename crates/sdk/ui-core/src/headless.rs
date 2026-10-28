@@ -280,8 +280,9 @@ mod capture;
 mod inspection;
 use inspection::{
     audit_inspection_node, collect_inspection, collect_named_targets, collect_targets,
-    compare_bool, compare_contains, compare_optional_bool, compare_text, effect_control_ids,
-    effect_control_ids_where, find_semantic_target, inspection_has_semantics, role_name,
+    compare_bool, compare_contains, compare_optional_bool, compare_text, compare_text_selection,
+    effect_control_ids, effect_control_ids_where, find_semantic_target, inspection_has_semantics,
+    role_name,
 };
 mod inspection_patch;
 pub use inspection_patch::{InspectionPatchStats, write_inspection_patch};
@@ -6186,6 +6187,12 @@ impl FrameHarness {
             "value",
             expected.value_contains.as_deref(),
             node.value.as_deref(),
+        );
+        compare_text_selection(
+            &mut mismatches,
+            "text selection",
+            expected.text_selection,
+            node.text_selection,
         );
         compare_bool(
             &mut mismatches,
