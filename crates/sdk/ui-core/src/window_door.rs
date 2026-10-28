@@ -210,7 +210,7 @@ mod transport {
 
     /// The window request `encoded` asks for, with the connections `fds` it came with.
     fn opening(encoded: &[u8], fds: Vec<Descriptor>) -> std::io::Result<WindowOpening> {
-        let request: WindowRequest = serde_json::from_slice(&encoded)
+        let request: WindowRequest = serde_json::from_slice(encoded)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
         let expected = usize::from(request.collaboration) + usize::from(request.shell_ui);
         if fds.len() != expected {
