@@ -139,7 +139,7 @@ impl PresenceHue {
 
     /// The hue nearest an sRGB colour's OKLCH hue, or `None` for a grey
     /// (chroma under 0.02): how a roster's packed colour or a desktop accent
-    /// reads as a presence hue. The OKLab conversion is the toolkit's
+    /// reads as a presence hue. The `OKLab` conversion is the toolkit's
     /// (`ui::color::Oklch::from_color`), so both read a colour alike.
     #[must_use]
     pub fn nearest_to_srgb(red: u8, green: u8, blue: u8) -> Option<Self> {
@@ -189,7 +189,7 @@ fn decode_srgb(v: u8) -> f64 {
     }
 }
 
-/// Linear sRGB in OKLab (Björn Ottosson's matrices).
+/// Linear sRGB in `OKLab` (Björn Ottosson's matrices).
 #[allow(
     clippy::many_single_char_names,
     reason = "l/a/b and l/m/s are the names the OKLab paper gives these axes"
