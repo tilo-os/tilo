@@ -4,9 +4,9 @@
 //! The probe and its report schema are `imager_backend::support_report`,
 //! shared with Tilo Imager, so both doors observe a machine the same way and
 //! name the same components in the same words. This module owns only what the
-//! installer draws: [the sentence above the rows](summary_text) and
-//! [the rows themselves](component_rows), plus
-//! [the same facts as data](component_facts) for a caller with no screen.
+//! installer draws: the sentence above the rows (`summary_text`) and
+//! the rows themselves (`component_rows`), plus
+//! the same facts as data (`component_facts`) for a caller with no screen.
 //!
 //! The report never decides the install and grants nothing. It is read once,
 //! before the plan is written, and shown on Review where the person is
