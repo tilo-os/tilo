@@ -548,6 +548,11 @@ verified, then the person is switched over, and the old directory is removed onl
 they have signed in to the new one. Every step can be resumed after an interruption.
 The old disk secret keeps working until the person's new keyslot has been proven to
 open the volume, and the recovery key keeps working throughout.
+A person's old password hash outlives their move onto a user key while the machine
+could still boot an image from before `pam_tilo`, whose sign-in checks it. `tilo-authd`
+locks it at the first start or sign-in after the booted update is confirmed and once no
+deployment that could boot predates `pam_tilo`; until then nothing on the new image
+checks it, because `pam_tilo`'s answer, and the daemon's silence, is final.
 
 ## 10. Still to establish
 

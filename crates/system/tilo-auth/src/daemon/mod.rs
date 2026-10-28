@@ -16,6 +16,7 @@ use crate::luks;
 use crate::protocol::{PendingSignIn, Refusal, Reply, Request};
 use crate::record::{self, Record, Store};
 use crate::recovery::RecoveryKey;
+use crate::rollback_set::RollbackSet;
 use crate::secret::Secret;
 use crate::strength;
 use crate::tpm::{self, Tries};
@@ -58,6 +59,8 @@ pub struct Config {
     pub volume_key: Option<String>,
     /// Where logind keeps a state file per signed-in uid.
     pub sessions: PathBuf,
+    /// What decides when a migrated person's old password hash may go.
+    pub rollback_set: RollbackSet,
 }
 
 impl Default for Config {
@@ -78,6 +81,7 @@ impl Default for Config {
             handoff: Some(handoff::DESCRIPTION.into()),
             volume_key: Some(volume::LINKED_VOLUME_KEY.into()),
             sessions: PathBuf::from("/run/systemd/users"),
+            rollback_set: RollbackSet::default(),
         }
     }
 }

@@ -42,6 +42,8 @@ pub mod record;
 #[cfg(feature = "service")]
 pub mod recovery;
 #[cfg(feature = "service")]
+pub mod rollback_set;
+#[cfg(feature = "service")]
 pub mod secret;
 #[cfg(feature = "service")]
 pub mod strength;
