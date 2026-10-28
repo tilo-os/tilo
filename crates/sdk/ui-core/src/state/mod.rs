@@ -12,8 +12,6 @@ pub use collaboration::state::{write_patches, write_revert_patches, write_revert
 #[cfg(test)]
 pub(crate) mod owned_restore_tests;
 
-pub mod collab;
-pub use collab::{CollaborationState, RemoteCursor};
 pub mod diagnostics;
 pub use diagnostics::{DocumentDiagnostics, FrontierDiagnostics};
 pub mod revision;
@@ -165,8 +163,6 @@ impl DocumentReplica {
 
 /// The unified state object that holds our CRDT document.
 pub struct State {
-    /// Compatibility cursor surface; modern collaboration uses `PresenceCtx`.
-    pub collab: CollaborationState,
     /// Process-local document lifetime, distinct from a persistent record name
     /// or committed frontier. Captured readers must not survive replacement.
     document_identity: uuid::Uuid,
@@ -197,7 +193,6 @@ impl State {
             doc,
             root,
             outbound,
-            collab: CollaborationState::new(),
             undo,
         }
     }
@@ -209,8 +204,6 @@ impl State {
     /// name changes the new document has never seen. Each record's history is
     /// its own, so the stacks reset rather than travel.
     ///
-    /// `collab` (remote cursors and presence) is kept: presence is about who
-    /// else is here, which does not change because the document on screen did.
     /// Returns `false` when the history revision namespace is exhausted. In
     /// that case the live document is deliberately left in place: adopting a
     /// new one under an indistinguishable revision could reuse cached history
@@ -530,7 +523,6 @@ impl State {
             doc,
             root: automerge::ROOT,
             outbound,
-            collab: CollaborationState::new(),
             undo,
         }
     }
@@ -546,7 +538,6 @@ impl State {
             doc,
             root,
             outbound,
-            collab: CollaborationState::new(),
             undo,
         })
     }

@@ -2179,10 +2179,9 @@ impl AppHandler {
     )]
     /// Split out of `window_event`'s `RedrawRequested` arm (`clippy::too_many_lines`).
     /// Body unchanged from the original inline arm — see `window_event` for the
-    /// event-loop plumbing this is called from. The layout pass, draw pass,
-    /// legacy cursor drawing, and debug-outline drawing are further split
-    /// into [`run_layout_pass`], [`draw_frame_content`], [`draw_legacy_cursors`]
-    /// and [`draw_debug_outlines`] respectively; what remains is a single
+    /// event-loop plumbing this is called from. The layout pass, draw pass
+    /// and debug-outline drawing are further split into [`run_layout_pass`],
+    /// [`draw_frame_content`] and [`draw_debug_outlines`] respectively; what remains is a single
     /// frame's render-thread handshake (acquire scene, draw, send, log) whose
     /// phases share `render`/`app`/`scene`/timing locals and several early
     /// `return`s — further fragmenting it risks changing frame-timing or
