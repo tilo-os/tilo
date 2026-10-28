@@ -29,71 +29,84 @@ fn policy(remote: bool, dark: bool) -> Policy<'static> {
     }
 }
 
-/// The markup of a prepared document: its tags with their attributes, and
-/// the sheets of its `style` elements, without the text it shows. Every `<`
-/// in a prepared document opens a tag (text writes `&lt;`, a sheet `\3c `),
-/// and every attribute value is quoted with `"`, which it never contains.
-fn markup(document: &str) -> String {
-    let mut out = String::new();
-    let mut rest = document;
-    while let Some(open) = rest.find('<') {
-        let tail = &rest[open..];
-        let mut quoted = false;
-        let close = tail
-            .char_indices()
-            .find(|&(_, c)| {
-                if c == '"' {
-                    quoted = !quoted;
-                }
-                c == '>' && !quoted
-            })
-            .map_or(tail.len(), |(at, _)| at + 1);
-        let tag = &tail[..close];
-        out.push_str(tag);
-        rest = &tail[close..];
-        if tag.to_ascii_lowercase().starts_with("<style") {
-            let end = rest
-                .to_ascii_lowercase()
-                .find("</style")
-                .unwrap_or(rest.len());
-            out.push_str(&rest[..end]);
-            rest = &rest[end..];
+/// A prepared document as the engine reads it: every element, with its
+/// attributes (lower-case names and values), and the text of its style
+/// sheets. Text the document shows is left out.
+fn elements(document: &str) -> Vec<(String, Vec<(String, String)>, String)> {
+    use html5ever::tendril::TendrilSink as _;
+    use markup5ever_rcdom::{NodeData, RcDom};
+    let dom =
+        html5ever::parse_document(RcDom::default(), html5ever::ParseOpts::default()).one(document);
+    let mut found = Vec::new();
+    let mut stack: Vec<_> = dom
+        .document
+        .children
+        .borrow()
+        .iter()
+        .rev()
+        .cloned()
+        .collect();
+    while let Some(node) = stack.pop() {
+        if let NodeData::Element {
+            name,
+            attrs,
+            template_contents,
+            ..
+        } = &node.data
+        {
+            let attributes = attrs
+                .borrow()
+                .iter()
+                .map(|attribute| {
+                    (
+                        attribute.name.local.to_string(),
+                        attribute.value.to_string(),
+                    )
+                })
+                .collect();
+            let sheet = if &*name.local == "style" {
+                node.children
+                    .borrow()
+                    .iter()
+                    .filter_map(|child| match &child.data {
+                        NodeData::Text { contents } => Some(contents.borrow().to_string()),
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                String::new()
+            };
+            found.push((name.local.to_string(), attributes, sheet));
+            stack.extend(template_contents.borrow().iter().cloned());
         }
+        stack.extend(node.children.borrow().iter().rev().cloned());
+    }
+    found
+}
+
+/// The markup of a prepared document as the engine reads it: its elements
+/// with their attributes, and its style sheets, without the text it shows.
+fn markup(document: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for (name, attributes, sheet) in elements(document) {
+        out.push('<');
+        out.push_str(&name);
+        for (attribute, value) in attributes {
+            let _ = write!(out, " {attribute}=\"{value}\"");
+        }
+        out.push('>');
+        out.push_str(&sheet);
     }
     out
 }
 
-/// The attribute names on the tags of a prepared document, lower-cased.
+/// The attribute names on the elements of a prepared document, lower-cased.
 fn attribute_names(document: &str) -> Vec<String> {
-    let markup = markup(document);
-    let mut names = Vec::new();
-    let mut rest = markup.as_str();
-    while let Some(open) = rest.find('<') {
-        rest = &rest[open + 1..];
-        let mut tag = rest.split_inclusive('>').next().unwrap_or_default();
-        tag = tag.trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '/' || c == '!');
-        loop {
-            tag = tag.trim_start();
-            let end = tag
-                .find(|c: char| c == '=' || c == '>' || c == '/' || c.is_whitespace())
-                .unwrap_or(tag.len());
-            if end == 0 {
-                match tag.chars().next() {
-                    Some('/') => {
-                        tag = &tag[1..];
-                        continue;
-                    }
-                    _ => break,
-                }
-            }
-            names.push(tag[..end].to_ascii_lowercase());
-            tag = &tag[end..];
-            if let Some(value) = tag.strip_prefix("=\"") {
-                tag = value.find('"').map_or("", |close| &value[close + 1..]);
-            }
-        }
-    }
-    names
+    elements(document)
+        .into_iter()
+        .flat_map(|(_, attributes, _)| attributes.into_iter().map(|(name, _)| name))
+        .collect()
 }
 
 /// Every address the document makes the engine fetch: image sources and
@@ -366,6 +379,14 @@ fn markup_cannot_escape_the_text_or_attribute_it_is_written_in() {
         "<p><svg><p><style><img src=x onerror=alert(1)></style></svg>",
         "<img src=x onerror=alert(1)//",
         "<a href=\"https://ok.example\" onclick=\"alert(1)\">ok</a>",
+        "<P OnClick=\"alert(1)\" ONMOUSEOVER=alert(1)>x</P>",
+        "<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>",
+        "<![CDATA[<script>alert(1)</script>]]>",
+        "<!-- never closed <script>alert(1)</script>",
+        "<p>x</p><img src=x onerror=alert(1)",
+        "<math><mtext><table><mglyph><style><img src=x onerror=alert(1)></style></mglyph></table></mtext></math>",
+        "<form><math><mtext></form><form><mglyph><style></math><img src=x onerror=alert(1)>",
+        "<table><td><style></td><img src=x onerror=alert(1)></style></table>",
     ];
     for case in cases {
         let prepared = prepare(case, &policy(false, false));
@@ -704,4 +725,24 @@ fn a_document_shows_no_scroll_bar_of_its_own() {
             prepared.document
         );
     }
+}
+
+#[test]
+fn the_mail_keeps_its_body_attributes_and_its_text_stays_text() {
+    let prepared = prepare(
+        "<body bgcolor=\"#fafafa\" onload=\"alert(1)\" style=\"margin:0\">\
+<p>Fish &amp; chips &lt;3 <b>bold <i>both</b> slanted</i></p></body>",
+        &policy(false, false),
+    );
+    let document = &prepared.document;
+    assert!(
+        document.contains("<body bgcolor=\"#fafafa\" style=\"margin:0\">"),
+        "{document}"
+    );
+    assert_eq!(document.matches("<body").count(), 1, "{document}");
+    // Misnested formatting is closed where the engine closes it.
+    assert!(
+        document.contains("<p>Fish &amp; chips &lt;3 <b>bold <i>both</i></b><i> slanted</i></p>"),
+        "{document}"
+    );
 }

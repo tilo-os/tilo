@@ -151,7 +151,7 @@ peniko = { version = "0.6", features = ["bytemuck"] }
 percent-encoding = { version = "2" }
 phf = { version = "0.13", features = ["macros"] }
 phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
-phf_shared-594e8ee84c453af0 = { package = "phf_shared", version = "0.13", default-features = false, features = ["std"] }
+phf_shared-594e8ee84c453af0 = { package = "phf_shared", version = "0.13" }
 pkcs8 = { version = "0.11", default-features = false, features = ["encryption", "pem", "std"] }
 poly1305 = { version = "0.9", default-features = false, features = ["zeroize"] }
 polyval = { version = "0.7", default-features = false, features = ["hazmat", "zeroize"] }
@@ -397,7 +397,7 @@ peniko = { version = "0.6", features = ["bytemuck"] }
 percent-encoding = { version = "2" }
 phf = { version = "0.13", features = ["macros"] }
 phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
-phf_shared-594e8ee84c453af0 = { package = "phf_shared", version = "0.13", default-features = false, features = ["std"] }
+phf_shared-594e8ee84c453af0 = { package = "phf_shared", version = "0.13" }
 pkcs8 = { version = "0.11", default-features = false, features = ["encryption", "pem", "std"] }
 poly1305 = { version = "0.9", default-features = false, features = ["zeroize"] }
 polyval = { version = "0.7", default-features = false, features = ["hazmat", "zeroize"] }
