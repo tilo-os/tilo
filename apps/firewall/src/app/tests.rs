@@ -64,12 +64,10 @@ fn until_stored(
     what: &str,
     landed: impl Fn(&FirewallConfig) -> bool,
 ) {
-    let deadline = tilo_test_env::hang_deadline();
-    while !landed(&app.state().config()) {
-        assert!(std::time::Instant::now() < deadline, "{what}");
-        std::thread::sleep(std::time::Duration::from_millis(5));
+    tilo_test_env::wait_until(what, || {
         app.settle();
-    }
+        landed(&app.state().config())
+    });
 }
 
 /// Press the window bar's slot `id`, as the desktop hands the press over,

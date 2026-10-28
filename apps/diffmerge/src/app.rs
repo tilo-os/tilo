@@ -2041,16 +2041,10 @@ mod tests {
         app.settle();
         app.harness().key("Enter");
         // The pair is read on a worker, so it opens in a later frame.
-        let deadline = tilo_test_env::hang_deadline();
-        app.settle();
-        while app.state().comparison.is_none() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the pair opened as a comparison"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
+        tilo_test_env::wait_until("the pair to open as a comparison", || {
             app.settle();
-        }
+            app.state().comparison.is_some()
+        });
         let state = app.state();
         let opened = state.comparison.expect("the pair opened as a comparison");
         assert_eq!(opened.left.0, "one\n");

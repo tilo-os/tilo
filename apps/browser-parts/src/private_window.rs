@@ -118,10 +118,7 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
         launch_executable(&executable, Some("https://example.test/")).unwrap();
-        let deadline = tilo_test_env::hang_deadline();
-        while !capture.exists() && ui::time::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        tilo_test_env::wait_until("the launched browser's capture", || capture.exists());
         let lines = std::fs::read_to_string(capture).unwrap();
         assert_eq!(
             lines,

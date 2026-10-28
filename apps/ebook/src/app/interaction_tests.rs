@@ -626,15 +626,11 @@ fn draw_settled(
     theme: &Theme,
     presence: &PresenceCtx,
 ) {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
+    tilo_test_env::wait_until("the reader's chapter to be laid out", || {
         scene.reset();
         app.draw(scene, Affine::IDENTITY, tr, theme, presence);
-        if app.view != View::Reader || !app.layout_pending() || ui::time::now() > deadline {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
+        app.view != View::Reader || !app.layout_pending()
+    });
 }
 
 /// Centre of the topmost recorded hit whose action matches `pred`.

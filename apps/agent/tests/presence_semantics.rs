@@ -26,20 +26,18 @@ fn send_until_presence(
     request: &CollabRequest,
     expected: &(PresenceKey, PresencePayload),
 ) -> (PresenceKey, PresencePayload) {
-    let deadline = tilo_test_env::hang_deadline();
-    while ui::time::now() < deadline {
+    tilo_test_env::wait_for("the remote presence", || {
         sender.send(request).expect("publish typed presence");
-        if let Some(CollabEvent::RemotePresenceUpdate { key, payload, .. }) = receiver
+        match receiver
             .recv()
             .expect("receive from typed collaboration broker")
         {
-            let observed = (key, payload);
-            if &observed == expected {
-                return observed;
+            Some(CollabEvent::RemotePresenceUpdate { key, payload, .. }) => {
+                Some((key, payload)).filter(|observed| observed == expected)
             }
+            _ => None,
         }
-    }
-    panic!("timed out waiting for remote presence")
+    })
 }
 
 #[test]

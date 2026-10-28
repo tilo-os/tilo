@@ -1191,37 +1191,22 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
         })
         .expect("the mock ssh transport connects");
 
-        let mut connected = false;
-        let deadline = ui::time::now() + hang_bound();
-        while ui::time::now() < deadline {
-            match ssh.status() {
-                SessionStatus::Connected => {
-                    connected = true;
-                    break;
-                }
-                SessionStatus::Failed(e) => panic!("connect failed: {e}"),
-                _ => std::thread::sleep(Duration::from_millis(25)),
-            }
-        }
-        assert!(connected, "client never reached Connected");
+        tilo_test_env::wait_until("the client to reach Connected", || match ssh.status() {
+            SessionStatus::Connected => true,
+            SessionStatus::Failed(e) => panic!("connect failed: {e}"),
+            _ => false,
+        });
 
-        let mut saw_banner = false;
-        let deadline = ui::time::now() + hang_bound();
-        while ui::time::now() < deadline {
+        tilo_test_env::wait_until("the banner in the grid", || {
             ssh.pump();
-            if ssh.grid().lines().iter().any(|l| {
+            ssh.grid().lines().iter().any(|l| {
                 l.cells
                     .iter()
                     .map(|c| c.ch)
                     .collect::<String>()
                     .contains("tilo-remote ready")
-            }) {
-                saw_banner = true;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-        assert!(saw_banner, "banner never arrived in the grid");
+            })
+        });
 
         // Prove the upstream pipe: send a byte, expect the echo back.
         let acknowledgement = ssh.send_input_ack(b"Z".to_vec()).unwrap();
@@ -1232,23 +1217,16 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
             Ok(()),
             "resource input is acknowledged only after the SSH channel write"
         );
-        let mut saw_echo = false;
-        let deadline = ui::time::now() + hang_bound();
-        while ui::time::now() < deadline {
+        tilo_test_env::wait_until("the server's echo of the upstream keystroke", || {
             ssh.pump();
-            if ssh.grid().lines().iter().any(|l| {
+            ssh.grid().lines().iter().any(|l| {
                 l.cells
                     .iter()
                     .map(|c| c.ch)
                     .collect::<String>()
                     .contains("echo:Z")
-            }) {
-                saw_echo = true;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-        assert!(saw_echo, "server never echoed the upstream keystroke");
+            })
+        });
         drop(ssh);
         drop(known_hosts_directory);
     }
@@ -1405,11 +1383,9 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
             known_hosts,
         })
         .unwrap();
-        let deadline = ui::time::now() + hang_bound();
-        while ui::time::now() < deadline && ssh.status() != SessionStatus::Connected {
-            std::thread::sleep(Duration::from_millis(25));
-        }
-        assert_eq!(ssh.status(), SessionStatus::Connected);
+        tilo_test_env::wait_until("the client to reach Connected", || {
+            ssh.status() == SessionStatus::Connected
+        });
         (ssh, known_hosts_directory)
     }
 }

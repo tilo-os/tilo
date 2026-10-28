@@ -3083,12 +3083,10 @@ fn vcf_export_writes_the_selected_book() {
 
         // The file is written off the UI thread; the export ends on the
         // frame after.
-        let deadline = tilo_test_env::hang_deadline();
-        while h.app.portal_in_flight() && ui::time::now() < deadline {
+        tilo_test_env::wait_until("the export to end", || {
             h.app.settle();
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        assert!(!h.app.portal_in_flight(), "the export ended");
+            !h.app.portal_in_flight()
+        });
         let body = std::fs::read_to_string(&vcf).expect("export wrote a vcf to the chosen path");
         assert_eq!(
             body.matches("BEGIN:VCARD").count(),
@@ -3208,12 +3206,10 @@ fn export_asks_a_format_and_writes_the_chosen_file() {
     assert_eq!(picks.len(), 1);
     assert_eq!(picks[0].title(), "Export contacts");
     chooser.choose(vcf.clone());
-    let deadline = tilo_test_env::hang_deadline();
-    while app.portal_in_flight() && ui::time::now() < deadline {
+    tilo_test_env::wait_until("the real export to finish", || {
         app.settle();
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert!(!app.portal_in_flight(), "the real export finishes");
+        !app.portal_in_flight()
+    });
     let body = std::fs::read_to_string(&vcf).expect("the chosen file is written");
     assert_eq!(body.matches("BEGIN:VCARD").count(), 2);
     assert!(body.contains("VERSION:3.0"));

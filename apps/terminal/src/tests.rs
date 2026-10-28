@@ -431,15 +431,10 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         // The session opens at the first sync, once the record says where.
         let doc = session_record_at(&crate::target::SessionTarget::default_environment());
         ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
-        let deadline = std::time::Instant::now() + hang_bound();
-        while matches!(widget.session_state(), crate::sessions::OpenState::Opening) {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "healthy open must finish"
-            );
+        tilo_test_env::wait_until("the healthy open to finish", || {
             ui::widget::Widget::update(&mut widget, &doc, &automerge::ROOT);
-            std::thread::yield_now();
-        }
+            !matches!(widget.session_state(), crate::sessions::OpenState::Opening)
+        });
         assert_eq!(widget.session_state(), &crate::sessions::OpenState::Open);
         drop(widget);
         server.join().unwrap();
@@ -480,15 +475,10 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
                 .unwrap();
         let doc = session_record_at(&crate::target::SessionTarget::default_environment());
         ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
-        let deadline = std::time::Instant::now() + hang_bound();
-        while matches!(widget.session_state(), crate::sessions::OpenState::Opening) {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "open failure must finish"
-            );
+        tilo_test_env::wait_until("the failed open to finish", || {
             ui::widget::Widget::update(&mut widget, &doc, &automerge::ROOT);
-            std::thread::yield_now();
-        }
+            !matches!(widget.session_state(), crate::sessions::OpenState::Opening)
+        });
         assert!(
             matches!(
                 widget.session_state(),
@@ -836,18 +826,10 @@ fn terminal_draw_and_disconnected_state_follow_theme_and_text_scale() {
         let mut widget = TerminalWidget::spawn_command(shell_command("true", "exit /b 0"))
             .expect("spawn short-lived pty command");
         let doc = AutoCommit::new();
-        let deadline = ui::time::now() + hang_bound();
-        while ui::time::now() < deadline {
+        tilo_test_env::wait_until("PTY EOF to settle the session state", || {
             widget.sync(&doc, &ROOT);
-            if widget.is_disconnected() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert!(
-            widget.is_disconnected(),
-            "PTY EOF must settle the session state"
-        );
+            widget.is_disconnected()
+        });
         let node = Widget::accessibility(&widget).expect("terminal semantics");
         assert!(
             node.description
@@ -3267,20 +3249,12 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
         command.arg("-c");
         command.arg("printf new-session-output");
         let mut fresh = TerminalWidget::spawn_command(command).expect("new local terminal");
-        let deadline = ui::time::now() + hang_bound();
-        while ui::time::now() < deadline {
+        tilo_test_env::wait_until("the new session's output on the grid", || {
             fresh.sync(&doc, &automerge::ROOT);
-            if fresh.grid_text().contains("new-session-output") {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+            fresh.grid_text().contains("new-session-output")
+        });
 
         let screen = fresh.grid_text();
-        assert!(
-            screen.contains("new-session-output"),
-            "screen was {screen:?}"
-        );
         assert!(
             !screen.contains("old-session-output"),
             "a new PTY must not inherit the previous process' screen: {screen:?}"

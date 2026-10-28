@@ -12,7 +12,6 @@ use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::TcpListener;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
 
 use agent_provider_config::{
     EndpointLocation, ModelDescriptor, ProviderConfig, ProviderProfile, ProviderProtocol,
@@ -136,14 +135,15 @@ fn chat_asks_the_provider_set_up_in_the_page_through_its_lent_service() {
         app.model_command("c_chat", "ask").expect("ask")["started"],
         true
     );
-    let deadline = tilo_test_env::hang_deadline();
-    while app.host_model.needs_frame() {
+    tilo_test_env::wait_until("the page's model to answer", || {
+        if !app.host_model.needs_frame() {
+            return true;
+        }
         app.pump_model();
         app.land(&mut doc);
         app.reload(&doc);
-        assert!(Instant::now() < deadline, "the page's model must answer");
-        std::thread::yield_now();
-    }
+        false
+    });
     let (authorization, body) = provider.join().expect("provider");
     assert_eq!(authorization, "Bearer placeholder-page-key");
     let body: serde_json::Value = serde_json::from_str(&body).expect("json body");

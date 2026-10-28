@@ -349,8 +349,6 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
 
-    use tilo_test_env::hang_bound;
-
     /// A minimal RFB 3.8 server that offers `None` security and serves one
     /// 4x2 Raw framebuffer of known pixels. Real socket, real bytes — the
     /// client's handshake + decode run end-to-end against it. The server keeps
@@ -440,22 +438,13 @@ mod tests {
             })
             .unwrap();
 
-            let mut got: Option<Framebuffer> = None;
-            let deadline = ui::time::now() + hang_bound();
-            while ui::time::now() < deadline {
+            let fb = tilo_test_env::wait_for("a framebuffer", || {
                 if let SessionStatus::Failed(e) = vnc.status() {
                     panic!("vnc connect failed: {e}")
                 }
-                if let Some(fb) = vnc.take_frame()
-                    && fb.data.iter().any(|&b| b != 0)
-                {
-                    got = Some(fb);
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-
-            let fb = got.expect("never received a framebuffer");
+                vnc.take_frame()
+                    .filter(|fb| fb.data.iter().any(|&b| b != 0))
+            });
             assert_eq!((fb.width, fb.height), (4, 2));
             // Verify the exact pixels landed where they should.
             for (i, expected) in pixels.iter().enumerate() {
@@ -477,16 +466,9 @@ mod tests {
                 password: None,
             })
             .unwrap();
-            let mut failed = false;
-            let deadline = ui::time::now() + hang_bound();
-            while ui::time::now() < deadline {
-                if let SessionStatus::Failed(_) = vnc.status() {
-                    failed = true;
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            assert!(failed, "a refused connection must surface as Failed");
+            tilo_test_env::wait_until("the refused connection to surface as Failed", || {
+                matches!(vnc.status(), SessionStatus::Failed(_))
+            });
         }
     }
 }

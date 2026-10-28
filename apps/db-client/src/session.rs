@@ -641,8 +641,6 @@ mod tests {
     use super::*;
     use crate::model::Engine;
 
-    use tilo_test_env::hang_bound;
-
     /// Sessions start empty, open `SQLite` for real, load tables and report unreachable servers honestly.
     #[test]
     fn session_opens_connections_and_loads_tables_honestly() {
@@ -825,16 +823,9 @@ mod tests {
             "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 1000000000) \
              SELECT sum(x) FROM n",
         );
-            let mut requested = false;
-            let deadline = ui::time::now() + hang_bound();
-            while ui::time::now() < deadline {
-                if s.cancel_in_flight_query() {
-                    requested = true;
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-            assert!(requested, "the worker must publish the active SQLite query");
+            tilo_test_env::wait_until("the worker to publish the active SQLite query", || {
+                s.cancel_in_flight_query()
+            });
             s.block_until_idle();
             assert!(!s.busy());
             assert!(

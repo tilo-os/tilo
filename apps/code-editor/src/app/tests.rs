@@ -2,8 +2,6 @@ use super::*;
 use automerge::ReadDoc;
 use ui::tilo_resource::Effect as _;
 
-use tilo_test_env::hang_bound;
-
 #[test]
 fn search_and_editor_share_the_current_syncs_authoritative_text() {
     let mut sample = synced_sample();
@@ -310,23 +308,15 @@ fn ide_terminal_runs_a_command_and_shows_output() {
     app.settle(&mut ui::widget::Edits::lend(&mut state.doc), &state.root);
     app.sync(&state.doc, &state.root);
     app.shots_terminal_input("printf 'IDE_TERM_OK\\n'\n");
-    let mut found = false;
-    let deadline = ui::time::now() + hang_bound();
-    while ui::time::now() < deadline {
-        app.update(&state.doc, &state.root);
-        app.settle(&mut ui::widget::Edits::lend(&mut state.doc), &state.root);
-        app.sync(&state.doc, &state.root);
-        if let Some(t) = app.shots_terminal_grid_text()
-            && t.contains("IDE_TERM_OK")
-        {
-            found = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    assert!(
-        found,
-        "the IDE's embedded terminal must run the typed command and show its output"
+    tilo_test_env::wait_until(
+        "the IDE's embedded terminal to run the typed command and show its output",
+        || {
+            app.update(&state.doc, &state.root);
+            app.settle(&mut ui::widget::Edits::lend(&mut state.doc), &state.root);
+            app.sync(&state.doc, &state.root);
+            app.shots_terminal_grid_text()
+                .is_some_and(|t| t.contains("IDE_TERM_OK"))
+        },
     );
 }
 
@@ -350,14 +340,12 @@ fn the_embedded_terminal_is_the_projects_terminal_child() {
             && crate::test_support::editor(app, |app| app.shots_terminal_grid_text())
                 .is_some_and(|text| text.contains("CHILD_TERM_OK"))
     };
-    let deadline = ui::time::now() + hang_bound();
-    while !shown(&mut app) && ui::time::now() < deadline {
-        app.settle();
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    assert!(
-        shown(&mut app),
-        "the shell's output shows, and the session is the one the project records"
+    tilo_test_env::wait_until(
+        "the shell's output to show, in the session the project records",
+        || {
+            app.settle();
+            shown(&mut app)
+        },
     );
     let published = app.harness().resources();
     let child = published

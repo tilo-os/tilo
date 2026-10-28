@@ -289,13 +289,11 @@ mod tests {
                 font_multiplier: 1.0,
             }],
         );
-        let deadline = tilo_test_env::hang_deadline();
         let mut chunks = Vec::new();
-        while !chunks.last().is_some_and(|c: &LayoutChunk| c.complete) {
-            assert!(ui::time::now() < deadline, "the chapter was laid out");
+        tilo_test_env::wait_until("the chapter to be laid out", || {
             chunks.extend(worker.take());
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+            chunks.last().is_some_and(|c: &LayoutChunk| c.complete)
+        });
         assert!(chunks.len() > 2, "the chapter came in stretches");
         let whole = crate::paginate::layout_chapter(
             &mut text,

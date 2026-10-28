@@ -28,15 +28,10 @@ fn refuse_open(_drive: &str) -> Result<(), String> {
 
 /// Wait for the answer of a request that runs off the UI thread.
 fn settle(files: &mut FileExplorerWidget, done: impl Fn(&FileExplorerWidget) -> bool) {
-    let deadline = tilo_test_env::hang_deadline();
-    while !done(files) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the request never answered"
-        );
+    tilo_test_env::wait_until("the request's answer", || {
         files.poll_drives();
-        std::thread::yield_now();
-    }
+        done(files)
+    });
 }
 
 #[test]

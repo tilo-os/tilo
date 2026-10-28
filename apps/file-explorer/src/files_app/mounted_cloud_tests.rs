@@ -136,13 +136,10 @@ fn synced_native_rows_describe_sources_and_choose_independent_editable_copies() 
     app.call_on(&id, "import-converted", serde_json::json!({}))
         .unwrap();
     assert!(recorder.pick_requests()[0].is_writable_directory());
-    let deadline = tilo_test_env::hang_deadline();
-    while !destination.join("Document.docx").exists() || app.state().ops.pending().next().is_some()
-    {
-        assert!(std::time::Instant::now() < deadline);
+    tilo_test_env::wait_until("the converted import to land", || {
         app.settle();
-        std::thread::yield_now();
-    }
+        destination.join("Document.docx").exists() && app.state().ops.pending().next().is_none()
+    });
     app.with_surface(|files: &mut FileExplorerWidget| {
         assert!(
             destination.join("Document.docx").exists(),

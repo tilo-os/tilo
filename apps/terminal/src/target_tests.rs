@@ -985,10 +985,9 @@ fn mounted_device_shell_operation(
 
 fn wait_for_owner_shell(app: &mut App, session: &str, ended: bool) {
     use ui::floating_surface::DeviceShellOperation as O;
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
+    tilo_test_env::wait_until("the owner PTY's output or exit", || {
         app.settle();
-        let observed = if ended {
+        if ended {
             app.harness().device_shell_operation(&O::Inspect).unwrap()["transport_disconnected"]
                 == true
                 && on_tab(app, |widget| widget.pty_output_drained())
@@ -1004,16 +1003,8 @@ fn wait_for_owner_shell(app: &mut App, session: &str, ended: bool) {
                 .unwrap()
                 .lines()
                 .any(|line| line.trim() == "owner-pty-ok")
-        };
-        if observed {
-            return;
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "actual owner PTY output/exit did not arrive"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    });
 }
 
 fn owner_fixture_sessions(gate: Rc<std::cell::Cell<bool>>) -> Sessions {
@@ -1063,9 +1054,7 @@ fn published_read_follows_actual_pty_output_into_the_shared_session() {
     })
     .unwrap()
     .unwrap();
-    let deadline = tilo_test_env::hang_deadline();
-    let mut observed = false;
-    while std::time::Instant::now() < deadline {
+    tilo_test_env::wait_until("the retained PTY output and prompt", || {
         app.settle();
         let read = app
             .call("read-screen", serde_json::json!({}))
@@ -1083,16 +1072,14 @@ fn published_read_follows_actual_pty_output_into_the_shared_session() {
                 .with_surface(|terminal: &mut crate::TerminalView| terminal.grid_text())
                 .unwrap();
             assert!(local.lines().any(|line| line == "TILO_OWNED_PTY_OUTPUT"));
-            observed = true;
-            break;
+            return true;
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+        false
+    });
     app.with_surface(|terminal: &mut crate::TerminalView| terminal.try_write_input(b"exit\r"))
         .unwrap()
         .unwrap();
     wait_for_owner_shell(&mut app, session.as_str().unwrap(), true);
-    assert!(observed, "canonical retained PTY output/prompt absent");
 }
 
 /// A tab whose sessions run an interactive bash on a real PTY.
@@ -1105,12 +1092,10 @@ fn bash_sessions() -> Sessions {
 
 /// Settle `app` until `done`, within the hang bound.
 fn settle_until(app: &mut App, what: &str, mut done: impl FnMut(&mut App) -> bool) {
-    let deadline = tilo_test_env::hang_deadline();
-    while !done(app) {
-        assert!(std::time::Instant::now() < deadline, "{what}");
+    tilo_test_env::wait_until(what, || {
         app.settle();
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+        done(app)
+    });
 }
 
 #[test]
@@ -1185,12 +1170,10 @@ fn an_embedded_terminal_restarts_its_ended_shell_on_the_same_target() {
     let doc = AutoCommit::new();
     let settle =
         |widget: &mut TerminalWidget, what: &str, done: &dyn Fn(&TerminalWidget) -> bool| {
-            let deadline = tilo_test_env::hang_deadline();
-            while !done(widget) {
-                assert!(std::time::Instant::now() < deadline, "{what}");
+            tilo_test_env::wait_until(what, || {
                 widget.sync(&doc, &ROOT);
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
+                done(widget)
+            });
         };
     widget.sync(&doc, &ROOT);
     assert_eq!(widget.session_state(), &OpenState::Open);

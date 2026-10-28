@@ -401,17 +401,13 @@ fn private_mode_is_empty_indicated_and_leaves_no_root() {
         let url = format!("http://{}/filters", listener.local_addr().unwrap());
         listener.set_nonblocking(true).unwrap();
         let server = std::thread::spawn(move || {
-            let deadline = tilo_test_env::hang_deadline();
-            let mut stream = loop {
+            let mut stream = tilo_test_env::wait_for("the filter worker to connect", || {
                 match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(ui::time::now() < deadline, "filter worker did not connect");
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                    }
+                    Ok((stream, _)) => Some(stream),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => None,
                     Err(error) => panic!("filter endpoint failed: {error}"),
                 }
-            };
+            });
             let mut request = [0; 4096];
             let _ = stream.read(&mut request);
             let body = b"||private-discovery.fixture^\n";
@@ -468,11 +464,7 @@ fn private_discovery_failure_filter_worker_does_not_recreate_root_child() {
     );
     let mut document = AutoCommit::new();
     widget.sync(&document, &automerge::ROOT);
-    let deadline = tilo_test_env::hang_deadline();
-    while !done.exists() && ui::time::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    assert!(done.exists(), "legacy filter worker did not finish");
+    tilo_test_env::wait_until("the legacy filter worker to finish", || done.exists());
     drop(widget);
     assert!(
         !root.exists(),

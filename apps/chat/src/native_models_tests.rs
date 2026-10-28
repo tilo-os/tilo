@@ -8,7 +8,6 @@ use crate::{ChatApp, identity::LocalIdentity};
 use std::{
     io::{Read, Write},
     os::{fd::AsFd, unix::net::UnixStream},
-    time::Instant,
 };
 use ui::models::{Message, ModelResponse, Models, Role, StopReason, Usage};
 
@@ -118,20 +117,12 @@ fn pump_until(
     doc: &mut crate::testing::Room,
     done: impl Fn(&ChatApp, &crate::testing::Room) -> bool,
 ) {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
+    tilo_test_env::wait_until("the native model attempt to make progress", || {
         app.pump_model();
         app.land(doc);
         app.reload(doc);
-        if done(app, doc) {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "native model attempt must make progress"
-        );
-        std::thread::yield_now();
-    }
+        done(app, doc)
+    });
 }
 
 #[test]

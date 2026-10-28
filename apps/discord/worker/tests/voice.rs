@@ -134,14 +134,15 @@ impl Host {
 
     /// Poll `check` until it answers.
     async fn until<T>(&self, what: &str, mut check: impl FnMut() -> Option<T>) -> T {
-        let deadline = tokio::time::Instant::now() + tilo_test_env::hang_bound();
-        loop {
-            if let Some(found) = check() {
-                return found;
+        tilo_test_env::within(what, async {
+            loop {
+                if let Some(found) = check() {
+                    return found;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            assert!(tokio::time::Instant::now() < deadline, "never saw {what}");
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        })
+        .await
     }
 
     /// The latest Calls report.

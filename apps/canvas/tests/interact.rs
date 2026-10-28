@@ -504,15 +504,14 @@ fn pixels_between_frames() -> ui::offscreen::pixels::PixelsHost {
 /// Draw frames, `host` answering between them, until nothing waits for a
 /// picture (the wand looks twice: the whole artwork, then closer).
 fn answer_between_frames(desk: &mut Desk, host: &mut ui::offscreen::pixels::PixelsHost) {
-    let started = std::time::Instant::now();
-    while host.waiting() {
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(60),
-            "the picture never came"
-        );
+    tilo_test_env::wait_until("the picture", || {
+        if !host.waiting() {
+            return true;
+        }
         host.drive();
         desk.app.harness().poll_frame().unwrap();
-    }
+        false
+    });
     desk.app.harness().poll_frame().unwrap();
 }
 

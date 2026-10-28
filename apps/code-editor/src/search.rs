@@ -417,8 +417,6 @@ pub fn relative_display(root: &Path, path: &Path) -> String {
 mod tests {
     use super::*;
 
-    use tilo_test_env::hang_bound;
-
     fn q(n: &str) -> Query {
         Query::new(n)
     }
@@ -619,20 +617,15 @@ mod tests {
         let d = fixture();
         let mut job = start(d.path(), q("needle"));
         let mut hits = Vec::new();
-        let deadline = ui::time::now() + hang_bound();
-        while ui::time::now() < deadline {
+        tilo_test_env::wait_until("the worker to report Done", || {
             for msg in job.drain() {
                 match msg {
                     Msg::Hits(h) => hits.extend(h),
                     Msg::Done { .. } => {}
                 }
             }
-            if job.is_finished() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert!(job.is_finished(), "the worker reported Done");
+            job.is_finished()
+        });
         assert_eq!(hits.len(), 2);
     }
 

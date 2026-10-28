@@ -75,17 +75,13 @@ fn until_answered(
     before: usize,
     what: &str,
 ) {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
+    tilo_test_env::wait_until(what, || {
         app.settle();
         let gone = !ui::attention::items()
             .iter()
             .any(|waiting| waiting.id() == item.id());
-        if gone && asked(devices).len() > before.saturating_add(1) {
-            return;
-        }
-        assert!(ui::time::now() < deadline, "gave up waiting for {what}");
-    }
+        gone && asked(devices).len() > before.saturating_add(1)
+    });
 }
 
 fn set_failing(devices: &stand_in::Shared, failing: bool) {
@@ -227,14 +223,10 @@ fn a_failed_scans_try_again_scans_again() {
     set_failing(&devices, true);
     let _ = app.effect(&PrintCentreEffect::ScanPage);
     fail_then_try_again(&mut app, Some(&devices));
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
+    tilo_test_env::wait_until("the page to be scanned again", || {
         app.settle();
-        if centre(&mut app).scan.pages.len() == pages.saturating_add(1) {
-            break;
-        }
-        assert!(ui::time::now() < deadline, "the page to be scanned again");
-    }
+        centre(&mut app).scan.pages.len() == pages.saturating_add(1)
+    });
     assert_eq!(
         asked(&devices)[before..],
         ["scan scanner0", "scan scanner0"]
@@ -252,22 +244,14 @@ fn a_failed_recognitions_try_again_recognizes_the_page_again() {
     set_failing(&devices, true);
     let _ = app.effect(&PrintCentreEffect::RecognizeText);
     fail_then_try_again(&mut app, Some(&devices));
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
+    tilo_test_env::wait_until("the text to be recognized again", || {
         app.settle();
-        let done = centre(&mut app)
+        centre(&mut app)
             .scan
             .result
             .as_ref()
-            .is_some_and(|page| page.recognized_text.as_deref() == Some("Stand-in text"));
-        if done {
-            break;
-        }
-        assert!(
-            ui::time::now() < deadline,
-            "the text to be recognized again"
-        );
-    }
+            .is_some_and(|page| page.recognized_text.as_deref() == Some("Stand-in text"))
+    });
     assert_eq!(asked(&devices)[before..], ["recognize", "recognize"]);
 }
 
@@ -279,17 +263,12 @@ fn a_success_is_recorded_and_nobody_is_called() {
     let _ = app.effect(&PrintCentreEffect::PausePrinter {
         printer: "Studio_printer".into(),
     });
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
+    tilo_test_env::wait_until("the pause to be recorded", || {
         app.settle();
-        if ui::attention::entries()
+        ui::attention::entries()
             .iter()
             .any(|entry| entry.what() == "Printer paused. Documents will wait until you resume it.")
-        {
-            break;
-        }
-        assert!(ui::time::now() < deadline, "the pause to be recorded");
-    }
+    });
     assert_eq!(asked(&devices).len(), 1);
     assert!(
         !ui::attention::items()

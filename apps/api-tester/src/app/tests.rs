@@ -715,27 +715,20 @@ fn open(app: &mut TestApp<ApiTesterShell>, request: &Request) {
 fn resource_send_performs_a_real_http_round_trip() {
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use ui::time::Duration;
 
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
     let (release_response, response_ready) = std::sync::mpsc::channel();
     let server = std::thread::spawn(move || {
-        let deadline = tilo_test_env::hang_deadline();
-        let mut stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(
-                        ui::time::now() < deadline,
-                        "the app's HTTP request never reached the probe server"
-                    );
-                    std::thread::sleep(Duration::from_millis(10));
+        let mut stream =
+            tilo_test_env::wait_for("the app's HTTP request to reach the probe server", || {
+                match listener.accept() {
+                    Ok((stream, _)) => Some(stream),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => None,
+                    Err(error) => panic!("accept request: {error}"),
                 }
-                Err(error) => panic!("accept request: {error}"),
-            }
-        };
+            });
         // Windows inherits the listener's nonblocking mode on accept.
         stream.set_nonblocking(false).unwrap();
         stream

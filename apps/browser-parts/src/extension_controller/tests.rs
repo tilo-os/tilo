@@ -414,11 +414,10 @@ fn an_icon_told_before_the_profile_is_read_shows_once_it_is() {
         wanted: Vec::new(),
         icons: Vec::new(),
     });
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while controller.action_icon(&id).is_none() && std::time::Instant::now() < deadline {
+    tilo_test_env::wait_until("the action icon to load", || {
         controller.sync(&window, "");
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+        controller.action_icon(&id).is_some()
+    });
     assert_eq!(
         controller
             .action_icon(&id)

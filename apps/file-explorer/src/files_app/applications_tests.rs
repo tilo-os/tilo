@@ -18,15 +18,10 @@ fn asked(intent: &ToolIntent) -> bool {
 
 /// Wait for a request that runs off the UI thread to reach the shell.
 fn settle(files: &mut FileExplorerWidget, intent: &ToolIntent) {
-    let deadline = tilo_test_env::hang_deadline();
-    while !asked(intent) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the shell was never asked for {intent:?}"
-        );
+    tilo_test_env::wait_until(format!("the shell to be asked for {intent:?}"), || {
         files.poll_applications(ui::time::now());
-        std::thread::yield_now();
-    }
+        asked(intent)
+    });
 }
 
 /// The Applications place, showing one app of each kind.

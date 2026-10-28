@@ -43,18 +43,10 @@ fn wait_for(
     description: &str,
     ready: impl Fn(&PlayerApp) -> bool,
 ) {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
+    tilo_test_env::wait_until(description, || {
         app.settle();
-        if player(app, |player| ready(player)) {
-            return;
-        }
-        assert!(
-            ui::time::now() < deadline,
-            "timed out waiting for {description}"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+        player(app, |player| ready(player))
+    });
 }
 
 #[test]

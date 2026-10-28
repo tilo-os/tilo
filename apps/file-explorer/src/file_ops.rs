@@ -1137,12 +1137,10 @@ mod tests {
                 .unwrap();
         app.invoke(crate::resource::FileExplorer::queueing("laptop", op).unwrap())
             .unwrap();
-        let deadline = tilo_test_env::hang_deadline();
-        while app.state().ops.pending().next().is_some() {
-            assert!(std::time::Instant::now() < deadline);
+        tilo_test_env::wait_until("the queued operation to settle", || {
             app.settle();
-            std::thread::yield_now();
-        }
+            app.state().ops.pending().next().is_none()
+        });
         let imported = app
             .state()
             .ops

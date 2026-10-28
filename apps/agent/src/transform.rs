@@ -1679,12 +1679,9 @@ mod tests {
             None,
         );
         assert!(matches!(wrong, Some(InvocationUpdate::Failed { .. })));
-        let mut done = Vec::new();
-        let deadline = tilo_test_env::hang_deadline();
-        while done.is_empty() && ui::time::now() < deadline {
-            done = service.finished();
-            std::thread::yield_now();
-        }
+        let done = tilo_test_env::wait_for("the summary's answer", || {
+            Some(service.finished()).filter(|done| !done.is_empty())
+        });
         assert!(matches!(
             done.as_slice(),
             [(7, InvocationUpdate::Succeeded { invocation, output })]
@@ -1703,12 +1700,10 @@ mod tests {
             service.cancel(9),
             Some(InvocationUpdate::Cancelled { .. })
         ));
-        let deadline = tilo_test_env::hang_deadline();
-        while !service.running.is_empty() && ui::time::now() < deadline {
+        tilo_test_env::wait_until("the cancelled worker to report", || {
             assert!(service.finished().is_empty());
-            std::thread::yield_now();
-        }
-        assert!(service.running.is_empty());
+            service.running.is_empty()
+        });
     }
 
     /// A model that works until it is told to stop: it says when its call
@@ -1769,15 +1764,13 @@ mod tests {
     /// Wait until the cancelled invocation's worker reported, checking its
     /// answer is dropped.
     fn drain_cancelled(service: &mut TransformService) {
-        let deadline = tilo_test_env::hang_deadline();
-        while !service.running.is_empty() && ui::time::now() < deadline {
+        tilo_test_env::wait_until("the cancelled invocation's slot to free", || {
             assert!(
                 service.finished().is_empty(),
                 "a cancelled answer is dropped"
             );
-            std::thread::yield_now();
-        }
-        assert!(service.running.is_empty(), "its slot is free again");
+            service.running.is_empty()
+        });
     }
 
     /// Cancelling a transform used to drop only its answer: the model call

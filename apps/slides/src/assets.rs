@@ -436,32 +436,26 @@ mod tests {
         let src = format!("{ASSET_PREFIX}{hash}");
         let mut images = ImageStore::new(ContentStore::from_backend(Arc::new(backend)));
         let settle = |images: &mut ImageStore| {
-            let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
-            loop {
+            tilo_test_env::wait_for("the decode to settle", || {
                 images.pump();
                 let state = images.get(&src);
-                if !images.arriving.borrow().is_empty() || !matches!(state, ImageState::Loading) {
-                    return state;
-                }
-                assert!(std::time::Instant::now() < deadline, "the decode settles");
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
+                (!images.arriving.borrow().is_empty() || !matches!(state, ImageState::Loading))
+                    .then_some(state)
+            })
         };
         assert!(
             matches!(settle(&mut images), ImageState::Loading),
             "bytes on their way are loading, not a broken picture"
         );
         arrived.store(true, Ordering::SeqCst);
-        let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
-        loop {
+        let ready = tilo_test_env::wait_for("the picture to appear", || {
             images.pump();
-            if let ImageState::Ready(ready) = images.get(&src) {
-                assert_eq!((ready.width, ready.height), (3, 2));
-                break;
+            match images.get(&src) {
+                ImageState::Ready(ready) => Some(ready),
+                _ => None,
             }
-            assert!(std::time::Instant::now() < deadline, "the picture appears");
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
+        });
+        assert_eq!((ready.width, ready.height), (3, 2));
     }
 
     /// Frozen/live decode budgets and limits, and failed worker requests never stay loading.

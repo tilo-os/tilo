@@ -4,7 +4,6 @@
 use super::{build_test_widget, send_cursor_move, send_left_press, shell_command};
 use crate::TerminalWidget;
 use automerge::{AutoCommit, ROOT};
-use tilo_test_env::hang_bound;
 use ui::widget::Widget as _;
 use vello::kurbo::Rect;
 
@@ -17,12 +16,10 @@ fn ended_session_banner_reserves_its_own_band_above_the_grid() {
     let mut widget = TerminalWidget::spawn_command(shell_command("true", "exit /b 0"))
         .expect("spawn short-lived pty command");
     let doc = AutoCommit::new();
-    let deadline = ui::time::now() + hang_bound();
-    while ui::time::now() < deadline && !widget.is_disconnected() {
+    tilo_test_env::wait_until("the short-lived command to end", || {
         widget.sync(&doc, &ROOT);
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    assert!(widget.is_disconnected());
+        widget.is_disconnected()
+    });
 
     let viewport = Rect::new(0.0, 0.0, 390.0, 844.0);
     let mut text = TextRenderer::new();
@@ -65,12 +62,10 @@ fn an_ended_shell_restarts_in_place() {
                   doc: &AutoCommit,
                   what: &str,
                   done: &dyn Fn(&TerminalWidget) -> bool| {
-        let deadline = ui::time::now() + hang_bound();
-        while !done(widget) {
-            assert!(ui::time::now() < deadline, "{what}");
+        tilo_test_env::wait_until(what, || {
             widget.sync(doc, &ROOT);
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+            done(widget)
+        });
     };
     settle(&mut widget, &doc, "the command ends", &|w| {
         w.is_disconnected() && w.grid_text().contains("before")

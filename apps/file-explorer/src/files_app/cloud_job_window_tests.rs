@@ -38,12 +38,10 @@ fn unhosted_cloud_import_without_issuer_settles_without_contacting_source() {
             cut: false,
         },
     );
-    let deadline = tilo_test_env::hang_deadline();
-    while files.cloud.transfer.is_some() {
-        assert!(Instant::now() < deadline);
+    tilo_test_env::wait_until("the cloud transfer to settle", || {
         files.poll_cloud();
-        std::thread::yield_now();
-    }
+        files.cloud.transfer.is_none()
+    });
     assert_eq!(files.local_outcomes.len(), 1);
     let outcome = files.local_outcomes.values().next().unwrap();
     assert_eq!(

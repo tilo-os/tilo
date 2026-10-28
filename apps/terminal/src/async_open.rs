@@ -58,8 +58,7 @@ mod tests {
     use super::*;
     use std::io::{BufRead, Read, Write};
     use std::os::unix::net::UnixStream;
-    use std::time::Instant;
-    use tilo_test_env::{hang_bound, hang_deadline};
+    use tilo_test_env::hang_bound;
     use ui::widget::Widget;
 
     /// The persistent-control handshake that precedes every open: read the
@@ -104,12 +103,10 @@ mod tests {
     }
 
     fn finish(widget: &mut crate::TerminalWidget, doc: &automerge::AutoCommit) {
-        let deadline = hang_deadline();
-        while matches!(widget.session_state(), crate::sessions::OpenState::Opening) {
-            assert!(Instant::now() < deadline, "open must finish");
+        tilo_test_env::wait_until("the open to finish", || {
             widget.update(doc, &automerge::ROOT);
-            std::thread::yield_now();
-        }
+            !matches!(widget.session_state(), crate::sessions::OpenState::Opening)
+        });
     }
 
     #[test]
@@ -300,11 +297,7 @@ mod tests {
         handed.recv_timeout(hang_bound()).unwrap();
         // Keep the result queued, with its descriptors received but unaccepted.
         // Worker completion pins that race without consuming the UI's answer.
-        let deadline = hang_deadline();
-        while !pending.answer.is_finished() {
-            assert!(Instant::now() < deadline, "the answer must be queued");
-            std::thread::yield_now();
-        }
+        tilo_test_env::wait_until("the answer to be queued", || pending.answer.is_finished());
         drop(pending);
         worker.join().unwrap();
     }

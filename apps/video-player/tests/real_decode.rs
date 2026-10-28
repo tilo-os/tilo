@@ -206,14 +206,10 @@ fn real_file_decodes_and_reaches_the_player_surface() {
         let doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
 
-        let deadline = tilo_test_env::hang_deadline();
-        while ui::time::now() < deadline {
+        tilo_test_env::wait_until("a decoded frame on the video surface", || {
             app.sync(&doc, &root);
-            if app.player().latest_frame().is_some() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
+            app.player().latest_frame().is_some()
+        });
 
         assert!(
             app.player().latest_frame().is_some(),

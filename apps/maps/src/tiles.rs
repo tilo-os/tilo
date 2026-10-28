@@ -1472,17 +1472,10 @@ mod tests {
             server.release();
 
             // Poll drain() until the worker delivers the decoded tile.
-            let mut got = false;
-            let deadline = tilo_test_env::hang_deadline();
-            while std::time::Instant::now() < deadline {
+            tilo_test_env::wait_until("the decoded tile to arrive via the channel", || {
                 layer.drain();
-                if layer.get(id).is_some() {
-                    got = true;
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            assert!(got, "decoded tile never arrived via the channel");
+                layer.get(id).is_some()
+            });
             // And it is no longer in-flight once delivered.
             assert!(!layer.is_inflight(id));
 
@@ -1505,12 +1498,10 @@ mod tests {
             // Requesting again while in-flight changes nothing.
             layer.request(id);
 
-            let deadline = tilo_test_env::hang_deadline();
-            while std::time::Instant::now() < deadline && layer.get(id).is_none() {
+            tilo_test_env::wait_until("the tile to become resident", || {
                 layer.drain();
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            assert!(layer.get(id).is_some());
+                layer.get(id).is_some()
+            });
             // Now resident: a fresh request must stay a no-op (not re-enqueue).
             layer.request(id);
             assert!(!layer.is_inflight(id));
@@ -1579,14 +1570,10 @@ mod tests {
             assert!(queued > 1);
             assert!(layer.progress().is_active() || est == 0);
 
-            let deadline = tilo_test_env::hang_deadline();
-            while std::time::Instant::now() < deadline {
+            tilo_test_env::wait_until("the download to complete via the channel", || {
                 layer.drain();
-                if !layer.progress().is_active() && layer.progress().done >= queued {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
+                !layer.progress().is_active() && layer.progress().done >= queued
+            });
             let prog = layer.progress();
             assert_eq!(prog.done, queued, "download did not complete via channel");
             assert_eq!(prog.failed, 0, "cached tiles should not fail");
@@ -1623,14 +1610,10 @@ mod tests {
             assert_eq!(layer.progress().done, 0);
             server.release();
 
-            let deadline = tilo_test_env::hang_deadline();
-            while Instant::now() < deadline {
+            tilo_test_env::wait_until("the download to complete", || {
                 layer.drain();
-                if !layer.progress().is_active() && layer.progress().done >= queued {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
+                !layer.progress().is_active() && layer.progress().done >= queued
+            });
             assert_eq!(layer.progress().done, queued, "download did not complete");
             assert_eq!(
                 layer.progress().failed,
@@ -1667,14 +1650,12 @@ mod tests {
             let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
             layer.request(id);
 
-            let deadline = tilo_test_env::hang_deadline();
-            while Instant::now() < deadline && layer.get(id).is_none() {
-                layer.drain();
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            assert!(
-                layer.get(id).is_some(),
-                "a cached tile must load offline (disk-first), with no network"
+            tilo_test_env::wait_until(
+                "the cached tile to load offline (disk-first), with no network",
+                || {
+                    layer.drain();
+                    layer.get(id).is_some()
+                },
             );
             assert!(
                 !layer.has_failures(),
@@ -1743,15 +1724,10 @@ mod tests {
             assert!(layer.is_inflight(id), "first request should be in-flight");
 
             // Wait for the (fast) connection-refused failure to arrive via drain.
-            let deadline = tilo_test_env::hang_deadline();
-            while Instant::now() < deadline && layer.is_inflight(id) {
+            tilo_test_env::wait_until("the failed fetch to clear in-flight", || {
                 layer.drain();
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            assert!(
-                !layer.is_inflight(id),
-                "a failed fetch must clear in-flight"
-            );
+                !layer.is_inflight(id)
+            });
             assert!(layer.get(id).is_none(), "a failed tile is not resident");
             assert!(
                 layer.is_backing_off(id),
@@ -1898,15 +1874,10 @@ mod tests {
     /// Request `id` and pump `drain` until the worker answers.
     fn settle(layer: &mut TileLayer, id: TileId) {
         layer.request(id);
-        let deadline = tilo_test_env::hang_deadline();
-        while Instant::now() < deadline && layer.is_inflight(id) {
+        tilo_test_env::wait_until(format!("the worker's answer for {id:?}"), || {
             layer.drain();
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(
-            !layer.is_inflight(id),
-            "the worker never answered for {id:?}"
-        );
+            !layer.is_inflight(id)
+        });
     }
 
     /// A server that refuses imagery — an error status, or a success carrying

@@ -377,17 +377,9 @@ mod tests {
             .recv_timeout(tilo_test_env::hang_bound())
             .unwrap();
         std::fs::write(&trigger, b"exit").unwrap();
-        let removal_deadline = tilo_test_env::hang_deadline();
-        while root.exists() && ui::time::now() < removal_deadline {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert!(!root.exists(), "helper exit must remove the private root");
+        tilo_test_env::wait_until("helper exit to remove the private root", || !root.exists());
         release_tx.send(()).unwrap();
-        let worker_deadline = tilo_test_env::hang_deadline();
-        while status().busy && ui::time::now() < worker_deadline {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert!(!status().busy, "delayed refresh worker did not finish");
+        tilo_test_env::wait_until("the delayed refresh worker to finish", || !status().busy);
         server.join().unwrap();
         assert!(
             !root.exists(),
@@ -503,10 +495,10 @@ mod tests {
             start(&engine, None);
             // The refresh starts on the cache reader's thread, once the
             // cached rules are handed over.
-            let deadline = tilo_test_env::hang_deadline();
-            while (status().busy || status() == Status::default()) && ui::time::now() < deadline {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
+            tilo_test_env::wait_until("the refresh to finish", || {
+                let status = status();
+                !status.busy && status != Status::default()
+            });
             let result = status();
             assert!(!result.busy);
             assert!(

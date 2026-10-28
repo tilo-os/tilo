@@ -122,19 +122,14 @@ pub(super) fn wheel(px: f64) -> WindowEvent {
 /// Run frames until the compile and every render the view waits on are
 /// done, as the window does when the worker wakes it.
 pub(super) fn settle(app: &mut Live) -> usize {
-    let deadline = ui::time::now() + tilo_test_env::hang_bound();
     let mut frames = 0;
-    loop {
+    tilo_test_env::wait_until("the compile and its renders to finish", || {
         app.harness().relayout();
         frames += 1;
-        let busy = app
-            .with_surface::<TypstApp, _>(|view| view.has_pending_visual_work())
-            .unwrap();
-        if !busy || ui::time::now() > deadline {
-            return frames;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
+        !app.with_surface::<TypstApp, _>(|view| view.has_pending_visual_work())
+            .unwrap()
+    });
+    frames
 }
 
 /// The editor showing a `chapters`-chapter document, settled.
@@ -276,18 +271,18 @@ fn drive_scroll_rendering_within(
     let mut asked = std::collections::BTreeMap::<usize, usize>::new();
     let mut out = Vec::with_capacity(frames);
     for frame in 0..frames {
-        let deadline = ui::time::now() + tilo_test_env::hang_bound();
-        while preview(app, |p| p.pending_pages())
-            .iter()
-            .any(|page| asked.get(page).is_some_and(|at| at + lead <= frame))
-        {
-            assert!(
-                ui::time::now() < deadline,
-                "the renderer never delivered the pages asked for before frame {frame}"
-            );
-            app.harness().relayout();
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        tilo_test_env::wait_until(
+            format!("the renderer to deliver the pages asked for before frame {frame}"),
+            || {
+                let waiting = preview(app, |p| p.pending_pages())
+                    .iter()
+                    .any(|page| asked.get(page).is_some_and(|at| at + lead <= frame));
+                if waiting {
+                    app.harness().relayout();
+                }
+                !waiting
+            },
+        );
         app.harness().send(&wheel(px));
         let (scroll_y, blank_pages, bitmap_bytes, pending) = preview(app, |p| {
             (
@@ -347,20 +342,14 @@ fn an_edit_re_renders_visible_pages_first() {
     let (chapter, at) = edit_point(&mut app, &source);
     put_source(&mut app, at, "Edited. ");
     let mut blank_frames = 0;
-    let deadline = ui::time::now() + tilo_test_env::hang_bound();
-    loop {
+    tilo_test_env::wait_until("the edit's compile and renders to finish", || {
         app.harness().relayout();
         if preview(&mut app, |p| p.blank_pages_on_screen()) > 0 {
             blank_frames += 1;
         }
-        let busy = app
-            .with_surface::<TypstApp, _>(|view| view.has_pending_visual_work())
-            .unwrap();
-        if !busy || ui::time::now() > deadline {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
+        !app.with_surface::<TypstApp, _>(|view| view.has_pending_visual_work())
+            .unwrap()
+    });
     let (delivered, now_on_screen, rendered) = preview(&mut app, |p| {
         (p.delivered_pages(), p.pages_on_screen(), p.pages_rendered())
     });

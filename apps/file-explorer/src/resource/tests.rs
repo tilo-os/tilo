@@ -494,16 +494,10 @@ fn undo_settled(app: &mut TestApp<FileExplorerShell>) {
 /// Run frames until every queued change settled: a copy, a move, an
 /// extraction or a packing runs on a worker.
 fn settle_ops(app: &mut TestApp<FileExplorerShell>) {
-    let deadline = tilo_test_env::hang_deadline();
-    app.settle();
-    while app.state().ops.pending().next().is_some() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "a queued change never settled"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(5));
+    tilo_test_env::wait_until("every queued change to settle", || {
         app.settle();
-    }
+        app.state().ops.pending().next().is_none()
+    });
 }
 
 /// Invoke the resource's action `id` with `args` through the door, as
@@ -875,15 +869,10 @@ fn cloud_import_queues_on_its_device_and_undo_reverts_its_record() {
     app.settle();
     let listener = server.join().unwrap();
     listener.set_nonblocking(true).unwrap();
-    let deadline = tilo_test_env::hang_deadline();
-    while app.state().ops.pending().next().is_some() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "import did not settle"
-        );
+    tilo_test_env::wait_until("the import to settle", || {
         app.settle();
-        std::thread::yield_now();
-    }
+        app.state().ops.pending().next().is_none()
+    });
     let state = app.state();
     let (id, entry) = state.ops.entries().next().unwrap();
     assert_eq!(entry.value.device, "laptop");
@@ -1115,12 +1104,10 @@ fn mounted_import_requires_private_admission_and_copies_editable_outputs() {
     );
     app.invoke(FileExplorer::queueing("laptop", op).unwrap())
         .unwrap();
-    let deadline = tilo_test_env::hang_deadline();
-    while !folder.join("Google.docx").exists() || app.state().ops.pending().next().is_some() {
-        assert!(std::time::Instant::now() < deadline);
+    tilo_test_env::wait_until("the Google import to land", || {
         app.settle();
-        std::thread::yield_now();
-    }
+        folder.join("Google.docx").exists() && app.state().ops.pending().next().is_none()
+    });
     assert_eq!(
         std::fs::read(folder.join("Google.docx")).unwrap(),
         b"native Google view"
@@ -1157,12 +1144,10 @@ fn mounted_import_record_verifies_offline_without_host_or_source() {
     };
     app.invoke(FileExplorer::queueing("laptop", op).unwrap())
         .unwrap();
-    let deadline = tilo_test_env::hang_deadline();
-    while app.state().ops.pending().next().is_some() {
-        assert!(std::time::Instant::now() < deadline);
+    tilo_test_env::wait_until("the queued operation to settle", || {
         app.settle();
-        std::thread::yield_now();
-    }
+        app.state().ops.pending().next().is_none()
+    });
     assert!(
         app.state()
             .ops

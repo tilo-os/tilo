@@ -87,12 +87,10 @@ fn cancel_action_closes_preparing_export_and_retry_records_only_failed_copy() {
             account: "account".into(),
         })
         .unwrap();
-    let deadline = tilo_test_env::hang_deadline();
-    while files.cloud.pending.is_some() {
-        assert!(std::time::Instant::now() < deadline);
+    tilo_test_env::wait_until("the cloud listing to settle", || {
         files.poll_cloud();
-        std::thread::yield_now();
-    }
+        files.cloud.pending.is_none()
+    });
     files
         .run_effect(FilesEffect::SelectCloud { entry: entry.id })
         .unwrap();
@@ -101,24 +99,22 @@ fn cancel_action_closes_preparing_export_and_retry_records_only_failed_copy() {
         .run_effect(FilesEffect::ImportCloud { folder: None })
         .unwrap();
     files.poll_cloud();
-    ready_rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+    tilo_test_env::recv("the transfer to start", &ready_rx);
     files.run_effect(FilesEffect::CancelCloud).unwrap();
-    while files.cloud.transfer.is_some() {
-        assert!(std::time::Instant::now() < deadline);
+    tilo_test_env::wait_until("the cloud transfer to settle", || {
         files.poll_cloud();
-        std::thread::yield_now();
-    }
+        files.cloud.transfer.is_none()
+    });
     assert!(!destination.join("Copy.docx").exists());
     assert!(files.cloud.retry.is_some());
     assert_eq!(files.cloud.progress.phase, "cancelled");
     let progress = files.run_effect(FilesEffect::CloudProgress).unwrap();
     assert!(matches!(progress,Ran::Done(Some(value)) if value["phase"] == "cancelled"));
     files.run_effect(FilesEffect::RetryCloud).unwrap();
-    while files.cloud.transfer.is_some() {
-        assert!(std::time::Instant::now() < deadline);
+    tilo_test_env::wait_until("the cloud transfer to settle", || {
         files.poll_cloud();
-        std::thread::yield_now();
-    }
+        files.cloud.transfer.is_none()
+    });
     assert_eq!(server.join().unwrap(), 2);
     assert_eq!(
         std::fs::read(destination.join("Copy.docx")).unwrap(),

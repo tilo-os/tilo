@@ -745,23 +745,15 @@ fn pointer_and_keyboard_send_use_the_live_request() {
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
-            let deadline = tilo_test_env::hang_deadline();
-            loop {
-                if let Ok((mut stream, _)) = listener.accept() {
-                    stream
-                        .set_read_timeout(Some(tilo_test_env::hang_bound()))
-                        .unwrap();
-                    let mut bytes = [0; 4096];
-                    let count = stream.read(&mut bytes).unwrap();
-                    stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
-                    return String::from_utf8_lossy(&bytes[..count]).to_string();
-                }
-                assert!(
-                    ui::time::now() < deadline,
-                    "Send never reached the HTTP server"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
+            let (mut stream, _) =
+                tilo_test_env::wait_for("Send to reach the HTTP server", || listener.accept().ok());
+            stream
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            let mut bytes = [0; 4096];
+            let count = stream.read(&mut bytes).unwrap();
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
+            String::from_utf8_lossy(&bytes[..count]).to_string()
         });
         let mut app = sample();
         // The token is a secret variable: its value is kept on this device.

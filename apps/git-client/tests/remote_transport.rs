@@ -67,16 +67,15 @@ fn start_server_with_tls(root: &Path, tls: bool) -> (Server, String) {
             .spawn()
             .expect("Python 3 is required for Git HTTP tests"),
     );
-    let deadline = tilo_test_env::hang_deadline();
     let ready = root.join("ready.json");
-    while !ready.exists() {
+    tilo_test_env::wait_until("the Git HTTP fixture to be ready", || {
         assert!(
-            server.0.try_wait().unwrap().is_none() && ui::time::now() < deadline,
+            server.0.try_wait().unwrap().is_none(),
             "Git HTTP fixture failed: {}",
             fs::read_to_string(root.join("server.log")).unwrap()
         );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+        ready.exists()
+    });
     let value: serde_json::Value = serde_json::from_slice(&fs::read(ready).unwrap()).unwrap();
     let port = value.get("port").unwrap().as_u64().unwrap();
     let scheme = if tls { "https" } else { "http" };
@@ -446,14 +445,9 @@ fn remote_fetch_keeps_app_responsive_and_reports_completion() {
         .start_bound_job(&address, &serde_json::Map::new(), false)
         .unwrap();
     assert!(started.completed().is_none(), "the fetch runs as a job");
-    let request_deadline = tilo_test_env::hang_deadline();
-    while !root.path().join("request-started").exists() {
-        assert!(
-            ui::time::now() < request_deadline,
-            "worker never contacted the server"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    tilo_test_env::wait_until("the worker to contact the server", || {
+        root.path().join("request-started").exists()
+    });
     app.settle();
     assert!(transfer_published(&mut app), "the transfer is a live row");
     assert!(

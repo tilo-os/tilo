@@ -339,12 +339,10 @@ fn measure_long_book_scroll() {
 
 /// Run idle frames until the reader shows its chapter fully laid out.
 fn settle(app: &mut Framed<BooksApp>) {
-    let deadline = tilo_test_env::hang_deadline();
-    while app.layout_pending() && ui::time::now() < deadline {
-        std::thread::sleep(Duration::from_millis(2));
+    tilo_test_env::wait_until("the chapter to be laid out", || {
         Framed::harness_mut(app).relayout();
-    }
-    assert!(!app.layout_pending(), "the chapter was laid out");
+        !app.layout_pending()
+    });
 }
 
 /// Share of the reading column's pixels, as the CPU renderer draws the
@@ -439,16 +437,17 @@ fn sustained_scrolling_through_a_long_book_never_waits_on_layout() {
 fn a_long_chapter_shows_before_it_is_all_laid_out() {
     for mode in [ReadMode::Continuous, ReadMode::Paged] {
         let mut app = reader(prose_book(1, 600, 90), mode, (1280, 800));
-        let deadline = tilo_test_env::hang_deadline();
         let mut shown_while_laying_out = 0;
-        while app.layout_pending() && ui::time::now() < deadline {
+        tilo_test_env::wait_until(format!("{mode:?}: the chapter to be laid out"), || {
+            if !app.layout_pending() {
+                return true;
+            }
             if !app.sel_runs.is_empty() {
                 shown_while_laying_out += 1;
             }
-            std::thread::sleep(Duration::from_millis(2));
             Framed::harness_mut(&mut app).relayout();
-        }
-        assert!(!app.layout_pending(), "{mode:?}: the chapter was laid out");
+            false
+        });
         assert!(
             shown_while_laying_out > 0,
             "{mode:?}: text showed before the chapter was all laid out"
@@ -482,9 +481,8 @@ fn no_frame_shows_a_blank_page_while_laying_out() {
     settle(&mut app);
     let far = app.num_chapters() - 2;
     app.on_goto_chapter(far);
-    let deadline = tilo_test_env::hang_deadline();
     let mut frames = 0;
-    loop {
+    tilo_test_env::wait_until("the chapter jumped to to be laid out", || {
         Framed::harness_mut(&mut app).relayout();
         frames += 1;
         let share = marked_share(&app);
@@ -493,10 +491,8 @@ fn no_frame_shows_a_blank_page_while_laying_out() {
             "frame {frames} after the jump shows a blank page ({:.1}% marked)",
             share * 100.0
         );
-        if !app.layout_pending() || ui::time::now() > deadline {
-            break;
-        }
-    }
+        !app.layout_pending()
+    });
     assert_eq!(app.chapter, far);
     assert!(!app.sel_runs.is_empty(), "the chapter shows its text");
 }

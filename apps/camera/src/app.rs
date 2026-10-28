@@ -4382,18 +4382,15 @@ mod tests {
 
             // Saving is now bounded background work; pump the real sync boundary
             // until it settles rather than assuming UI event delivery did disk IO.
-            let deadline = tilo_test_env::hang_deadline();
-            while ui::time::now() < deadline
-                && std::fs::read_dir(&dir).map_or(true, |entries| {
-                    !entries.flatten().any(|e| {
+            tilo_test_env::wait_until("a JPEG to land on disk", || {
+                app.sync_record(&mut doc, &root);
+                std::fs::read_dir(&dir).is_ok_and(|entries| {
+                    entries.flatten().any(|e| {
                         e.path().extension().is_some_and(|x| x == "jpg")
                             && e.metadata().is_ok_and(|m| m.len() >= 2)
                     })
                 })
-            {
-                app.sync_record(&mut doc, &root);
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            });
             // A real JPEG landed on disk. Camera publishes the portable identity,
             // not the private local projection path.
             let files: Vec<_> = std::fs::read_dir(&dir)
@@ -4634,18 +4631,12 @@ mod tests {
         ));
         // The photo's save runs on, at the disk's pace; its arrival is when
         // it is dropped.
-        let deadline = tilo_test_env::hang_deadline();
-        while app
-            .with_surface::<CameraApp, _>(|camera| camera.worker.saving_photo())
-            .expect("the window shows Camera")
-        {
-            assert!(
-                ui::time::now() < deadline,
-                "the cancelled photo's save never answered"
-            );
+        tilo_test_env::wait_until("the cancelled photo's save to answer", || {
             app.harness()
                 .wait_until(ui::time::Duration::from_millis(20), |_| false);
-        }
+            !app.with_surface::<CameraApp, _>(|camera| camera.worker.saving_photo())
+                .expect("the window shows Camera")
+        });
         assert!(app.state().recent.is_none(), "nothing is registered");
         let photos =
             std::fs::read_dir(&dir).map_or(0, |entries| entries.filter_map(Result::ok).count());

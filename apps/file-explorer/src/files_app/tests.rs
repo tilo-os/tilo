@@ -1247,19 +1247,15 @@ mod command_path_tests {
         assert_watched_idle_window_needs_no_wake(&mut widget);
 
         std::fs::write(root.path().join("new.txt"), b"new").unwrap();
-        let deadline = tilo_test_env::hang_deadline();
-        let mut checked = false;
-        while !checked && ui::time::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            // Where the watch sees every change nothing is polled, so only
-            // the watch can make this check.
-            #[cfg(target_os = "linux")]
-            assert_eq!(widget.next_metadata_refresh, None, "nothing is polled");
-            checked = widget.refresh_metadata_if_due(ui::time::now());
-        }
-        assert!(
-            checked,
-            "the root's change moved the catalogue's generation"
+        tilo_test_env::wait_until(
+            "the root's change to move the catalogue's generation",
+            || {
+                // Where the watch sees every change nothing is polled, so only
+                // the watch can make this check.
+                #[cfg(target_os = "linux")]
+                assert_eq!(widget.next_metadata_refresh, None, "nothing is polled");
+                widget.refresh_metadata_if_due(ui::time::now())
+            },
         );
         assert_watched_idle_window_needs_no_wake(&mut widget);
     }
@@ -1279,9 +1275,9 @@ mod command_path_tests {
         std::fs::write(dir.path().join("b.txt"), b"new").unwrap();
         let shown =
             |widget: &FileExplorerWidget| widget.entries.iter().any(|entry| entry.name == "b.txt");
-        let deadline = tilo_test_env::hang_deadline();
-        while !shown(&widget) && ui::time::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(20));
+        // How soon is `change_read_gap`'s (under a second); wall time here
+        // would only measure the test machine's load.
+        tilo_test_env::wait_until("the new file to be listed", || {
             // The earliest moment a reported change may be read, which is
             // before any poll is due: only the watch can make this read.
             let readable = widget.last_directory_read
@@ -1290,10 +1286,8 @@ mod command_path_tests {
                 assert!(readable < due, "the change is read before the poll");
             }
             let _ = widget.refresh_metadata_if_due(readable);
-        }
-        // How soon is `change_read_gap`'s (under a second); wall time here
-        // would only measure the test machine's load.
-        assert!(shown(&widget), "the new file is listed");
+            shown(&widget)
+        });
         assert!(!widget.directory_changed, "the reported change was read");
     }
 
@@ -1345,16 +1339,15 @@ mod command_path_tests {
                 .find(|entry| entry.name == name)
                 .map(|entry| (entry.size, entry.is_dir))
         };
-        let deadline = tilo_test_env::hang_deadline();
-        while shown(&widget).is_none() && ui::time::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(20));
+        let listed = tilo_test_env::wait_for("the moved-in archive to be listed", || {
             let readable = widget.last_directory_read
                 + metadata_refresh::change_read_gap(widget.entries.len());
             let _ = widget.refresh_metadata_if_due(readable);
-        }
+            shown(&widget)
+        });
         assert_eq!(
-            shown(&widget),
-            Some((SIZE, false)),
+            listed,
+            (SIZE, false),
             "the moved-in archive is listed as a file, at its size"
         );
         assert_eq!(widget.entries.len(), 111);
@@ -1791,12 +1784,10 @@ mod command_path_tests {
         std::os::unix::fs::symlink(&mount, &alias).unwrap();
         app.invoke(crate::resource::FileExplorer::queueing("test-device", op).unwrap())
             .unwrap();
-        let deadline = tilo_test_env::hang_deadline();
-        while app.state().ops.pending().next().is_some() {
-            assert!(std::time::Instant::now() < deadline);
+        tilo_test_env::wait_until("the queued operation to settle", || {
             app.settle();
-            std::thread::yield_now();
-        }
+            app.state().ops.pending().next().is_none()
+        });
         let state = app.state();
         let outcome = state
             .ops

@@ -103,12 +103,10 @@ fn provider_actions_choose_destination_and_import_office_bytes_without_mount() {
             account: "account".into(),
         })
         .unwrap();
-    let deadline = tilo_test_env::hang_deadline();
-    while files.cloud.pending.is_some() {
-        assert!(std::time::Instant::now() < deadline);
+    tilo_test_env::wait_until("the cloud listing to settle", || {
         files.poll_cloud();
-        std::thread::yield_now();
-    }
+        files.cloud.pending.is_none()
+    });
     assert_eq!(files.cloud.entries, vec![source]);
     assert!(!root.path().join("Remote").exists());
     assert_eq!(files.cloud_resources().len(), 1);
@@ -122,11 +120,10 @@ fn provider_actions_choose_destination_and_import_office_bytes_without_mount() {
         .run_effect(FilesEffect::ImportCloud { folder: None })
         .unwrap();
     assert!(recorder.pick_requests()[0].is_writable_directory());
-    while files.cloud.chooser.is_some() || files.cloud.transfer.is_some() {
-        assert!(std::time::Instant::now() < deadline);
+    tilo_test_env::wait_until("the cloud import to settle", || {
         files.poll_cloud();
-        std::thread::yield_now();
-    }
+        files.cloud.chooser.is_none() && files.cloud.transfer.is_none()
+    });
     server.join().unwrap();
     assert_eq!(
         std::fs::read(destination.join("Document.docx")).unwrap(),
@@ -193,12 +190,10 @@ fn explicit_import_folder_is_pinned_without_a_chooser_and_is_not_source_consent(
         *pinned,
         crate::cloud_transfer::pin_destination(folder, std::iter::empty()).unwrap()
     );
-    let deadline = tilo_test_env::hang_deadline();
-    while files.cloud.transfer.is_some() {
-        assert!(std::time::Instant::now() < deadline);
+    tilo_test_env::wait_until("the cloud transfer to settle", || {
         files.poll_cloud();
-        std::thread::yield_now();
-    }
+        files.cloud.transfer.is_none()
+    });
     assert!(
         files
             .local_outcomes
@@ -274,12 +269,10 @@ fn replacing_folder_or_account_detaches_pending_pages_and_selection() {
             .is_err()
         );
         assert!(files.run_effect(FilesEffect::MoreCloud).is_err());
-        let deadline = tilo_test_env::hang_deadline();
-        while files.cloud.pending.is_some() {
-            assert!(Instant::now() < deadline);
+        tilo_test_env::wait_until("the cloud listing to settle", || {
             files.poll_cloud();
-            std::thread::yield_now();
-        }
+            files.cloud.pending.is_none()
+        });
         assert!(files.cloud.entries.is_empty());
     }
 }

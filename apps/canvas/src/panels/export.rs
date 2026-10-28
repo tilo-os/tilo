@@ -755,14 +755,13 @@ mod tests {
 
     /// Frames, until `host` answered everything asked of it.
     fn frames(host: &mut PixelsHost) {
-        let started = std::time::Instant::now();
-        while host.waiting() {
-            assert!(
-                started.elapsed() < std::time::Duration::from_secs(60),
-                "the picture never came"
-            );
+        tilo_test_env::wait_until("the picture", || {
+            if !host.waiting() {
+                return true;
+            }
             host.drive();
-        }
+            false
+        });
     }
 
     /// In a browser page the export's picture comes from the frame loop a
