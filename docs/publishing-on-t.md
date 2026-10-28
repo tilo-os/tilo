@@ -135,7 +135,6 @@ release = ["sha-{commit}"]               # tags a signed release pushes; {versio
 
 [product.context]                        # optional: a step that prepares the build context
 run = "bash tools/ci/publish/web-entry-context.sh {dir}/context /target/publish/web-desktop/bundle"
-inputs = ["crates/browser/tilo-browser-runtime/container/**"]
 needs = ["web-desktop-bundle"]           # checks whose outputs the context takes
 outputs = ["{dir}/context/**"]
 
@@ -153,7 +152,7 @@ Tags may name `{commit}`, `{version}` (on `v<version>` tags), `{rust}` (the chan
 `rust-toolchain.toml` pins) and `{fingerprint}` (the published directory's `fingerprint` file). A
 tag written `once:<tag>` never moves: where it exists already, nothing is published.
 
-A product with `[product.provenance]` (`run`, `inputs`, `outputs`) gets a `provenance-<name>`
+A product with `[product.provenance]` (`run`, `outputs`) gets a `provenance-<name>`
 check, no secrets, that writes `provenance.json` beside the index (or each image): the SLSA
 predicate, naming the image's digest as `expectedReleaseDigest` and the commit as `{commit}`.
 `sign-<name>` then also signs it as an in-toto attestation for that digest (`oci-attest.sh`,
@@ -165,10 +164,9 @@ check on main is `sign-dev-<name>`.
 
 `{dir}` is `/target/publish/<name>`, `{out}` the build's directory (`{dir}`, or `{dir}/<arch>`
 per architecture), `{arch}` and `{platform}` (`linux/amd64`) the architecture built. Any other
-field of `[product.context]` and `[product.build]` (`inputs`, `requires`, `requirement`,
-`timeout_secs`, `needs`, `privileged`, `cargo_packages`, …) goes to the check as written; the
-generator adds the publishing scripts to `inputs`, `arch=<arch>` to `requires` and `default =
-false`, and writes `on`, `id_token` and the signing environment itself, so a product can't
+field of `[product.context]` and `[product.build]` (`requires`, `requirement`, `timeout_secs`,
+`needs`, `isolation`, …) goes to the check as written; the generator adds `arch=<arch>` to
+`requires` and `default = false`, and writes `on`, `id_token` and the signing environment itself, so a product can't
 publish from a working tree by mistake.
 
 A release whose image differs from the one the build tested names a step that derives it,
@@ -251,7 +249,7 @@ throwaway key and publishing an OCI layout in the step.
 ## Without t
 
 `tools/ci/run-checks.py` runs t.toml's checks on one machine with python3, git and a local
-podman: the named checks and everything they need, each in its image with its setup, env and
+podman: the named checks and everything they need, each in its image with its env and
 `isolation`, in dependency order, with one shared `/target`; a check that passed with the same
 key is kept. It runs a committed checkout (its `HEAD`), so a builder runs a publishing chain in
 one command, for example main's dev image up to its gate and the model runtimes' uploads:

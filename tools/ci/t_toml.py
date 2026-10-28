@@ -1,57 +1,39 @@
 #!/usr/bin/env python3
 """Keep the parts of t.toml that other repository files define in step with them.
 
-t keys a cargo check by what cargo reads for its package (its sources, the
-local crates it reaches and the lockfile entries of the crates it uses), and a
-shell check by its `inputs`. suites.toml already says which packages read
-files outside their directory and which paths each hermetic suite group reads,
-so t.toml carries both, generated between markers:
+t keys every check by what its jobs read, recorded as they run, so nothing here
+says what a check reads. What is generated between markers is what other files
+already say:
 
-  * `package_inputs` of the cargo families, so a change to a file a package
-    reads through include_str! or a test fixture path runs its checks again;
-  * one `suite-<group>` check per suite group;
+  * one `suite-<group>` check per suite group of tools/ci/suites.toml;
   * the publishing chains of tools/ci/products.toml, one block per family
     (`products-<family>`; docs/publishing-on-t.md, "Products");
   * the `goldens` family, which runs .config/nextest-filters.toml's golden
     filter in the image .config/visual-goldens-image names, the
     `visual-goldens` check, which runs it on release candidates, and the
     nightly `nightly-arm64-goldens` check, which runs it there on aarch64;
-  * what the checks in CARGO_CHECKS read: the workspace packages they build,
-    test or run (`cargo_packages`, whose sources, local dependencies and
-    external crates t derives from the manifests and the lockfile), and the
-    files outside those packages they or the packages read, so a change
-    elsewhere in the tree doesn't run them again;
-  * what `security` reads: the trees its invariant scripts check as a whole
-    (SECURITY_AREAS) and the files and directories they name, so a change to a
-    file none of them reads doesn't boot its micro-VM again;
   * the policy suite's steps (tools/policy/steps.toml), one `policy/<name>`
-    check each, keyed by what that step reads;
-  * what `t-toml` itself reads: what this script generates from, so a change
-    to anything else leaves its result cached;
+    check each;
+  * the package lists of the cargo families (per-architecture, idle, deep);
   * the size checks: `thin-runtime-<arch>`, which builds what they share once,
     and on it `app-size/<app>-<arch>` for each app of the default collection and
-    `runtime-size-<arch>`, each keyed by what building and measuring its subject
-    reads (tools/apps/t-release.sh thin-runtime, app-size, runtime-size),
-    written as matrices t expands per app and architecture.
+    `runtime-size-<arch>` (tools/apps/t-release.sh thin-runtime, app-size,
+    runtime-size), written as matrices t expands per app and architecture;
+  * the OS image's layer actions (tools/ci/os/os_toml.py).
 
   t_toml.py write   regenerate the marked blocks in t.toml
   t_toml.py check   fail when they differ from what suites.toml implies
 """
 from __future__ import annotations
 
-import dataclasses
 import difflib
-import fnmatch
 import json
-import os
 from pathlib import Path
 import re
-import subprocess
 import sys
 import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import macos_apps  # noqa: E402
 import package_sets  # noqa: E402
 import products  # noqa: E402
 import t_matrix  # noqa: E402
@@ -75,90 +57,25 @@ SUITE_IMAGE = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d
 # every commit and bisects a failure to the commit that broke it (docs/t.md, "Heavy checks on
 # main"). `t test <check>` runs one for a working tree.
 HEAVY = {"on": ["stable", "dispatch", "idle"], "default": False, "heavy": True}
-# What some groups need beyond a plain check, and why. A group that writes into
-# its sources gets a private copy-on-write view of them. A `prepare` command
+# What some groups need beyond a plain check, and why. A `prepare` command
 # runs before the group's suites. No group takes `git = true`: t keeps such a
 # check's result per commit, so it would rerun on every commit of main whatever
 # its files; a fixture that needs a repository makes its own.
 GROUP_FIELDS = {
     "os": {"why": "writes fixtures next to its sources, and as root builds bubblewrap "
                   "namespaces and gives fixtures other owners, which the capability-less job sandbox cannot",
-           "writable_sources": True, "isolation": "vm",
+           "isolation": "vm",
            # The installer helper its scripts run, compiled outside the VM (see vm-test-binaries).
            "needs": ["vm-test-binaries"], "env": {"TILO_STAGING_HANDOFF_BIN": "/target/debug/tilo-staging-handoff"},
            **HEAVY},
-    "dist": {"why": "writes under target/ in the source tree", "writable_sources": True},
-    "vm-acceptance": {"why": "writes under target/ in the source tree",
-                      "writable_sources": True, **HEAVY},
+    "dist": {"why": "writes under target/ in the source tree"},
+    "vm-acceptance": {"why": "writes under target/ in the source tree", **HEAVY},
     "browser-compute-web": {"why": "installs the MoQ library's npm dependencies in scripts/moq-browser",
-                            "writable_sources": True, "prepare": "bash tools/ci/prepare-moq-library.sh"},
+                            "prepare": "bash tools/ci/prepare-moq-library.sh"},
     "browser-runtime-web": {"why": "builds the MoQ library with npm in scripts/moq-browser",
-                            "writable_sources": True, "prepare": "bash tools/ci/prepare-moq-library.sh"},
+                            "prepare": "bash tools/ci/prepare-moq-library.sh"},
 }
 SUITE_PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin"
-
-
-def glob(pattern: str) -> str:
-    """A suites.toml input as a t glob: "dir/" covers everything below it."""
-    return pattern + "**" if pattern.endswith("/") else pattern
-
-
-# What the security-boundary invariants (suites.SECURITY_MANIFEST) read whole: the OS tree, its
-# packaging, keys, workflows and CI configuration, and the app manifests tools/apps/app_release.py
-# resolves the app collections from. Beyond these they read the files and directories they name
-# by path, which `security_reads` finds in them. The helper binaries they run come from
-# `vm-test-binaries`, whose key (the packages it builds) is part of theirs.
-SECURITY_AREAS = ("os/**", "dist/**", "keys/**", ".forgejo/**", ".config/**", "apps/*/Cargo.toml",
-                  "apps/*/tilo-app.toml")
-# A path of the tree outside those areas, as an invariant names it: "$repo/crates/x/y/src/z.rs",
-# "$repo/tools/ci/x.sh" or ROOT / "crates/x" / "y" (joined first). A path with a variable or glob
-# in it ends before that; one followed by an escaped `*` is text a pattern matches, not a path.
-SECURITY_PATH = re.compile(
-    r"(?<![\w.-])((?:crates|apps|examples|sdk|vendor|docs|tools|scripts)/[\w.@+-]+(?:/[\w.@+-]+)*)(?![\w.@+-]|/[\w.@+-]|/?\\\*)")
-
-
-def security_named(root: Path = ROOT) -> tuple[list[str], set[str]]:
-    """The invariant scripts, and every path of the tree they name, whether it exists or not."""
-    manifest = root / suites.SECURITY_MANIFEST
-    invariants = [line.strip() for line in manifest.read_text(encoding="utf-8").splitlines()
-                  if line.strip() and not line.lstrip().startswith("#")]
-    named: set[str] = set()
-    for invariant in invariants:
-        text = re.sub(r'"\s*/\s*"', "/", (root / invariant).read_text(encoding="utf-8"))
-        named |= {match[1].rstrip(".") for match in SECURITY_PATH.finditer(text)}
-    return invariants, named
-
-
-def security_reads(root: Path = ROOT) -> str:
-    """The `inputs` of the security check: SECURITY_AREAS, the invariant scripts and every existing
-    path they name: a file as itself, a directory as everything below it. A path only built at
-    runtime has to fall in SECURITY_AREAS."""
-    invariants, named = security_named(root)
-    # A path no file has is a fixture's, made up in a scratch directory.
-    reads = {f"{path}/**" if (root / path).is_dir() else path for path in named if (root / path).exists()}
-    reads |= {suites.SECURITY_MANIFEST, "tools/run-security-boundary-invariants.sh", *invariants}
-    trees = [*SECURITY_AREAS, *(path for path in reads if path.endswith("/**"))]
-
-    def covered(path: str) -> bool:
-        return any(tree != path and fnmatch.fnmatchcase(path.removesuffix("/**"), tree) for tree in trees)
-
-    return f"inputs = {array([*SECURITY_AREAS, *sorted(path for path in reads if not covered(path))])}\n"
-
-
-def workspace_layout_reads() -> str:
-    """The `inputs` of workspace-layout: the workspace's manifests (check_workspace_members.py) and,
-    of the tracked paths check_repository_layout.py judges, those that can break one of its rules:
-    any inside a generated directory, under a retired source root or among the application tooling
-    at the top of tools/, and the fixtures it compares. A path that can't break a rule doesn't
-    change its result, and a new one that can changes the files these globs match."""
-    import check_repository_layout as layout
-    reads = ["Cargo.toml", "**/Cargo.toml", "scripts/check-workspace-complete.sh",
-             "tools/policy/check_workspace_members.py", "tools/policy/check_repository_layout.py",
-             "tools/ci/t-git-index.sh", "**/fixtures/**"]
-    reads += [f"**/{directory}/**" for directory in sorted(layout.GENERATED_DIRECTORIES)]
-    reads += [f"{root}*" for root in sorted(layout.RETIRED_SOURCE_ROOTS)]
-    reads += ["tools/app_*", "tools/accept_app_*", "tools/assemble_verified_apps.py"]
-    return f"inputs = {array(reads)}\n"
 
 
 # What each policy step must be able to pass with, measured over its runs (t.toml's rule: the
@@ -172,8 +89,7 @@ POLICY_TEST_FILE_REQUIREMENT = '{ cores = 1, memory = "1GiB" }'
 
 
 def policy_checks(root: Path = ROOT) -> str:
-    """One `policy/<name>` check per step of tools/policy/steps.toml, keyed by what the step reads
-    and its own scripts. A step another check of t.toml runs (`covered_by`) gets none; that check
+    """One `policy/<name>` check per step of tools/policy/steps.toml. A step another check of t.toml runs (`covered_by`) gets none; that check
     has to run the same command."""
     declared = {check["name"]: check for check in tomllib.loads(T_TOML.read_text(encoding="utf-8")).get("check", [])}
     blocks = []
@@ -184,77 +100,27 @@ def policy_checks(root: Path = ROOT) -> str:
                 raise ValueError(f"tools/policy/steps.toml: {step.name} says {step.covered_by} runs it, but t.toml's "
                                  f"{step.covered_by} doesn't run `{step.run}`")
             continue
-        inputs = list(dict.fromkeys([*step.inputs, *(path for path in policy_steps.own_files(step, root)
-                                                      if path not in step.inputs)]))
         blocks.append("\n".join([
             "[[check]]",
             f"name = {json.dumps(step.check)}",
             'requires = ["arch=any"]',
             f"requirement = {POLICY_TEST_FILE_REQUIREMENT if step.pruned else POLICY_TESTS_REQUIREMENT if step.tests else POLICY_REQUIREMENT}",
             f"run = {json.dumps(step.t_command)}",
-            # The tests make repositories and scratch files beside the sources: a private
-            # writable view of the tree. Those that read the commit's history (release contracts
-            # at HEAD) get t's own .git too, which keys their result per commit.
+            # Those that read the commit's history (release contracts at HEAD) get t's own .git,
+            # which keys their result per commit.
             *(["git = true"] if step.history else []),
-            # A pruned test file runs in a copy of its inputs, which it may write to.
-            *(["writable_sources = true"] if step.tests and not step.pruned else []),
-            f"inputs = {array(inputs)}",
         ]) + "\n")
     return "\n".join(blocks)
-
-
-# What `t-toml` reads besides the files below, all of which t_toml_reads adds: t.toml, the
-# generators and their data, the workspace's manifests (cargo metadata), its Rust sources (which
-# packages differ between architectures, package_sets.per_arch), the apps and collections the size
-# checks are made from and the runtime's budget.
-T_TOML_READS = ["t.toml", "tools/ci/suites.toml", "tools/ci/products.toml", "tools/ci/publish/**",
-                "tools/policy/steps.toml", ".config/nextest-filters.toml", ".config/visual-goldens-image",
-                "Cargo.toml", "**/Cargo.toml", "Cargo.lock", "**/*.rs", "apps/*/tilo-app.toml", "examples/apps/*/tilo-app.toml",
-                "dist/apps/app-collections.toml", "tools/apps/app_release.py",
-                "tools/perf/runtime-size-budget/budget.toml", suites.SECURITY_MANIFEST,
-                # The test files' own checks are keyed by the paths of the tree their tests name
-                # (steps.split_checks): which of those exist is the whole tree's to say.
-                "**"]
-
-
-def t_toml_reads(manifest: suites.Manifest, root: Path = ROOT) -> str:
-    """The `inputs` of the t-toml check, which runs this script: T_TOML_READS, this script and the
-    modules it imports, the Rust files suites.toml says read outside their package (whose includes
-    `cargo_check` follows), the security invariants and every path they name (existing or not, so
-    one appearing changes the key), and the policy steps' own scripts (whose imports
-    `policy_checks` follows)."""
-    reads = set(policy_steps.imports("tools/ci/t_toml.py", root))
-    reads |= policy_steps.imports("tools/policy/steps.py", root)
-    reads |= {path for reader in manifest.cargo for path in reader.readers}
-    invariants, named = security_named(root)
-    reads |= set(invariants) | named
-    for step in policy_steps.load(root):
-        if step.covered_by is None:
-            reads |= set(policy_steps.own_files(step, root))
-    reads = {path for path in reads - set(T_TOML_READS) if not path.endswith(".rs")}
-    return f"inputs = {array([*T_TOML_READS, *sorted(reads)])}\n"
 
 
 def array(values: list[str]) -> str:
     return "[" + ", ".join(json.dumps(value) for value in values) + "]"
 
 
-def package_inputs(manifest: suites.Manifest) -> str:
-    lines = ["[cargo.package_inputs]"]
-    for reader in sorted(manifest.cargo, key=lambda reader: reader.package):
-        key = reader.package if re.fullmatch(r"[A-Za-z0-9_-]+", reader.package) else json.dumps(reader.package)
-        lines.append(f"{key} = {array([glob(path) for path in reader.inputs])}")
-    return "\n".join(lines) + "\n"
-
-
 def suite_checks(manifest: suites.Manifest) -> str:
     blocks = []
     for group in manifest.groups:
         fields = GROUP_FIELDS.get(group.name, {})
-        inputs = sorted({glob(path) for path in (*group.inputs, *group.suites)}
-                        | {suites.MANIFEST, "tools/ci/suites.py", "tools/policy/run_unit_tests.py",
-                           "tools/with-test-environment.sh"}
-                        | set(fields.get("prepare", "").split()[1:2]))
         run = f"python3 tools/ci/suites.py run --jobs 8 --group {group.name}"
         if "prepare" in fields:
             run = f"{fields['prepare']} && {run}"
@@ -269,10 +135,8 @@ def suite_checks(manifest: suites.Manifest) -> str:
             'requires = ["arch=x86_64"]',
             *([f"requirement = {{ cores = {group.requirement[0]}, memory = {json.dumps(group.requirement[1])} }}"]
               if group.requirement else []),
-            *(["writable_sources = true"] if fields.get("writable_sources") else []),
             *([f"isolation = {json.dumps(fields['isolation'])}"] if "isolation" in fields else []),
             *([f"needs = {array(fields['needs'])}"] if "needs" in fields else []),
-            f"inputs = {array(inputs)}",
             *([f"on = {array(fields['on'])}"] if "on" in fields else []),
             *(["default = false"] if fields.get("default") is False else []),
             *(["heavy = true"] if fields.get("heavy") else []),
@@ -300,8 +164,6 @@ def goldens(image: str) -> str:
         'exec bash tools/test-env.sh \\"$@\\"", "goldens"]',
         f"packages = {array(packages)}",
         f"args = {array(['--locked', '--profile', 'ci', '--tests', '--no-tests=pass', '-E', golden])}",
-        'inputs = [".config/nextest.toml", ".config/nextest-filters.toml", ".config/visual-goldens-image", '
-        '"tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh"]',
         'env = { TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }',
         # Measured over its runs: the 99th-percentile peak memory with half again as much room, and
         # the 90th-percentile peak cores, at most 16. Batches of its packages run as one job.
@@ -321,11 +183,7 @@ def goldens(image: str) -> str:
         'requires = ["arch=x86_64"]',
         "run = " + json.dumps(f"bash tools/test-env.sh cargo nextest run --locked --profile ci --tests "
                               f"--no-tests=pass {' '.join(f'-p {name}' for name in packages)} -E '{golden}'"),
-        'inputs = [".config/nextest.toml", ".config/nextest-filters.toml", ".config/visual-goldens-image", '
-        '"tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh"]',
-        f"cargo_packages = {array(packages)}",
         'env = { TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }',
-        "writable_sources = true",
         'requirement = { cores = 16, memory = "48GiB" }',
         'cost = "heavy"',
         'on = ["stable", "dispatch"]',
@@ -337,8 +195,7 @@ def goldens(image: str) -> str:
 def arm64_goldens(image: str) -> str:
     """The goldens on aarch64, in the same image, to see where its pixels differ from x86_64's.
     A look, not a gate (the baselines are x86_64's), so it runs on request, never as part of a
-    release candidate; keyed like visual-goldens, so a request after an unrelated change returns
-    the last result."""
+    release candidate; a request after a change it didn't read returns the last result."""
     sys.path.insert(0, str(ROOT / "tools/ci"))
     import nextest_filters
     golden = nextest_filters.filters()["GOLDEN_FILTER"]
@@ -351,292 +208,11 @@ def arm64_goldens(image: str) -> str:
         'requires = ["arch=arm64"]',
         "run = " + json.dumps(f"bash tools/test-env.sh cargo nextest run --locked --profile ci --tests "
                               f"--no-tests=pass {packages} -E '{golden}'"),
-        'inputs = [".config/nextest.toml", ".config/nextest-filters.toml", ".config/visual-goldens-image", '
-        '"tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh"]',
-        f"cargo_packages = {array(names)}",
         'env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }',
-        "writable_sources = true",
         'on = ["dispatch"]',
         'cost = "heavy"',
         "default = false",
     ]) + "\n"
-
-
-# What tools/ci/package_sets.py runs to pick its packages.
-PACKAGE_SET_TOOLS = ["tools/ci/package_sets.py"]
-# The files tools/test-env.sh and the scripts it runs read.
-TEST_ENV = ["tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh"]
-
-
-def apps_of(packages: dict[str, dict], root: Path, parent: str) -> set[str]:
-    """Workspace packages directly under `parent` that are Tilo apps (have a tilo-app.toml)."""
-    found = set()
-    for name, package in packages.items():
-        directory = Path(package["manifest_path"]).resolve().parent
-        if directory.parent == (root / parent).resolve() and (directory / "tilo-app.toml").is_file():
-            found.add(name)
-    return found
-
-
-# Checks that build, test or run particular workspace packages, keyed by those
-# packages rather than by every file under apps/ and crates/. Each names its
-# packages (or how to find them in the workspace's metadata), whether their
-# dev-dependencies count (`dev`, by default: they do when it runs their tests or
-# examples), those whose tests or examples it runs (`tested`, by default all of
-# them where `dev`), and the other files it reads.
-#
-# t derives a package's reach from the manifests alone, so it counts every optional
-# dependency and every platform's. A check that builds its packages in one cargo
-# invocation with their default features for one `target` is keyed instead by the
-# directories cargo resolves for exactly that (`cargo tree --target`), the root
-# manifest and the whole lockfile: tilo-runtime on macOS doesn't build tilo-relay's
-# agents, which link every app, nor the Linux-only crates.
-CARGO_CHECKS: dict[str, dict] = {
-    # Clippy of the apps with an Android host example, for both Android targets.
-    "android": {
-        "packages": lambda packages, root: package_sets.android_apps(packages),
-        "inputs": ["tools/ci/clippy-android.sh", "tools/ci/measure.sh", "scripts/ci-run.sh", *PACKAGE_SET_TOOLS],
-    },
-    # Clippy of the browser crates' libraries and binaries for wasm32.
-    "wasm": {
-        "packages": lambda packages, root: package_sets.browser_crates(packages)
-        | {"tilo-web-desktop", "tilo-browser-runtime", "tilo-browser-compute"},
-        "dev": False,
-        "inputs": ["tools/ci/check-wasm.sh", "tools/ci/measure.sh", "scripts/ci-run.sh", *PACKAGE_SET_TOOLS],
-    },
-    # tilo-app builds each example for the web with the browser runtime and the
-    # MoQ library npm builds.
-    "web-examples": {
-        "packages": lambda packages, root: package_sets.example_apps(packages, root)
-        | {"tilo-app-cli", "tilo-browser-runtime"},
-        "dev": False,
-        "inputs": ["examples/apps/**", "scripts/moq-browser/**", "tools/ci/build-web-examples.sh"],
-    },
-    # tilo-app runs each example's saved scenarios through its own binary.
-    "example-scenarios": {
-        "packages": lambda packages, root: package_sets.example_apps(packages, root) | {"tilo-app-cli"},
-        "dev": False,
-        "inputs": ["examples/apps/**", "tools/ci/example-scenarios.sh", *TEST_ENV],
-    },
-    # tilo-app lints the sources and manifests of every app of the workspace, as
-    # the workspace's members name them.
-    "app-lints": {
-        "packages": lambda packages, root: {"tilo-app-cli"},
-        "dev": False,
-        "inputs": ["Cargo.toml", "apps/**", "examples/apps/**"],
-    },
-    # tilo-app builds and audits every app of the workspace.
-    "certify": {
-        "packages": lambda packages, root: apps_of(packages, root, "apps")
-        | apps_of(packages, root, "examples/apps") | {"tilo-app-cli"},
-        "dev": False,
-        "inputs": ["Cargo.toml", "apps/*/tilo-app.toml", "apps/*/Cargo.toml",
-                   "examples/apps/*/tilo-app.toml", "examples/apps/*/Cargo.toml"],
-    },
-    # The SDK's Linux path: the CLI's tests, and the calculator built and packaged. The app the
-    # outside_repo test generates compiles tilo-model-gateway from the checkout too, which none of
-    # the others reaches, so a change to it reruns this.
-    "sdk-linux": {
-        "packages": lambda packages, root: {"tilo-caps", "tilo-app-cli", "tilo-app-package-cli", "calculator",
-                                            "tilo-model-gateway"},
-        "tested": {"tilo-caps", "tilo-app-cli"},
-        "inputs": ["tools/sdk/**", "tools/web/**", "tools/font-catalog.py"],
-    },
-    # The SDK's web path: the desktop bundle (the web desktop and the apps it
-    # registers), the chat bundle and the agent participant's example, in Chromium.
-    "sdk-web": {
-        "packages": lambda packages, root: {"tilo-app-cli", "calculator", "chat", "tilo-agent-participant",
-                                            "tilo-web-desktop", "tilo-browser-runtime", "tilo-browser-compute"},
-        "tested": {"tilo-agent-participant"},
-        "inputs": ["crates/platform/*/web/**", "apps/*/tilo-app.toml", "scripts/moq-browser/**",
-                   "tools/ci/prepare_sdk_moq.py", "tools/ci/ensure-browser-dependencies.sh", "tools/web/**"],
-    },
-    # The portable provider panel in the production single-app browser runtime: tilo-app
-    # builds the app bundle, which carries the compute worker, checks the app against the
-    # desktop crate's links and every app's resource kinds, and bundles the MoQ library;
-    # run.mjs drives it in Chromium through tools/web/chrome.mjs. Whether the desktop
-    # registry matches the apps is sdk-policy's to say, on every commit.
-    "model-providers-web": {
-        "packages": lambda packages, root: {"model-providers", "tilo-app-cli", "tilo-browser-runtime",
-                                            "tilo-browser-compute"},
-        "dev": False,
-        "inputs": ["apps/model-providers/web/**", "apps/*/tilo-app.toml",
-                   "crates/browser/tilo-web-desktop/Cargo.toml", "scripts/moq-browser/**",
-                   "tools/ci/prepare_sdk_moq.py", "tools/ci/ensure-browser-dependencies.sh",
-                   "tools/web/chrome.mjs", "tools/web/owned_browser.py"],
-    },
-    # The release desktop bundle and the image worker it qualifies.
-    "sdk-web-size": {
-        "packages": lambda packages, root: {"tilo-app-cli", "calculator", "tilo-web-desktop",
-                                            "tilo-browser-runtime", "tilo-browser-compute"},
-        "dev": False,
-        "inputs": ["apps/*/tilo-app.toml", "scripts/moq-browser/**", "tools/ci/ensure-browser-dependencies.sh",
-                   "tools/web/**"],
-    },
-    # The FUSE tests of these packages, and the session lifecycle test, which builds
-    # the flight recorder (tilo-session-record) and reads the session wrapper, the
-    # user units, the login session, the SELinux policy, the image's Containerfile
-    # and workflow, and the session scripts.
-    "real-fuse": {
-        "packages": lambda packages, root: {"tilo-fs", "fs-protocol", "tilo-user-identity", "tilo-session-record"},
-        "tested": {"tilo-fs", "fs-protocol", "tilo-user-identity"},
-        "inputs": ["os/tests/tilo-session-lifecycle.sh", "crates/session/shell/src/linux_main.rs",
-                   "os/usr/libexec/tilo-session",
-                   "os/usr/lib/systemd/user/**", "os/usr/share/tilo/selinux/tilo-base.cil",
-                   "os/usr/share/wayland-sessions/**", "os/dev-image/usr/lib/systemd/user/**",
-                   "os/Containerfile", "dist/session/**",
-                   "tools/desktop-isolation.sh", "scripts/ci-fuse-preflight.sh", "tools/font-catalog.py"],
-    },
-    # real-fuse's long suites, its relay proof, and its runtime and file explorer mounts, each a
-    # check of its own so they build and run side by side.
-    "real-fuse-mounts": {
-        "packages": lambda packages, root: {"tilo-fs"},
-        "inputs": ["scripts/ci-fuse-preflight.sh", "tools/font-catalog.py"],
-    },
-    "real-fuse-shares": {
-        "packages": lambda packages, root: {"tilo-fs"},
-        "inputs": ["scripts/ci-fuse-preflight.sh", "tools/font-catalog.py"],
-    },
-    "real-fuse-relay": {
-        "packages": lambda packages, root: {"tilo-relay"},
-        "inputs": ["scripts/ci-fuse-preflight.sh", "tools/font-catalog.py"],
-    },
-    "real-fuse-runtime": {
-        "packages": lambda packages, root: {"tilo-runtime", "file-explorer"},
-        "inputs": ["scripts/ci-fuse-preflight.sh", "tools/font-catalog.py"],
-    },
-    # The credential vault's wasm build linted, and its storage probe example built
-    # and driven in Chromium (crates/system/accounts/web/run.mjs, tools/web/chrome.mjs).
-    # The builder's definition says which wasm-bindgen and Node it carries.
-    "accounts-web-storage": {
-        "packages": lambda packages, root: {"accounts", "tilo-secret-vault", "tilo-files", "tilo-secrets"},
-        "tested": set(),
-        "inputs": ["crates/system/accounts/web/**", "tools/web/chrome.mjs", "tools/web/owned_browser.py",
-                   "tools/ci/ensure-browser-dependencies.sh", "os/Containerfile.builder"],
-    },
-    # The relay's privileged personal-device test, built here for the micro-VM
-    # check that runs it as real root (real-fuse-privileged).
-    "real-fuse-privileged-build": {
-        "packages": lambda packages, root: {"tilo-relay"},
-        "inputs": [],
-    },
-    # The tests of the imager and its backend, archived for the micro-VM check that runs them on
-    # an ext4 of its own (imager-tests-<arch>). Built beside workspace-unify, as the test family
-    # builds them, which decides only the features they are built with: its manifest counts, not
-    # the sources of every crate it names.
-    "imager-tests-build": {
-        "packages": lambda packages, root: {"imager", "imager-backend"},
-        "inputs": ["crates/dev/workspace-unify/Cargo.toml"],
-    },
-    # The browser desktop's wasm modules (tools/ci/publish/web-desktop-bundle.sh wasm): what wasm32
-    # compiles for it and the generator its build checks, without the crates' web/ pages, which
-    # web-desktop-bundle takes from the tree. A change to the pages alone compiles nothing.
-    "web-desktop-wasm": {
-        "packages": lambda packages, root: {"tilo-web-desktop", "tilo-browser-compute"},
-        "dev": False,
-        "target": "wasm32-unknown-unknown",
-        "unread": ["crates/browser/tilo-browser-runtime/web", "crates/browser/tilo-browser-compute/web"],
-        "inputs": ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/web-desktop-bundle.sh", "tools/font-catalog.py",
-                   "tools/web/generate_web_desktop.py", "tools/web/crate_source.py", "tools/web/wasm-split/**",
-                   "apps/*/tilo-app.toml", "apps/*/Cargo.toml", "apps/*/search/*.ftl",
-                   "crates/agent/agent-participant/Cargo.toml", "crates/agent/agent-participant/src/web_apps.rs",
-                   "crates/session/desktop-search/src/catalog.rs"],
-    },
-    # The room service image's programs (tools/ci/publish/room-service-binaries.sh), which the
-    # browser end-to-end checks run too: what the release build compiles, without the room
-    # service's scripts, pages, image files and dashboards, which its build doesn't read, so a
-    # change to an end-to-end script doesn't build them again.
-    "room-service-binaries": {
-        "packages": lambda packages, root: {"tilo-relay", "tilo-room-service", "discord-worker"},
-        "dev": False,
-        "target": "x86_64-unknown-linux-gnu",
-        "features": ["tilo-relay/agents"],
-        "unread": [f"crates/hosting/tilo-room-service/{name}"
-                   for name in ("README.md", "container", "dev", "grafana", "web")],
-        "inputs": ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/room-service-binaries.sh", ".cargo/**", "apps/*/surface.toml",
-                   "apps/*/tilo-app.toml", "apps/*.rs", "crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py",
-                   "tools/test-assets.py", "tools/test-assets-build.rs"],
-    },
-    # The compiled helpers the micro-VM checks' scripts run, built for them.
-    "vm-test-binaries": {
-        "packages": lambda packages, root: {"tilo-image-policy-check", "tilo-crypto", "tilo-esp-write",
-                                            "tilo-board-successor", "tilo-install-helpers"},
-        "dev": False,
-        "target": "x86_64-unknown-linux-gnu",
-        "inputs": [],
-    },
-    # The per-user runtime checked on t's Mac, all targets: its dev-dependencies are compiled,
-    # its tests don't run.
-    "runtime-macos": {
-        "packages": lambda packages, root: {"tilo-runtime"},
-        "target": "aarch64-apple-darwin",
-        "tested": set(),
-        "inputs": [],
-    },
-    # Every app that runs on macOS, built and tested on t's Mac. tools/ci/macos_apps.py picks
-    # them from the apps' manifests.
-    "apps-macos": {
-        "packages": lambda packages, root: set(macos_apps.macos_apps(root)),
-        "target": "aarch64-apple-darwin",
-        "inputs": ["tools/ci/macos_apps.py", "apps/*/tilo-app.toml", "apps/*/Cargo.toml", "tools/font-catalog.py",
-                   ".config/nextest.toml"],
-    },
-}
-
-
-def all_but(directory: str, names: list[str]) -> list[str]:
-    """Globs for every file under `directory` but those under its entries `names`: a name's
-    every proper prefix followed by any other character, and the name followed by more of one."""
-    if any("/" in name or not re.fullmatch(r"[A-Za-z0-9_.-]+", name) for name in names):
-        raise ValueError(f"{directory}: only top-level entries of plain names can be left out: {names}")
-    tree: dict = {}
-    for name in names:
-        node = tree
-        for char in name:
-            node = node.setdefault(char, {})
-        node[""] = {}
-    globs: list[str] = []
-
-    def walk(prefix: str, node: dict) -> None:
-        if prefix and "" not in node:
-            globs.append(f"{directory}/{prefix}")
-        if "" in node:
-            globs.append(f"{directory}/{prefix}[!/]*")
-        others = sorted(char for char in node if char)
-        if others:
-            globs.append(f"{directory}/{prefix}[!{''.join(others)}]*")
-        for char in others:
-            walk(prefix + char, node[char])
-
-    walk("", tree)
-    return globs
-
-
-def resolved_dirs(names: set[str], target: str, dev: bool, root: Path = ROOT, features: list[str] = ()) -> set[str]:
-    """The directories of the local packages cargo builds for `names` on `target` with their
-    default features and `features`, and with `dev` their own dev-dependencies: what `cargo tree`
-    resolves, so optional dependencies nothing turns on and other platforms' are left out."""
-    command = ["cargo", "tree", "--locked", "--target", target, "--edges", "normal,build" + (",dev" if dev else ""),
-               "--prefix", "none", "--format", "{p}", *(f"--features={feature}" for feature in features)]
-    for name in sorted(names):
-        command += ["--package", name]
-    output = subprocess.check_output(command, cwd=root, text=True)
-    top = root.resolve()
-    dirs = {Path(match[1]).resolve().relative_to(top).as_posix()
-            for match in re.finditer(r"\((/[^)]*)\)", output)}
-    # cargo tree takes build-dependencies for the host it runs on, which isn't the target's host
-    # and differs between t's nodes: no local crate may be one only on some host.
-    workspace = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8")).get("workspace", {})
-    shared = workspace.get("dependencies", {})
-    for directory in sorted(dirs):
-        manifest = tomllib.loads((root / directory / "Cargo.toml").read_text(encoding="utf-8"))
-        for platform, table in manifest.get("target", {}).items():
-            for key, spec in table.get("build-dependencies", {}).items():
-                spec = shared.get(key, {}) if isinstance(spec, dict) and spec.get("workspace") else spec
-                if isinstance(spec, dict) and "path" in spec:
-                    raise ValueError(f"{directory}/Cargo.toml: build-dependency {key} only for {platform} is a local "
-                                     "crate, which cargo tree resolves for its own host only")
-    return dirs
 
 
 # The size checks (tools/apps/t-release.sh thin-runtime, app-size and runtime-size). Each compiles
@@ -644,43 +220,9 @@ def resolved_dirs(names: set[str], target: str, dev: bool, root: Path = ROOT, fe
 # `thin-runtime-<arch>` compiles what every one of them shares, the runtime, its engines and the
 # packing tools, and its outputs are the build directory holding them; `app-size/<app>-<arch>` and
 # `runtime-size-<arch>` need it, so their keys hold its key, and compile only their apps on it.
-# They read:
 SIZE_ARCHES = [("x86_64", "arch=x86_64"), ("aarch64", "arch=arm64")]
 # The architecture whose app sizes the push gate checks (tools/ci/pre_push.py SIZE_ARCH).
 PUSH_GATE_SIZE_ARCH = "aarch64"
-# to compile: t-release.sh and what it sources, the app plan (app_release.py, which reads every
-# app's manifests and the collections), the architecture guard, package-apps.sh up to its
-# compile, build-thin-apps.sh and the rustc wrappers it puts in front of the compiler;
-SIZE_COMPILE = ["tools/apps/t-release.sh", "tools/apps/release-lib.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh",
-                "tools/ci/python.py", "tools/ci/__init__.py", "tools/ci/runner_labels.py",
-                "tools/ci/workspace_graph.py", "tools/apps/app_release.py", "dist/apps/app-collections.toml",
-                "apps/*/tilo-app.toml", "os/dev/assert-native-arch.sh", "dist/apps/package-apps.sh",
-                "tools/apps/app_package_isa.py", "crates/packaging/tilo-app-package/max-app-bytes",
-                "os/scripts/build-thin-apps.sh", "tools/ci/rustc-thin-app-wrapper.sh",
-                "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "os/scripts/verify-elf-hardening.sh"]
-# to keep only the shared build's units in its build directory;
-SHARED_BUILD = ["tools/apps/thin_runtime_units.py"]
-# to measure: the smoke script that runs the measurements;
-SIZE_MEASURE = ["tools/apps/release-smoke.sh", "tools/perf/tapp_size_ratchet.py", "tools/perf/record.py"]
-# to package one app: the signed runtime bundle its tapp names (the font catalog, the bake, the
-# closure check), the manifest's staging and the packing of the runtime package, then its budget;
-APP_SIZE_PACKAGING = ["tools/font-catalog.py", "os/scripts/bake-runtime-bundle.sh",
-                      "os/scripts/collect-runtime-dependencies.py", "os/scripts/verify-runtime-bundle-closure.sh",
-                      "tools/apps/dev_app_versions.py", "os/scripts/stamp-runtime.sh",
-                      "tools/apps/stage_sdk_services.py", "tools/apps/pack-runtime-package.sh",
-                      "tools/perf/tapp-size-budget/**"]
-# to measure the runtime: its budget.
-RUNTIME_SIZE_MEASURE = ["tools/perf/runtime_size_ratchet.py", "tools/perf/runtime-size-budget/**"]
-# The packages package-apps.sh compiles for every selection: the runtime, its engines (the runtime
-# bundle and so every tapp's runtime id cover them) and the packing tools.
-SIZE_PACKING_TOOLS = {"tilo-app-package-cli", "runtime-bundle"}
-# and beyond those, what the whole collection's gate (app-sizes-<arch>) runs: the publication
-# settings, the apps' and examples' manifests the catalogue reads, the release tools and the
-# GitHub asset cache its packaging takes binaries from.
-APP_SIZES_EXTRA = ["os/publication.env", "apps/*/Cargo.toml", "examples/apps/*/tilo-app.toml",
-                   "examples/apps/*/Cargo.toml", "dist/apps/**", "tools/apps/**", "tools/perf/**",
-                   "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv",
-                   "tools/upload_immutable_packages.sh", "tools/reuse_prior_app_collection.sh"]
 RUNTIME_SIZE_BUDGET = ROOT / "tools/perf/runtime-size-budget/budget.toml"
 # What `thin-runtime-<arch>` hands the checks that need it, under its build directory: the thin
 # graph's profile directory with only its units, the list of its files, and the packing tools.
@@ -697,28 +239,13 @@ def app_release_module():
     return module
 
 
-def resolution_manifests(packages: dict[str, dict], names: set[str]) -> list[str]:
-    """What Cargo reads to resolve the default collection's graph, beyond what t derives for a
-    check's own packages: features unify across every package the build selects, and versions
-    across the lockfile, so the manifests of every package that graph reaches (and of the crates
-    patched in) and the whole lockfile."""
-    tops = {Path(packages[name]["manifest_path"]).resolve().relative_to(ROOT).parts[0]
-            for name in local_closure(packages, names, False)}
-    root = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
-    for table in root.get("patch", {}).values():
-        tops |= {Path(spec["path"]).parts[0] for spec in table.values() if isinstance(spec, dict) and "path" in spec}
-    return ["Cargo.toml", "Cargo.lock", *(f"{top}/**/Cargo.toml" for top in sorted(tops))]
-
-
-def size_checks(manifest: suites.Manifest, packages: dict[str, dict]) -> str:
+def size_checks() -> str:
     """One `app-size/<app>-<arch>` check per app of the default collection, and one
     `runtime-size-<arch>`. `app-size` runs on main, for the apps a commit changes; the others run
     when an agent names the one its change concerns."""
     module = app_release_module()
     catalog = module.app_catalog(ROOT)
     apps = module.resolve_collection("default", catalog, module.config(ROOT / "dist/apps/app-collections.toml"))
-    engines = module.runtime_engines(ROOT)
-    runtime = {"runtime-dylib", *engines}
     without_media = tomllib.loads(RUNTIME_SIZE_BUDGET.read_text(encoding="utf-8"))["apps_without_media"]
     by_binary = {catalog[app]["binary"]: app for app in apps}
     missing = sorted(set(without_media) - by_binary.keys())
@@ -726,17 +253,8 @@ def size_checks(manifest: suites.Manifest, packages: dict[str, dict]) -> str:
         raise ValueError(f"{RUNTIME_SIZE_BUDGET.relative_to(ROOT)}: apps_without_media names no app of the "
                          f"default collection: {', '.join(missing)}")
     media_free = sorted(by_binary[binary] for binary in without_media)
-    graph = runtime | SIZE_PACKING_TOOLS | {catalog[app]["package"] for app in apps}
-    manifests = resolution_manifests(packages, graph)
 
-    # The engines by the pattern their packages follow, where it names them all; a package it
-    # names besides them only adds inputs.
-    engine_names = (["tilo-*-engine"] if all(fnmatch.fnmatchcase(engine, "tilo-*-engine") for engine in engines)
-                    else sorted(engines))
-
-    def check(name: str, run: str, node: str, names: set[str], inputs: list[str], shared: str | None) -> str:
-        spec = {"packages": lambda packages, root: names, "dev": False, "inputs": inputs, "drop_covered": True,
-                "cargo_packages": sorted(names - engines) + (engine_names if names & engines else [])}
+    def check(name: str, run: str, node: str, shared: str | None) -> str:
         lines = ["[[check]]", f"name = {json.dumps(name)}", f"run = {json.dumps(run)}",
                  f"requires = [{json.dumps(node)}]"]
         if shared is None:
@@ -754,50 +272,35 @@ def size_checks(manifest: suites.Manifest, packages: dict[str, dict]) -> str:
             # The push gate's architecture's is built for every main push that changes it
             # (`main`), so the gate's size check of an app a commit changes (tools/ci/pre_push.py)
             # finds the runtime of the main it lands on built and compiles only that app; `idle`
-            # would wait for t to have room, which a busy t rarely has. A push that leaves the
-            # runtime's inputs alone reuses it. The other architecture's only the size checks
-            # named for it use, so it waits for room.
+            # would wait for t to have room, which a busy t rarely has. A push that leaves what it
+            # reads alone reuses it. The other architecture's only the size checks named for it
+            # use, so it waits for room.
             on = ["main", "idle"] if name.endswith(f"-{PUSH_GATE_SIZE_ARCH}") else ["idle"]
             lines.append(f"on = {json.dumps(on)}")
-        return "\n".join(lines) + "\n" + cargo_check(name, spec, manifest, packages, ROOT)
+        return "\n".join(lines) + "\n"
 
-    shared = [check(f"thin-runtime-{arch}", f"bash tools/apps/t-release.sh thin-runtime {arch}",
-                    node, runtime | SIZE_PACKING_TOOLS, [*SIZE_COMPILE, *SHARED_BUILD, *manifests], None)
+    shared = [check(f"thin-runtime-{arch}", f"bash tools/apps/t-release.sh thin-runtime {arch}", node, None)
               for arch, node in SIZE_ARCHES]
     runtime_size = [check(f"runtime-size-{arch}",
                           f"bash tools/apps/t-release.sh runtime-size {arch} {' '.join(media_free)}",
-                          node, {catalog[app]["package"] for app in media_free},
-                          [*SIZE_COMPILE, *SIZE_MEASURE, *RUNTIME_SIZE_MEASURE,
-                           *(f"apps/{app}/**" for app in media_free), *manifests], f"thin-runtime-{arch}")
+                          node, f"thin-runtime-{arch}")
                     for arch, node in SIZE_ARCHES]
-
-    def app_sizes(arch: str, node: str, names: set[str], inputs: list[str]) -> str:
-        spec = {"packages": lambda packages, root: names, "dev": False, "inputs": list(dict.fromkeys(inputs)),
-                "drop_covered": True,
-                "cargo_packages": sorted(names - engines) + (engine_names if names & engines else [])}
-        lines = ["[[check]]", f'name = "app-sizes-{arch}"', f'run = "bash tools/apps/t-release.sh sizes {arch}"',
-                 f"requires = [{json.dumps(node)}]",
-                 # The runtime library's link and the apps' one-unit codegen run side by side.
-                 'requirement = { cores = 16, memory = "32GiB" }', "timeout_secs = 5400", 'cost = "heavy"',
-                 'on = ["stable", "dispatch", "idle"]', "default = false", "heavy = true"]
-        return "\n".join(lines) + "\n" + cargo_check(f"app-sizes-{arch}", spec, manifest, packages, ROOT)
 
     # The whole collection's gate (tools/apps/t-release.sh sizes): every app of the default
     # collection, the runtime and its engines compiled, packaged and held to their budgets
     # (tools/perf/tapp-size-budget/, tools/perf/runtime-size-budget/). It runs on every release
     # candidate, on demand, and on main's newest head when t has room left (`idle`), where a
     # failure is bisected to the commit that took an app over its budget; not on every push: each
-    # run builds the whole collection, 10 to 16 minutes on 16 cores. Keyed by what that compiles
-    # and the scripts it runs, so a commit that touches only packages no app or the runtime builds
-    # (the shell, the relay, the OS tools) takes its result.
-    whole = [app_sizes(arch, node, graph, [*SIZE_COMPILE, *SHARED_BUILD, *SIZE_MEASURE, *APP_SIZE_PACKAGING,
-                                           *RUNTIME_SIZE_MEASURE, *APP_SIZES_EXTRA, *manifests])
+    # run builds the whole collection, 10 to 16 minutes on 16 cores.
+    whole = ["\n".join(["[[check]]", f'name = "app-sizes-{arch}"', f'run = "bash tools/apps/t-release.sh sizes {arch}"',
+                        f"requires = [{json.dumps(node)}]",
+                        # The runtime library's link and the apps' one-unit codegen run side by side.
+                        'requirement = { cores = 16, memory = "32GiB" }', "timeout_secs = 5400", 'cost = "heavy"',
+                        'on = ["stable", "dispatch", "idle"]', "default = false", "heavy = true"]) + "\n"
              for arch, node in SIZE_ARCHES]
 
     app_size = {app: [check(f"app-size/{app}-{arch}", f"bash tools/apps/t-release.sh app-size {arch} {app}",
-                            node, {catalog[app]["package"]},
-                            [*SIZE_COMPILE, *SIZE_MEASURE, *APP_SIZE_PACKAGING, f"apps/{app}/**", *manifests],
-                            f"thin-runtime-{arch}")
+                            node, f"thin-runtime-{arch}")
                       for arch, node in SIZE_ARCHES]
                 for app in apps}
     return size_matrices([shared, runtime_size, whole], app_size, apps)
@@ -807,8 +310,7 @@ def size_matrices(per_arch: list[list[str]], app_size: dict[str, list[str]], app
     """The size checks as matrices t expands (t's README, "Matrices"): each of `per_arch`
     (`thin-runtime-{arch}`, `runtime-size-{arch}`) once over the architectures, and
     `app-size/{app}-{arch}` once for the apps that differ only by name, which `apps/*/tilo-app.toml`
-    lists, and once for each set of apps whose checks differ otherwise (what their packages read
-    beyond their directory). Verified to expand into exactly the checks written out one by one, so
+    lists, and once for each set of apps whose checks differ otherwise. Verified to expand into exactly the checks written out one by one, so
     their keys are those."""
     concrete = {app: [tomllib.loads(block)["check"][0] for block in blocks] for app, blocks in app_size.items()}
     arches = [{"arch": arch, "node": node} for arch, node in SIZE_ARCHES]
@@ -867,120 +369,6 @@ def size_matrices(per_arch: list[list[str]], app_size: dict[str, list[str]], app
     if differ or len(got) != len(want):
         raise ValueError(f"the size checks' matrices don't expand into the checks they stand for: {', '.join(differ)}")
     return text
-
-
-def _local_edges(packages: dict[str, dict]) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
-    """Each package's workspace dependencies through normal and build edges, and through dev
-    edges. Worked out once per `packages`: resolving every dependency's path on each closure
-    was most of what planning and generating spent (a closure per check, per commit asked)."""
-    if _EDGES and _EDGES[0] is packages:
-        return _EDGES[1]
-    by_manifest = {str(Path(p["manifest_path"]).resolve()): name for name, p in packages.items()}
-    normal: dict[str, list[str]] = {}
-    dev: dict[str, list[str]] = {}
-    for name, package in packages.items():
-        normal[name], dev[name] = [], []
-        for dependency in package.get("dependencies", []):
-            if not dependency.get("path"):
-                continue
-            found = by_manifest.get(str(Path(dependency["path"]).resolve() / "Cargo.toml"))
-            if found:
-                (dev if dependency.get("kind") == "dev" else normal)[name].append(found)
-    _EDGES[:] = [packages, (normal, dev)]
-    return normal, dev
-
-
-# The packages `_local_edges` last worked out, with their edges (holding the dict keeps its id).
-_EDGES: list = []
-
-
-def local_closure(packages: dict[str, dict], names: set[str], dev: bool) -> set[str]:
-    """`names` and the workspace packages they reach through normal and build dependencies,
-    and with `dev` through their own dev-dependencies, as t derives a check's packages."""
-    normal, dev_edges = _local_edges(packages)
-    stack = list(names)
-    if dev:
-        stack += [d for name in names for d in dev_edges[name]]
-    seen: set[str] = set()
-    while stack:
-        name = stack.pop()
-        if name not in seen:
-            seen.add(name)
-            stack += normal[name]
-    return seen
-
-
-def compiled_reads(reader: suites.CargoReader) -> set[str]:
-    """What building a package that `reader` describes reads outside its directory: the files
-    its sources include, and everything the entry names if a build script reads files it finds
-    at run time. The rest of the entry is what its tests read."""
-    found: set[str] = set()
-    for path in reader.readers:
-        text = (ROOT / path).read_text(encoding="utf-8", errors="replace")
-        for match in suites.RUST_INCLUDE.finditer(text):
-            found.add(os.path.normpath(os.path.join(os.path.dirname(path), match.group(1) or match.group(2))))
-        if path.endswith("/build.rs") and suites.MANIFEST_DIR.search(text):
-            return {glob(input) for input in reader.inputs}
-    return found
-
-
-def covered(path: str, packages: dict[str, dict], reach: set[str], root: Path,
-            dirs: dict[Path, str] | None = None) -> bool:
-    """Whether t already counts `path` (a file, or a directory's `/**`) as a file of a package in
-    `reach`: t gives a file to the deepest package directory it lies in."""
-    target = (root / path.removesuffix("/**")).resolve()
-    if dirs is None:
-        dirs = {Path(p["manifest_path"]).resolve().parent: name for name, p in packages.items()}
-    if path.endswith("/**") and any(target in d.parents for d in dirs):
-        return False
-    owners = [d for d in dirs if d == target or d in target.parents]
-    return bool(owners) and dirs[max(owners, key=lambda d: len(d.parts))] in reach
-
-
-def cargo_check(name: str, spec: dict, manifest: suites.Manifest, packages: dict[str, dict], root: Path) -> str:
-    """A CARGO_CHECKS check's packages and the files it reads beyond them: its own, and those
-    suites.toml says its packages read outside their directories (for packages it only builds,
-    what building them reads)."""
-    names = set(spec["packages"](packages, root))
-    missing = sorted(names - packages.keys())
-    if missing:
-        raise ValueError(f"{name}: no workspace package is called {', '.join(missing)}")
-    dev = spec.get("dev", True)
-    tested = spec.get("tested", names if dev else set())
-    target = spec.get("target")
-    if target:
-        dirs = resolved_dirs(names, target, dev, root, spec.get("features", []))
-        by_dir = {Path(p["manifest_path"]).resolve().parent.relative_to(root.resolve()).as_posix(): name
-                  for name, p in packages.items()}
-        reach = {by_dir[directory] for directory in dirs if directory in by_dir}
-    else:
-        reach = local_closure(packages, names, dev)
-    reads: set[str] = set()
-    for reader in manifest.cargo:
-        if reader.package in reach:
-            reads |= {glob(path) for path in reader.inputs} if reader.package in tested else compiled_reads(reader)
-    if target:
-        reads = {path for path in reads if not any(path.startswith(directory + "/") for directory in dirs)}
-        unread = spec.get("unread", [])
-        stray = sorted(path for path in unread if not any(path.startswith(directory + "/") for directory in dirs))
-        if stray:
-            raise ValueError(f"{name}: unread {', '.join(stray)} lies in no package it builds")
-        package_globs = []
-        for directory in sorted(dirs, key=lambda directory: f"{directory}/**"):
-            left_out = [path.removeprefix(directory + "/") for path in unread if path.startswith(directory + "/")]
-            package_globs += all_but(directory, left_out) if left_out else [f"{directory}/**"]
-        inputs = [*spec["inputs"], "Cargo.toml", "Cargo.lock", *package_globs]
-        inputs = list(dict.fromkeys([*inputs, *sorted(reads - set(inputs))]))
-        return f"inputs = {array(inputs)}\n"
-    if spec.get("drop_covered"):
-        dirs = {Path(p["manifest_path"]).resolve().parent: name for name, p in packages.items()}
-        reads = {path for path in reads if not covered(path, packages, reach, root, dirs)}
-    inputs = list(dict.fromkeys([*spec["inputs"], *sorted(reads - set(spec["inputs"]))]))
-    return "\n".join([
-        f"cargo_packages = {array(spec.get('cargo_packages', sorted(names)))}",
-        *([] if dev else ["cargo_dev_dependencies = false"]),
-        f"inputs = {array(inputs)}",
-    ]) + "\n"
 
 
 def untested(packages: dict[str, dict]) -> list[str]:
@@ -1062,48 +450,19 @@ def test_families(packages: dict[str, dict]) -> dict[str, str]:
     return blocks
 
 
-def cargo_checks(manifest: suites.Manifest, metadata: dict | None = None) -> dict[str, str]:
+def cargo_checks(metadata: dict | None = None) -> dict[str, str]:
     metadata = metadata if metadata is not None else workspace_graph.cargo_metadata(ROOT)
     packages = {p["name"]: p for p in metadata["packages"]}
-    return {**{f"{name}-reads": cargo_check(name, spec, manifest, packages, ROOT)
-               for name, spec in CARGO_CHECKS.items()},
-            "size-checks": size_checks(manifest, packages), **test_families(packages)}
-
-
-def with_dependency_inputs(manifest: suites.Manifest, packages: dict[str, dict], root: Path) -> suites.Manifest:
-    """`manifest` with each entry's `dependencies_of` turned into inputs: the directory of every
-    workspace package that a package under one of those directories reaches through normal and
-    build dependencies, less those its inputs already cover."""
-    dirs = {name: Path(package["manifest_path"]).resolve().parent.relative_to(root.resolve()).as_posix()
-            for name, package in packages.items()}
-    cargo = []
-    for reader in manifest.cargo:
-        seeds = {name for name, directory in dirs.items()
-                 if any((directory + "/").startswith(parent) for parent in reader.dependencies_of)}
-        reached = sorted(dirs[name] + "/" for name in local_closure(packages, seeds, False))
-        inputs = list(reader.inputs)
-        for directory in reached:
-            if not any(directory.startswith(path) for path in inputs if path.endswith("/")):
-                inputs.append(directory)
-        cargo.append(dataclasses.replace(reader, inputs=tuple(inputs)))
-    return dataclasses.replace(manifest, cargo=tuple(cargo))
+    return {"size-checks": size_checks(), **test_families(packages)}
 
 
 def generated(manifest: suites.Manifest) -> dict[str, str]:
-    metadata = workspace_graph.cargo_metadata(ROOT)
-    manifest = with_dependency_inputs(manifest, {p["name"]: p for p in metadata["packages"]}, ROOT)
-    inputs = package_inputs(manifest)
-    return {"test-package-inputs": inputs, "test-idle-package-inputs": inputs, "test-deep-package-inputs": inputs, "examples-package-inputs": inputs,
-            "clippy-package-inputs": inputs, "clippy-idle-package-inputs": inputs, "check-package-inputs": inputs,
-            **{f"{family}-{arch}-package-inputs": inputs for family in ("test", "clippy") for arch in ARCHES},
-            "suites": suite_checks(manifest),
+    return {"suites": suite_checks(manifest),
             "goldens": goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
             "arm64-goldens": arm64_goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
-            "security-reads": security_reads(), "policy-steps": policy_checks(),
-            "workspace-layout-reads": workspace_layout_reads(),
-            "t-toml-reads": t_toml_reads(manifest),
-            **product_blocks(products.load()), **cargo_checks(manifest, metadata),
-            # The OS image's layer actions, keyed by what each of os/image/'s pieces reads.
+            "policy-steps": policy_checks(),
+            **product_blocks(products.load()), **cargo_checks(),
+            # The OS image's layer actions, one per piece of os/image/.
             "os-layers": os_toml.block()}
 
 

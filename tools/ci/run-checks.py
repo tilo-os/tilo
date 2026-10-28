@@ -7,9 +7,9 @@ definition; this reads it (tools/ci/t_matrix.py expands its matrices) and runs w
 
 What a check gets, as on t (t's README, "Where checks run" and "Micro-VM steps"):
   * its `image` (the project's when it names none; `{ check, path }` is the OCI layout or
-    archive that check wrote below /target), with the tree at /src (read-only, copy-on-write
-    with `writable_sources`, writable for a check with outputs in the tree, which the checks
-    after it see there) and its .git with `git = true`;
+    archive that check wrote below /target), with the tree at /src (copy-on-write, writable for
+    a check with outputs in the tree, which the checks after it see there) and its .git with
+    `git = true`;
   * one /target shared by every check of the run, where the outputs of those it needs are;
   * t.toml's [env] and its own `env`, HOME, TMPDIR and CARGO_TARGET_DIR (a directory of its own
     below /target, kept between runs: cargo builds of checks run at once must not share one), and
@@ -18,12 +18,10 @@ What a check gets, as on t (t's README, "Where checks run" and "Micro-VM steps")
   * `isolation = "vm"`: root with podman of its own and /dev/kvm (here a privileged container
     with its own /var/lib/containers, /tmp and /var/tmp, but the machine's kernel: no loop
     devices and only the filesystems it has, so os-dev-disk-<arch> does not run here);
-  * its `setup` before its `run`, its `requirement` as the container's cores and memory, and
-    `timeout_secs`.
+  * its `requirement` as the container's cores and memory, and `timeout_secs`.
 
-A check passed before with the same key (its command, image, environment, the files its `inputs`
-name, or the whole tree when it names none or builds cargo packages, and the keys of what it
-needs) is not run again unless --force. A check's `secrets` come from this environment, named
+A check passed before with the same key (its command, image, environment, the whole tree, and
+the keys of what it needs) is not run again unless --force. A check's `secrets` come from this environment, named
 with --secret; of t's identity tokens only registry.tilo.so's has a stand-in, REGISTRY_TOKEN (a
 Forgejo token that may push to this repository, lib.sh registry_login). A check that needs
 another (signing) runs on t, or its outputs are made elsewhere and it is named with --given.
@@ -35,11 +33,9 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
-import functools
 import hashlib
 import json
 import os
-import re
 from pathlib import Path
 import shlex
 import subprocess
@@ -110,45 +106,12 @@ def closure(names: list[str], checks: dict[str, dict], project: dict) -> list[st
     return order
 
 
-@functools.cache
-def pattern_re(pattern: str) -> re.Pattern[str]:
-    """A t input glob as a regex: `**` spans directories, `*` and `?` stay within one, and a
-    plain path names a file or everything below a directory."""
-    if not any(c in pattern for c in "*?["):
-        return re.compile(re.escape(pattern.rstrip("/")) + "(?:/.*)?")
-    out, i = "", 0
-    while i < len(pattern):
-        if pattern.startswith("**/", i):
-            out, i = out + "(?:.*/)?", i + 3
-        elif pattern.startswith("**", i):
-            out, i = out + ".*", i + 2
-        elif pattern[i] == "*":
-            out, i = out + "[^/]*", i + 1
-        elif pattern[i] == "?":
-            out, i = out + "[^/]", i + 1
-        elif pattern[i] == "[":
-            j = pattern.index("]", i)
-            out, i = out + pattern[i:j + 1], j + 1
-        else:
-            out, i = out + re.escape(pattern[i]), i + 1
-    return re.compile(out)
-
-
-def matches(path: str, pattern: str) -> bool:
-    return pattern_re(pattern).fullmatch(path) is not None
-
 
 class Tree:
-    """The files of the checkout, as git has them at HEAD, with their blob ids."""
+    """The checkout as git has it at HEAD: its commit and tree."""
 
     def __init__(self, root: Path):
         self.root = root
-        out = subprocess.run(["git", "-C", str(root), "ls-tree", "-r", "--full-tree", "HEAD"],
-                             check=True, capture_output=True, text=True).stdout
-        self.blobs = {}
-        for line in out.splitlines():
-            meta, path = line.split("\t", 1)
-            self.blobs[path] = meta.split()[2]
         self.commit = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], check=True,
                                      capture_output=True, text=True).stdout.strip()
         self.tree = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD^{tree}"], check=True,
@@ -157,13 +120,6 @@ class Tree:
                                check=True, capture_output=True, text=True).stdout
         if dirty.strip():
             die(f"{root} has uncommitted changes; checks run on what git has at HEAD")
-
-    def digest(self, patterns: list[str]) -> str:
-        h = hashlib.sha256()
-        for path in sorted(self.blobs):
-            if any(matches(path, p) for p in patterns):
-                h.update(f"{path}\0{self.blobs[path]}\n".encode())
-        return h.hexdigest()
 
 
 class Runner:
@@ -184,17 +140,11 @@ class Runner:
         if name in self.keys:
             return self.keys[name]
         check = self.checks[name]
-        inputs = check.get("inputs")
-        if inputs is None or check.get("cargo_packages") is not None:
-            files = self.tree.tree
-        else:
-            files = self.tree.digest(list(self.project.get("inputs", [])) + list(inputs)
-                                     + [s for s in [check.get("setup", {}).get("inputs")] if s for s in s])
         material = {
-            "check": {k: v for k, v in check.items() if k not in ("inputs", "package_inputs")},
+            "check": check,
             "env": self.project.get("env", {}),
             "image": image_of(check, self.project),
-            "files": files,
+            "files": self.tree.tree,
             "commit": self.tree.commit if check.get("git") else None,
             "needs": {n: self.key(n) for n in needs_of(check, self.project)},
         }
@@ -266,7 +216,7 @@ class Runner:
         # Outputs named by a path in the tree are in /src for the checks that need them, as t
         # gives them; such a check writes them into the checkout itself.
         in_tree = any(not o.startswith("/") for o in check.get("outputs", []))
-        src = "" if in_tree else ":O" if check.get("writable_sources") else ":ro"
+        src = "" if in_tree else ":O"
         argv = ["run", "--rm", "--name", self.container(name),
                 "--security-opt", "label=disable", "--workdir", "/src",
                 "-v", f"{ROOT}:/src{src}", "-v", f"{self.target}:/target",
@@ -311,11 +261,9 @@ class Runner:
         # A secret goes by name, from this environment, never on a command line or into the log.
         for secret in secrets:
             argv += ["-e", secret]
-        setup = check.get("setup", {}).get("run")
-        script = "sh -c \"$T_SHELL\" \"$1\" && sh -c \"$T_SHELL\" \"$2\"" if setup else "exec sh -c \"$T_SHELL\" \"$2\""
         argv += ["-e", f"T_SHELL={SHELL}"]
         # t runs the command whatever the image's entrypoint (the skopeo image's is skopeo).
-        argv += ["--entrypoint", "sh", image, "-c", script, "run-checks", setup or "", check["run"]]
+        argv += ["--entrypoint", "sh", image, "-c", "exec sh -c \"$T_SHELL\" \"$1\"", "run-checks", check["run"]]
         timeout = check.get("timeout_secs")
         log = self.state / f"{name.replace('/', '_')}.log"
         say(f"{name}: started (log {log})")

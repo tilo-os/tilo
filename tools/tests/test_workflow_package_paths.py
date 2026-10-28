@@ -3,14 +3,12 @@ from __future__ import annotations
 import subprocess
 import tempfile
 import unittest
-from fnmatch import fnmatchcase
 from pathlib import Path
 
 from tools.policy.check_workflow_package_paths import (
     audit,
     dependency_directories,
     pattern_covers,
-    t_check_blocks,
     unmatched_patterns,
     workflow_path_blocks,
 )
@@ -48,41 +46,6 @@ def metadata(root: Path) -> dict:
 
 
 class WorkflowPackagePathTests(unittest.TestCase):
-    def test_a_t_check_naming_the_package_covers_its_closure(self) -> None:
-        text = """
-[[check]]
-name = "image"
-run = "build"
-cargo_packages = ["app", "tool-*"]
-inputs = ["tools/build.sh"]
-
-[[check]]
-name = "packages-only"
-run = "build"
-cargo_packages = ["other"]
-
-[[check]]
-name = "globs"
-run = "build"
-inputs = ["apps/app/**"]
-
-[[check]]
-name = "per-arch-{arch}"
-run = "build {arch}"
-inputs = ["tools/{arch}.sh"]
-
-[check.matrix]
-arch = ["x86_64", "aarch64"]
-"""
-        self.assertEqual(t_check_blocks(text, "image", "app"), [])
-        self.assertEqual(t_check_blocks(text, "per-arch-aarch64", "app"), [{"tools/aarch64.sh"}])
-        self.assertEqual(t_check_blocks(text, "image", "tool-x"), [])
-        self.assertEqual(t_check_blocks(text, "image", "shared"), [{"tools/build.sh"}])
-        self.assertEqual(t_check_blocks(text, "packages-only", "app"), [set()])
-        self.assertEqual(t_check_blocks(text, "globs", "app"), [{"apps/app/**"}])
-        with self.assertRaises(ValueError):
-            t_check_blocks(text, "missing", "app")
-
     def test_workflow_path_filters_cover_every_package_closure(self) -> None:
         with self.subTest(phase='extracts each paths block and ignores other lists'):
             text = """on:
@@ -149,62 +112,7 @@ jobs:
                 for pattern in unmatched_patterns(workflow.read_text(encoding="utf-8"), files)
             ]
             self.assertEqual(stale, [])
-        with self.subTest(phase='repository targeted workflows follow package closures'):
-            from tools.policy.check_workflow_package_paths import load_metadata
 
-            repository_metadata = load_metadata(ROOT)
-            t_text = (ROOT / "t.toml").read_text(encoding="utf-8")
-            relay_inputs = {
-                ".cargo/**",
-                "Cargo.toml",
-                "Cargo.lock",
-                "keys/cosign.pub",
-                "os/base-snapshot.env",
-                "os/dev/rpm-snapshot-fingerprint.py",
-                "os/dev/verify-rpm-snapshot-package-set.sh",
-            }
-            relay_blocks = t_check_blocks(t_text, "image-relay", "tilo-relay")
-            self.assertEqual(len(relay_blocks), 1)
-            self.assertTrue(
-                relay_inputs <= relay_blocks[0],
-                f"image-relay misses direct build/signing inputs: {sorted(relay_inputs - relay_blocks[0])}",
-            )
-            # The kernel recipe builds tilo-crypto without default features from
-            # the crate kernel-signer-crate projects (os/kernel/Containerfile,
-            # os/kernel/project-crate.py), so that check reads its sources.
-            kernel_signer = ("--no-default-features",)
-            pairs = (
-                ("tilo-relay", "image-relay", ()),
-                ("tilo-fs", "image-relay", ()),
-                ("tilo-crypto", "kernel-signer-crate", kernel_signer),
-            )
-            violations: list[str] = []
-            for package, check, cargo_args in pairs:
-                blocks = t_check_blocks(t_text, check, package)
-                self.assertTrue(blocks, f"{check} names {package} in cargo_packages; audit its inputs instead")
-                violations.extend(
-                    f"t.toml#{check}: {item}"
-                    for item in audit(repository_metadata, ROOT, package, "", blocks, cargo_args)
-                )
-            self.assertEqual(violations, [])
-        with self.subTest(phase='relay image inputs exclude test-only workspace edges'):
-            # The image Containerfile runs cargo build -p tilo-relay -p fs --bins.
-            # Dev-harness crates must not schedule that rebuild.
-            (block,) = t_check_blocks((ROOT / "t.toml").read_text(encoding="utf-8"),
-                                      "image-relay", "tilo-relay")
-            for path in (
-                "apps/notes/**",
-                "apps/chat/**",
-                "crates/sdk/ui-core/**",
-                "crates/browser/tilo-browser-runtime/**",
-                "vendor/vello/**",
-            ):
-                self.assertNotIn(path, block, path)
-            for path in ("crates/hosting/tilo-relay/src/main.rs", "crates/system/fs/src/lib.rs"):
-                self.assertTrue(any(fnmatchcase(path, pattern) for pattern in block), path)
-            self.assertIn("crates/hosting/tilo-relay/**", block)
-            self.assertIn("crates/system/fs/**", block)
-            self.assertIn("vendor/genawaiter-proc-macro/**", block)
 
 if __name__ == "__main__":
     unittest.main()

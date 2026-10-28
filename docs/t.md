@@ -185,31 +185,19 @@ A check is a shell command, or a cargo family that becomes one check per package
 name = "codemap"
 run = "python3 tools/docs/codemap.py --check"
 fix = "python3 tools/docs/codemap.py"    # what `t fix codemap` runs, and t itself on main
-inputs = ["docs/codemap.md", "tools/docs/codemap.py", "**/Cargo.toml"]
 ```
 
-`inputs` are the files the result depends on: a change to any of them runs the check again,
-and nothing else does. List too few and a stale result is reused; list too many and it reruns
-for nothing. `default = false` keeps a check out of `all` and out of `main`'s CI: it runs when named, or where
+Nothing says what a check reads: t records what its job read as it runs (each file it looked
+up, each directory it listed), and a later run whose files answer that the same way takes the
+result; a change to anything else leaves it standing. `default = false` keeps a check out of `all` and out of `main`'s CI: it runs when named, or where
 its `on` says (`on = ["stable"]`, `on = ["schedule:…"]`, or `on = ["idle"]`: `main`'s newest
 head when t has room, bisected and attributed when it fails). Image builds, VM end-to-end tests
 and long suites are declared this way.
 
-The cargo families (`test/<package>`, `clippy/<package>`, `check/<package>`) need no globs for
-Rust code: t derives what each package reads from the manifests and `Cargo.lock`, the way cargo
-resolves it. That is the sources of the package and of every local crate it reaches, vendored
-crates patched in with `[patch]` included, and the lockfile entries of only the crates it uses,
-so a lockfile bump reruns the users of the bumped crate, not the workspace. A shell check that
-builds packages names them instead of copying their directories as globs:
-
-```toml
-[[check]]
-name = "image-registry-server"
-run = "bash tools/ci/publish/oci-build.sh . crates/packaging/registry-server/container/Containerfile …"
-cargo_packages = ["registry-server"]   # what building it reads,
-cargo_dev_dependencies = false         # not what only its tests use,
-inputs = ["tools/ci/publish/**", "crates/packaging/registry-server/container/**"]   # and these
-```
+The cargo families (`test/<package>`, `clippy/<package>`, `check/<package>`) are keyed by what
+cargo reads to build each package: the manifests and `Cargo.lock`, the way cargo resolves them,
+and what rustc read, so a lockfile bump reruns the users of the bumped crate, not the workspace.
+Their tests are keyed by what they read as they ran, a fixture outside the package included.
 
 Tilo's `check` and `clippy` families run under `tools/ci/t_cargo_compile.py`: for a browser crate
 (`python3 tools/ci/package_sets.py wasm`) it first builds the library for
@@ -217,15 +205,6 @@ Tilo's `check` and `clippy` families run under `tools/ci/t_cargo_compile.py`: fo
 Code under `cfg(target_arch = "wasm32")` builds for no other target, so a native-only check of a
 browser crate passes while the web build breaks. `test/<package>` stays native; the `wasm` check
 lints the page runtime with every web app linked in.
-
-The lockfile records every optional dependency, so a package reads the crates behind its
-features whether a build enables them or not. Where that matters, as for `image-relay`, whose
-release build leaves out much of what the workspace's features pull in, a hand-kept list checked
-by `tools/policy/check_workflow_package_paths.py` can still be tighter.
-
-Files a package reads that no manifest names (an `include_str!` of a file outside every crate, a
-fixture a test opens) still have to be declared: in `tools/ci/suites.toml`, which generates the
-families' `package_inputs`, or in the check's `inputs`.
 
 Every check states the cores and memory it must be able to pass with (`requirement`, with a
 default at the top of `t.toml`). A check that needs more fails, so a test that slowly needs more
@@ -241,14 +220,13 @@ requires = ["arch=arm64", "/dev/kvm"]   # also "os=macos", or a label a node was
 [README](https://code.tilo.so/tilo/t#declaring-checks).
 
 The repository policy suite is one check per step, `policy/<step>` (`policy/tests/<step>` for
-the suite's own tests), each keyed by what that step reads: its command and inputs are in
+the suite's own tests): its command is in
 [`tools/policy/steps.toml`](../tools/policy/steps.toml), which `tools/policy/run.sh` runs as a
-whole. `t test policy` runs every step. A new step goes there, with the files it reads.
+whole. `t test policy` runs every step. A new step goes there.
 
-Some of `t.toml` is generated: the `package_inputs` of the cargo families and the `suite-*`
-checks from [`tools/ci/suites.toml`](../tools/ci/suites.toml), the `policy/*` checks from
-`tools/policy/steps.toml`, what `security`, `t-toml` and `workspace-layout` read, the `goldens`
-family from `.config/nextest-filters.toml` and `.config/visual-goldens-image`, and the size
+Some of `t.toml` is generated: the `suite-*` checks from
+[`tools/ci/suites.toml`](../tools/ci/suites.toml), the `policy/*` checks from
+`tools/policy/steps.toml`, the package lists of the cargo families, the `goldens` family from `.config/nextest-filters.toml` and `.config/visual-goldens-image`, and the size
 checks below from the default collection's apps and the runtime's budget. After changing those, run
 `t fix t-toml` (or `python3 tools/ci/t_toml.py write`); `t-toml` fails while `t.toml` is out of
 date.
