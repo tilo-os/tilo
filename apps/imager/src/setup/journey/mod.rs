@@ -5208,8 +5208,20 @@ impl InstallerPreview {
                     next_focus.set(true);
                 }
             })
-        } else if submit_enabled {
+        } else if submit_enabled && self.password_continue_enabled() {
             submits(self.actions.as_ref(), input, continues())
+        } else if submit_enabled {
+            // The page refuses this form itself, with the copy beside the
+            // field whose correction unblocks it. Enter asks for that answer
+            // rather than invoking Continue: an invocation the page refuses
+            // would be said over the window as a refused action, and the
+            // announcement would take the focus the field needs.
+            let commands = self.commands.clone();
+            input.on_submit(move |_| {
+                commands
+                    .borrow_mut()
+                    .push(InstallerPreviewEffect::ContinuePreview);
+            })
         } else {
             input.with_enter_submits(true)
         };
