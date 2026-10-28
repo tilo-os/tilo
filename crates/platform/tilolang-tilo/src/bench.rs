@@ -12,10 +12,9 @@
 //!   has read the room; `load`, loading the room's record from its saved bytes;
 //!   `index_build`, building the package's index from the record, as a room opened for the
 //!   first time (or with an index it cannot trust) does off the frame.
-//! * `search`: a typed query (the title of the room's middle resource) found across the room's
-//!   texts and read back as hits. Beside it, the first query on a room just opened, on the frame
-//!   (`first_ms`, finding `first_hits`), which starts taking in the room's texts off the frame,
-//!   and when a search after that answers it (`answered_ms`).
+//! * `search_entries`: what a live window publishes to the session's search index, every
+//!   resource with text read as hits, again and again; beside it, the first time after opening
+//!   (`first_ms`, finding `first_hits`), and until every hit is read (`complete_ms`).
 //! * `first_frame`: from the saved room to the first frame, the record loading on a thread of
 //!   its own while the window opens over the index; `first_write`, the first change right
 //!   after that frame, which waits for the record.
@@ -1227,7 +1226,7 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         if let Some(isolation) = &config.memory {
             out.push(memory(&sized, isolation)?);
         }
-        for record in open(&sized)?.into_iter().chain(search(&sized)?) {
+        for record in open(&sized)?.into_iter().chain(search_entries(&sized)?) {
             out.push(record);
         }
         if config.workloads.cold {
@@ -1365,6 +1364,10 @@ fn measure_memory(room: &Path, package: &Path, index: Option<PathBuf>) -> Result
     let mut room = Room::open(doc, &packages, &app, false, index)?;
     room.settle();
     room.frame(&mut [])?;
+    // A live window publishes what search finds of the room as it opens.
+    std::hint::black_box(crate::search::every_hit(&room.host));
+    room.host.wait_index();
+    std::hint::black_box(crate::search::every_hit(&room.host));
     anon_mib().ok_or_else(|| "the process's memory is not readable".to_owned())
 }
 
@@ -1550,51 +1553,38 @@ fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<[Record; 2], String> {
     ])
 }
 
-/// A typed query on the room as it opened: the title of its middle resource, found among every
-/// resource's texts. `None` for a room without text.
-fn search(sized: &Sized<'_>) -> Result<Option<Record>, String> {
+/// What a live window publishes to the session's search index right after it opens: every
+/// resource with text, read as hits ([`crate::search::every_hit`]), the first time and again.
+/// `None` for a room without text.
+fn search_entries(sized: &Sized<'_>) -> Result<Option<Record>, String> {
     let mut room = sized.open()?;
     room.settle();
-    let mut titles = Vec::new();
-    for (package, _, doc) in room.host.records() {
-        if let Ok(record) = room.host.store().record(&doc) {
-            titles.extend(
-                crate::search::hits(&package.meta, &record, &doc)
-                    .into_iter()
-                    .map(|hit| hit.title),
-            );
-        }
-    }
-    titles.sort();
-    let Some(query) = titles.get(titles.len() / 2).cloned() else {
-        return Ok(None);
-    };
-    drop(room);
-    // A room just opened: the first query, on the frame, starts taking in its search index off
-    // the frame; a search after that ends answers it.
-    let room = sized.open()?;
     let start = Instant::now();
-    let early = crate::search::find(&room.host, &query, 20);
+    let first = crate::search::every_hit(&room.host);
     let first_ms = ms(start.elapsed());
+    let first_hits = first.len();
+    // What is still being taken in, taken in, and every hit read again.
     room.host.wait_index();
-    let first = crate::search::find(&room.host, &query, 20);
-    let answered_ms = ms(start.elapsed());
+    let hits = crate::search::every_hit(&room.host);
+    let complete_ms = ms(start.elapsed());
+    if hits.is_empty() {
+        return Ok(None);
+    }
     let mut samples = Vec::new();
     for _ in 0..sized.config.samples {
         let start = Instant::now();
-        std::hint::black_box(crate::search::find(&room.host, &query, 20));
+        std::hint::black_box(crate::search::every_hit(&room.host));
         samples.push(ms(start.elapsed()));
     }
     Ok(Some(sized.record(
-        "search",
+        "search_entries",
         "ms",
         samples,
         json!({
             "first_ms": first_ms,
-            "first_hits": early.len(),
-            "answered_ms": answered_ms,
-            "query": query,
-            "hits": first.len(),
+            "first_hits": first_hits,
+            "complete_ms": complete_ms,
+            "hits": hits.len(),
         }),
     )))
 }

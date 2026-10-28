@@ -516,20 +516,22 @@ fn a_corrupt_index_is_built_anew_and_never_read() {
     assert_eq!(host.store().index_contents(APP).unwrap(), anew(&ada, &lock));
 }
 
-/// The titles of what `query` finds of the todo package, best first.
-fn found(host: &Host, query: &str) -> Vec<String> {
-    tilolang_tilo::search::find(host, query, 10)
+/// The titles of every todo-package hit a window publishes, sorted.
+fn published(host: &Host) -> Vec<String> {
+    let mut out: Vec<String> = tilolang_tilo::search::every_hit(host)
         .into_iter()
         .filter(|hit| {
             hit.resource
                 .starts_with(&tilolang_tilo::publish::resource_id(APP, ""))
         })
         .map(|hit| hit.title)
-        .collect()
+        .collect();
+    out.sort();
+    out
 }
 
 #[test]
-fn search_is_taken_in_off_the_frame_and_nothing_on_the_frame_waits_for_it() {
+fn a_window_opened_over_its_index_publishes_every_hit_and_each_commit_at_once() {
     let (mut ada, root, lock) = room();
     for step in 0..5 {
         let action = plan(
@@ -540,11 +542,10 @@ fn search_is_taken_in_off_the_frame_and_nothing_on_the_frame_waits_for_it() {
         );
         ada.apply(&action);
     }
-    let dir = TempDir::new("search-off-frame");
+    let dir = TempDir::new("published");
     drop(kept_in(dir.path(), &ada.doc, &lock));
 
-    // A window opens over the index it kept: read from at once, its search index not had until
-    // something searches.
+    // A window opens over the index it kept: every hit is read from it, nothing built first.
     let host = Host::open(
         Opening {
             record: Some(&ada.doc),
@@ -552,38 +553,25 @@ fn search_is_taken_in_off_the_frame_and_nothing_on_the_frame_waits_for_it() {
             device: None,
         },
         Principal::new("ada"),
-        |_, _| Decision::Allow,
+        || None,
     )
     .unwrap();
     host.load_builtin(TODO, &lock).unwrap();
     assert!(host.index_ready());
-    let snapshot = host.store().snapshot();
-    let search = snapshot.view(APP).unwrap().snapshot.search();
-    // Every build of it stops once it has the commit it reads, until let go. Were anything
-    // below to wait for the build, it would wait for ever.
-    let held = search.hold();
-
-    // The first search starts the build; frames and searches go on while it runs.
-    assert!(
-        found(&host, "task").is_empty(),
-        "nothing found until it is had"
+    assert_eq!(
+        published(&host),
+        ["task 0", "task 1", "task 2", "task 3", "task 4"]
     );
-    assert!(!host.poll_index(), "no view reads the search index");
-    assert!(tilolang_tilo::search::every_hit(&host).iter().all(|hit| {
-        !hit.resource
-            .starts_with(&tilolang_tilo::publish::resource_id(APP, ""))
-    }),);
-    // A change lands after the commit the build reads: the frame commits it to the index.
+    assert_eq!(
+        host.store().read_stats().doc.entries,
+        0,
+        "the record not walked"
+    );
+
+    // A change committed to the room is published as soon as the window has it.
     let action = plan(&ada, "add", json!({ "text": "late arrival" }), &root);
     ada.apply(&action);
     host.sync_from(&ada.doc);
-    assert!(!host.poll_index());
-    assert!(found(&host, "late").is_empty());
-
-    // Let go, the build ends; the next search takes it in with the change read back.
-    drop(held);
-    host.wait_index();
-    assert_eq!(found(&host, "late"), ["late arrival"]);
-    assert_eq!(found(&host, "task 3"), ["task 3"]);
+    assert!(published(&host).contains(&"late arrival".to_owned()));
     assert_eq!(host.store().index_contents(APP).unwrap(), anew(&ada, &lock));
 }

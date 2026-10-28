@@ -145,11 +145,8 @@ pub trait Sink {
     /// It cannot be written.
     fn drop_lists(&mut self, prefix: &str) -> Result<(), IndexError>;
 
-    /// A text of `resource` changed: what search finds it by.
-    fn text_changed(&mut self, resource: &str);
-
-    /// Whether it keeps filter columns and what search reads, or (the store's open writes)
-    /// fields and membership alone.
+    /// Whether it keeps filter columns, or (the store's open writes) fields and membership
+    /// alone.
     fn keeps_columns(&self) -> bool;
 }
 
@@ -208,9 +205,6 @@ impl Sink for Writer<'_> {
             }
         }
         for (held, field, _) in held_fields {
-            if field == TYPE {
-                Writer::text_changed(self, &held);
-            }
             self.remove_field(&held, &field)?;
         }
         for prefix in lists_within(resource) {
@@ -252,10 +246,6 @@ impl Sink for Writer<'_> {
 
     fn drop_lists(&mut self, prefix: &str) -> Result<(), IndexError> {
         Writer::drop_lists(self, prefix)
-    }
-
-    fn text_changed(&mut self, resource: &str) {
-        Writer::text_changed(self, resource);
     }
 
     fn keeps_columns(&self) -> bool {
@@ -412,9 +402,6 @@ impl<'d> Derive<'d> {
                 MergeKind::Record => {}
                 _ => {
                     let value = self.value(obj, field);
-                    if field.kind == MergeKind::Text {
-                        sink.text_changed(path);
-                    }
                     sink.put_field(path, &field.id, &value)?;
                 }
             }
@@ -922,9 +909,6 @@ impl<'d> Derive<'d> {
                 let before = sink.field(path, field)?;
                 if before.as_ref() == Some(&now) {
                     return Ok(());
-                }
-                if spec.kind == MergeKind::Text {
-                    sink.text_changed(path);
                 }
                 sink.put_field(path, field, &now)?;
                 // The columns reading the field, in the collection the resource is in and across
