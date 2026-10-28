@@ -35,11 +35,6 @@ const ASK_TIMEOUT: Duration = Duration::from_secs(30);
 const FILED_STANDS: Duration = Duration::from_secs(120);
 
 thread_local! { static CONNECTIONS: RefCell<HashMap<u32, Rc<RefCell<Connection>>>> = RefCell::new(HashMap::new()); }
-thread_local! {
-    static STARTUPS: RefCell<HashMap<u32, Startup>> = RefCell::new(HashMap::new());
-    static WAKES: RefCell<HashMap<u32, std::sync::Arc<dyn Fn() + Send + Sync>>> =
-        RefCell::new(HashMap::new());
-}
 
 pub(crate) struct Connection {
     peer: PeerHandle,
@@ -390,7 +385,9 @@ pub(crate) fn pump(id: u32) {
                                 Box::new(page_recorder(id)),
                             )
                             .map_err(|error| error.to_string())
-                            .and_then(|startup| register_feedback_startup(id, startup));
+                            .and_then(|startup| {
+                                crate::feedback_code::register_feedback_startup(id, startup)
+                            });
                             let mut state = connection.borrow_mut();
                             match setup {
                                 Ok(()) => state.installed = true,
@@ -544,30 +541,6 @@ impl Transport for Session {
     }
 }
 
-/// Trusted Rust startup handoff, separate from deserialized mount configuration.
-/// The certified peer must already exist. This never creates a peer or joins.
-pub(crate) fn register_feedback_startup(peer: u32, startup: Startup) -> Result<(), String> {
-    let device = startup
-        .reporter()
-        .device_public_key()
-        .ok_or("feedback reporter has no certified device")?;
-    if crate::replication::device_of(peer).as_deref() != Some(hex::encode(device).as_str()) {
-        return Err("feedback reporter does not own this certified peer".into());
-    }
-    STARTUPS.with_borrow_mut(|startups| -> Result<(), String> {
-        if startups.contains_key(&peer) {
-            return Err("feedback startup already registered".into());
-        }
-        startups.insert(peer, startup);
-        Ok(())
-    })?;
-    // A desktop that mounted first takes it up on its next frame.
-    if let Some(wake) = WAKES.with_borrow_mut(|wakes| wakes.remove(&peer)) {
-        wake();
-    }
-    Ok(())
-}
-
 /// Ask the owner of `peer`'s destination for a fresh admission, which
 /// registers a new startup; whether it was asked.
 pub(crate) fn readmit(peer: u32) -> bool {
@@ -581,23 +554,4 @@ pub(crate) fn readmit(peer: u32) -> bool {
     state.installed = false;
     state.error = None;
     state.request(None).is_ok()
-}
-
-/// Call `wake` once a startup is registered for `peer`.
-pub(crate) fn wake_on_startup(peer: u32, wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
-    WAKES.with_borrow_mut(|wakes| wakes.insert(peer, wake));
-}
-
-pub(crate) fn forget_feedback_startup(peer: u32) {
-    STARTUPS.with_borrow_mut(|startups| {
-        startups.remove(&peer);
-    });
-    WAKES.with_borrow_mut(|wakes| {
-        wakes.remove(&peer);
-    });
-}
-
-/// The startup registered for `peer`, for the desktop that mounts with it.
-pub(crate) fn take_startup(peer: u32) -> Option<Startup> {
-    STARTUPS.with_borrow_mut(|startups| startups.remove(&peer))
 }
