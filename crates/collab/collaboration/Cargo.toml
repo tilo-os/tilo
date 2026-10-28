@@ -40,6 +40,8 @@ automerge.workspace = true
 tilo-automerge.workspace = true
 # Content a record references, carried on its route.
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
+# A record's on-disk copy and its writer (`record::save`).
+tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 # The private storage the managed sender keeps its outbox in.
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 # The channel settings the shell hands an app (personal dictionary).

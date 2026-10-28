@@ -24,7 +24,7 @@ pub mod bootstrap;
 /// A record's identity, as it travels on the collaboration wire.
 pub use ::collaboration::record::{
     MAX_FORMER_IDS, MAX_RECORD_RELATION_BYTES, RecordCheckout, RecordId, RecordKind, RecordRef,
-    valid_label,
+    RecordSaveStatus, valid_label,
 };
 pub mod capability;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -1121,10 +1121,11 @@ impl RecordSet {
         &self,
         record_key: &str,
     ) -> Result<app_state::DocStore, app_state::StoreError> {
-        app_state::validate_record_identity(&self.package_id, &self.home, record_key)?;
-        app_state::DocStore::shared(
-            Rc::clone(self.documents()?),
-            StorageKey::record(&self.package_id, &self.home, record_key),
+        ::collaboration::record::save::record_document(
+            self.documents()?,
+            &self.package_id,
+            &self.home,
+            record_key,
         )
     }
 
@@ -1959,14 +1960,6 @@ impl RoomNotices {
                 .all(|head| doc.get_change_meta_by_hash(head).is_some())
         });
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RecordSaveStatus {
-    Saved,
-    Saving,
-    Failed(String),
-    MemoryOnly,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -2876,19 +2869,7 @@ impl RecordStore {
             ));
         }
         if let Some(saver) = &slot.autosave {
-            let snapshot = saver.durability_snapshot();
-            if let Some(error) = snapshot.error {
-                return Ok(RecordSaveStatus::Failed(error));
-            }
-            // A record that was never written holds nothing durable; while
-            // it has no changes either (a pristine record) there is nothing
-            // to save, so it reads as saved rather than saving.
-            let durable = snapshot.durable_heads.unwrap_or_default();
-            return Ok(if doc.pending_ops() == 0 && durable == doc.base_heads() {
-                RecordSaveStatus::Saved
-            } else {
-                RecordSaveStatus::Saving
-            });
+            return Ok(RecordSaveStatus::of_writer(doc, saver));
         }
         Ok(if set.persistent {
             RecordSaveStatus::Failed("record persistence unavailable".to_owned())
