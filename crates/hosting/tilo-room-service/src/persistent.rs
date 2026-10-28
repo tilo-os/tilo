@@ -26,7 +26,7 @@ use tilo_relay_protocol::room_operator::{
 use tilo_relay_protocol::rooms::RoomRole;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, Lines};
 use tokio::process::Command;
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 /// The role every visitor `/join` admits gets: the room's default role, as
 /// its directory entry says.
@@ -189,11 +189,50 @@ enum Answer {
 type Waiters = HashMap<String, oneshot::Sender<std::result::Result<Answer, String>>>;
 type OperatorInput = Box<dyn AsyncWrite + Send + Unpin>;
 
-/// The running child: where to write commands, and what it announced.
+/// The running child: where to send commands, and what it announced.
+///
+/// Commands reach the child's stdin through a writer task, not from the
+/// caller: one line's write can wait for a full pipe, and every request that
+/// asks the room something would queue behind it otherwise. A caller hands
+/// its line to [`Child::send`], which never waits on the pipe.
 struct Child {
-    stdin: OperatorInput,
+    commands: mpsc::Sender<Box<str>>,
     origin: String,
     room: String,
+}
+
+impl Child {
+    /// Queues `command` for the child, as one line.
+    ///
+    /// `false` when the child is gone or its writer already ended: the line
+    /// was not and will not be written.
+    fn send(&self, command: &OperatorCommand) -> bool {
+        self.commands.try_send(command.to_line().into()).is_ok()
+    }
+}
+
+/// How many command lines may wait for the child's stdin, so that a child
+/// that stops reading makes callers fail fast rather than pile up unmetered.
+const COMMAND_BACKLOG: usize = 4096;
+
+/// Writes what arrives on `commands` to `stdin`, one line at a time, in the
+/// order it arrived, until the channel closes or the pipe refuses a line.
+///
+/// A failed write ends the task and the receiver with it, so every later
+/// [`Child::send`] fails and its caller answers as it does for a stopped
+/// child: the relay is restarting, and the supervisor starts a new one.
+async fn write_commands(mut stdin: OperatorInput, mut commands: mpsc::Receiver<Box<str>>) {
+    while let Some(line) = commands.recv().await {
+        let written = async {
+            stdin.write_all(line.as_bytes()).await?;
+            stdin.flush().await
+        }
+        .await;
+        if let Err(error) = written {
+            eprintln!("tilo-room-service: could not write to the relay: {error}");
+            return;
+        }
+    }
 }
 
 /// What outlives one child.
@@ -835,13 +874,9 @@ impl Persistent {
     /// room's store is closed cleanly before the pod goes away.
     pub async fn shutdown(&self) {
         {
-            let mut child = self.child.lock().await;
-            if let Some(child) = child.as_mut() {
-                let _ = child
-                    .stdin
-                    .write_all(OperatorCommand::Shutdown {}.to_line().as_bytes())
-                    .await;
-                let _ = child.stdin.flush().await;
+            let child = self.child.lock().await;
+            if let Some(child) = child.as_ref() {
+                child.send(&OperatorCommand::Shutdown {});
             }
         }
         let started = tokio::time::Instant::now();
@@ -862,8 +897,13 @@ impl Persistent {
         let room = started
             .room
             .context("the persistent room's relay named no governed room")?;
+        let (commands, queued) = mpsc::channel(COMMAND_BACKLOG);
+        // Its receiver ends with `Child` below, and a failed write ends it
+        // too: either way every later send fails and its caller answers as
+        // one would for a child that stopped.
+        tokio::spawn(write_commands(stdin, queued));
         *self.child.lock().await = Some(Child {
-            stdin,
+            commands,
             origin: origin.unwrap_or(started.origin),
             room,
         });
@@ -1023,16 +1063,15 @@ impl Persistent {
                 removal,
             } => {
                 let queued = self.mail_invite(&to, &link, &removal);
-                if let Some(child) = self.child.lock().await.as_mut() {
-                    let command = OperatorCommand::InviteMailQueued { request, queued };
-                    if child
-                        .stdin
-                        .write_all(command.to_line().as_bytes())
-                        .await
-                        .is_err()
-                    {
-                        eprintln!("tilo-room-service: could not acknowledge invitation enqueue");
-                    }
+                let command = OperatorCommand::InviteMailQueued { request, queued };
+                if !self
+                    .child
+                    .lock()
+                    .await
+                    .as_ref()
+                    .is_some_and(|child| child.send(&command))
+                {
+                    eprintln!("tilo-room-service: could not acknowledge invitation enqueue");
                 }
             }
             _ => {}
@@ -1075,36 +1114,36 @@ impl Persistent {
 
     /// Sends `command` to the child and waits for the answer keyed `key`.
     /// Returns the answer with the child's origin and room.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the command is written under the lock so lines never interleave"
-    )]
+    ///
+    /// The child's lock is held only to read where it serves and to hand the
+    /// line to its writer: a full stdin pipe blocks that one writer, not the
+    /// requests that follow, which keep queuing.
     async fn ask(
         &self,
         key: String,
         command: OperatorCommand,
     ) -> std::result::Result<(Answer, String, String), JoinRefusal> {
         let (sender, receiver) = oneshot::channel();
-        let (origin, room) = {
-            let mut child = self.child.lock().await;
-            let Some(child) = child.as_mut() else {
-                return Err(JoinRefusal::Unavailable);
-            };
+        // The waiter is registered before the line is sent, never after: the
+        // answer can arrive as soon as the relay reads it.
+        if let Ok(mut waiters) = self.waiters.lock() {
+            waiters.insert(key.clone(), sender);
+        }
+        let served = {
+            let child = self.child.lock().await;
+            child.as_ref().map(|child| {
+                (
+                    child.origin.clone(),
+                    child.room.clone(),
+                    child.send(&command),
+                )
+            })
+        };
+        let Some((origin, room, true)) = served else {
             if let Ok(mut waiters) = self.waiters.lock() {
-                waiters.insert(key.clone(), sender);
+                waiters.remove(&key);
             }
-            if child
-                .stdin
-                .write_all(command.to_line().as_bytes())
-                .await
-                .is_err()
-            {
-                if let Ok(mut waiters) = self.waiters.lock() {
-                    waiters.remove(&key);
-                }
-                return Err(JoinRefusal::Unavailable);
-            }
-            (child.origin.clone(), child.room.clone())
+            return Err(JoinRefusal::Unavailable);
         };
         if let Ok(Ok(Ok(answer))) = tokio::time::timeout(ANSWER_WAIT, receiver).await {
             return Ok((answer, origin, room));
@@ -1130,15 +1169,10 @@ impl Persistent {
             Err(failed) => return Some(Err(failed)),
         };
         let told = {
-            let mut child = self.child.lock().await;
-            match child.as_mut() {
-                Some(child) => child
-                    .stdin
-                    .write_all(authorized.command.to_line().as_bytes())
-                    .await
-                    .is_ok(),
-                None => false,
-            }
+            let child = self.child.lock().await;
+            child
+                .as_ref()
+                .is_some_and(|child| child.send(&authorized.command))
         };
         if !told {
             return Some(Err(crate::discord_sign_in::Failed::Discord));
@@ -1149,17 +1183,17 @@ impl Persistent {
         )))
     }
 
-    /// Whether a relay child is running and has announced itself.
-    pub async fn relay_up(&self) -> bool {
-        self.child.lock().await.is_some()
-    }
-
-    /// Why the relay last stopped, while it is not up.
-    pub async fn relay_failure(&self) -> Option<RelayFailure> {
-        if self.relay_up().await {
-            return None;
+    /// Why the relay last stopped, while it is not up: whether it serves, and
+    /// the failure to explain a stop. Both from one look at the child, so a
+    /// `/mode` cannot report it up and down at once.
+    pub async fn relay_state(&self) -> (bool, Option<RelayFailure>) {
+        if self.child.lock().await.is_some() {
+            return (true, None);
         }
-        self.failure.lock().ok().and_then(|failure| failure.clone())
+        (
+            false,
+            self.failure.lock().ok().and_then(|failure| failure.clone()),
+        )
     }
 
     pub fn online(&self) -> u32 {
@@ -1660,8 +1694,60 @@ mod tests {
     use tokio::io::{BufReader, DuplexStream, Lines};
 
     struct Relay {
-        commands: Lines<BufReader<DuplexStream>>,
+        commands: Lines<BufReader<Reading>>,
         events: DuplexStream,
+    }
+
+    /// What the relay reads its commands through: with a gate, it reads only
+    /// while the test holds the gate open, so a test can fill the pipe and
+    /// keep it full; without, it reads as often as it likes.
+    struct Reading {
+        inner: DuplexStream,
+        gate: tokio::sync::watch::Receiver<bool>,
+    }
+
+    impl Reading {
+        /// A relay that reads as often as it likes.
+        fn open(inner: DuplexStream) -> Self {
+            let (_reads, reads) = tokio::sync::watch::channel(true);
+            Self { inner, gate: reads }
+        }
+
+        /// A relay that reads only while `reads` says it may.
+        fn gated(inner: DuplexStream, reads: tokio::sync::watch::Receiver<bool>) -> Self {
+            Self { inner, gate: reads }
+        }
+    }
+
+    impl tokio::io::AsyncRead for Reading {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            let this = self.get_mut();
+            if !*this.gate.borrow_and_update() {
+                // Not while the test holds the relay back: the pipe stays full.
+                let changed = std::pin::pin!(this.gate.changed());
+                match changed.poll(cx) {
+                    std::task::Poll::Ready(Ok(())) => cx.waker().wake_by_ref(),
+                    std::task::Poll::Ready(Err(_)) => return std::task::Poll::Ready(Ok(())),
+                    std::task::Poll::Pending => {}
+                }
+                return std::task::Poll::Pending;
+            }
+            // What was asked for, so the pipe's writer has the rest of its
+            // capacity: a test of a full pipe needs the other caller's line
+            // to wait for room.
+            let mut scratch = vec![0; buf.remaining()];
+            let mut short = tokio::io::ReadBuf::new(&mut scratch);
+            match std::pin::Pin::new(&mut this.inner).poll_read(cx, &mut short) {
+                std::task::Poll::Ready(ready) => ready?,
+                std::task::Poll::Pending => return std::task::Poll::Pending,
+            }
+            buf.put_slice(short.filled());
+            std::task::Poll::Ready(Ok(()))
+        }
     }
 
     impl Relay {
@@ -1670,6 +1756,13 @@ mod tests {
                 .write_all(format!("{}\n", event.to_line()).as_bytes())
                 .await
                 .unwrap();
+        }
+        /// The next line, read even where the relay reads nothing else.
+        async fn raw_line(&mut self) -> String {
+            tilo_test_env::within("a line to the relay", self.commands.next_line())
+                .await
+                .unwrap()
+                .expect("stdin closed")
         }
         async fn command(&mut self) -> OperatorCommand {
             let line = tilo_test_env::within("a command to the relay", self.commands.next_line())
@@ -1705,7 +1798,7 @@ mod tests {
         (
             persistent,
             Relay {
-                commands: BufReader::new(relay_stdin).lines(),
+                commands: BufReader::new(Reading::open(relay_stdin)).lines(),
                 events: relay_stdout,
             },
             dir,
@@ -1744,7 +1837,7 @@ mod tests {
         let persistent =
             Persistent::attach_for_test(Arc::new(shared), Box::new(stdin), stdout).await;
         let relay = Relay {
-            commands: BufReader::new(relay_stdin).lines(),
+            commands: BufReader::new(Reading::open(relay_stdin)).lines(),
             events: relay_stdout,
         };
         (persistent, relay, dir)
@@ -1832,10 +1925,10 @@ mod tests {
     #[tokio::test]
     async fn the_relay_is_up_while_its_child_serves_and_not_once_it_ends() {
         let (persistent, relay, _dir) = persistent(200, 1000).await;
-        assert!(persistent.relay_up().await);
+        assert!(persistent.relay_state().await.0);
         drop(relay);
         tilo_test_env::within("the relay to count as down after its child ended", async {
-            while persistent.relay_up().await {
+            while persistent.relay_state().await.0 {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
         })
@@ -2165,6 +2258,145 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(ended, Err(JoinRefusal::Unavailable)));
+    }
+
+    /// [`persistent`], with a relay whose stdin holds `capacity` bytes and
+    /// which reads only while `reads` says it may, so a test can leave a line
+    /// waiting for room.
+    async fn persistent_with_stdin(
+        capacity: usize,
+        reads: tokio::sync::watch::Receiver<bool>,
+    ) -> (Arc<Persistent>, Relay, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = Shared::for_test(dir.path(), 200, 1000);
+        let (stdin, relay_stdin) = tokio::io::duplex(capacity);
+        let (mut relay_stdout, stdout) = tokio::io::duplex(64 * 1024);
+        let started = RoomEvent::Started {
+            version: room_operator::VERSION,
+            origin: "https://rooms.example".into(),
+            plain_origin: None,
+            user_public_key: "ee".repeat(32),
+            certificate_sha256: None,
+            allowed_origins: Vec::new(),
+            room: Some("room-uuid".into()),
+        };
+        relay_stdout
+            .write_all(format!("{}\n", started.to_line()).as_bytes())
+            .await
+            .unwrap();
+        let persistent = Persistent::attach_for_test(shared, Box::new(stdin), stdout).await;
+        (
+            persistent,
+            Relay {
+                commands: BufReader::new(Reading::gated(relay_stdin, reads)).lines(),
+                events: relay_stdout,
+            },
+            dir,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_line_waiting_for_room_does_not_hold_the_requests_behind_it() {
+        // The relay's stdin holds one line, and the relay reads nothing: the
+        // first caller's line is written, the second caller's waits in the
+        // writer for room, and every request after it queues behind that one
+        // line and nothing else. None of them may wait on the child's lock,
+        // which `/mode` and every other caller need: while each ask wrote the
+        // child's stdin under that lock, the second caller held it on a write
+        // that could not finish.
+        let first = OperatorCommand::PreAdmit {
+            user_public_key: hex::encode([7; 32]),
+            token_sha256: "11".repeat(32),
+            label: "A".into(),
+            role: GUEST_ROLE,
+        };
+        let second = OperatorCommand::PreAdmit {
+            user_public_key: hex::encode([8; 32]),
+            token_sha256: "22".repeat(32),
+            label: "B".into(),
+            role: GUEST_ROLE,
+        };
+        let (reads, permitted) = tokio::sync::watch::channel(true);
+        let (persistent, mut relay, _dir) =
+            persistent_with_stdin(first.to_line().len(), permitted).await;
+        let asking = |key: &'static str, command: OperatorCommand| {
+            tokio::spawn({
+                let persistent = Arc::clone(&persistent);
+                async move {
+                    persistent
+                        .ask(key.into(), command)
+                        .await
+                        .map(|(answer, ..)| answer)
+                }
+            })
+        };
+        let first_ask = asking("first", first.clone());
+        assert_eq!(
+            OperatorCommand::from_line(&relay.raw_line().await).unwrap(),
+            first
+        );
+        // From here the relay reads nothing, so the second caller's line is
+        // one line more than its stdin holds and waits in the writer.
+        reads.send(false).unwrap();
+        let second_ask = asking("second", second.clone());
+        // The child's lock is free while that line waits: `/mode` answers,
+        // holding the child only for as long as reading it takes.
+        let (up, failure) =
+            tilo_test_env::within("the relay's state", persistent.relay_state()).await;
+        assert!(up, "the relay is up though its pipe is full");
+        assert!(failure.is_none());
+        let spectating = asking(
+            "spectate",
+            OperatorCommand::Spectate {
+                device_public_key: hex::encode([9; 32]),
+            },
+        );
+        // The relay reads again: what queued arrives in the order it was
+        // sent, behind the line that waited for room.
+        reads.send(true).unwrap();
+        assert_eq!(
+            OperatorCommand::from_line(&relay.raw_line().await).unwrap(),
+            second
+        );
+        let OperatorCommand::Spectate { device_public_key } =
+            OperatorCommand::from_line(&relay.raw_line().await).unwrap()
+        else {
+            panic!("expected a spectate")
+        };
+        assert_eq!(device_public_key, hex::encode([9; 32]));
+        // Nobody answered, so each caller takes its wait out on
+        // `ANSWER_WAIT`, and none leaves a waiter behind.
+        for asked in [first_ask, second_ask, spectating] {
+            assert!(matches!(
+                tilo_test_env::within("the answer", asked).await.unwrap(),
+                Err(JoinRefusal::Unavailable)
+            ));
+        }
+        assert!(persistent.waiters.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_child_whose_writer_ends_refuses_what_it_cannot_take() {
+        // The relay's end of the pipe goes away, as a child that died takes
+        // it: the writer's next line fails, the task ends with the channel's
+        // receiver, and the child stops taking commands. Its caller is
+        // refused rather than left waiting on an answer, and the waiter it
+        // registered is gone.
+        let (_reads, permitted) = tokio::sync::watch::channel(true);
+        let (persistent, relay, _dir) = persistent_with_stdin(64 * 1024, permitted).await;
+        drop(relay);
+        let refused = tilo_test_env::within(
+            "the refusal of a child that stopped",
+            persistent.ask(
+                "gone".into(),
+                OperatorCommand::Spectate {
+                    device_public_key: hex::encode([9; 32]),
+                },
+            ),
+        )
+        .await;
+        assert!(matches!(refused, Err(JoinRefusal::Unavailable)));
+        assert!(persistent.waiters.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
