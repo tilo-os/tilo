@@ -1,11 +1,12 @@
 //! Shared helpers for the setup tests.
 //!
 //! [`isolated`] runs a merged test phase on its own thread. On Linux,
-//! [`qualified_tempdir`] provides temporary directories for the native
-//! internal-cache tests: the cache refuses filesystems without Linux
-//! ext4/XFS/Btrfs semantics, so its fixtures cannot use a tmpfs `/tmp`. They
-//! are created below `TILO_IMAGER_TEST_CACHE_ROOT` when set (CI points it at
-//! a prepared location), else below the build's own `target/test-fs/imager`,
+//! [`qualified_tempdir`] provides the temporary directories the setup fixtures
+//! root their state and scratch in: the cache, the transfer scratch and the
+//! prepared-media store refuse filesystems without Linux ext4/XFS/Btrfs
+//! semantics, so a tmpfs or overlay `/tmp` cannot hold them. They are created
+//! below `TILO_IMAGER_TEST_CACHE_ROOT` when set (CI points it at a prepared
+//! location), else below the build's own `target/test-fs/imager`,
 //! which lives in the checkout and so on the developer's filesystem — never
 //! in the cache directory of the account running the tests.
 
@@ -96,8 +97,19 @@ fn default_root() -> PathBuf {
     target.unwrap().join("test-fs").join("imager")
 }
 
-/// A fresh temporary directory on a qualified filesystem, removed on drop.
+/// A fresh temporary directory for a setup fixture, removed on drop.
+///
+/// On Linux it is on a filesystem the setup code accepts (see above), so a
+/// fixture may root the installer's state and its scratch in it; on other
+/// platforms only the native cache has that requirement and an ordinary
+/// temporary directory is what the tests want.
 #[cfg(target_os = "linux")]
 pub(crate) fn qualified_tempdir() -> tempfile::TempDir {
     tempfile::tempdir_in(qualified_root()).expect("create qualified temporary directory")
+}
+
+/// A fresh temporary directory for a setup fixture, removed on drop.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn qualified_tempdir() -> tempfile::TempDir {
+    tempfile::tempdir().expect("create temporary directory")
 }
