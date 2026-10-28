@@ -24,67 +24,48 @@ use tilo_doc::snapshot::BlockView;
 
 /// The mark a reference's run carries, valued with what it refers to (`tilo_doc`'s and
 /// ui-core's `mention`).
-pub const MENTION: &str = "mention";
+pub const MENTION: &str = tilo_reference::embed::MARK;
 
-/// The scheme a reference to a resource elsewhere is written with in a `mention` mark's value:
-/// the native resource link's (`tilo_reference::Link::to_native`, `tilo-rich-text`'s
-/// `RESOURCE_LINK_SCHEME`).
-pub const REFERENCE_SCHEME: &str = "tilo://open#";
+/// What a `mention` mark refers to: a person, or a resource by the catalogue's reference
+/// (`tilo_reference::embed`), the one form native apps write too.
+pub use tilo_reference::Embed as Reference;
 
-/// The prefix of a tilolang resource's published id in its room (`tl:<app>:<id>`,
-/// `tilolang_tilo::publish::resource_id`): how a reference to one in the same room is written.
-/// A `mention` value with neither prefix names a person by participant id.
-pub const PUBLISHED_PREFIX: &str = "tl:";
-
-/// The reference to the tilolang resource `target` of the app `app`: its published id.
+/// The catalogue's id of the tilolang resource `id` of `app`, as its app publishes it
+/// (`tilolang_tilo::publish::resource_id`).
 #[must_use]
-pub fn resource_reference(app: &str, target: &crate::value::ResourceRef) -> Reference {
-    Reference::Resource(format!("{PUBLISHED_PREFIX}{app}:{}", target.id_string()))
+pub fn published_id(app: &str, id: &str) -> String {
+    format!("tl:{app}:{id}")
 }
 
-/// The resource id (`ResourceRef::id_string`) a published reference names, when it names a
-/// tilolang resource.
+/// The catalogue's resource kind of the tilolang type `ty` of `app`
+/// (`tilolang_tilo::meta::MetaExt::kind_of`).
 #[must_use]
-pub fn resource_id(reference: &str) -> Option<&str> {
-    let rest = reference.strip_prefix(PUBLISHED_PREFIX)?;
-    // The app id is dotted (`so.tilo.lang.chat`) and never holds a `:`.
-    rest.split_once(':')
-        .map(|(_, id)| id)
+pub fn published_kind(app: &str, ty: &str) -> String {
+    format!("tl.{app}.{ty}")
+}
+
+/// The reference to the tilolang resource `target`, of the type named `ty`, of the app `app`:
+/// the catalogue's reference to it, as its app publishes it.
+#[must_use]
+pub fn resource_reference(app: &str, ty: &str, target: &crate::value::ResourceRef) -> Reference {
+    Reference::resource(
+        app,
+        published_kind(app, ty),
+        published_id(app, &target.id_string()),
+    )
+}
+
+/// The resource id (`ResourceRef::id_string`) a reference names, when it names a tilolang
+/// resource.
+#[must_use]
+pub fn resource_id(reference: &Reference) -> Option<&str> {
+    let at = reference.as_resource()?;
+    at.reference
+        .id
+        .strip_prefix("tl:")?
+        .strip_prefix(at.app.as_str())?
+        .strip_prefix(':')
         .filter(|id| !id.is_empty())
-}
-
-/// What a `mention` mark refers to.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum Reference {
-    /// A person (or agent), by participant id.
-    Person(String),
-    /// A resource, by its reference (`tilo://open#…`).
-    Resource(String),
-}
-
-impl Reference {
-    /// The reference a `mention` mark's value names.
-    #[must_use]
-    pub fn of_mark(value: &str) -> Option<Self> {
-        if value.is_empty() {
-            return None;
-        }
-        Some(
-            if value.starts_with(REFERENCE_SCHEME) || value.starts_with(PUBLISHED_PREFIX) {
-                Self::Resource(value.to_owned())
-            } else {
-                Self::Person(value.to_owned())
-            },
-        )
-    }
-
-    /// The `mention` mark's value naming it.
-    #[must_use]
-    pub fn mark_value(&self) -> &str {
-        match self {
-            Self::Person(id) | Self::Resource(id) => id,
-        }
-    }
 }
 
 /// A `RichText` value (see the module docs).
@@ -184,7 +165,7 @@ impl RichValue {
                 start,
                 end,
                 name: MENTION.to_owned(),
-                value: MarkValue::Str(to.mark_value().to_owned()),
+                value: MarkValue::Str(to.mark_value()),
             });
         }
     }
@@ -354,9 +335,7 @@ mod tests {
     fn references_are_read_from_the_marks_in_order_each_once() {
         let mut v = RichValue::from_text("Ask ");
         let ada = Reference::Person("u_ada".into());
-        let ch = Reference::Resource(format!(
-            "{REFERENCE_SCHEME}/me/so.tilo.chat/-/channel:general"
-        ));
+        let ch = Reference::resource("so.tilo.chat", "chat.channel", "chat.channel:general");
         v.push_reference("@Ada", &ada);
         v.push_text(" in ");
         v.push_reference("#general", &ch);

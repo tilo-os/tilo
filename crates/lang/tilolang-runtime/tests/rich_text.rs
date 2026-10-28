@@ -123,13 +123,25 @@ mod cases {
         let refs = body.references();
         assert_eq!(refs.len(), 2, "{refs:?}");
         assert_eq!(refs[0], Reference::Person("me".into()));
-        let Reference::Resource(name) = &refs[1] else {
+        let Some(at) = refs[1].as_resource() else {
             panic!("{refs:?}")
         };
         assert_eq!(
-            name,
-            &format!("tl:so.tilo.lang.richtext:{}", task.id_string()),
-            "a resource is named by its published id"
+            (
+                at.app.as_str(),
+                at.reference.kind.as_str(),
+                at.reference.id.as_str()
+            ),
+            (
+                "so.tilo.lang.richtext",
+                "tl.so.tilo.lang.richtext.Task",
+                format!("tl:so.tilo.lang.richtext:{}", task.id_string()).as_str()
+            ),
+            "a resource is named by the catalogue's reference to it"
+        );
+        assert_eq!(
+            tilolang_runtime::rich::resource_id(&refs[1]),
+            Some(task.id_string().as_str())
         );
         // The marks are tilo-doc's `mention` marks over the runs.
         let block = &body.blocks[0];
@@ -150,6 +162,33 @@ mod cases {
         assert_eq!(runs, ["@me", "Fix the build"]);
         assert_eq!(b.int("people_count", &post), 1);
         assert_eq!(b.int("task_count", &post), 1);
+    }
+
+    #[test]
+    fn text_stored_with_an_older_reference_form_still_refers_to_its_resource() {
+        let b = Room::on(&AmStore::new(), None);
+        let task = b.task("Fix the build");
+        let post = b.say("placeholder");
+        // As the first rich text wrote a resource: its published id as the mark's value.
+        let mut old = RichValue::from_text("see ");
+        old.blocks[0].text.push_str("Fix the build");
+        old.blocks[0].marks.push(tilo_doc::document::MarkSpan {
+            start: 4,
+            end: 17,
+            name: "mention".into(),
+            value: tilo_doc::document::MarkValue::Str(format!(
+                "tl:so.tilo.lang.richtext:{}",
+                task.id_string()
+            )),
+        });
+        b.call("edit", vec![Value::resource(&post), Value::Rich(old)]);
+        let refs = b.body(&post).references();
+        assert_eq!(refs.len(), 1, "{refs:?}");
+        assert_eq!(
+            tilolang_runtime::rich::resource_id(&refs[0]),
+            Some(task.id_string().as_str())
+        );
+        assert_eq!(b.int("task_count", &post), 1, "it still reads as the task");
     }
 
     #[test]
