@@ -75,6 +75,17 @@ pub enum RecordReadError {
     Initialization(String),
 }
 
+/// Where construction's primary read comes from.
+enum Primary {
+    /// Read it now, on this thread.
+    #[cfg(feature = "native")]
+    Read,
+    /// None is read (a component's construction).
+    None,
+    /// Read already, off this thread.
+    Taken(Option<(PrimaryRead, CommittedDocument)>),
+}
+
 pub struct NativeConstruction {
     state: Rc<Construction>,
     previous: Option<Weak<Construction>>,
@@ -114,34 +125,91 @@ pub fn component_history_read_for_test(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "the app's own channel answers this record".into())
 }
+/// The committed read of a joined manager's primary route, to be taken on
+/// any thread: an owner that must not wait on its own thread (a tilolang host
+/// running other instances meanwhile) reads it on another and enters
+/// construction with what it read ([`NativeConstruction::enter_read`]).
+#[derive(Clone)]
+pub struct PrimaryRead(InitialReadBridge);
+
+impl PrimaryRead {
+    /// The read `manager`'s primary route needs before its record is built;
+    /// `None` when it needs none (a route whose reads are not committed, a
+    /// manager without the broker).
+    ///
+    /// # Errors
+    /// The manager's route is not admitted.
+    pub fn of(manager: &CollaborationManager) -> Result<Option<Self>, String> {
+        Ok(InitialReadBridge::from_manager(manager)?.map(Self))
+    }
+
+    /// Wait for the read, on the calling thread, for as long as the broker
+    /// takes; its worker's end and the route's failure end the wait.
+    ///
+    /// # Errors
+    /// The read failed or its worker ended.
+    pub fn read(&self) -> Result<CommittedDocument, String> {
+        self.0.read_primary()
+    }
+}
+
 impl NativeConstruction {
     #[cfg(feature = "native")]
     pub fn enter(manager: CollaborationManager) -> Result<Self, String> {
-        Self::enter_inner(manager, None, true)
+        Self::enter_inner(manager, None, Primary::Read)
     }
     pub fn enter_component(
         manager: CollaborationManager,
         scope: crate::wake::WakeScope,
     ) -> Result<Self, String> {
-        Self::enter_inner(manager, Some(scope), false)
+        Self::enter_inner(manager, Some(scope), Primary::None)
+    }
+    /// Enter as [`Self::enter`] does, with the primary read `read` already
+    /// taken off this thread through [`PrimaryRead`]; `None` when
+    /// [`PrimaryRead::of`] found none to take.
+    ///
+    /// # Errors
+    /// Construction is entered already, or the read is not of this manager's
+    /// route.
+    pub fn enter_read(
+        manager: CollaborationManager,
+        read: Option<(PrimaryRead, CommittedDocument)>,
+    ) -> Result<Self, String> {
+        Self::enter_inner(manager, None, Primary::Taken(read))
     }
     fn enter_inner(
         manager: CollaborationManager,
         scope: Option<crate::wake::WakeScope>,
-        primary_read: bool,
+        primary_read: Primary,
     ) -> Result<Self, String> {
         if current().is_some() {
             return Err("nested native construction would replace its worker".into());
         }
-        let bridge = InitialReadBridge::from_manager(&manager)?;
-        // No state/root callback runs until the actual primary read is ready.
-        let primary = if primary_read {
-            bridge
-                .as_ref()
-                .map(InitialReadBridge::read_primary)
-                .transpose()?
-        } else {
-            None
+        let (bridge, primary) = match primary_read {
+            // No state/root callback runs until the actual primary read is ready.
+            #[cfg(feature = "native")]
+            Primary::Read => {
+                let bridge = InitialReadBridge::from_manager(&manager)?;
+                let primary = bridge
+                    .as_ref()
+                    .map(InitialReadBridge::read_primary)
+                    .transpose()?;
+                (bridge, primary)
+            }
+            Primary::None => (InitialReadBridge::from_manager(&manager)?, None),
+            Primary::Taken(read) => {
+                let bridge = InitialReadBridge::from_manager(&manager)?;
+                match (bridge, read) {
+                    (None, None) => (None, None),
+                    (Some(bridge), Some((PrimaryRead(read_by), read)))
+                        if read_by.route == bridge.route =>
+                    {
+                        bridge.check()?;
+                        (Some(bridge), Some(read))
+                    }
+                    _ => return Err("the primary read is not of this route".into()),
+                }
+            }
         };
         #[cfg(feature = "broker-transport")]
         let creations = {
