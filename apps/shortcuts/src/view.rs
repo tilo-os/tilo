@@ -349,12 +349,14 @@ pub(crate) fn root(cx: &ViewCx<Workbench>) -> Element {
 mod window_bar;
 
 /// What [`follow`] last derived the editor from: the open sidebar item, the
-/// open draft, the door, the open picker and whether the save sheet shows.
+/// open draft, the door, the open picker, whether the save sheet shows, and
+/// whether the draft is read as blocks or as text.
 type Followed = (
     Option<String>,
     Option<(Id, Draft)>,
     DoorState,
     Option<String>,
+    bool,
     bool,
 );
 
