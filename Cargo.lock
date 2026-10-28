@@ -20350,6 +20350,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-lock",
+ "tilo-paths",
  "workspace-hack",
 ]
 
@@ -20877,6 +20878,7 @@ dependencies = [
  "themes",
  "tilo-app",
  "tilo-browser-runtime",
+ "tilo-desktop",
  "tilo-desktop-surface",
  "tilo-lock",
  "tilo-search",

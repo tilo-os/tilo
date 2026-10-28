@@ -931,9 +931,11 @@ impl App {
             Some(continuation) => continuation.settle(update),
             None => update,
         };
-        // A terminal must follow the document commands it covers: queue every
-        // changed owned record first, or retire the transport as uncertain.
-        if update.is_terminal() && !self.queue_documents_before_terminal() {
+        if update.is_terminal() {
+            // What it caused in the app is part of it: the frame its change
+            // asks for runs now, and the answer waits for any reply that
+            // frame owes to land ([`Self::answer_held_invocations`]).
+            self.answer_after_its_sync(id, update);
             return;
         }
         self.collaboration
@@ -2664,14 +2666,7 @@ impl App {
             .pop_front()
             .map(|intent| (intent, None, crate::bound_dispatch::Origin::Person))
             .or_else(|| {
-                // The next invocation the widgets' queues hand over, the
-                // effect invocation it continues, and who asked for it.
-                let (taken, _, origin) = crate::bound_dispatch::capture_physical_drain(|| {
-                    crate::widget::controls::take_attributed_control_invocation(
-                        self.root_widget.as_mut(),
-                    )
-                });
-                taken.map(|(intent, on_behalf_of)| (intent, on_behalf_of, origin))
+                crate::bound_dispatch::take_attributed_with_origin(self.root_widget.as_mut())
             })
         {
             // Only what the person asked for is refused over the window; the
@@ -2892,116 +2887,6 @@ impl App {
         true
     }
 
-    /// Ask the broker to admit an edit the effect invocation `running`
-    /// submitted for its invoker: it decides with the invoker's grants and,
-    /// when they allow it, hands it back here as theirs.
-    fn send_follow_up(
-        &mut self,
-        running: tilo_actions::InvocationId,
-        address: &tilo_actions::ActionAddress,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-        context: Option<tilo_actions::ActionContext>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        let request_id = self.take_broker_request_id()?;
-        let request = tilo_actions::remote::InvokeRequest {
-            on_behalf_of: Some(running),
-            invocation: tilo_actions::InvocationId::new(),
-            target: tilo_actions::remote::RemoteActionTarget {
-                provider: tilo_actions::remote::OWN_PROVIDER.into(),
-                address: address.clone(),
-            },
-            argument: tilo_actions::remote::InvokeArgument::Json(arguments.clone()),
-            context,
-            confirmation: None,
-            revision: None,
-            wait_ms: None,
-            appearance: None,
-        };
-        self.actions
-            .broker_requests
-            .insert(BrokerReply::Receipt(request.invocation), request_id);
-        self.actions.follow_ups.insert(request_id, running);
-        if let Some(continuation) = self.actions.acting_for.get_mut(&running) {
-            continuation.outstanding.insert(request_id);
-        }
-        self.send_own_invocation(request);
-        Ok(crate::widget::ResourceOperationStart::Accepted)
-    }
-
-    /// The broker answered the edit request `request_id` an effect
-    /// submitted: a refusal fails the effect, and the effect's held answer
-    /// goes out once its last edit is settled. Whether it was one.
-    pub(super) fn settle_follow_up(
-        &mut self,
-        request_id: u64,
-        result: &Result<(tilo_actions::InvocationId, tilo_actions::InvocationUpdate), String>,
-    ) -> bool {
-        let Some(running) = self.actions.follow_ups.remove(&request_id) else {
-            return false;
-        };
-        let refusal = match result {
-            Err(reason) => Some(tilo_actions::ActionFailure {
-                code: "permission_denied".into(),
-                message: reason.clone(),
-                details: None,
-                retryable: false,
-            }),
-            Ok((_, tilo_actions::InvocationUpdate::Failed { error, .. })) => Some(error.clone()),
-            Ok((_, tilo_actions::InvocationUpdate::Cancelled { .. })) => {
-                Some(tilo_actions::ActionFailure {
-                    code: "follow_up_cancelled".into(),
-                    message: "an edit the effect submitted was cancelled".into(),
-                    details: None,
-                    retryable: false,
-                })
-            }
-            Ok(_) => None,
-        };
-        let Some(continuation) = self.actions.acting_for.get_mut(&running) else {
-            return true;
-        };
-        continuation.outstanding.remove(&request_id);
-        if continuation.refused.is_none() {
-            continuation.refused = refusal;
-        }
-        if !continuation.outstanding.is_empty() || continuation.deferred.is_none() {
-            return true;
-        }
-        let Some(continuation) = self.actions.acting_for.remove(&running) else {
-            return true;
-        };
-        let Some((wire_id, update)) = continuation.deferred.clone() else {
-            return true;
-        };
-        let update = continuation.settle(update);
-        if self.queue_documents_before_terminal() {
-            self.collaboration
-                .manager
-                .send(CollabRequest::UpdateInvocation {
-                    id: wire_id,
-                    update,
-                });
-        }
-        true
-    }
-
-    /// Keep why an edit the running effect `on_behalf_of` submitted was
-    /// refused: the effect then fails rather than claim what it did not do.
-    fn note_continuation(
-        &mut self,
-        on_behalf_of: Option<tilo_actions::InvocationId>,
-        result: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
-    ) {
-        let Err(error) = result else {
-            return;
-        };
-        if let Some(continuation) = on_behalf_of.and_then(|id| self.actions.acting_for.get_mut(&id))
-            && continuation.refused.is_none()
-        {
-            continuation.refused = Some(crate::invocation_scope::Continuation::failure(error));
-        }
-    }
-
     fn request_invocation_cancellation(&mut self, wire_id: u64) {
         if let Some(pending) = self
             .actions
@@ -3152,13 +3037,16 @@ impl App {
                 self.actions.bound_invocations.remove(&invocation);
                 self.actions.directed_invocations.remove(&invocation);
                 self.actions.acting_for.remove(&invocation);
+                // As a direct answer, it waits for what it caused to land.
+                self.hold_answer(pending.wire_id, update);
+            } else {
+                self.collaboration
+                    .manager
+                    .send(CollabRequest::UpdateInvocation {
+                        id: pending.wire_id,
+                        update,
+                    });
             }
-            self.collaboration
-                .manager
-                .send(CollabRequest::UpdateInvocation {
-                    id: pending.wire_id,
-                    update,
-                });
             changed = true;
         }
         // An invocation that ended however it ended runs for nobody, once

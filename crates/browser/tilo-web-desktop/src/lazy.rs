@@ -279,6 +279,12 @@ split_code! {
 }
 
 split_code! {
+    /// The profile card: the first card that opens asks for it.
+    mod profile_card: tilo_desktop::profile_card::MakeProfileCard = tilo_desktop::profile_card::builtin_profile_card()
+        => tilo_desktop::profile_card::PROFILE_CARD, module = "profile_card", hash = "5f81c2e94a3d07b6";
+}
+
+split_code! {
     /// History: the first window that registers it asks for it.
     mod history: tilo_ui::history_mode::MakeHistory = tilo_ui::history_mode::builtin_history()
         => tilo_ui::history_mode::HISTORY, module = "history", hash = "e1a7c5039b6d2f84";
@@ -335,4 +341,5 @@ pub(crate) fn register() {
     emoji::register();
     history::register();
     feedback_code::register();
+    profile_card::register();
 }

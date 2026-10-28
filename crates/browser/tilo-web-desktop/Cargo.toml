@@ -20,6 +20,8 @@ crate-type = ["cdylib", "rlib"]
 # (src/feedback.rs) load as their own modules.
 tilo-browser-runtime = { path = "../tilo-browser-runtime", features = ["deferred-activity", "deferred-model-clients", "deferred-feedback-composer", "deferred-feedback", "deferred-people-overlay"] }
 tilo-desktop-surface = { path = "../../session/desktop-surface" }
+# The profile card loads the first time a card opens.
+tilo-desktop = { path = "../../session/desktop", features = ["lazy-profile-card"] }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 # Search loads as its own module the first time something searches
 # (src/lazy.rs).
