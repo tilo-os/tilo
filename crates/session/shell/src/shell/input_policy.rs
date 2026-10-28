@@ -735,7 +735,7 @@ impl InputCapture {
 
 /// What the shell holds back from client windows this frame. A modal
 /// overlay, the palette, a prompt and the like hold all input
-/// ([`chrome_takes_all_input`]); a file chooser's sheet holds the keyboard
+/// (`chrome_takes_all_input`); a file chooser's sheet holds the keyboard
 /// while the window that asked for it is focused and the pointer over
 /// itself and that window, so a click on another window reaches it.
 pub fn input_capture(fb: &FrameBuilder) -> InputCapture {

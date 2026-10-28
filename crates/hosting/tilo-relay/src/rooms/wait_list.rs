@@ -166,7 +166,7 @@ fn v1_to_v2(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
 }
 
 /// What keeping a request did. `mail`: send the confirmation mail now (at
-/// most one per [`MAIL_EVERY_NS`] to an address).
+/// most one per `MAIL_EVERY_NS` to an address).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WaitListed {
     Added {

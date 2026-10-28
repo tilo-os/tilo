@@ -12,7 +12,7 @@
 //! No app opens another in the background.
 //!
 //! Either way the app is told only that its request was taken
-//! ([`REQUESTED`]). What follows is the person's to see: an installed app
+//! (`REQUESTED`). What follows is the person's to see: an installed app
 //! opens; one the catalogue offers but this computer doesn't have stands in
 //! front of them as the shell's Get card; any other id becomes a notice; a
 //! launch that fails says so in a notification. So no app learns from the
