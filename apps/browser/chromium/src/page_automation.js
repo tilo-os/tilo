@@ -1328,6 +1328,44 @@ globalThis.__tiloPage ||= (() => {
     return findsNothing(role, name, all);
   }
 
+  // The page actions that act on one element, and so say which element it
+  // was in their answer; an engine gesture names its element by ref and is
+  // described the same way.
+  const ACTED_ON = new Set(['fill', 'select', 'fill_files', 'submit', 'focus', 'locate']);
+
+  // The element one page action acted on, described the way a find names it:
+  // the role and the name its line prints, the number among its equals and
+  // the frame whose outline carried its ref. A ref belongs to one document;
+  // this description is what a recorded step finds again after a reload.
+  function actedOn(ref, command) {
+    let element;
+    try { element = resolve(ref); } catch (error) { return null; }
+    if (!element) return null;
+    const all = findCandidates();
+    const known = all.find(candidate => candidate.element === element);
+    if (!known) return null;
+    // The number among the elements this line names, in the outline's order:
+    // the first of two equal `button "Remove"` is 1.
+    const nth = all.filter(candidate => candidate.kind === known.kind && candidate.label === known.label
+      && !(candidate.element !== element && candidate.line.indexOf(known.places) !== 0))
+      .map(candidate => candidate.element).indexOf(element) + 1;
+    const described = {role: known.kind, name: clean(known.label, MAX_NAME) || ''};
+    if (nth > 1) described.nth = nth;
+    const frame = typeof command.frame === 'string' && command.frame.trim() ? command.frame.trim() : '';
+    if (frame) described.frame = frame;
+    return described;
+  }
+
+  // Every page action that names one element answers with what it acted on,
+  // beside the page's own report: a recorder never has to guess what a ref
+  // was, and a replayed step knows which control to find.
+  function withActedOn(result, command) {
+    if (!result || !result.ok || !command || typeof command.element !== 'string') return result;
+    const acted = actedOn(command.element, command);
+    if (!acted) return result;
+    return {...result, data: {...(result.data || {}), acted}};
+  }
+
   function clip(rect) {
     const left = Math.max(rect.left, 0), top = Math.max(rect.top, 0);
     const right = Math.min(rect.right, innerWidth), bottom = Math.min(rect.bottom, innerHeight);
@@ -2220,92 +2258,100 @@ globalThis.__tiloPage ||= (() => {
               || `Drew ${command.drew ? command.drew + ' points' : 'the pointer path'} on the page`, {drew: command.drew});
           return gestureResult(before, command.message || 'Dragged', {});
         }
-        switch (command.action) {
-          case 'prepare_text_input': case 'start_text_input': case 'check_text_input': case 'commit_text_input': case 'cancel_text_input': case 'undo_text_input': case 'redo_text_input':
-            return guardedTextInput(command);
-          case 'outline': return outline();
-          // The ref of the element a stable description names, read from the
-          // page as it is now.
-          case 'find': return find(command);
-          // The engine mirrors a hover through the page's CSS only when that
-          // CSS opens something on hover; otherwise the browser's own pointer
-          // is enough and nothing is applied.
-          case 'need_styles': { const n = markHoverTargets(); return {ok: true, need_styles: n > 0, doc: typeof doc === 'number' ? doc : command.doc}; }
-          case 'changes': return changes();
-          // A turn of the wheel: where it turns, and what is left of the
-          // distance once the page has given what it has.
-          case 'scroll_target': return scrollTarget(command);
-          case 'scroll_left': return scrollLeft();
-          case 'at': return frameId() ? atInFrame() : at(command.x, command.y);
-          case 'frame_offset': return frameOffset(command.frame, command.anchored);
-          case 'frame_element': return frameElement(command.frame);
-          case 'frame_fence': return fence();
-          case 'settle': return settle(command.quiet_ms, command.timeout_ms);
-          case 'locate': arm('pointer'); return locate(command.element, command.cross_origin);
-          case 'locate_box': return locateBox(command.element);
-          case 'capture': return captureRegion(command.element);
-          case 'fill': { arm('script'); return fill(command.element, command.text, command.secret); }
-          case 'fill_files': arm('script'); return fillFilesTarget(command.element, command.paths);
-          case 'select': arm('script'); return select(command.element, command.values);
-          case 'submit': arm('script'); return submit(command.element, command.cross_origin);
-          case 'focus': {
-            watch = null;
-            const focused = focus(command.element, command.key, command.cross_origin);
-            arm('key');
-            return focused;
-          }
-          case 'arm': return arm('key');
-          case 'reader': return reader(command.enabled === true);
-          // The engine moves the pointer to a point computed here.
-          case 'hover': {
-            const end = landing(command.element, command.x, command.y, 'hover');
-            return {ok: true, x: end.x, y: end.y};
-          }
-          // The engine presses at one end, moves and releases at the other.
-          case 'drag': {
-            const from = dragEnd(command.element, command.x, command.y, 'drag');
-            const to = dragEnd(command.to, command.to_x, command.to_y, 'drop on');
-            return {ok: true, x: from.x, y: from.y, to_x: to.x, to_y: to.y,
-              from: from.element ? refOf(from.element) : undefined, to_target: to.element ? refOf(to.element) : undefined};
-          }
-          // The drag's own drop, replayed as the page's own drag and drop
-          // events between the same two ends.
-          case 'drag_fallback': {
-            const from = dragEnd(command.element, command.x, command.y, 'drag');
-            const to = dragEnd(command.to, command.to_x, command.to_y, 'drop on');
-            const target = topmost(to.x, to.y) || document.body;
-            // Nothing native moved the source: the gesture's release is the
-            // only drop the page has seen.
-            const moved = false;
-            const report = moved ? {accepted: true, started: true, removed: true, replayed: false}
-              : syntheticDrag({x: to.x, y: to.y, element: from.element}, target);
+        const answer = (() => {
+          switch (command.action) {
+            case 'prepare_text_input': case 'start_text_input': case 'check_text_input': case 'commit_text_input': case 'cancel_text_input': case 'undo_text_input': case 'redo_text_input':
+              return guardedTextInput(command);
+            case 'outline': return outline();
+            // The ref of the element a stable description names, read from the
+            // page as it is now.
+            case 'find': return find(command);
+            // The engine mirrors a hover through the page's CSS only when that
+            // CSS opens something on hover; otherwise the browser's own pointer
+            // is enough and nothing is applied.
+            case 'need_styles': { const n = markHoverTargets(); return {ok: true, need_styles: n > 0, doc: typeof doc === 'number' ? doc : command.doc}; }
+            case 'changes': return changes();
+            // A turn of the wheel: where it turns, and what is left of the
+            // distance once the page has given what it has.
+            case 'scroll_target': return scrollTarget(command);
+            case 'scroll_left': return scrollLeft();
+            case 'at': return frameId() ? atInFrame() : at(command.x, command.y);
+            case 'frame_offset': return frameOffset(command.frame, command.anchored);
+            case 'frame_element': return frameElement(command.frame);
+            case 'frame_fence': return fence();
+            case 'settle': return settle(command.quiet_ms, command.timeout_ms);
+            case 'locate': arm('pointer'); return locate(command.element, command.cross_origin);
+            case 'locate_box': return locateBox(command.element);
+            case 'capture': return captureRegion(command.element);
+            case 'fill': { arm('script'); return fill(command.element, command.text, command.secret); }
+            case 'fill_files': arm('script'); return fillFilesTarget(command.element, command.paths);
+            case 'select': arm('script'); return select(command.element, command.values);
+            case 'submit': arm('script'); return submit(command.element, command.cross_origin);
+            case 'focus': {
+              watch = null;
+              const focused = focus(command.element, command.key, command.cross_origin);
+              arm('key');
+              return focused;
+            }
+            case 'arm': return arm('key');
+            case 'reader': return reader(command.enabled === true);
+            // The engine moves the pointer to a point computed here.
+            case 'hover': {
+              const end = landing(command.element, command.x, command.y, 'hover');
+              return {ok: true, x: end.x, y: end.y};
+            }
+            // The engine presses at one end, moves and releases at the other.
+            case 'drag': {
+              const from = dragEnd(command.element, command.x, command.y, 'drag');
+              const to = dragEnd(command.to, command.to_x, command.to_y, 'drop on');
+              return {ok: true, x: from.x, y: from.y, to_x: to.x, to_y: to.y,
+                from: from.element ? refOf(from.element) : undefined, to_target: to.element ? refOf(to.element) : undefined};
+            }
+            // The drag's own drop, replayed as the page's own drag and drop
+            // events between the same two ends.
+            case 'drag_fallback': {
+              const from = dragEnd(command.element, command.x, command.y, 'drag');
+              const to = dragEnd(command.to, command.to_x, command.to_y, 'drop on');
+              const target = topmost(to.x, to.y) || document.body;
+              // Nothing native moved the source: the gesture's release is the
+              // only drop the page has seen.
+              const moved = false;
+              const report = moved ? {accepted: true, started: true, removed: true, replayed: false}
+                : syntheticDrag({x: to.x, y: to.y, element: from.element}, target);
 
-            const before = gestureBefore || {lines: [], reveals: new Map()};
-            gestureBefore = null;
-            const said = `Dragged ${from.element ? describe(from.element) : 'the pointer'} to ${describe(target)}`;
-            const data = {...report, from: describe(from.element), to: describe(target), native: false};
-            // A page that received no drop did not reorder; say so instead of
-            // reporting a drag it never took.
-            if (!report.accepted)
-              return failure('no_drop', `${said}, which received no drop; the page takes drags only from its own drag events`);
-            return gestureResult(before, said, data);
+              const before = gestureBefore || {lines: [], reveals: new Map()};
+              gestureBefore = null;
+              const said = `Dragged ${from.element ? describe(from.element) : 'the pointer'} to ${describe(target)}`;
+              const data = {...report, from: describe(from.element), to: describe(target), native: false};
+              // A page that received no drop did not reorder; say so instead of
+              // reporting a drag it never took.
+              if (!report.accepted)
+                return failure('no_drop', `${said}, which received no drop; the page takes drags only from its own drag events`);
+              return gestureResult(before, said, data);
+            }
+            // Where the engine's pointer is; the page's hover styles follow it.
+            case 'pointer_rest': return {ok: true, rested: false};
+            // A contact path for the engine's pointer, in viewport pixels.
+            case 'path': {
+              const {points} = contactPath(command.element, command.points || []);
+              return {ok: true, points, message: `Drawing ${points.length} points on ${command.element}`};
+            }
+            // A contact path the engine cannot send, replayed as pointer events.
+            case 'path_fallback': {
+              const element = resolve(command.element);
+              const box = element.getBoundingClientRect();
+              for (const [x, y] of command.points || []) pointerEvent(element, 'pointermove', box.left + x, box.top + y);
+              return {message: `Drew ${(command.points || []).length} points on ${command.element}`};
+            }
           }
-          // Where the engine's pointer is; the page's hover styles follow it.
-          case 'pointer_rest': return {ok: true, rested: false};
-          // A contact path for the engine's pointer, in viewport pixels.
-          case 'path': {
-            const {points} = contactPath(command.element, command.points || []);
-            return {ok: true, points, message: `Drawing ${points.length} points on ${command.element}`};
-          }
-          // A contact path the engine cannot send, replayed as pointer events.
-          case 'path_fallback': {
-            const element = resolve(command.element);
-            const box = element.getBoundingClientRect();
-            for (const [x, y] of command.points || []) pointerEvent(element, 'pointermove', box.left + x, box.top + y);
-            return {message: `Drew ${(command.points || []).length} points on ${command.element}`};
-          }
-        }
-        return failure('invalid_request', 'Unknown page action');
+          return failure('invalid_request', 'Unknown page action');
+        })();
+        // An action on an element says which element it acted on, described
+        // as a find names it, so a step recorded now finds the same element
+        // again after a reload gave it a new ref.
+        if (ACTED_ON.has(command.action))
+          return withActedOn(answer, command);
+        return answer;
       } catch (error) {
         if (error && error.ok === false) return error;
         return failure('script', clean(error && error.message || error, 300));

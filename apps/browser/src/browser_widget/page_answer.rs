@@ -4,6 +4,14 @@
 use super::BrowserWidget;
 use ui::webview::{PageReply, PageRequest};
 
+/// The fields a [`PageRequest::Find`] answers with, beside the page's own.
+const ACTED_KEYS: &[&str] = &["element", "role", "name", "line", "nth", "matches"];
+
+/// The requests that act on one element, and so answer with [`acted`](ACTED_KEYS)'s
+/// description of it: the page says which control the action reached, so a
+/// step recorded from it finds the same control again on a fresh document.
+const ACTED_ON: &[&str] = &["fill", "select", "fill_files", "submit", "focus", "locate"];
+
 impl BrowserWidget {
     pub(super) fn page_success(
         &self,
@@ -35,10 +43,19 @@ impl BrowserWidget {
         // what a later step binds to, so it is the answer's own field rather
         // than only a finding inside it.
         if let (PageRequest::Find { .. }, Some(data)) = (request, &reply.data) {
-            for key in ["element", "role", "name", "line", "nth", "matches"] {
-                if let Some(field) = data.get(key) {
-                    value.insert(key.into(), field.clone());
+            for key in ACTED_KEYS {
+                if let Some(field) = data.get(*key) {
+                    value.insert((*key).into(), field.clone());
                 }
+            }
+        }
+        // A page action says which element it acted on, described as a find
+        // names one: a ref belongs to one document, and this is what a
+        // recorded step binds to when the same action replays on a page
+        // loaded again. It sits beside `element`, which is only a ref.
+        if let Some(acted) = reply.data.as_ref().and_then(|data| data.get("acted")) {
+            if ACTED_ON.contains(request.kind()) {
+                value.insert("acted".into(), acted.clone());
             }
         }
         // The site's own question is part of the page it waits on: it goes in
