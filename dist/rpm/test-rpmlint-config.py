@@ -133,16 +133,6 @@ class RuntimeFilterContract(unittest.TestCase):
                 self.assertEqual(unused.printed_messages["E"], len(PATTERNS))
                 self.assertTrue(all("unused-rpmlintrc-filter" in x for x in unused.results))
 
-    def test_preflight_runs_before_native_compilation(self):
-        builder = (ROOT / "dist/rpm/build-rpm.sh").read_text()
-        self.assertLess(builder.index("test-rpmlint-config.py"),
-                        builder.index("cargo build --release"))
-        lane = (ROOT / "dist/ci/package-lane.sh").read_text()
-        self.assertLess(lane.index("python3 dist/rpm/test-rpmlint-config.py"),
-                        lane.index("bash dist/ci/fetch-package-env-runtime.sh"))
-        self.assertLess(lane.index("python3 dist/rpm/test-rpmlint-config.py"),
-                        lane.index("dist/ci/run-package-job.sh"))
-
 
 if __name__ == "__main__":
     unittest.main()

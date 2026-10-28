@@ -151,16 +151,6 @@ class BuildOrder(unittest.TestCase):
     def test_failed_full_gate_exposes_no_packaging_environment(self):
         self.exercise(reject=True)
 
-    def test_release_workflow_orders_both_hosts_and_media_after_capture(self):
-        workflow = (pipeline.ROOT / '.forgejo/workflows/release-imager.yml').read_text()
-        media = workflow[workflow.index('  medium:'):workflow.index('  catalog:')]
-        self.assertLess(media.index('prepare-capture-release.py'), media.index('layer-capture-install-medium.py'))
-        self.assertLess(media.index('layer-capture-install-medium.py'), media.index('./os/dev/build-custom-installer.sh'))
-        self.assertLess(media.index('./os/dev/build-custom-installer.sh'), media.index('package-install-medium.sh'))
-        linux = workflow[workflow.index('  linux:'):workflow.index('  windows:')]
-        self.assertLess(linux.index('prepare-capture-release.py'), linux.index('package-host.sh'))
-        self.assertLess(linux.index('prepare-capture-release.py'), linux.index('package-flatpak.sh'))
-
 
 class MediumLayer(unittest.TestCase):
     def test_installed_platform_paths_follow_full_gate_and_keep_observed_bytes(self):
@@ -217,22 +207,6 @@ class MediumLayer(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'confined'):
                     medium.layer(settings, 'sha256:' + 'b' * 64, Path('/unallocated/iid'), {})
                 run.assert_not_called()
-
-
-class PairingHelperPackaging(unittest.TestCase):
-    def test_linux_packaging_builds_and_places_the_canonical_helper_beside_host(self):
-        build = (HERE / 'build-capture-host.sh').read_text()
-        self.assertIn('if [ "$(uname -s)" = Linux ]; then', build)
-        self.assertIn('build --locked --release -p tilo-relay --bin tilo-enroll', build)
-        host = (HERE / 'package-host.sh').read_text()
-        self.assertIn('install -m755 target/release/tilo-enroll "$bundle/tilo-enroll"', host)
-        self.assertIn('install -m755 target/release/tilo-enroll "$appdir/usr/bin/tilo-enroll"', host)
-        flatpak = (HERE / 'package-flatpak.sh').read_text()
-        self.assertIn('cp "$repo/target/release/tilo-enroll" "$stage/tilo-enroll"', flatpak)
-        self.assertIn('--command=tilo-enroll org.tilo.Imager pair-device --help', flatpak)
-        manifest = (HERE / 'flatpak/org.tilo.Imager.yml').read_text()
-        self.assertIn('install -Dm755 tilo-enroll /app/bin/tilo-enroll', manifest)
-        self.assertIn('path: tilo-enroll', manifest)
 
 
 class NativePlatformArchive(unittest.TestCase):

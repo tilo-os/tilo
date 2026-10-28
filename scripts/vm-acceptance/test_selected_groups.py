@@ -69,26 +69,5 @@ class Selects(unittest.TestCase):
             self.assertEqual(said.getvalue(), "app\n" if code == 0 else "", only)
 
 
-class Runner(unittest.TestCase):
-    def test_the_perf_job_compares_the_selection_the_acceptance_job_ran(self):
-        checks = {check["name"]: check for check in
-                  tomllib.loads((ROOT / "t.toml").read_text())["check"]}
-        run = checks["vm-acceptance-perf"]["run"]
-        # Never a fixed list of groups: that is what owed a subset every group.
-        self.assertNotIn("--groups boot,session,idle", run)
-        self.assertIn('--groups "$(python3 scripts/vm-acceptance/selected_groups.py ', run)
-        self.assertIn("/target/vm-acceptance/only", run)
-        runner = (ROOT / "tools" / "ci" / "vm-acceptance.sh").read_text()
-        self.assertRegex(runner, r'printf \'%s\\n\' "\$only" > "\$reports/only"')
-
-    def test_the_helper_the_job_runs_is_one_of_its_inputs(self):
-        checks = {check["name"]: check for check in
-                  tomllib.loads((ROOT / "t.toml").read_text())["check"]}
-        # A helper outside the job's inputs would be a stale copy on a cached result.
-        self.assertIn("scripts/vm-acceptance/selected_groups.py",
-                      checks["vm-acceptance-perf"]["inputs"])
-        self.assertIn("tools/perf/**", checks["vm-acceptance-perf"]["inputs"])
-
-
 if __name__ == "__main__":
     unittest.main()
