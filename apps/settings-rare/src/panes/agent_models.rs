@@ -293,6 +293,17 @@ pub enum AgentModelsEffect {
         #[param("The model's id, one the provider offers")]
         model: Option<String>,
     },
+    /// Choose the model each kind of interaction runs on; omit both to let
+    /// that kind follow the default again.
+    #[effect(job, idempotent)]
+    SetInteractionModel {
+        #[param("`one_shot`, `task`, `subtask`, `request`, `classifier` or `dictation`")]
+        kind: String,
+        #[param("The provider's id")]
+        provider: Option<String>,
+        #[param("The model's id, one the provider offers")]
+        model: Option<String>,
+    },
     /// Remove a provider and its stored API key.
     #[effect(job, row, destructive, label = "Remove provider")]
     RemoveProvider {
