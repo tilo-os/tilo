@@ -33,7 +33,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
             .application_creation()
             .filter(|evidence| evidence.valid())
             .ok_or("application creation requires original signed launch declarations")?;
-        let declared = tilo_joined_room::ApplicationRecord::declared(
+        tilo_joined_room::ApplicationRecord::declared(
             &route.app_id,
             &route.record_id,
             context
@@ -41,15 +41,10 @@ impl NativeDocumentReads for NativeOwnerCommitService {
                 .ok_or("application creation requires SDK resource kind")?,
             &evidence.declared_kinds,
         )?;
-        let created = self
-            .network
-            .as_ref()
-            .ok_or("native selected custody unavailable")?
-            .prepare_native_application(owner, room, context.certificate(), &declared)?;
+        // A room's governor seals a record's genesis when the app is first
+        // opened there; this device contributes its own first change to it,
+        // never a record created in the clear on anyone's behalf.
         context.revalidate()?;
-        if !created {
-            return Ok(None);
-        }
         Ok(Some(creation_workspace(&self.tree, room)))
     }
     fn initialize_application(

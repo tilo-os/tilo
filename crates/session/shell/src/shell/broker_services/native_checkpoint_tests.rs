@@ -239,23 +239,45 @@ fn admit_checkpoint_reader(
     (key, certificate)
 }
 
+/// Publish the empty genesis of the room's chat record, as its governor
+/// does when a member first opens the app there.
 fn prepare(fixture: &NativeFixture) -> serde_json::Value {
+    use tilo_owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService as _};
     let (key, _) =
         tilo_identity_host::broker::trusted_current_device(&fixture.room.to_string()).unwrap();
-    let declared = tilo_joined_room::ApplicationRecord::declared(
-        "so.tilo.chat",
-        "checkpoint-test",
-        "chat.workspace",
-        &["chat.workspace".into()],
-    )
-    .unwrap();
+    let message = fixture
+        .owner
+        .with_current(fixture.room, |view| {
+            view.peer().clone().publication_mut().publish_document(
+                "so.tilo.chat",
+                "checkpoint-test",
+                automerge::AutoCommit::new().save(),
+                &key,
+                std::time::SystemTime::now(),
+            )
+        })
+        .unwrap();
+    let neighbour_wire::NeighbourMsg::AppDocument {
+        app_id,
+        cluster_id,
+        record_id,
+        envelope,
+        ..
+    } = message
+    else {
+        panic!("a record's genesis is a document write");
+    };
     fixture
         .owner
-        .prepare_application_record(
-            fixture.room,
-            &fixture.certificate,
-            &key,
-            &declared,
+        .commit_document(
+            OwnerCommitRequest {
+                room: cluster_id,
+                operation: CommitOperation::Document {
+                    app: app_id,
+                    record: record_id,
+                    envelope,
+                },
+            },
             std::time::SystemTime::now(),
         )
         .unwrap();
