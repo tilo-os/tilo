@@ -2005,6 +2005,15 @@ pub trait Widget {
         false
     }
 
+    /// Whether this widget lays one retained [`children`](Widget::children)
+    /// entry out itself (an [`Embedded`](crate::widget::Embedded) part of a
+    /// painted page) rather than through the window's layout, which then
+    /// gives it no node. The accessibility walk reaches such a child, and
+    /// every widget inside it, through this widget's node.
+    fn lays_out_child(&self, _child_index: usize) -> bool {
+        false
+    }
+
     /// What describes one retained [`children`](Widget::children) entry to
     /// assistive technology, when this widget holds the words for it: a
     /// row's secondary line is its trailing switch's description. The

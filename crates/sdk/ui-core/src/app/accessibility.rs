@@ -1412,7 +1412,8 @@ impl App {
         let handled = self
             .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
-                    widget.perform_semantic_action(
+                    crate::a11y_child_route::perform(
+                        widget,
                         target,
                         action,
                         &mut crate::widget::Edits::lend(doc),
@@ -1494,7 +1495,18 @@ impl App {
                 None
             }
             Action::Activate | Action::ToggleCheck => {
-                let rect = if synthetic {
+                // A widget reached through its painting ancestor is pressed
+                // where it stands.
+                let routed = semantic_target.as_deref().and_then(|target| {
+                    self.inspect_node(taffy_id, |widget| {
+                        crate::a11y_child_route::rect(widget, target)
+                    })
+                    .ok()
+                    .flatten()
+                });
+                let rect = if let Some(rect) = routed {
+                    rect
+                } else if synthetic {
                     self.inspect_node(taffy_id, |widget| {
                         widget.synthetic_accessibility_rect(&ordinal_path)
                     })
@@ -1873,7 +1885,8 @@ impl App {
                                     root,
                                 )
                             } else {
-                                widget.perform_semantic_action(
+                                crate::a11y_child_route::perform(
+                                    widget,
                                     &semantic_target,
                                     &verb,
                                     &mut crate::widget::Edits::lend(doc),

@@ -1115,6 +1115,13 @@ struct Build<'a, const BOUND: bool> {
     /// The synthetic children compared in full or built.
     #[cfg(any(test, feature = "test-support"))]
     compared: usize,
+    /// The route of each retained widget with no layout node of its own,
+    /// set by its parent before it is visited: the nearest laid-out widget
+    /// and the child indices from it ([`crate::a11y_child_route`]).
+    routes: HashMap<*const (), (TaffyNodeId, Vec<usize>)>,
+    /// The route of the widget whose synthetic children are being visited,
+    /// when it has no layout node: their targets are reached through it.
+    synthetic_route: Option<(TaffyNodeId, Vec<usize>)>,
 }
 
 /// A widget's synthetic child as the widget handed it over: built this
@@ -1243,6 +1250,8 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
             ambiguous_projection: false,
             ptr_to_taffy,
             focused,
+            routes: HashMap::new(),
+            synthetic_route: None,
         }
     }
 
@@ -1274,6 +1283,25 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
             return;
         };
         let taffy_id = self.ptr_to_taffy.get(w);
+        // A retained widget the window's layout gave no node is reached
+        // through the nearest widget that has one; every child is routed
+        // from here before any is visited, hosted ones included.
+        let route = if taffy_id.is_some() {
+            None
+        } else {
+            self.routes.remove(&std::ptr::from_ref(w).cast::<()>())
+        };
+        for (index, child) in w.children().into_iter().enumerate() {
+            let child_route = match (taffy_id, &route) {
+                (Some(owner), _) if w.lays_out_child(index) => Some((owner, vec![index])),
+                (None, Some((owner, path))) => Some((*owner, [path.as_slice(), &[index]].concat())),
+                (Some(_), _) | (None, None) => None,
+            };
+            if let Some(child_route) = child_route {
+                self.routes
+                    .insert(std::ptr::from_ref(child).cast::<()>(), child_route);
+            }
+        }
         let (access, shared) = match w.accessibility_shared() {
             Some(SharedAccessNode { node, children }) => (Some(node), children),
             None => (w.accessibility(), Vec::new()),
@@ -1320,6 +1348,7 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
                     .into_iter()
                     .map(Synthetic::Owned)
                     .chain(shared.into_iter().map(Synthetic::Shared));
+                let outer_route = std::mem::replace(&mut self.synthetic_route, route.clone());
                 for (i, synth) in synthetic.enumerate() {
                     let child = self.visit_synthetic_retained(
                         SyntheticParent {
@@ -1333,6 +1362,7 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
                     );
                     children.push(child);
                 }
+                self.synthetic_route = outer_route;
 
                 let mut state = access.state;
                 if let (Some(t), Some(f)) = (taffy_id, self.focused)
@@ -1359,8 +1389,18 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
                     bounds: Some(w.get_rect()),
                     actions,
                     children,
-                    widget_taffy_id: taffy_id.map(u64::from),
-                    semantic_target: access.action_target.clone(),
+                    // A widget with no layout node is acted on through the
+                    // nearest one that has.
+                    widget_taffy_id: taffy_id
+                        .or(route.as_ref().map(|(owner, _)| *owner))
+                        .map(u64::from),
+                    semantic_target: match (&route, taffy_id) {
+                        (Some((_, path)), None) => Some(crate::a11y_child_route::encode(
+                            path,
+                            access.action_target.as_deref(),
+                        )),
+                        _ => access.action_target.clone(),
+                    },
                 };
                 self.order.push(id.clone());
                 self.insert_node(node);
@@ -1387,8 +1427,9 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
         hosted: Vec<HostedWidget<'_>>,
     ) -> SemanticId {
         // A widget hosted in the child is walked afresh, and the projection
-        // for actions keeps nothing.
-        if !hosted.is_empty() || self.actions_only {
+        // for actions keeps nothing; nor does a routed widget's, whose
+        // targets carry its route.
+        if !hosted.is_empty() || self.actions_only || self.synthetic_route.is_some() {
             #[cfg(any(test, feature = "test-support"))]
             {
                 self.compared = self.compared.saturating_add(1);
@@ -1511,8 +1552,14 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
                 Vec::new()
             },
             children,
-            widget_taffy_id: semantic_target.and(owner).map(u64::from),
-            semantic_target: semantic_target.map(str::to_owned),
+            widget_taffy_id: semantic_target
+                .and(owner.or(self.synthetic_route.as_ref().map(|(owner, _)| *owner)))
+                .map(u64::from),
+            semantic_target: match (&self.synthetic_route, owner) {
+                (Some((_, path)), None) => semantic_target
+                    .map(|target| crate::a11y_child_route::encode(path, Some(target))),
+                _ => semantic_target.map(str::to_owned),
+            },
         };
         self.order.push(id.clone());
         self.insert_node(node);
