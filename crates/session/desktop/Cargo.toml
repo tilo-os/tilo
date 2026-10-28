@@ -38,6 +38,8 @@ ed25519-dalek.workspace = true
 durable-store = { path = "../../system/durable-store" }
 # The emoji picker's catalogue, search, skin tones and recents.
 emoji = { path = "../../text/emoji" }
+# The bar's clock reads the weekday of the local time.
+chrono.workspace = true
 # The same catalogue for the toolkit's shared picker, which the window bars'
 # reaction pickers open.
 tilo-emoji-catalogue = { path = "../../text/emoji-catalogue" }

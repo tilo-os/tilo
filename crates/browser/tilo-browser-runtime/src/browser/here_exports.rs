@@ -213,7 +213,7 @@ pub fn desktop_set_own_status(id: u64, status: &str, sharing: &str) -> Result<()
         let mut here = desktop.here.borrow_mut();
         let before = here.revision();
         here.set_own_words(Some(status.to_owned()));
-        if let Some(sharing) = crate::shell::sharing_of(sharing) {
+        if let Some(sharing) = ui::StatusSharing::from_word(sharing) {
             here.set_sharing(sharing);
         }
         if here.revision() != before {

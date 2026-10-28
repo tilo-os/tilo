@@ -29,6 +29,29 @@ pub enum StatusSharing {
     Automatic,
 }
 
+impl StatusSharing {
+    /// The word a profile and the shell's actions name this sharing by.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::ManualOnly => "manual",
+            Self::Automatic => "automatic",
+        }
+    }
+
+    /// The sharing `word` names ([`Self::word`], or `manual-only`), if any.
+    #[must_use]
+    pub fn from_word(word: &str) -> Option<Self> {
+        Some(match word {
+            "off" => Self::Off,
+            "manual" | "manual-only" => Self::ManualOnly,
+            "automatic" => Self::Automatic,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StatusOrigin {
     Manual,

@@ -144,16 +144,14 @@ fn refresh_clock_activity(state: &mut chrome_state::ChromeState, poll: &mut Cloc
 /// pins the palette: a screenshot harness comparing whole frames needs every
 /// part still. Unset (every real session) reads the wall clock.
 pub(crate) fn clock_snapshot() -> ClockSnapshot {
-    let now = ui::clock::local_now();
-    ClockSnapshot {
-        unix_seconds: now.timestamp(),
-        clock: std::env::var("TILO_CLOCK")
-            .ok()
-            .filter(|pinned| !pinned.is_empty())
-            .unwrap_or_else(|| ui::clock::time_of_day(&now)),
-        weekday: ui::format::weekday_short(chrono::Datelike::weekday(&now)),
-        date: ui::format::month_day(now.date_naive()),
+    let mut snapshot = ClockSnapshot::now();
+    if let Some(pinned) = std::env::var("TILO_CLOCK")
+        .ok()
+        .filter(|pinned| !pinned.is_empty())
+    {
+        snapshot.clock = pinned;
     }
+    snapshot
 }
 
 fn system_status(status: &tilo_quick_settings::SystemStatus) -> SystemStatus {

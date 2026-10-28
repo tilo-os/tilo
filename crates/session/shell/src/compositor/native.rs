@@ -4098,11 +4098,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "label": scope.label,
             })),
             "presence": {
-                "status_sharing": match status_sharing {
-                    ui::StatusSharing::Off => "off",
-                    ui::StatusSharing::ManualOnly => "manual",
-                    ui::StatusSharing::Automatic => "automatic",
-                },
+                "status_sharing": status_sharing.word(),
                 "own_status": own_status,
                 "following": following,
             },
