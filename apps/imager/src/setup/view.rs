@@ -1468,6 +1468,26 @@ impl SetupApp {
         row.on_effect(move || sink.borrow_mut().push(command))
     }
 
+    /// `row` with the revealed action `icon`/`label` running `effect`; a bare
+    /// window asks for the command the effect runs.
+    fn row_action(
+        &self,
+        row: ListRow,
+        (icon, label): (Icon, &str),
+        effect: &SetupEffect,
+        command: SetupCommand,
+    ) -> ListRow {
+        if let Some(binding) = self
+            .actions
+            .as_ref()
+            .and_then(|actions| actions.effect(effect))
+        {
+            return row.action_binding(icon, label, binding);
+        }
+        let sink = Rc::clone(&self.commands);
+        row.action(icon, label, move || sink.borrow_mut().push(command))
+    }
+
     fn button(&self, id: &str, label: &str, command: SetupCommand) -> Button {
         let effect = match command {
             SetupCommand::InstallDesktop => Some(SetupEffect::InstallDesktop),
@@ -1682,19 +1702,22 @@ impl SetupApp {
                 items_phrase(folder.scan.skipped_count)
             );
         }
-        let remove = Rc::clone(&self.commands);
-        let mut row = ListRow::new(format!("setup.folder.{index}"), &source)
-            .icon(Icon::Folder)
-            .secondary(facts)
-            .action(Icon::X, "Remove", move || {
-                remove.borrow_mut().push(SetupCommand::RemoveFolder(index));
-            });
+        let token = self.controller().folder_token(index).unwrap_or_default();
+        let mut row = self.row_action(
+            ListRow::new(format!("setup.folder.{index}"), &source)
+                .icon(Icon::Folder)
+                .secondary(facts),
+            (Icon::X, "Remove"),
+            &SetupEffect::RemoveFolder {
+                folder: token.clone(),
+            },
+            SetupCommand::RemoveFolder(index),
+        );
         if folder.scan.skipped_count > 0 {
             row = row.warning();
         }
         let modes = self.offered_modes();
         let choices = modes.clone();
-        let token = self.controller().folder_token(index).unwrap_or_default();
         let choice = ToggleGroup::new(
             modes
                 .iter()
@@ -1796,20 +1819,22 @@ impl SetupApp {
                 if chosen(path) {
                     return None;
                 }
-                let add = Rc::clone(&self.commands);
                 let suggestion = known.kind.label().to_lowercase();
-                let row =
+                let add = SetupEffect::AddSuggestedFolder {
+                    suggestion: suggestion.clone(),
+                };
+                let row = self.row_action(
                     ListRow::new(format!("setup.suggestion.{suggestion}"), known.kind.label())
                         .icon(Icon::Folder)
-                        .secondary(path.display().to_string())
-                        .action(Icon::Plus, "Add", move || {
-                            add.borrow_mut().push(SetupCommand::AddSuggested(index));
-                        });
-                Some(Box::new(self.bind_effect(
-                    row,
-                    &SetupEffect::AddSuggestedFolder { suggestion },
+                        .secondary(path.display().to_string()),
+                    (Icon::Plus, "Add"),
+                    &add,
                     SetupCommand::AddSuggested(index),
-                )) as Box<dyn Widget>)
+                );
+                Some(
+                    Box::new(self.bind_effect(row, &add, SetupCommand::AddSuggested(index)))
+                        as Box<dyn Widget>,
+                )
             })
             .collect();
         let add_folder = self

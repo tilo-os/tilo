@@ -3778,6 +3778,15 @@ impl TextInput {
         self
     }
 
+    /// Route Enter through an exported resource action with the text as its
+    /// input; see [`Self::on_submit`].
+    #[must_use]
+    pub fn on_submit_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
+        self.enter_submits = true;
+        self.submit_action = Some(ActionEmitter::new(binding));
+        self
+    }
+
     /// A trailing clear button inside the field while it holds text.
     #[must_use]
     pub fn with_clear_button(self) -> Self {
