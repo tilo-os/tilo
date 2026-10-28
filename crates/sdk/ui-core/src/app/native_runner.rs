@@ -4415,11 +4415,19 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             self.held_frame = None;
             request_primary_redraw();
         }
+        // A control a bound component's permissions let run only until a
+        // grant ends is shown otherwise from then: a frame walks the tree
+        // again ([`App::permissions_change_at`]).
+        let permissions_change_at = app.permissions_change_at();
+        if permissions_change_at.is_some_and(|at| at <= crate::time::now()) {
+            request_primary_redraw();
+        }
         let scheduled_deadline = scheduled_deadline
             .into_iter()
             .chain(tooltip_reveal.filter(|_| !tooltip_pending))
             .chain(self.typing_step_at)
             .chain(self.held_frame)
+            .chain(permissions_change_at)
             .min();
 
         // A widget asking for a frame is served whatever the motion setting.
@@ -5169,6 +5177,13 @@ impl App {
                 .flatten()
         };
         tilo_startup_metrics::mark("run-settings-watched");
+        {
+            // A change of an outside authority the window's permissions
+            // follow (the host's view of the app's action authority) moves
+            // the permissions' revision on and wakes the loop to show it.
+            let _entry = self.enter_wake_scope();
+            crate::permissions::wake_on_outside_change(crate::wake::WakeHandle::new());
+        }
         let host_appearance = {
             let _entry = self.enter_wake_scope();
             setup(proxy.clone());

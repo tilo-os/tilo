@@ -1553,6 +1553,129 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
     }
 }
 
+/// The host's view of the person's authority over a bound component's
+/// actions is read when the host changes it, never by a frame.
+#[test]
+fn bound_controls_read_the_host_authority_only_when_it_changes() {
+    use collab_types::action_authority::AppActionAuthorityProjection;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    const ROOM: &str = "00000000-0000-0000-0000-000000000004";
+    const APP: &str = "so.tilo.binding-probe";
+    let owner = AppActionAuthorityProjection::project(
+        &tilo_action_policy::RoomPolicy::new(ROOM, "fixture-user"),
+        APP,
+        "fixture-user",
+        false,
+    );
+    let held = Arc::new(Mutex::new(serde_json::to_vec(&owner).unwrap()));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let read: tilo_host::action_authority::AuthoritySource = {
+        let (held, reads) = (held.clone(), reads.clone());
+        Arc::new(move || {
+            reads.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(held.lock().unwrap().clone()))
+        })
+    };
+    let (watch, changed) = crate::application::manual_authority_watch();
+    let mut fixture = ActionFixture::new();
+    fixture.permissions.set(
+        crate::application::follow_host_authority(
+            crate::permissions::PermissionContext::member_of(
+                ROOM,
+                "fixture-user",
+                crate::permissions::Role::Viewer,
+            ),
+            read,
+            watch,
+            ROOM,
+            APP,
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        1,
+        "read once as it is followed"
+    );
+    CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
+    fixture.app.refresh_control_action_availability();
+    assert_eq!(
+        CONTROL_AUTHORITY.with_borrow(Clone::clone),
+        vec![(false, true), (true, true)]
+    );
+    // Every frame the native runner draws pushes availability first.
+    CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
+    for _ in 0..120 {
+        fixture.app.refresh_control_action_availability();
+    }
+    assert_eq!(reads.load(Ordering::SeqCst), 1, "a frame reads no file");
+    assert!(
+        CONTROL_AUTHORITY.with_borrow(Vec::is_empty),
+        "a frame walks no control"
+    );
+    assert_eq!(fixture.app.permissions_change_at(), None);
+    // The host withdraws the person's ownership.
+    let mut revoked = owner.clone();
+    revoked.policy.owner = None;
+    *held.lock().unwrap() = serde_json::to_vec(&revoked).unwrap();
+    let revision = crate::permissions::shared_revision();
+    changed();
+    assert_eq!(reads.load(Ordering::SeqCst), 2);
+    assert_ne!(crate::permissions::shared_revision(), revision);
+    fixture.app.refresh_control_action_availability();
+    assert_eq!(
+        CONTROL_AUTHORITY.with_borrow(Clone::clone),
+        vec![(false, false), (true, false)]
+    );
+    assert_eq!(reads.load(Ordering::SeqCst), 2);
+}
+
+/// A bound component whose grant ends at a time of its policy clock has its
+/// controls walked again then, and not before.
+#[test]
+fn bound_controls_wake_when_a_grant_ends_by_the_policy_clock() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let clock = Arc::new(AtomicU64::new(100));
+    let mut fixture = ActionFixture::new();
+    let sampled = clock.clone();
+    fixture.permissions.set(
+        crate::permissions::PermissionContext::granted(
+            "fixture-user",
+            &crate::permissions::TreePath::root(),
+            crate::permissions::policy::KindSet::ALL,
+            Some(110),
+        )
+        .with_policy_time_sampler(Arc::new(move || Ok(sampled.load(Ordering::SeqCst)))),
+    );
+    CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
+    let start = crate::time::now();
+    crate::time::testing::with_monotonic_time(start, || {
+        fixture.app.refresh_control_action_availability();
+    });
+    assert_eq!(
+        CONTROL_AUTHORITY.with_borrow(Clone::clone),
+        vec![(false, true), (true, true)]
+    );
+    let ends = start + std::time::Duration::from_secs(10);
+    assert_eq!(fixture.app.permissions_change_at(), Some(ends));
+    CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
+    crate::time::testing::with_monotonic_time(ends - std::time::Duration::from_millis(1), || {
+        fixture.app.refresh_control_action_availability();
+    });
+    assert!(CONTROL_AUTHORITY.with_borrow(Vec::is_empty));
+    clock.store(110, Ordering::SeqCst);
+    crate::time::testing::with_monotonic_time(ends, || {
+        fixture.app.refresh_control_action_availability();
+    });
+    assert_eq!(
+        CONTROL_AUTHORITY.with_borrow(Clone::clone),
+        vec![(false, false), (true, false)]
+    );
+    assert_eq!(fixture.app.permissions_change_at(), None);
+}
+
 #[test]
 fn compound_bound_effects_preserve_typing_custody_and_redo() {
     // Case `task4_compound_view_and_noop_effect_preserve_pending_typing`.

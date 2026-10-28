@@ -74,6 +74,7 @@ include!("app/dev_session.rs");
 include!("app/dev_library.rs");
 include!("app/actions.rs");
 include!("app/action_directory.rs");
+include!("app/control_availability.rs");
 include!("app/accessibility.rs");
 include!("app/collaboration.rs");
 include!("app/persistence.rs");
