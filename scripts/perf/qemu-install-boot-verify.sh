@@ -61,14 +61,13 @@ done
 source "$REPO_ROOT/os/dev/_common.sh"
 
 SNAP="$OUT_DIR/snapshot.qcow2"
-VARS="$OUT_DIR/vars.fd"
 CONSOLE="$OUT_DIR/boot.console.log"
-# AF_UNIX socket paths are capped at 108 bytes; a deep $OUT_DIR overflows
-# that on the qemu -monitor arg. Keep the monitor socket under a short
-# fixed prefix so the -monitor arg stays valid regardless of $OUT_DIR.
+# The VM's runtime directory holds its monitor socket, and AF_UNIX socket
+# paths are capped at 108 bytes; a deep $OUT_DIR overflows that. Keep it
+# under a short fixed prefix regardless of $OUT_DIR.
 SHORT_RUN="${SHORT_RUN:-/tmp/tilo-vb-$$}"
 MON="$SHORT_RUN/mon.sock"
-PID="$OUT_DIR/qemu.pid"
+PID="$SHORT_RUN/qemu.pid"
 LOG="$OUT_DIR/verify.log"
 JSON="$OUT_DIR/result.json"
 
@@ -90,8 +89,8 @@ cleanup() {
     inenv "kill -9 '$qemu_pid' 2>/dev/null || true"
     rm -f "$PID"
   fi
-  rm -f "$MON" "$SNAP" "$OUT_DIR/full.img" "$OUT_DIR/esp.img"
-  rmdir "$SHORT_RUN" 2>/dev/null || true
+  rm -f "$SNAP" "$OUT_DIR/full.img" "$OUT_DIR/esp.img"
+  rm -rf "$SHORT_RUN"
 }
 trap cleanup EXIT
 
@@ -119,13 +118,6 @@ EOF
   log "no qcow2 at $DISK — build one first: ./os/dev/build-image.sh"
   emit_json "precondition" false "missing qcow2"; exit 3
 }
-
-firmware_setup
-inenv "cp -f '$TILO_FW_VARS' '$VARS'"
-
-# Backing-file snapshot so the input qcow2 stays byte-for-byte identical.
-# Same trick scripts/perf/qemu-boot-measure.sh uses.
-inenv "qemu-img create -f qcow2 -F qcow2 -b '$DISK' '$SNAP'" >/dev/null
 
 # --- Phase 1: inspect the ESP (offline) ------------------------------------
 # Extract the ESP partition to a plain raw file and read it with mtools
@@ -206,19 +198,14 @@ log "phase 2: boot snapshot=$SNAP under OVMF, wait for multi-user.target"
 BOOT_START="$(date +%s)"
 rm -f "$MON" "$CONSOLE"
 
-BOOT_ARGS="\
-  $(machine_args) $(secboot_qemu_args) -enable-kvm -m 4096 -cpu host -smp 2 \
-  $(pflash_args "$VARS") \
-  -drive file=$SNAP,format=qcow2,if=virtio \
-  -device virtio-vga -display none \
-  -nic user,model=virtio-net-pci \
-  -monitor unix:$MON,server,nowait \
-  -serial file:$CONSOLE \
-  -pidfile $PID -name tilo-systemd-boot-verify"
-
-inenv "setsid nohup qemu-system-x86_64 $BOOT_ARGS >/dev/null 2>&1 & disown"
-sleep 2
-inenv "test -S '$MON'" || { emit_json "boot" false "qemu did not start"; exit 8; }
+# A backing-file snapshot (created by tilo-vm) keeps the input qcow2
+# byte-for-byte identical; the firmware's pristine variable store is seeded
+# in the run directory.
+rm -f "$SNAP"
+tilo_vm qemu boot --run "$SHORT_RUN" --name tilo-systemd-boot-verify \
+  --disk "$SNAP,backing=$DISK" --accel kvm --memory 4096 --smp 2 \
+  --display 2d --input none --serial-log "$CONSOLE" >>"$LOG" 2>&1 \
+  || { emit_json "boot" false "qemu did not start"; exit 8; }
 
 DEADLINE=$(( BOOT_START + BOOT_TIMEOUT ))
 BOOT_STATE="unknown"
@@ -246,9 +233,9 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
   sleep 2
 done
 
-# Same measurement as scripts/perf/qemu-boot-measure.sh — the kernel-log
-# timestamp on the `Reached target multi-user.target` line is the
-# wall-clock since boot in seconds. Reused verbatim so the numbers are
+# The kernel-log timestamp on the `Reached target multi-user.target` line
+# is the wall-clock since boot in seconds, the same measurement
+# `tilo-vm qemu run --kernel-time` reports, so the numbers are
 # apples-to-apples with the prior GRUB baseline.
 if [ "$BOOT_SIGNAL" = "systemd-target" ]; then
   BOOT_MS="$(sed 's/\x1b\[[0-9;]*[mGKH]//g' "$CONSOLE" 2>/dev/null | \

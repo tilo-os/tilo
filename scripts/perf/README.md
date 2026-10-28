@@ -68,20 +68,28 @@ executable stand-alone; the higher-level flow is described below.
   wrong last frame or lost press. t's performance run runs it as the
   `stream` group (`tools/perf/adapters.py native-stream`).
 
-- `qemu-boot-measure.sh <qcow2> <label>` — headless QEMU boot of a
-  qcow2 using qemu-system-x86_64 + OVMF. Set `TILO_DISTROBOX` when those
-  tools are in a distrobox. Snapshots the base so consecutive runs are hermetic; polls
-  the serial console for the multi-user.target reach; extracts the
-  kernel timestamp on the reach line into a JSON `{state, boot_ms}`
-  blob. Powers the guest down cleanly.
+- Boot time of a qcow2 under QEMU + OVMF, from its serial console:
+
+  ```bash
+  tilo-vm qemu run --disk DISK.qcow2 --overlay --display none --memory 2048 --smp 2 \
+    --ready 'Reached target [^-]*(multi-user\.target|graphical\.target)' \
+    --fail 'Kernel panic|Failed to load kernel' --kernel-time --timeout 180 \
+    --serial-log target/perf/LABEL.console.log --report target/perf/LABEL.json
+  ```
+
+  Boots a throwaway child of the disk so consecutive runs are hermetic, and
+  powers the guest down through the monitor afterwards. The report's
+  `kernel_ms` is the kernel timestamp on the line that reached the target; a
+  boot without one fails (`missing-timing`) rather than report a made-up time.
 
 - `qemu-install-boot-verify.sh [--disk PATH]` — assert the bootloader
   on the produced qcow2's ESP is systemd-boot (not GRUB) and that the
   disk boots to `multi-user.target`. Reads the ESP with `qemu-img
   convert` + `sfdisk` + mtools (no NBD, no host mount) so it runs
   rootless everywhere; then boots a throwaway backing-file snapshot
-  under OVMF and emits `boot_ms` in the same units as
-  `qemu-boot-measure.sh`. Emits JSON on stdout for CI.
+  under OVMF (`tilo-vm qemu boot`) and emits `boot_ms`, the kernel
+  timestamp `tilo-vm qemu run --kernel-time` reports. Emits JSON on stdout
+  for CI.
 
 - `agent_rtt.py (--socket PATH | --spawn SHELL)` — the agent round trip:
   actions list, state dump, a no-op invoke (accepted, and completed through

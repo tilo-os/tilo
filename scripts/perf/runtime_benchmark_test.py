@@ -2,9 +2,7 @@ import contextlib
 import importlib.util
 import io
 import json
-import os
 from pathlib import Path
-import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -164,79 +162,6 @@ class MeasurementFailureTests(unittest.TestCase):
                             self.assertIn(outcome, str(failure.exception))
                         self.assertEqual(cleanup.call_count, 2)
                     self.assertEqual(source.read_text(), original)
-
-    def test_boot_measurement_requires_success_and_observed_timing(self):
-        script = Path(__file__).with_name("qemu-boot-measure.sh").resolve()
-        target = "systemd[1]: Reached target multi-user.target - Multi-User System."
-        cases = [("success", "[    1.250] " + target, True),
-                 ("graphical", "[    2.500] previous line\n\\x1b[32m[ OK ]\\x1b[0m " +
-                  target.replace("multi-user", "graphical"), True),
-                 ("panic", "Kernel panic", False),
-                 ("panic-after-target", "[ 1.250] " + target + "\nKernel panic", False),
-                 ("exited", "", False), ("timeout", "", False),
-                 ("missing-timing", target, False),
-                 ("late-timing", target + "\n[ 9.000] too late", False),
-                 ("parser-failure", "[ 1.250] " + target, False)]
-        for name, console, success in cases:
-            with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp)
-                image = root / "base.qcow2"
-                image.touch()
-                fixture = root / "console"
-                fixture.write_text(console.replace("\\x1b", "\x1b"))
-                tools = root / "bin"
-                tools.mkdir()
-                qemu = tools / "qemu-system-x86_64"
-                qemu.write_text('''#!/usr/bin/env python3
-import os, pathlib, socket, sys
-args = sys.argv
-pathlib.Path(args[args.index('-pidfile') + 1]).write_text('99999999')
-serial = args[args.index('-serial') + 1].removeprefix('file:')
-pathlib.Path(serial).write_text(pathlib.Path(os.environ['FIXTURE']).read_text())
-monitor = args[args.index('-monitor') + 1].split(',')[0].removeprefix('unix:')
-s = socket.socket(socket.AF_UNIX)
-s.bind(monitor)
-''')
-                stubs = {"qemu-img": 'touch "${@: -1}"',
-                         "nc": 'echo shutdown >> "$EVENTS"; exit 1',
-                         "seq": "exit 0"}
-                if name == "parser-failure":
-                    stubs["awk"] = "exit 42"
-                for tool, body in stubs.items():
-                    (tools / tool).write_text("#!/usr/bin/env bash\n" + body + "\n")
-                for tool in tools.iterdir():
-                    tool.chmod(0o755)
-                env = {**os.environ, "PATH": f"{tools}:{os.environ['PATH']}",
-                       "TILO_DISTROBOX": "", "TILO_PERF_OUT": str(root),
-                       "FIXTURE": str(fixture), "EVENTS": str(root / "events"),
-                       "CASE": name}
-                # Avoid real waiting or signalling; all measurement and shutdown
-                # control flow still runs in the production script.
-                wrapper = '''
-kill() {
-    echo "kill $*" >> "$EVENTS"
-    if [ "$1" = -0 ] && [ "$CASE" = exited ]; then return 1; fi
-    return 0
-}
-sleep() { if [ "$CASE" = timeout ]; then SECONDS=$((SECONDS + 200)); fi; }
-export -f kill sleep
-exec bash "$1" "$2" run
-'''
-                (root / "run.json").write_text("stale result")
-                result = subprocess.run(["bash", "-c", wrapper, "test", str(script), str(image)],
-                                        env=env, capture_output=True, text=True, timeout=10)
-                self.assertEqual(result.returncode, 0 if success else 1, result.stderr)
-                self.assertIn("shutdown", (root / "events").read_text())
-                self.assertIn("kill -9", (root / "events").read_text())
-                self.assertFalse((root / "run.snapshot.qcow2").exists())
-                if success:
-                    report = json.loads(result.stdout)
-                    self.assertEqual(report["state"], "reached-target")
-                    self.assertEqual(report["boot_ms"], 2500 if name == "graphical" else 1250)
-                else:
-                    self.assertEqual(result.stdout, "")
-                    self.assertFalse((root / "run.json").exists())
-                    self.assertIn("boot measurement failed", result.stderr)
 
 
 if __name__ == "__main__":
