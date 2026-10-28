@@ -294,6 +294,7 @@ mod shared_contract {
         AgentModelsEffect, CredentialStatus, FakeAdminBackend, Ordering, ProviderProfile,
         SettingsEffect, assert_private, config, invoke, key_buffer, mount, run, with_panel,
     };
+    use agent_provider_config::Interaction;
     use provider_settings_ui::widgets;
     use std::sync::Arc;
     use ui::lock::MutexRecover as _;
