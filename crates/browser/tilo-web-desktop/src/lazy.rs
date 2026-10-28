@@ -72,14 +72,6 @@ unsafe extern "C" {
     fn load_people_overlay(callback: Callback, data: *const c_void);
     #[link_name = "__wasm_split_00___people_overlay___00_import_c0c7a1e1c6874f57_roster"]
     fn people_overlay() -> tilo_browser_runtime::MakePinnedRoster;
-    #[link_name = "__wasm_split_load_emoji_4b8e2d6f1a9c7035_catalogue"]
-    fn load_emoji(callback: Callback, data: *const c_void);
-    #[link_name = "__wasm_split_00___emoji___00_import_4b8e2d6f1a9c7035_catalogue"]
-    fn emoji_catalogue() -> tilo_ui::emoji_catalogue::CatalogueFor;
-    #[link_name = "__wasm_split_load_history_e1a7c5039b6d2f84_host"]
-    fn load_history(callback: Callback, data: *const c_void);
-    #[link_name = "__wasm_split_00___history___00_import_e1a7c5039b6d2f84_host"]
-    fn history_code() -> tilo_ui::history_mode::MakeHistory;
 }
 
 #[unsafe(export_name = "__wasm_split_00___search___00_export_8c1f5e0d2b7a4936_engine")]
@@ -134,24 +126,6 @@ extern "C" fn export_model_clients() -> tilo_browser_runtime::MakeModelClients {
 )]
 extern "C" fn export_people_overlay() -> tilo_browser_runtime::MakePinnedRoster {
     tilo_browser_runtime::builtin_pinned_roster
-}
-
-#[unsafe(export_name = "__wasm_split_00___emoji___00_export_4b8e2d6f1a9c7035_catalogue")]
-#[allow(
-    improper_ctypes_definitions,
-    reason = "the function pointer only passes between Rust"
-)]
-extern "C" fn export_emoji_catalogue() -> tilo_ui::emoji_catalogue::CatalogueFor {
-    tilo_ui::emoji_catalogue::builtin_catalogue
-}
-
-#[unsafe(export_name = "__wasm_split_00___history___00_export_e1a7c5039b6d2f84_host")]
-#[allow(
-    improper_ctypes_definitions,
-    reason = "the function pointer only passes between Rust"
-)]
-extern "C" fn export_history_code() -> tilo_ui::history_mode::MakeHistory {
-    tilo_ui::history_mode::builtin_history()
 }
 
 /// Fetch the search engine's module, then install the engine.
@@ -233,30 +207,71 @@ fn fetch_people_overlay() {
     });
 }
 
-/// Fetch the emoji catalogue's module, then hand it to the toolkit.
-fn fetch_emoji() {
-    wasm_bindgen_futures::spawn_local(async {
-        if crate::split::load(load_emoji).await {
-            // SAFETY: the module that defines `emoji_catalogue` is loaded.
-            tilo_ui::emoji_catalogue::CATALOGUE.install(unsafe { emoji_catalogue() });
-            tilo_browser_runtime::refresh_mounts();
-        } else {
-            tilo_ui::emoji_catalogue::CATALOGUE.load_failed();
+/// Split out the code behind a toolkit surface that loads on first use
+/// (`tilo_ui::lazy_code`): `$code` is where the toolkit asks for it (a
+/// `LazyCode` or `Deferred`), `$builtin` the only expression that reaches
+/// it, which the splitter therefore moves into module `$name`. `register`
+/// tells `$code` how to fetch it; the fetch installs it and lays every mount
+/// out again so that what it changes shows.
+macro_rules! split_code {
+    ($(#[$meta:meta])* mod $module:ident: $ty:ty = $builtin:expr => $code:path, module = $name:literal, hash = $hash:literal;) => {
+        $(#[$meta])*
+        mod $module {
+            use std::ffi::c_void;
+
+            use crate::split::Callback;
+
+            #[link(wasm_import_module = "./__wasm_split.js")]
+            #[allow(
+                improper_ctypes,
+                reason = "the function pointer only passes between Rust"
+            )]
+            unsafe extern "C" {
+                #[link_name = concat!("__wasm_split_load_", $name, "_", $hash, "_code")]
+                fn load_module(callback: Callback, data: *const c_void);
+                #[link_name = concat!("__wasm_split_00___", $name, "___00_import_", $hash, "_code")]
+                fn code() -> $ty;
+            }
+
+            #[unsafe(export_name = concat!("__wasm_split_00___", $name, "___00_export_", $hash, "_code"))]
+            #[allow(
+                improper_ctypes_definitions,
+                reason = "the function pointer only passes between Rust"
+            )]
+            extern "C" fn export() -> $ty {
+                $builtin
+            }
+
+            fn fetch() {
+                wasm_bindgen_futures::spawn_local(async {
+                    if crate::split::load(load_module).await {
+                        // SAFETY: the module that defines `code` is loaded.
+                        $code.install(unsafe { code() });
+                        tilo_browser_runtime::refresh_mounts();
+                    } else {
+                        $code.load_failed();
+                    }
+                });
+            }
+
+            pub(super) fn register() {
+                $code.defer(fetch);
+            }
         }
-    });
+    };
 }
 
-/// Fetch History's module, then hand it to the windows waiting on it.
-fn fetch_history() {
-    wasm_bindgen_futures::spawn_local(async {
-        if crate::split::load(load_history).await {
-            // SAFETY: the module that defines `history_code` is loaded.
-            tilo_ui::history_mode::install_history_code(unsafe { history_code() });
-            tilo_browser_runtime::refresh_mounts();
-        } else {
-            tilo_ui::history_mode::history_load_failed();
-        }
-    });
+split_code! {
+    /// The emoji catalogue: the first picker, reaction name or `:name:`
+    /// completion asks for it.
+    mod emoji: tilo_ui::emoji_catalogue::CatalogueFor = tilo_ui::emoji_catalogue::builtin_catalogue
+        => tilo_ui::emoji_catalogue::CATALOGUE, module = "emoji", hash = "4b8e2d6f1a9c7035";
+}
+
+split_code! {
+    /// History: the first window that registers it asks for it.
+    mod history: tilo_ui::history_mode::MakeHistory = tilo_ui::history_mode::builtin_history()
+        => tilo_ui::history_mode::HISTORY, module = "history", hash = "e1a7c5039b6d2f84";
 }
 
 /// How often the page looks again whether its first frame is up, or the
@@ -307,6 +322,6 @@ pub(crate) fn register() {
     tilo_ui::image_decoders::defer_image_decoders(fetch_page_images);
     tilo_browser_runtime::defer_model_clients(fetch_model_clients);
     tilo_browser_runtime::defer_people_overlay(fetch_people_overlay);
-    tilo_ui::emoji_catalogue::CATALOGUE.defer(fetch_emoji);
-    tilo_ui::history_mode::defer_history(fetch_history);
+    emoji::register();
+    history::register();
 }

@@ -2331,64 +2331,22 @@ pub(crate) fn make_history(
     registration: HistoryRegistration,
     doc: &AutoCommit,
 ) -> Result<MadeHistory, HistoryRegistrationError> {
-    match history_code() {
+    match HISTORY.get() {
         Some(make) => (make.0)(registration, doc).map(MadeHistory::Ready),
         None => Ok(MadeHistory::Loading(registration)),
     }
 }
 
-#[cfg(not(feature = "lazy-history"))]
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "the lazy-history build has none until it is fetched"
-)]
-fn history_code() -> Option<MakeHistory> {
-    Some(builtin_history())
-}
-
-#[cfg(not(feature = "lazy-history"))]
-/// Whether the History code is in: always, as this build links it.
-pub(crate) fn history_code_ready() -> bool {
-    true
-}
-
-/// The History code is fetched the first time a window registers History:
-/// the program hands over a loader ([`defer_history`]) that fetches it and
-/// passes back [`builtin_history`] ([`install_history_code`]). Until then a
-/// window keeps its registration and shows without History.
-#[cfg(feature = "lazy-history")]
-static HISTORY_CODE: crate::deferred::Deferred<MakeHistory> = crate::deferred::Deferred::new();
-
-#[cfg(feature = "lazy-history")]
-fn history_code() -> Option<MakeHistory> {
-    HISTORY_CODE.get()
+crate::lazy_code! {
+    /// History's code: linked, or with `lazy-history` fetched the first
+    /// time a window registers History. Until then a window keeps its
+    /// registration and shows without History.
+    pub static HISTORY: MakeHistory = builtin_history, feature = "lazy-history";
 }
 
 /// Whether the History code is in, asking for it if not.
-#[cfg(feature = "lazy-history")]
 pub(crate) fn history_code_ready() -> bool {
-    HISTORY_CODE.get().is_some()
-}
-
-/// How the program fetches the History code: `load` starts the fetch and,
-/// once the code is in, calls [`install_history_code`] (or
-/// [`history_load_failed`]).
-#[cfg(feature = "lazy-history")]
-pub fn defer_history(load: fn()) {
-    HISTORY_CODE.defer(load);
-}
-
-/// The History code is in: windows waiting on it take it up when they next
-/// lay out.
-#[cfg(feature = "lazy-history")]
-pub fn install_history_code(make: MakeHistory) {
-    HISTORY_CODE.install(make);
-}
-
-/// The fetch failed: the next window that registers History fetches again.
-#[cfg(feature = "lazy-history")]
-pub fn history_load_failed() {
-    HISTORY_CODE.load_failed();
+    HISTORY.get().is_some()
 }
 
 /// What a window, a tile or a test harness asks of its History, as a trait

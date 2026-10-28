@@ -625,7 +625,5 @@ pub(crate) mod routes;
 /// A window's History as the windows that own one hand it to a visitor.
 pub(crate) type FrameworkHistorySurface = dyn host::HistoryChromeApi;
 pub(crate) use host::SIDE_PANEL_WIDTH;
-pub use host::{MakeHistory, builtin_history};
-#[cfg(feature = "lazy-history")]
-pub use host::{defer_history, history_load_failed, install_history_code};
+pub use host::{HISTORY, MakeHistory, builtin_history};
 pub(crate) mod embedded;
