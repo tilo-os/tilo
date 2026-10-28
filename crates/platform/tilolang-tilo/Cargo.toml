@@ -24,6 +24,8 @@ tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 # The patch protocol an instance sends its window over.
 tilo-render-protocol = { version = "0.1.0", path = "../tilo-render-protocol" }
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+# Tilo's search layer: what search finds resources by their texts through.
+tilo-search = { version = "0.1.0", path = "../../sdk/search" }
 tilolang = { path = "../../lang/tilolang" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 # The collab client an instance commits to its room through, without the toolkit.

@@ -956,3 +956,108 @@ fn not_done(done: String) -> tilolang_runtime::store::Pred {
         Operand::Lit(Lit::Bool(true)),
     )))
 }
+
+/// Search folds as everywhere in Tilo: a query without its diacritics finds the text with them.
+#[test]
+fn search_folds_diacritics() {
+    let (mut ada, meta, root) = room();
+    add(&mut ada, &meta, &root, "Café au lait");
+    assert_eq!(found(&ada, "cafe"), ["Café au lait"]);
+    assert_eq!(found(&ada, "CAFÉ AU"), ["Café au lait"]);
+}
+
+/// What names a resource is found from inside its words, as it is typed.
+#[test]
+fn search_finds_a_name_from_inside_a_word() {
+    let (mut ada, meta, root) = room();
+    assert_eq!(found(&ada, "read"), ["bread"]);
+    add(&mut ada, &meta, &root, "sourdough");
+    assert_eq!(found(&ada, "dough"), ["sourdough"]);
+}
+
+const NOTES_APP: &str = "so.tilo.notes";
+
+const NOTES: &str = r#"app so.tilo.notes "Notes"
+
+type Note {
+  title: Text merge text
+  body: Text merge text
+}
+
+type Notebook {
+  title: Text merge text
+  notes: Collection<Note>
+}
+
+action add(b: Notebook, title: Text, body: Text) { b.notes.insert(Note(title: title, body: body)) }
+
+root Notebook
+
+default view main for Notebook
+
+view main(b: Notebook) {
+  page {
+    input(bind: b.title, placeholder: "Title")
+    for n in b.notes {
+      text(n.title)
+    }
+  }
+}
+"#;
+
+fn add_note(
+    replica: &mut Replica,
+    meta: &tilolang_runtime::Meta,
+    root: &str,
+    title: &str,
+    body: &str,
+) {
+    let action = meta.actions.iter().find(|a| a.name == "add").unwrap();
+    let args = json!({ "title": title, "body": body })
+        .as_object()
+        .cloned()
+        .unwrap();
+    let planned = replica
+        .host
+        .plan(&PlanRequest {
+            app: NOTES_APP,
+            kind: "tl.so.tilo.notes.Notebook",
+            action_id: &action.id,
+            resource: Some(root),
+            args: &args,
+            caller: None,
+        })
+        .unwrap();
+    replica.apply(&planned);
+}
+
+/// A match in the text that names a resource (its first text field, in id order) ranks above
+/// the same match in its other texts.
+#[test]
+fn the_naming_text_outranks_the_others() {
+    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(NOTES, "")]);
+    let meta = packages[0].meta.clone();
+    let root = ada.host.root_of(NOTES_APP).unwrap();
+    ada.commit();
+    let naming_is_title = field_id(&meta, "Note", "title") < field_id(&meta, "Note", "body");
+    // The query in one note's naming text, and in the other's other text: (title, body).
+    let (naming, other) = if naming_is_title {
+        (("apples", "plums"), ("pears", "apples"))
+    } else {
+        (("plums", "apples"), ("apples", "pears"))
+    };
+    add_note(&mut ada, &meta, &root.doc, other.0, other.1);
+    add_note(&mut ada, &meta, &root.doc, naming.0, naming.1);
+    let hits: Vec<String> = tilolang_tilo::search::find(&ada.host, "apple", 10)
+        .into_iter()
+        .map(|hit| hit.texts.join(" / "))
+        .collect();
+    assert_eq!(
+        hits,
+        [
+            format!("{} / {}", naming.0, naming.1),
+            format!("{} / {}", other.0, other.1)
+        ],
+        "the note named by the query first"
+    );
+}
