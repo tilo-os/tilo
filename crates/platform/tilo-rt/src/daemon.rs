@@ -10,6 +10,12 @@ use tokio::runtime::Runtime;
 use crate::{Error, pool};
 use tilo_lock::MutexRecover as _;
 
+/// The environment variable a process sets to ask for a worker count.
+///
+/// The same name tokio's own runtime builder reads, so a harness that sets it
+/// for a child (the room bench's `--host-threads`) reaches [`daemon()`].
+pub const WORKER_THREADS_ENV: &str = "TOKIO_WORKER_THREADS";
+
 /// Builder for a service's runtime. Start with [`daemon()`].
 #[derive(Clone, Debug)]
 pub struct Daemon {
@@ -20,22 +26,34 @@ pub struct Daemon {
 
 /// A multi-thread runtime for the service `name`.
 ///
-/// Workers default to the available parallelism, capped at
+/// Workers default to [`WORKER_THREADS_ENV`] when it holds a positive integer,
+/// and otherwise to the available parallelism, capped at
 /// [`Daemon::DEFAULT_MAX_WORKERS`]: a service waits on sockets and disks, and
-/// more workers than that only add contention. The blocking pool defaults to
-/// [`Daemon::DEFAULT_MAX_BLOCKING`] threads instead of tokio's 512, so a
-/// burst of blocking calls queues rather than spawning hundreds of threads.
-/// Threads are named `{name}-rt-N`, workers and blocking-pool threads alike:
-/// tokio hands a new thread whichever job is queued, so a name given at
-/// spawn cannot tell the two apart.
+/// more workers than that only add contention. [`Daemon::workers`] overrides
+/// both. The blocking pool defaults to [`Daemon::DEFAULT_MAX_BLOCKING`]
+/// threads instead of tokio's 512, so a burst of blocking calls queues rather
+/// than spawning hundreds of threads. Threads are named `{name}-rt-N`, workers
+/// and blocking-pool threads alike: tokio hands a new thread whichever job is
+/// queued, so a name given at spawn cannot tell the two apart.
 pub fn daemon(name: &'static str) -> Daemon {
     Daemon {
         name,
-        workers: std::thread::available_parallelism()
-            .map_or(2, std::num::NonZeroUsize::get)
-            .clamp(1, Daemon::DEFAULT_MAX_WORKERS),
+        workers: default_workers(
+            std::env::var(WORKER_THREADS_ENV).ok().as_deref(),
+            std::thread::available_parallelism().map_or(2, std::num::NonZeroUsize::get),
+        ),
         max_blocking: Daemon::DEFAULT_MAX_BLOCKING,
     }
+}
+
+/// The worker count [`daemon()`] uses: `asked` when the environment asks for a
+/// positive number of threads, else `available` clamped to
+/// [`Daemon::DEFAULT_MAX_WORKERS`].
+fn default_workers(asked: Option<&str>, available: usize) -> usize {
+    asked
+        .and_then(|asked| asked.trim().parse::<usize>().ok())
+        .filter(|workers| *workers > 0)
+        .unwrap_or_else(|| available.clamp(1, Daemon::DEFAULT_MAX_WORKERS))
 }
 
 impl Daemon {
@@ -169,6 +187,32 @@ mod tests {
         {
             let runtime = daemon("capped").build().unwrap();
             assert!(runtime.metrics().num_workers() <= Daemon::DEFAULT_MAX_WORKERS);
+        }
+        // phase: the_environment_raises_the_cap
+        {
+            // The environment is read in `default_workers`, which takes its
+            // value as an argument: a test that set the variable would race
+            // every other test's runtime in this process.
+            assert_eq!(default_workers(Some("40"), 16), 40);
+            assert_eq!(default_workers(Some(" 3 "), 16), 3);
+        }
+        // phase: a_missing_or_bad_environment_is_the_capped_default
+        {
+            for asked in [None, Some(""), Some("0"), Some("four"), Some("-2")] {
+                assert_eq!(
+                    default_workers(asked, 16),
+                    Daemon::DEFAULT_MAX_WORKERS,
+                    "{asked:?}"
+                );
+                assert_eq!(default_workers(asked, 1), 1, "{asked:?}");
+            }
+        }
+        // phase: an_explicit_worker_count_wins_over_the_environment
+        {
+            // `Daemon::workers` sets the count outright; the environment only
+            // reaches the default, so a caller's choice is never overridden.
+            let runtime = daemon("explicit").workers(2).build().unwrap();
+            assert_eq!(runtime.metrics().num_workers(), 2);
         }
         // phase: blocking_threads_carry_the_name_but_do_not_drive_tasks
         {
