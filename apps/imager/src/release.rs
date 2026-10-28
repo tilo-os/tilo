@@ -440,7 +440,7 @@ fn parse_catalog(raw: &str) -> Result<Catalog, String> {
                 &internal.arch
             }
         };
-        if !matches!(arch.as_str(), "x86_64" | "aarch64") {
+        if unqualified_architecture(arch).is_some() {
             return Err("Unsupported release architecture.".into());
         }
     }
@@ -476,7 +476,80 @@ fn media_releases(catalog: Catalog, arch: &str) -> Vec<TiloRelease> {
         .collect()
 }
 
+/// The 64-bit architectures the release catalog may describe. A catalog
+/// entry naming anything else is refused; see
+/// [`unqualified_architecture`] for the ones Tilo can never run on.
 pub const SUPPORTED_ARCHITECTURES: [&str; 2] = ["x86_64", "aarch64"];
+
+/// The catalogue key prefix that states each architecture boundary; the
+/// reasons themselves live in [`unqualified_architecture`].
+pub const ARCHITECTURE_UNSUPPORTED: &str = "installer-preview-target-architecture-unsupported";
+
+type ArchitectureBoundary = (&'static str, fn(&str) -> bool);
+
+/// The architectures Tilo refuses outright, and how to recognise them.
+const UNQUALIFIED: [ArchitectureBoundary; 3] = [
+    (
+        "installer-preview-target-architecture-unsupported-processor-size",
+        is_thirty_two_bit,
+    ),
+    (
+        "installer-preview-target-architecture-unsupported-byte-order",
+        is_big_endian,
+    ),
+    (
+        "installer-preview-target-architecture-unsupported-graphics",
+        is_sparc,
+    ),
+];
+
+/// Why `architecture` cannot run Tilo, as a catalogue key, or `None` when the
+/// release catalog may describe it.
+///
+/// Three boundaries are refused here, before any catalog entry or report is
+/// looked at:
+///
+/// - **32-bit** (`i686`, `i386`, `armv7hl`, `armv7l`): Tilo needs a 64-bit
+///   address space with 4 GiB or more of RAM. Automerge documents and the
+///   file store are unbounded in size, and the browser runtime and image
+///   model are built for 64-bit only, so a process that cannot map more than
+///   4 GiB cannot open a large workspace.
+/// - **Big-endian** (`s390x`, `ppc64`): every format Tilo stores, hashes and
+///   exchanges — Automerge documents and their sync messages, Iroh content
+///   hashes, blob envelopes, registry manifests — is little-endian or
+///   byte-as-written, so a big-endian host is a different serialization
+///   contract rather than a different target triple.
+/// - **SPARC** (`sparc64`): no current Vulkan compute driver, so neither the
+///   compositor nor the toolkit can draw.
+///
+/// 64-bit little-endian architectures Tilo has not built or boot-tested
+/// (`riscv64`, `ppc64le`) are not refused as impossible; they have no catalog
+/// entry yet, which the target page states instead.
+#[must_use]
+pub fn unqualified_architecture(architecture: &str) -> Option<&'static str> {
+    UNQUALIFIED
+        .iter()
+        .find(|(_, recognizes)| recognizes(architecture))
+        .map(|(key, _)| *key)
+}
+
+fn is_thirty_two_bit(architecture: &str) -> bool {
+    matches!(
+        architecture,
+        "i386" | "i486" | "i586" | "i686" | "x86" | "armv6l" | "armv7l" | "armv7hl" | "armhf"
+    )
+}
+
+fn is_big_endian(architecture: &str) -> bool {
+    matches!(
+        architecture,
+        "s390" | "s390x" | "ppc" | "powerpc" | "mips" | "mips64"
+    )
+}
+
+fn is_sparc(architecture: &str) -> bool {
+    matches!(architecture, "sparc" | "sparc64")
+}
 
 /// The selected target policy for `architecture`, if the embedded catalog
 /// publishes one. An empty selection is honest: source preparation then
@@ -487,7 +560,7 @@ pub const SUPPORTED_ARCHITECTURES: [&str; 2] = ["x86_64", "aarch64"];
 pub fn bundled_target_policy_for_arch(
     architecture: &str,
 ) -> Result<Option<staging_handoff_model::prepared::TargetPolicyBundle>, String> {
-    if !SUPPORTED_ARCHITECTURES.contains(&architecture) {
+    if unqualified_architecture(architecture).is_some() {
         return Err("Unsupported release architecture.".into());
     }
     let catalog = parse_catalog(&internal_catalog_text()?)?;
@@ -557,7 +630,7 @@ fn releases_for_host(
 }
 
 fn releases_for_arch(catalog_json: &str, architecture: &str) -> Result<Vec<TiloRelease>, String> {
-    if !SUPPORTED_ARCHITECTURES.contains(&architecture) {
+    if unqualified_architecture(architecture).is_some() {
         return Err("Unsupported release architecture.".into());
     }
     let catalog = parse_catalog(catalog_json)?;
@@ -580,7 +653,7 @@ pub fn bundled_internal_releases() -> Result<Vec<InternalRelease>, String> {
 pub fn bundled_internal_releases_for_arch(
     architecture: &str,
 ) -> Result<Vec<InternalRelease>, String> {
-    if !SUPPORTED_ARCHITECTURES.contains(&architecture) {
+    if unqualified_architecture(architecture).is_some() {
         return Err("Unsupported release architecture.".into());
     }
     let catalog = internal_catalog_text()?;
