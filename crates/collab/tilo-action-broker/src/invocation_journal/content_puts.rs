@@ -279,6 +279,17 @@ fn snapshot_of(puts: &[ContentPutRecord]) -> Result<Vec<u8>, String> {
     Ok(line)
 }
 
+/// Every attribution `root`'s file holds, as a journal opened there reads
+/// them: what a restart keeps.
+///
+/// # Errors
+///
+/// Returns why the file cannot be read.
+#[cfg(test)]
+pub(crate) fn attributions(root: &Path) -> Result<Vec<ContentPutRecord>, String> {
+    ContentPutsStore::read(root)?.held()
+}
+
 impl InvocationJournal {
     /// Stage `record` for the journal's writer, after every write staged
     /// before it; its ticket resolves once the line is durable.

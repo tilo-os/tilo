@@ -34,6 +34,8 @@ mod guarded;
 pub(crate) use content_puts::CONTENT_PUTS_FILE;
 pub(crate) use content_puts::ContentHolds;
 pub(crate) use content_puts::ContentPutRecord;
+#[cfg(test)]
+pub(crate) use content_puts::attributions;
 #[path = "invocation_journal/writer.rs"]
 mod writer;
 pub(crate) use effect::PreparedEffect;
