@@ -796,17 +796,19 @@ impl RunningRuns {
             .unwrap_or_default()
     }
 
-    /// The shortcuts already running in `room` above a run that is not
-    /// registered yet: every run going in the room that is not `own`, plus
-    /// the shortcut the run is being started for.
+    /// The shortcuts a run about to start in `room` is told are running
+    /// above it: the shortcut it is being started for, plus the shortcut of
+    /// every run going in the room whose own id is the group its steps will
+    /// carry (`parent`), which is how a run reads the shortcut that called
+    /// it.
     ///
-    /// The steps of such a run are stamped with the run that owns them
-    /// (`parent`), so the run a step belongs to is the container the newest
-    /// registrations nest in, and the runs going inside it are the ones above
-    /// it. Two shortcuts that call each other are therefore one run inside the
-    /// other, which the interpreter refuses before it starts them; two runs a
-    /// person started side by side are not, and neither is one going in
-    /// another room.
+    /// A step's [`InvokeRequest`](tilo_actions::remote::InvokeRequest) names
+    /// its group, and a host starts a run called that way with that group as
+    /// its `parent`, so the runs going inside the caller's group are the
+    /// calls it made. Two shortcuts that call each other are therefore one
+    /// run inside the other and the inner one is refused; two runs a person
+    /// started side by side carry their own groups and are not each other's
+    /// parents, and neither is a run in another room.
     #[must_use]
     pub fn above(&self, room: &str, parent: Option<&str>, own: &str) -> Vec<String> {
         let Ok(running) = self.running.lock() else {
@@ -1344,6 +1346,35 @@ mod tests {
         assert_eq!(runs.going("desk").len(), 2);
         runs.leave(tidy.run);
         assert_eq!(runs.going("desk").len(), 1);
+    }
+
+    #[test]
+    fn a_run_is_told_the_shortcuts_going_above_it_and_the_ones_beside_it_are_not() {
+        let runs = RunningRuns::default();
+        // `outer` is going on its own group, as a run with nothing above it
+        // does; the run its step calls is stamped with that group.
+        let outer = going("desk", "outer", "Outer");
+        let group = outer.run.0.to_string();
+        runs.register(outer.clone());
+        // The call inside it: its own id is running, and so is `outer`'s.
+        assert_eq!(
+            runs.above("desk", Some(&group), "inner"),
+            ["outer", "inner"]
+        );
+        // Another room's outer run above the same group is somebody else's.
+        runs.register(going("study", "other", "Other"));
+        assert_eq!(
+            runs.above("desk", Some(&group), "inner"),
+            ["outer", "inner"]
+        );
+        // A run a person started has no parent naming another run, so it is
+        // told only of itself: two runs side by side do not block each other.
+        assert_eq!(runs.above("desk", None, "beside"), ["beside"]);
+        assert_eq!(runs.above("desk", Some("elsewhere"), "beside"), ["beside"]);
+        // Once the outer run is over, a run its group names has nothing
+        // above it.
+        runs.leave(outer.run);
+        assert_eq!(runs.above("desk", Some(&group), "inner"), ["inner"]);
     }
 
     #[test]
