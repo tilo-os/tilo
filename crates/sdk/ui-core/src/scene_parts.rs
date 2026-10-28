@@ -725,7 +725,6 @@ pub fn drawn_bounds(
     }
 }
 
-#[cfg(feature = "native")]
 fn end_of(events: &[Event], begin: usize) -> Option<usize> {
     let mut depth = 0_usize;
     for (index, event) in events.iter().enumerate().skip(begin) {
@@ -797,6 +796,120 @@ fn drawn_from(
         }
     }
     drawn.iter().all(Rect::is_finite).then_some(drawn)
+}
+
+/// `scene`, drawn with `parts`, without every bounded part whose bounds
+/// `wanted` refuses, or `None` when no part is left out. Where the parts
+/// left out paint nothing, the result paints what `scene` does: a part's
+/// commands depend on nothing before them ([`boundary`]), and only a part
+/// whose layers it pops itself is left out, so every layer around the rest
+/// is the same. A renderer's work grows with every path a scene holds,
+/// wherever it lands, so a frame repainting a small damage renders only
+/// what can reach it.
+pub fn culled(
+    scene: &Scene,
+    parts: &SectionParts,
+    wanted: impl Fn(&[Rect]) -> bool,
+) -> Option<Scene> {
+    let events = &parts.events;
+    let ends = part_ends(events).ok()?;
+    let encoding = scene.encoding();
+    let mut kept = Vec::new();
+    let mut from = Marks::default();
+    let mut skip_to = None;
+    for (index, event) in events.iter().enumerate() {
+        if let Some(end) = skip_to {
+            if index == end {
+                skip_to = None;
+                from = event.marks;
+            }
+            continue;
+        }
+        if !matches!(event.boundary, Boundary::Begin(_)) {
+            continue;
+        }
+        let Some(PartEnd::Bounds(bounds)) = ends.get(index) else {
+            continue;
+        };
+        if bounds.is_empty() || wanted(bounds) {
+            continue;
+        }
+        let Some(end) = end_of(events, index) else {
+            continue;
+        };
+        let end_marks = events.get(end)?.marks;
+        if !pops_own_layers(encoding, event.marks.draw_tags, end_marks.draw_tags) {
+            continue;
+        }
+        kept.push((from, event.marks));
+        skip_to = Some(end);
+    }
+    if kept.is_empty() {
+        return None;
+    }
+    kept.push((from, Marks::of(encoding)));
+    let mut out = Scene::new();
+    for range in kept {
+        if range.0 != range.1 {
+            out.append(&slice(encoding, range)?, None);
+        }
+    }
+    count_streams(out.encoding_mut());
+    Some(out)
+}
+
+/// Whether the draw tags from `start` to `end` close every layer they open,
+/// and only those.
+fn pops_own_layers(encoding: &Encoding, start: usize, end: usize) -> bool {
+    use vello_encoding::DrawTag;
+    let Some(tags) = encoding.draw_tags.get(start..end) else {
+        return false;
+    };
+    let mut open = 0_usize;
+    for tag in tags {
+        if *tag == DrawTag::BEGIN_CLIP {
+            open = open.saturating_add(1);
+        } else if *tag == DrawTag::END_CLIP {
+            let Some(left) = open.checked_sub(1) else {
+                return false;
+            };
+            open = left;
+        }
+    }
+    open == 0
+}
+
+/// The path, segment and layer counts of `encoding`, as encoding its
+/// commands one by one counts them: slices ([`slice`]) carry none.
+fn count_streams(encoding: &mut Encoding) {
+    use vello_encoding::{DrawTag, PathTag};
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    encoding.n_paths = count(
+        encoding
+            .path_tags
+            .iter()
+            .filter(|tag| **tag == PathTag::PATH)
+            .count(),
+    );
+    encoding.n_path_segments = count(
+        encoding
+            .path_tags
+            .iter()
+            .filter(|tag| tag.is_path_segment())
+            .count(),
+    );
+    let begins = encoding
+        .draw_tags
+        .iter()
+        .filter(|tag| **tag == DrawTag::BEGIN_CLIP)
+        .count();
+    let ends = encoding
+        .draw_tags
+        .iter()
+        .filter(|tag| **tag == DrawTag::END_CLIP)
+        .count();
+    encoding.n_clips = count(begins.saturating_add(ends));
+    encoding.n_open_clips = count(begins.saturating_sub(ends));
 }
 
 /// [`damage`] for one list of boundaries per frame, compared piece by piece.
