@@ -1195,7 +1195,7 @@ impl Draft {
         if addressing.is_empty() {
             return Some((String::new(), branch));
         }
-        let owner = self.item_at(addressing, index_of(addressing)?)?;
+        let owner = self.item_at(&addressing.to_vec(), index_of(addressing)?)?;
         Some((owner.as_str().to_owned(), branch))
     }
 }
@@ -1207,25 +1207,22 @@ type Block = Vec<&'static str>;
 /// The segments of `block`, in order; `None` when one is neither a step
 /// index nor a branch.
 fn segments(block: &str) -> Option<Block> {
-    if block.is_empty() {
-        return Some(Vec::new());
-    }
     block
         .split('.')
-        .map(|segment| {
-            if let Some(branch) = address_branch(segment) {
-                return Some(branch);
-            }
-            segment.parse::<usize>().ok().map(|_| segment)
-        })
+        .filter(|segment| !segment.is_empty())
+        .map(address_segment)
         .collect()
 }
 
-/// The branch `segment` names, when it names one.
-fn address_branch(segment: &str) -> Option<&'static str> {
-    [THEN, ELSE, EACH]
+/// `segment` as the branch it names, or the step index it reads as.
+fn address_segment(segment: &'static str) -> Option<&'static str> {
+    if let Some(branch) = [THEN, ELSE, EACH]
         .into_iter()
         .find(|branch| *branch == segment)
+    {
+        return Some(branch);
+    }
+    segment.parse::<usize>().ok().map(|_| segment)
 }
 
 /// The index `addressing` ends with, when it ends with one.

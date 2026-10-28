@@ -690,12 +690,7 @@ pub fn program_text(program: &crate::model::Program, catalog: &ActionCatalog) ->
 fn text_steps(steps: &[Step], indent: &str, catalog: &ActionCatalog, out: &mut String) {
     for step in steps {
         let line = match &step.kind {
-            StepKind::Invoke {
-                action,
-                resource,
-                args,
-                ..
-            } => {
+            StepKind::Invoke { resource, args, .. } => {
                 let values: Vec<String> = args
                     .iter()
                     .map(|(name, binding)| format!("{name}: {}", describe(binding, steps)))
