@@ -4423,7 +4423,27 @@ impl FrameBuilder {
     /// document, rather than from the file.
     pub fn follow_settings(&mut self, settings: settings_store::live::LiveSettings) {
         self.theme_store_stamp = Some(settings.generation());
+        self.follow_settings_sections(&settings.snapshot().document, true, true);
         self.live_settings = Some(settings);
+    }
+
+    /// Hand the chrome what `document`, the followed settings, now says of
+    /// the person's control-hint record and notification policy, as their
+    /// sections changed: no frame reads them again on a schedule.
+    pub fn follow_settings_sections(
+        &mut self,
+        document: &serde_json::Map<String, serde_json::Value>,
+        control_hints: bool,
+        notifications: bool,
+    ) {
+        if control_hints {
+            self.host.follow_control_hints(document);
+        }
+        if notifications {
+            let policy =
+                settings_store::notification_policy::NotificationPolicy::from_document(document);
+            self.with_chrome(|st| st.follow_notification_policy(policy));
+        }
     }
 
     /// The generation of the settings paint follows.

@@ -725,7 +725,7 @@ mod tests {
 
     fn new_chrome() -> Chrome {
         let chrome = ChromeState::new(WorkspaceTree::default());
-        chrome.borrow_mut().set_notification_policy_for_tests(
+        chrome.borrow_mut().follow_notification_policy(
             settings_store::notification_policy::NotificationPolicy::default(),
         );
         chrome
@@ -1035,6 +1035,33 @@ mod tests {
             incoming_call: false,
             machine_wide: false,
         }
+    }
+
+    /// Do not disturb turned on in Settings reaches the desktop with that
+    /// settings change; a frame that delivers notifications reads no settings.
+    #[test]
+    fn the_notification_policy_arrives_with_its_settings_change_not_with_a_frame() {
+        let _settings = crate::shell::test_support::install_settings(std::sync::Arc::new(
+            settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
+        ));
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
+        settings_store::notification_policy::NotificationPolicy::save_do_not_disturb(true)
+            .expect("keep the policy");
+        bridge.push_incoming(incoming(1, 1, 5000));
+        chrome.borrow_mut().pump_dbus_notifications();
+        assert!(
+            !chrome.borrow().dnd(),
+            "a frame reads no settings: the policy waits for its change"
+        );
+
+        chrome.borrow_mut().follow_notification_policy(
+            settings_store::notification_policy::NotificationPolicy::from_document(
+                &settings_store::load(),
+            ),
+        );
+        assert!(chrome.borrow().dnd(), "the settings change brings it");
     }
 
     #[test]
@@ -1459,9 +1486,7 @@ mod tests {
                 show_previews: false,
                 ..Default::default()
             };
-            chrome
-                .borrow_mut()
-                .set_notification_policy_for_tests(policy);
+            chrome.borrow_mut().follow_notification_policy(policy);
             bridge.push_incoming(incoming(91, 1, 5_000));
             chrome.borrow_mut().pump_dbus_notifications();
             let events = bridge.drain_continuity_outbound();
@@ -1503,9 +1528,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            chrome
-                .borrow_mut()
-                .set_notification_policy_for_tests(policy);
+            chrome.borrow_mut().follow_notification_policy(policy);
             assert_eq!(
                 chrome.borrow().notification_badge_for("org.mail"),
                 0,
@@ -1526,9 +1549,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            chrome
-                .borrow_mut()
-                .set_notification_policy_for_tests(policy);
+            chrome.borrow_mut().follow_notification_policy(policy);
 
             let mut foreign = incoming(23, 1, 5000);
             // This is the identity the notification service derived from a
@@ -1687,7 +1708,7 @@ mod tests {
             let chrome = new_chrome();
             let bridge = NotificationBridge::new();
             chrome.borrow_mut().set_notification_bridge(bridge.clone());
-            chrome.borrow_mut().set_notification_policy_for_tests(
+            chrome.borrow_mut().follow_notification_policy(
                 settings_store::notification_policy::NotificationPolicy {
                     do_not_disturb: true,
                     ..settings_store::notification_policy::NotificationPolicy::default()
@@ -1741,7 +1762,7 @@ mod tests {
                 );
             }
             // Personal Settings writes the same policy; the shell adopts it.
-            chrome.borrow_mut().set_notification_policy_for_tests(
+            chrome.borrow_mut().follow_notification_policy(
                 settings_store::notification_policy::NotificationPolicy::default(),
             );
             let ch = chrome.borrow();
@@ -1752,7 +1773,7 @@ mod tests {
 
         fn a_focus_schedule_names_when_it_ends() {
             let chrome = new_chrome();
-            chrome.borrow_mut().set_notification_policy_for_tests(
+            chrome.borrow_mut().follow_notification_policy(
                 settings_store::notification_policy::NotificationPolicy {
                     focus: settings_store::notification_policy::FocusSchedule {
                         enabled: true,

@@ -12231,6 +12231,11 @@ pub fn run() {
                     settings_store::hardware::DesktopControlsConfig::load(),
                 );
             }
+            frame_builder.follow_settings_sections(
+                &live_settings.snapshot().document,
+                settings_change.control_hints(),
+                settings_change.notifications(),
+            );
             if settings_change.display_identify()
                 && frame_builder.host_mut().poll_display_identify()
                 && let Some(network) = peer_sync.as_ref()
