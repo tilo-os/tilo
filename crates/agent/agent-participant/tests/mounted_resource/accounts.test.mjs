@@ -76,7 +76,12 @@ test('mounted fixture seeds both accounts in the entry page’s current namespac
       }
     }
   } finally {
-    await browser?.close();
-    await new Promise(done => server.close(done));
+    // A browser that fails to close must not leave the server holding the
+    // test process open.
+    try {
+      await browser?.close();
+    } finally {
+      await new Promise(done => server.close(done));
+    }
   }
 });
