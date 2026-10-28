@@ -320,12 +320,18 @@ globalThis.__tiloPage ||= (() => {
   // frame 1 however many frames the page has had, and a number printed is a
   // number the actions take.
   const framesByNumber = new Map();
+  // The number a frame has in this document now: counted over every frame
+  // element the document holds, in document order, whether or not a frame
+  // whose mark-up is here has a document this one may read. The address the
+  // engine resolves a frame by is that number, so the number printed and the
+  // number taken are the same count.
   function frameNumber(element) {
     if (!element.isConnected) return 1;
     if (framesByNumber.size >= 4096) framesByNumber.clear();
-    const number = [...document.querySelectorAll('iframe,frame')].indexOf(element) + 1;
+    const root = document.contains(element) ? document : element.getRootNode();
+    const number = [...root.querySelectorAll('iframe,frame')].indexOf(element) + 1;
     framesByNumber.set(number, new WeakRef(element));
-    return number;
+    return Math.max(1, number);
   }
 
   const type = element => (element.getAttribute('type') || 'text').toLowerCase();
@@ -545,33 +551,19 @@ globalThis.__tiloPage ||= (() => {
 
   // The frame an action named, by the number the page prints for it: the frame
   // element this document holds it in, or the frame element the page numbered.
+  // The frame element this document numbers `number`: its frames are the ones
+  // it holds, numbered in the order it holds them, whether or not this document
+  // may read what a frame shows. A frame inside another one is numbered by that
+  // frame's own document, which is where a place with more parts is read.
   function numberedFrame(number) {
     if (!/^\d+$/.test(number || '')) return null;
-    // A frame this document may not read is still placed from the frame
-    // element that holds it, which this document does see.
-    const held = holdingFrame(Number(number));
-    return held || framesByNumber.get(String(Number(number)))?.deref?.() || null;
-  }
-
-  // The frame element this document numbers `number`: the one holding this
-  // document itself, or the one holding the frame this document numbers. The
-  // walk descends only into frames this document may read: a frame out of
-  // reach is placed from the mark-up around it, which is never out of reach.
-  function holdingFrame(number) {
-    if (document.frameElement) return document.frameElement;
-    const walk = root => {
-      for (const element of [...root.querySelectorAll('iframe,frame')].slice(0, 4096)) {
-        let child = null;
-        try { child = element.contentDocument; } catch { child = null; }
-        if (!child) continue;
-        const inner = child.querySelectorAll?.('iframe,frame') || [];
-        if (inner.length < number) return element;
-        const found = walk(child);
-        if (found) return found;
-      }
-      return null;
-    };
-    return walk(document);
+    const known = framesByNumber.get(String(Number(number)))?.deref?.();
+    if (known && known.isConnected) return known;
+    // A frame this document is held in is numbered from the document that
+    // holds it, so a document asked for a number above its own answers with
+    // the frame it is itself in.
+    if (document.frameElement && Number(number) === frameNumber(document.frameElement)) return document.frameElement;
+    return [...document.querySelectorAll('iframe,frame')].slice(0, 4096)[Number(number) - 1] || null;
   }
 
   // Where a frame this document lists sits in it now, in this document's
@@ -601,6 +593,47 @@ globalThis.__tiloPage ||= (() => {
     // and a click is placed from the page's viewport, so the frame's own
     // viewport position is the whole of the offset: no scroll is added.
     return {ok: true, message: `Frame ${number}`, x: rect.x, y: rect.y};
+  }
+
+  // The frame element this document numbers `part`, and the document a frame
+  // of that number holds: a frame whose mark-up is here is one this document
+  // can name even when the frame's own document belongs to another site, so a
+  // place that walks through it is answered here and continued there.
+  function frameElement(part) {
+    if (!/^\d+$/.test(part || '')) throw failure('invalid_request', 'A frame of this document is named by its number, such as 1 or 2');
+    const element = numberedFrame(part);
+    if (!element) throw failure('no_frame', `This document holds no frame ${part} now; read the page again`);
+    const box = element.getBoundingClientRect(), style = getComputedStyle(element);
+    // The place a frame's own document is moved by is the view's corner, inside
+    // the frame's border, and the doc gives the document a frame of its own.
+    const x = box.x + (parseFloat(style.borderLeftWidth) || 0), y = box.y + (parseFloat(style.borderTopWidth) || 0);
+    const held = element.contentWindow ? (() => { try { return element.contentWindow.document; } catch { return null; } })() : null;
+    return {ok: true, message: `Frame ${part}`, data: {x, y, frame: windowFrameId(part), same_origin: !!held}};
+  }
+
+  // The engine's name for the document a frame of one number holds: it belongs
+  // to the frame of this document, and is named by the number this document
+  // gives it.
+  function windowFrameId(part) {
+    const frame = windowFrame();
+    return frame ? `${frame}.${part}` : String(part);
+  }
+
+  // The engine's id of this document's frame, which a frame inside it is named
+  // under: the address the page calls this frame by, or nothing for the page.
+  function windowFrame() {
+    const element = window.frameElement;
+    if (!element) return '';
+    return frameAddress || internalId(element);
+  }
+
+  function internalId(element) {
+    const root = document.contains(element) ? document : element.getRootNode?.();
+    const frames = root?.querySelectorAll ? [...root.querySelectorAll('iframe,frame')] : [];
+    const part = frames.indexOf(element) + 1;
+    if (part < 1) return '';
+    const outer = window.frameElement ? internalId(window.frameElement) : '';
+    return outer ? `${outer}.${part}` : String(part);
   }
 
   // A point in a frame's own document means nothing in the page: the caller
@@ -933,6 +966,9 @@ globalThis.__tiloPage ||= (() => {
         flush();
         // A frame is its own document: the line names the id an action takes to
         // run there, and the address, so the caller knows what it would reach.
+        // A frame whose mark-up this document holds is listed here even when
+        // its document is another site's: it is a frame of this page, and one
+        // the page numbered, so the id is one an action can take to it.
         const label = clean(element.title || element.name, MAX_NAME);
         const id = frameNumber(element);
         const parts = [kind];
@@ -1912,6 +1948,7 @@ globalThis.__tiloPage ||= (() => {
           case 'scroll_left': return scrollLeft();
           case 'at': return frameId() ? atInFrame() : at(command.x, command.y);
           case 'frame_offset': return frameOffset(command.frame, command.anchored);
+          case 'frame_element': return frameElement(command.frame);
           case 'frame_fence': return fence();
           case 'settle': return settle(command.quiet_ms, command.timeout_ms);
           case 'locate': arm('pointer'); return locate(command.element, command.cross_origin);
