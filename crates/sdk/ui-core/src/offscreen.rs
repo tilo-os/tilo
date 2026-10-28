@@ -768,6 +768,15 @@ pub struct OffscreenRenderer {
     copy_scratch: crate::scroll_copy::CopyScratch,
 }
 
+/// In which order a renderer's tiles sum a scene's segments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SegmentOrder {
+    /// The same order every render: a capture's.
+    Fixed,
+    /// Whichever order the tiles finish in: a live frame's.
+    AsTilesFinish,
+}
+
 impl OffscreenRenderer {
     /// This renderer's device and queue, cloned out of the shared context so
     /// its lock (host-side bookkeeping only) is not held while rendering.
@@ -1149,11 +1158,37 @@ impl OffscreenRenderer {
     ///
     /// Panics if `width` or `height` is zero — that's a caller bug, not a
     /// recoverable environment failure.
+    ///
+    /// The renderer is a capture's: it sums segments in a fixed order, so one
+    /// scene renders to the same pixels every time. Frames only shown, never
+    /// kept or compared, use [`try_new_live`](Self::try_new_live).
     pub fn try_new(width: u32, height: u32) -> Result<Self, OffscreenError> {
         Self::try_new_with_preprocessing(
             width,
             height,
             crate::env::var_os("TILO_UI_VELLO_CPU").is_some(),
+            SegmentOrder::Fixed,
+        )
+    }
+
+    /// [`try_new`](Self::try_new) for frames that are shown and replaced, as
+    /// a headless desktop's or a window preview's: segments are summed in the
+    /// order the tiles finish, which may move an antialiased edge by one unit
+    /// between two renders of one scene. It builds no segment-ordering
+    /// pipelines, which a CPU driver (lavapipe) keeps in the heap for the
+    /// renderer's lifetime, several MiB of an idle desktop.
+    ///
+    /// # Errors
+    /// As [`try_new`](Self::try_new).
+    ///
+    /// # Panics
+    /// On zero dimensions, as [`try_new`](Self::try_new).
+    pub fn try_new_live(width: u32, height: u32) -> Result<Self, OffscreenError> {
+        Self::try_new_with_preprocessing(
+            width,
+            height,
+            crate::env::var_os("TILO_UI_VELLO_CPU").is_some(),
+            SegmentOrder::AsTilesFinish,
         )
     }
 
@@ -1167,7 +1202,7 @@ impl OffscreenRenderer {
     /// # Panics
     /// Panics on zero dimensions, as [`Self::try_new`] does.
     pub fn try_new_with_cpu_preprocessing(width: u32, height: u32) -> Result<Self, OffscreenError> {
-        Self::try_new_with_preprocessing(width, height, true)
+        Self::try_new_with_preprocessing(width, height, true, SegmentOrder::Fixed)
     }
 
     /// Exact pixel oracles can use stable CPU segment ordering while keeping
@@ -1178,7 +1213,7 @@ impl OffscreenRenderer {
         height: u32,
         use_cpu: bool,
     ) -> Result<Self, OffscreenError> {
-        Self::try_new_with_preprocessing(width, height, use_cpu)
+        Self::try_new_with_preprocessing(width, height, use_cpu, SegmentOrder::Fixed)
     }
 
     #[allow(
@@ -1189,6 +1224,7 @@ impl OffscreenRenderer {
         width: u32,
         height: u32,
         use_cpu: bool,
+        order: SegmentOrder,
     ) -> Result<Self, OffscreenError> {
         assert!(width > 0 && height > 0, "width and height must be > 0");
         // Acquiring the device and reading pixels back both wait on the GPU,
@@ -1254,7 +1290,7 @@ impl OffscreenRenderer {
         // so its shaders compile once: turned on afterwards, vello compiles a
         // second shader set and keeps both, which lavapipe holds in the heap
         // (about 40 MiB in the idle compositor).
-        let renderer = if use_cpu {
+        let renderer = if use_cpu || order == SegmentOrder::AsTilesFinish {
             Renderer::new(device, options())
         } else {
             Renderer::new_with_canonical_segment_order(device, options()).or_else(|error| {
