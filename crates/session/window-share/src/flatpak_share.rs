@@ -255,6 +255,36 @@ pub fn encode_size(
     (even(fitted.0), even(fitted.1))
 }
 
+/// Whether this process has read what this machine can encode, so starting
+/// a share reads it at once. The first read starts the media framework and
+/// loads its plugin registry, which takes from a fraction of a second to
+/// several on a fresh profile: it runs on a worker, never on the frame loop
+/// that starts shares, and calls `wake` (which wakes that loop) when it is
+/// done. Until then a share waits; nothing else does.
+pub fn encoders_known(wake: fn()) -> bool {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static KNOWN: AtomicBool = AtomicBool::new(false);
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    if KNOWN.load(Ordering::Acquire) {
+        return true;
+    }
+    if !STARTED.swap(true, Ordering::AcqRel) {
+        let spawned = std::thread::Builder::new()
+            .name("tilo-encoder-caps".into())
+            .spawn(move || {
+                let _ = media::realtime::local_capabilities();
+                KNOWN.store(true, Ordering::Release);
+                wake();
+            });
+        if spawned.is_err() {
+            // No worker: read it here rather than never share.
+            let _ = media::realtime::local_capabilities();
+            KNOWN.store(true, Ordering::Release);
+        }
+    }
+    KNOWN.load(Ordering::Acquire)
+}
+
 /// This machine's capabilities as the configured preference allows using
 /// them: a software-only preference cannot encode in hardware.
 fn usable_local(policy: RealtimePolicy) -> CodecCapabilities {
