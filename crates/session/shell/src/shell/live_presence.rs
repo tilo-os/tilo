@@ -68,6 +68,78 @@ pub fn session_keys(room: RoomId, channel: ChannelId) -> Option<ChannelContentKe
     }
 }
 
+/// [`session_keys`] for the frame loop, which must never wait for them.
+///
+/// Reading a channel's keys can wait: on the channel service's lock, and for
+/// a room this device hosts on the host's steward, answered on the network's
+/// runtime. Under load that took more than a minute, with the desktop frozen
+/// while it sealed a presence frame. Here the loop gets the keys the last
+/// read found at once, and a reader thread reads them again, so they are
+/// never more than one read old; until a first read answers there are none,
+/// and the frame waits for its next keep-alive like any frame this device
+/// cannot seal yet.
+pub fn session_keys_without_waiting(
+    room: RoomId,
+    channel: ChannelId,
+) -> Option<ChannelContentKeys> {
+    static SESSION: std::sync::OnceLock<KeyReader> = std::sync::OnceLock::new();
+    SESSION
+        .get_or_init(|| KeyReader::start(Box::new(session_keys)))
+        .keys(room, channel)
+}
+
+/// Channel keys read on a thread of their own, for callers that cannot wait
+/// ([`session_keys_without_waiting`]).
+struct KeyReader {
+    /// What each channel's last read found, and whether one is under way.
+    held: std::sync::Arc<std::sync::Mutex<HashMap<(RoomId, ChannelId), HeldKeys>>>,
+    asks: std::sync::mpsc::Sender<(RoomId, ChannelId)>,
+}
+
+#[derive(Default)]
+struct HeldKeys {
+    keys: Option<ChannelContentKeys>,
+    reading: bool,
+}
+
+impl KeyReader {
+    fn start(read: LiveKeys) -> Self {
+        let held: std::sync::Arc<std::sync::Mutex<HashMap<(RoomId, ChannelId), HeldKeys>>> =
+            std::sync::Arc::default();
+        let (asks, asked) = std::sync::mpsc::channel::<(RoomId, ChannelId)>();
+        let answers = std::sync::Arc::clone(&held);
+        let started = std::thread::Builder::new()
+            .name("tilo-live-keys".into())
+            .spawn(move || {
+                for (room, channel) in asked {
+                    let keys = read(room, channel);
+                    if let Ok(mut held) = answers.lock() {
+                        let entry = held.entry((room, channel)).or_default();
+                        entry.keys = keys;
+                        entry.reading = false;
+                    }
+                }
+            });
+        if let Err(error) = started {
+            tracing::warn!(%error, "live presence: the channel key reader did not start");
+        }
+        Self { held, asks }
+    }
+
+    /// The keys the last read of `channel` found, asking for a fresh read
+    /// when none is under way.
+    fn keys(&self, room: RoomId, channel: ChannelId) -> Option<ChannelContentKeys> {
+        let mut held = self.held.lock().ok()?;
+        let entry = held.entry((room, channel)).or_default();
+        if !entry.reading {
+            entry.reading = self.asks.send((room, channel)).is_ok();
+        }
+        let keys = entry.keys.clone();
+        drop(held);
+        keys
+    }
+}
+
 /// Open sealed live `frame` with its channel's keys, returning the canonical
 /// frame, or `None` when this device holds no keys that open it.
 pub fn open(
@@ -548,6 +620,44 @@ mod tests {
             path: vec![ui::presence::PathSegment::Field("editor".into())],
         })
         .unwrap()
+    }
+
+    /// The frame loop asks for a channel's keys while their read is stuck
+    /// (a busy host): it is answered at once, with nothing at first and
+    /// then with what the read found, and the stuck read is never asked
+    /// twice at a time.
+    #[test]
+    fn keys_for_the_frame_loop_never_wait_for_their_read() {
+        let room = RoomId::new();
+        let channel = collab_types::document_channel_id("so.tilo.notes", &room.to_string(), "n");
+        let wire = (1_u8, channel, 1_u64, vec![(1_u64, [7_u8; 32])]);
+        let keys = ChannelContentKeys::from_bytes(&postcard::to_stdvec(&wire).unwrap()).unwrap();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let released = std::sync::Mutex::new(released);
+        let (read, reads) = std::sync::mpsc::channel::<()>();
+        let read = std::sync::Mutex::new(read);
+        let reader = KeyReader::start(Box::new(move |_, _| {
+            let _ = read.lock().unwrap().send(());
+            released.lock().unwrap().recv().ok()?;
+            Some(keys.clone())
+        }));
+        assert!(reader.keys(room, channel).is_none(), "nothing read yet");
+        reads.recv().unwrap();
+        // The read is stuck; asking again neither waits nor asks twice.
+        assert!(reader.keys(room, channel).is_none());
+        assert!(reader.keys(room, channel).is_none());
+        release.send(()).unwrap();
+        let deadline = tilo_test_env::hang_deadline();
+        while reader.keys(room, channel).is_none() {
+            assert!(Instant::now() < deadline, "the read's keys never arrived");
+            std::thread::yield_now();
+        }
+        // The call that found them asked for the next read, and only it.
+        reads
+            .recv_timeout(tilo_test_env::hang_bound())
+            .expect("a fresh read once the first answered");
+        assert_eq!(reader.keys(room, channel).unwrap().epoch(), 1);
+        assert_eq!(reads.try_iter().count(), 0, "one read at a time");
     }
 
     /// Where this desktop's windows are rides its frame once per change and

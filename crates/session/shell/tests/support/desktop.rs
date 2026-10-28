@@ -359,10 +359,20 @@ impl Desktop {
     /// [`Self::call`] with an explicit deadline for calls that wait on purpose.
     #[track_caller]
     pub fn call_within(&self, request: &Value, deadline: Duration) -> Value {
+        let mut replies = self.calls_within(std::slice::from_ref(request), deadline);
+        replies.pop().expect("one reply to one request")
+    }
+
+    /// `requests` written at once on one connection, answered in order: the
+    /// compositor serves them back to back, within one turn of its loop when
+    /// they have all arrived, as it does a burst of input between two frames.
+    #[track_caller]
+    fn calls_within(&self, requests: &[Value], deadline: Duration) -> Vec<Value> {
         self.check();
-        let op = request.get("op").and_then(Value::as_str).unwrap_or("?");
+        let first = requests.first().expect("at least one request");
+        let op = first.get("op").and_then(Value::as_str).unwrap_or("?");
         if let Ok(mut last) = self.last_call.lock() {
-            *last = request.to_string().chars().take(200).collect();
+            *last = first.to_string().chars().take(200).collect();
         }
         let started = Instant::now();
         let mut stream = UnixStream::connect(&self.control)
@@ -370,12 +380,16 @@ impl Desktop {
         stream
             .set_read_timeout(Some(Duration::from_millis(25)))
             .expect("short read slices");
-        let mut line = serde_json::to_vec(request).expect("encode the request");
-        line.push(b'\n');
-        stream.write_all(&line).expect("write the request");
+        let mut lines = Vec::new();
+        for request in requests {
+            serde_json::to_writer(&mut lines, request).expect("encode the request");
+            lines.push(b'\n');
+        }
+        stream.write_all(&lines).expect("write the requests");
         let mut reply = Vec::new();
         let mut chunk = [0_u8; 8192];
-        loop {
+        let answered = |reply: &[u8]| reply.split(|byte| *byte == b'\n').skip(1).count();
+        while answered(&reply) < requests.len() {
             match stream.read(&mut chunk) {
                 Ok(0) => panic!(
                     "the compositor closed the control connection during {op}\n{}",
@@ -391,18 +405,25 @@ impl Desktop {
                     ) => {}
                 Err(e) => panic!("read the reply to {op}: {e}"),
             }
-            if reply.last() == Some(&b'\n') {
+            if answered(&reply) >= requests.len() {
                 break;
             }
             // A frozen loop is reported by the monitor within its budget:
             // fail as that, with the stacks, rather than waiting this out.
             self.check();
             if started.elapsed() >= deadline {
-                self.hung_call(op, request, deadline);
+                let pending = requests.get(answered(&reply)).unwrap_or(first);
+                self.hung_call(op, pending, deadline);
             }
         }
-        serde_json::from_slice(&reply)
-            .unwrap_or_else(|e| panic!("the reply to {op} was not JSON ({e}): {reply:?}"))
+        reply
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                serde_json::from_slice(line)
+                    .unwrap_or_else(|e| panic!("the reply to {op} was not JSON ({e}): {line:?}"))
+            })
+            .collect()
     }
 
     /// A call that outlived its deadline: give the monitor time to name a
@@ -547,10 +568,28 @@ impl Desktop {
 
     // Protocol helpers
 
-    /// Move the pointer to `(x, y)`.
+    /// Move the pointer through every point of `path` in order, as one
+    /// stroke: the moves arrive together, as a hand's motion events do
+    /// between two frames, and each is still its own event to whatever it
+    /// enters and leaves. One frame per stroke, not per point, keeps a
+    /// screen-wide sweep a few seconds long on a machine that draws a frame
+    /// every few hundred milliseconds.
     #[track_caller]
-    pub fn pointer_move(&self, x: f64, y: f64) {
-        self.ok(&json!({"op": "pointer_move", "x": x, "y": y}));
+    pub fn pointer_path(&self, path: &[(f64, f64)]) {
+        if path.is_empty() {
+            return;
+        }
+        let moves: Vec<Value> = path
+            .iter()
+            .map(|(x, y)| json!({"op": "pointer_move", "x": x, "y": y}))
+            .collect();
+        for (request, reply) in moves.iter().zip(self.calls_within(&moves, call_deadline())) {
+            assert!(
+                reply.get("err").is_none(),
+                "{request} was refused: {reply}\n{}",
+                self.recent_log(20)
+            );
+        }
     }
 
     #[track_caller]
@@ -657,9 +696,13 @@ impl Desktop {
     /// Invoke the action `(provider, id)`, waiting for it to settle. The
     /// address is resolved against a fresh catalogue, so an unknown one is
     /// refused here, not skipped.
+    ///
+    /// The compositor holds a reply for at most its `wait_ms`; a job that
+    /// a loaded machine has not finished by then is answered unsettled, so
+    /// it is read again until it settles, within the shared hang bound.
     #[track_caller]
     pub fn invoke_action(&self, provider: &str, id: &str) -> Value {
-        let reply = self.call_within(
+        let mut reply = self.call_within(
             &json!({"op": "actions_invoke", "provider": provider, "id": id, "wait_ms": 8000}),
             call_deadline(),
         );
@@ -668,6 +711,16 @@ impl Desktop {
             "action {provider}:{id} was refused: {reply}\n{}",
             self.recent_log(20)
         );
+        let started = Instant::now();
+        while let Some(job) = unsettled_job(&reply) {
+            assert!(
+                started.elapsed() < tilo_test_env::hang_bound(),
+                "action {provider}:{id} never settled: {reply}\n{}",
+                self.recent_log(20)
+            );
+            reply =
+                self.ok(&json!({"op": "actions_status", "invocation_id": job, "wait_ms": 8000}));
+        }
         reply
     }
 
@@ -877,6 +930,17 @@ impl Drop for Desktop {
         }
         let _ = std::fs::remove_dir_all(&self.runtime_dir);
     }
+}
+
+/// The broker job an invocation's reply names while it has not settled.
+fn unsettled_job(reply: &Value) -> Option<u64> {
+    let receipt = reply.get("answer")?.get("receipt")?;
+    let state = receipt.get("update")?.get("state")?.as_str()?;
+    let settled = matches!(state, "succeeded" | "failed" | "cancelled");
+    receipt
+        .get("broker_invocation_id")?
+        .as_u64()
+        .filter(|_| !settled)
 }
 
 /// The password the compositor accepts to unlock (it stands in for PAM).
