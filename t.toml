@@ -1341,6 +1341,12 @@ requirement = { cores = 1, memory = "1GiB" }
 run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_wasm_size_ratchet.py"
 
 [[check]]
+name = "policy/tests/unit/web-entry-layout"
+requires = ["arch=any"]
+requirement = { cores = 1, memory = "1GiB" }
+run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_web_entry_layout.py"
+
+[[check]]
 name = "policy/tests/unit/web-example-shared-assets"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "1GiB" }

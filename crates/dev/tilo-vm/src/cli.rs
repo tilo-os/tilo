@@ -1149,6 +1149,7 @@ pub enum ImageCommand {
 pub enum QemuCommand {
     /// Start a VM in the background and return once its monitor answers.
     #[command(
+        args_override_self = true,
         after_help = "Examples:\n  tilo-vm qemu boot --run \"$XDG_RUNTIME_DIR/tilo-vm\" --disk os/output/qcow2/disk.qcow2 --ssh-port 2222 --console\n  tilo-vm qemu boot --run /run/user/1000/c1 --tpm --keep-vars \\\n      --disk work.qcow2,backing=installer.qcow2,serial=tilo-installer-medium \\\n      --disk target.qcow2,create=40G,serial=tilo-install-target\n\nThe run directory holds mon.sock (HMP monitor), serial.log, console.sock,\nqemu.pid, qemu.log, the variable store and tpm/. os/dev/vm.sh drives a VM\nstarted this way; `tilo-vm qemu stop --run DIR` powers it off."
     )]
     Boot {
@@ -1160,6 +1161,7 @@ pub enum QemuCommand {
     },
     /// Boot in the foreground until the serial line says ready or failed (or QEMU exits), then power off.
     #[command(
+        args_override_self = true,
         after_help = "Examples:\n  tilo-vm qemu run --disk os/output/qcow2/disk.qcow2 --overlay --timeout 180 --kernel-time \\\n      --ready 'Reached target [^-]*(multi-user|graphical)\\.target' --fail 'Kernel panic' \\\n      --serial-log target/perf/boot.log --report target/perf/boot.json\n  tilo-vm qemu run --disk os/output/qcow2/disk.qcow2 --display window --timeout 0   # interactive window\n\nExits 0 when a --ready pattern matched (or, with none, when QEMU exited 0). The\nJSON report has state (ready, failed, missing-timing, exited, timeout), the\nmatching line, elapsed_ms (wall clock from start) and kernel_ms (the kernel's\nown timestamp at that line)."
     )]
     Run {
@@ -1170,6 +1172,7 @@ pub enum QemuCommand {
     },
     /// Print the firmware, variable store and measurement support the settings resolve to.
     #[command(
+        args_override_self = true,
         after_help = "Examples:\n  tilo-vm qemu firmware --tpm\n  tilo-vm qemu firmware --arch aarch64 --aavmf-dir /opt/homebrew/share/qemu\n\nRefuses (exit 1, with the remedy) where a boot would be refused, e.g. a TPM\non a firmware that cannot measure into it."
     )]
     Firmware {
@@ -1178,6 +1181,7 @@ pub enum QemuCommand {
     },
     /// Print the QEMU command line for these settings without starting anything.
     #[command(
+        args_override_self = true,
         after_help = "Examples:\n  tilo-vm qemu args --disk disk.qcow2 --tpm --console --run /run/user/1000/tilo-vm"
     )]
     Args {
