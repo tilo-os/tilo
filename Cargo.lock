@@ -15290,6 +15290,7 @@ dependencies = [
  "tilo-app",
  "tilo-app-package",
  "tilo-app-state",
+ "tilo-auth",
  "tilo-automation",
  "tilo-automerge",
  "tilo-automerge-fork",
