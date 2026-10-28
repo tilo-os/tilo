@@ -111,9 +111,11 @@ impl Device {
     /// `room`.
     pub(crate) fn retained_writes(&self, room: RoomId, app: &str) -> usize {
         let net = self.net();
-        let host = net.room_host().expect("the device runs its host");
+        let records = net
+            .room_host()
+            .expect("the device runs its host")
+            .room_records();
         let workspace = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
-        let records = host.room_records();
         net.wait_on(async move { records.retained(workspace).await })
             .and_then(std::convert::identity)
             .map_or(0, |bodies| {
@@ -385,7 +387,7 @@ pub(crate) fn open_launched(
         room,
         author,
         collaboration,
-        |definition, records| definition.unsaved_target(records),
+        ApplicationDefinition::unsaved_target,
     )
 }
 

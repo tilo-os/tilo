@@ -428,22 +428,25 @@ fn a_refused_stop_is_asked_again_and_said_once() {
     assert_eq!(f.stops_to_ask(), Vec::<u64>::new(), "the host took it");
 }
 
+/// What the window shares asked of the room's host since the last call, as
+/// the items they show.
+fn shows_asked(f: &Fixture) -> Vec<Option<String>> {
+    f.asked
+        .borrow_mut()
+        .drain(..)
+        .filter_map(|request| match request {
+            PeerSyncRequest::ShareWindow {
+                share: true, shows, ..
+            } => Some(shows),
+            _ => None,
+        })
+        .collect()
+}
+
 /// A Tilo app's window is shared with what it shows, whichever door asks;
 /// an outside window is shared with nothing beside it, to be streamed.
 #[test]
 fn a_tilo_apps_window_is_shared_with_what_it_shows() {
-    let shows_asked = |f: &Fixture| -> Vec<Option<String>> {
-        f.asked
-            .borrow_mut()
-            .drain(..)
-            .filter_map(|request| match request {
-                PeerSyncRequest::ShareWindow {
-                    share: true, shows, ..
-                } => Some(shows),
-                _ => None,
-            })
-            .collect()
-    };
     let mut f = fixture();
     f.make_personal();
     f.frame();
@@ -482,18 +485,6 @@ fn a_shared_tilo_apps_window_shares_again_what_it_moves_to() {
     use ui::floating_surface::FloatingSurfaceClientMessage as Message;
     use ui::window_toolbar::{ToolbarLocation, WindowToolbar};
     const KIND: &str = "notes.notebook";
-    let shows_asked = |f: &Fixture| -> Vec<Option<String>> {
-        f.asked
-            .borrow_mut()
-            .drain(..)
-            .filter_map(|request| match request {
-                PeerSyncRequest::ShareWindow {
-                    share: true, shows, ..
-                } => Some(shows),
-                _ => None,
-            })
-            .collect()
-    };
     let at = |anchor: &str| WindowToolbar {
         location: Some(ToolbarLocation {
             label: "Agenda".into(),

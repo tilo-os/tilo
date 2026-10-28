@@ -1196,6 +1196,18 @@ impl ChromeState {
         }
     }
 
+    /// Note the surfaces `used` here, and ask to close each surface whose
+    /// shared window was left unused when its share ended.
+    pub fn close_unused_ended_shared_windows(&mut self, used: &[u64]) {
+        if !self.tree().shared_window_work(used) {
+            return;
+        }
+        let ended = self.tree_mut().note_used_and_take_ended(used);
+        for surface in ended {
+            self.request_surface_close(surface);
+        }
+    }
+
     pub fn take_surface_close_requests(&mut self) -> Vec<u64> {
         std::mem::take(&mut self.close_surface_requests)
     }

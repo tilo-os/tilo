@@ -519,54 +519,53 @@ impl Device {
             .expect("the broker directory is the device's alone");
         let socket = parent.join("collab.sock");
         let _ = std::fs::remove_file(&socket);
-        let broker = self.start_broker(&socket);
         let (key, cert) = (self.key(), self.cert());
         let keys = self.endpoint_keys.lock().unwrap().clone();
         let wakes = Arc::clone(&self.wakes);
-        let records =
-            crate::shell::workspace_layouts::WorkspaceLayouts::with_connect(move |room, woken| {
-                let room_text = room.to_string();
-                crate::shell::launcher::register_in_process_launch(DESKTOP_APP, &room_text);
-                let identity = cold_reads::certified_identity(&key, &cert, room, keys.clone());
-                let device = hex::encode(cert.device_public_key);
-                let route = ui::collaboration::RouteSpec::record(
-                    DESKTOP_APP,
-                    room.as_uuid(),
-                    DESKTOP_RECORD,
-                );
-                let socket = socket.clone();
-                let wakes = Arc::clone(&wakes);
-                ui::app::record_routes::RouteDocument::connect_with(
-                    {
-                        let route = route.clone();
-                        move || {
-                            let mut stream = std::os::unix::net::UnixStream::connect(&socket)
-                                .expect("connect to the session's broker");
-                            ::launcher::services::write_collab_handoff(
-                                &mut stream,
-                                DESKTOP_APP,
-                                &room_text,
-                            )
-                            .expect("hand the connection over as the session does");
-                            ui::collaboration::CollaborationManager::for_record_fd_with_identity(
-                                stream.into_raw_fd(),
-                                route,
-                                Some(DESKTOP_KIND.to_owned()),
-                                Some(device),
-                                identity,
-                            )
-                        }
-                    },
-                    route,
-                    move || {
-                        woken.store(true, Ordering::Release);
-                        wakes.wake();
-                    },
-                )
-            });
         let held = SessionLayouts {
-            records,
-            _broker: broker,
+            _broker: self.start_broker(&socket),
+            records: crate::shell::workspace_layouts::WorkspaceLayouts::with_connect(
+                move |room, woken| {
+                    let room_text = room.to_string();
+                    crate::shell::launcher::register_in_process_launch(DESKTOP_APP, &room_text);
+                    let identity = cold_reads::certified_identity(&key, &cert, room, keys.clone());
+                    let device = hex::encode(cert.device_public_key);
+                    let route = ui::collaboration::RouteSpec::record(
+                        DESKTOP_APP,
+                        room.as_uuid(),
+                        DESKTOP_RECORD,
+                    );
+                    let socket = socket.clone();
+                    let wakes = Arc::clone(&wakes);
+                    ui::app::record_routes::RouteDocument::connect_with(
+                        {
+                            let route = route.clone();
+                            move || {
+                                let mut stream = std::os::unix::net::UnixStream::connect(&socket)
+                                    .expect("connect to the session's broker");
+                                ::launcher::services::write_collab_handoff(
+                                    &mut stream,
+                                    DESKTOP_APP,
+                                    &room_text,
+                                )
+                                .expect("hand the connection over as the session does");
+                                ui::collaboration::CollaborationManager::for_record_fd_with_identity(
+                                    stream.into_raw_fd(),
+                                    route,
+                                    Some(DESKTOP_KIND.to_owned()),
+                                    Some(device),
+                                    identity,
+                                )
+                            }
+                        },
+                        route,
+                        move || {
+                            woken.store(true, Ordering::Release);
+                            wakes.wake();
+                        },
+                    )
+                },
+            ),
         };
         SESSION_LAYOUTS.with(|layouts| layouts.borrow_mut().insert(self.layouts, held));
     }
