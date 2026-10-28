@@ -54,25 +54,59 @@ fn app_id(index: usize) -> String {
     format!("so.tilo.update-phases-{index}")
 }
 
-/// Publish `versions[i]` of app `i` and return the registry entries.
+/// Publish `versions[i]` of app `i` and return the registry entries. An app
+/// at a version published before is the same artifact and entry again
+/// (authoring is deterministic), so `published` keeps them: authoring all
+/// forty apps for each of the three catalogues, one after another, was much
+/// of this test.
 fn publish(
     registry: &FarRegistry,
     base: &str,
     versions: &[&str],
+    published: &mut std::collections::HashMap<(String, String), registry_types::RegistryEntry>,
 ) -> Vec<registry_types::RegistryEntry> {
     versions
         .iter()
         .enumerate()
         .map(|(index, version)| {
             let id = app_id(index);
-            let tapp = author_tapp_with_files(&id, version, &test_publisher(), &payload(&id));
-            let path = format!("/artifacts/{id}-{version}.tapp");
-            registry.put(
-                &format!("{path}{}", tilo_app_package::compressed::SUFFIX),
-                tilo_app_package::compressed::compress(&tapp).unwrap(),
-            );
-            registry.put(&path, tapp.clone());
-            signed_entry_version(&id, version, &format!("{base}{path}"), &tapp)
+            (id, (*version).to_owned())
+        })
+        .collect::<Vec<_>>()
+        .chunks(8)
+        .flat_map(|apps| {
+            // New artifacts are authored side by side, eight at a time.
+            let authored: Vec<_> = std::thread::scope(|scope| {
+                apps.iter()
+                    .filter(|key| !published.contains_key(*key))
+                    .map(|(id, version)| {
+                        scope.spawn(move || {
+                            let tapp = author_tapp_with_files(
+                                id,
+                                version,
+                                &test_publisher(),
+                                &payload(id),
+                            );
+                            let path = format!("/artifacts/{id}-{version}.tapp");
+                            registry.put(
+                                &format!("{path}{}", tilo_app_package::compressed::SUFFIX),
+                                tilo_app_package::compressed::compress(&tapp).unwrap(),
+                            );
+                            registry.put(&path, tapp.clone());
+                            let entry =
+                                signed_entry_version(id, version, &format!("{base}{path}"), &tapp);
+                            ((id.clone(), version.clone()), entry)
+                        })
+                    })
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .map(|authoring| authoring.join().unwrap())
+                    .collect()
+            });
+            published.extend(authored);
+            apps.iter()
+                .map(|key| published[key].clone())
+                .collect::<Vec<_>>()
         })
         .collect()
 }
@@ -160,16 +194,25 @@ fn an_update_with_little_to_fetch_does_work_only_for_what_changed() {
 
     // The device: every app installed at 1.0.0.
     let mut versions = vec!["1.0.0"; APPS];
-    let first = snapshot(publish(&registry, &base, &versions), &owner, None);
-    registry.put_catalogue(&first);
-    let started = Instant::now();
-    for offer in app_cli::available().apps {
-        app_cli::install::install_app(&offer).unwrap();
-    }
-    eprintln!(
-        "perf installing {APPS} apps one by one: {:?}",
-        started.elapsed()
+    let mut published = std::collections::HashMap::new();
+    let first = snapshot(
+        publish(&registry, &base, &versions, &mut published),
+        &owner,
+        None,
     );
+    registry.put_catalogue(&first);
+    // The device's apps are installed eight at a time: this is the fixture,
+    // not what is measured, and one after another it was most of the test.
+    let started = Instant::now();
+    let offers = app_cli::available().apps;
+    for batch in offers.chunks(8) {
+        std::thread::scope(|scope| {
+            for offer in batch {
+                scope.spawn(move || app_cli::install::install_app(offer).unwrap());
+            }
+        });
+    }
+    eprintln!("perf installing {APPS} apps: {:?}", started.elapsed());
     assert_eq!(package_store::list_installed().unwrap().len(), APPS);
     registry.take_seen();
 
@@ -188,7 +231,11 @@ fn an_update_with_little_to_fetch_does_work_only_for_what_changed() {
 
     // One app is newer, measured phase by phase as `app update` runs them.
     versions[0] = "1.0.1";
-    let second = snapshot(publish(&registry, &base, &versions), &owner, Some(&first));
+    let second = snapshot(
+        publish(&registry, &base, &versions, &mut published),
+        &owner,
+        Some(&first),
+    );
     registry.put_catalogue(&second);
     let mut phases = Vec::new();
     let held = timed(&mut phases, "installed apps", || {
@@ -246,7 +293,11 @@ fn an_update_with_little_to_fetch_does_work_only_for_what_changed() {
 
     // Another app is newer, end to end.
     versions[1] = "1.0.1";
-    let third = snapshot(publish(&registry, &base, &versions), &owner, Some(&second));
+    let third = snapshot(
+        publish(&registry, &base, &versions, &mut published),
+        &owner,
+        Some(&second),
+    );
     registry.put_catalogue(&third);
     let one = app_update();
     let seen = registry.take_seen();
