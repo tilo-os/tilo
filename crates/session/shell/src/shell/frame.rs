@@ -1764,18 +1764,21 @@ impl FrameBuilder {
         if self.active_tile_is_terminal() {
             return self.active_terminal_node();
         }
-        // Overflowing scroll regions are keyboard targets too, but an
-        // unnamed container must not take the initial focus from the setup
-        // form's first control. Keep it in the Tab order for keyboard scrolling.
+        // Overflowing scroll regions are keyboard targets too, but a scroll
+        // region (named or not) or an unnamed container must not take the
+        // initial focus from the setup form's first control. Keep them in the
+        // Tab order for keyboard scrolling.
         order
             .iter()
             .copied()
             .find(|id| {
                 self.node_map.get(id).is_some_and(|&widget| {
                     // SAFETY: this map belongs to the current, live layout tree.
-                    unsafe { (*widget).accessibility() }.is_none_or(|node| {
-                        node.role != ui::a11y::Role::Group || node.name.is_some()
-                    })
+                    let widget = unsafe { &*widget };
+                    widget.name() != "Scrollable"
+                        && widget.accessibility().is_none_or(|node| {
+                            node.role != ui::a11y::Role::Group || node.name.is_some()
+                        })
                 })
             })
             .or_else(|| order.first().copied())
@@ -10684,6 +10687,10 @@ mod quiet_pump_tests;
 #[cfg(test)]
 #[path = "frame_layout_owed_tests.rs"]
 mod layout_owed_tests;
+
+#[cfg(test)]
+#[path = "frame_ready_focus_tests.rs"]
+mod ready_focus_tests;
 
 #[cfg(test)]
 #[allow(
