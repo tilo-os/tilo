@@ -96,7 +96,7 @@ impl GreeterScreen {
         if let Some(plymouth) = &fallback.plymouth {
             plymouth.deactivate();
         }
-        match spawn(launch) {
+        match spawn(launch).and_then(|greeter| hello(greeter, &launch.comforts)) {
             Ok(greeter) => {
                 eprintln!("tilo-boot-signin: the greeter asks");
                 Ok(Self {
@@ -289,6 +289,21 @@ impl Drop for GreeterScreen {
             if let Some(plymouth) = &self.fallback.plymouth {
                 plymouth.reactivate();
             }
+        }
+    }
+}
+
+/// Tell the greeter the device's comforts, which it reads before anything
+/// else: its language, keymap and voice come from them.
+fn hello(greeter: Running, comforts: &serde_json::Value) -> io::Result<Running> {
+    let told = greeter.link.send_to_greeter(&ToGreeter::Hello {
+        comforts: comforts.clone(),
+    });
+    match told {
+        Ok(()) => Ok(greeter),
+        Err(error) => {
+            greeter.stop();
+            Err(error)
         }
     }
 }
@@ -749,6 +764,25 @@ mod tests {
         let (exit, auth, _) = run(1, vec![Act::Secret(3, "2468")], PathBuf::new());
         assert!(auth.tries.is_empty());
         assert_eq!(exit, Exit::OtherWays);
+    }
+
+    #[test]
+    fn the_greeter_hears_the_comforts_first() {
+        let (ours, theirs) = Link::pair().unwrap();
+        let comforts = serde_json::json!({"screen_reader": true});
+        let running = hello(
+            Running {
+                link: ours,
+                child: None,
+            },
+            &comforts,
+        )
+        .unwrap();
+        assert_eq!(
+            theirs.recv_from_supervisor().unwrap(),
+            ToGreeter::Hello { comforts }
+        );
+        running.stop();
     }
 
     #[test]
