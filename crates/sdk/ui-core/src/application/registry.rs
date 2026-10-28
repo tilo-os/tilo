@@ -31,6 +31,11 @@ enum Entry {
     Deferred {
         app_id: &'static str,
         title: &'static str,
+        /// What the app's window shows while its code is on its way. The app
+        /// declares it in its manifest (`[appearance] arrival-skeleton`),
+        /// through the toolkit's [`SkeletonShape`](crate::widget::SkeletonShape):
+        /// the placeholder is the app's own shape, never the host's guess.
+        arrival_shape: crate::widget::SkeletonShape,
         load: Load,
     },
 }
@@ -74,6 +79,17 @@ pub fn register(definition: &'static ApplicationDefinition) -> bool {
 /// Register an application whose code `load` fetches when it is first
 /// needed. Returns `false` when the id is already registered.
 pub fn defer(app_id: &'static str, title: &'static str, load: Load) -> bool {
+    defer_arriving(app_id, title, crate::widget::SkeletonShape::Ground, load)
+}
+
+/// [`defer`] with the shape the app's window shows while its code is on its
+/// way: what the app declares for it in its manifest.
+pub fn defer_arriving(
+    app_id: &'static str,
+    title: &'static str,
+    arrival_shape: crate::widget::SkeletonShape,
+    load: Load,
+) -> bool {
     let mut registry = entries();
     if registry.iter().any(|entry| entry.app_id() == app_id) {
         return false;
@@ -81,9 +97,27 @@ pub fn defer(app_id: &'static str, title: &'static str, load: Load) -> bool {
     registry.push(Entry::Deferred {
         app_id: app_id.into(),
         title,
+        arrival_shape,
         load,
     });
     true
+}
+
+/// The shape `app_id` declared for its window while its code is on its way;
+/// [`SkeletonShape::Ground`] for an app that declared none, and for one whose
+/// code is in (its own window says what it shows).
+pub fn declared_arrival_shape(app_id: &str) -> crate::widget::SkeletonShape {
+    entries()
+        .iter()
+        .find_map(|entry| match entry {
+            Entry::Deferred {
+                app_id: id,
+                arrival_shape,
+                ..
+            } if *id == app_id => Some(*arrival_shape),
+            _ => None,
+        })
+        .unwrap_or(crate::widget::SkeletonShape::Ground)
 }
 
 /// Every registered application whose definition is loaded, in
@@ -230,6 +264,40 @@ mod tests {
         assert_eq!(
             listed(catalogue()),
             ["test.registry.deferred", "test.registry.after-deferred"]
+        );
+    }
+
+    #[test]
+    fn a_deferred_app_declares_what_its_window_shows_while_its_code_is_on_its_way() {
+        use crate::widget::SkeletonShape;
+        assert!(defer_arriving(
+            "test.registry.shaped",
+            "Shaped",
+            SkeletonShape::Page,
+            || Box::pin(async { Some(definition("test.registry.shaped")) })
+        ));
+        assert_eq!(
+            declared_arrival_shape("test.registry.shaped"),
+            SkeletonShape::Page
+        );
+        // An app that declared none shows its ground, not a guess.
+        assert!(defer("test.registry.unshaped", "Unshaped", || Box::pin(
+            async { Some(definition("test.registry.unshaped")) }
+        )));
+        assert_eq!(
+            declared_arrival_shape("test.registry.unshaped"),
+            SkeletonShape::Ground
+        );
+        // Nobody's app, and one whose code is in: the window's own answer.
+        assert_eq!(
+            declared_arrival_shape("test.registry.nobody"),
+            SkeletonShape::Ground
+        );
+        let loaded = block_on(load("test.registry.shaped")).unwrap();
+        assert_eq!(loaded.app_id, "test.registry.shaped");
+        assert_eq!(
+            declared_arrival_shape("test.registry.shaped"),
+            SkeletonShape::Ground
         );
     }
 

@@ -1237,7 +1237,8 @@ impl Tiles {
         // loaded ones: fetch it, and the view is tried again once it is in.
         if ui::application::registry::is_deferred(&view.app) {
             self.load(&view.app);
-            return Ok(TileHost::new(ui::widget::TileContent::Arriving));
+            let shape = ui::application::registry::declared_arrival_shape(&view.app);
+            return Ok(TileHost::new(ui::widget::TileContent::Arriving).with_arrival_shape(shape));
         }
         let definition = application(&view.app)
             .filter(|definition| definition.app_id() != tilo_desktop::feedback::PACKAGE)
@@ -1453,9 +1454,18 @@ impl TileSource for Tiles {
                 TileHost::from_component(component)
             }
             // The app's code is on its way: its window reserves the place,
-            // and the app goes on with that arrival once built.
+            // showing the shape the app declared for it (its manifest's
+            // `arrival-skeleton`), and the app goes on with that arrival once
+            // built.
             Err(Unready::Arriving) => {
-                TileHost::new(ui::widget::TileContent::Arriving).arriving_from(code_host())
+                let TileContent::LocalApp { app_id, .. } = &tab.tile else {
+                    return TileHost::new(ui::widget::TileContent::Arriving)
+                        .arriving_from(code_host());
+                };
+                let shape = ui::application::registry::declared_arrival_shape(app_id);
+                TileHost::new(ui::widget::TileContent::Arriving)
+                    .arriving_from(code_host())
+                    .with_arrival_shape(shape)
             }
             Err(Unready::Notice(detail)) => {
                 if self.shared.records.borrow().contains_key(&tab.id) {
