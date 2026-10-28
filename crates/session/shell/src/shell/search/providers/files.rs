@@ -756,6 +756,10 @@ impl SearchProvider for FilesProvider {
         )
     }
 
+    fn pages_itself(&self) -> bool {
+        true
+    }
+
     fn query_page(
         &self,
         ctx: SearchContext<'_>,

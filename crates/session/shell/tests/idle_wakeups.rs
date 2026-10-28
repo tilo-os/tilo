@@ -2,7 +2,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -29,6 +29,8 @@ pub(crate) struct Desktop {
     control: PathBuf,
     runtime_dir: PathBuf,
     log: Log,
+    /// Signalled with `log`'s lock for every line the compositor prints.
+    printed: Arc<Condvar>,
 }
 
 /// The shell Cargo built beside an integration test, where the run put it.
@@ -124,7 +126,12 @@ impl Desktop {
             .env("TILO_PAINT_STATS", "ticks")
             // Every round of channel-key questions is logged, so the gate counts
             // the rounds the shovel starts, not how often contention woke it.
-            .env("RUST_LOG", "warn,tilo::collab::key_rounds=debug")
+            // What moves the action surface every listing reads is traced
+            // too, so a desktop that republishes while idle says what did.
+            .env(
+                "RUST_LOG",
+                "warn,tilo::collab::key_rounds=debug,tilo::publications=debug",
+            )
             // As the session starts the compositor (os/usr/libexec/tilo-session):
             // glibc reads its tunables when a process starts.
             .env(
@@ -145,6 +152,7 @@ impl Desktop {
             .spawn()
             .expect("spawn the compositor under test");
         let log: Log = Arc::default();
+        let printed = Arc::new(Condvar::new());
         for pipe in [
             child
                 .stdout
@@ -160,11 +168,13 @@ impl Desktop {
         {
             // Unread output would block the compositor mid-write.
             let log = Arc::clone(&log);
+            let printed = Arc::clone(&printed);
             std::thread::spawn(move || {
                 for line in BufReader::new(pipe).lines().map_while(Result::ok) {
                     if let Ok(mut log) = log.lock() {
                         log.push((Instant::now(), line));
                     }
+                    printed.notify_all();
                 }
             });
         }
@@ -173,6 +183,7 @@ impl Desktop {
             control,
             runtime_dir,
             log,
+            printed,
         };
         desktop.wait_for("a laid-out first frame", |targets| !targets.is_empty());
         // A compositor that cannot take its own state file's writer lease runs
@@ -209,6 +220,31 @@ impl Desktop {
             .lock()
             .map(|log| log.iter().filter(|(at, _)| *at >= since).cloned().collect())
             .unwrap_or_default()
+    }
+
+    /// The first line the compositor printed at or after `since` holding
+    /// any of `needles`, waiting for one until `until`; `None` if none came
+    /// by then. Each line printed wakes the wait; nothing polls.
+    #[allow(dead_code, reason = "the idle-wakeups example includes this file")]
+    pub(crate) fn next_line(
+        &self,
+        since: Instant,
+        needles: &[&str],
+        until: Instant,
+    ) -> Option<String> {
+        let mut log = self.log.lock().ok()?;
+        loop {
+            if let Some((_, line)) = log.iter().find(|(at, line)| {
+                *at >= since && needles.iter().any(|needle| line.contains(needle))
+            }) {
+                return Some(line.clone());
+            }
+            let left = until.checked_duration_since(Instant::now())?;
+            if left.is_zero() {
+                return None;
+            }
+            log = self.printed.wait_timeout(log, left).ok()?.0;
+        }
     }
 
     /// Whether the compositor has printed a line containing `needle`.

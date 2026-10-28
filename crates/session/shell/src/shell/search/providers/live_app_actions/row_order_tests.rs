@@ -83,7 +83,8 @@ fn equal_rows_come_in_title_order() {
         &broker,
         &LiveAppActionsProvider::build_scope(&ctx),
         &provider.build_probe,
-    ));
+    ))
+    .map(std::rc::Rc::new);
     drop(broker);
     let page = provider.query_page(ctx, None, SearchBudget::PALETTE);
     drop(provider);

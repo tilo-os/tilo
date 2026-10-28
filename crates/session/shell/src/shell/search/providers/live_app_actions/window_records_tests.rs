@@ -214,7 +214,8 @@ fn shown(broker: &Broker, provider: &LiveAppActionsProvider) -> Vec<(String, Sho
         &app,
         &LiveAppActionsProvider::build_scope(&ctx),
         &provider.build_probe,
-    ));
+    ))
+    .map(std::rc::Rc::new);
     let mut shown: Vec<_> = provider
         .query_page(ctx, None, SearchBudget::PALETTE)
         .results

@@ -470,6 +470,15 @@ impl ListingRequest {
     ///
     /// `invalid_arguments` for a cursor this socket never handed out, and
     /// `stale_cursor` for one cut from a listing that has changed since.
+    /// The listing this request's cursor was cut from, as
+    /// [`listing_fingerprint`] identifies it; `None` without a cursor or
+    /// for one this socket never handed out.
+    #[must_use]
+    pub fn cursor_listing(&self) -> Option<u64> {
+        let (_, listing) = self.cursor.as_deref()?.split_once('.')?;
+        u64::from_str_radix(listing, 16).ok()
+    }
+
     pub fn window(&self, total: usize, fingerprint: u64) -> Result<ListingWindow, ActionRefusal> {
         let start = match self.cursor.as_deref() {
             None => 0,
