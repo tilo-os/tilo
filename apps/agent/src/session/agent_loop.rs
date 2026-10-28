@@ -1582,8 +1582,7 @@ impl Session {
                 // A step is a public note, appended to the task's history.
                 presentation: None,
             },
-        )?;
-        self.record_lookup(run, state, call)
+        )
     }
 
     /// List on the run's issue the resource this step reads, when the step
@@ -1640,7 +1639,11 @@ impl Session {
         call: &StreamedCall,
         failed: &mut bool,
     ) -> Result<Handled> {
+        // Both are about the step and neither depends on the other: the note
+        // is shown once per distinct step, while every resource the step
+        // reads is listed, however many steps share a note.
         self.tell_step(run, state, call)?;
+        self.record_lookup(run, state, call)?;
         match call.name.as_str() {
             tools::PLAN => {
                 let mut input = call.input.clone();
