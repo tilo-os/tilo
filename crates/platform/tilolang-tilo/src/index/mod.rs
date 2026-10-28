@@ -12,9 +12,6 @@
 //!   counter), a list per value of the items holding it, in the collection's order: a filter
 //!   or a count is answered from the lists of the values it holds of;
 //!
-//! Beside them, what search finds resources by: their texts, in a search index of Tilo's search
-//! layer derived from the index's fields and following its commits ([`search`]).
-//!
 //! The record stays the source of truth. The index is derived from it ([`derive`]) and kept
 //! up to date change by change, field by field; one that reflects heads the record does not
 //! hold, or that fails a checksum, is built anew and never read.
@@ -44,7 +41,6 @@ pub mod derive;
 pub mod lists;
 pub mod merged;
 pub mod overlay;
-pub mod search;
 pub mod select;
 pub mod view;
 
@@ -61,7 +57,6 @@ use tilolang_runtime::store::FieldValue;
 
 use self::codec::Corrupt;
 use self::lists::{Dir, Entry, ListEdits, ListSource, Pages};
-use self::search::Search;
 
 /// The version of what the index holds and how: an index of another is built anew.
 pub const FORMAT: u32 = 3;
@@ -232,7 +227,6 @@ pub struct Index {
     schema: String,
     db: Arc<Database>,
     stats: Arc<IndexStats>,
-    search: Arc<Search>,
     path: Option<PathBuf>,
 }
 
@@ -374,11 +368,6 @@ impl Index {
         Self {
             app: app.to_owned(),
             schema: schema.to_owned(),
-            search: Arc::new(Search::new(
-                Arc::clone(&db),
-                Arc::clone(&stats),
-                path.is_some(),
-            )),
             db,
             stats,
             path,
@@ -399,12 +388,6 @@ impl Index {
     #[must_use]
     pub fn stats(&self) -> &Arc<IndexStats> {
         &self.stats
-    }
-
-    /// What search finds the index's resources by (see [`Snapshot::search`]).
-    #[must_use]
-    pub(crate) fn search(&self) -> &Search {
-        &self.search
     }
 
     /// The heads the index reflects, when it is a complete index of this format and of the
@@ -449,7 +432,6 @@ impl Index {
             meta.insert(META_SCHEMA, codec::put_text(schema).as_slice())?;
         }
         txn.commit()?;
-        self.search.clear();
         Ok(())
     }
 
@@ -474,7 +456,6 @@ impl Index {
             dirs: txn.open_table(DIRS)?,
             pages: txn.open_table(PAGES)?,
             counts: txn.open_table(COUNTS)?,
-            search: Arc::clone(&self.search),
             stats: Arc::clone(&self.stats),
         }))
     }
@@ -491,14 +472,13 @@ impl Index {
     ) -> Result<T, IndexError> {
         let mut txn = self.db.begin_write()?;
         txn.set_durability(Durability::None)?;
-        let (out, texts) = {
+        let out = {
             let mut writer = Writer::new(&txn)?;
             let out = f(&mut writer)?;
             writer.flush()?;
-            (out, std::mem::take(&mut writer.texts))
+            out
         };
         txn.commit()?;
-        self.search.changed(&texts);
         Ok(out)
     }
 
@@ -532,7 +512,6 @@ pub struct Snapshot {
     dirs: ReadOnlyTable<&'static str, &'static [u8]>,
     pages: ReadOnlyTable<(&'static str, u32), &'static [u8]>,
     counts: ReadOnlyTable<(&'static str, &'static str), u64>,
-    search: Arc<Search>,
     stats: Arc<IndexStats>,
 }
 
@@ -540,6 +519,16 @@ impl std::fmt::Debug for Snapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Snapshot").finish_non_exhaustive()
     }
+}
+
+/// One resource as [`Snapshot::texted`] reads it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Texted {
+    pub path: String,
+    /// Its type, if the index holds one.
+    pub ty: Option<String>,
+    /// The text values of its fields, by field id.
+    pub texts: std::collections::BTreeMap<String, String>,
 }
 
 /// The last resource path that starts with `path/`: what a range over the resources inside
@@ -586,6 +575,41 @@ impl Snapshot {
                 return Ok(None);
             };
             Ok(Some(codec::get_text(value.value())?))
+        })();
+        self.checked(read)
+    }
+
+    /// Every resource the index holds (records and items, in path order), with its type and
+    /// the text values of its fields by field id: one pass over the fields, what lists every
+    /// resource search finds.
+    ///
+    /// # Errors
+    /// The index cannot be read or is corrupt.
+    pub fn texted(&self) -> Result<Vec<Texted>, IndexError> {
+        let read = (|| {
+            let mut out: Vec<Texted> = Vec::new();
+            for entry in self.fields.iter()? {
+                let (key, value) = entry?;
+                let (at, field) = key.value();
+                if out.last().is_none_or(|last| last.path != at) {
+                    out.push(Texted {
+                        path: at.to_owned(),
+                        ty: None,
+                        texts: std::collections::BTreeMap::new(),
+                    });
+                }
+                let Some(last) = out.last_mut() else {
+                    continue;
+                };
+                if field == TYPE {
+                    last.ty = Some(codec::get_text(value.value())?);
+                } else if !field.starts_with('$')
+                    && let FieldValue::Text(text) = codec::get_value(value.value())?
+                {
+                    last.texts.insert(field.to_owned(), text);
+                }
+            }
+            Ok(out)
         })();
         self.checked(read)
     }
@@ -705,13 +729,6 @@ impl Snapshot {
         })();
         self.checked(read)
     }
-
-    /// What search finds the resources of the index by: the index's search index, taken in
-    /// from the index's last commit ([`search`]).
-    #[must_use]
-    pub fn search(&self) -> &Search {
-        &self.search
-    }
 }
 
 /// Everything an index holds, as it stands for what it holds: lists by their entries, not by
@@ -721,8 +738,6 @@ pub struct Contents {
     pub docs: std::collections::BTreeMap<String, String>,
     pub fields: std::collections::BTreeMap<(String, String), String>,
     pub lists: std::collections::BTreeMap<String, Vec<Entry>>,
-    /// What search finds each resource by: its texts and their weights.
-    pub texts: std::collections::BTreeMap<String, Vec<(String, u8)>>,
     pub counts: std::collections::BTreeMap<(String, String), u64>,
 }
 
@@ -763,7 +778,6 @@ impl Snapshot {
                 out.lists.insert(name, entries);
             }
         }
-        out.texts = self.search.contents()?;
         for entry in self.counts.iter()? {
             let (key, count) = entry?;
             let (list, value) = key.value();
@@ -810,8 +824,6 @@ impl ListSource for Tables<'_> {
 pub struct Writer<'t> {
     tables: Tables<'t>,
     lists: ListEdits,
-    /// The resources whose texts the commit changed: what search reads back once it is in.
-    texts: std::collections::BTreeSet<String>,
 }
 
 impl<'t> Writer<'t> {
@@ -826,7 +838,6 @@ impl<'t> Writer<'t> {
                 counts: txn.open_table(COUNTS)?,
             },
             lists: ListEdits::default(),
-            texts: std::collections::BTreeSet::new(),
         })
     }
 
@@ -1063,11 +1074,5 @@ impl<'t> Writer<'t> {
             }
         }
         Ok(names.into_iter().collect())
-    }
-
-    /// A text of `resource` changed, or `resource` is gone: search reads it back once the
-    /// commit is in.
-    pub fn text_changed(&mut self, resource: &str) {
-        self.texts.insert(resource.to_owned());
     }
 }

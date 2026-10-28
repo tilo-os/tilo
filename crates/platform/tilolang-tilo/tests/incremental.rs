@@ -121,33 +121,20 @@ fn indexed(replica: &Replica) -> Vec<String> {
     out
 }
 
-/// The titles of what a query finds, best first.
-fn found(replica: &Replica, query: &str) -> Vec<String> {
-    tilolang_tilo::search::find(&replica.host, query, 10)
-        .into_iter()
-        .map(|hit| hit.title)
-        .collect()
-}
-
 #[test]
 fn search_reads_the_index_the_lists_read() {
     let (mut ada, meta, root) = room();
     assert_eq!(indexed(&ada), all_hits(&ada, &meta, &root));
-    assert_eq!(found(&ada, "milk"), ["milk"]);
 
     let ids = item_ids(&ada, &meta, &root);
     retype(&mut ada, &meta, &root, &ids[1], "oat milk");
     assert_eq!(indexed(&ada), all_hits(&ada, &meta, &root));
-    // Every word, the last as typed so far.
-    assert_eq!(found(&ada, "oat mi"), ["oat milk"]);
-    assert_eq!(found(&ada, "eggs"), Vec::<String>::new());
 
     add(&mut ada, &meta, &root, "jam");
-    assert_eq!(found(&ada, "ja"), ["jam"]);
+    assert_eq!(indexed(&ada), all_hits(&ada, &meta, &root));
 
     // Emptied, an item has nothing to be found by.
     retype(&mut ada, &meta, &root, &ids[0], "");
-    assert_eq!(found(&ada, "milk"), ["oat milk"]);
     assert_eq!(indexed(&ada), all_hits(&ada, &meta, &root));
 }
 
@@ -160,7 +147,6 @@ fn search_follows_a_peer_and_matches_a_full_index() {
     add(&mut grace, &meta, &root, "tea");
     ada.sync_with(&mut grace);
     assert_eq!(indexed(&ada), all_hits(&ada, &meta, &root));
-    assert_eq!(found(&ada, "rye"), ["rye bread"]);
 
     // A peer removes one item and moves another.
     let ids = item_ids(&ada, &meta, &root);
@@ -169,7 +155,6 @@ fn search_follows_a_peer_and_matches_a_full_index() {
     grace.apply(&moved);
     ada.sync_with(&mut grace);
     assert_eq!(indexed(&ada), all_hits(&ada, &meta, &root));
-    assert_eq!(found(&ada, "eggs"), Vec::<String>::new());
 }
 
 struct Refusing;
@@ -957,24 +942,6 @@ fn not_done(done: String) -> tilolang_runtime::store::Pred {
     )))
 }
 
-/// Search folds as everywhere in Tilo: a query without its diacritics finds the text with them.
-#[test]
-fn search_folds_diacritics() {
-    let (mut ada, meta, root) = room();
-    add(&mut ada, &meta, &root, "Café au lait");
-    assert_eq!(found(&ada, "cafe"), ["Café au lait"]);
-    assert_eq!(found(&ada, "CAFÉ AU"), ["Café au lait"]);
-}
-
-/// What names a resource is found from inside its words, as it is typed.
-#[test]
-fn search_finds_a_name_from_inside_a_word() {
-    let (mut ada, meta, root) = room();
-    assert_eq!(found(&ada, "read"), ["bread"]);
-    add(&mut ada, &meta, &root, "sourdough");
-    assert_eq!(found(&ada, "dough"), ["sourdough"]);
-}
-
 const NOTES_APP: &str = "so.tilo.notes";
 
 const NOTES: &str = r#"app so.tilo.notes "Notes"
@@ -1031,33 +998,30 @@ fn add_note(
     replica.apply(&planned);
 }
 
-/// A match in the text that names a resource (its first text field, in id order) ranks above
-/// the same match in its other texts.
+/// What a window publishes of a resource covers every text it holds, in field order, the first
+/// as what it reads as; an emptied text drops out.
 #[test]
-fn the_naming_text_outranks_the_others() {
+fn every_text_of_a_resource_is_published() {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(NOTES, "")]);
     let meta = packages[0].meta.clone();
     let root = ada.host.root_of(NOTES_APP).unwrap();
     ada.commit();
-    let naming_is_title = field_id(&meta, "Note", "title") < field_id(&meta, "Note", "body");
-    // The query in one note's naming text, and in the other's other text: (title, body).
-    let (naming, other) = if naming_is_title {
-        (("apples", "plums"), ("pears", "apples"))
-    } else {
-        (("plums", "apples"), ("apples", "pears"))
-    };
-    add_note(&mut ada, &meta, &root.doc, other.0, other.1);
-    add_note(&mut ada, &meta, &root.doc, naming.0, naming.1);
-    let hits: Vec<String> = tilolang_tilo::search::find(&ada.host, "apple", 10)
+    add_note(&mut ada, &meta, &root.doc, "apples", "and plums");
+    add_note(&mut ada, &meta, &root.doc, "", "only a body");
+    let mut notes: Vec<(String, Vec<String>)> = every_hit(&ada.host)
         .into_iter()
-        .map(|hit| hit.texts.join(" / "))
+        .filter(|hit| hit.type_name == "Note")
+        .map(|hit| (hit.title, hit.texts))
         .collect();
+    notes.sort();
     assert_eq!(
-        hits,
+        notes,
         [
-            format!("{} / {}", naming.0, naming.1),
-            format!("{} / {}", other.0, other.1)
-        ],
-        "the note named by the query first"
+            (
+                "apples".to_owned(),
+                vec!["apples".to_owned(), "and plums".to_owned()]
+            ),
+            ("only a body".to_owned(), vec!["only a body".to_owned()]),
+        ]
     );
 }
