@@ -199,43 +199,95 @@ fn an_edit_answers_with_the_blocks_it_changed() {
     );
 }
 
-/// `text` with every block id taken out, so a test can state the layout it
-/// expects without the generated ones.
+/// `text` with the id of each block and cell taken out, so a test can state
+/// the layout it expects without the generated ids.
 fn without_ids(text: &str) -> String {
-    let mut out = String::new();
-    let mut rest = text;
-    while let Some((before, tag)) = rest.split_once("{#") {
-        out.push_str(before);
-        let (_, after) = tag.split_once('}').expect("a closed tag");
-        rest = after;
-    }
-    out.push_str(rest);
-    out.lines()
+    text.lines()
         .map(|line| {
-            let mut words: Vec<&str> = line.split(' ').collect();
-            while words.last().is_some_and(|word| after_id(word)) {
-                words.pop();
+            let mut out = String::new();
+            let mut rest = line;
+            while let Some((before, tag)) = rest.split_once(" ^") {
+                out.push_str(before);
+                let (id, after) = tag
+                    .split_once(|c: char| c.is_whitespace() || c == '|')
+                    .expect("an id is followed by a space, a cell edge or nothing");
+                assert!(
+                    !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric()),
+                    "only an id is taken out: ^{tag}"
+                );
+                rest = after;
             }
-            while words.last().is_some_and(|word| word.is_empty()) {
-                words.pop();
-            }
-            let mut line = words.join(" ").replace("  |", " |");
-            while let Some(shortened) = line.strip_suffix(" |") {
-                line = format!("{shortened} |");
-            }
-            line.trim_end().to_owned()
+            out.push_str(rest);
+            out.trim_end().to_owned()
         })
         .collect::<Vec<_>>()
         .join("\n")
-        + "\n"
 }
 
-/// Whether `word` is a block's short id, as a read writes it after a block's
-/// text: the four characters the fewest an id shows, and no more.
-fn after_id(word: &str) -> bool {
-    let word = word.trim_end_matches('|');
-    word.chars().count() == tilo_document::block_markdown::MIN_ID_CHARS
-        && word.chars().all(|c| c.is_ascii_alphanumeric())
+/// The table `table` of `markdown`, as the cells its rows hold: the first
+/// cell a row gives up its own is its header.
+fn rows_of(markdown: &str, table: &str) -> Vec<Vec<(String, String)>> {
+    // The table's rows are the line that tags it, the header, the rule and
+    // then the rows, until the line that begins the next block.
+    let mut inside = false;
+    let mut rows: Vec<&str> = Vec::new();
+    for line in markdown.lines() {
+        if line.contains(&format!(" ^table:{table}")) {
+            inside = true;
+            rows.push(line);
+            continue;
+        }
+        if inside && is_row(line) {
+            rows.push(line);
+            continue;
+        }
+        if inside {
+            break;
+        }
+    }
+    assert!(rows.len() > 1, "the table {table} is read: {markdown}");
+    rows.into_iter()
+        .filter(|line| !line.starts_with("| ---"))
+        .map(|line| {
+            line.trim_end_matches(&format!(" ^table:{table}"))
+                .split('|')
+                .filter(|cell| !cell.trim().is_empty())
+                .map(|cell| match cell.trim().rsplit_once(" ^") {
+                    Some((text, id)) => (text.trim().to_owned(), id.to_owned()),
+                    None => panic!("a cell reads with its id: {line}"),
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Whether `line` is a table's row: it starts at a cell edge.
+fn is_row(line: &str) -> bool {
+    line.starts_with('|')
+}
+
+/// The id the table whose first cell says `first` is tagged with.
+fn table_of(markdown: &str, first: &str) -> String {
+    let row = markdown
+        .lines()
+        .find(|line| line.starts_with('|') && line.contains(first))
+        .expect("the table's first row is read");
+    let tagged = row
+        .split_once(" ^table:")
+        .expect("the table is tagged with its id");
+    tagged
+        .1
+        .split(|c: char| c.is_whitespace() || c == '|')
+        .next()
+        .expect("a table id")
+        .to_owned()
+}
+
+/// The page the document's read answers, as its Markdown.
+fn read_page(app: &mut TestApp<WordProcessorApp>) -> String {
+    app.settle();
+    let answer = read(app, &serde_json::json!({})).unwrap();
+    page(&answer).to_owned()
 }
 
 #[test]
@@ -253,42 +305,44 @@ fn a_heading_list_and_table_read_back_with_the_handles_that_edit_them() {
     let layout = "## Standup\n\
         - review\n  1. screen reader\n- ship\n\
         | Person | Blocked | Next |\n| --- | --- | --- |\n\
-        | Maya | no | docs |\n| Ravi | yes | CI |\n\
-        \n";
+        | Maya | no | docs |\n| Ravi | yes | CI |";
 
-    app.settle();
-    let read_back = read(&mut app, &serde_json::json!({})).unwrap();
-    let markdown = page(&read_back).to_owned();
+    let markdown = read_page(&mut app);
     assert_eq!(without_ids(&markdown), layout, "{markdown}");
 
-    let cell = id_of(&markdown, "yes");
+    // A cell is selected and filled by the id the read tags it with.
+    let ravi = rows_of(&markdown, &table_of(&markdown, "Person"))[2].clone();
+    let (_, cell) = ravi[1].clone();
     invoke(
         &mut app,
         "select-block",
         &serde_json::json!({"block": cell}),
     );
     invoke(&mut app, "type-text", &serde_json::json!({"text": "no"}));
-    app.settle();
-    let answer = read(&mut app, &serde_json::json!({})).unwrap();
-    let markdown = page(&answer).to_owned();
+    let markdown = read_page(&mut app);
     assert!(
-        markdown.contains(&format!("| no ^{cell} |")),
+        markdown.contains(&format!("| no ^{cell}")),
         "the cell's id selects it: {markdown}"
     );
 
-    // The table read names is the one a row is added to, and the next read
-    // shows the row.
-    let table = markdown
-        .split_once("table ")
-        .and_then(|(_, tagged)| tagged.split(['#', '}']).next())
-        .map(str::to_owned)
-        .expect("the table is tagged with its id");
-    invoke(&mut app, "add-row", &serde_json::json!({ "table": table }));
-    let answer = read(&mut app, &serde_json::json!({})).unwrap();
-    let markdown = page(&answer).to_owned();
-    assert!(
-        without_ids(&markdown).contains("| Ravi | no | CI |\n|  |  |  |"),
-        "{markdown}"
+    // The table read names is the one a row is added to, and a read after
+    // it shows the row.
+    let table = table_of(&markdown, "Person");
+    invoke(
+        &mut app,
+        "add-row",
+        &serde_json::json!({ "table": table.clone() }),
+    );
+    let markdown = read_page(&mut app);
+    let rows = rows_of(&markdown, &table);
+    assert_eq!(rows.len(), 4, "the header and three rows: {markdown}");
+    assert_eq!(
+        rows[3]
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .collect::<Vec<_>>(),
+        ["", "", ""],
+        "the row added is empty: {markdown}"
     );
 }
 
@@ -309,8 +363,7 @@ fn pasting_a_table_and_adding_a_row_answer_with_the_blocks_they_made() {
     let layout = "## Standup\n\
         - review\n  1. screen reader\n- ship\n\
         | Person | Blocked | Next |\n| --- | --- | --- |\n\
-        | Maya | no | docs |\n| Ravi | yes | CI |\n\
-        \n";
+        | Maya | no | docs |\n| Ravi | yes | CI |";
     let pasted = pasted
         .as_ref()
         .and_then(|value| value.as_str())
@@ -322,21 +375,34 @@ fn pasting_a_table_and_adding_a_row_answer_with_the_blocks_they_made() {
     );
     app.harness().relayout();
     let table = pasted
-        .split_once("{#table ")
-        .and_then(|(_, tagged)| tagged.split_once('}'))
-        .map(|(id, _)| id.to_owned())
+        .split_once(" ^table:")
+        .and_then(|(_, tagged)| tagged.split(|c: char| c.is_whitespace() || c == '|').next())
+        .map(str::to_owned)
         .expect("the paste answers with the table's id");
-    let appended = invoke(&mut app, "add-row", &serde_json::json!({ "table": table }));
-    // A verb answers with what it changed, beside the ids it minted.
+
+    // The row it adds is answered with the ids that fill it, and the read
+    // shows them in the table.
+    let appended = invoke(
+        &mut app,
+        "add-row",
+        &serde_json::json!({ "table": table.clone() }),
+    );
     let appended = appended
         .as_ref()
         .and_then(|value| value["changed"].as_str())
         .unwrap_or_default();
     assert_eq!(
         without_ids(appended),
-        "3 changed:\n| | | |\n| --- | --- | --- |\n",
+        "3 changed:\n| | | |\n| --- | --- | --- |",
         "the new row answers with the ids that fill it"
     );
+    let markdown = read_page(&mut app);
+    let rows = rows_of(&markdown, &table);
+    assert_eq!(rows.len(), 4, "{markdown}");
+    for (text, id) in &rows[3] {
+        assert!(text.is_empty(), "the row added is empty: {markdown}");
+        assert!(appended.contains(&format!(" ^{id}")), "{markdown}");
+    }
 }
 
 /// The document's blocks as (kind, text, align), in order.
