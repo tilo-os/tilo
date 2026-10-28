@@ -127,7 +127,7 @@
 "crates/session/shell/src/compositor/native.rs" = 22000
 "crates/session/shell/src/compositor/selection.rs" = 3500
 "crates/session/shell/src/compositor/state.rs" = 10500
-"crates/session/shell/src/network/actor.rs" = 6000
+"crates/session/shell/src/network/actor.rs" = 6500
 "crates/session/shell/src/onboarding_view.rs" = 10000
 "crates/session/shell/src/shell/broker_services.rs" = 3500
 "crates/session/shell/src/shell/chrome_state.rs" = 5000

@@ -67,6 +67,65 @@ impl Upstream {
             Self::Relay(addr) | Self::OwnDevice { addr, .. } | Self::OwnHost { addr, .. } => addr,
         }
     }
+
+    /// The device the session pins.
+    fn device(&self) -> [u8; 32] {
+        match self {
+            Self::Relay(addr) => *addr.id.as_bytes(),
+            Self::OwnDevice { device, .. } | Self::OwnHost { device, .. } => *device,
+        }
+    }
+}
+
+/// The devices whose sessions to this host authenticated, as they do.
+///
+/// A device that comes back, perhaps at another address, opens its
+/// sessions here first. A host dialing it hears that and dials it again
+/// at once, where the device is now reachable, rather than finishing a
+/// dial to where it was or waiting out its backoff.
+#[derive(Clone)]
+pub struct Arrivals(tokio::sync::broadcast::Sender<[u8; 32]>);
+
+impl Default for Arrivals {
+    fn default() -> Self {
+        Self(tokio::sync::broadcast::channel(ARRIVALS).0)
+    }
+}
+
+/// Arrivals a slow dial loop may fall behind by: one that falls further
+/// behind dials again, as it would on any arrival.
+const ARRIVALS: usize = 64;
+
+impl Arrivals {
+    /// A session of `device` authenticated here.
+    pub(crate) fn arrived(&self, device: [u8; 32]) {
+        let _ = self.0.send(device);
+    }
+
+    fn watch(&self) -> tokio::sync::broadcast::Receiver<[u8; 32]> {
+        self.0.subscribe()
+    }
+}
+
+/// Wait until `device` arrives in `arrivals`; never when there are none to
+/// hear.
+async fn arrival(
+    arrivals: Option<&mut tokio::sync::broadcast::Receiver<[u8; 32]>>,
+    device: [u8; 32],
+) {
+    let Some(arrivals) = arrivals else {
+        return std::future::pending().await;
+    };
+    loop {
+        match arrivals.recv().await {
+            Ok(arrived) if arrived == device => return,
+            Ok(_) => {}
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => return,
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                return std::future::pending().await;
+            }
+        }
+    }
 }
 
 /// What an outbound federation session carries: the local endpoint, this
@@ -88,26 +147,62 @@ impl PeerRelayDialer {
     /// after a session ends or a dial fails it waits `1s, 2s, 4s, …` up to
     /// 60s before dialing again.
     pub fn spawn(self, upstream: Upstream, label: String) -> JoinHandle<()> {
-        tokio::spawn(self.dial_loop(upstream, label))
+        tokio::spawn(self.dial_loop(upstream, label, None))
     }
 
-    async fn dial_loop(self, upstream: Upstream, label: String) {
+    /// [`Self::spawn`], dialing again as soon as the upstream's device opens
+    /// a session here ([`Arrivals`]): a dial still under way to where it
+    /// was is given up, and a wait for the next dial cut short.
+    pub(crate) fn spawn_woken(
+        self,
+        upstream: Upstream,
+        label: String,
+        arrivals: &Arrivals,
+    ) -> JoinHandle<()> {
+        tokio::spawn(self.dial_loop(upstream, label, Some(arrivals.watch())))
+    }
+
+    async fn dial_loop(
+        self,
+        upstream: Upstream,
+        label: String,
+        mut arrivals: Option<tokio::sync::broadcast::Receiver<[u8; 32]>>,
+    ) {
+        let device = upstream.device();
         let mut backoff_ms: u64 = 1_000;
         loop {
-            match self.dial(&upstream).await {
-                Ok(client) => {
+            let dialed = tokio::select! {
+                dialed = self.dial(&upstream) => Some(dialed),
+                () = arrival(arrivals.as_mut(), device) => None,
+            };
+            match dialed {
+                Some(Ok(client)) => {
                     tracing::info!(%label, "peer relay federated");
                     backoff_ms = 1_000;
                     if let Err(error) = self.run_session(&client, true).await {
                         tracing::debug!(%label, "peer relay session ended: {error}");
                     }
+                    // What arrived while the session lasted says nothing
+                    // of the device now.
+                    if let Some(arrivals) = arrivals.as_mut() {
+                        *arrivals = arrivals.resubscribe();
+                    }
                 }
-                Err(error) => {
+                Some(Err(error)) => {
                     tracing::debug!(%label, "peer relay dial failed: {error}");
                 }
+                None => {
+                    tracing::debug!(%label, "the upstream's device is back; dialing it again");
+                    backoff_ms = 1_000;
+                    continue;
+                }
             }
-            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-            backoff_ms = backoff_ms.saturating_mul(2).min(60_000);
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_millis(backoff_ms)) => {
+                    backoff_ms = backoff_ms.saturating_mul(2).min(60_000);
+                }
+                () = arrival(arrivals.as_mut(), device) => backoff_ms = 1_000,
+            }
         }
     }
 
