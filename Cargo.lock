@@ -21255,6 +21255,7 @@ dependencies = [
  "tilo-app",
  "tilo-browser-runtime",
  "tilo-desktop",
+ "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-lock",
  "tilo-search",

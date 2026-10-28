@@ -10,16 +10,21 @@
 //!   choices, host commands).
 //! - [`palette`]: the toolkit's command palette over those sources.
 //! - [`window`]: one window's own search, over what it publishes.
+//! - [`lazy`]: search whose code a program may fetch on first use.
 //! - [`availability`]: what the manifest registry knows of each app: where
 //!   it runs, its category and the words people know it by.
 
 pub mod availability;
+pub mod lazy;
 pub mod model;
 pub mod palette;
 pub mod providers;
 pub mod rank;
 pub mod window;
 
+pub use lazy::{
+    DESKTOP_SEARCH, DesktopSearchApi, LazyDesktopSearch, MakeDesktopSearch, builtin_desktop_search,
+};
 pub use model::{ActionTarget, Hit, Source, Target, search};
 pub use palette::{DesktopSearch, SearchData};
 pub use ui::search::system::ResourceKind;
