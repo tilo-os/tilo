@@ -111,6 +111,17 @@ fn remove_where_removes_and_counts() {
 }
 
 #[test]
+fn moves_name_a_neighbour_never_an_index() {
+    ok("action m(c: C, x: C, y: C) {\n    c.items.move(x, after: y)\n}");
+    ok("action m(c: C, x: C, y: C) {\n    c.items.move(x, before: y)\n}");
+    expect("E107", "action m(c: C, x: C) {\n    c.items.move(x, 2)\n}");
+    expect(
+        "E107",
+        "action m(c: C, x: C, y: C) {\n    c.items.move(x, to: y)\n}",
+    );
+}
+
+#[test]
 fn an_optional_view_renders_when_given() {
     ok(
         "view frame<R>(of: R, extra: Option<View> = .none) {\n    stack {\n        text(\"head\")\n        extra\n    }\n}\nview w(c: C) {\n    frame(c)\n}\nview z(c: C) {\n    frame(c) {\n        extra: {\n            text(c.t)\n        }\n    }\n}",
@@ -126,4 +137,27 @@ fn a_root_is_an_expression_anywhere() {
         "view w() {\n    let c = root C\n    text(c.t)\n}\naction a() {\n    let c = root C\n    c.t = \"x\"\n}",
     );
     let _ = compile;
+}
+
+const TALK: &str = "type Talk {\n    draft: Text\n    lines: Collection<Line>\n}\ntype Line {\n    said: Text\n}\nview line(l: Line) {\n    text(l.said)\n}\naction send(t: Talk, said: Text) (icon: .send) {\n    if said != \"\" {\n        t.lines.insert(Line(said: said))\n    }\n}\n";
+
+#[test]
+fn typing_in_a_composer_is_personal() {
+    let ok_src = format!(
+        "app t.x \"X\"\n{TALK}view talk(t: Talk) {{\n    lens draft: Text\n    std.transcript(t, t.lines, row: line) {{\n        composer: {{\n            row {{\n                input(bind: draft, fill)\n                button(send(t, draft).then(set(draft, \"\")), icon_only: true)\n            }}\n        }}\n    }}\n}}\n"
+    );
+    let compiled = crate::common::compile_with(&ok_src, &[]).unwrap_or_else(|d| panic!("{d:#?}"));
+    validate(&compiled.wasm);
+    let shared = format!(
+        "{TALK}view talk(t: Talk) {{\n    std.transcript(t, t.lines, row: line) {{\n        composer: {{\n            input(bind: t.draft)\n        }}\n    }}\n}}"
+    );
+    let got = codes(&shared);
+    assert!(got.iter().any(|c| c == "E108"), "{got:?}");
+    // Outside a composer a shared field is edited together, as a document is.
+    let together = format!("{TALK}view talk(t: Talk) {{\n    input(bind: t.draft)\n}}");
+    assert!(codes(&together).is_empty(), "{:?}", codes(&together));
+    let not_an_action = format!(
+        "{TALK}view talk(t: Talk) {{\n    button(\"Send\", on: send(t, \"x\").then(1))\n}}"
+    );
+    assert!(codes(&not_an_action).iter().any(|c| c == "E020"));
 }

@@ -16,7 +16,7 @@ use crate::engine::Wasm;
 use crate::handles::FrameKind;
 use crate::ids::ModuleHash;
 use crate::meta::{FieldKind, Ty};
-use crate::num::{counter_to_float, float_to_counter, to_usize};
+use crate::num::{counter_to_float, float_to_counter};
 use crate::registry::{FieldInfo, TypeInfo};
 use crate::store::{Applied, FieldSpec, FieldValue, Mutation, Scalar, Txn};
 use crate::value::{CollRef, RecordInit, RefValue, ResourceRef, Value, from_json, to_json};
@@ -682,9 +682,24 @@ impl Core {
                 let ctx = self.mut_ctx(a.h(0)?, a.h(1)?)?;
                 self.coll_field(&ctx)?;
                 let item = self.item_arg(&ctx, a.h(2)?)?;
-                let Some(index) = to_usize(a.long(3)?) else {
-                    return trap("move to a negative index");
+                let neighbour = self.item_arg(&ctx, a.h(3)?)?;
+                let after = a.h(4)? != 0;
+                // Next to itself, it is where it was asked to be.
+                if neighbour == item {
+                    return ret_void();
+                }
+                // The neighbour's place among the other items, as this change sees them.
+                let listing = self
+                    .store
+                    .borrow()
+                    .listing(&ctx.target, &spec(&ctx.field))
+                    .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+                let others: Vec<Rc<str>> =
+                    listing.iter().filter(|id| **id != *item.as_str()).collect();
+                let Some(at) = others.iter().position(|id| **id == *neighbour.as_str()) else {
+                    return trap("the neighbour is not in this collection");
                 };
+                let index = if after { at + 1 } else { at };
                 let field = ctx.field.id.clone();
                 self.apply_mut(&ctx, &Mutation::CollMove { field, item, index })?;
                 ret_void()

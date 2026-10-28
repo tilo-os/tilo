@@ -128,6 +128,8 @@ pub(crate) struct UiPlace {
     /// Whether it is in a named slot of a `ui.*` component: what a loop makes there are parts
     /// of the component (a menu's commands), so the loop lowers in place.
     parts: bool,
+    /// Whether it is in a composer: text typed here is one person's until it is sent.
+    composer: bool,
 }
 
 /// A `window` or `lens` declaration in scope, for `bind:` and `set(...)`.

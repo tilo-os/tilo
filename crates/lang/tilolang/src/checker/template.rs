@@ -830,6 +830,9 @@ impl Checker<'_> {
                     }
                 }
                 let saved = self.enter(&block.scope, extra);
+                if name == "composer" {
+                    self.st.ui.composer = true;
+                }
                 self.ui_stmts(&block.body, parent);
                 self.leave(saved);
             }
