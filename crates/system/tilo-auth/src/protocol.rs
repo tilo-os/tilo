@@ -7,6 +7,16 @@ use zeroize::Zeroizing;
 /// longer is not a request.
 pub const MAX_LINE: usize = 16 * 1024;
 
+/// Whether a secret is a PIN (digits only) or a password. A screen asks for
+/// one or the other by name and offers a number pad for a PIN. Part of the
+/// protocol, so a client built without the service reads it too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SecretKind {
+    Pin,
+    Password,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum Request {
@@ -110,7 +120,7 @@ pub struct Reply {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_held: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secret: Option<crate::record::SecretKind>,
+    pub secret: Option<SecretKind>,
 }
 
 impl Reply {
