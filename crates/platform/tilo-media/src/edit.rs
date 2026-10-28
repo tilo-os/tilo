@@ -1,6 +1,7 @@
 //! Editing without waiting: a source's picture at an exact frame
-//! ([`FrameSeeker`]) and an encoder that writes a finished file
-//! ([`ClipEncoder`]).
+//! ([`FrameSeeker`]), its sound as samples ([`PcmDecoder`]), mixed sound
+//! played on the output ([`PcmPlayer`]) and an encoder that writes a
+//! finished file ([`ClipEncoder`]).
 //!
 //! Both are for a host whose thread may never block, which is a browser
 //! page: there they run on the browser's own media stack (the media element
@@ -96,6 +97,26 @@ impl FrameSeeker {
         }
     }
 
+    /// A seeker over the still picture `source`: it holds frame 0, whatever
+    /// time is asked, once the picture is decoded.
+    #[must_use]
+    pub fn open_still(source: &Source) -> Option<Self> {
+        #[cfg(web_page)]
+        {
+            let Source::Remote { url } = source else {
+                return None;
+            };
+            let js = crate::web_edit::TiloFrameSeeker::new().ok()?;
+            js.open_image(url);
+            Some(Self { js })
+        }
+        #[cfg(not(web_page))]
+        {
+            let _ = source;
+            None
+        }
+    }
+
     /// Hold the picture of the frame showing at `seconds` of a source
     /// running at `fps`, exactly; [`Self::shown_frame`] says when it is held.
     pub fn seek(&self, seconds: f64, fps: f64) {
@@ -108,15 +129,16 @@ impl FrameSeeker {
         }
     }
 
-    /// Play along with a playhead moving forward at normal speed from
-    /// `seconds`: smooth pictures, each the one shown as the source plays,
-    /// until [`Self::seek`] holds an exact one again.
-    pub fn follow(&self, seconds: f64, fps: f64) {
+    /// Play along with a playhead moving forward at `rate` times normal
+    /// speed from `seconds`: smooth pictures, each the one shown as the
+    /// source plays at that rate, until [`Self::seek`] holds an exact one
+    /// again.
+    pub fn follow(&self, seconds: f64, fps: f64, rate: f64) {
         #[cfg(web_page)]
-        self.js.follow(seconds, fps);
+        self.js.follow(seconds, fps, rate);
         #[cfg(not(web_page))]
         {
-            let _ = (seconds, fps);
+            let _ = (seconds, fps, rate);
             match self.never {}
         }
     }
@@ -235,14 +257,22 @@ impl ClipEncoder {
     }
 
     /// Start an encoder for `width`x`height` frames at `fps`, aiming at
-    /// `bitrate` bits per second.
+    /// `bitrate` bits per second. With `sound`, the file also carries the
+    /// sound given to [`Self::encode_sound`], where the host encodes Opus
+    /// ([`Self::has_sound`] says, once ready).
     ///
     /// # Errors
     /// Why no encoder could be made here.
-    pub fn start(width: u32, height: u32, fps: f64, bitrate: f64) -> Result<Self, String> {
+    pub fn start(
+        width: u32,
+        height: u32,
+        fps: f64,
+        bitrate: f64,
+        sound: bool,
+    ) -> Result<Self, String> {
         #[cfg(web_page)]
         {
-            crate::web_edit::TiloClipEncoder::new(width, height, fps, bitrate)
+            crate::web_edit::TiloClipEncoder::new(width, height, fps, bitrate, sound)
                 .map(|js| Self { js })
                 .map_err(|e| {
                     e.as_string()
@@ -251,7 +281,7 @@ impl ClipEncoder {
         }
         #[cfg(not(web_page))]
         {
-            let _ = (width, height, fps, bitrate);
+            let _ = (width, height, fps, bitrate, sound);
             Err("this build encodes through GStreamer".into())
         }
     }
@@ -312,6 +342,37 @@ impl ClipEncoder {
         }
     }
 
+    /// Whether the file carries sound, once ready.
+    #[must_use]
+    pub fn has_sound(&self) -> bool {
+        #[cfg(web_page)]
+        {
+            self.js.has_sound()
+        }
+        #[cfg(not(web_page))]
+        match self.never {}
+    }
+
+    /// Encode interleaved stereo `samples` at [`SAMPLE_RATE`], starting
+    /// `start` samples into the file. Nothing is written when the file
+    /// carries no sound; `false` once the encoder has failed.
+    pub fn encode_sound(&self, samples: &[f32], start: u64) -> bool {
+        #[cfg(web_page)]
+        {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "a sample count within an export is far inside f64's exact range"
+            )]
+            let start = start as f64;
+            self.js.encode_sound(samples, start)
+        }
+        #[cfg(not(web_page))]
+        {
+            let _ = (samples, start);
+            match self.never {}
+        }
+    }
+
     /// No more frames: encode the rest and write the file.
     pub fn finish(&self) {
         #[cfg(web_page)]
@@ -334,6 +395,169 @@ impl ClipEncoder {
 
 #[cfg(web_page)]
 impl Drop for ClipEncoder {
+    fn drop(&mut self) {
+        self.js.close();
+    }
+}
+
+/// The rate [`PcmDecoder`] decodes to and [`PcmPlayer`] and
+/// [`ClipEncoder::encode_sound`] take samples at, in stereo.
+pub const SAMPLE_RATE: u32 = 48_000;
+
+/// Where a [`PcmDecoder`] has got to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PcmState {
+    Decoding,
+    /// The samples are here.
+    Ready,
+    /// The source has no sound this host decodes; it mixes as silence.
+    None,
+}
+
+/// A source's whole sound, decoded once to interleaved stereo at
+/// [`SAMPLE_RATE`] by the host's own audio decoding, without waiting.
+pub struct PcmDecoder {
+    #[cfg(web_page)]
+    js: crate::web_edit::TiloPcmDecoder,
+    #[cfg(not(web_page))]
+    never: std::convert::Infallible,
+}
+
+impl PcmDecoder {
+    /// Start decoding `source`, or `None` where this host decodes through
+    /// sessions that may wait instead.
+    #[must_use]
+    pub fn open(source: &Source) -> Option<Self> {
+        #[cfg(web_page)]
+        {
+            let Source::Remote { url } = source else {
+                return None;
+            };
+            crate::web_edit::TiloPcmDecoder::new(url)
+                .ok()
+                .map(|js| Self { js })
+        }
+        #[cfg(not(web_page))]
+        {
+            let _ = source;
+            None
+        }
+    }
+
+    #[must_use]
+    pub fn state(&self) -> PcmState {
+        #[cfg(web_page)]
+        match self.js.state().as_str() {
+            "decoding" => PcmState::Decoding,
+            "ready" => PcmState::Ready,
+            _ => PcmState::None,
+        }
+        #[cfg(not(web_page))]
+        match self.never {}
+    }
+
+    /// `frames` interleaved stereo frames from frame `from`: short at the
+    /// end, empty until [`PcmState::Ready`].
+    #[must_use]
+    pub fn samples(&self, from: u64, frames: usize) -> Vec<f32> {
+        #[cfg(web_page)]
+        {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "sample positions are far inside f64's exact range"
+            )]
+            let (from, frames) = (from as f64, frames as f64);
+            self.js.samples(from, frames)
+        }
+        #[cfg(not(web_page))]
+        {
+            let _ = (from, frames);
+            match self.never {}
+        }
+    }
+}
+
+#[cfg(web_page)]
+impl Drop for PcmDecoder {
+    fn drop(&mut self) {
+        self.js.close();
+    }
+}
+
+/// Mixed sound on the host's output, each block played at the timeline time
+/// it was mixed for, without waiting.
+pub struct PcmPlayer {
+    #[cfg(web_page)]
+    js: crate::web_edit::TiloPcmPlayer,
+    #[cfg(not(web_page))]
+    never: std::convert::Infallible,
+}
+
+impl PcmPlayer {
+    /// A player, or `None` where this host plays sound through sessions
+    /// that may wait instead.
+    #[must_use]
+    pub fn open() -> Option<Self> {
+        #[cfg(web_page)]
+        {
+            crate::web_edit::TiloPcmPlayer::new()
+                .ok()
+                .map(|js| Self { js })
+        }
+        #[cfg(not(web_page))]
+        {
+            None
+        }
+    }
+
+    /// Begin playing timeline second `at` a moment from now, silencing
+    /// what was scheduled. `false` where the output cannot open.
+    pub fn start(&self, at: f64) -> bool {
+        #[cfg(web_page)]
+        {
+            self.js.start(at)
+        }
+        #[cfg(not(web_page))]
+        {
+            let _ = at;
+            match self.never {}
+        }
+    }
+
+    /// The timeline second the output is playing now.
+    #[must_use]
+    pub fn position(&self) -> f64 {
+        #[cfg(web_page)]
+        {
+            self.js.position()
+        }
+        #[cfg(not(web_page))]
+        match self.never {}
+    }
+
+    /// Play interleaved stereo `samples` at [`SAMPLE_RATE`], mixed for
+    /// timeline second `at`.
+    pub fn push(&self, samples: &[f32], at: f64) {
+        #[cfg(web_page)]
+        self.js.push(samples, at);
+        #[cfg(not(web_page))]
+        {
+            let _ = (samples, at);
+            match self.never {}
+        }
+    }
+
+    /// Silence what is scheduled.
+    pub fn stop(&self) {
+        #[cfg(web_page)]
+        self.js.stop();
+        #[cfg(not(web_page))]
+        match self.never {}
+    }
+}
+
+#[cfg(web_page)]
+impl Drop for PcmPlayer {
     fn drop(&mut self) {
         self.js.close();
     }
@@ -362,7 +586,10 @@ mod tests {
         assert!(!FrameSeeker::available());
         assert!(FrameSeeker::open(&source).is_none());
         assert!(!ClipEncoder::available());
-        assert!(ClipEncoder::start(64, 64, 30.0, 1e6).is_err());
+        assert!(ClipEncoder::start(64, 64, 30.0, 1e6, true).is_err());
+        assert!(FrameSeeker::open_still(&source).is_none());
+        assert!(PcmDecoder::open(&source).is_none());
+        assert!(PcmPlayer::open().is_none());
         assert!(in_memory_source(b"bytes", "video/mp4").is_none());
     }
 }

@@ -8,6 +8,10 @@
 //! last picture it showed (a preview) or nothing (an export, which asks again
 //! next time and writes no stand-in frame in between).
 //!
+//! A still picture is a seeker too, holding its one frame. A playhead
+//! running forward at any speed is played along with at that speed rather
+//! than sought frame by frame.
+//!
 //! On a host where seekers do not open, every layer draws its representative
 //! fill, exactly as with [`super::NoSources`].
 
@@ -36,8 +40,11 @@ pub enum Fetch {
 const RUNNING_GAP: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// The furthest one request may lead the last and still count as the
-/// playhead running forward.
+/// playhead running forward, at the least and as a multiple of the time
+/// between them (a shuttle at 16x moves more than a quarter second a frame).
 const RUNNING_STEP_S: f64 = 0.25;
+// ratchet-allow(pixel_const): a playback speed multiple, not spacing
+const RUNNING_MAX_RATE: f64 = 17.0;
 
 /// A seeker left unused this long is closed.
 const IDLE: std::time::Duration = std::time::Duration::from_secs(30);
@@ -49,6 +56,9 @@ struct Held {
     frame_in_texture: Option<u64>,
     /// The source time last asked for, and when.
     asked: Option<(f64, ui::time::Instant)>,
+    /// How fast the requests have been moving through the source, in source
+    /// seconds per second, smoothed over a few frames.
+    rate: Option<f64>,
     used: ui::time::Instant,
 }
 
@@ -59,6 +69,8 @@ struct Indexed {
     path: String,
     fps: f64,
     last_frame: Option<f64>,
+    /// A still picture: one frame, whatever time is asked.
+    still: bool,
 }
 
 /// A [`FrameSource`] over [`FrameSeeker`]s.
@@ -116,10 +128,9 @@ impl SeekFrameSource {
         project
             .media
             .iter()
-            // A title's picture is drawn, and a still is not something a
-            // media element plays. Seekers open copies kept by their bytes:
-            // a page has no paths to open.
-            .filter(|item| item.kind == MediaKind::Video)
+            // A title's picture is drawn. Seekers open copies kept by their
+            // bytes: a page has no paths to open.
+            .filter(|item| matches!(item.kind, MediaKind::Video | MediaKind::Image))
             .filter(|item| crate::files::is_kept(&item.path))
             .map(|item| {
                 let fps = if item.fps > 1.0 { item.fps } else { 30.0 };
@@ -131,6 +142,7 @@ impl SeekFrameSource {
                         path: item.path.clone(),
                         fps,
                         last_frame,
+                        still: item.kind == MediaKind::Image,
                     },
                 )
             })
@@ -180,6 +192,55 @@ impl SeekFrameSource {
     /// Why a source cannot be decoded, when one could not.
     pub fn failure(&self) -> Option<MediaId> {
         self.failed.iter().next().copied()
+    }
+
+    /// A seeker over `media`'s kept copy, or `None` while its bytes are
+    /// still being read back (asked again later) or when it cannot open.
+    fn open_seeker(&mut self, media: MediaId, indexed: &Indexed, source_time: f64) -> Option<Held> {
+        let Some(source) = crate::files::kept_source(&indexed.path) else {
+            if crate::files::kept_missing(&indexed.path) {
+                self.failed.insert(media);
+            } else {
+                // Its bytes are still being read from where they were kept.
+                self.pending = true;
+                self.missing.push((media, source_time));
+            }
+            return None;
+        };
+        let opened = if indexed.still {
+            FrameSeeker::open_still(&source)
+        } else {
+            FrameSeeker::open(&source)
+        };
+        let Some(seeker) = opened else {
+            self.failed.insert(media);
+            return None;
+        };
+        Some(Held {
+            seeker,
+            texture: None,
+            frame_in_texture: None,
+            asked: None,
+            rate: None,
+            used: ui::time::now(),
+        })
+    }
+
+    /// How fast the playhead runs through `held`'s source when asked for
+    /// `at` now, while it runs forward (the element plays along at that
+    /// rate); `None` when it stands still, jumped or runs backwards.
+    fn running_rate(&self, held: &Held, at: f64, now: ui::time::Instant) -> Option<f64> {
+        let (before, when) = held.asked.filter(|_| self.fetch == Fetch::Responsive)?;
+        let gap = now.saturating_duration_since(when);
+        let moved = at - before;
+        if gap > RUNNING_GAP
+            || moved <= 0.0
+            || moved > RUNNING_STEP_S.max(gap.as_secs_f64() * RUNNING_MAX_RATE)
+        {
+            return None;
+        }
+        let rate = moved / gap.as_secs_f64().max(1e-3);
+        Some(held.rate.map_or(rate, |was| was * 0.7 + rate * 0.3))
     }
 
     /// Put `held`'s current picture in its texture, reusing the texture
@@ -247,52 +308,29 @@ impl FrameSource for SeekFrameSource {
             *uses - 1
         };
         let key = (media, slot);
-        if !self.seekers.contains_key(&key) {
-            let Some(source) = crate::files::kept_source(&indexed.path) else {
-                if crate::files::kept_missing(&indexed.path) {
-                    self.failed.insert(media);
-                    return None;
-                }
-                // Its bytes are still being read from where they were kept.
-                self.pending = true;
-                self.missing.push((media, source_time));
-                return None;
-            };
-            let Some(seeker) = FrameSeeker::open(&source) else {
-                self.failed.insert(media);
-                return None;
-            };
-            let now = ui::time::now();
-            self.seekers.insert(
-                key,
-                Held {
-                    seeker,
-                    texture: None,
-                    frame_in_texture: None,
-                    asked: None,
-                    used: now,
-                },
-            );
-        }
-        let mut held = self.seekers.remove(&key)?;
+        let mut held = match self.seekers.remove(&key) {
+            Some(held) => held,
+            None => self.open_seeker(media, &indexed, source_time)?,
+        };
         if let Some(why) = held.seeker.take_error() {
             tracing::warn!(%media, %why, "video: a source cannot be shown");
             self.failed.insert(media);
             return None;
         }
-        let at = indexed
-            .last_frame
-            .map_or(source_time, |last| source_time.min(last))
-            .max(0.0);
+        let at = if indexed.still {
+            0.0
+        } else {
+            indexed
+                .last_frame
+                .map_or(source_time, |last| source_time.min(last))
+                .max(0.0)
+        };
         let now = ui::time::now();
-        let running = self.fetch == Fetch::Responsive
-            && held.asked.is_some_and(|(before, when)| {
-                at > before
-                    && at - before <= RUNNING_STEP_S
-                    && now.saturating_duration_since(when) <= RUNNING_GAP
-            });
-        if running {
-            held.seeker.follow(at, indexed.fps);
+        let step = self.running_rate(&held, at, now);
+        held.rate = step;
+        let running = step.is_some();
+        if let Some(rate) = step {
+            held.seeker.follow(at, indexed.fps, rate);
         } else {
             held.seeker.seek(at, indexed.fps);
         }
