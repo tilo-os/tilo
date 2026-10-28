@@ -6857,7 +6857,8 @@ impl Filesystem for QuickFS {
                 return;
             }
         };
-        match self.ns().getattr(ino) {
+        let attr = self.ns().getattr(ino);
+        match attr {
             Some(attr) => reply.entry(&TTL, &attr, Generation(0)),
             None => reply.error(to_errno(EIO)),
         }

@@ -57,6 +57,7 @@ impl QuickFS {
                 .record_id_for(ino)
                 .and_then(|record| ns.posix_attrs(record))
                 .unwrap_or_else(|| PosixAttrs::default_for(dir));
+            drop(ns);
             (attr.kind, current)
         };
         let local = (
