@@ -49,6 +49,8 @@ pub mod own_device;
 mod pending;
 mod providers;
 mod search;
+#[cfg(any(test, feature = "test-support"))]
+mod test_host;
 mod wait;
 mod within;
 pub mod workspace_activity;
@@ -72,6 +74,8 @@ pub use nodes::{
 };
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use search::stem_word;
+#[cfg(any(test, feature = "test-support"))]
+pub use test_host::TestHost;
 pub use wait::{MAX_REMOTE_WAIT, UpdateMark, settle_with};
 
 use crate::context::ActionContext;

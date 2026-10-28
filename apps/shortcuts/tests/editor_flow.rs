@@ -9,7 +9,7 @@
     reason = "test assertions"
 )]
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use serde_json::{Value, json};
 use shortcuts::{APP_ID, App, Workbench};
@@ -17,13 +17,11 @@ use ui::a11y::Action;
 use ui::headless::SemanticExpectation;
 use ui::prelude::TestApp;
 use ui::tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
-    CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
-    ReceiptStatus,
+    ActionHost, Caller, CataloguePage, CatalogueResource, CatalogueRow, InvokeArgument, TestHost,
 };
 use ui::tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionOutput, ActionParam,
-    ExecutionLocus, InputSpec, InvocationId, OperationKind, ParamType, ResultSpec,
+    ExecutionLocus, InputSpec, OperationKind, ParamType, ResultSpec,
 };
 use ui::{RemoteActions, RemoteActionsGuard};
 
@@ -75,17 +73,14 @@ fn row(
     }
 }
 
-/// A workspace offering a notes app and the shortcut library; it records
-/// every invocation and answers each at once.
-struct FakeHost {
+/// A workspace offering a notes app and the shortcut library.
+struct Workspace {
     rows: Vec<CatalogueRow>,
     /// What `shortcuts#list` answers: the saved shortcuts.
     saved: Vec<Value>,
-    invoked: Mutex<Vec<InvokeRequest>>,
-    callers: Mutex<Vec<Caller>>,
 }
 
-impl FakeHost {
+impl Workspace {
     fn new() -> Self {
         let library = |action: &str, params: Vec<ActionParam>| {
             row(
@@ -146,87 +141,62 @@ impl FakeHost {
                 ),
             ],
             saved: Vec::new(),
-            invoked: Mutex::new(Vec::new()),
-            callers: Mutex::new(Vec::new()),
         }
     }
 
-    fn library_calls(&self, action: &str) -> Vec<Value> {
-        self.invoked
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|request| {
-                request.target.address.resource == "shortcuts"
-                    && request.target.address.action == action
+    /// The host serving this workspace: it records every invocation and
+    /// answers each at once.
+    fn host(self) -> TestHost {
+        let Self { rows, saved } = self;
+        TestHost::new()
+            .with_catalogue(move |_, _| {
+                Ok(CataloguePage {
+                    revision: "1".into(),
+                    rows: rows.clone(),
+                    exhausted: true,
+                    ..CataloguePage::default()
+                })
             })
-            .map(|request| match &request.argument {
-                InvokeArgument::Json(arguments) => Value::Object(arguments.clone()),
-                _ => Value::Null,
+            .completing(move |request| {
+                let value = match request.target.address.action.as_str() {
+                    "list" if request.target.address.resource == "shortcuts" => {
+                        Some(Value::Array(saved.clone()))
+                    }
+                    "list" => Some(json!([])),
+                    "freeform" => Some(json!({
+                        "name": "Note the inbox",
+                        "steps": [
+                            {"id": "list", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "list"},
+                             "resource": {"fixed": INBOX}},
+                            {"id": "note", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "create"},
+                             "resource": {"fixed": INBOX},
+                             "args": {"title": {"literal": "Inbox"}, "pinned": {"literal": false}}}
+                        ],
+                        "grant": [{"node": "**", "kinds": ["read", "undoable", "outside"], "answer": "allow"}]
+                    })),
+                    _ => None,
+                };
+                ActionOutput {
+                    value,
+                    resources: Vec::new(),
+                }
             })
-            .collect()
     }
 }
 
-impl ActionHost for FakeHost {
-    fn query(
-        &self,
-        caller: &Caller,
-        _query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        self.callers.lock().unwrap().push(caller.clone());
-        Pending::ready(Ok(CataloguePage {
-            revision: "1".into(),
-            rows: self.rows.clone(),
-            exhausted: true,
-            ..CataloguePage::default()
-        }))
-    }
-
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        self.callers.lock().unwrap().push(caller.clone());
-        let value = match request.target.address.action.as_str() {
-            "list" if request.target.address.resource == "shortcuts" => {
-                Some(Value::Array(self.saved.clone()))
-            }
-            "list" => Some(json!([])),
-            "freeform" => Some(json!({
-                "name": "Note the inbox",
-                "steps": [
-                    {"id": "list", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "list"},
-                     "resource": {"fixed": INBOX}},
-                    {"id": "note", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "create"},
-                     "resource": {"fixed": INBOX},
-                     "args": {"title": {"literal": "Inbox"}, "pinned": {"literal": false}}}
-                ],
-                "grant": [{"node": "**", "kinds": ["read", "undoable", "outside"], "answer": "allow"}]
-            })),
-            _ => None,
-        };
-        let receipt = InvocationReceipt {
-            invocation: request.invocation,
-            status: ReceiptStatus::Completed {
-                output: ActionOutput {
-                    value,
-                    resources: Vec::new(),
-                },
-            },
-        };
-        self.invoked.lock().unwrap().push(request);
-        Pending::ready(Ok(receipt))
-    }
-
-    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
-        None
-    }
-
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
-        Pending::ready(Ok(()))
-    }
+/// The arguments of each call `host` was asked of the library's `action`.
+fn library_calls(host: &TestHost, action: &str) -> Vec<Value> {
+    host.asked()
+        .iter()
+        .filter(|request| {
+            request.target.address.resource == "shortcuts"
+                && request.target.address.action == action
+        })
+        .map(|request| match &request.argument {
+            InvokeArgument::Json(arguments) => Value::Object(arguments.clone()),
+            _ => Value::Null,
+        })
+        .collect()
 }
 
 fn rule(action: &str, kind: tilo_action_policy::ActionKind) -> Value {
@@ -243,12 +213,12 @@ fn rule(action: &str, kind: tilo_action_policy::ActionKind) -> Value {
     .unwrap()
 }
 
-fn open() -> (Arc<FakeHost>, RemoteActionsGuard, TestApp<App>) {
-    open_with(FakeHost::new())
+fn open() -> (Arc<TestHost>, RemoteActionsGuard, TestApp<App>) {
+    open_with(Workspace::new())
 }
 
-fn open_with(host: FakeHost) -> (Arc<FakeHost>, RemoteActionsGuard, TestApp<App>) {
-    let host = Arc::new(host);
+fn open_with(workspace: Workspace) -> (Arc<TestHost>, RemoteActionsGuard, TestApp<App>) {
+    let host = Arc::new(workspace.host());
     let guard = RemoteActions::enter(
         Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
         Caller::local_app(APP_ID).in_room("room"),
@@ -292,15 +262,11 @@ fn the_app_starts_empty_and_reads_the_door_as_itself() {
         .wait_for_named("shortcuts-library", tilo_test_env::hang_bound())
         .expect("the library shows");
     assert!(
-        host.callers
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|caller| *caller.principal()
-                == ui::tilo_actions::remote::CallerPrincipal::App(APP_ID.into())),
+        host.callers().iter().all(|caller| *caller.principal()
+            == ui::tilo_actions::remote::CallerPrincipal::App(APP_ID.into())),
         "every request goes to the door as the Shortcuts app"
     );
-    assert_eq!(host.library_calls("list").len(), 1, "the library is read");
+    assert_eq!(library_calls(&host, "list").len(), 1, "the library is read");
     let audit = app.harness().native_app_audit();
     assert!(audit.issues.is_empty(), "{audit:#?}");
 }
@@ -493,7 +459,7 @@ fn add_steps_bind_them_validate_and_save_through_the_door() {
     act(&mut app, "shortcuts-save-sheet.primary", &Action::Focus);
     app.harness().key("Enter");
 
-    let created = host.library_calls("create");
+    let created = library_calls(&host, "create");
     assert_eq!(created.len(), 1, "saved once through shortcuts#create");
     assert_eq!(
         created[0],
@@ -519,8 +485,8 @@ fn add_steps_bind_them_validate_and_save_through_the_door() {
 }
 
 /// The workspace also offers the agent's free-form transform.
-fn with_agent() -> FakeHost {
-    let mut host = FakeHost::new();
+fn with_agent() -> Workspace {
+    let mut host = Workspace::new();
     host.rows.push(row(
         "9",
         tilo_automation::AGENT_APP_ID,
@@ -568,9 +534,7 @@ fn a_described_shortcut_is_drafted_checked_and_opened_but_never_saved() {
         .expect("the draft is offered");
 
     let asked: Vec<_> = host
-        .invoked
-        .lock()
-        .unwrap()
+        .asked()
         .iter()
         .filter(|request| request.target.address.action == "freeform")
         .cloned()
@@ -604,14 +568,14 @@ fn a_described_shortcut_is_drafted_checked_and_opened_but_never_saved() {
     assert_eq!(shortcut.name, "Note the inbox");
     assert_eq!(shortcut.steps.len(), 2);
     assert!(
-        host.library_calls("create").is_empty() && host.library_calls("update").is_empty(),
+        library_calls(&host, "create").is_empty() && library_calls(&host, "update").is_empty(),
         "nothing is saved without the grant review"
     );
 }
 
 /// The workspace holds one saved shortcut that asks for a title.
-fn with_saved_note() -> FakeHost {
-    let mut host = FakeHost::new();
+fn with_saved_note() -> Workspace {
+    let mut host = Workspace::new();
     host.rows.push(row(
         "workspace:room",
         APP_ID,
@@ -663,16 +627,12 @@ fn a_saved_shortcut_opens_its_page_runs_with_its_inputs_and_a_run_leads_back() {
 
     tilo_test_env::wait_until("the shortcut's run to be invoked", || {
         app.settle();
-        host.invoked
-            .lock()
-            .unwrap()
+        host.asked()
             .iter()
             .any(|request| request.target.address.action == "run")
     });
     let runs: Vec<_> = host
-        .invoked
-        .lock()
-        .unwrap()
+        .asked()
         .iter()
         .filter(|request| request.target.address.action == "run")
         .cloned()
@@ -695,7 +655,7 @@ fn a_saved_shortcut_opens_its_page_runs_with_its_inputs_and_a_run_leads_back() {
 
 #[test]
 fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
-    let mut fixture = FakeHost::new();
+    let mut fixture = Workspace::new();
     let mut refresh = row(
         "weather",
         "so.tilo.weather",
@@ -715,7 +675,7 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
         "id": "fixture-refresh", "name": "Refresh chosen weather", "steps": [{"id": "refresh", "step": "invoke", "action": {"app": "so.tilo.weather", "kind": "weather.location", "action": "refresh"}, "resource": {"fixed": "weather.location:fixture"}}]
     }))).unwrap();
     act(&mut app, "schedule-enabled", &Action::Focus);
-    assert!(host.library_calls("create").is_empty());
+    assert!(library_calls(&host, "create").is_empty());
     assert!(
         app.state()
             .drafts
@@ -744,7 +704,7 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
         }]
     );
     assert!(
-        host.library_calls("create").is_empty(),
+        library_calls(&host, "create").is_empty(),
         "schedule choice edits only the draft"
     );
     let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -772,7 +732,7 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
     app.harness().resize((1600, 1000)).unwrap();
     act(&mut app, "shortcuts-save-sheet.primary", &Action::Focus);
     app.harness().key("Enter");
-    let saved = host.library_calls("create");
+    let saved = library_calls(&host, "create");
     assert_eq!(saved.len(), 1);
     let saved: tilo_automation::Shortcut =
         serde_json::from_value(saved[0]["shortcut"].clone()).unwrap();
@@ -893,7 +853,7 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
 /// A draft with an `if` holding the list step in its `then` block, built the
 /// way a person does: three steps from the catalogue, one of them a
 /// condition, the last moved inside it.
-fn draft_with_a_condition() -> (Arc<FakeHost>, RemoteActionsGuard, TestApp<App>) {
+fn draft_with_a_condition() -> (Arc<TestHost>, RemoteActionsGuard, TestApp<App>) {
     let (host, guard, mut app) = open();
     app.invoke(Workbench::NEW_DRAFT.with("Tidy"))
         .expect("a new draft");

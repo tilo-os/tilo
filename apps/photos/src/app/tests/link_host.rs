@@ -4,56 +4,26 @@
 
 use super::*;
 /// The room's host behind the door, announcing a web entry for links.
-pub(super) struct LinkHost;
-
-impl tilo_actions::remote::ActionHost for LinkHost {
-    fn query(
-        &self,
-        _: &tilo_actions::remote::Caller,
-        query: tilo_actions::remote::CatalogueQuery,
-    ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionHostError>,
-    > {
-        tilo_actions::remote::Pending::ready(Ok(tilo_actions::remote::CataloguePage {
-            locator: Some(tilo_actions::remote::ResourceViewLocator {
-                origin: "https://host.example".into(),
-                room: "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90".into(),
-                host_device: "ab".repeat(32),
-                provider: query.provider.unwrap_or_default(),
-                web_entry: Some("https://tilo.so/".into()),
-            }),
-            exhausted: true,
-            ..tilo_actions::remote::CataloguePage::default()
-        }))
-    }
-
-    fn invoke(
-        &self,
-        _: &tilo_actions::remote::Caller,
-        _: tilo_actions::remote::InvokeRequest,
-    ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>,
-    > {
-        tilo_actions::remote::Pending::ready(Err(
-            tilo_actions::remote::ActionHostError::NotPermitted,
-        ))
-    }
-
-    fn observe(
-        &self,
-        _: &tilo_actions::remote::Caller,
-        _: &tilo_actions::InvocationId,
-    ) -> Option<tilo_actions::remote::InvocationState> {
-        None
-    }
-
-    fn cancel(
-        &self,
-        _: &tilo_actions::remote::Caller,
-        _: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionHostError>> {
-        tilo_actions::remote::Pending::ready(Ok(()))
-    }
+pub(super) fn link_host() -> tilo_actions::remote::TestHost {
+    tilo_actions::remote::TestHost::new()
+        .with_catalogue(|_, query| {
+            Ok(tilo_actions::remote::CataloguePage {
+                locator: Some(tilo_actions::remote::ResourceViewLocator {
+                    origin: "https://host.example".into(),
+                    room: "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90".into(),
+                    host_device: "ab".repeat(32),
+                    provider: query.provider.unwrap_or_default(),
+                    web_entry: Some("https://tilo.so/".into()),
+                }),
+                exhausted: true,
+                ..tilo_actions::remote::CataloguePage::default()
+            })
+        })
+        .answering(|_, _| {
+            tilo_actions::remote::Pending::ready(Err(
+                tilo_actions::remote::ActionHostError::NotPermitted,
+            ))
+        })
 }
 
 #[derive(Default)]
@@ -78,7 +48,7 @@ impl ui::clipboard::ClipboardBackend for LinkClipboard {
 fn share_copies_the_open_photographs_link() {
     use ui::framework::testing::TestApp;
     let _served = ui::RemoteActions::enter(
-        std::sync::Arc::new(LinkHost),
+        std::sync::Arc::new(link_host()),
         tilo_actions::remote::Caller::local_person("owner"),
     );
     let services = ui::host::HostServices::null()
