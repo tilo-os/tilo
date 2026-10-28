@@ -4,6 +4,7 @@ use super::*;
 use crate::history_mode::restore::*;
 use crate::permissions::PermissionContext;
 use automerge::ROOT;
+use automerge::transaction::Transactable;
 use std::cell::Cell;
 
 thread_local! { static VALIDATION_MODE: Cell<u8> = const { Cell::new(0) }; }
