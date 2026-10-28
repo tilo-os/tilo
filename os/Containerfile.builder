@@ -11,10 +11,12 @@ FROM registry.fedoraproject.org/fedora:44@sha256:55159f5c92b7baf5f1c1ca1d727c95e
 
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
-    PATH=/usr/local/cargo/bin:$PATH
+    PATH=/usr/local/cargo/bin:$PATH \
+    CHROME=/usr/lib64/chromium-browser/chromium-browser
 
 # The workspace's build dependencies, the test suites' runtime (GStreamer
-# plugins, fonts, lavapipe, PulseAudio, the sandbox/LUKS/TPM test subjects) and
+# plugins, fonts, lavapipe, PulseAudio, the sandbox/LUKS/TPM test subjects, the
+# OSTree/Flatpak fixtures' tools and the Chromium that CHROME names) and
 # the pinned cargo-nextest come from the same script and profile the developer
 # distrobox (dist/dev/Containerfile.fedora44) installs, so CI builds and tests
 # against exactly what developers do. The script also bootstraps the pinned Rust
@@ -69,17 +71,6 @@ RUN dnf install -y \
       nodejs \
       ripgrep time yt-dlp \
     && dnf clean all
-
-# The launcher's signed OSTree/OpenPGP capture fixture (launcher-root) commits
-# a GPG-signed OSTree repository and compiles the OpenPGP engine probe against
-# gpgme, as the image build of that engine does.
-RUN dnf install -y --setopt=install_weak_deps=False ostree gpgme-devel \
-    && dnf clean all && rm -rf /var/cache/dnf
-
-# The imager backend's signed offline Flatpak fixture (imager-tests-<arch>) restores a
-# GPG-signed repository into a user installation with the native flatpak tool.
-RUN dnf install -y --setopt=install_weak_deps=False flatpak \
-    && dnf clean all && rm -rf /var/cache/dnf
 
 # Required by production PDF capture tests. Use the same verified external
 # asset context as sccache; runtime/library upgrades do not touch Fedora packages.
@@ -212,14 +203,6 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
       && chmod 0755 /usr/local/bin/jsign \
       && jsign --help >/dev/null; \
     fi
-
-# Native browser tests use Fedora's signed Chromium RPM, not a per-job download.
-# Bypass its desktop launcher: tests supply their own flags and fresh profiles.
-# Keep this late so browser updates do not rebuild the cross toolchains.
-ENV CHROME=/usr/lib64/chromium-browser/chromium-browser
-RUN dnf install -y --setopt=install_weak_deps=False chromium \
-    && dnf clean all && rm -rf /var/cache/dnf \
-    && test -x "$CHROME" && "$CHROME" --version
 
 # Match the workspace's own check so a stale image fails loudly rather than
 # compiling against the wrong libraries.
