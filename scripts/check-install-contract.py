@@ -29,6 +29,27 @@ assert contract["completeSystem"]["alongside"] == {
     "resizesExistingFilesystems": False,
 }
 
+# Staged media writing is a development route, and this file is the copy the
+# release tooling publishes to the landing page verbatim. The stage has to be
+# stated by the data itself, next to the claim it qualifies, so that neither the
+# copy nor the page can present a route under development as a support
+# commitment: a reader that only looks at these fields still sees the stage.
+staged_installer = contract["completeSystem"]["stagedLiveInstaller"]
+assert staged_installer == {
+    "classification": "development",
+    "liveInstallerModes": ["guided-alongside"],
+    "targetMinimumGiB": 34,
+    "reclaimsStagingAfterFirstSession": True,
+    "resizesExistingFilesystems": False,
+}
+assert any(
+    "development guided-import route" in principle for principle in contract["principles"]
+)
+assert any(
+    "Development routes are under development" in principle
+    for principle in contract["principles"]
+)
+
 imager_workflow = (ROOT / ".forgejo/workflows/release-imager.yml").read_text()
 for runner, architecture in (
     ("imager-linux-x86_64", "x86_64"),
