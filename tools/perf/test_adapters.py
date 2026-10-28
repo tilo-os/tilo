@@ -648,7 +648,9 @@ def browser_report(**changes) -> dict:
         "viewport": {"width": 1920, "height": 1080, "deviceScaleFactor": 1},
         "workload": {"rounds": 2, "apps": ["so.tilo.notes", "so.tilo.sheets"], "inputHz": 120, "cpuThrottle": 1,
                      "demoSeconds": 5},
-        "samples": {"load_ms": [900.0, 1100.0], "open_ms": [20.0, 30.0, 25.0, 35.0],
+        "load": {"bytes": [6000000, 6200000], "requests": [70, 72], "crossOrigin": [0, 0]},
+        "samples": {"load_ms": [900.0, 1100.0], "transfer_bytes": [6000000, 6200000], "request_count": [70, 72],
+                    "open_ms": [20.0, 30.0, 25.0, 35.0],
                     "open_ready_ms": [60.0, 90.0, 70.0, 80.0], "activate_ms": [12.0, 14.0, 40.0],
                     "demo_interval_ms": [16.0, 17.0, 33.0, 18.0], "demo_work_ms": [9.0, 10.0, 11.0],
                     "idle_per_s": [0.0, 0.5]},
@@ -757,6 +759,9 @@ class BrowserQualification(unittest.TestCase):
         self.assertEqual((interval.unit, interval.n, interval.p50, interval.max), ("ms", 4, 17.0, 33.0))
         idle = records["browser.idle.presented_per_s"]
         self.assertEqual((idle.unit, idle.n, idle.max), ("per_s", 2, 0.5))
+        transfer = records["browser.load.transfer_bytes"]
+        self.assertEqual((transfer.unit, transfer.n, transfer.max), ("bytes", 2, 6200000.0))
+        self.assertEqual(records["browser.load.request_count"].unit, "count")
         self.assertEqual(records["browser.activate.first_frame"].p99, 40.0)
         meta = interval.meta
         self.assertEqual((meta["runtime_sha256"], meta["viewport"], meta["adapter"]),
@@ -783,11 +788,15 @@ class BrowserQualification(unittest.TestCase):
         report["samples"] = {**report["samples"], "activate_ms": []}
         with self.assertRaisesRegex(ValueError, "activate_ms"):
             adapters.browser_qualification(report, BROWSER_ENV)
+        report = browser_report()
+        report["samples"] = {**report["samples"], "transfer_bytes": []}
+        with self.assertRaisesRegex(ValueError, "transfer_bytes"):
+            adapters.browser_qualification(report, BROWSER_ENV)
 
     def test_the_fields_are_the_harnesses(self):
         """The harness writes every sample list the adapter reads."""
         source = BROWSER_HARNESS.read_text()
-        written = set(re.findall(r"\b([a-z_]+_(?:ms|per_s)): rounds", source[source.index("samples: {"):]))
+        written = set(re.findall(r"\b([a-z_]+_(?:ms|per_s|bytes|count)): ", source[source.index("samples: {"):]))
         self.assertEqual(written, set(adapters.BROWSER_KPIS))
 
     def test_a_run_without_the_demo_reports_everything_else(self):
