@@ -308,8 +308,16 @@ impl HttpsTransport for ReqwestTransport {
 enum ManagerTransport {
     Https(ReqwestTransport),
     Offline(local_model_service::developer::OfflineTransport),
-    /// Hugging Face, for a person's own models.
-    Hub(hub_client::HubClient),
+    /// Hugging Face for a person's own models, and the signed catalog's transport for the
+    /// runtime that serves them: the person's Hub token only ever goes to the Hub.
+    Hub(hub_client::HubClient, Box<ManagerTransport>),
+}
+/// Whether `url` is the Hub's, which a person's own model downloads from.
+fn from_hub(url: &str) -> bool {
+    url.starts_with(&format!(
+        "{}/",
+        agent_provider_config::local::hub::HUB_ORIGIN
+    ))
 }
 impl ManagerTransport {
     fn new(dir: Option<&Path>, catalog: &CatalogPayload) -> Result<Self, ServiceError> {
@@ -328,7 +336,8 @@ impl HttpsTransport for ManagerTransport {
         match self {
             Self::Https(t) => t.validate_pin(pin),
             Self::Offline(t) => t.validate_pin(pin),
-            Self::Hub(t) => t.validate_pin(pin),
+            Self::Hub(hub, _) if from_hub(&pin.url) => hub.validate_pin(pin),
+            Self::Hub(_, signed) => signed.validate_pin(pin),
         }
     }
     fn resume(
@@ -342,7 +351,10 @@ impl HttpsTransport for ManagerTransport {
         match self {
             Self::Https(t) => t.resume(url, start, maximum, progress, destination),
             Self::Offline(t) => t.resume(url, start, maximum, progress, destination),
-            Self::Hub(t) => t.resume(url, start, maximum, progress, destination),
+            Self::Hub(hub, _) if from_hub(url) => {
+                hub.resume(url, start, maximum, progress, destination)
+            }
+            Self::Hub(_, signed) => signed.resume(url, start, maximum, progress, destination),
         }
     }
 }
@@ -1210,7 +1222,10 @@ fn open_cli_service(
     catalog: &CatalogPayload,
 ) -> Result<LocalModelService<ManagerTransport, SystemdSupervisor>, String> {
     let transport = if matches!(cli.command, Action::WorkerUser { .. }) {
-        hub_client::HubClient::new().map(ManagerTransport::Hub)
+        hub_client::HubClient::new().and_then(|hub| {
+            let signed = ManagerTransport::new(cli.artifact_dir.as_deref(), catalog)?;
+            Ok(ManagerTransport::Hub(hub, Box::new(signed)))
+        })
     } else {
         ManagerTransport::new(cli.artifact_dir.as_deref(), catalog)
     }
@@ -1552,9 +1567,11 @@ fn run_user_worker(
     else {
         return Ok(());
     };
-    let started = allocate_loopback_port()
-        .map_err(ServiceError::Backend)
-        .and_then(|port| service.start(runtime, &release, port));
+    let started = service.install_runtime(runtime, &release).and_then(|()| {
+        allocate_loopback_port()
+            .map_err(ServiceError::Backend)
+            .and_then(|port| service.start(runtime, &release, port))
+    });
     if let Err(error) = started {
         let _ = service.record_failure(model, error.to_string());
         return Err(error.to_string());
@@ -2479,6 +2496,19 @@ mod tests {
                 RuntimeKind::Cpu
             );
         }
+    }
+
+    /// A person's own model downloads from the Hub with their token, and the runtime that serves
+    /// it from the signed catalog's origin, which never sees the token.
+    #[test]
+    fn only_hub_urls_go_to_the_hub() {
+        assert!(from_hub(
+            "https://huggingface.co/acme/Chat-GGUF/resolve/abc/model.gguf"
+        ));
+        assert!(!from_hub("https://huggingface.co.example/acme/model.gguf"));
+        assert!(!from_hub(
+            "https://code.tilo.so/api/packages/tilo/generic/local-model-runtime-llama-cpp-cpu-x86_64/x/y.oci.tar"
+        ));
     }
 
     /// Settings reaches the Hub verbs through the service; the worker that

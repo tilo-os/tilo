@@ -12,8 +12,9 @@
 //! connections to the session, admitted here as the launch's:
 //!
 //! - collaboration, recorded as the window's launch before the shell
-//!   connects it (`register_in_process_window`), so the broker attests it,
-//!   window instance included, as it attests a launched app;
+//!   connects it (`register_in_process_window`), keyed by the window's
+//!   instance, which the connection names, so the broker attests it, window
+//!   instance included, as it attests a launched app;
 //! - shell-ui, connected here and attributed to the process's launch
 //!   ([`take_window_shell_ui`]).
 //!
@@ -465,10 +466,15 @@ fn door_pair() -> std::io::Result<(OwnedFd, OwnedFd)> {
 /// The window's own collaboration connection, attested as the launch of
 /// `instance` of `app_id` in `room`.
 fn window_collaboration(app_id: &str, room: &str, instance: u64) -> std::io::Result<OwnedFd> {
-    super::register_in_process_window(app_id, room, Some(instance));
     let mut stream =
         std::os::unix::net::UnixStream::connect(::launcher::services::collab_socket())?;
-    ::launcher::services::write_collab_handoff(&mut stream, app_id, room)?;
+    super::register_in_process_window(app_id, room, instance);
+    if let Err(error) =
+        ::launcher::services::write_collab_window_handoff(&mut stream, app_id, room, instance)
+    {
+        super::withdraw_in_process_launch(app_id, room, Some(instance));
+        return Err(error);
+    }
     Ok(stream.into())
 }
 

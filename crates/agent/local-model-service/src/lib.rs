@@ -884,6 +884,20 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         self.install_model(model)
     }
 
+    /// Fetch and install the verified runtime image that serves `model`, for a model whose own
+    /// install carries no runtime: a person's pick from the Hub or a file, which brings only its
+    /// weights, needs the signed runtime on this device before it can start.
+    ///
+    /// # Errors
+    /// As [`Self::install_with_runtime`], without placing the model.
+    pub fn install_runtime(
+        &mut self,
+        runtime: &SignedRuntime,
+        model: &LocalModelRelease,
+    ) -> Result<(), ServiceError> {
+        self.install_accepted_runtime(runtime, model)
+    }
+
     /// Background-worker variant that durably publishes bounded transfer
     /// progress, then verification and installation phases. Transfer callbacks
     /// still observe every chunk; intermediate state fsyncs are coalesced.

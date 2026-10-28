@@ -75,6 +75,18 @@ fn played_child_role(role: &str, write: impl FnOnce()) -> bool {
     if std::env::var(ROLE).as_deref() != Ok(role) {
         return false;
     }
+    // The abort is the outcome under test, not a crash to debug: it must not
+    // leave a core file in the directory the tests run in.
+    let no_core = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `setrlimit` only reads the limit it is handed.
+    assert_eq!(
+        unsafe { libc::setrlimit(libc::RLIMIT_CORE, &raw const no_core) },
+        0,
+        "the child turns off its core dump"
+    );
     // A test binary must be built with unwinding, so the release profile's
     // `panic = "abort"` is reproduced with a hook that aborts — without it
     // the child would exit 101 and the signal would go unasserted.

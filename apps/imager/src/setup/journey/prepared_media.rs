@@ -2452,7 +2452,7 @@ mod tests {
         }
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         let _facts = super::super::main_story_tests::source_fixture(&root);
@@ -2585,7 +2585,7 @@ mod tests {
     fn cancellation_keeps_worker_custody_until_exit_and_retry_preserves_identity() {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -2699,7 +2699,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         let identity = PreparedIdentity::create(
@@ -2777,7 +2777,7 @@ mod tests {
         };
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         let runner = portable::tests::fixture(&root);
         let selected = InstalledRef {
@@ -2882,7 +2882,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         let source = root.join("source");
@@ -3304,7 +3304,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::setup::test_support::qualified_tempdir();
         let private = root.path().canonicalize().unwrap();
         std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
         let identity = PreparedIdentity::create(

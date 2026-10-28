@@ -174,6 +174,21 @@ impl NativeConstruction {
         let manager = manager
             .as_mut()
             .ok_or("prepared component worker already transferred")?;
+        // A manager still joining its room builds on the local replica: the
+        // route answers later, as an event the app takes. Join the bound
+        // record's route rather than the launch's, without waiting.
+        if manager.is_joining() {
+            let requested = binding
+                .admission_route()
+                .ok_or("component record route is not valid")?;
+            let pending = manager
+                .requested_primary_route()
+                .ok_or("native component route unavailable")?;
+            if requested.app_id != pending.app_id || requested.cluster_id != pending.cluster_id {
+                return Err("component record does not belong to the prepared native route".into());
+            }
+            return manager.retarget_join(binding.checkout());
+        }
         let Some(current) = manager.primary_route() else {
             return if self.state.bridge.is_none() {
                 Ok(())
@@ -193,7 +208,9 @@ impl NativeConstruction {
             // Applying the capture releases its token before the independent RPC
             // worker confirms the next current read. Wait for that confirmation;
             // a fast component factory must not race the real owner recheck.
-            let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
+            // No clock ends the wait: the confirming read is the broker's
+            // answer, which under load takes what it takes. The worker's
+            // end, the route's failure and the answer each end it.
             loop {
                 let seen = bridge.progress();
                 bridge.check()?;
@@ -204,7 +221,7 @@ impl NativeConstruction {
                 if bridge.publishable(&requested.channel_id()) {
                     break;
                 }
-                if crate::time::now() >= deadline {
+                if let Some(error) = bridge.unreadable(&requested.channel_id()) {
                     #[cfg(feature = "broker-transport")]
                     {
                         let phase = bridge
@@ -212,6 +229,7 @@ impl NativeConstruction {
                             .document_reads
                             .readiness_diagnostic(&requested.channel_id());
                         tracing::warn!(
+                            %error,
                             primary_route_matches = requested == current.route,
                             phase_available = phase.is_some(),
                             required = ?phase.as_ref().map(|phase| phase.required),
@@ -221,12 +239,12 @@ impl NativeConstruction {
                             "native component history confirmation unavailable before factory"
                         );
                     }
-                    return Err(
-                        "native component history was not confirmed before its factory".into(),
-                    );
+                    return Err(format!(
+                        "native component history was not confirmed before its factory: {error}"
+                    ));
                 }
-                // The confirming read wakes this; the bound re-checks the
-                // worker's health and the deadline.
+                // The confirming read wakes this; the bound only re-checks
+                // that the worker still runs.
                 bridge.wait_progress(seen, crate::time::Duration::from_millis(10));
             }
         }
@@ -354,6 +372,30 @@ pub fn take_initialization(
     Ok(None)
 }
 
+impl NativeConstruction {
+    /// Leave construction, handing back the manager and the component's
+    /// wake scope when nothing took them: a launch whose record is not on
+    /// this device builds again once its join is over, on the same manager
+    /// in the same scope.
+    pub fn into_parts(self) -> (Option<CollaborationManager>, Option<crate::wake::WakeScope>) {
+        let manager = self.state.manager.borrow_mut().take();
+        let scope = self.state.component_scope.borrow_mut().take();
+        (manager, scope)
+    }
+}
+/// Whether the construction under way is on a manager still joining its
+/// room. A record that is not on this device is then not created: the room
+/// may hold it, and a second copy made here would diverge from it. It
+/// arrives with the join.
+pub fn joining() -> bool {
+    current().is_some_and(|state| {
+        state
+            .manager
+            .borrow()
+            .as_ref()
+            .is_some_and(CollaborationManager::is_joining)
+    })
+}
 impl Drop for NativeConstruction {
     fn drop(&mut self) {
         CONSTRUCTION.with(|slot| {
@@ -548,12 +590,11 @@ impl InitialReadBridge {
         ) {
             return Err("native initialization queue unavailable".into());
         }
-        let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
+        // No clock ends the wait: the worker answers once the broker has
+        // committed the initialization, or it failed. A worker that ends
+        // drops the reply unanswered; the bound only re-checks custody.
         loop {
             self.check()?;
-            // Wait on the actual worker reply rather than polling and sleeping
-            // the caller's thread. The bounded interval still revalidates
-            // original custody and observes the construction deadline.
             match received.recv_timeout(crate::time::Duration::from_millis(10)) {
                 Ok(result) => return result.map(|_| ()),
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -561,15 +602,18 @@ impl InitialReadBridge {
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             }
-            if crate::time::now() >= deadline {
-                return Err("native initialization commit timed out".into());
-            }
         }
     }
     fn from_manager(manager: &CollaborationManager) -> Result<Option<Self>, String> {
         let Backend::Transport(transport) = &manager.backend else {
             return Ok(None);
         };
+        // A manager still joining its room builds on the local replica (the
+        // non-Required path): its route's committed history arrives later,
+        // as an event the app merges.
+        if manager.awaiting_primary {
+            return Ok(None);
+        }
         let Some(channel) = transport
             .as_any()
             .and_then(|any| any.downcast_ref::<BrokerTransport>())
@@ -600,6 +644,10 @@ impl InitialReadBridge {
     }
     fn publishable(&self, channel: &str) -> bool {
         self.state.document_reads.publishable(channel)
+    }
+    /// Why no read of `channel` is coming, once none is.
+    fn unreadable(&self, channel: &str) -> Option<String> {
+        self.state.document_reads.unreadable(channel)
     }
     fn apply_prepared_capture(
         &self,
@@ -873,6 +921,9 @@ impl InitialReadBridge {
     fn publishable(&self, _channel: &str) -> bool {
         match self.never {}
     }
+    fn unreadable(&self, _channel: &str) -> Option<String> {
+        match self.never {}
+    }
     fn progress(&self) -> u64 {
         match self.never {}
     }
@@ -892,12 +943,6 @@ impl InitialReadBridge {
         _room: &str,
         _checkout: &crate::record::RecordCheckout,
     ) -> Result<Option<CommittedDocument>, RecordReadError> {
-        match self.never {}
-    }
-    fn read(
-        &self,
-        _record: Option<&crate::record::RecordId>,
-    ) -> Result<Option<CommittedDocument>, String> {
         match self.never {}
     }
     fn read_primary(&self) -> Result<CommittedDocument, String> {

@@ -884,9 +884,12 @@ pub fn session_connector(
     // broker, as a launched app's inherited connection does.
     ui::collaboration::HostSessionConnector::with_descriptor_lane(move |_route| async move {
         let failed = |error: std::io::Error| runtime_portal::NotAvailable::ConnectionFailed(error);
-        crate::shell::launcher::register_in_process_launch(&app, &room);
         let mut stream = std::os::unix::net::UnixStream::connect(&collab).map_err(failed)?;
-        launcher::services::write_collab_handoff(&mut stream, &app, &room).map_err(failed)?;
+        crate::shell::launcher::register_in_process_launch(&app, &room);
+        if let Err(error) = launcher::services::write_collab_handoff(&mut stream, &app, &room) {
+            crate::shell::launcher::withdraw_in_process_launch(&app, &room, None);
+            return Err(failed(error));
+        }
         stream.set_nonblocking(true).map_err(failed)?;
         let collaboration = tokio::net::UnixStream::from_std(stream).map_err(failed)?;
         let mut identity = std::os::unix::net::UnixStream::connect(&identity).map_err(failed)?;

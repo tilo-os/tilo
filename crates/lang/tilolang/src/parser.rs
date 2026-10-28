@@ -111,6 +111,28 @@ pub fn parse_expr_source(src: &str) -> (Option<Expr>, Vec<Diagnostic>) {
     (if complete { expr } else { None }, diags)
 }
 
+/// Parses the text as the statements of an agent's program: `let`, `for`, assignments and
+/// expressions, one per line.
+pub fn parse_program_source(src: &str) -> (Vec<Stmt>, Vec<Diagnostic>) {
+    let (toks, mut diags) = lex(src);
+    let mut p = Parser::new(toks, src);
+    let mut out = Vec::new();
+    p.skip_nl();
+    while !matches!(p.peek(), Tok::Eof) {
+        match p.stmt() {
+            Ok(s) => out.push(s),
+            Err(Abort) => p.recover_stmt(),
+        }
+        p.skip_nl();
+        if matches!(p.peek(), Tok::RBrace) {
+            p.unexpected::<()>("a statement").ok();
+            p.bump();
+        }
+    }
+    diags.append(&mut p.diags);
+    (out, diags)
+}
+
 /// Parses the text as the statements of a view body.
 pub fn parse_ui_source(src: &str) -> (Vec<UiStmt>, Vec<Diagnostic>) {
     let (toks, mut diags) = lex(src);

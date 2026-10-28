@@ -72,6 +72,8 @@ impl Core {
 
     fn check_param(&self, ty: &Ty, v: &Value) -> Result<(), String> {
         let ok = match (ty, v) {
+            // A program's `host.Resource` is any resource.
+            (Ty::Record(key), Value::Ref(_)) if *key == tilolang::resource_key() => true,
             (Ty::Record(key), Value::Ref(r)) => {
                 let want = self.registry.borrow().type_for(key);
                 want.as_deref() == Some(r.target.ty.as_str())
@@ -490,8 +492,15 @@ impl Core {
             .ok_or_else(|| RuntimeError::NotFound(format!("flow {flow_id}")))?
             .clone();
         let args = journal.args.clone();
+        // An agent's program is code its agent wrote: what it applies is decided as the
+        // agent's code, as a block's is.
+        let module = if pkg.meta.app.starts_with(tilolang::PROGRAM_APP_PREFIX) {
+            ModuleHash::principal(&journal.invoker.0)
+        } else {
+            pkg.hash.clone()
+        };
         self.frames.borrow_mut().push(
-            pkg.hash.clone(),
+            module,
             FrameKind::Flow(Box::new(FlowState {
                 run: run.clone(),
                 invoker: journal.invoker.clone(),

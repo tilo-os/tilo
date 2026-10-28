@@ -124,6 +124,8 @@ impl PopulatedShellFixture {
         theme: ui::theme::Theme,
         tree: crate::shell::state::WorkspaceTree,
     ) -> Self {
+        // The installed apps are read at startup, as the compositor does.
+        crate::shell::launcher::load_installed_apps();
         let parent = tempfile::tempdir().expect("private populated shell fixture parent");
         let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
             ui::font_catalog::checkout_root(),
@@ -152,6 +154,41 @@ impl PopulatedShellFixture {
                 .expect("populated fixture explicitly creates each presented tab record");
         }
         Self { frame, parent }
+    }
+
+    /// Acknowledge the startup writes of the fixture's `surfaces` Notes
+    /// windows and present that. Startup creates real records, and the
+    /// writer otherwise acknowledges them on its own thread whenever it gets
+    /// to them, flipping each window from Saving to Saved between two frames
+    /// a test compares.
+    pub(crate) fn acknowledge_notes_startup_writes(&mut self, surfaces: usize) {
+        let (apps, room) = {
+            let chrome = self.chrome();
+            let room = chrome
+                .tree()
+                .desktop
+                .active_workspace()
+                .expect("fixture workspace")
+                .room()
+                .to_string();
+            let apps = chrome
+                .hosted_inputs()
+                .in_process()
+                .expect("fixture app owner")
+                .clone();
+            (apps, room)
+        };
+        assert_eq!(
+            apps.borrow_mut()
+                .flush_fixture_records(notes::definition().app_id(), &room)
+                .expect("actual Notes startup writes acknowledged"),
+            surfaces
+        );
+        // Durability is sampled after sync; the next sync presents that sample.
+        assert_eq!(self.wake_mounted_components(), surfaces);
+        let _ = self.paint_with_damage();
+        assert_eq!(self.wake_mounted_components(), surfaces);
+        let _ = self.paint_with_damage();
     }
 }
 

@@ -72,7 +72,7 @@ mod tests {
 
     use super::super::idle_quiet_tests::{
         LONE_CPU_BUDGET, LONE_IDLE, LONE_SETTLE, LONE_WAKEUP_BUDGET, in_a_process_of_its_own,
-        session_threads,
+        session_threads, written_since,
     };
     use super::RoomId;
 
@@ -90,8 +90,12 @@ mod tests {
         }
         let mut home = tilo_test_env::TestHome::new().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        home.env()
-            .set("TILO_IDENTITY_ROOT", dir.path().join("identity"));
+        // The identity tree exists, so the session's watches of it follow
+        // it and not the nearest directory that does: the temporary
+        // directory the session's own profile is written in.
+        let identity = dir.path().join("identity");
+        std::fs::create_dir_all(identity.join("peers")).unwrap();
+        home.env().set("TILO_IDENTITY_ROOT", &identity);
         let profile = dir.path().join("profile");
         std::fs::create_dir_all(&profile).unwrap();
         let session = crate::runtime_host::Session::start(&profile).unwrap();
@@ -102,16 +106,24 @@ mod tests {
         );
 
         std::thread::sleep(LONE_SETTLE);
-        let before = session_threads(None);
+        // This thread only sleeps and reads `/proc`: a loaded runner blocks
+        // it on page faults, which is the runner and not the session.
+        let measurer = Some(tilo_test_env::idle::current_thread_id().expect("this thread's id"));
+        let before = session_threads(measurer);
         let started = Instant::now();
+        let started_at = std::time::SystemTime::now();
         std::thread::sleep(LONE_IDLE);
-        let wakeups =
-            tilo_test_env::idle::Wakeups::between(before, session_threads(None), started.elapsed());
+        let wakeups = tilo_test_env::idle::Wakeups::between(
+            before,
+            session_threads(measurer),
+            started.elapsed(),
+        );
+        let written = written_since([home.root(), dir.path()].into_iter(), started_at);
         eprintln!("an idle hosting session's threads, {wakeups}");
         assert!(
             wakeups.blocking_per_second() <= LONE_WAKEUP_BUDGET,
             "an idle session hosting its workspace woke {:.2} times a second, over \
-             {LONE_WAKEUP_BUDGET}/s:\n{wakeups}",
+             {LONE_WAKEUP_BUDGET}/s:\n{wakeups}files written while idle: {written:?}",
             wakeups.blocking_per_second(),
         );
         assert!(

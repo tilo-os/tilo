@@ -9,15 +9,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tilo_user_identity::DeviceCapabilities;
 
-use super::cold_reads::{CHAT, chat_channels, open_cold, open_launched, until_broker_took};
+use super::cold_reads::{CHAT, chat_channels, open_launched, open_record_cold, until_broker_took};
 use super::{Device, Person, RoomId, Wakes, hosted_workspace, scratch, until, until_or_say};
+
+/// The windows the desktop's and the laptop's sessions open the app in.
+const DESKTOP_WINDOW: u64 = 1;
+const LAPTOP_WINDOW: u64 = 2;
 
 /// The room's first channels, as the chat seeds them.
 const FIRST_CHANNELS: [&str; 2] = [chat::record::CHAT_CHANNEL, chat::record::VOICE_CHANNEL];
 
 /// An app [`drive`] started, kept open until dropped so its channel keeps
 /// serving what it wrote.
-struct Running {
+pub(super) struct Running {
     done: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -32,7 +36,7 @@ impl Drop for Running {
 }
 
 /// What one turn of a [`drive`]n app found.
-enum Step<T> {
+pub(super) enum Step<T> {
     /// Not yet; what the app shows meanwhile.
     Waiting(String),
     Done(T),
@@ -51,7 +55,7 @@ fn seeded(channels: &[String]) -> bool {
 /// after each turn of the app's model until it is done or failed: what it
 /// was done with, or why not (with what the app showed last). The app runs
 /// on until the answer's [`Running`] is dropped.
-fn drive<T: Send + 'static>(
+pub(super) fn drive<T: Send + 'static>(
     devices: &[&Device],
     what: &str,
     open: impl FnOnce() -> (ui::App, ui::record::RecordOwners) + Send + 'static,
@@ -126,7 +130,7 @@ fn first_part_messages(owners: &ui::record::RecordOwners, room: RoomId) -> Optio
 
 /// The published resource of `resources` (or of their children) that
 /// offers `action`.
-fn offering<'a>(
+pub(super) fn offering<'a>(
     resources: &'a [tilo_actions::Resource],
     action: &str,
 ) -> Option<&'a tilo_actions::Resource> {
@@ -141,7 +145,7 @@ fn offering<'a>(
 
 /// Each published resource of `resources` with its actions, for a failure
 /// to say what the app offered.
-fn offered(resources: &[tilo_actions::Resource]) -> Vec<String> {
+pub(super) fn offered(resources: &[tilo_actions::Resource]) -> Vec<String> {
     resources
         .iter()
         .flat_map(|resource| {
@@ -162,7 +166,7 @@ fn offered(resources: &[tilo_actions::Resource]) -> Vec<String> {
 
 /// Each action the session's broker lists in `room`, by app, for a failure
 /// to say what the session offered.
-fn session_listing(
+pub(super) fn session_listing(
     listed: &crate::shell::collab_broker::AppActionBroker,
     room: &str,
 ) -> Vec<String> {
@@ -187,10 +191,10 @@ fn session_listing(
 
 /// A person's desktop hosting a fresh workspace, and their laptop holding
 /// it: the devices, the room and the person's id.
-struct NewWorkspace {
-    desktop: Device,
-    laptop: Device,
-    room: RoomId,
+pub(super) struct NewWorkspace {
+    pub(super) desktop: Device,
+    pub(super) laptop: Device,
+    pub(super) room: RoomId,
     person: String,
 }
 
@@ -199,7 +203,7 @@ fn hex_keys(keys: &[[u8; 32]]) -> Vec<String> {
     keys.iter().map(hex::encode).collect()
 }
 
-fn new_workspace(
+pub(super) fn new_workspace(
     home: &mut tilo_test_env::TestHome,
     dir: &std::path::Path,
     seed: u8,
@@ -225,7 +229,9 @@ fn new_workspace(
         &ada,
         "Ada's laptop",
         &dir.join("laptop"),
-        ports + 1,
+        ports
+            .checked_add(1)
+            .expect("the laptop has a port after the desktop's"),
         DeviceCapabilities::member(),
         &wakes,
     );
@@ -251,7 +257,7 @@ fn new_workspace(
     // process's, so it names the desktop only once the laptop holds the
     // workspace: Ada's devices met each other as their sessions do.
     home.env()
-        .set("TILO_IDENTITY_ROOT", &dir.join("desktop"))
+        .set("TILO_IDENTITY_ROOT", dir.join("desktop"))
         .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
     desktop.keep_identity_on_disk(
         &runtime_identity::identity_dir_from_env().expect("the identity directory"),
@@ -265,7 +271,7 @@ fn new_workspace(
 }
 
 /// A scratch directory the brokers may bind in: owner-only.
-fn broker_scratch() -> tempfile::TempDir {
+pub(super) fn broker_scratch() -> tempfile::TempDir {
     let dir = scratch();
     std::fs::set_permissions(
         dir.path(),
@@ -293,7 +299,28 @@ impl NewWorkspace {
     where
         S: FnMut(&mut ui::App, &ui::record::RecordOwners) -> Step<T> + Send + 'static,
     {
-        self.desktop.open_app_first(self.room, CHAT);
+        self.launch_app_on_desktop(dir, CHAT, chat::definition(), what, step)
+    }
+
+    /// The desktop's `app` of `definition` in the new workspace, launched
+    /// as the session launches a window of it: its broker, then the step
+    /// `step` makes from the actions the broker lists [`drive`]n on it.
+    pub(super) fn launch_app_on_desktop<T: Send + 'static, S>(
+        &mut self,
+        dir: &std::path::Path,
+        app: &'static str,
+        definition: &'static ui::application::ApplicationDefinition,
+        what: &str,
+        step: impl FnOnce(crate::shell::collab_broker::AppActionBroker) -> S,
+    ) -> (
+        crate::shell::collab_broker::BrokerHandle,
+        Result<T, String>,
+        Running,
+    )
+    where
+        S: FnMut(&mut ui::App, &ui::record::RecordOwners) -> Step<T> + Send + 'static,
+    {
+        self.desktop.open_app_first(self.room, app);
         let socket = dir.join("desktop-collab.sock");
         let broker = self.desktop.start_broker(&socket);
         let step = step(
@@ -301,21 +328,15 @@ impl NewWorkspace {
                 .app_action_broker()
                 .expect("the session's broker lists its apps' actions"),
         );
-        let launch = self.desktop.app_launch(&socket, CHAT, self.room);
-        let profile = dir.join("desktop-chat");
+        let launch = self
+            .desktop
+            .app_window_launch(&socket, app, self.room, DESKTOP_WINDOW);
+        let profile = dir.join(format!("desktop-{app}"));
         let (room, person) = (self.room, self.person.clone());
         let (found, running) = drive(
             &[&self.desktop, &self.laptop],
             what,
-            move || {
-                open_launched(
-                    &profile,
-                    chat::definition(),
-                    room,
-                    &person,
-                    launch.connect(),
-                )
-            },
+            move || open_launched(&profile, definition, room, &person, launch.connect()),
             step,
         );
         (broker, found, running)
@@ -334,22 +355,47 @@ impl NewWorkspace {
         Result<T, String>,
         Running,
     ) {
+        let primary =
+            ui::record::RecordCheckout::package_primary(chat::definition().record_kind.clone());
+        self.open_app_on_laptop(dir, CHAT, chat::definition(), primary, what, step)
+    }
+
+    /// The laptop's `app` of `definition` on the record `checkout` names,
+    /// opened cold through its own broker once the desktop's writes reached
+    /// the room's host: its broker, then `step` [`drive`]n on it.
+    pub(super) fn open_app_on_laptop<T: Send + 'static>(
+        &mut self,
+        dir: &std::path::Path,
+        app: &'static str,
+        definition: &'static ui::application::ApplicationDefinition,
+        checkout: ui::record::RecordCheckout,
+        what: &str,
+        step: impl FnMut(&mut ui::App, &ui::record::RecordOwners) -> Step<T> + Send + 'static,
+    ) -> (
+        crate::shell::collab_broker::BrokerHandle,
+        Result<T, String>,
+        Running,
+    ) {
         let socket = dir.join("laptop-collab.sock");
         let broker = self.laptop.start_broker(&socket);
-        until_broker_took(&[&self.desktop, &self.laptop], &self.laptop, CHAT);
-        let launch = self.laptop.app_launch(&socket, CHAT, self.room);
-        let profile = dir.join("laptop-chat");
+        until_broker_took(&[&self.desktop, &self.laptop], &self.laptop, app);
+        let launch = self
+            .laptop
+            .app_window_launch(&socket, app, self.room, LAPTOP_WINDOW)
+            .on_record(&checkout.id);
+        let profile = dir.join(format!("laptop-{app}"));
         let (room, person) = (self.room, self.person.clone());
         let (found, running) = drive(
             &[&self.desktop, &self.laptop],
             what,
             move || {
-                open_cold(
+                open_record_cold(
                     &profile,
-                    chat::definition(),
+                    definition,
                     room,
                     &person,
                     launch.connect(),
+                    checkout,
                 )
             },
             step,

@@ -400,6 +400,9 @@ def block():
                         'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", '
                         'CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }'),
                 ("outputs", arr([f"/target/os/{arch}/compiled{suffix}/**"])),
+                # The greeter's initramfs build resolves with the empty workspace-hack and
+                # writes that resolve to Cargo.lock before compile.sh puts it back.
+                ("writable_sources", "true"),
                 ("requires", arr([node])),
                 ("cost", '"heavy"'), ("requirement", requirement(16, memory)), ("timeout_secs", "10800"),
                 ("default", "false")]))

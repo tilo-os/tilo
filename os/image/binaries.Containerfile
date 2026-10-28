@@ -14,6 +14,11 @@
 # are new in every build, while the trees they verify are named by their
 # payload and stay the same layer.
 FROM trust AS app-store
+# Buildah keys a RUN by its instruction and the layer below, not by what a bind mount from
+# another stage holds, so this RUN would be served from an earlier build's cache however the
+# apps changed. Copying the runtime's publisher key first keys it: the payload's builder
+# signs with a key it generates, so that key is new whenever the payload is built again.
+COPY --from=native-builder-payload /out/runtime-bundle-publisher.hex /tilo-payload-keys/
 RUN --network=none \
     --mount=type=bind,from=native-builder-payload,source=/usr/share/tilo-apps,target=/run/tilo-apps-built,ro \
     --mount=type=bind,source=os/scripts/seed-env-runtime.py,target=/run/tilo-seed-env-runtime.py,ro \

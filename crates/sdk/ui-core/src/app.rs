@@ -1911,15 +1911,26 @@ impl App {
     /// source stays at the same generation. The session keeps it after the
     /// app closes, so the app's content stays findable whether or not it
     /// runs.
+    ///
+    /// Any acknowledged primary route carries it, whatever keeps the room's
+    /// records: the broker files it under the app, room and record that
+    /// route certifies, so it needs no private window binding, which a room
+    /// whose records are sealed channels never hands out.
     fn publish_search_index(&mut self) {
         let _phase = tilo_resource::profiling::Phase::start("ui.publish_search_index");
         let Some(state) = crate::search::capability::search_index_state(self.root_widget.as_ref())
         else {
             return;
         };
-        let Some(route) = self.private_continuity_route() else {
+        let Some(witness) = self.collaboration.manager.primary_route().cloned() else {
             return;
         };
+        // A new route starts from nothing: the whole set crosses again.
+        if self.continuation.search_index_route.as_ref() != Some(&witness) {
+            self.continuation.search_index.reset();
+            self.continuation.search_index_route = Some(witness.clone());
+        }
+        let route = witness.route();
         if !self.continuation.search_index.wants(state) {
             return;
         }
@@ -1958,7 +1969,6 @@ impl App {
             }
             self.continuation.last_published = None;
             self.continuation.publication_initialized = false;
-            self.continuation.search_index.reset();
             self.last_published_playback = None;
             self.last_playback_publish = None;
             self.continuation.last_private_route = Some(witness.clone());

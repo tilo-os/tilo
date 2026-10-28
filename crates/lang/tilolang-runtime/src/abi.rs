@@ -112,6 +112,11 @@ imports! {
     (Outside, "outside", "ii", "i"),
     (ModelCall, "model_call", "ii", "i"),
     (QueueBlock, "queue_block", "iii", ""),
+    (Print, "print", "i", ""),
+    (Find, "find", "ii", "i"),
+    (ReadText, "read_text", "i", "i"),
+    (OfType, "of_type", "ii", "i"),
+    (Keep, "keep", "ii", ""),
 
     (UiNode, "ui_node", "ii", "i"),
     (UiPropH, "ui_prop_h", "iii", ""),

@@ -963,6 +963,10 @@ fn spatial_controller_withdrawal_retries_terminal_after_policy_off_and_transport
         fixture.actions().is_empty(),
         "full transport cannot report terminal delivery"
     );
+    // The pump reads the policy through the settings watch, which publishes
+    // the write above on its own thread: on a loaded machine the pump would
+    // otherwise still see Display & Input on and probe the peer's health.
+    runtime.refresh_settings_for_test();
     runtime.pump(
         &fixture.network,
         &selection,

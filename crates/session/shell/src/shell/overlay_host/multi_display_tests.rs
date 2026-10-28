@@ -1202,6 +1202,11 @@ fn arriving_is_said_in_the_top_bar_on_one_display_beneath_every_overlay() {
     let _settled = ui::motion::testing::settled();
     let mut desk = Desk::new("laptop-beside-1080p");
     desk.work_on(0);
+    // A control hint's moment comes seconds after the desktop is first
+    // painted, on the wall clock, and hints are drawn where the overlays
+    // are: on a loaded machine one lands between the two drawings compared
+    // below. This test measures the arrival, so the hints keep away.
+    desk.fb.host_mut().rest_control_hints();
     let sections = |desk: &mut Desk| {
         desk.fb.host_mut().draw_scene_sections(
             Affine::IDENTITY,

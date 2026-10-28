@@ -624,9 +624,11 @@ pub(super) struct ContinuationRuntime {
     /// The document this window shows has left its workspace, and the
     /// window knows: it stopped editing and told its desktop once.
     pub(super) retired: bool,
-    /// What this route last published to the session's persistent search
-    /// index, so only changes cross again.
+    /// What the primary route last published to the session's persistent
+    /// search index, so only changes cross again.
     pub(super) search_index: crate::search::index_publication::Publisher,
+    /// The primary route [`Self::search_index`] published on.
+    pub(super) search_index_route: Option<crate::collaboration::PrimaryRouteWitness>,
 }
 
 impl ContinuationRuntime {
@@ -641,6 +643,7 @@ impl ContinuationRuntime {
             private_instance: None,
             retired: false,
             search_index: crate::search::index_publication::Publisher::default(),
+            search_index_route: None,
         }
     }
 }
@@ -665,6 +668,10 @@ pub(super) struct CollaborationRuntime {
     /// retire departed certified members without touching unrelated local
     /// presentation state.
     pub(super) context_participants: std::collections::HashSet<crate::permissions::UserId>,
+    /// What the window's status line last said about the connection: a
+    /// join held up, refused or lost changes it without changing the
+    /// window's model.
+    pub(super) shown_sync_status: Option<String>,
 }
 
 impl CollaborationRuntime {
@@ -681,6 +688,7 @@ impl CollaborationRuntime {
             history: crate::collaboration::DocumentHistory::default(),
             channel_access: None,
             context_participants: std::collections::HashSet::new(),
+            shown_sync_status: None,
         }
     }
 }

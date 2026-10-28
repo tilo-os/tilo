@@ -4027,10 +4027,16 @@ impl ForeignFrameStore {
     /// past the one frame budget its first frame may hold the window's
     /// ([`ui::arriving`]). A launch is settled once it does.
     pub fn stands(&self, id: SurfaceId) -> bool {
+        self.stands_at(id, Instant::now())
+    }
+
+    /// Whether `id`'s window stands at `now` ([`Self::stands`]).
+    pub fn stands_at(&self, id: SurfaceId, now: Instant) -> bool {
         let guard = self.entries.lock_recover();
-        guard
-            .get(&id)
-            .is_some_and(|e| e.presented || e.first_seen.elapsed() >= ui::arriving::frame_budget())
+        guard.get(&id).is_some_and(|e| {
+            e.presented
+                || now.saturating_duration_since(e.first_seen) >= ui::arriving::frame_budget()
+        })
     }
 
     /// When the store next decides something about `id`'s window by itself
@@ -6249,9 +6255,12 @@ mod tests {
         fn a_surface_just_heard_of_holds_its_first_frame() {
             let id = sid(50);
             store().forget(id);
+            // Asked at the moment it is heard of: a loaded machine can
+            // spend the whole budget between two lines of this test.
+            let heard = Instant::now();
             store().note_placement(id, TILE);
             assert!(
-                !store().stands(id),
+                !store().stands_at(id, heard),
                 "an app that may still draw in time must not have its place put up \
                  empty first",
             );

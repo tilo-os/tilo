@@ -1032,7 +1032,7 @@ def nested_sandboxes() -> list[str]:
     """The packages the `test` family runs with nested sandboxes, which t.toml names by hand."""
     for family in tomllib.loads(T_TOML.read_text(encoding="utf-8")).get("cargo", []):
         if family["name"] == "test":
-            return family["nested_sandboxes"]
+            return family["isolation"]["nested"]
     raise ValueError("t.toml has no `test` family")
 
 
@@ -1060,7 +1060,7 @@ def test_families(packages: dict[str, dict]) -> dict[str, str]:
               "check-exclude": f"exclude = {array(['workspace-unify', *sorted(per_arch)])}\n"}
     for arch in ARCHES:
         blocks[f"test-{arch}-packages"] = (f"packages = {array(tested)}\n"
-                                           f"nested_sandboxes = {array(nested)}\n")
+                                           f"isolation = {{ nested = {array(nested)} }}\n")
         blocks[f"clippy-{arch}-packages"] = f"packages = {array(linted)}\n"
     return blocks
 

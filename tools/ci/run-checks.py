@@ -13,7 +13,8 @@ What a check gets, as on t (t's README, "Where checks run" and "Micro-VM steps")
   * one /target shared by every check of the run, where the outputs of those it needs are;
   * t.toml's [env] and its own `env`, HOME, TMPDIR and CARGO_TARGET_DIR (a directory of its own
     below /target, kept between runs: cargo builds of checks run at once must not share one), and
-    T_COMMIT with `git = true`, secrets or identity tokens; T_REF from --ref;
+    T_COMMIT with `git = true`, secrets or identity tokens; T_REF from --ref, with T_TRIGGER
+    `branch`; its `dispatch_inputs` as T_INPUT_<NAME>, their defaults unless --input names them;
   * `isolation = "vm"`: root with podman of its own and /dev/kvm (here a privileged container
     with its own /var/lib/containers, /tmp and /var/tmp, but the machine's kernel: no loop
     devices and only the filesystems it has, so os-dev-disk-<arch> does not run here);
@@ -176,6 +177,7 @@ class Runner:
         self.state = self.target / ".run-checks"
         self.keys: dict[str, str] = {}
         self.pulling: dict[str, threading.Lock] = {}
+        self.inputs = dict(i.split("=", 1) for i in args.input)
         self.run_id = f"{os.getpid()}-{int(time.time())}"
 
     def key(self, name: str) -> str:
@@ -293,7 +295,11 @@ class Runner:
         if check.get("git") or check.get("secrets") or check.get("id_token"):
             env["T_COMMIT"] = self.tree.commit
         if self.args.ref:
-            env["T_REF"] = self.args.ref
+            # A run for a branch, as t's runs of a pushed branch are (T_TRIGGER `branch`).
+            env.update(T_REF=self.args.ref, T_TRIGGER="branch")
+        # A check's dispatch inputs, as T_INPUT_<NAME>: their defaults, or --input's values.
+        for input_name, default in check.get("dispatch_inputs", {}).items():
+            env[f"T_INPUT_{input_name.upper()}"] = self.inputs.get(input_name, default)
         env.update(check.get("env", {}))
         # Podman here runs as root of a user namespace, so it keeps its runtime files in
         # XDG_RUNTIME_DIR as a rootless podman does; a VM step's root podman never reads it.
@@ -379,7 +385,11 @@ def main(argv: list[str]) -> int:
     p.add_argument("checks", nargs="+")
     p.add_argument("--target", default=str(ROOT / "target" / "run-checks"), help="the shared /target")
     p.add_argument("--work", help="per-check scratch (default: TARGET/../run-checks-work)")
-    p.add_argument("--ref", help="T_REF, the branch the run is for (main for main's dev channel)")
+    p.add_argument("--ref", help="T_REF, the branch the run is for (main for main's dev channel); "
+                   "without it checks run as for a working tree, such as vm-acceptance running only what "
+                   "the tree's changes select")
+    p.add_argument("--input", action="append", default=[], metavar="NAME=VALUE",
+                   help="a dispatch input of the checks that declare it (t dispatch --input)")
     p.add_argument("--jobs", type=int, default=4, help="checks run at once")
     p.add_argument("--force", action="store_true", help="run the named checks and their needs even if passed")
     p.add_argument("--dry-run", action="store_true", help="say what would run")

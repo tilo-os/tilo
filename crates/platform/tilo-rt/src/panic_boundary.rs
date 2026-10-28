@@ -122,6 +122,20 @@ mod tests {
         let Ok(scenario) = std::env::var(FIXTURE) else {
             return;
         };
+        // The abort is the outcome under test, not a crash to debug: it must
+        // not leave a core file in the directory the tests run in.
+        #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+        {
+            let no_core = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            // SAFETY: `setrlimit` only reads the limit it is handed.
+            assert_eq!(
+                unsafe { libc::setrlimit(libc::RLIMIT_CORE, &raw const no_core) },
+                0
+            );
+        }
         abort_outside_boundaries();
         if scenario == "isolated" {
             let helper =

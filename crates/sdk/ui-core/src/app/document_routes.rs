@@ -180,14 +180,28 @@ impl App {
         // A change still on its way to the history says nothing.
         let key = if self.document_routes.witness.is_none() {
             let manager = &self.collaboration.manager;
-            // A lost connection says it is offline: reconnecting resumes it.
-            // A refused change is reported above, while still connected.
-            if self.native_document_chrome && manager.joining_late_route() {
-                // Opened on the local replica while the route is joined.
+            if !self.native_document_chrome {
+                return None;
+            }
+            // The broker refused the workspace's join: say why. The app
+            // keeps working on what this device holds.
+            if let Some(reason) = manager.join_refusal() {
+                return Some(Cow::Owned(crate::i18n::I18nManager::format(
+                    "history-sync-join-refused",
+                    &[("reason", reason.to_owned().into())],
+                )));
+            }
+            if manager.join_hold().is_some() {
+                // Joining, and the broker says what holds the join up: the
+                // room is not ready on this device yet, or the broker
+                // cannot be reached. A join that is merely under way says
+                // nothing.
                 Some("history-sync-reconnecting")
             } else {
-                (self.native_document_chrome && manager.sync_lost())
-                    .then_some("history-sync-offline")
+                // A lost connection says it is offline: reconnecting resumes
+                // it. A refused change is reported above, while still
+                // connected.
+                manager.sync_lost().then_some("history-sync-offline")
             }
         } else if !self.document_routes.primary.is_empty()
             || self

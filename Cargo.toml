@@ -47,6 +47,7 @@ exclude = [
     "vendor/rustypipe",
     "vendor/miracast",
     "vendor/davey",
+    "vendor/zbus",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
@@ -1272,6 +1273,9 @@ hyper-proxy2 = { path = "vendor/hyper-proxy2" }
 # text is measured and kerned at the width it is drawn. See
 # vendor/cosmic-text/TILO-PATCH.md.
 cosmic-text = { path = "vendor/cosmic-text" }
+# zbus's blocking API runs on a runtime of its own with a worker thread per
+# host CPU; one worker, as its message says. See vendor/zbus/PROVENANCE.md.
+zbus = { path = "vendor/zbus" }
 # The Google Cast message types with their prost code pre-generated, so the
 # build no longer compiles a protobuf compiler for one message.
 # See vendor/google-cast-protocol/PROVENANCE.md.

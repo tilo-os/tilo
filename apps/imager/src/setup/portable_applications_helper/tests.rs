@@ -114,7 +114,7 @@ impl Fixture {
     fn new_schema(home_selected: bool, user_state: bool, schema: u32) -> Self {
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let temporary = tempfile::tempdir().unwrap();
+        let temporary = crate::setup::test_support::qualified_tempdir();
         let root = temporary.path().canonicalize().unwrap();
         directory(&root);
         let home = root.join("target-home");

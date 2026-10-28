@@ -30,6 +30,12 @@ COPY os/usr/lib/systemd/system/tilo-node-relay@.service \
     os/usr/lib/systemd/system/tilo-node-session@.service \
     os/usr/lib/systemd/system/tilo-node-session@.path \
     /tilo-components/usr/lib/systemd/system/
+# Buildah keys a RUN by its instruction and the layer below, not by what a bind mount from
+# another stage holds, so this RUN would be served from an earlier build's cache however the
+# compiled components changed. Copying the payload's runtime publisher key first keys it:
+# the payload's builder signs with a key it generates, so that key is new whenever the
+# payload is built again.
+COPY --from=native-builder-payload /out/runtime-bundle-publisher.hex /tilo-payload-keys/
 RUN --network=none \
     --mount=type=bind,from=native-builder-payload,source=/out,target=/out,ro \
     --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
