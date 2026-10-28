@@ -142,10 +142,14 @@ impl PersonRecords {
 
     /// Write out what is not stored yet, as closing the window does.
     ///
+    /// The records are the store's once written: a store whose host commits
+    /// in its own time (the page's, through IndexedDB) says "not yet" for
+    /// every write it took, which is not a record that could not be stored.
+    ///
     /// # Errors
     /// The records' writer reports a storage failure.
     pub fn flush(&self) -> Result<(), String> {
-        self.store.try_flush()
+        self.store.try_flush_written()
     }
 
     #[must_use]
