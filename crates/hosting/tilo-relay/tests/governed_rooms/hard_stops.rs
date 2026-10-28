@@ -27,7 +27,7 @@ fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
 async fn a_write_the_relay_committed_survives_a_hard_stop_before_the_governor_keeps_it() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", crate::common::governor_capabilities());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();

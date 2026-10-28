@@ -19,7 +19,7 @@ fn first_state(peer: &StatePeer) -> Option<String> {
 async fn a_member_authors_an_apps_first_record_themselves() {
     let alice = TestUser::fresh("Fixture governor");
     let bob = TestUser::fresh("Fixture editor");
-    let host = alice.enrol("private-host", DeviceCapabilities::host());
+    let host = alice.enrol("private-host", crate::common::governor_capabilities());
     let laptop = alice.enrol("private-laptop", DeviceCapabilities::primary());
     let member = bob.enrol("private-member", DeviceCapabilities::member());
     let scratch = tempfile::tempdir().unwrap();

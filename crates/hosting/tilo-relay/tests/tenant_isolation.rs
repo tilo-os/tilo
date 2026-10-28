@@ -426,7 +426,7 @@ struct TwoTenants {
 impl TwoTenants {
     async fn start() -> Self {
         let provider = TestUser::fresh("Provider");
-        let host = provider.enrol("hosted-relay", DeviceCapabilities::host());
+        let host = provider.enrol("hosted-relay", crate::common::governor_capabilities());
         let ann = TestUser::fresh("Ann of Acme");
         let ann_laptop = ann.enrol("ann-laptop", DeviceCapabilities::primary());
         let bob = TestUser::fresh("Bob of Globex");

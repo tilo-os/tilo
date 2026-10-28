@@ -31,7 +31,7 @@ fn release(
 async fn a_developer_pushes_an_app_version_and_a_bot_program_into_a_running_room() {
     let alice = TestUser::fresh("Alice");
     let ada = TestUser::fresh("Ada");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", crate::common::governor_capabilities());
     let laptop = ada.enrol("ada-laptop", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = start(state.path(), &alice, &host).await;
@@ -178,7 +178,7 @@ async fn a_member_follows_the_version_the_room_runs_and_its_held_edit_goes_in() 
     let alice = TestUser::fresh("Alice");
     let ada = TestUser::fresh("Ada");
     let bob = TestUser::fresh("Bob");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", crate::common::governor_capabilities());
     let laptop = ada.enrol("ada-laptop", DeviceCapabilities::member());
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();

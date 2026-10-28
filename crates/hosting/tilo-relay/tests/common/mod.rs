@@ -28,6 +28,13 @@ use tilo_relay::{
     daemon::{Relay, RelayIdentity},
 };
 
+/// The capabilities of a device that governs rooms: hosting them and owning
+/// their workspaces, so it stewards the channels of every record they hold.
+/// A relay's own setup refuses any other certificate.
+pub fn governor_capabilities() -> DeviceCapabilities {
+    tilo_user_identity::cloud_enrollment::host_capabilities()
+}
+
 /// A "user" (root keypair) + on-disk identity root usable by the
 /// tests.
 pub struct TestUser {

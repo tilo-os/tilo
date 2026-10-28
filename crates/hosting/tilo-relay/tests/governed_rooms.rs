@@ -212,7 +212,7 @@ fn role(peer: &StatePeer, device: [u8; 32]) -> Option<collab_types::Role> {
 async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_removed() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", crate::common::governor_capabilities());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
@@ -487,7 +487,7 @@ fn terminal_audit(actor: &str, invocation: uuid::Uuid) -> Vec<u8> {
 async fn member_terminal_audit_uses_exact_authenticated_current_admission() {
     let alice = TestUser::fresh("Fixture owner");
     let bob = TestUser::fresh("Fixture member");
-    let host = alice.enrol("private-host", DeviceCapabilities::host());
+    let host = alice.enrol("private-host", crate::common::governor_capabilities());
     let member = bob.enrol("private-member", DeviceCapabilities::member());
     let scratch = tempfile::tempdir().unwrap();
     let relay = Relay::start_with_relay_mode(
@@ -687,7 +687,7 @@ type = "String"
     );
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", crate::common::governor_capabilities());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
@@ -862,7 +862,7 @@ params = []
     );
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", crate::common::governor_capabilities());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
@@ -1041,7 +1041,7 @@ params = []
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pruning_removes_idle_guests_in_one_change_and_their_invitations_admit_nobody() {
     let alice = TestUser::fresh("Alice");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", crate::common::governor_capabilities());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let relay = start(state.path(), &alice, &host).await;

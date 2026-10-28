@@ -143,7 +143,7 @@ async fn spectators_read_a_public_room_write_nothing_and_fill_only_its_seats() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
     let spectator = TestUser::fresh("Watching visitors");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", crate::common::governor_capabilities());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let first = spectator.enrol("joined", DeviceCapabilities::member());

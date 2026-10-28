@@ -1734,10 +1734,7 @@ async fn a_plain_host_certificate_governs_no_room() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(DeviceCapabilities::host());
     let relay = view_read_relay(&dir.path().join("relay"), &key, &cert).await;
-    let rooms = relay
-        .rooms()
-        .expect("a certified host holds a relay")
-        .clone();
+    let rooms = relay.rooms().expect("a certified host holds a relay");
     let refused = rooms.create("Unstewarded").await;
     assert!(
         refused.is_err(),
@@ -1745,10 +1742,10 @@ async fn a_plain_host_certificate_governs_no_room() {
     );
 }
 
-/// The other half of the same claim, so the plain host's test observes its
-/// subject: a node certified to own workspaces stewards the channel of every
-/// record in the rooms it governs, is a member of each group beside the
-/// member devices governance lets read it, and seals its state on disk.
+/// The subject the refusal leaves room for: a node certified to own
+/// workspaces stewards the channel of every record in the rooms it governs,
+/// is a member of each group beside the member devices governance lets read
+/// it, and seals its state on disk.
 #[tokio::test]
 #[cfg_attr(
     feature = "agents",

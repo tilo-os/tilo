@@ -283,7 +283,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
     let ada = TestUser::fresh("Ada");
     let ben = TestUser::fresh("Ben");
     let mo = TestUser::fresh("Mo");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", crate::common::governor_capabilities());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let ada_browser = ada.enrol("ada-browser", DeviceCapabilities::member());
     let ben_browser = ben.enrol("ben-browser", DeviceCapabilities::member());
@@ -506,7 +506,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
 async fn a_public_rooms_guest_is_answered_the_role_it_was_admitted_with() {
     let alice = TestUser::fresh("Alice");
     let ada = TestUser::fresh("Ada");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", crate::common::governor_capabilities());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let ada_browser = ada.enrol("ada-browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();

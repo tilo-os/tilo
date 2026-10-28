@@ -63,7 +63,7 @@ async fn member_in_a_new_room(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_member_fetches_a_bridged_avatar_from_the_room_host() {
     let alice = crate::common::TestUser::fresh("Alice");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", crate::common::governor_capabilities());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let relay = Relay::start(

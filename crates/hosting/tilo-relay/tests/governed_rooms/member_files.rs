@@ -11,7 +11,7 @@ use tilo_relay::room_bots::installed::FsBlobs;
 async fn a_visitors_file_as_large_as_the_host_keeps_reaches_it() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", crate::common::governor_capabilities());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = bob.enrol("bob-browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();

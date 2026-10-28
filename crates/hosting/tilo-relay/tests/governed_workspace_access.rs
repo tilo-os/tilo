@@ -67,11 +67,11 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     let bob = TestUser::fresh("Bob");
     let charlie = TestUser::fresh("Charlie");
     let diana = TestUser::fresh("Diana");
-    let host = provider.enrol("host", DeviceCapabilities::host());
+    let host = provider.enrol("host", crate::common::governor_capabilities());
     let alice_a = alice.enrol("alice-a", DeviceCapabilities::primary());
     let alice_b = alice.enrol("alice-b", DeviceCapabilities::primary());
     let bob_device = bob.enrol("bob", DeviceCapabilities::primary());
-    let charlie_device = charlie.enrol("charlie-host", DeviceCapabilities::host());
+    let charlie_device = charlie.enrol("charlie-host", crate::common::governor_capabilities());
     let diana_device = diana.enrol("diana", DeviceCapabilities::primary());
     let alice_a_key = alice_a.device_pubkey();
     let alice_reconnect_cert = alice_a.cert.clone();

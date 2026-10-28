@@ -102,7 +102,7 @@ async fn until_refused(what: &str, relay: &Relay, device: &TestDevice, workspace
 async fn a_revocation_announced_in_one_room_reaches_the_relay_and_every_room_it_governs() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", crate::common::governor_capabilities());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("alice-phone", DeviceCapabilities::primary());
     let tablet = bob.enrol("bob-tablet", DeviceCapabilities::member());

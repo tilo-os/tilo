@@ -23,7 +23,7 @@ fn authors(peer: &StatePeer, member: &TestDevice) -> bool {
 async fn the_hosts_person_grants_app_authorship_through_the_hosts_action() {
     let alice = TestUser::fresh("Fixture governor");
     let bob = TestUser::fresh("Fixture editor");
-    let host = alice.enrol("private-host", DeviceCapabilities::host());
+    let host = alice.enrol("private-host", crate::common::governor_capabilities());
     let laptop = alice.enrol("private-laptop", DeviceCapabilities::primary());
     let member = bob.enrol("private-member", DeviceCapabilities::member());
     let scratch = tempfile::tempdir().unwrap();
@@ -100,7 +100,7 @@ async fn settled_app_authorship_survives_a_restart_and_is_withdrawn_for_good() {
     use std::collections::BTreeSet;
     const CHAT: &str = "so.tilo.chat";
     let alice = TestUser::fresh("Lounge host's person");
-    let host = alice.enrol("lounge-host", DeviceCapabilities::host());
+    let host = alice.enrol("lounge-host", crate::common::governor_capabilities());
     let scratch = tempfile::tempdir().unwrap();
     let chat = BTreeSet::from([CHAT.to_owned()]);
     let none = BTreeSet::new();

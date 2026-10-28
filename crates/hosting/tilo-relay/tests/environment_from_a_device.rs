@@ -109,8 +109,8 @@ fn read_until(master: &mut std::fs::File, needle: &str) -> String {
 )]
 async fn a_terminal_reaches_an_environment_on_the_persons_relay_and_re_attaches() {
     let alice = TestUser::fresh("Alice");
-    let home = alice.enrol("home-relay", DeviceCapabilities::host());
-    let worker = alice.enrol("home-worker", DeviceCapabilities::host());
+    let home = alice.enrol("home-relay", crate::common::governor_capabilities());
+    let worker = alice.enrol("home-worker", crate::common::governor_capabilities());
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let workspace = tilo_relay_protocol::personal_continuity_workspace_id(&alice.user_pk);
     let state = tempfile::tempdir().unwrap();
