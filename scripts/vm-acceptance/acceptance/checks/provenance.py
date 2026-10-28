@@ -21,13 +21,17 @@ def commit(ctx, res):
     expect(p.get("booted_digest"), "no booted image digest")
     expect(not p.get("mismatch"), p.get("mismatch", ""))
     swap = p.get("swap")
+    record = p["record"]
+    base = (record.get("commit") or "?")[:12]
+    if "published" in (record.get("source") or ""):
+        # vm-acceptance-layers: main's published disk, not this tree's image; say whose.
+        res.detail = f"main's published dev disk of {base} ({record.get('oci_digest') or 'no digest'})"
     if not swap:
         return
     # Base image plus components swapped in from a ref: say so, and pass only when every
     # requested swap is the layer its slot runs. Anything else is a mixed image nobody asked for.
-    base = (p["record"].get("commit") or "?")[:12]
     done = [c for c in swap["components"] if not c.get("error") and (c.get("layer") or c["component"].startswith("app:"))]
-    res.detail = (f"base {base} + {', '.join(c['component'] for c in done) or 'nothing'} "
+    res.detail = (f"{res.detail or 'base ' + base} + {', '.join(c['component'] for c in done) or 'nothing'} "
                   f"swapped from {swap['ref']} ({swap['commit'][:12]})")
     failed = [f"{c['component']}: {c.get('error') or 'not a layer of slot ' + c['slot'] + ' after the swap'}"
               for c in swap["components"] if c not in done]

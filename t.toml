@@ -5865,6 +5865,46 @@ outputs = "1920x1080@1,1280x800@1.25"
 gl = "auto"
 budgets = "report"
 
+# Main's published dev disk (tools/ci/fetch-dev-disk.sh): the disk publish-os-dev-disk-x86_64
+# published after os-acceptance passed on main, named by its `dev-disk-x86_64` pointer and
+# checked against the manifest's sha256. Kept by the pointer's value, so it is fetched once per
+# disk main publishes. vm-acceptance-layers' base.
+[[check]]
+name = "dev-disk-base-x86_64"
+run = "bash tools/ci/fetch-dev-disk.sh x86_64 /target/dev-disk-base/x86_64"
+reads_pointers = ["main:dev-disk-x86_64"]
+inputs = ["tools/ci/fetch-dev-disk.sh"]
+outputs = ["/target/dev-disk-base/x86_64/**"]
+requires = ["arch=x86_64", "disk-100g"]
+requirement = { cores = 1, memory = "1GiB" }
+default = false
+
+# vm-acceptance for iterating on a working tree without building its image: main's published
+# dev disk (dev-disk-base-x86_64) with this tree's userspace built and swapped in over it, the
+# components its change since that disk's commit reaches (scripts/vm-acceptance/layer_route.py).
+# A change the swaps cannot carry (the kernel, packages, the image recipe, boot components,
+# tilo-vmd, Cargo.lock, any path the route does not know) is refused with the advice to run
+# vm-acceptance, which tests the commit's own disk; main and release candidates only ever run
+# that. P01 names the base's commit and digest. `t test vm-acceptance-layers --test A15`.
+[[check]]
+name = "vm-acceptance-layers"
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+requirement = { cores = 8, memory = "16GiB" }
+isolation = "vm"
+git = true
+writable_sources = true
+run = "bash tools/ci/vm-acceptance.sh layers"
+setup = { run = "bash tools/ci/install-packages.sh tools/ci/packages/vm-acceptance.txt", inputs = ["tools/ci/install-packages.sh", "tools/ci/packages/vm-acceptance.txt"] }
+shards = ["session", "apps", "foreign-apps", "window", "shell"]
+needs = ["dev-disk-base-x86_64", "tilo-vm-binary-x86_64"]
+inputs = ["**"]
+outputs = ["/target/vm-acceptance/{shard}/report/**"]
+evidence = ["/target/vm-acceptance/**"]
+timeout_secs = 10800
+cost = "heavy"
+default = false
+on = ["dispatch"]
+
 # A broken update falls back by itself: this tree's dev image installed to a disk and
 # booted under KVM, an update staged on it that waits at a disk unlock prompt nobody
 # answers, and the boot loader going back after its tries (tools/ci/boot-assessment.sh,

@@ -7,6 +7,11 @@
 # the checks.
 #
 #   vm-acceptance.sh           what vm-acceptance runs
+#   vm-acceptance.sh layers    what vm-acceptance-layers runs: main's published dev
+#                              disk (dev-disk-base-x86_64) with this tree's userspace
+#                              built and swapped in over it, for iterating on a
+#                              working tree without building its image; a change the
+#                              swaps cannot carry (layer_route.py) is refused
 #   vm-acceptance.sh cohort    what vm-acceptance-cohort runs: the launcher,
 #                              install, shell and apps+runtime layers vm-cohort.sh
 #                              produced from this commit enter through verified
@@ -41,11 +46,12 @@
 set -euo pipefail
 
 mode=${1:-}
-[[ -z $mode || $mode == cohort ]] || { echo "usage: vm-acceptance.sh [cohort]" >&2; exit 2; }
+[[ -z $mode || $mode == cohort || $mode == layers ]] || { echo "usage: vm-acceptance.sh [cohort|layers]" >&2; exit 2; }
 arch=x86_64
 work=/var/tmp/vm-acceptance
 reports=${CARGO_TARGET_DIR:-/target}/vm-acceptance
 gate=/target/publish/os-dev-disk/$arch/disk
+[[ $mode != layers ]] || gate=/target/dev-disk-base/$arch/disk
 tilo_vm=/target/tilo-vm-bin/tilo-vm
 cohort=/target/vm-cohort
 verifier=/target/vm-cohort-verifier
@@ -74,12 +80,32 @@ mkdir -p "$work" "$reports"
 target=$(git rev-parse HEAD)
 disk=$gate/disk.qcow2
 [[ -s $disk && -s $gate/image-digest ]] \
-  || { echo "no installed dev disk in $gate: the check needs os-dev-disk-$arch" >&2; exit 1; }
+  || { echo "no installed dev disk in $gate: the check needs os-dev-disk-$arch (layers: dev-disk-base-$arch)" >&2; exit 1; }
 [[ -x $tilo_vm ]] || { echo "no $tilo_vm: the check needs tilo-vm-binary-$arch" >&2; exit 1; }
 # t gives this run the disk its own tree's inputs built (the need), whatever commit first
 # built it: the disk names its image by digest, the commit is this run's.
 commit=$target
 oci_digest=$(cat "$gate/image-digest")
+if [[ $mode == layers ]]; then
+  # The disk is main's, of the commit its manifest names; what this tree changed since then
+  # comes in as swaps, and only a change the swaps can carry is run this way.
+  commit=$(cat "$gate/source-revision")
+  git cat-file -e "$commit^{commit}" 2>/dev/null || git fetch -q --depth=1 origin "$commit" \
+    || { echo "main's dev disk is of $commit, which this checkout cannot reach to compare" >&2; exit 1; }
+  export CARGO_HOME=$work/cargo-home
+  mkdir -p "$CARGO_HOME"
+  cargo metadata --format-version 1 --locked > "$work/metadata.json"
+  mapfile -t changed < <({ git diff --name-only "$commit" HEAD; git diff --name-only HEAD; \
+                          git ls-files --others --exclude-standard; } | sort -u)
+  read -r way what < <(python3 scripts/vm-acceptance/layer_route.py --metadata "$work/metadata.json" "${changed[@]}")
+  if [[ $way != layers ]]; then
+    echo "this tree's change cannot be swapped over main's dev disk: $what" >&2
+    echo "test it on its own disk instead: t test vm-acceptance" >&2
+    exit 1
+  fi
+  T_INPUT_SWAP=${what:-none}
+  echo "main's dev disk of ${commit:0:12} ($oci_digest); this tree's change since: ${#changed[@]} files"
+fi
 
 swap=${T_INPUT_SWAP:-none}
 case $swap in
@@ -132,7 +158,11 @@ esac
 outputs=${T_INPUT_OUTPUTS:-1920x1080@1,1280x800@1.25}
 budgets=${T_INPUT_BUDGETS:-report}
 [[ $budgets == report || $budgets == gate ]] || { echo 'budgets must be report or gate' >&2; exit 1; }
-echo "testing ${target:0:12} on its own dev image $oci_digest; swap: ${swap:-nothing}; checks: ${only:-all}; gl=$gl; budgets: $budgets"
+if [[ $mode == layers ]]; then
+  echo "testing ${target:0:12} as swaps over main's dev image $oci_digest of ${commit:0:12}; swap: ${swap:-nothing}; checks: ${only:-all}; gl=$gl; budgets: $budgets"
+else
+  echo "testing ${target:0:12} on its own dev image $oci_digest; swap: ${swap:-nothing}; checks: ${only:-all}; gl=$gl; budgets: $budgets"
+fi
 
 export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-$work/test-assets}
 install -m 0755 "$tilo_vm" /usr/local/bin/tilo-vm
@@ -157,7 +187,7 @@ disk="$work/tilo-dev-${commit:0:9}.qcow2"
 qemu-img create -q -f qcow2 -F qcow2 -b "$base" "$disk"
 jq -n --arg commit "$commit" --arg subject "$(git log -1 --format=%s "$commit" 2>/dev/null)" \
   --arg time "$(git log -1 --format=%cI "$commit" 2>/dev/null)" --arg digest "$oci_digest" \
-  --arg built "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" --arg source "t os-dev-disk-$arch" \
+  --arg built "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" --arg source "$([[ $mode == layers ]] && echo "main's published dev disk (dev-disk-$arch)" || echo "t os-dev-disk-$arch")" \
   '{commit:$commit, subject:$subject, commit_time:$time, oci_digest:$digest,
     built_at:$built, built_by:"t vm-acceptance", source:$source}' > "$disk.provenance.json"
 
