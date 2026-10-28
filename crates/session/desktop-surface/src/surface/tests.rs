@@ -1075,6 +1075,94 @@ fn a_mouse_pans_the_strip_from_empty_canvas() {
     );
 }
 
+// A mouse with only a vertical wheel pans the strip over the strip's own
+// chrome — canvas, and a window's tab bar, which is the desktop's and not
+// the app's; over the app's content the wheel stays the app's.
+#[test]
+fn a_plain_wheel_over_a_windows_bar_pans_the_strip() {
+    fn scroll(frame: &ui::headless::FrameHarness) -> f64 {
+        frame
+            .root::<DesktopSurface>()
+            .shown_row_ref()
+            .unwrap()
+            .scroll_x()
+    }
+    let (surface, _handle) = desktop(5);
+    let mut frame = ui::headless::FrameHarness::for_root_with(
+        ui::state::State::new(),
+        surface,
+        (1280, 800),
+        ui::headless::FrameOptions::default(),
+    );
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let t = ui::time::now();
+    // Somewhere to pan to in both directions.
+    for i in 0..10 {
+        frame
+            .root_mut::<DesktopSurface>()
+            .route_swipe(pixels(-120.0, 0.0), 1.0, ms(t, 17 * i));
+    }
+    frame
+        .root_mut::<DesktopSurface>()
+        .end_idle_swipe(ms(t, 17 * 10 + 250));
+    assert!(frame.settle_for_capture(Duration::from_secs(2)));
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let (bar, content) = {
+        let row = frame.root::<DesktopSurface>().shown_row_ref().unwrap();
+        let viewport = row.viewport;
+        let bounds = row
+            .groups
+            .iter()
+            .map(WindowGroup::presentation_bounds)
+            .find(|bounds| {
+                viewport.contains(bounds.tab_bar.center())
+                    && bounds
+                        .client
+                        .is_some_and(|client| viewport.contains(client.center()))
+            })
+            .expect("a window shows its bar and its content");
+        (bounds.tab_bar.center(), bounds.client.unwrap().center())
+    };
+
+    // Over the app's own content the wheel is the app's: the strip stays.
+    frame.send(&ui::synthetic_input::cursor_moved(content.x, content.y));
+    let start = scroll(&frame);
+    assert!(
+        !frame
+            .root_mut::<DesktopSurface>()
+            .pans_strip(MouseScrollDelta::LineDelta(0.0, 3.0), ms(t, 2000)),
+        "the content under the wheel scrolls, not the strip"
+    );
+
+    // Over the bar, which is the strip's own: a plain wheel pans it.
+    frame.send(&ui::synthetic_input::cursor_moved(bar.x, bar.y));
+    assert!(
+        frame
+            .root::<DesktopSurface>()
+            .shown_row_ref()
+            .unwrap()
+            .pointer_over_chrome(),
+        "a bar is the strip's, where an app cannot scroll: {bar:?}"
+    );
+    assert!(
+        frame.root_mut::<DesktopSurface>().route_swipe(
+            MouseScrollDelta::LineDelta(0.0, 3.0),
+            1.0,
+            ms(t, 3000)
+        ),
+        "a plain wheel over the bar is the strip's"
+    );
+    let wheeled = scroll(&frame);
+    assert!(
+        (start - wheeled - 120.0).abs() < 0.5,
+        "three lines up pan 120 px toward earlier windows: {start} -> {wheeled}"
+    );
+}
+
 #[test]
 fn host_actions_no_longer_offered_are_reported_for_withdrawal() {
     let (_surface, handle) = desktop(1);
