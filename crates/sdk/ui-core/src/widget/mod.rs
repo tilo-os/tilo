@@ -3578,7 +3578,9 @@ pub use stat_tile::{StatGroup, StatTile, StatTileFace, Trend};
 pub mod banner;
 pub use banner::{Banner, BannerContent, BannerHit, BannerKind, BannerNotice};
 pub mod chip;
+mod chip_component;
 pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipStyle};
+pub use chip_component::ChipProps;
 pub mod conversation;
 pub use conversation::{
     AttachmentAction, AttachmentFace, AttachmentKind, AttachmentSummary, ComposerIntent,

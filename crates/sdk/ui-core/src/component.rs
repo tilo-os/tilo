@@ -859,6 +859,7 @@ pub fn registry() -> &'static [Entry] {
             entry::<PropertyList>(),
             entry::<Avatar>(),
             entry::<crate::widget::Board>(),
+            entry::<crate::widget::Chip>(),
         ]
     })
 }

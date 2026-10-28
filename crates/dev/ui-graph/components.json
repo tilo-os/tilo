@@ -218,7 +218,7 @@
     },
     {
       "name": "Docked",
-      "doc": "Content that fills its column above a bar that stays at the column's foot: a conversation above its composer.",
+      "doc": "Content that fills its column above a bar that stays at the column's foot: a conversation above its composer. The bar stands in the column's page, a section's gap under the content and the page's gutter at its sides and below.",
       "slots": [
         {
           "name": "content",
@@ -866,6 +866,47 @@
       "semantics": {
         "role": "Group",
         "label": "name"
+      }
+    },
+    {
+      "name": "Chip",
+      "doc": "A compact pill for a tag, a filter or a token: what a note is tagged with, a recipient, an applied filter. Pressing it opens or applies what it names; a chip that can be taken away has a trailing remove button; a filter chip shows whether it is on.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What it names, in a word or two.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "icon",
+          "doc": "A glyph before the label, for a chip that names an action rather than a value.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "selected",
+          "doc": "Whether the filter it stands for is on; without it the chip is no filter.",
+          "type": {
+            "option": "bool"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "press",
+          "doc": "It was pressed: open or apply what it names."
+        },
+        {
+          "name": "remove",
+          "doc": "Its remove button was pressed: take it away. A chip with this has the button."
+        }
+      ],
+      "semantics": {
+        "role": "Button",
+        "label": "label"
       }
     },
     {
