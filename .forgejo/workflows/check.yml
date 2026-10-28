@@ -155,8 +155,15 @@ jobs:
   security-fixtures:
     if: needs.select.outputs.security_required == 'true'
     needs: [builder, select]
-    runs-on: runner-large
+    # The native class, not the large one: the shell shard holds a large
+    # runner for up to two hours, and the boundary fixtures queued behind it
+    # for longer than a whole run, which starved the boundary and the
+    # aggregate behind it. Six crates compile here through the shared cache,
+    # two jobs at a time so the linker stays inside the native limit.
+    runs-on: runner
     timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '2'
     container:
       image: ${{ needs.builder.outputs.image }}
     steps:
