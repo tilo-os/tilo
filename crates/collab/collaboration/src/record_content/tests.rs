@@ -216,3 +216,41 @@ fn missing_content_reads_where_its_host_says_the_want_stands() {
     lane.stands(other.clone(), ContentState::Unavailable);
     assert_eq!(lane.standing(&other), None);
 }
+
+/// A process that carries a record's content for every window (a browser
+/// page's replication) reaches each window's own lane through the record's
+/// route: what a window asks for is asked, what arrives reaches the window,
+/// and a window that let its lane go is not asked again.
+#[test]
+fn the_records_route_reaches_the_lanes_of_the_windows_showing_it() {
+    let app = "so.tilo.record-content-route-test";
+    let window = Arc::new(ContentLane::default());
+    ContentLane::show_on_route(app, "", &window);
+    let store = RecordContent::store(ContentStore::memory(), Arc::clone(&window));
+    let picture = b"a picture the page lacks".to_vec();
+    let hash = tilo_content::hash_bytes(&picture);
+    assert_eq!(store.read(&hash), None);
+
+    let wanted: Vec<String> = ContentLane::on_route(app, "")
+        .iter()
+        .flat_map(|lane| lane.take_requests().wants)
+        .collect();
+    assert_eq!(
+        wanted,
+        vec![hash.clone()],
+        "the window's want is the route's"
+    );
+
+    for lane in ContentLane::on_route(app, "") {
+        lane.arrive(hash.clone(), picture.clone());
+    }
+    assert_eq!(store.read(&hash), Some(picture), "the window has it");
+
+    drop(store);
+    drop(window);
+    assert_eq!(
+        ContentLane::on_route(app, "").len(),
+        1,
+        "only the record's own lane is left once the window let its lane go"
+    );
+}

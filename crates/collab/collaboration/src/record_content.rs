@@ -117,7 +117,48 @@ fn lanes() -> std::sync::MutexGuard<'static, HashMap<(String, String), Arc<Conte
     LANES.get_or_init(Mutex::default).lock_recover()
 }
 
+/// The lanes windows keep for the records they show, by app and wire record
+/// ([`ContentLane::show_on_route`]); a lane goes once its window let it go.
+type WindowLanes = Mutex<HashMap<(String, String), Vec<std::sync::Weak<ContentLane>>>>;
+
+fn window_lanes()
+-> std::sync::MutexGuard<'static, HashMap<(String, String), Vec<std::sync::Weak<ContentLane>>>> {
+    static WINDOW_LANES: OnceLock<WindowLanes> = OnceLock::new();
+    WINDOW_LANES.get_or_init(Mutex::default).lock_recover()
+}
+
 impl ContentLane {
+    /// `lane`, a window's own ([`Self::of_window`]), carries the content of
+    /// record `record` (its wire name) of app `app`: whatever moves that
+    /// record's content for the process, rather than the window's own
+    /// collaboration (a browser page's replication), reaches it through
+    /// [`Self::on_route`] for as long as the window keeps it.
+    pub fn show_on_route(app: &str, record: &str, lane: &Arc<Self>) {
+        let mut lanes = window_lanes();
+        let kept = lanes
+            .entry((app.to_owned(), record.to_owned()))
+            .or_default();
+        kept.retain(|kept| {
+            kept.strong_count() > 0 && !std::ptr::eq(kept.as_ptr(), Arc::as_ptr(lane))
+        });
+        kept.push(Arc::downgrade(lane));
+    }
+
+    /// Every lane carrying record `record` (its wire name) of app `app`'s
+    /// content in this process: the record's own ([`Self::of`]) and those of
+    /// the windows showing it ([`Self::show_on_route`]). What their windows
+    /// ask for is asked of the record's route, and what arrives on it is
+    /// handed to each.
+    pub fn on_route(app: &str, record: &str) -> Vec<Arc<Self>> {
+        let mut found = vec![Self::of(app, record)];
+        let mut lanes = window_lanes();
+        if let Some(kept) = lanes.get_mut(&(app.to_owned(), record.to_owned())) {
+            kept.retain(|kept| kept.strong_count() > 0);
+            found.extend(kept.iter().filter_map(std::sync::Weak::upgrade));
+        }
+        found
+    }
+
     /// The lane of record `record` of app `app` in this process.
     pub fn of(app: &str, record: &str) -> Arc<Self> {
         Arc::clone(

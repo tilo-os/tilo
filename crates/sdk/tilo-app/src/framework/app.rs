@@ -1300,6 +1300,19 @@ fn record_content(context: &mut HostContext) {
     // The window keeps its lane: another window of the app on this thread
     // reads its own, never this one's queue of wants.
     ui_core::collaboration::record_content::keep_lane(&context.wake_handle(), Arc::clone(&lane));
+    // Whatever carries the record's content for the process (a browser
+    // page's replication) asks for and hands over this window's too.
+    let record = &context.record().id;
+    let wire = if record.is_package_primary() {
+        ""
+    } else {
+        record.as_str()
+    };
+    ui_core::collaboration::record_content::ContentLane::show_on_route(
+        context.app_id(),
+        wire,
+        &lane,
+    );
     context
         .provide_content(ui_core::collaboration::record_content::RecordContent::store(local, lane));
 }
