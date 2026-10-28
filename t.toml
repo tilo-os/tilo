@@ -4335,7 +4335,7 @@ run_tests() {
 }
 repo=$PWD
 cd "$repo/crates/platform/tilo-sandbox"
-run_tests 15 /target/vm/tilo-sandbox-job host_ids:: overlays:: --nocapture --test-threads=1
+run_tests 16 /target/vm/tilo-sandbox-job host_ids:: overlays:: --nocapture --test-threads=1
 cd "$repo"
 run_tests 2 /target/vm/runtime-fs-lib operations::tests::replacing_save_actual_original_uid --nocapture --test-threads=1
 run_tests 1 /target/vm/account-custody-lib portable::tests::installed_adoption_succeeds_as_private_target_user --nocapture --test-threads=1
