@@ -55,6 +55,23 @@ fn press(app: &mut TestApp<FirewallShell>, suffix: &str) {
     app.settle();
 }
 
+/// Run frames until `landed` holds of the stored configuration. A press
+/// submits its edit through the door, which applies it after the event; on a
+/// loaded machine that can take more than the one frame a press runs, so a
+/// test asserting right after the press saw the document unchanged.
+fn until_stored(
+    app: &mut TestApp<FirewallShell>,
+    what: &str,
+    landed: impl Fn(&FirewallConfig) -> bool,
+) {
+    let deadline = tilo_test_env::hang_deadline();
+    while !landed(&app.state().config()) {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        app.settle();
+    }
+}
+
 /// Press the window bar's slot `id`, as the desktop hands the press over,
 /// and run the frame that follows.
 fn press_bar(app: &mut TestApp<FirewallShell>, id: &str) {
@@ -296,10 +313,17 @@ fn deleting_a_rule_asks_first() {
         );
         press(&mut app, &format!("firewall-rule-delete-{}", rule.id));
         press(&mut app, "firewall-delete-dialog.primary");
-        assert!(!public_rules(&app).iter().any(|r| r.id == rule.id));
+        let public = |config: &FirewallConfig| config.zone(ZoneKind::Public).unwrap().rules.clone();
+        until_stored(
+            &mut app,
+            "the confirmed delete removes the rule",
+            |config| !public(config).iter().any(|r| r.id == rule.id),
+        );
 
         assert!(app.undo());
-        assert!(public_rules(&app).iter().any(|r| r.id == rule.id));
+        until_stored(&mut app, "undo brings the rule back", |config| {
+            public(config).iter().any(|r| r.id == rule.id)
+        });
     }
 }
 
@@ -309,21 +333,18 @@ fn switches_round_trip_through_the_document() {
     let mut app = hosted();
     let rule = public_rules(&app)[0].clone();
     press(&mut app, &format!("firewall-rule-enabled-{}", rule.id));
-    assert_eq!(
-        public_rules(&app)[0].enabled,
-        !rule.enabled,
-        "the rule's switch writes the document"
+    until_stored(
+        &mut app,
+        "the rule's switch writes the document",
+        |config| config.zone(ZoneKind::Public).unwrap().rules[0].enabled != rule.enabled,
     );
 
     press_bar(&mut app, Tab::Services.view_id());
     press(&mut app, "firewall-service-ssh");
-    assert!(
-        !app.state()
-            .config()
-            .zone(ZoneKind::Public)
-            .unwrap()
-            .has_service("ssh"),
-        "ssh is on in the sample and the switch turned it off"
+    until_stored(
+        &mut app,
+        "ssh is on in the sample and the switch turned it off",
+        |config| !config.zone(ZoneKind::Public).unwrap().has_service("ssh"),
     );
 
     // Panic mode and stopping the firewall cut traffic: each waits for the
@@ -335,12 +356,16 @@ fn switches_round_trip_through_the_document() {
         "panic mode waits for consent"
     );
     confirm(&mut app);
-    assert!(app.state().config().panic_mode);
+    until_stored(&mut app, "consent turns panic mode on", |config| {
+        config.panic_mode
+    });
 
     press_bar(&mut app, view::FIREWALL_ON);
     assert!(app.state().config().enabled, "stopping waits for consent");
     confirm(&mut app);
-    assert!(!app.state().config().enabled);
+    until_stored(&mut app, "consent stops the firewall", |config| {
+        !config.enabled
+    });
 }
 
 /// Confirm what the host asks, as the person does with its verb button.
@@ -354,7 +379,9 @@ fn making_a_zone_active_changes_the_default() {
     open_another_zone(&mut app);
     let before = app.state().config().default_zone;
     press(&mut app, "firewall-make-active");
-    assert_ne!(app.state().config().default_zone, before);
+    until_stored(&mut app, "the zone becomes the default", |config| {
+        config.default_zone != before
+    });
     let frame = app.harness().inspection_json().unwrap();
     assert!(frame.contains("is now the active zone"), "{frame}");
 }
