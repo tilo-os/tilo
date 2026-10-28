@@ -2600,7 +2600,7 @@ impl Namespace {
     pub fn getattr(&self, ino: u64) -> Option<FileAttr> {
         let id = self.ino_to_id.get(&ino)?;
         if id == ROOT_ID {
-            return Some(self.root_attr());
+            return Some(Self::root_attr());
         }
         if !self.reaches_root(id) {
             return None;
@@ -2615,7 +2615,7 @@ impl Namespace {
     pub(crate) fn getattr_including_unlinked(&self, ino: u64) -> Option<FileAttr> {
         let id = self.ino_to_id.get(&ino)?;
         if id == ROOT_ID {
-            return Some(self.root_attr());
+            return Some(Self::root_attr());
         }
         let meta = self.node_meta(id)?;
         Some(self.attr_for(ino, &meta))
@@ -2623,7 +2623,7 @@ impl Namespace {
 
     /// The attributes of the mount's root: a directory this document does not
     /// describe with a record, at its default mode.
-    fn root_attr(&self) -> FileAttr {
+    fn root_attr() -> FileAttr {
         let dir = NodeKind::Dir.to_file_type();
         let t = UNIX_EPOCH;
         FileAttr {
@@ -2650,7 +2650,7 @@ impl Namespace {
     pub(crate) fn attr_and_hash(&self, ino: u64) -> Option<(FileAttr, Option<Hash>)> {
         let id = self.ino_to_id.get(&ino)?;
         if id == ROOT_ID {
-            return Some((self.root_attr(), None));
+            return Some((Self::root_attr(), None));
         }
         if !self.reaches_root(id) {
             return None;
@@ -2672,7 +2672,7 @@ impl Namespace {
         let id = self.ino_to_id.get(&ino)?;
         if id == ROOT_ID {
             return Some(InodeView {
-                attr: self.root_attr(),
+                attr: Self::root_attr(),
                 hash: None,
                 live: true,
                 path: query.path.then(|| "/".to_string()),
@@ -2763,7 +2763,7 @@ impl Namespace {
                     (Some(posix), _) if posix.symlink => FileType::Symlink,
                     (_, kind) => kind.to_file_type(),
                 };
-                Some((c.clone(), name, kind))
+                Some((c, name, kind))
             })
             .collect();
         kids.sort_by(|a, b| a.1.cmp(&b.1));
