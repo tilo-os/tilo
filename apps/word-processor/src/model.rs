@@ -95,6 +95,24 @@ fn upgrade(doc: &mut Doc, from: u32) -> Result<(), ModelError> {
     Ok(())
 }
 
+impl Document {
+    /// What the workspace lists of the document and search finds of it:
+    /// the document by its first line (its heading, or its first
+    /// paragraph), found by its words. A document with no text yet is not
+    /// listed.
+    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        let text = self.body.text();
+        let Some(title) = text.lines().map(str::trim).find(|line| !line.is_empty()) else {
+            return Vec::new();
+        };
+        vec![
+            ui::tilo_resource::SearchEntry::new(title, text.clone())
+                .anchored(<Self as Resource>::KIND)
+                .with_icon("file-text"),
+        ]
+    }
+}
+
 #[resource(
     kind = "word-processor.document",
     label = "Document",
@@ -103,6 +121,7 @@ fn upgrade(doc: &mut Doc, from: u32) -> Result<(), ModelError> {
     locate = Document::locate,
     lands = Document::lands,
     answer = Document::answer,
+    search = Document::search_entries,
     version = 2,
     migrate = upgrade,
 )]
