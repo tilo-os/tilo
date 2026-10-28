@@ -933,13 +933,9 @@ fn a_condition_holds_steps_and_a_step_folds_away() {
 
     // The third step moves into the condition's `then` block, where it is
     // no longer one of the top level's steps.
-    app.invoke(Workbench::SET_NESTED.with((
-        app.state().drafts.keys().next().expect("the draft").clone(),
-        "2".to_owned(),
-        "0.then".to_owned(),
-        0,
-    )))
-    .expect("the step moves into the condition");
+    let draft_id = app.state().drafts.ids().next().expect("the draft").clone();
+    app.invoke(Workbench::SET_NESTED.with((draft_id, "2".to_owned(), "0.then".to_owned(), 0)))
+        .expect("the step moves into the condition");
     let top = steps(&mut app);
     assert_eq!(top.len(), 2, "only the condition is left at the top");
     let tilo_automation::StepKind::If { then, .. } = &top[0].kind else {
