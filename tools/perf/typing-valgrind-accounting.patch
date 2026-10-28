@@ -1,0 +1,174 @@
+--- a/callgrind/dump.c
++++ b/callgrind/dump.c
+@@ -1017,26 +1017,46 @@
+ static BBCC** prepare_ptr;
+ 
+ 
++/* Execution counters describe completed blocks, not pending self costs.
++ * Cache simulation can have recorded any prefix of the current block, even
++ * when collection is disabled before that block exits. Do not defer those
++ * instruction slots to a later dump, whose summary excludes them.
++ * Keep execution/jump counters unchanged: inventing an execution here would
++ * change instruction positions and jump counts (and double count on exit).
++ */
++static Bool bbcc_has_dump_data(BBCC* bbcc)
++{
++  UInt i;
++  jCC* jcc;
++
++  if (bbcc->ecounter_sum || bbcc->ret_counter) return True;
++  for (i = 0; i < bbcc->bb->cost_count; i++)
++    if (bbcc->cost[i]) return True;
++  if (bbcc->skipped &&
++      !CLG_(is_zero_cost)(CLG_(sets).full, bbcc->skipped)) return True;
++  for (i = 0; i <= bbcc->bb->cjmp_count; i++)
++    for (jcc = bbcc->jmp[i].jcc_list; jcc; jcc = jcc->next_from)
++      if (!CLG_(is_zero_cost)(CLG_(sets).full, jcc->cost)) return True;
++  return False;
++}
++
+ static void hash_addCount(BBCC* bbcc)
+ {
+-  if ((bbcc->ecounter_sum > 0) || (bbcc->ret_counter>0))
+-    prepare_count++;
++  if (bbcc_has_dump_data(bbcc)) prepare_count++;
+ }
+ 
+ static void hash_addPtr(BBCC* bbcc)
+ {
+-  if ((bbcc->ecounter_sum == 0) &&
+-      (bbcc->ret_counter == 0)) return;
++  if (!bbcc_has_dump_data(bbcc)) return;
+ 
+   *prepare_ptr = bbcc;
+   prepare_ptr++;
+ }
+ 
+ 
+-static void cs_addCount(thread_info* ti)
++static void cs_update_cost(thread_info* ti)
+ {
+   Int i;
+-  BBCC* bbcc;
+ 
+   /* add BBCCs with active call in call stack of current thread.
+    * update cost sums for active calls
+@@ -1048,41 +1068,6 @@
+     
+     CLG_(add_diff_cost_lz)( CLG_(sets).full, &(e->jcc->cost),
+ 			   e->enter_cost, CLG_(current_state).cost);
+-    bbcc = e->jcc->from;
+-
+-    CLG_DEBUG(1, " [%2d] (tid %u), added active: %s\n",
+-	     i,CLG_(current_tid),bbcc->cxt->fn[0]->name);
+-    
+-    if (bbcc->ecounter_sum>0 || bbcc->ret_counter>0) {
+-      /* already counted */
+-      continue;
+-    }
+-    prepare_count++;
+-  }
+-}
+-
+-static void cs_addPtr(thread_info* ti)
+-{
+-  Int i;
+-  BBCC* bbcc;
+-
+-  /* add BBCCs with active call in call stack of current thread.
+-   * update cost sums for active calls
+-   */
+-      
+-  for(i = 0; i < CLG_(current_call_stack).sp; i++) {
+-    call_entry* e = &(CLG_(current_call_stack).entry[i]);
+-    if (e->jcc == 0) continue;
+-
+-    bbcc = e->jcc->from;
+-    
+-    if (bbcc->ecounter_sum>0 || bbcc->ret_counter>0) {
+-      /* already counted */
+-      continue;
+-    }
+-
+-    *prepare_ptr = bbcc;
+-    prepare_ptr++;
+   }
+ }
+ 
+@@ -1099,16 +1084,16 @@
+ 
+     prepare_count = 0;
+     
+-    /* if we do not separate among threads, this gives all */
+-    /* count number of BBCCs with >0 executions */
+-    CLG_(forall_bbccs)(hash_addCount);
+-
+-    /* even if we do not separate among threads,
+-     * call stacks are separated */
++    /* Materialize active inclusive arcs before selecting their source BBCCs.
++     * Select each BBCC once, including when recursive frames or threads share
++     * a source. The per-frame enter_cost is advanced by add_diff_cost_lz.
++     */
+     if (CLG_(clo).separate_threads)
+-      cs_addCount(0);
++      cs_update_cost(0);
+     else
+-      CLG_(forall_threads)(cs_addCount);
++      CLG_(forall_threads)(cs_update_cost);
++
++    CLG_(forall_bbccs)(hash_addCount);
+ 
+     CLG_DEBUG(0, "prepare_dump: %d BBCCs\n", prepare_count);
+ 
+@@ -1119,11 +1104,6 @@
+ 
+     CLG_(forall_bbccs)(hash_addPtr);
+ 
+-    if (CLG_(clo).separate_threads)
+-      cs_addPtr(0);
+-    else
+-      CLG_(forall_threads)(cs_addPtr);
+-
+     CLG_ASSERT(array + prepare_count == prepare_ptr);
+ 
+     /* end mark */
+@@ -1471,6 +1451,12 @@
+ }
+ 
+ 
++static void update_lastdump_cost(thread_info* ti)
++{
++  CLG_(copy_cost)(CLG_(sets).full, ti->lastdump_cost,
++                  CLG_(current_state).cost);
++}
++
+ static void print_bbccs(const HChar* trigger, Bool only_current_thread)
+ {
+   init_dump_array();
+@@ -1484,6 +1470,8 @@
+ 
+     CLG_(switch_thread)(1);
+     print_bbccs_of_thread( CLG_(get_current_thread)() );
++    /* The shared dump consumed all threads' costs, not only thread 1's. */
++    CLG_(forall_threads)(update_lastdump_cost);
+     CLG_(switch_thread)(orig_tid);
+   }
+   else if (only_current_thread)
+--- a/callgrind/main.c
++++ b/callgrind/main.c
+@@ -688,6 +688,15 @@
+    tl_assert(clgs->events_used >= 0);
+    flushEvents(clgs);
+    tl_assert(clgs->events_used == 0);
++   /* The guarded action bypasses the event queue, so flushEvents cannot
++      reserve its data counters. Reserve them before computing cost offsets;
++      otherwise the helper writes past this instruction's event set into the
++      next instruction's slots. A false runtime guard still needs the layout. */
++   if (!clgs->seen_before)
++      inode->eventset = CLG_(add_event_group)(inode->eventset,
++                                             isWrite ? EG_DW : EG_DR);
++   CLG_ASSERT(inode->eventset->mask & (1u << (isWrite ? EG_DW : EG_DR)));
++
+    /* Same as case Ev_Dw / case Ev_Dr in flushEvents, except with guard */
+    IRExpr*      i_node_expr;
+    const HChar* helperName;
