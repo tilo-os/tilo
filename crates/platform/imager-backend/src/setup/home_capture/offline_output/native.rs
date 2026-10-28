@@ -116,13 +116,10 @@ fn mount_id(file: &File) -> io::Result<u64> {
 }
 /// Count every alias, including read-only aliases: no foreign mount is adopted.
 fn unique_mount(number: &str, id: u64) -> io::Result<()> {
-    let mut bytes = Vec::new();
-    File::open("/proc/self/mountinfo")?
-        .take(1024 * 1024 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > 1024 * 1024 {
-        return Err(refused("Original output mount inventory exceeds bounds"));
-    }
+    let bytes =
+        crate::record::read_bounded(File::open("/proc/self/mountinfo")?, 1024 * 1024, || {
+            refused("Original output mount inventory exceeds bounds")
+        })?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|_| refused("Original output mount inventory invalid"))?;
     let mut found = 0usize;

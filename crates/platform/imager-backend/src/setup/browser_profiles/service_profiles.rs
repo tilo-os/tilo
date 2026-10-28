@@ -450,13 +450,9 @@ fn firefox_names(root: &Arc<PinnedDirectory>) -> io::Result<Vec<(String, Vec<Str
     if file.metadata()?.len() > MAX_INI {
         return Err(invalid("Browser source index is too large"));
     }
-    let mut bytes = Vec::new();
-    Read::by_ref(&mut file)
-        .take(MAX_INI + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_INI {
-        return Err(invalid("Browser source index is too large"));
-    }
+    let bytes = crate::record::read_bounded(&mut file, MAX_INI, || {
+        invalid("Browser source index is too large")
+    })?;
     firefox_sections(std::str::from_utf8(&bytes).map_err(invalid)?)?
         .into_iter()
         .map(|(label, path)| Ok((label, components(Path::new(&path))?, Provider::Firefox)))

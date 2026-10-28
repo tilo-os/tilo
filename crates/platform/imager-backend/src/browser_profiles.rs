@@ -1,6 +1,6 @@
 //! Exact legacy browser profiles discovered inside an already granted home.
 //! Metadata discovery never reads browser databases, cookies or credentials.
-use std::io::{self, Read};
+use std::io;
 use std::path::{Component, Path};
 use std::sync::Arc;
 
@@ -455,13 +455,9 @@ fn firefox(
     if file.metadata()?.len() > MAX_INI {
         return Err(invalid("Firefox profile index exceeds its bound"));
     }
-    let mut bytes = Vec::new();
-    Read::by_ref(&mut file)
-        .take(MAX_INI + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_INI {
-        return Err(invalid("Firefox profile index exceeds its bound"));
-    }
+    let bytes = crate::record::read_bounded(&mut file, MAX_INI, || {
+        invalid("Firefox profile index exceeds its bound")
+    })?;
     let content = std::str::from_utf8(&bytes).map_err(invalid)?;
     let sections = firefox_sections(content)?;
     for (name, path) in sections {
@@ -574,13 +570,9 @@ fn read_bounded(
     if file.metadata()?.len() > limit {
         return Err(invalid("Browser inventory source exceeds its bound"));
     }
-    let mut bytes = Vec::new();
-    Read::by_ref(&mut file)
-        .take(limit.saturating_add(1))
-        .read_to_end(&mut bytes)?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
-        return Err(invalid("Browser inventory source exceeds its bound"));
-    }
+    let bytes = crate::record::read_bounded(&mut file, limit, || {
+        invalid("Browser inventory source exceeds its bound")
+    })?;
     Ok(Some(bytes))
 }
 

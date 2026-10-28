@@ -4,7 +4,7 @@ use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_primitives::fs::{FollowSymlinks, Metadata, OpenOptions};
 use std::{
     ffi::OsStr,
-    io::{self, Read},
+    io,
     path::{Path, PathBuf},
 };
 
@@ -53,11 +53,9 @@ pub(crate) fn read_bounded(
     if !crate::migration_directory::same_snapshot(expected, &opened) {
         return Err(invalid("Steam metadata changed during inventory"));
     }
-    let mut text = String::new();
-    file.take(MAX_METADATA + 1).read_to_string(&mut text)?;
-    if text.len() as u64 > MAX_METADATA {
-        return Err(invalid("Steam metadata exceeds size limit"));
-    }
+    let text = crate::record::read_bounded_string(file, MAX_METADATA, || {
+        invalid("Steam metadata exceeds size limit")
+    })?;
     Ok(text)
 }
 

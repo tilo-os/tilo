@@ -1,12 +1,7 @@
 //! Private restart-index storage. A public path or decoded record is not custody.
 use super::{DraftLock, ensure_private_tree, require_supported};
 use crate::{destination_security, migration::PinnedDirectory, migration_durability};
-use std::{
-    ffi::OsStr,
-    io::{self, Read},
-    path::Path,
-    sync::Arc,
-};
+use std::{ffi::OsStr, io, path::Path, sync::Arc};
 use tilo_files::native::atomic::{Privacy, PublishMode, StorageDirectory};
 
 const LIMIT: u64 = 32 * 1024;
@@ -64,11 +59,7 @@ impl RestartStorage {
         if file.metadata()?.len() > LIMIT {
             return Err(invalid());
         }
-        let mut bytes = Vec::new();
-        file.take(LIMIT + 1).read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > LIMIT {
-            return Err(invalid());
-        }
+        let bytes = crate::record::read_bounded(file, LIMIT, invalid)?;
         self.pin.validate()?;
         Ok(Some(bytes))
     }

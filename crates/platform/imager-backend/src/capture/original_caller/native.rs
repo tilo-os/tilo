@@ -25,17 +25,14 @@ impl OriginalCallerFacts {
 fn read_status(
     peer: &runtime_portal::process_binding::ExecutingPeer,
 ) -> io::Result<OriginalCallerFacts> {
-    use std::io::Read;
     if !peer.current() {
         return Err(refused("original peer exited before credential read"));
     }
-    let mut bytes = Vec::new();
-    std::fs::File::open(format!("/proc/{}/status", peer.pid()))?
-        .take(2 * 1024 * 1024 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > 2 * 1024 * 1024 {
-        return Err(refused("original credential status exceeds bound"));
-    }
+    let bytes = crate::record::read_bounded(
+        std::fs::File::open(format!("/proc/{}/status", peer.pid()))?,
+        2 * 1024 * 1024,
+        || refused("original credential status exceeds bound"),
+    )?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|_| refused("original credential status is malformed"))?;
     let mut uid = None;

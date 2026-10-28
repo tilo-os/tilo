@@ -914,7 +914,7 @@ struct Log {
     root_receipt: Option<root_acl::Receipt>,
     journal_reservations: Vec<Reservation>,
     segment_reservation: Reservation,
-    #[cfg(test)]
+    #[cfg(all(test, feature = "native-capture-qualification"))]
     manifest: segmented::Manifest,
 }
 impl Log {
@@ -1021,7 +1021,7 @@ impl Log {
             segments,
         };
         let store = Store::new(scratch.clone(), Arc::new(AtomicBool::new(false)))?;
-        #[cfg(test)]
+        #[cfg(all(test, feature = "native-capture-qualification"))]
         let kept = segmented::Manifest {
             nonce: manifest.nonce.clone(),
             bytes: manifest.bytes,
@@ -1090,7 +1090,7 @@ impl Log {
             root_receipt,
             journal_reservations,
             segment_reservation,
-            #[cfg(test)]
+            #[cfg(all(test, feature = "native-capture-qualification"))]
             manifest: kept,
         })
     }

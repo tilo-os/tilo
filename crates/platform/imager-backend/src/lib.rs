@@ -114,6 +114,7 @@ pub mod prepared_media;
 pub mod prepared_setup;
 pub mod probe;
 pub mod profile;
+pub mod record;
 pub mod recovery;
 pub mod retained_source;
 pub mod staging;

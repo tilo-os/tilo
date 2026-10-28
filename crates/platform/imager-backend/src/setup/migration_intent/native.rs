@@ -583,11 +583,9 @@ impl MigrationIntent {
         if !file.metadata()?.is_file() || file.metadata()?.len() > MAX {
             return Err(error("Migration intent must be bounded private metadata"));
         }
-        let mut bytes = Vec::new();
-        file.take(MAX + 1).read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > MAX {
-            return Err(error("Migration intent exceeds its metadata bound"));
-        }
+        let bytes = crate::record::read_bounded(file, MAX, || {
+            error("Migration intent exceeds its metadata bound")
+        })?;
         let grant: Grant = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
         if grant.schema != 1 {
             return Err(error("Migration intent version is unsupported"));

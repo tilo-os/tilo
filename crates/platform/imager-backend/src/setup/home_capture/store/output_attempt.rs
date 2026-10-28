@@ -1068,11 +1068,9 @@ fn bounded_private_bytes(
     if file.metadata()?.len() > bound {
         return Err(failure("Readonly committed record exceeds bounds"));
     }
-    let mut bytes = Vec::new();
-    file.by_ref().take(bound + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > bound {
-        return Err(failure("Readonly committed record exceeds bounds"));
-    }
+    let bytes = crate::record::read_bounded(&mut file, bound, || {
+        failure("Readonly committed record exceeds bounds")
+    })?;
     Ok(bytes)
 }
 pub fn review_committed_original_selection(

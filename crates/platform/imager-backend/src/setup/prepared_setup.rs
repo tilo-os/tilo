@@ -645,11 +645,7 @@ fn bounded_file(pin: &Arc<PinnedDirectory>, name: &str, limit: u64) -> io::Resul
         return Err(invalid());
     }
     destination_security::check_private_file(&file)?;
-    let mut bytes = Vec::new();
-    file.take(limit + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > limit {
-        return Err(invalid());
-    }
+    let bytes = crate::record::read_bounded(file, limit, invalid)?;
     pin.validate()?;
     Ok(bytes)
 }

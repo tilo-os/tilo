@@ -117,13 +117,7 @@ pub(super) fn run(output: &mut impl Write) -> io::Result<()> {
     authorize()?;
     let artifacts = Path::new(ROOT).join("artifacts");
     let expected_file = protected(&artifacts.join("expected.json"))?;
-    let mut bytes = Vec::new();
-    expected_file
-        .take(BOUND as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > BOUND {
-        return Err(invalid());
-    }
+    let bytes = crate::record::read_bounded(expected_file, BOUND as u64, invalid)?;
     let expected: crate::setup::flatpak_transfer::portable::Expectation =
         serde_json::from_slice(&bytes).map_err(|_| invalid())?;
     expected.validate()?;

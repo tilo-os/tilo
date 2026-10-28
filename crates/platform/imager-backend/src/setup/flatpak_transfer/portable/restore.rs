@@ -8,13 +8,13 @@ use crate::setup::{
 use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_primitives::fs::{FollowSymlinks, OpenOptions};
 use sha2::{Digest, Sha256};
+use std::sync::atomic::AtomicBool;
 use std::{
     collections::BTreeSet,
     io,
     path::{Path, PathBuf},
     sync::Arc,
 };
-use std::{io::Read, sync::atomic::AtomicBool};
 use zeroize::Zeroizing;
 /// Authenticated private app subset. Call only after genuine Home adoption;
 /// restoration changes the writable target repo, never the archived source home.
@@ -502,11 +502,9 @@ fn read(pin: &Arc<PinnedDirectory>, name: &str, limit: u64) -> io::Result<Vec<u8
     if !file.metadata()?.is_file() || file.metadata()?.len() > limit {
         return Err(changed("Invalid bounded application metadata"));
     }
-    let mut bytes = Vec::new();
-    file.take(limit + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > limit {
-        return Err(changed("Application metadata exceeds bounds"));
-    }
+    let bytes = crate::record::read_bounded(file, limit, || {
+        changed("Application metadata exceeds bounds")
+    })?;
     pin.validate_destination()?;
     Ok(bytes)
 }

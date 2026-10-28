@@ -2,7 +2,7 @@
 use account_custody::hints::media::Prepared;
 use serde::{Deserialize, Serialize};
 use std::{
-    io::{self, Read},
+    io,
     path::{Path, PathBuf},
 };
 
@@ -36,11 +36,8 @@ impl WindowsMedia {
         if !file.metadata()?.is_file() {
             return Err(io::ErrorKind::InvalidData.into());
         }
-        let mut bytes = Vec::new();
-        file.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
-        if bytes.len() > 1024 * 1024 {
-            return Err(io::ErrorKind::InvalidData.into());
-        }
+        let bytes =
+            crate::record::read_bounded(file, 1024 * 1024, || io::ErrorKind::InvalidData.into())?;
         self.prepared.verify_receipt(&bytes)
     }
     /// Recheck the receipt and attest that it is not stored on the target disk.

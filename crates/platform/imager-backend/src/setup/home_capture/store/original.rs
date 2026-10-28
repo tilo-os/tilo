@@ -393,13 +393,9 @@ impl SourceReadContext {
             return Err(failure("Original source record exceeds bound"));
         }
         let before = migration_durability::identity(&record)?;
-        let mut bytes = Vec::new();
-        Read::by_ref(&mut record)
-            .take(MAX_RECORD + 1)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > MAX_RECORD {
-            return Err(failure("Original source record exceeds bound"));
-        }
+        let bytes = crate::record::read_bounded(&mut record, MAX_RECORD, || {
+            failure("Original source record exceeds bound")
+        })?;
         let intent = match serde_json::from_slice::<DurableRecord>(&bytes)? {
             DurableRecord::Original(intent) => intent,
             DurableRecord::Capture(_) => {
