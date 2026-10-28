@@ -1,11 +1,10 @@
-"""Exercise both lint entrypoints against real divergent/shallow Git history."""
+"""Exercise the changed-file rustfmt gate against real divergent/shallow Git history."""
 from __future__ import annotations
 
 import os
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -60,170 +59,55 @@ class ChangedRustComparisonTests(unittest.TestCase):
         self.assertEqual(self.git(checkout, "rev-parse", "--is-shallow-repository"), "true")
         return checkout
 
-    def check(self, entrypoint, root, base="", before=""):
+    def check(self, root, base="", before=""):
         self.arguments.unlink(missing_ok=True)
         env = dict(os.environ, TILO_REPO_ROOT=str(root), RUSTFMT_ARGUMENTS=str(self.arguments),
                    PATH=str(self.bin) + os.pathsep + os.environ["PATH"])
-        if entrypoint == "allows":
-            command = [sys.executable, str(CI / "check_changed_rust_allows.py"),
-                       "--root", str(root), base, before]
-        else:
-            command = ["bash", str(CI / "check-changed-rustfmt.sh"), base, before]
+        command = ["bash", str(CI / "check-changed-rustfmt.sh"), base, before]
         return subprocess.run(command, env=env, text=True, capture_output=True)
-
-    def test_changed_file_deleted_after_head_is_not_audited(self):
-        for deletion in ("worktree", "index", "commit"):
-            with self.subTest(deletion=deletion):
-                self.doCleanups()
-                self.setUp()
-                path = self.origin / "deleted file.rs"
-                path.write_text("#[allow(dead_code)]\nfn deleted() {}\n")
-                self.commit("add a Rust file changed since the comparison base")
-                (self.origin / "kept.rs").write_text("#[allow(dead_code)]\nfn kept() {}\n")
-                self.commit("add a file that must still be audited")
-                if deletion == "worktree":
-                    path.unlink()
-                else:
-                    self.git(self.origin, "rm", "deleted file.rs")
-                    if deletion == "commit":
-                        self.commit("delete the changed file")
-                result = self.check("allows", self.origin, self.base)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("kept.rs:1:", result.stderr)
-                self.assertNotIn("deleted file.rs", result.stderr)
-                (self.origin / "kept.rs").write_text("fn kept() {}\n")
-                result = self.check("allows", self.origin, self.base)
-                self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_unexpected_missing_file_fails_closed(self):
-        path = self.origin / "disappearing.rs"
-        path.write_text("fn disappearing() {}\n")
-        self.commit("add changed Rust file")
-        real_git = shutil.which("git")
-        stub = self.bin / "git"
-        # Remove the file only after Git has reported a clean working tree.
-        stub.write_text(
-            '#!/bin/sh\nif [ "$1" = status ]; then\n'
-            f'  "{real_git}" "$@" || exit $?\n'
-            f'  rm "{path}"\n  exit 0\nfi\n'
-            f'exec "{real_git}" "$@"\n'
-        )
-        stub.chmod(0o755)
-        result = self.check("allows", self.origin, self.base)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Rust allow-reason check failed:", result.stderr)
-        self.assertIn("disappearing.rs", result.stderr)
-        self.assertNotIn("allow reasons OK", result.stdout)
-
-    def test_inner_allows_require_reasons_in_commit_and_staged_checks(self):
-        for staged in (False, True):
-            source = self.origin / ("inner_staged.rs" if staged else "inner.rs")
-            for attribute in ("#![allow(dead_code)]", "mod nested {\n    #![allow(\n        dead_code,\n    )]\n}"):
-                with self.subTest(staged=staged, attribute=attribute):
-                    source.write_text(attribute + "\n")
-                    self.git(self.origin, "add", source.name)
-                    if staged:
-                        result = subprocess.run(
-                            [sys.executable, str(CI / "check_changed_rust_allows.py"),
-                             "--root", str(self.origin), "--staged"],
-                            text=True, capture_output=True,
-                        )
-                    else:
-                        self.commit("add inner lint attribute")
-                        result = self.check("allows", self.origin, self.base)
-                    self.assertNotEqual(result.returncode, 0, result.stdout)
-                    self.assertIn(source.name + ":", result.stderr)
-                    self.assertIn("allow with no reason", result.stderr)
-
-    def test_explained_inner_allows_remain_admitted(self):
-        (self.origin / "inner.rs").write_text(
-            '#![allow(dead_code, reason = "generated entrypoints")]\n'
-            'mod nested {\n    #![allow(unused_imports, reason = "platform imports")]\n}\n'
-        )
-        self.commit("explain inner lint attributes")
-        result = self.check("allows", self.origin, self.base)
-        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_changed_rust_files_come_from_the_exact_observed_comparison_trees(self):
         with self.subTest(phase='advanced main does not attribute its changes to docs pr'):
             self.doCleanups()
             self.setUp()
-            for entrypoint in ("allows", "format"):
-                with self.subTest(entrypoint=entrypoint):
-                    result = self.check(entrypoint, self.origin, self.base)
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertIn(self.ancestor + "..HEAD", result.stdout)
-                    self.assertFalse(self.arguments.exists())
+            result = self.check(self.origin, self.base)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(self.ancestor + "..HEAD", result.stdout)
+            self.assertFalse(self.arguments.exists())
         with self.subTest(phase='shallow pr fetches both endpoints until merge base is observable'):
             self.doCleanups()
             self.setUp()
             checkout = self.shallow_clone()
-            # Run the formatter first so its production range resolver must recover.
-            for entrypoint in ("format", "allows"):
-                with self.subTest(entrypoint=entrypoint):
-                    result = self.check(entrypoint, checkout, self.base)
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertIn(self.ancestor + "..HEAD", result.stdout)
-                    self.assertFalse(self.arguments.exists())
+            result = self.check(checkout, self.base)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(self.ancestor + "..HEAD", result.stdout)
+            self.assertFalse(self.arguments.exists())
             self.assertEqual(self.git(checkout, "merge-base", self.base, "HEAD"), self.ancestor)
         with self.subTest(phase='actual pr rust changes still get checked'):
             self.doCleanups()
             self.setUp()
-            (self.origin / "new.rs").write_text("#[allow(dead_code)]\nfn new() {}\n")
-            self.commit("PR adds an unexplained allow")
-            result = self.check("allows", self.origin, self.base)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("new.rs:1:", result.stderr)
-            self.assertNotIn("legacy.rs:", result.stderr)
-            result = self.check("format", self.origin, self.base)
+            (self.origin / "new.rs").write_text("fn new() {}\n")
+            self.commit("PR adds a Rust file")
+            result = self.check(self.origin, self.base)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(self.arguments.read_text().splitlines(),
                              ["--edition", "2024", "--check", "--", "new.rs"])
-        with self.subTest(phase='staged mode reads the index instead of the worktree'):
-            self.doCleanups()
-            self.setUp()
-            staged = self.origin / "staged.rs"
-            staged.write_text("#[allow(dead_code)]\nfn staged() {}\n")
-            self.git(self.origin, "add", "staged.rs")
-            staged.write_text(
-                '#[allow(dead_code, reason = "working tree is not committed")]\n'
-                "fn staged() {}\n"
-            )
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(CI / "check_changed_rust_allows.py"),
-                    "--root",
-                    str(self.origin),
-                    "--staged",
-                ],
-                text=True,
-                capture_output=True,
-            )
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("staged.rs:1:", result.stderr)
         with self.subTest(phase='force push preserves exact before tree instead of merge base'):
             self.doCleanups()
             self.setUp()
-            result = self.check("allows", self.origin, "", self.base)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("legacy.rs:1:", result.stderr)
-            result = self.check("format", self.origin, "null", self.base)
+            result = self.check(self.origin, "null", self.base)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("legacy.rs", self.arguments.read_text().splitlines())
-        with self.subTest(phase='missing shallow ancestry fails both gates without checking wrong tree'):
+        with self.subTest(phase='missing shallow ancestry fails without checking wrong tree'):
             self.doCleanups()
             self.setUp()
             checkout = self.shallow_clone()
             self.git(checkout, "fetch", "--depth=1", "origin", self.base)
             self.git(checkout, "remote", "set-url", "origin", str(self.directory / "unavailable"))
-            for entrypoint in ("allows", "format"):
-                with self.subTest(entrypoint=entrypoint):
-                    result = self.check(entrypoint, checkout, self.base)
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertNotIn("Rust formatting OK", result.stdout)
-                    self.assertNotIn("allow reasons OK", result.stdout)
-                    self.assertFalse(self.arguments.exists())
+            result = self.check(checkout, self.base)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("Rust formatting OK", result.stdout)
+            self.assertFalse(self.arguments.exists())
         with self.subTest(phase='diff failure cannot be mistaken for no rust changes'):
             self.doCleanups()
             self.setUp()
@@ -232,12 +116,10 @@ class ChangedRustComparisonTests(unittest.TestCase):
             stub.write_text('#!/bin/sh\nif [ "$1" = diff ]; then exit 23; fi\n'
                             + 'exec "' + real_git + '" "$@"\n')
             stub.chmod(0o755)
-            for entrypoint in ("allows", "format"):
-                with self.subTest(entrypoint=entrypoint):
-                    result = self.check(entrypoint, self.origin, self.base)
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertNotIn("no Rust files", result.stdout)
-                    self.assertFalse(self.arguments.exists())
+            result = self.check(self.origin, self.base)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("no Rust files", result.stdout)
+            self.assertFalse(self.arguments.exists())
 
 
 if __name__ == "__main__":

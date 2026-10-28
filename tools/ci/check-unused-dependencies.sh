@@ -43,8 +43,7 @@ holds_generated() {
 
 scan=()
 if [[ ${1:-} == --changed ]]; then
-    range=$(python3 "$script_dir/check_changed_rust_allows.py" \
-        --root "$repo" --comparison-range "${2:-}" "${3:-}")
+    range=$(python3 "$script_dir/comparison_range.py" --root "$repo" "${2:-}" "${3:-}")
     declare -A crate_dirs=()
     for manifest in "${manifests[@]}"; do
         [[ $manifest == Cargo.toml ]] || crate_dirs[${manifest%/Cargo.toml}]=1

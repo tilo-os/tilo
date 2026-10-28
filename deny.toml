@@ -151,6 +151,41 @@ deny = [
     ], reason = "old RustCrypto generation" },
     { crate = "hmac:<0.13", wrappers = ["davey", "hkdf", "librespot-core", "librespot-discovery", "pbkdf2", "rfc6979"], reason = "old RustCrypto generation" },
     { crate = "chacha20poly1305:<0.11", wrappers = ["hpke-rs-rust-crypto", "openmls_rust_crypto", "snow"], reason = "old RustCrypto generation" },
+    # Raw AEAD, key agreement/KEM, HPKE and password-KDF crates. Sealing
+    # constructions live in one reviewed crate, tilo-seal; every other
+    # workspace crate seals through its typed API. The other wrappers are the
+    # upstream libraries that own their whole construction (Noise, MLS, SSH,
+    # iroh, ...) and tilo-crypto's PBKDF2, which Apple's iCloud SRP-6a sign-in
+    # fixes. A new upstream user is added here after review.
+    { crate = "aead", wrappers = ["aes-gcm", "chacha20poly1305", "davey", "ssh-cipher"] },
+    { crate = "aes", wrappers = ["aes-gcm", "davey", "librespot-audio", "librespot-core", "librespot-discovery", "pkcs5", "russh", "ssh-cipher", "tilo-seal", "wacore", "wacore-libsignal"] },
+    { crate = "aes-gcm", wrappers = ["hpke-rs-rust-crypto", "noq-proto", "openmls_rust_crypto", "pkcs5", "snow", "ssh-cipher", "tilo-seal"] },
+    { crate = "aes-gcm-siv" },
+    { crate = "aes-siv" },
+    { crate = "argon2", wrappers = ["ssh-key", "tilo-seal"] },
+    { crate = "balloon-hash" },
+    { crate = "chacha20", wrappers = ["chacha20poly1305", "rand", "ssh-cipher"] },
+    { crate = "chacha20poly1305", wrappers = ["hpke-rs-rust-crypto", "openmls_rust_crypto", "snow", "tilo-seal"] },
+    { crate = "crypto_box" },
+    { crate = "crypto_secretbox" },
+    { crate = "curve25519-dalek", wrappers = ["ed25519-dalek", "frost-ed25519", "iroh-base", "russh", "snow", "wacore-libsignal", "x25519-dalek"] },
+    { crate = "hpke" },
+    { crate = "hpke-rs", wrappers = ["openmls_rust_crypto", "tilo-seal"] },
+    { crate = "hpke-rs-crypto", wrappers = ["hpke-rs", "hpke-rs-rust-crypto", "openmls_rust_crypto", "tilo-seal"] },
+    { crate = "hpke-rs-libcrux" },
+    { crate = "hpke-rs-rust-crypto", wrappers = ["hpke-rs", "openmls_rust_crypto", "tilo-seal"] },
+    { crate = "libcrux-chacha20poly1305" },
+    { crate = "libcrux-ecdh" },
+    { crate = "libcrux-hpke" },
+    { crate = "libcrux-kem" },
+    { crate = "orion" },
+    { crate = "pbkdf2", wrappers = ["bcrypt-pbkdf", "librespot-core", "pkcs5", "russh", "scrypt", "tilo-crypto", "tilo-seal"] },
+    { crate = "poly1305", wrappers = ["chacha20poly1305", "ssh-cipher"] },
+    { crate = "salsa20", wrappers = ["russh", "scrypt"] },
+    { crate = "scrypt", wrappers = ["davey", "pkcs5", "russh"] },
+    { crate = "sodiumoxide" },
+    { crate = "x25519-dalek", wrappers = ["hpke-rs-rust-crypto", "wacore-libsignal", "x-wing"] },
+    { crate = "xsalsa20poly1305" },
 ]
 
 [sources]

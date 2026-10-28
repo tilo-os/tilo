@@ -21,7 +21,7 @@
 //! drop, compare in constant time and redact themselves from `Debug`.
 //!
 //! No other workspace crate may depend on raw AEAD/KEM crates;
-//! `tools/policy/check_crypto_dependencies.py` enforces that.
+//! deny.toml's `[bans]` enforces that.
 
 #![cfg_attr(
     test,

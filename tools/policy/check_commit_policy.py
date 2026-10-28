@@ -13,7 +13,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools/ci"))
-from check_changed_rust_allows import comparison_range
+from comparison_range import comparison_range
 from check_commit_message import EXAMPLES, validate
 from check_public_references import internal_reference
 from check_source_content import content_issues

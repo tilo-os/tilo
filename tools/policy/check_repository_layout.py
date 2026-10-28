@@ -40,7 +40,6 @@ RETIRED_SOURCE_ROOTS = {
     "tools/check-build-env.sh": "tools/ci/check-build-env.sh",
     "tools/check-changed-rustfmt.sh": "tools/ci/check-changed-rustfmt.sh",
     "tools/check-warnings.sh": "tools/ci/check-warnings.sh",
-    "tools/check_changed_rust_allows.py": "tools/ci/check_changed_rust_allows.py",
     "tools/check_": "tools/policy/check_",
     "tools/ci-": "tools/ci/",
     "tools/ci_": "tools/ci/",

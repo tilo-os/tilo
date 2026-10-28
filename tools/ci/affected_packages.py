@@ -84,7 +84,7 @@ QUALITY_ONLY_HELPERS = {
     ".githooks/pre-commit": "tools/tests/test_pre_commit_contract.py",
     "scripts/ci-run.sh": "tools/tests/test_ci_run.py",
     "tools/ci/check-changed-rustfmt.sh": "tools/tests/test_changed_rust_comparison.py",
-    "tools/ci/check_changed_rust_allows.py": "tools/tests/test_changed_rust_comparison.py",
+    "tools/ci/comparison_range.py": "tools/tests/test_changed_rust_comparison.py",
     "tools/ci/check_lock_update.py": "tools/tests/test_lock_update.py",
     "tools/ci/measure.sh": "tools/tests/test_ci_measure.py",
     "tools/ci/compiler_cache_metrics.py": "tools/tests/test_ci_compiler_cache_metrics.py",

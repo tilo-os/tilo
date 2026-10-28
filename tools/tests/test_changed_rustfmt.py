@@ -90,13 +90,6 @@ class ChangedRustfmtTests(unittest.TestCase):
             arguments = self.arguments.read_text(encoding="utf-8")
             self.assertNotIn("<vendor/codec/src/lib.rs>", arguments)
             self.assertIn("<crates/demo/vendor/local.rs>", arguments)
-            result = subprocess.run(
-                ["python3", str(SCRIPT.with_name("check_changed_rust_allows.py")),
-                 "--root", str(self.root), self.base], text=True, capture_output=True,
-            )
-            self.assertEqual(result.returncode, 1)
-            self.assertIn("crates/demo/vendor/local.rs:1:", result.stderr)
-            self.assertNotIn("vendor/codec/src/lib.rs", result.stderr)
         with self.subTest(phase='@generated sources are excluded'):
             self.doCleanups()
             self.setUp()

@@ -592,6 +592,8 @@ equatable_if_let = "deny"                   # if let used as an equality test
 # Crates list their banned calls in their own clippy.toml; a listed call is an
 # error, not a style suggestion.
 disallowed_methods = "deny"
+# Every `#[allow]` says why the lint does not apply there.
+allow_attributes_without_reason = "deny"
 
 # `as_conversions` is broad; pedantic already denies the dangerous cast
 # categories more precisely. The blanket lint adds noise to bounded graphics
@@ -726,7 +728,7 @@ hmac = "0.13"
 pbkdf2 = "0.13"
 blake3 = "1.8.5"
 # Raw AEAD and password-KDF crates are for `crates/system/tilo-seal` only;
-# `tools/policy/check_crypto_dependencies.py` rejects any other direct user.
+# deny.toml's `[bans]` rejects any other direct user.
 # `zeroize` keeps the cipher key wiped on drop; 0.11 made it opt-in.
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
 argon2 = { version = "0.6", default-features = false, features = ["alloc"] }

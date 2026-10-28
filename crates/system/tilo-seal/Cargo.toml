@@ -13,7 +13,7 @@ name = "tilo_seal"
 path = "src/lib.rs"
 
 # This is the only crate allowed to depend on raw AEAD/KEM crates
-# (`tools/policy/check_crypto_dependencies.py`). Every other crate seals
+# (deny.toml `[bans]`). Every other crate seals
 # through the typed API here.
 [dependencies]
 # RFC 9180 HPKE. The same implementation (and Rust-Crypto backend) OpenMLS

@@ -80,12 +80,6 @@ jobs:
           fi
           cargo hakari verify
 
-      - name: Require reasons for Rust lint exceptions in changed files
-        run: >-
-          python3 tools/ci/check_changed_rust_allows.py
-          '${{ steps.merge.outputs.main }}'
-          '${{ github.event.before }}'
-
       - name: Verify commit messages and exact new blob contents
         env:
           PR_HEAD_REF: ${{ github.head_ref }}
