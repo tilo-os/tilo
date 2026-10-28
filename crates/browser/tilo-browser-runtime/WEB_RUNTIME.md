@@ -32,6 +32,49 @@ Tools: the pinned Rust toolchain with
 `wasm32-unknown-unknown`, a wasm-bindgen CLI matching the crate's pinned
 wasm-bindgen, binaryen, Node.js.
 
+## Drawing without WebGPU
+
+A browser that offers no WebGPU (Firefox on Linux ships `dom.webgpu.enabled`
+off) draws the same scene on the CPU: `rendererChoice` asks for an adapter
+once per page, and a page without one rasterizes through
+`ui::cpu_canvas`/`tilo-cpu-raster` and presents each changed region to its
+canvas as a WebGL2 texture (`web/cpu-present.mjs`). The start module is built
+with `+simd128` (`.cargo/config.toml`), which is where `vello_cpu` takes its
+vector path, and the rasterizer is not in it: `tilo-web-desktop`'s
+`src/cpu_raster.rs` is a split point, so the page fetches that module
+(`load_cpu_raster`, `lazy-cpu-raster`) after `rendererChoice` picked the CPU
+and before the first mount. A visitor whose browser has WebGPU never
+downloads it.
+
+Release desktop bundle, measured with the same tools (wasm-opt 126,
+wasm-bindgen 0.2.108), start module in bytes:
+
+| build | start module | CPU rasterizer |
+|---|---|---|
+| `main` before the CPU renderer | 22,322,887 | — |
+| linked in, no SIMD | 22,956,739 | in the start module |
+| `+simd128` | 22,462,472 | in the start module |
+| `+simd128`, fetched on demand | 22,138,463 | 343,076 |
+
+Frame work at 1440x900 with four windows open, in Playwright's Firefox with
+`dom.webgpu.enabled=false` and Chromium whose adapter request answers
+nothing, measuring the runtime's own `draw_total` stage:
+
+| | Firefox before | Firefox now | Chromium before | Chromium now |
+|---|---|---|---|---|
+| first frame | 1.2–2.3 s | 1.2 s | 0.6 s | 0.6 s |
+| open an app (p50/p95 ms) | 40 / 59 | 24 / 43 | 52–96 | 21 / 63 |
+| typing (p50/p95 ms) | 97 / 128 | 32 / 49 | — | 33 / 46 |
+| pan the strip (p50/p95 ms) | 83 / 97 | 32 / 39 | 38 / 128 | 34 / 41 |
+| pan (frames/s) | 11 | 27 | 13 | 26 |
+| scroll inside a window (p50/p95 ms) | 83 / 174 | 32 / 37 | — | 39 / 45 |
+| idle (frames/s) | 0 | 0 | 0 | 0 |
+
+Still above the 16 ms budget: a pan frame repaints the windows it moved (the
+runtime reports `render:full:outside-parts`), since one stretch of the strip's
+own draws outside every window leaves the damage proof no bound for what
+follows it.
+
 ## Cargo features of `tilo-browser-runtime`
 
 The crate has no Cargo features: the one wasm32 build carries the toolkit,
