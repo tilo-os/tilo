@@ -796,6 +796,8 @@ pub struct FrameBuilder {
     keyboard_focus_rect: Option<Rect>,
     /// Speaks the chrome when the screen reader is on; silent otherwise.
     narrator: crate::shell::shell_narrator::ShellNarrator,
+    /// Carries the comforts the person turns on to the login screens.
+    sign_in_comforts: crate::shell::sign_in_comforts::SignInMirror,
     /// The logical desktop the shell lays out in: the bounding box of every
     /// display's logical rectangle.
     viewport: (f64, f64),
@@ -1210,6 +1212,7 @@ impl FrameBuilder {
             magnifier_focus: crate::shell::magnifier::FocusTracker::default(),
             keyboard_focus_rect: None,
             narrator: crate::shell::shell_narrator::ShellNarrator::default(),
+            sign_in_comforts: crate::shell::sign_in_comforts::SignInMirror::default(),
             viewport: (f64::from(viewport.0), f64::from(viewport.1)),
             scene_size: (f64::from(viewport.0), f64::from(viewport.1)),
             outputs: None,
@@ -4181,6 +4184,7 @@ impl FrameBuilder {
                 .screen_reader()
                 .enabled,
         );
+        self.sign_in_comforts.observe();
     }
 
     /// Speak what changed in the chrome since the last frame (focus moves in

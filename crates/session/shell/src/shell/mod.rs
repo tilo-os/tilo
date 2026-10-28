@@ -197,6 +197,7 @@ pub(crate) mod settings_records;
 pub(crate) mod shared_display_actions;
 pub mod shell_narrator;
 pub mod shots_keyboard;
+pub mod sign_in_comforts;
 pub mod software_dim;
 pub mod spatial_calibration;
 pub mod speaker_calibration;
