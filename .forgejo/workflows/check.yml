@@ -147,18 +147,58 @@ jobs:
   # pushes retain every selected native result even when this boundary fails.
   # Pull requests containing only audited prose or self-tested quality helpers
   # may omit this independent suite.
+  # The boundary invariants run five fixture binaries built from the merged
+  # tree, as t's security check depends on its vm-test-binaries check. Build
+  # them where the compiler and cache are warm: the checks themselves are
+  # mostly text, but their first cold build on a 2-CPU lane spent a 30-minute
+  # timeout inside one invariant and reported no result at all.
+  security-fixtures:
+    if: needs.select.outputs.security_required == 'true'
+    needs: [builder, select]
+    runs-on: runner-large
+    timeout-minutes: 60
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    steps:
+      - name: Checkout security fixture sources
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Merge onto the tested main
+        uses: ./.forgejo/actions/merge-main
+        with:
+          main: ${{ needs.select.outputs.main }}
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Build the security fixture binaries
+        run: |
+          cargo build --locked -p tilo-image-policy-check -p tilo-crypto \
+            -p tilo-esp-write -p tilo-board-successor
+          cargo build --locked -p tilo-install-helpers --bin tilo-staging-handoff
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: security-fixtures
+          path: |
+            target/debug/tilo-image-policy-check
+            target/debug/tilo-crypto
+            target/debug/tilo-esp-write
+            target/debug/tilo-board-successor
+            target/debug/tilo-staging-handoff
+          if-no-files-found: error
+          retention-days: 1
+
   security:
     if: needs.select.outputs.security_required == 'true'
-    needs: [select]
-    # The invariants compile their fixtures (image policy check, crypto, ESP
-    # write, board successor, staging handoff). On the quality lane's 2 CPUs
-    # one run spent its 30-minute timeout inside the second of 74 invariants
-    # (29m38s) and never reached the rest; the native class's CPUs and memory
-    # are t's declared shape for the same check.
-    runs-on: runner
-    timeout-minutes: 60
+    needs: [select, security-fixtures]
+    runs-on: runner-quality
+    timeout-minutes: 45
     env:
-      CARGO_BUILD_JOBS: '4'
+      # The complete suite passes in the quality lane's 2 CPU / 5 GiB job limit
+      # once its fixtures are built (security-fixtures); t declares the same
+      # check as a 1-core, minutes-long job.
+      CARGO_BUILD_JOBS: '2'
     container:
       image: registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1
     steps:
@@ -170,11 +210,22 @@ jobs:
         with:
           main: ${{ needs.select.outputs.main }}
 
-      # The fixture binaries build from the merged tree. The registry cache
-      # and the runner's compiler cache serve them, and a toolchain component
-      # the image lacks must fail at once rather than download during the run.
-      - name: Prepare Rust build caches
-        uses: ./.forgejo/actions/prepare-rust-build
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          name: security-fixtures
+          path: target/debug
+
+      - name: Use the fixture binaries the builder produced
+        run: |
+          for binary in tilo-image-policy-check tilo-crypto tilo-esp-write \
+                        tilo-board-successor tilo-staging-handoff; do
+            chmod 0755 "target/debug/$binary"
+          done
+          printf 'TILO_IMAGE_POLICY_CHECK_BIN=%s/target/debug/tilo-image-policy-check\n' "$PWD" >> "$GITHUB_ENV"
+          printf 'TILO_CRYPTO_BIN=%s/target/debug/tilo-crypto\n' "$PWD" >> "$GITHUB_ENV"
+          printf 'TILO_ESP_WRITE_BIN=%s/target/debug/tilo-esp-write\n' "$PWD" >> "$GITHUB_ENV"
+          printf 'TILO_BOARD_SUCCESSOR_BIN=%s/target/debug/tilo-board-successor\n' "$PWD" >> "$GITHUB_ENV"
+          printf 'TILO_STAGING_HANDOFF_BIN=%s/target/debug/tilo-staging-handoff\n' "$PWD" >> "$GITHUB_ENV"
 
       # ci-fast carries the native fixture tools (os/Containerfile.ci-fast);
       # check them explicitly so EFI/RPM tests cannot skip.
@@ -269,11 +320,12 @@ jobs:
   test:
     if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.rust_required == 'true' }}
     needs: [builder, select, security]
-    # Linking a shard's test binaries is the memory peak of the whole check:
-    # the shell test link took the native class's 14/16 GiB job limit (the
-    # kernel killed 1-2 rustc processes on both architectures), and the tree
-    # declares 48 GiB for the same tests. The large class has 36 GiB.
-    runs-on: ${{ matrix.arch == 'aarch64' && 'runner-large-arm64' || 'runner-large' }}
+    # Linking the shell test binaries is the memory peak of the whole check:
+    # it took the native class's 14/16 GiB job limit (the kernel killed rustc
+    # on both architectures), and the tree declares 48 GiB for those tests.
+    # Only that shard needs the large class; the others link within the native
+    # limit.
+    runs-on: ${{ contains(matrix.test_packages, '-p shell') && (matrix.arch == 'aarch64' && 'runner-large-arm64' || 'runner-large') || matrix.runner }}
     timeout-minutes: 120
     outputs:
       cleanup-shared-libraries: ${{ steps.cleanup.outputs.shared-libraries }}
