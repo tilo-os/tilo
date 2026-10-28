@@ -704,7 +704,7 @@ pub struct NavGeometry {
     pub size_class: Breakpoint,
     /// The size of the rect this plan was solved for. Two passes that differ
     /// here are a **resize** — the window's own edge moved — and a plan that
-    /// switches between them lands at once ([`NavShell::reconcile_size_class`]).
+    /// switches between them lands at once (`NavShell::reconcile_size_class`).
     pub size: Vec2,
     /// Each column's visible area (header and body); a drawer's panel.
     pub sidebar_column: Rect,

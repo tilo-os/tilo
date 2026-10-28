@@ -7,7 +7,7 @@
 //! page edits the description in the shared block editor and holds the
 //! thread. An issue assigned to an agent is that agent's task: its runs are
 //! the issue's actions, approved, steered and answered from the issue page.
-//! An issue's note is written in Notes, through Notes' own action ([`note`]).
+//! An issue's note is written in Notes, through Notes' own action (`note`).
 //!
 //! Storage, sync, history, undo, search and permissions are the framework's.
 //!

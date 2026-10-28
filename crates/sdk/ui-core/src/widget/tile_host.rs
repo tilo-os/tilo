@@ -548,7 +548,7 @@ impl TileHost {
     }
 
     /// How far the content is drawn from where it was laid out
-    /// ([`Self::offset_layout`]): what its app placed at `x` shows at
+    /// (`Self::offset_layout`): what its app placed at `x` shows at
     /// `x + content_shift()`.
     #[must_use]
     pub fn content_shift(&self) -> f64 {

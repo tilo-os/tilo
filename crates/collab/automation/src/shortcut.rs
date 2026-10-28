@@ -74,7 +74,7 @@ pub struct Step {
     pub id: String,
     /// What the run does when the step does not succeed. Absent, the step
     /// must succeed and the run stops at it
-    /// ([`StepPolicy::Fail`](crate::StepPolicy::Fail)).
+    /// ([`StepPolicy::Fail`]).
     #[serde(default, skip_serializing_if = "StepPolicy::is_fail")]
     pub on_error: StepPolicy,
     #[serde(flatten)]

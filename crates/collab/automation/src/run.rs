@@ -339,7 +339,7 @@ impl StepFailure {
     }
 
     /// The failure as a branch or a person matches on it: one of
-    /// [`STEP_FAILURE_CODES`](crate::STEP_FAILURE_CODES), and the action's
+    /// `STEP_FAILURE_CODES`, and the action's
     /// own code when the action is what failed.
     #[must_use]
     pub fn code(&self) -> &str {

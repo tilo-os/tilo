@@ -458,7 +458,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// A new window of the app on a fresh profile that already holds
     /// `documents`, each a record a window of the app kept in the test room
-    /// ([`window_record`]): how an app that now keeps one record per room
+    /// (`window_record`): how an app that now keeps one record per room
     /// first opens where it used to keep one per window.
     pub fn with_window_records(documents: &mut [tilo_resource::Doc]) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);

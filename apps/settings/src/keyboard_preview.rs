@@ -2,8 +2,8 @@
 //!
 //! Compiling a drawing reads the installed XKB data, which takes long enough
 //! to hold a frame, so the window never compiles one: it asks for a drawing
-//! ([`Preview::drawn`]), shows that it is being drawn while it is compiled
-//! off the UI thread ([`Preview::draw_in_background`]), and is woken when it
+//! (`Preview::drawn`), shows that it is being drawn while it is compiled
+//! off the UI thread (`Preview::draw_in_background`), and is woken when it
 //! lands.
 use pc_keyboard_geometry::{Geometry, Key as GeometryKey};
 use std::collections::VecDeque;

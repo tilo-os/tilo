@@ -14,7 +14,7 @@
 //! so echo suppression is exercised for real.
 //!
 //! Voice is faked too: a voice gateway and a UDP media path on loopback,
-//! with transport encryption and DAVE for real (see [`voice`]'s notes in
+//! with transport encryption and DAVE for real (see `voice`'s notes in
 //! the source). Fake users join, mute, leave and say Opus frames through
 //! [`FakeDiscord::voice_join`] and friends; what the bot said is decrypted
 //! and kept for [`FakeDiscord::voice_heard`]. [`tone`] makes and tells
