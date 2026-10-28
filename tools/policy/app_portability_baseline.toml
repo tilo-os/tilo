@@ -6,8 +6,6 @@
 
 [apps.agent]
 D1 = 2
-# The agent publishes the `task` action, which reads the same allow rules a
-# run's grant is narrowed by, so the policy crate is a runtime dependency.
 D2 = 8
 
 [apps.backups]
@@ -69,7 +67,7 @@ D1 = 6
 D2 = 9
 R1 = 273
 R2 = 138
-R3 = 37
+R3 = 36
 R4 = 1
 
 [apps.logs]
@@ -179,6 +177,6 @@ R1 = 17
 W3 = 11
 
 [sdk.tilo-ui]
-R1 = 249
-W1 = 13
-W3 = 56
+R1 = 209
+W1 = 12
+W3 = 52

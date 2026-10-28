@@ -58,6 +58,14 @@ pub(crate) const KEYS: &[&str] = &[
     "greeter-error-passcode-repeated-tries",
     "greeter-error-wait-minutes",
     "greeter-error-wait-hours",
+    "greeter-keyboard",
+    "greeter-key-shift",
+    "greeter-key-symbols",
+    "greeter-key-numbers",
+    "greeter-key-letters",
+    "greeter-key-space",
+    "greeter-key-delete",
+    "greeter-key-enter",
 ];
 
 #[cfg(test)]

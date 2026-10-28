@@ -108,6 +108,11 @@ fn settled_builder_in(theme: Theme) -> (PopulatedShellFixture, tilo_test_env::Sc
         (NATIVE_WIDTH, NATIVE_HEIGHT),
         theme.with_reduce_motion(true),
     );
+    // A control hint's moment comes seconds after the desktop is first
+    // painted, on the wall clock: it can land between two frames a test
+    // compares and change the chrome under them. These tests measure what
+    // else changes, so the hints keep away.
+    frame.host_mut().rest_control_hints();
     frame.relayout();
     let _ = frame.paint();
     frame.relayout();
@@ -1023,6 +1028,11 @@ fn foreign_damage_window(
     tree.seed_doc_from_cache();
     let mut fixture =
         PopulatedShellFixture::with_tree(output, Theme::dark().with_reduce_motion(true), tree);
+    // A control hint's moment comes seconds after the desktop is first
+    // painted, on the wall clock: it can land between two frames a test
+    // compares and change the chrome under them. These tests measure what
+    // else changes, so the hints keep away.
+    fixture.host_mut().rest_control_hints();
     let store = crate::shell::foreign::store();
     store.note_adopted(surface);
     fixture.with_chrome(|chrome| {
@@ -1374,7 +1384,13 @@ fn wide_retained_fixture_in(size: (u32, u32), theme: Theme) -> PopulatedShellFix
         }
     }
     tree.seed_doc_from_cache();
-    PopulatedShellFixture::with_tree(size, theme.with_reduce_motion(true), tree)
+    let mut fixture = PopulatedShellFixture::with_tree(size, theme.with_reduce_motion(true), tree);
+    // A control hint's moment comes seconds after the desktop is first
+    // painted, on the wall clock: it can land between two frames a test
+    // compares and change the chrome under them. These tests measure what
+    // else changes, so the hints keep away.
+    fixture.host_mut().rest_control_hints();
+    fixture
 }
 
 #[cfg(target_os = "linux")]

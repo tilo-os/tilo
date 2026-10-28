@@ -328,6 +328,45 @@ fn one_dirty_hidden_owner_of_110_enters_only_its_actual_model_and_save_service_w
         );
     }
 }
+/// A save that lands after a keystroke changes the save status and
+/// nothing the model holds: its owner hears the status, and no model
+/// callback runs (no update, no sync) and no layout is retired or solved
+/// for it. Any other wake of the same owner takes its whole service.
+#[test]
+fn a_landed_save_shows_its_status_without_an_owner_service_or_layout() {
+    let host = ProbeHost::new();
+    let queue = OwnerWakeQueue::default();
+    let (owner, seen, _) = prepared(&host, &queue, 6100, true);
+    let (mut frame, _, _) = frame(&queue, vec![owner]);
+    settle_first_writes(&host, &mut frame, std::slice::from_ref(&seen));
+    let (updates, syncs, saves) = (seen.updates.get(), seen.syncs.get(), seen.saves.get());
+    let layouts = frame.relayout_frames;
+    let wake = seen.wake.borrow().clone().unwrap();
+
+    wake.wake_save_progress();
+    assert_eq!(frame.service_pending_owner_models().unwrap(), 1);
+    assert_eq!(seen.saves.get(), saves + 1, "the owner hears the status");
+    assert_eq!(
+        (seen.updates.get(), seen.syncs.get()),
+        (updates, syncs),
+        "no model callback runs for a save that landed"
+    );
+    assert!(
+        !frame.owner_service_layout_retired,
+        "the window's layout stands"
+    );
+    assert_eq!(frame.relayout_frames, layouts, "nor is one solved");
+
+    wake.wake_save_progress();
+    wake.wake();
+    assert_eq!(frame.service_pending_owner_models().unwrap(), 1);
+    assert_eq!(
+        seen.syncs.get(),
+        syncs + 1,
+        "a wake for anything else takes the whole service"
+    );
+    close(&mut frame, 1);
+}
 #[test]
 fn first_dirty_fifo_and_reason_or_preserve_every_original_sink_event() {
     let host = ProbeHost::new();

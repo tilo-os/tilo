@@ -5,8 +5,8 @@ spends one `tilo-vm` round trip on a wait instead of one per poll.
         until no process belongs to <app> (its launcher's process tree, or a cgroup of its
         unit below the launcher's scope: core.parse_processes' rule), waiting on pidfds
     python3 - line <file> <from-line> <seconds> <regex>...
-        until a line of <file> from line <from-line> on matches one of the regexes, waiting
-        on inotify
+        until a line of <file> from line <from-line> on matches one of the regexes, woken by
+        inotify where the file's writes reach it and reading again every 0.1 s where not
 
 Exit status 0 when the event happened, 1 when the wait ran out, with what is left on stdout.
 The harness sends this file's text as the script (`script()`); it runs in the guest's python3.
@@ -132,7 +132,10 @@ def wait_line(path: str, first: int, seconds: float, patterns: list[str]) -> int
             left = deadline - time.monotonic()
             if left <= 0:
                 return 1
-            select.select([fd], [], [], left)
+            # The session writes its log through the slot's own mount of the home, and
+            # inotify sees no write made through another mount of an overlay: a wakeup on
+            # an event where there is one, else after a tenth of a second, to read again.
+            select.select([fd], [], [], min(left, 0.1))
             try:
                 os.read(fd, 4096)
             except BlockingIOError:

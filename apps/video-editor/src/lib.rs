@@ -65,6 +65,8 @@ pub mod gpu;
 pub(crate) mod layout;
 pub mod media;
 pub mod model;
+#[cfg(not(any(feature = "gst", feature = "decode")))]
+mod page_sound;
 pub mod param;
 pub mod portal;
 pub mod presence;

@@ -898,6 +898,10 @@ pub struct FrameBuilder {
     frame_only_moved: bool,
     /// Scene builds so far, numbering each for [`ui::retained_present::PanReplay`].
     scene_builds: u64,
+    /// Frames drawn since this builder was made, dense and retained alike:
+    /// a test that waits for the desktop to come to rest counts repaints
+    /// with it rather than wall-clock time, which a busy runner stretches.
+    frames_drawn: u64,
     /// A frame changed the desktop since the presenter's layers were last
     /// drawn ([`Self::layers_stale`]).
     layers_stale: bool,
@@ -1261,6 +1265,7 @@ impl FrameBuilder {
             drawing_layers_at_rest: false,
             frame_only_moved: false,
             scene_builds: 0,
+            frames_drawn: 0,
             layers_stale: false,
             layers_generation: 0,
             layers_off: None,
@@ -2643,6 +2648,11 @@ impl FrameBuilder {
     /// ([`ui::retained_present::PanFrame::Moved`]).
     pub fn set_frame_only_moved(&mut self, only_moved: bool) {
         self.frame_only_moved = only_moved;
+    }
+
+    /// How many frames this builder has drawn, dense and retained alike.
+    pub fn frames_drawn(&self) -> u64 {
+        self.frames_drawn
     }
 
     /// Produce the same ordered shell composition as [`paint`](Self::paint), together with
@@ -4954,6 +4964,7 @@ impl FrameBuilder {
     /// the window groups' once-per-drawn-frame motion is told the frame
     /// turned. Every paint says it here, whoever asked for the paint.
     fn frame_drawn(&mut self, motions_at: Instant) {
+        self.frames_drawn = self.frames_drawn.wrapping_add(1);
         ui::motion::frame_drawn(motions_at);
         self.host.frame_presented();
         // The scene this frame issued has just landed. The list is a window,

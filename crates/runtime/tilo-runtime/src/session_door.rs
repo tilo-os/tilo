@@ -679,7 +679,7 @@ mod tests {
         // fallback that never comes.
         let probes = 8;
         let flood = format!("{PROBE}\n").repeat(probes);
-        let (mut near, served, host, asked) = door(
+        let (near, served, host, asked) = door(
             &flood,
             Consent::Admit {
                 room: "room".into(),

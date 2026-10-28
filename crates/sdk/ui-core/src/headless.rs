@@ -1053,6 +1053,20 @@ impl FrameHarness {
             return Ok(());
         };
         let mut batch = queue.take_batch();
+        // Saves that moved on, and nothing else: each owner shows its save
+        // status alone (a change the window's bar shows wakes its host), the
+        // layout stands and the next frame need not sync: no model callback
+        // ran.
+        if batch.front().is_some() && batch.all_save_progress_only() {
+            while let Some(work) = batch.front() {
+                let _profile =
+                    tilo_resource::profiling::Phase::start("ui.owner_wake.save_progress");
+                crate::bound_dispatch::service_owner_save_progress(self.root.as_mut(), work)?;
+                batch.complete_front();
+                *completed += 1;
+            }
+            return Ok(());
+        }
         let mut aside = None;
         if batch.front().is_some() {
             // An unknown visitor can replace descendants before it locates the

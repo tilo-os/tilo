@@ -2055,6 +2055,10 @@ mod tests {
             })
         }
         let drop = |by_touch: bool| {
+            // The view follows a held display and settles back over time:
+            // read the whole drag at one instant, so the target the mapping
+            // names is where the drop lands however long the drag takes.
+            let _frame = crate::motion::pin_frame();
             let mut canvas = canvas();
             let mapping = canvas.mapping();
             let monitor = mapping.to_canvas(displays()[1].placement);

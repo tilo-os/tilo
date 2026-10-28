@@ -72,3 +72,11 @@ greeter-error-wait-minutes = Zu viele Fehlversuche. Versuch es in { $count ->
        *[other] { $count } Minuten
     } noch einmal.
 greeter-error-wait-hours = Zu viele Fehlversuche. Versuch es in { $count } Stunden noch einmal.
+greeter-keyboard = Tastatur
+greeter-key-shift = Umschalt
+greeter-key-symbols = Symbole
+greeter-key-numbers = Ziffern
+greeter-key-letters = Buchstaben
+greeter-key-space = Leertaste
+greeter-key-delete = Löschen
+greeter-key-enter = Eingabe

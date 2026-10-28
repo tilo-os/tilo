@@ -1003,6 +1003,30 @@ impl FakeDiscord {
         (id, token)
     }
 
+    /// Someone deletes webhook `webhook` in its channel's settings; its
+    /// messages stay. Returns whether there was one.
+    pub fn delete_webhook(&self, webhook: &str) -> bool {
+        let mut state = self.shared.lock();
+        let before = state.webhooks.len();
+        state.webhooks.retain(|w| w.id != webhook);
+        before != state.webhooks.len()
+    }
+
+    /// Delete every webhook of `channel`, as [`Self::delete_webhook`];
+    /// returns their ids.
+    pub fn delete_webhooks_in(&self, channel: &str) -> Vec<String> {
+        let mut state = self.shared.lock();
+        let gone = state
+            .webhooks
+            .iter()
+            .filter(|w| w.channel == channel)
+            .map(|w| w.id.clone())
+            .collect();
+        state.webhooks.retain(|w| w.channel != channel);
+        drop(state);
+        gone
+    }
+
     /// The ephemeral answers the bot gave to interactions.
     #[must_use]
     pub fn interaction_replies(&self) -> Vec<Value> {

@@ -3510,6 +3510,30 @@ impl State {
         }
     }
 
+    /// `surface`'s stream could not start for `receivers` at `size`: it
+    /// waits for them (or the size) to change, and the stream it was to
+    /// replace ends.
+    fn legacy_share_failed(
+        &mut self,
+        surface: SurfaceId,
+        receivers: Vec<media::realtime::CodecCapabilities>,
+        size: (u32, u32),
+        replaced: Option<Arc<SharedFlatpakSession>>,
+    ) {
+        self.legacy_share_failures.insert(
+            surface,
+            LegacyShareFailure {
+                receivers,
+                size,
+                at: std::time::Instant::now(),
+            },
+        );
+        if let Some(replaced) = replaced {
+            self.active_sessions.insert(surface, replaced);
+            self.unregister_share_session(surface);
+        }
+    }
+
     /// Reconcile encoder lifetimes and viewer permissions with the windows
     /// that have viewers: shares in the active workspace's replicated
     /// `shared_surfaces` map, and windows the person's other devices show. A
@@ -3610,18 +3634,7 @@ impl State {
                 Ok(session) => session,
                 Err(error) => {
                     log_share_failure(surface, app_id, (width, height), &error, &receivers);
-                    self.legacy_share_failures.insert(
-                        surface,
-                        LegacyShareFailure {
-                            receivers,
-                            size: (width, height),
-                            at: std::time::Instant::now(),
-                        },
-                    );
-                    if let Some(replaced) = replaced {
-                        self.active_sessions.insert(surface, replaced);
-                        self.unregister_share_session(surface);
-                    }
+                    self.legacy_share_failed(surface, receivers, (width, height), replaced);
                     continue;
                 }
             };
@@ -9231,6 +9244,9 @@ mod tick_hook_tests {
         const HOST: PeerId = 0xAAAA;
         const MEMBER: PeerId = 0xCCCC;
         const SURFACE: SurfaceId = 0x7e57_0000_0093;
+        // A share starts once what this machine encodes is known, which the
+        // compositor reads on a worker; read it here first.
+        tilo_window_share::flatpak_share::read_encoders();
         let mut state = make_state();
         let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = Arc::clone(&sent);
@@ -9295,6 +9311,9 @@ mod tick_hook_tests {
         const HOST: PeerId = 0xAAAA;
         const VIEWER: PeerId = 0xBBBB;
         const SURFACE: SurfaceId = 0x7e57_0000_0091;
+        // A share starts once what this machine encodes is known, which the
+        // compositor reads on a worker; read it here first.
+        tilo_window_share::flatpak_share::read_encoders();
         let mut state = make_state();
         let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = Arc::clone(&sent);
@@ -9364,6 +9383,9 @@ mod tick_hook_tests {
         const HOST: PeerId = 0xAAAA;
         const VIEWER: PeerId = 0x5eed_1017;
         const SURFACE: SurfaceId = 0x7e57_0000_1017;
+        // A share starts once what this machine encodes is known, which the
+        // compositor reads on a worker; read it here first.
+        tilo_window_share::flatpak_share::read_encoders();
         let mut state = make_state();
         let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = Arc::clone(&sent);

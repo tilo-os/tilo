@@ -5749,8 +5749,10 @@ mod tests {
         started.recv().unwrap();
         let ticket = begin_display_answer(&chrome_with_room(), DISPLAY_KEEP_ID);
         assert!(ticket().unwrap().is_none());
-        // Another legitimate writer reaches the desired state. This cannot
-        // turn an unsupported atomic operation into our storage receipt.
+        // Another legitimate writer reaches the desired state while the
+        // answer waits. Its write is not this answer's storage receipt: the
+        // answer is stored only over the transaction it was given, so it is
+        // refused as replaced.
         source
             .update_section(
                 "display_transaction",
@@ -5762,8 +5764,10 @@ mod tests {
             .unwrap();
         release.send(()).unwrap();
         crate::shell::durable_writer::global().flush();
+        let answered = ticket();
         assert!(
-            matches!(ticket(), Err(ActionError::Refused(message)) if message.contains("conditional settings persistence is unavailable"))
+            matches!(&answered, Err(ActionError::Refused(message)) if message.contains("replaced before the answer was recorded")),
+            "{answered:?}"
         );
         assert_eq!(
             source.load()["display_transaction"]["state"],
@@ -5778,7 +5782,6 @@ mod tests {
         use settings_store::hardware::{
             DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
         };
-        use std::os::unix::fs::PermissionsExt as _;
         for id in [DISPLAY_KEEP_ID, DISPLAY_REVERT_ID] {
             let _home = tilo_test_env::TestHome::new().unwrap();
             let paths = settings_store::SessionPaths::configured().unwrap();
@@ -5791,17 +5794,14 @@ mod tests {
             transaction.state = DisplayTransactionState::AwaitingConfirmation;
             transaction.save().unwrap();
             // The copy stays readable (an unreadable copy may hold another
-            // process's edit and blocks the write), but its directory takes
-            // no new file, so only the copy's replacement fails.
-            let copy_dir = paths.copy.parent().unwrap().to_path_buf();
-            assert_ne!(Some(copy_dir.as_path()), paths.device.parent());
-            let writable = std::fs::metadata(&copy_dir).unwrap().permissions();
-            std::fs::set_permissions(&copy_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            // process's edit and blocks the write), but its replacement
+            // fails, so only the copy is left to repair.
+            let refused = settings_store::faults::refuse_copy_writes(&paths.copy);
             let stale_copy = std::fs::read(&paths.copy).unwrap();
             let ticket = begin_display_answer(&chrome_with_room(), id);
             crate::shell::durable_writer::global().flush();
             let accepted = ticket();
-            std::fs::set_permissions(&copy_dir, writable).unwrap();
+            drop(refused);
             assert!(accepted.unwrap().is_some());
             assert_eq!(std::fs::read(&paths.copy).unwrap(), stale_copy);
             let state = if id == DISPLAY_KEEP_ID {

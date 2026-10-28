@@ -202,3 +202,157 @@ impl Stewards {
         Some((channel, bytes))
     }
 }
+
+/// A steward change still under way: `Send` where the platform has threads,
+/// as the session's task is.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) type StewardFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Stewarding, String>> + Send + 'a>>;
+/// A steward change still under way.
+#[cfg(target_family = "wasm")]
+pub(crate) type StewardFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Stewarding, String>> + 'a>>;
+
+/// What the session asks of the channels it stewards, as the trait object
+/// [`STEWARDS`] makes.
+pub(crate) trait StewardsApi: collab_types::signer::MaybeSendSync {
+    fn take<'a>(
+        &'a mut self,
+        route: DocumentRoute,
+        workspace_id: u64,
+        saved: Option<&'a [u8]>,
+        signer: &'a Arc<dyn DeviceSigner>,
+        vault: &'a VaultKey,
+    ) -> StewardFuture<'a>;
+    fn release(&mut self, channel: ChannelId);
+    fn request<'a>(
+        &'a mut self,
+        channel: ChannelId,
+        request: MlsAccessRequestV1,
+        allowed: &'a BTreeSet<Ed25519PublicKey>,
+        vault: &'a VaultKey,
+    ) -> StewardFuture<'a>;
+    fn acknowledge(&mut self, channel: ChannelId, ack: &MlsGovernanceAckV1) -> Stewarding;
+    fn redeliver(&self, channel: ChannelId, announce: bool) -> Stewarding;
+}
+
+impl StewardsApi for Stewards {
+    fn take<'a>(
+        &'a mut self,
+        route: DocumentRoute,
+        workspace_id: u64,
+        saved: Option<&'a [u8]>,
+        signer: &'a Arc<dyn DeviceSigner>,
+        vault: &'a VaultKey,
+    ) -> StewardFuture<'a> {
+        Box::pin(Self::take(self, route, workspace_id, saved, signer, vault))
+    }
+    fn release(&mut self, channel: ChannelId) {
+        Self::release(self, channel);
+    }
+    fn request<'a>(
+        &'a mut self,
+        channel: ChannelId,
+        request: MlsAccessRequestV1,
+        allowed: &'a BTreeSet<Ed25519PublicKey>,
+        vault: &'a VaultKey,
+    ) -> StewardFuture<'a> {
+        Box::pin(Self::request(self, channel, request, allowed, vault))
+    }
+    fn acknowledge(&mut self, channel: ChannelId, ack: &MlsGovernanceAckV1) -> Stewarding {
+        Self::acknowledge(self, channel, ack)
+    }
+    fn redeliver(&self, channel: ChannelId, announce: bool) -> Stewarding {
+        Self::redeliver(self, channel, announce)
+    }
+}
+
+/// The stewarding code, as a program that fetches it on first use hands it
+/// over.
+#[derive(Clone, Copy)]
+pub struct MakeStewards(fn() -> Box<dyn StewardsApi>);
+
+/// The stewarding code this build links.
+#[must_use]
+pub fn builtin_stewards() -> MakeStewards {
+    MakeStewards(|| Box::<Stewards>::default())
+}
+
+#[cfg(feature = "lazy-stewards")]
+ui::lazy_code! {
+    /// The stewarding code: with `lazy-stewards` fetched the first time
+    /// this page takes up a channel of the person's own room.
+    pub static STEWARDS: MakeStewards = builtin_stewards, feature = "lazy-stewards";
+}
+
+/// The channels this page stewards, made the first time it takes one up:
+/// until then it stewards none.
+#[derive(Default)]
+pub(crate) struct OwnStewards(Option<Box<dyn StewardsApi>>);
+
+impl OwnStewards {
+    /// Steward `route`'s channel ([`Stewards::take`]), once the stewarding
+    /// code is in.
+    pub(crate) async fn take(
+        &mut self,
+        route: DocumentRoute,
+        workspace_id: u64,
+        saved: Option<&[u8]>,
+        signer: &Arc<dyn DeviceSigner>,
+        vault: &VaultKey,
+    ) -> Result<Stewarding, String> {
+        if self.0.is_none() {
+            #[cfg(feature = "lazy-stewards")]
+            let make = STEWARDS
+                .wait()
+                .await
+                .ok_or("the stewarding code did not load")?;
+            #[cfg(not(feature = "lazy-stewards"))]
+            let make = builtin_stewards();
+            self.0 = Some((make.0)());
+        }
+        let stewards = self.0.as_mut().ok_or("no stewards")?;
+        stewards
+            .take(route, workspace_id, saved, signer, vault)
+            .await
+    }
+
+    pub(crate) fn release(&mut self, channel: ChannelId) {
+        if let Some(stewards) = &mut self.0 {
+            stewards.release(channel);
+        }
+    }
+
+    pub(crate) async fn request(
+        &mut self,
+        channel: ChannelId,
+        request: MlsAccessRequestV1,
+        allowed: &BTreeSet<Ed25519PublicKey>,
+        vault: &VaultKey,
+    ) -> Result<Stewarding, String> {
+        match &mut self.0 {
+            Some(stewards) => stewards.request(channel, request, allowed, vault).await,
+            None => Ok(Stewarding::default()),
+        }
+    }
+
+    pub(crate) fn acknowledge(
+        &mut self,
+        channel: ChannelId,
+        ack: &MlsGovernanceAckV1,
+    ) -> Stewarding {
+        self.0
+            .as_mut()
+            .map_or_else(Stewarding::default, |stewards| {
+                stewards.acknowledge(channel, ack)
+            })
+    }
+
+    pub(crate) fn redeliver(&self, channel: ChannelId, announce: bool) -> Stewarding {
+        self.0
+            .as_ref()
+            .map_or_else(Stewarding::default, |stewards| {
+                stewards.redeliver(channel, announce)
+            })
+    }
+}

@@ -4381,6 +4381,12 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "trims": crate::shell::heap_trim::trims_completed(),
                 }),
             );
+            // Frames drawn so far: a waiter counts repaints with it, so a
+            // slow frame cannot pass for a settled layout.
+            fields.insert(
+                "frames_drawn".into(),
+                serde_json::json!(self.fb.frames_drawn()),
+            );
         }
         dump
     }
@@ -5040,6 +5046,7 @@ fn passcode_key_name(key: ui::passcode_keyboard::PasscodeKey) -> String {
         PasscodeKey::Char(c) => c.to_string(),
         PasscodeKey::Shift => "shift".into(),
         PasscodeKey::Symbols => "symbols".into(),
+        PasscodeKey::Letters => "letters".into(),
         PasscodeKey::Space => "space".into(),
         PasscodeKey::Backspace => "backspace".into(),
         PasscodeKey::Enter => "enter".into(),

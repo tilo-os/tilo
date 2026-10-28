@@ -97,8 +97,7 @@ pub fn word_score(row: &CatalogueRow, words: &[String]) -> usize {
             // A word begins a name's word, or is that word in another
             // inflection: "drawing" and "draw" are the same word to a
             // caller describing what it wants to do.
-            names.iter().any(|name| name.starts_with(word.as_str()))
-                || stems.iter().any(|name| *name == stemmed)
+            names.iter().any(|name| name.starts_with(word.as_str())) || stems.contains(&stemmed)
         })
         .count()
 }

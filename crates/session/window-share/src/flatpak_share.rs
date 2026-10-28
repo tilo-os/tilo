@@ -255,6 +255,11 @@ pub fn encode_size(
     (even(fitted.0), even(fitted.1))
 }
 
+/// Whether what this machine encodes has been read, and whether a worker was
+/// sent to read it.
+static ENCODERS_KNOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static ENCODERS_ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Whether this process has read what this machine can encode, so starting
 /// a share reads it at once. The first read starts the media framework and
 /// loads its plugin registry, which takes from a fraction of a second to
@@ -262,27 +267,31 @@ pub fn encode_size(
 /// that starts shares, and calls `wake` (which wakes that loop) when it is
 /// done. Until then a share waits; nothing else does.
 pub fn encoders_known(wake: fn()) -> bool {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static KNOWN: AtomicBool = AtomicBool::new(false);
-    static STARTED: AtomicBool = AtomicBool::new(false);
-    if KNOWN.load(Ordering::Acquire) {
+    use std::sync::atomic::Ordering;
+    if ENCODERS_KNOWN.load(Ordering::Acquire) {
         return true;
     }
-    if !STARTED.swap(true, Ordering::AcqRel) {
+    if !ENCODERS_ASKED.swap(true, Ordering::AcqRel) {
         let spawned = std::thread::Builder::new()
             .name("tilo-encoder-caps".into())
             .spawn(move || {
-                let _ = media::realtime::local_capabilities();
-                KNOWN.store(true, Ordering::Release);
+                read_encoders();
                 wake();
             });
         if spawned.is_err() {
             // No worker: read it here rather than never share.
-            let _ = media::realtime::local_capabilities();
-            KNOWN.store(true, Ordering::Release);
+            read_encoders();
         }
     }
-    KNOWN.load(Ordering::Acquire)
+    ENCODERS_KNOWN.load(Ordering::Acquire)
+}
+
+/// Read what this machine can encode on the calling thread, as
+/// [`encoders_known`]'s worker does: for a caller that may block until it is
+/// known, such as a test that starts a share and looks at it at once.
+pub fn read_encoders() {
+    let _ = media::realtime::local_capabilities();
+    ENCODERS_KNOWN.store(true, std::sync::atomic::Ordering::Release);
 }
 
 /// This machine's capabilities as the configured preference allows using

@@ -54,6 +54,10 @@ default = ["iroh"]
 # without it, so the wasm bundle links no iroh.
 iroh = ["dep:iroh", "dep:iroh-base", "dep:tilo-relay-session", "tilo-relay-client/iroh"]
 toolkit = ["dep:ui"]
+# Leave the stewarding code out of what the page starts with: it fetches it
+# the first time it takes up a channel of the person's own room
+# (`STEWARDS`).
+lazy-stewards = ["toolkit"]
 
 [dev-dependencies]
 # A test that must hold the wall clock of its whole process (and the

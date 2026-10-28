@@ -1145,6 +1145,7 @@ thread_local! {
     static NOTICE: RefCell<Option<ToolbarNotice>> = const { RefCell::new(None) };
     static REACTIONS: RefCell<Option<ToolbarReactions>> = const { RefCell::new(None) };
     static VIEW_ONLY: Cell<bool> = const { Cell::new(false) };
+    static EDITED: Cell<bool> = const { Cell::new(false) };
     static REACTION_PRESSES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static REVISION: Cell<u64> = const { Cell::new(0) };
     static EVENTS: RefCell<VecDeque<ToolbarEvent>> = const { RefCell::new(VecDeque::new()) };
@@ -1320,23 +1321,25 @@ pub fn notice() -> Option<ToolbarNotice> {
 /// the reactions shown.
 #[must_use]
 pub fn shown() -> Option<WindowToolbar> {
-    with_window_owned(declared(), notice(), reactions(), view_only())
+    with_window_owned(declared(), notice(), reactions(), view_only(), edited())
 }
 
 /// `toolbar` with `notice` up in it, `reactions` at its end and its
-/// location marked [`ToolbarLocation::view_only`] when `view_only`.
+/// location marked [`ToolbarLocation::view_only`] when `view_only`, and
+/// [`ToolbarLocation::edited`] when `edited`.
 pub(crate) fn with_window_owned(
     mut toolbar: Option<WindowToolbar>,
     notice: Option<ToolbarNotice>,
     reactions: Option<ToolbarReactions>,
     view_only: bool,
+    edited: bool,
 ) -> Option<WindowToolbar> {
-    if view_only
-        && let Some(location) = toolbar
-            .as_mut()
-            .and_then(|toolbar| toolbar.location.as_mut())
+    if let Some(location) = toolbar
+        .as_mut()
+        .and_then(|toolbar| toolbar.location.as_mut())
     {
-        location.view_only = true;
+        location.view_only |= view_only;
+        location.edited |= edited;
     }
     if notice.is_none() && reactions.is_none() {
         return toolbar;
@@ -1369,6 +1372,33 @@ pub fn view_only() -> bool {
         return window.view_only();
     }
     VIEW_ONLY.with(Cell::get)
+}
+
+/// Mark the window's document as having work not yet saved
+/// ([`ToolbarLocation::edited`]), as the window's framework follows its
+/// record's saves: every window marks its record this one way, and no app
+/// marks it from its own copy of the save status. Cheap when nothing
+/// changed.
+pub fn show_edited(edited: bool) {
+    if let Some(window) = window() {
+        window.show_edited(edited);
+        return;
+    }
+    EDITED.with(|current| {
+        if current.replace(edited) != edited {
+            REVISION.with(|revision| revision.set(revision.get().wrapping_add(1)));
+        }
+    });
+}
+
+/// Whether the window's bar marks its document as not yet saved
+/// ([`show_edited`]).
+#[must_use]
+pub fn edited() -> bool {
+    if let Some(window) = window() {
+        return window.edited();
+    }
+    EDITED.with(Cell::get)
 }
 
 /// Show `reactions` at the end of the window's bar (`None`: none), as the
