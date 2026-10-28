@@ -23,8 +23,11 @@ added only where a pattern is common, awkward otherwise, and no existing mechani
    bug: two people typing overwrite each other.
 5. **Positions by neighbour only.** Collection moves take `after:` or `before:` another item;
    the compiler rejects integer positions (convergence.md, "Actions").
-6. **Roots as expressions.** `root notes.Notebook` gives the workspace's one notebook anywhere
-   authority allows, so a dashboard needs no `attach` action or optional fields.
+6. **Roots are named values of any type.** `root channels: List<Category | Channel>`, `root
+   notes: Collection<Note>`: no wrapper type named after the app. Other code reaches a root by
+   the app's alias and the root's name (`notes.notes`) wherever authority allows, so a dashboard
+   needs no `attach` action or optional fields. Views attach with `default view chat for
+   channels`.
 
 ## Syntax
 
