@@ -61,6 +61,12 @@ if [[ ${1:-} == --dev ]]; then
   dev_bins=$(python3 os/scripts/install-components.py --dev --dry-run --format bins)
   [[ -n $dev_cargo_args && -n $dev_bins ]] || { echo 'install-components.py names no dev components' >&2; exit 1; }
   printf 'dev image build: cargo build --release %s\n' "$dev_cargo_args"
+  # Cargo compares mtimes, and a tree synced to a build host (rsync keeps the checkout's
+  # times) can hand it an edited source older than the kept artifact, which it would link
+  # stale: the files whose contents changed since the last build are made newer first, as
+  # for the image's own compile (TILO_CARGO_FRESHNESS=content).
+  dev_built_sources="$CARGO_TARGET_DIR/.tilo-built-sources-dev"
+  sh os/scripts/cargo-freshness.sh "$(pwd)" "$dev_built_sources" || cargo clean --release
   # The image compile's settings without LTO (16 codegen units, no line tables, which the
   # release profile strips from what it links anyway), so the crates both build come from
   # one compiler cache entry, and the shell, rebuilt by most changes, compiles in parallel.
@@ -69,6 +75,7 @@ if [[ ${1:-} == --dev ]]; then
   CARGO_PROFILE_RELEASE_CODEGEN_UNITS=$([ "$TILO_DEV_RUST_LTO" = off ] && echo 16 || echo 8) \
   CARGO_PROFILE_RELEASE_DEBUG=0 \
     bash tools/ci/measure.sh "dev cargo" -- cargo build --release $dev_cargo_args
+  sh os/scripts/cargo-freshness.sh --built "$dev_built_sources"
   for b in $dev_bins; do cp "$CARGO_TARGET_DIR/release/$b" "$out/"; done
   os/scripts/verify-elf-hardening.sh "$out"
   exit 0
