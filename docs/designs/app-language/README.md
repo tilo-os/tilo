@@ -70,11 +70,14 @@ which people, agents and automations can find, read and pin.
   so an app costs a few megabytes, not a toolkit.
 - Changes are CRDT-backed and replay identically everywhere; what lives outside the workspace
   follows the outside service's rules.
+- A package can declare **scenarios**: named seed data for screenshots, tests and benchmarks.
+  They never touch a person's data; a real first launch starts empty.
 
 ## The detail docs
 
 | Topic | Doc |
 |---|---|
+| Who may do what; versions | authority.md |
 | Concurrency, offline, outside services, invariants, flows | convergence.md |
 | Search and identifiers | search.md |
 | Agents writing tilolang programs | agents.md |
