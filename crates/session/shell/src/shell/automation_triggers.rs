@@ -1887,6 +1887,29 @@ mod tests {
         );
     }
 
+    /// What the shortcuts watching `watch`'s folders fire with, for a file
+    /// that has settled since the last look.
+    fn folder_runs(
+        triggers: &mut TriggerHost,
+        armed: &[Armed<'_>],
+        watch: &mut crate::shell::automation_folders::FolderWatch,
+    ) -> Vec<serde_json::Value> {
+        let changes = watch.changes();
+        if changes.is_empty() {
+            return Vec::new();
+        }
+        triggers
+            .observe(TriggerEvent::Files(&changes), armed)
+            .into_iter()
+            .map(|firing| {
+                json!({
+                    "file": firing.inputs.get("file"),
+                    "change": firing.inputs.get("change"),
+                })
+            })
+            .collect()
+    }
+
     #[test]
     fn a_file_dropped_into_a_watched_folder_fires_once_with_that_file() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -1917,26 +1940,6 @@ mod tests {
             claims: &[],
         }];
         let deadline = tilo_test_env::hang_deadline();
-        fn runs(
-            triggers: &mut TriggerHost,
-            armed: &[Armed<'_>],
-            watch: &mut crate::shell::automation_folders::FolderWatch,
-        ) -> Vec<serde_json::Value> {
-            let changes = watch.changes();
-            if changes.is_empty() {
-                return Vec::new();
-            }
-            triggers
-                .observe(TriggerEvent::Files(&changes), armed)
-                .into_iter()
-                .map(|firing| {
-                    json!({
-                        "file": firing.inputs.get("file"),
-                        "change": firing.inputs.get("change"),
-                    })
-                })
-                .collect()
-        }
         // A file arrives the way a copy does: written, and written again
         // before the folder is looked at.
         std::fs::write(inbox.join("scan.pdf"), b"%PDF-1.4").expect("the file arrives");
@@ -1948,14 +1951,14 @@ mod tests {
                 Instant::now() < deadline,
                 "the drop was never reported: {files:?}"
             );
-            files.extend(runs(&mut triggers, &armed, &mut watch));
+            files.extend(folder_runs(&mut triggers, &armed, &mut watch));
             std::thread::sleep(Duration::from_millis(50));
         }
         // Whatever follows the drop, for as long as the wait a settling file
         // gets, is not a second run.
         let quiet_until = Instant::now() + crate::shell::automation_folders::SETTLE;
         while Instant::now() < quiet_until {
-            files.extend(runs(&mut triggers, &armed, &mut watch));
+            files.extend(folder_runs(&mut triggers, &armed, &mut watch));
             std::thread::sleep(Duration::from_millis(50));
         }
         assert_eq!(
