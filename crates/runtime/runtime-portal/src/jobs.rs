@@ -56,7 +56,7 @@ pub const MAX_LABEL: usize = 48;
 pub const MAX_MESSAGE: usize = 1024;
 
 /// The most descriptors one message carries.
-const MAX_FDS: usize = 3;
+const MAX_FDS: usize = 4;
 
 /// A job's cgroup, ready for one process to join.
 #[derive(Debug)]
