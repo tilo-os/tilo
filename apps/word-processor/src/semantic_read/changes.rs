@@ -1,5 +1,5 @@
 //! What a document edit answers: the blocks it changed, as
-//! [`read-text`](super::markdown) renders them, so its caller sees the
+//! the Markdown of [`markdown`](super::markdown) renders them, so its caller sees the
 //! result without reading the document again.
 //!
 //! ```text
@@ -19,7 +19,7 @@ use automerge::{AutoCommit, PatchAction, Prop};
 
 use super::{Segment, Shape};
 
-/// The most changed blocks one answer lists; `read-text` reads the rest.
+/// The most changed blocks one answer lists; the document's read answers the rest.
 pub const MAX_LISTED: usize = 32;
 
 /// The most characters of one block an answer shows.
@@ -93,7 +93,7 @@ pub fn summary(doc: &AutoCommit, changes: &[automerge::Patch]) -> String {
         if blocks.len() > listed {
             let _ = writeln!(
                 out,
-                "… {} more; read-text reads them",
+                "… {} more; the document read lists them",
                 blocks.len() - listed
             );
         }

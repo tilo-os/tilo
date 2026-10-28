@@ -1,5 +1,6 @@
 //! An agent reads the document through the bound-action door the broker
-//! and the MCP bridge reach: `read-text` pages the committed body text.
+//! and the MCP bridge reach: the framework's `read` answers the committed
+//! body text, the same door every other resource's content is read through.
 
 use ui::bound_dispatch::BoundActionAddress;
 use ui::framework::testing::TestApp;
@@ -7,17 +8,19 @@ use word_processor::framework::WordProcessorApp;
 
 const INSTANCE: u64 = 7;
 
-fn read_text_address(resources: &[tilo_actions::Resource]) -> Option<tilo_actions::ActionAddress> {
+fn read_address(resources: &[tilo_actions::Resource]) -> Option<tilo_actions::ActionAddress> {
     resources.iter().find_map(|resource| {
         resource
             .actions
             .iter()
-            .find(|action| action.id == "read-text")
+            .find(|action| action.id == "read" && action.contract.reads_document())
             .and_then(|action| resource.action_address(&action.id))
-            .or_else(|| read_text_address(&resource.children))
+            .or_else(|| read_address(&resource.children))
     })
 }
 
+/// Invoke the document's `read` through the bound-action door, answering
+/// what it answered.
 fn read(
     app: &mut TestApp<WordProcessorApp>,
     arguments: &serde_json::Value,
@@ -25,7 +28,7 @@ fn read(
     let harness = app.harness();
     let address = BoundActionAddress {
         instance_id: INSTANCE,
-        address: read_text_address(&harness.resources()).expect("read-text is published"),
+        address: read_address(&harness.resources()).expect("the document publishes its read"),
     };
     harness
         .invoke_bound_action(&address, arguments.as_object().unwrap())
@@ -37,8 +40,30 @@ fn read(
         })
 }
 
+/// The body text a read answers, whether it answered now's document or a
+/// past version's page.
+fn page(answer: &serde_json::Value) -> &str {
+    answer["markdown"]
+        .as_str()
+        .or_else(|| answer["content"]["markdown"].as_str())
+        .expect("the read answers its page")
+}
+
+/// The id the line of `markdown` holding `text` ends in, as its actions
+/// take it.
+fn id_of(markdown: &str, text: &str) -> String {
+    let (_, tagged) = markdown
+        .split_once(&format!("{text} ^"))
+        .expect("the text is read");
+    tagged
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
 #[test]
-fn read_text_pages_the_committed_document_for_an_agent() {
+fn the_read_answers_the_committed_document_for_an_agent() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<WordProcessorApp>::new().unwrap();
     app.harness().type_text("Q3 Planning");
@@ -46,46 +71,50 @@ fn read_text_pages_the_committed_document_for_an_agent() {
     app.harness().type_text("Book the venue");
 
     let whole = read(&mut app, &serde_json::json!({})).unwrap();
-    let markdown = whole["content"]["markdown"].as_str().unwrap();
+    let markdown = whole["markdown"].as_str().unwrap();
     assert!(
-        markdown.starts_with("Q3 Planning {#") && markdown.contains("\nBook the venue {#"),
+        markdown.starts_with("Q3 Planning ^") && markdown.contains("\nBook the venue ^"),
         "{markdown}"
     );
+    assert_eq!(whole["blocks"], 2, "{whole}");
 
-    let first = read(
-        &mut app,
-        &serde_json::json!({"pageSize": 1, "format": "segments"}),
-    )
-    .unwrap();
-    assert_eq!(first["version"], 1);
-    assert_eq!(first["content"]["segments"][0]["text"], "Q3 Planning");
-    assert!(!first["basis"]["heads"].as_array().unwrap().is_empty());
-    let cursor = first["nextCursor"]
-        .as_str()
-        .expect("a second page")
-        .to_owned();
-
-    let rest = read(
-        &mut app,
-        &serde_json::json!({"pageSize": 8, "cursor": cursor, "format": "segments"}),
-    )
-    .unwrap();
-    assert_eq!(rest["content"]["segments"][0]["text"], "Book the venue");
-    assert!(rest["nextCursor"].is_null());
-    assert_eq!(
-        rest["record"], first["record"],
-        "one record, stamped by the SDK"
-    );
-
-    app.harness().type_text("!");
-    let stale = read(
-        &mut app,
-        &serde_json::json!({"pageSize": 8, "cursor": cursor, "format": "segments"}),
-    );
+    // One block, by the id the whole read named.
+    let paragraph = id_of(markdown, "Book the venue");
+    let one = read(&mut app, &serde_json::json!({ "item": paragraph })).unwrap();
+    assert_eq!(one["blocks"], 1, "{one}");
     assert!(
-        matches!(&stale, Err(tilo_actions::DoorError::Unavailable { code, .. }) if code == "stale_cursor"),
-        "a cursor from before an edit is refused: {stale:?}"
+        one["markdown"].as_str().unwrap().contains("Book the venue"),
+        "{one}"
     );
+
+    // An item the document does not hold is refused, naming why.
+    let missing = read(&mut app, &serde_json::json!({ "item": "no-such-block" }));
+    assert!(missing.is_err(), "{missing:?}");
+}
+
+#[test]
+fn a_read_of_a_past_version_answers_the_text_as_it_was() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<WordProcessorApp>::new().unwrap();
+    app.harness().type_text("First draft");
+    app.settle();
+    let past_heads = app.read_document(|doc| {
+        doc.clone()
+            .get_heads()
+            .into_iter()
+            .map(|hash| hash.to_string())
+            .collect::<Vec<_>>()
+    });
+    assert!(!past_heads.is_empty());
+    app.harness().key("Enter");
+    app.harness().type_text("Second thought");
+    app.settle();
+    let heads = past_heads.join("+");
+    let past = read(&mut app, &serde_json::json!({ "version": heads })).unwrap();
+    let markdown = page(&past);
+    assert!(markdown.contains("First draft"), "{past}");
+    assert!(!markdown.contains("Second thought"), "{past}");
+    assert_eq!(past["heads"], serde_json::json!(past_heads), "{past}");
 }
 
 fn invoke(
@@ -170,30 +199,43 @@ fn an_edit_answers_with_the_blocks_it_changed() {
     );
 }
 
-/// `text` with every `{#id}` and `{#table id}` emptied, so a test can state
-/// the layout it expects without the generated ids.
+/// `text` with every block id taken out, so a test can state the layout it
+/// expects without the generated ones.
 fn without_ids(text: &str) -> String {
     let mut out = String::new();
     let mut rest = text;
     while let Some((before, tag)) = rest.split_once("{#") {
         out.push_str(before);
-        let (id, after) = tag.split_once('}').expect("a closed tag");
-        out.push_str(if id.starts_with("table ") {
-            "{#table}"
-        } else {
-            "{#}"
-        });
+        let (_, after) = tag.split_once('}').expect("a closed tag");
         rest = after;
     }
-    out + rest
+    out.push_str(rest);
+    out.lines()
+        .map(|line| {
+            let mut words: Vec<&str> = line.split(' ').collect();
+            while words.last().is_some_and(|word| after_id(word)) {
+                words.pop();
+            }
+            while words.last().is_some_and(|word| word.is_empty()) {
+                words.pop();
+            }
+            let mut line = words.join(" ").replace("  |", " |");
+            while let Some(shortened) = line.strip_suffix(" |") {
+                line = format!("{shortened} |");
+            }
+            line.trim_end().to_owned()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
 }
 
-/// The id closing the line of `markdown` holding `text`, cell or block.
-fn id_of(markdown: &str, text: &str) -> String {
-    let (_, tagged) = markdown
-        .split_once(&format!("{text} {{#"))
-        .expect("the text is read");
-    tagged.split_once('}').unwrap().0.to_owned()
+/// Whether `word` is a block's short id, as a read writes it after a block's
+/// text: the four characters the fewest an id shows, and no more.
+fn after_id(word: &str) -> bool {
+    let word = word.trim_end_matches('|');
+    word.chars().count() == tilo_document::block_markdown::MIN_ID_CHARS
+        && word.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
 #[test]
@@ -208,17 +250,15 @@ fn a_heading_list_and_table_read_back_with_the_handles_that_edit_them() {
         &serde_json::json!({"markdown": "## Standup\n\n- review\n  1. screen reader\n- ship\n\n\
             | Person | Blocked | Next |\n| --- | --- | --- |\n| Maya | no | docs |\n| Ravi | yes | CI |\n"}),
     );
-    let layout = "## Standup {#}\n\
-        - review {#}\n  1. screen reader {#}\n- ship {#}\n\
-        | Person {#} | Blocked {#} | Next {#} | {#table}\n| --- | --- | --- |\n\
-        | Maya {#} | no {#} | docs {#} |\n| Ravi {#} | yes {#} | CI {#} |\n\
-        {#}\n";
+    let layout = "## Standup\n\
+        - review\n  1. screen reader\n- ship\n\
+        | Person | Blocked | Next |\n| --- | --- | --- |\n\
+        | Maya | no | docs |\n| Ravi | yes | CI |\n\
+        \n";
 
+    app.settle();
     let read_back = read(&mut app, &serde_json::json!({})).unwrap();
-    let markdown = read_back["content"]["markdown"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let markdown = page(&read_back).to_owned();
     assert_eq!(without_ids(&markdown), layout, "{markdown}");
 
     let cell = id_of(&markdown, "yes");
@@ -228,32 +268,26 @@ fn a_heading_list_and_table_read_back_with_the_handles_that_edit_them() {
         &serde_json::json!({"block": cell}),
     );
     invoke(&mut app, "type-text", &serde_json::json!({"text": "no"}));
-    let markdown = read(&mut app, &serde_json::json!({})).unwrap()["content"]["markdown"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    app.settle();
+    let answer = read(&mut app, &serde_json::json!({})).unwrap();
+    let markdown = page(&answer).to_owned();
     assert!(
-        markdown.contains(&format!(
-            "| Ravi {{#{}}} | no {{#{cell}}} |",
-            id_of(&markdown, "Ravi")
-        )),
+        markdown.contains(&format!("| no ^{cell} |")),
         "the cell's id selects it: {markdown}"
     );
 
     // The table read names is the one a row is added to, and the next read
     // shows the row.
     let table = markdown
-        .split_once("{#table ")
-        .and_then(|(_, tagged)| tagged.split_once('}'))
-        .map(|(id, _)| id.to_owned())
+        .split_once("table ")
+        .and_then(|(_, tagged)| tagged.split(['#', '}']).next())
+        .map(str::to_owned)
         .expect("the table is tagged with its id");
     invoke(&mut app, "add-row", &serde_json::json!({ "table": table }));
-    let markdown = read(&mut app, &serde_json::json!({})).unwrap()["content"]["markdown"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let answer = read(&mut app, &serde_json::json!({})).unwrap();
+    let markdown = page(&answer).to_owned();
     assert!(
-        without_ids(&markdown).contains("| Ravi {#} | no {#} | CI {#} |\n| {#} | {#} | {#} |"),
+        without_ids(&markdown).contains("| Ravi | no | CI |\n|  |  |  |"),
         "{markdown}"
     );
 }
@@ -272,11 +306,11 @@ fn pasting_a_table_and_adding_a_row_answer_with_the_blocks_they_made() {
         &serde_json::json!({"markdown": "## Standup\n\n- review\n  1. screen reader\n- ship\n\n\
             | Person | Blocked | Next |\n| --- | --- | --- |\n| Maya | no | docs |\n| Ravi | yes | CI |\n"}),
     );
-    let layout = "## Standup {#}\n\
-        - review {#}\n  1. screen reader {#}\n- ship {#}\n\
-        | Person {#} | Blocked {#} | Next {#} | {#table}\n| --- | --- | --- |\n\
-        | Maya {#} | no {#} | docs {#} |\n| Ravi {#} | yes {#} | CI {#} |\n\
-        {#}\n";
+    let layout = "## Standup\n\
+        - review\n  1. screen reader\n- ship\n\
+        | Person | Blocked | Next |\n| --- | --- | --- |\n\
+        | Maya | no | docs |\n| Ravi | yes | CI |\n\
+        \n";
     let pasted = pasted
         .as_ref()
         .and_then(|value| value.as_str())
@@ -300,7 +334,7 @@ fn pasting_a_table_and_adding_a_row_answer_with_the_blocks_they_made() {
         .unwrap_or_default();
     assert_eq!(
         without_ids(appended),
-        "3 changed:\n| {#} | {#} | {#} | {#table}\n| --- | --- | --- |\n",
+        "3 changed:\n| | | |\n| --- | --- | --- |\n",
         "the new row answers with the ids that fill it"
     );
 }

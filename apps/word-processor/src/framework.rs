@@ -139,12 +139,6 @@ impl ResourceApp for WordProcessorApp {
         Some(&crate::i18n::CATALOG)
     }
 
-    /// The document's text a page at a time, for agents, scripts and
-    /// assistive tools.
-    fn local_operations() -> Vec<tilo_actions::ActionSpec> {
-        vec![crate::semantic_read::action::spec()]
-    }
-
     fn scenarios() -> &'static [&'static str] {
         SCENARIOS
     }
@@ -297,7 +291,7 @@ mod tests {
             "zoom-in",
             "move-caret",
             "type-text",
-            "read-text",
+            "read",
             "append-paragraph",
             "field-edit",
         ] {

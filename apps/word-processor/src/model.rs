@@ -103,6 +103,8 @@ fn upgrade(doc: &mut Doc, from: u32) -> Result<(), ModelError> {
     locate = Document::locate,
     lands = Document::lands,
     answer = Document::answer,
+    read_content_in_doc = Document::read_document,
+    document_child = Document::is_readable_object,
     version = 2,
     migrate = upgrade,
 )]
@@ -150,7 +152,9 @@ impl Document {
     #[action(answers, audience = "agents")]
     pub fn replace_text(
         &mut self,
-        #[param("The exact text to find, within one paragraph, as read-text shows it")]
+        #[param(
+            "The exact text to find, within one paragraph, as a read of the document shows it"
+        )]
         find: String,
         #[param("The text that takes its place; empty deletes it")] replace: String,
         #[param("Replace every occurrence; only the first when left out")] all: Option<bool>,
@@ -460,6 +464,41 @@ impl Document {
             return Rc::default();
         };
         OBJECTS.with_borrow_mut(|kept| kept.get_or_insert_with(Objects::default).follow(state))
+    }
+
+    /// The document as a reader reads it: with no `item`, its body paged as
+    /// Markdown, one line a block, each ending in the id its actions take;
+    /// with `item`, that block's own line.
+    ///
+    /// The page is the projection the editor's own semantic read answers, so
+    /// a script, an agent and an assistive tool read the same text from the
+    /// committed document as the person sees in the window.
+    #[expect(
+        clippy::unused_self,
+        reason = "the read is the resource's, called with its state"
+    )]
+    fn read_document(&self, doc: &Doc, item: Option<&Id>) -> Result<serde_json::Value, String> {
+        let root = body(doc).ok_or("the document has no body")?;
+        let block = item.map(|item| {
+            let id = item.as_str();
+            let place = id.rsplit_once("/derived/").map_or(id, |(_, place)| place);
+            place.strip_prefix("block:").unwrap_or(place).to_owned()
+        });
+        tilo_document::block_actions::read_under(doc, &root, block.as_deref())
+    }
+
+    /// A table, an image or a tracked change is part of what a read of the
+    /// document answers; a comment thread is read on its own door.
+    #[expect(
+        clippy::unused_self,
+        reason = "which children a read answers is asked of the resource"
+    )]
+    fn is_readable_object(&self, id: &str) -> bool {
+        let place = id.rsplit_once("/derived/").map_or(id, |(_, place)| place);
+        place.starts_with("table:")
+            || place.starts_with("cell:")
+            || place.starts_with("image:")
+            || place.starts_with("change:")
     }
 
     /// The document's tables, each with its cells, then its images.

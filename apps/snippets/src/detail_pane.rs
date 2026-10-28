@@ -37,25 +37,36 @@ use ui::tilo_resource::{Derived, Effect};
 /// What the content column shows. A change rebuilds the column.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DetailKey {
-    /// The open snippet's id, language, folder, tags, description and
-    /// whether its body has variables.
-    snippet: Option<(SnippetId, Language, String, Vec<String>, String, bool)>,
+    /// The open snippet's id and whether its body has variables.
+    head: Option<(SnippetId, bool)>,
+    /// The open snippet's language, folder, tags and description: the
+    /// fields the pane shows and edits.
+    facts: Option<DetailFacts>,
     library_empty: bool,
+}
+
+/// The snippet fields the detail pane reads, each where it is shown.
+struct DetailFacts {
+    language: Language,
+    folder: String,
+    tags: Vec<String>,
+    description: String,
 }
 
 impl DetailKey {
     pub(crate) fn of(core: &Core) -> Self {
+        let open = core.open.as_ref().and_then(|id| core.library.get(id));
         Self {
-            snippet: core.open.as_ref().and_then(|id| {
-                let s = core.library.get(id)?;
-                Some((
-                    id.clone(),
-                    s.language,
-                    s.folder.0.clone(),
-                    s.tags.iter().cloned().collect(),
-                    s.description.clone(),
-                    s.has_placeholders(),
-                ))
+            head: core
+                .open
+                .as_ref()
+                .zip(open)
+                .map(|(id, s)| (id.clone(), s.has_placeholders())),
+            facts: open.map(|s| DetailFacts {
+                language: s.language,
+                folder: s.folder.0.clone(),
+                tags: s.tags.iter().cloned().collect(),
+                description: s.description.clone(),
             }),
             library_empty: core.library.is_empty(),
         }
@@ -68,97 +79,10 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
     if key.library_empty {
         return empty_library(requests);
     }
-    let Some((id, language, folder, tags, description, templated)) = key.snippet else {
+    let (Some((id, templated)), Some(facts)) = (key.head, key.facts) else {
         return Box::new(EmptyState::new(tr("snippets-none-selected")).with_icon(Icon::Code));
     };
-
-    // The facts: the language (a picker over every language), then the
-    // folder and tags.
-    let picker = {
-        let requests = Rc::clone(requests);
-        let id = id.clone();
-        Dropdown::from_state(
-            Language::ALL.into_iter().map(Language::name).collect(),
-            &ui::LocalState::new(language.name()),
-        )
-        .with_id(&format!("snippets.snippet:{id}.language"))
-        .with_resolved_accessible_name(tr("snippets-language"))
-        .leading_icon(Icon::Code)
-        .control_size(ControlSize::Small)
-        .on_change(move |name| {
-            if let Some(language) = Language::ALL.into_iter().find(|l| l.name() == name) {
-                requests
-                    .borrow_mut()
-                    .push(Action::SetLanguage(id.clone(), language));
-            }
-        })
-    };
-    let mut facts = Row::new().push(Box::new(LanguagePicker {
-        dropdown: picker,
-        core: Rc::clone(core),
-    }));
-    // The folder and each tag reveal their snippets, as the place each is
-    // published as does.
-    let reveal = |place: Derived<Snippets>, view: SnippetsView| {
-        ActionBinding::unit_for(&place.publish(), view.id()).ok()
-    };
-    if !folder.is_empty() {
-        let mut chip = Chip::new(folder.clone())
-            .with_id(format!("snippets.snippet:{id}.folder"))
-            .with_lead(ChipLead::Glyph(Icon::Folder))
-            .with_accessible_name(format!("Folder: {folder}"));
-        if let Some(reveal) = reveal(
-            Snippets::folder_place(folder.clone()),
-            SnippetsView::RevealFolder {
-                folder: folder.clone(),
-            },
-        ) {
-            chip = chip.on_action(reveal);
-        }
-        facts = facts.push(Box::new(chip));
-    }
-    for tag in tags.iter() {
-        let mut chip = Chip::new(tag.clone())
-            .with_id(format!("snippets.snippet:{id}.tag:{tag}"))
-            .with_accessible_name(format!("Tag: {tag}"));
-        if let Some(reveal) = reveal(
-            Snippets::tag_place(tag.clone()),
-            SnippetsView::Reveal { tag: tag.clone() },
-        ) {
-            chip = chip.on_action(reveal);
-        }
-        facts = facts.push(Box::new(chip));
-    }
-    let about = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .push(Box::new(name_field(core, requests, &id)))
-        .push(Box::new(facts))
-        // What the snippet is for, and which folder it is filed under: both
-        // are the library's organising model, so both are editable where the
-        // snippet is read rather than only when it is created.
-        .push(Box::new(field(
-            core,
-            requests,
-            &id,
-            "description",
-            "snippets-description",
-            "snippets-description-placeholder",
-            &description,
-            Action::SetDescription as fn(SnippetId, String) -> Action,
-        )))
-        .push(Box::new(field(
-            core,
-            requests,
-            &id,
-            "folder",
-            "snippets-folder",
-            "snippets-folder-placeholder",
-            &folder,
-            Action::SetFolder as fn(SnippetId, String) -> Action,
-        )))
-        .push(Box::new(tag_editor(core, requests, &id, &tags)));
-    let about = about.with_rhythm(Rhythm::Sibling);
+    let about = about(core, requests, &id, &facts);
 
     // The main action: copy, through the fill-in dialog when the body has
     // variables.
@@ -188,6 +112,101 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
                 rect: Rect::ZERO,
             })),
     )
+}
+
+/// The facts and fields of snippet `id`: its language, the folder and tags
+/// it is filed under, then what it is for and where it is filed, each edited
+/// where the snippet is read.
+fn about(core: &Shared, requests: &Requests, id: &SnippetId, facts: &DetailFacts) -> Column {
+    let language = facts.language;
+    let folder: &str = &facts.folder;
+    let tags: &[String] = &facts.tags;
+    let description: &str = &facts.description;
+    let picker = {
+        let requests = Rc::clone(requests);
+        let id = id.clone();
+        Dropdown::from_state(
+            Language::ALL.into_iter().map(Language::name).collect(),
+            &ui::LocalState::new(language.name()),
+        )
+        .with_id(&format!("snippets.snippet:{id}.language"))
+        .with_resolved_accessible_name(tr("snippets-language"))
+        .leading_icon(Icon::Code)
+        .control_size(ControlSize::Small)
+        .on_change(move |name| {
+            if let Some(language) = Language::ALL.into_iter().find(|l| l.name() == name) {
+                requests
+                    .borrow_mut()
+                    .push(Action::SetLanguage(id.clone(), language));
+            }
+        })
+    };
+    let mut facts = Row::new().push(Box::new(LanguagePicker {
+        dropdown: picker,
+        core: Rc::clone(core),
+    }));
+    // The folder and each tag reveal their snippets, as the place each is
+    // published as does.
+    let reveal = |place: Derived<Snippets>, view: SnippetsView| {
+        ActionBinding::unit_for(&place.publish(), view.id()).ok()
+    };
+    if !folder.is_empty() {
+        let mut chip = Chip::new(folder.to_owned())
+            .with_id(format!("snippets.snippet:{id}.folder"))
+            .with_lead(ChipLead::Glyph(Icon::Folder))
+            .with_accessible_name(format!("Folder: {folder}"));
+        if let Some(reveal) = reveal(
+            Snippets::folder_place(folder.to_owned()),
+            SnippetsView::RevealFolder {
+                folder: folder.to_owned(),
+            },
+        ) {
+            chip = chip.on_action(reveal);
+        }
+        facts = facts.push(Box::new(chip));
+    }
+    for tag in tags {
+        let mut chip = Chip::new(tag.clone())
+            .with_id(format!("snippets.snippet:{id}.tag:{tag}"))
+            .with_accessible_name(format!("Tag: {tag}"));
+        if let Some(reveal) = reveal(
+            Snippets::tag_place(tag.clone()),
+            SnippetsView::Reveal { tag: tag.clone() },
+        ) {
+            chip = chip.on_action(reveal);
+        }
+        facts = facts.push(Box::new(chip));
+    }
+    let about = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .push(Box::new(name_field(core, requests, id)))
+        .push(Box::new(facts))
+        // What the snippet is for, and which folder it is filed under: both
+        // are the library's organising model, so both are editable where the
+        // snippet is read rather than only when it is created.
+        .push(Box::new(field(
+            core,
+            requests,
+            id,
+            "description",
+            "snippets-description",
+            "snippets-description-placeholder",
+            description,
+            Action::SetDescription as fn(SnippetId, String) -> Action,
+        )))
+        .push(Box::new(field(
+            core,
+            requests,
+            id,
+            "folder",
+            "snippets-folder",
+            "snippets-folder-placeholder",
+            folder,
+            Action::SetFolder as fn(SnippetId, String) -> Action,
+        )))
+        .push(Box::new(tag_editor(core, requests, id, tags)));
+    about.with_rhythm(Rhythm::Sibling)
 }
 
 /// A fresh library: what a snippet is for, and the one thing to do, create
@@ -244,7 +263,7 @@ fn field(
     let _ = core;
     TextInput::local()
         .with_id(&format!("snippets.snippet:{id}.{name}"))
-        .with_accessible_name(&tr(accessible))
+        .with_accessible_name(tr(accessible))
         .with_placeholder(placeholder)
         .with_initial_value(&initial)
         .on_change(move |text| {
@@ -261,7 +280,7 @@ fn tag_editor(core: &Shared, requests: &Requests, id: &SnippetId, tags: &[String
         .with_no_padding()
         .with_intrinsic_height()
         .with_rhythm(Rhythm::Sibling);
-    for tag in tags.iter() {
+    for tag in tags {
         let requests = Rc::clone(requests);
         let removed = id.clone();
         let name = tag.clone();

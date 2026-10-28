@@ -9,12 +9,22 @@
 //!
 //! What the window shows (a tag's snippets, a folder's, the search) are
 //! [`SnippetsView`]s, which change no document.
+//!
+//! What the library holds is read the way every resource is read: the
+//! framework publishes `read` from the resource's own
+//! [`read_content`](Snippets::read_snippets), so a script, an agent or an
+//! assistive tool reads a snippet's fields and body through the same door,
+//! permissions and audit as the edits that change them, without a window and
+//! never from a screenshot.
 
 use std::rc::Rc;
 
 use ui::framework::{EffectAnswer, EffectCx, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::i18n::EmbeddedCatalog;
-use ui::tilo_resource::{self, ActionCx, Atom, Derived, Effect, Id, Invoke, Refusal, resource};
+use ui::tilo_reference::ResourceRef;
+use ui::tilo_resource::{
+    self, ActionCx, Atom, Derived, Effect, Id, Invoke, Model as _, Refusal, resource,
+};
 use ui::widget::Element;
 
 use crate::app::SnippetsApp;
@@ -22,7 +32,12 @@ use crate::model::{Snippet, Snippets};
 
 ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
-#[resource(kind = "snippets.library", label = "Snippets", children = Snippets::places)]
+#[resource(
+    kind = "snippets.library",
+    label = "Snippets",
+    children = Snippets::places,
+    read_content = Snippets::read_snippets
+)]
 impl Snippets {
     /// Create a snippet.
     #[action]
@@ -180,6 +195,61 @@ impl Snippets {
             .with_effect(&SnippetsView::Reveal { tag: tag.clone() })
             .with(Self::RENAME_TAG.bind(snippets::RenameTag::paths().tag, tag.clone()))
             .with(Self::REMOVE_TAG.bind(snippets::RemoveTag::paths().tag, tag))
+    }
+
+    /// What the library holds, as a reader reads it: with no `item`, every
+    /// snippet listed by what it is filed under; a snippet by its id, as
+    /// every field it is stored by, its body and the tags it carries.
+    ///
+    /// The field names are the ones [`Snippets::paths`] and `surface.toml`
+    /// name, so what a read shows is what a field edit changes.
+    fn read_snippets(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
+        let Some(item) = item else {
+            return Ok(serde_json::json!({
+                "kind": <Self as tilo_resource::Resource>::KIND,
+                "snippets": self
+                    .snippets
+                    .iter()
+                    .map(|(id, snippet)| {
+                        let item = tilo_resource::items::item_resource_id::<Self>("snippets", id);
+                        serde_json::json!({
+                            "item": item,
+                            "reference": ResourceRef::whole(
+                                <Self as tilo_resource::Resource>::KIND,
+                                item,
+                                snippet.title.clone(),
+                            ),
+                            "title": snippet.title,
+                            "folder": snippet.folder.0,
+                            "favorite": snippet.favorite,
+                            "language": snippet.language.to_json(),
+                            "tags": snippet.tags.iter().cloned().collect::<Vec<String>>(),
+                            "uses": snippet.use_count(),
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            }));
+        };
+        let snippet = self.get(item).ok_or_else(|| {
+            format!("no snippet `{item}`; read the library for the snippets it holds")
+        })?;
+        Ok(serde_json::json!({
+            "item": tilo_resource::items::item_resource_id::<Self>("snippets", item),
+            "reference": ResourceRef::whole(
+                <Self as tilo_resource::Resource>::KIND,
+                tilo_resource::items::item_resource_id::<Self>("snippets", item),
+                snippet.title.clone(),
+            ),
+            "title": snippet.title,
+            "body": snippet.body,
+            "description": snippet.description,
+            "favorite": snippet.favorite,
+            "folder": snippet.folder.0,
+            "language": snippet.language.to_json(),
+            "tags": snippet.tags.iter().cloned().collect::<Vec<String>>(),
+            "placeholders": snippet.placeholders(),
+            "uses": snippet.use_count(),
+        }))
     }
 }
 

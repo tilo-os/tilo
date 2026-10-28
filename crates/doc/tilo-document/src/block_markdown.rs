@@ -517,6 +517,19 @@ pub fn render(blocks: &[BlockView], shown: &BTreeMap<&str, String>, ids: bool) -
     let mut index = 0;
     while let Some(view) = blocks.get(index) {
         index = index.saturating_add(1);
+        if view.kind == "cell" {
+            // A run of one table's cells is the table's rows.
+            let mut run = vec![view];
+            while let Some(next) = blocks.get(index) {
+                if next.kind != "cell" || next.attrs.get("table") != view.attrs.get("table") {
+                    break;
+                }
+                run.push(next);
+                index = index.saturating_add(1);
+            }
+            out.push_str(&render_table(&run, &id_of));
+            continue;
+        }
         let Some(shape) = Shape::of_view(view) else {
             let kind = if view.attrs.contains_key("table_source") {
                 "table"
@@ -564,6 +577,42 @@ pub fn render(blocks: &[BlockView], shown: &BTreeMap<&str, String>, ids: bool) -
             }
         }
         out.push_str(&fence);
+        out.push('\n');
+    }
+    out
+}
+
+/// One table's cells as a Markdown table: a row per `row`, a cell per `col`,
+/// each cell ending in its block's id so a reader can select and fill it.
+fn render_table(cells: &[&BlockView], id_of: &dyn Fn(&BlockView) -> String) -> String {
+    let int = |view: &BlockView, key: &str| int_attr(view, key).unwrap_or(0);
+    let mut rows: Vec<(i64, Vec<&BlockView>)> = Vec::new();
+    for cell in cells {
+        let row = int(cell, "row");
+        match rows.iter_mut().find(|(at, _)| *at == row) {
+            Some((_, row)) => row.push(cell),
+            None => rows.push((row, vec![cell])),
+        }
+    }
+    rows.sort_by_key(|(row, _)| *row);
+    let mut out = String::new();
+    for (place, (_, row)) in rows.iter_mut().enumerate() {
+        row.sort_by_key(|cell| int(cell, "col"));
+        out.push('|');
+        for cell in row.iter() {
+            let text = inline(&cell.text, &cell.marks).replace('|', "\\|");
+            if !text.is_empty() {
+                out.push(' ');
+                out.push_str(&text);
+            }
+            out.push_str(&id_of(cell));
+            out.push_str(" |");
+        }
+        if place == 0 {
+            let _ = writeln!(out);
+            out.push('|');
+            out.push_str(&" --- |".repeat(row.len()));
+        }
         out.push('\n');
     }
     out
@@ -1136,11 +1185,51 @@ mod tests {
                 "| a |",
                 &[("table_source", AttrVal::Bool(true))],
             ),
+            view(
+                "c1r0",
+                "cell",
+                "Person",
+                &[
+                    ("table", AttrVal::Str("t1".into())),
+                    ("row", AttrVal::Int(0)),
+                    ("col", AttrVal::Int(0)),
+                ],
+            ),
+            view(
+                "c2r0",
+                "cell",
+                "Blocked",
+                &[
+                    ("table", AttrVal::Str("t1".into())),
+                    ("row", AttrVal::Int(0)),
+                    ("col", AttrVal::Int(1)),
+                ],
+            ),
+            view(
+                "c1r1",
+                "cell",
+                "Maya",
+                &[
+                    ("table", AttrVal::Str("t1".into())),
+                    ("row", AttrVal::Int(1)),
+                    ("col", AttrVal::Int(0)),
+                ],
+            ),
+            view(
+                "c2r1",
+                "cell",
+                "",
+                &[
+                    ("table", AttrVal::Str("t1".into())),
+                    ("row", AttrVal::Int(1)),
+                    ("col", AttrVal::Int(1)),
+                ],
+            ),
         ];
         let shown = short_ids(blocks.iter().map(|block| block.id.as_str()));
         assert_eq!(
             render(&blocks, &shown, true),
-            "# Groceries ^h1h1\n- [ ] oat milk ^c1c1\n  - [x] eggs ^c2c2\n1. first ^n1n1\n> bags ^q1q1\nplain ^p1p1\n--- ^d1d1\n[table] ^t1t1\n"
+            "# Groceries ^h1h1\n- [ ] oat milk ^c1c1\n  - [x] eggs ^c2c2\n1. first ^n1n1\n> bags ^q1q1\nplain ^p1p1\n--- ^d1d1\n[table] ^t1t1\n| Person ^c1r0 | Blocked ^c2r0 |\n| --- | --- |\n| Maya ^c1r1 | ^c2r1 |\n"
         );
         assert!(!render(&blocks, &shown, false).contains('^'));
     }

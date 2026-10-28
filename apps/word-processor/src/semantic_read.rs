@@ -1,5 +1,6 @@
-//! Immutable body-text pages over the actual tilo-doc layout. Not a public action or authority witness.
-pub mod action;
+//! Immutable body-text pages over the actual tilo-doc layout: the editor's
+//! own projection, and the Markdown an edit's answer renders it as. The
+//! document's read is the framework's, from [`Document::read_document`].
 pub mod changes;
 pub mod markdown;
 use automerge::AutoCommit;

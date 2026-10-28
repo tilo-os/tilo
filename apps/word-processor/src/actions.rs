@@ -10,7 +10,6 @@
 
 /// Edits bound to a view's caret and selection, as the document's typed
 /// declarations.
-pub(crate) mod continuation;
 /// Pure editor input primitives shared by keyboard, palette and agents.
 pub mod editing;
 pub(crate) mod image_place;

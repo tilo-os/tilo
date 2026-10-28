@@ -1,5 +1,5 @@
-//! A page of [`Segment`]s as Markdown, the form `read-text` answers by
-//! default: one line per block, ending in the block's `{#id}`.
+//! A page of [`Segment`]s as Markdown, the form a read of the document
+//! answers by default: one line per block, ending in the block's `{#id}`.
 //!
 //! ```text
 //! ## Standup {#b1}

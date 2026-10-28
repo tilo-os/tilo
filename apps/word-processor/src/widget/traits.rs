@@ -35,7 +35,6 @@ impl Widget for WordProcessorWidget {
         dyn ui::widget::controls::ActionControls,
         dyn ui::resources::PublishesResources,
         dyn ui::presence::capability::PublishesPresence,
-        dyn ui::semantic_document_read::SemanticReaders,
         dyn ui::widget::Findable
     );
 
@@ -757,12 +756,6 @@ impl ui::widget::controls::ActionControls for WordProcessorWidget {
         for child in self.children_mut() {
             ui::widget::controls::refresh_control_action_availability(child, allowed);
         }
-    }
-}
-
-impl ui::semantic_document_read::SemanticReaders for WordProcessorWidget {
-    fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
-        &crate::semantic_read::action::READERS
     }
 }
 
