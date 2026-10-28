@@ -701,6 +701,36 @@ mod tests {
         assert!(!harness.root::<ContextMenuArea>().is_open());
     }
 
+    /// An open menu's entries are its published controls: an agent chooses
+    /// one as a person does, and the area runs the entry it read from the
+    /// menu's choice.
+    #[test]
+    fn an_agent_chooses_a_menu_entry_through_its_published_control() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
+        let (mut harness, chosen) = four_entries();
+        assert!(
+            !harness
+                .resources()
+                .iter()
+                .any(|resource| resource.id.0.starts_with("tilo.control:menu.")),
+            "a closed menu offers nothing"
+        );
+        right_click(&mut harness);
+        let resources = harness.resources();
+        let third = resources
+            .iter()
+            .find(|resource| resource.id.0 == "tilo.control:menu.2")
+            .expect("the third entry is published");
+        assert_eq!(third.label, "Third");
+        assert_eq!(third.actions[0].kind, tilo_actions::OperationKind::Effect);
+        harness
+            .invoke_published("tilo.control:menu.2", "invoke", &serde_json::Map::new())
+            .expect("the entry is reachable");
+        assert_eq!(*chosen.borrow(), vec!["Third"]);
+        assert!(!harness.root::<ContextMenuArea>().is_open());
+    }
+
     #[test]
     fn nothing_to_offer_opens_nothing() {
         // Motion reads at its end: this test checks the resting frame.

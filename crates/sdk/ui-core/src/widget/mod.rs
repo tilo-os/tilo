@@ -3469,6 +3469,7 @@ pub use virtual_list::{
 mod activation;
 mod dismissal;
 pub(crate) mod view_choice;
+pub(crate) use activation::take_presses;
 pub use activation::{Interaction, PaintedTargets, paint_focus_ring};
 pub mod media_card;
 pub use media_card::{
