@@ -164,29 +164,34 @@ NOT_CONTROL_CALLBACKS = {
     "on_open_item": "answers the resource's published open action",
     "on_stage": "stages view state for a screenshot scenario",
 }
-# Buttons a toolkit composite draws itself and runs a closure for: a menu's
-# entries, a row's hover and swipe actions, a card's hover action, a
-# navigation list's item actions. Each builder call that hands one a closure
-# counts, as a closure-activated control does; a composite that publishes its
-# buttons itself (a dialog's footer) is in NOT_ACTION_BUTTONS.
-ACTION_BUTTON_BUILDERS = frozenset(
-    {
-        "hover_action", "swipe_action", "icon_action", "destructive_action",
-        "item_actions",
-    }
+# Buttons a toolkit composite draws itself and runs a closure for: a row's
+# and a property's actions, a row's swipe actions, a card's hover action, a
+# navigation list's item actions, each with the number of arguments its
+# toolkit builder takes. A call counts by that call site, whatever its
+# arguments are written as (`Icon::X`, a variable, a function's result): the
+# builder's name with the builder's arity. Other methods of the same name (a
+# toolbar's `action(ToolbarAction)`, a spec's `action(name)`) take a different
+# number. Every closure-taking toolkit method of one of these names must take
+# the arity written here, so a changed signature changes what is counted. A
+# composite that publishes its buttons itself (a dialog's footer) is in
+# NOT_ACTION_BUTTONS.
+ACTION_BUTTON_BUILDERS = {
+    "action": 3,
+    "hover_action": 3,
+    "swipe_action": 4,
+    "item_actions": 2,
+}
+ACTION_BUTTON_METHOD = re.compile(
+    r"(?<!\.)\.\s*(" + "|".join(sorted(ACTION_BUTTON_BUILDERS)) + r")\s*\("
 )
-# `MenuItem::action` and a row's or property's `.action(Icon::…, label, …)`
-# are the same buttons under the common name `action`, told apart by their
-# call shape.
-ACTION_BUTTON_CALL = re.compile(
-    r"\.\s*(?:" + "|".join(sorted(ACTION_BUTTON_BUILDERS)) + r")\s*\("
-    r"|\bMenuItem\s*::\s*(?:action|icon_action|destructive_action)\s*\("
-    r"|\.\s*action\s*\(\s*(?:ui\s*::\s*icons\s*::\s*)?Icon\s*::"
-)
+# A menu's entries, by the constructor's path.
+MENU_ENTRY_CALL = re.compile(r"\bMenuItem\s*::\s*(?:action|icon_action|destructive_action)\s*\(")
+ACTION_BUTTON_CALL = re.compile(f"{ACTION_BUTTON_METHOD.pattern}|{MENU_ENTRY_CALL.pattern}")
 # Closure-taking toolkit builders named `*action*` that are neither counted
 # above nor controls: why.
 NOT_ACTION_BUTTONS = {
-    "action": "counted by call shape (ACTION_BUTTON_CALL)",
+    "icon_action": "a menu entry, counted by its path (MENU_ENTRY_CALL)",
+    "destructive_action": "a menu entry, counted by its path (MENU_ENTRY_CALL)",
     "actions_group": "binds each hit to its published action",
     "primary_action": "a dialog's footer button, published as the dialog's own control",
     "secondary_action": "a dialog's footer button, published as the dialog's own control",
@@ -214,12 +219,80 @@ def closure_controls(code: str, raw: str, matches: list[re.Match]) -> list[re.Ma
     return kept
 
 
+def call_arguments(code: str, raw: str, open_paren: int) -> int:
+    """How many arguments the call whose `(` is at `open_paren` passes.
+    `code` has literals blanked; `raw` at the same offsets tells a blanked
+    literal argument from an empty slot (a trailing comma)."""
+    count = 0
+    depth = 0
+    start = open_paren + 1
+    index = start
+    while index < len(code):
+        char = code[index]
+        if depth == 0 and char == "|" and code[start:index].strip() in ("", "move"):
+            # A closure's parameters: their commas separate no arguments.
+            close = code.find("|", index + 1)
+            index = len(code) if close < 0 else close + 1
+            continue
+        if code.startswith("::<", index):
+            # A turbofish's commas separate type arguments.
+            angle = 0
+            index += 2
+            while index < len(code):
+                angle += {"<": 1, ">": -1}.get(code[index], 0)
+                index += 1
+                if angle == 0:
+                    break
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+        elif char == "," and depth == 0:
+            count += 1
+            start = index + 1
+        index += 1
+    last = code[start:index]
+    if last.strip() or re.search(r"\"|'\\?.'", raw[start:index]):
+        count += 1
+    return count
+
+
+def closure_action_buttons(code: str, raw: str, matches: list[re.Match]) -> list[re.Match]:
+    """The closure-run buttons among `matches`: a menu entry's constructor,
+    or a builder method passed its toolkit arity."""
+    kept = []
+    for match in closure_controls(code, raw, matches):
+        method = ACTION_BUTTON_METHOD.match(code, match.start())
+        if method and call_arguments(code, raw, match.end() - 1) != ACTION_BUTTON_BUILDERS[method.group(1)]:
+            continue
+        kept.append(match)
+    return kept
+
+
+def split_parameters(parameters: str) -> list[str]:
+    """A signature's parameters, split at its top-level commas."""
+    parts, depth, start = [], 0, 0
+    for index, char in enumerate(parameters):
+        if char in "(<[{":
+            depth += 1
+        elif char in ")>]}" and not (char == ">" and parameters[index - 1] == "-"):
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(parameters[start:index])
+            start = index + 1
+    parts.append(parameters[start:])
+    return [part.strip() for part in parts if part.strip()]
+
+
 def unclassified_control_callbacks(root: Path) -> list[Violation]:
     """Closure-taking toolkit `on_*` builders neither counted nor excused."""
     known = (
         CONTROL_CALLBACKS
         | NOT_CONTROL_CALLBACKS.keys()
-        | ACTION_BUTTON_BUILDERS
+        | ACTION_BUTTON_BUILDERS.keys()
         | NOT_ACTION_BUTTONS.keys()
     )
     violations = []
@@ -230,7 +303,27 @@ def unclassified_control_callbacks(root: Path) -> list[Violation]:
             for match in CLOSURE_CALLBACK_DEFINITION.finditer(code):
                 name, generics, arguments, bounds = match.groups()
                 signature = f"{generics or ''} {arguments} {bounds or ''}"
-                if name in known or not CLOSURE_TYPE.search(signature):
+                if not CLOSURE_TYPE.search(signature):
+                    continue
+                arity = ACTION_BUTTON_BUILDERS.get(name)
+                parameters = [
+                    parameter
+                    for parameter in split_parameters(arguments)
+                    if not re.fullmatch(r"&?\s*(?:'\w+\s+)?(?:mut\s+)?self", parameter)
+                ]
+                if arity is not None and len(parameters) != len(split_parameters(arguments)):
+                    if len(parameters) != arity:
+                        violations.append(
+                            Violation(
+                                source,
+                                line_number(raw, match.start()),
+                                f"closure-taking `{name}` takes {len(parameters)} arguments, but "
+                                f"ACTION_BUTTON_BUILDERS counts its calls with {arity}: update "
+                                f"it in {Path(__file__).name}",
+                            )
+                        )
+                    continue
+                if name in known:
                     continue
                 violations.append(
                     Violation(
@@ -283,7 +376,7 @@ RATCHETS = {
 # Which matches of a ratchet count, given the file's code and raw text.
 RATCHET_FILTERS = {
     "closure_control": closure_controls,
-    "closure_action_button": closure_controls,
+    "closure_action_button": closure_action_buttons,
 }
 # Ratchets of the shipped app: test files and `#[cfg(test)]` items are exempt.
 PRODUCTION_RATCHETS = {"closure_control", "closure_action_button"}
