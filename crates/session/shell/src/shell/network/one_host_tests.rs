@@ -39,6 +39,7 @@ mod adopted_fields;
 mod channels;
 mod chat_seed;
 pub(crate) mod cold_reads;
+mod content_index;
 mod edit_latency;
 mod failover;
 mod history_across_admission;
