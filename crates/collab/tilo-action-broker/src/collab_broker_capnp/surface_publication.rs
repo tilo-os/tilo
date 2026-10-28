@@ -62,9 +62,10 @@ impl CapnpBrokerState {
         let Ok(mut published) = self.surfaces.lock() else {
             return;
         };
-        let previous = published.insert(peer, surface.clone());
+        let republished = surface.clone();
+        let previous = published.insert(peer, surface);
         drop(published);
         self.advance_witness_publication(peer, WitnessPublicationKind::Surface);
-        self.surface_republished(peer, &surface, previous.as_ref());
+        self.surface_republished(peer, &republished, previous.as_ref());
     }
 }

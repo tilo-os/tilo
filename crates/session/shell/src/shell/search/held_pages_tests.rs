@@ -31,7 +31,7 @@ impl SearchProvider for ChurningProvider {
     }
     fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
         let asked = self.asked.get();
-        self.asked.set(asked + 1);
+        self.asked.set(asked.saturating_add(1));
         (0..self.rows)
             .map(|row| {
                 mk_result(

@@ -2,6 +2,10 @@
 //! landing and apps republishing while it is paged show up on the next
 //! listing, never as a cursor gone stale mid-listing. And an app publishing
 //! what it already had moves nothing.
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures own long-lived broker handles and lock guards by design"
+)]
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -63,7 +67,7 @@ impl SearchProvider for Interloper {
             1,
             |_, _, _| {},
         );
-        let next = at + 1;
+        let next = at.saturating_add(1);
         SearchPage::continuing(
             "interloper",
             vec![row],
@@ -105,7 +109,7 @@ fn assert_listing_settles_under_churn() {
     use crate::shell::chrome_state::SearchScope;
     use crate::shell::search::action_api::{ActionCatalog, AllVisible};
     use crate::shell::search::{QueryArgs, SearchRegistry};
-    const CONNECTIONS: u64 = 20;
+    const CONNECTIONS: usize = 20;
     const ROWS: usize = 4;
     let chrome = chrome();
     let directory =
@@ -120,7 +124,8 @@ fn assert_listing_settles_under_churn() {
         .next()
         .expect("the fixture's directory root");
     broker.replace_action_directory_roots_for_test(
-        (1..=CONNECTIONS)
+        (1_u64..)
+            .take(CONNECTIONS)
             .map(|peer| ActionDirectoryRoot {
                 peer_id: peer,
                 ..template.clone()
@@ -162,10 +167,9 @@ fn assert_listing_settles_under_churn() {
     let republished = Rc::new(Cell::new(0usize));
     let churn = {
         let provider = Rc::clone(&provider);
-        let broker = broker.clone();
         let replies = Rc::clone(&replies);
         let republished = Rc::clone(&republished);
-        let app_id = template.app_id.clone();
+        let app_id = template.app_id;
         move || {
             // Every reply owed arrives, as each connection answers.
             let keys: Vec<_> = provider
@@ -180,12 +184,12 @@ fn assert_listing_settles_under_churn() {
                     owed.receiver = receiver;
                 }
                 sender.complete(Ok(connection_page(key.0)));
-                replies.set(replies.get() + 1);
+                replies.set(replies.get().saturating_add(1));
             }
             // An app beside them republishes: changed the first time, the
             // same surface again after.
             broker.publish_surface_for_test(surface(999, &app_id, "Republished"));
-            republished.set(republished.get() + 1);
+            republished.set(republished.get().saturating_add(1));
         }
     };
     let mut registry = SearchRegistry::new();
@@ -217,42 +221,42 @@ fn assert_listing_settles_under_churn() {
     // The local index builds on its own thread; between two listings, take
     // in a build that one started, as the next frame would.
     let land_index = || {
-        let build = provider.surface_build.borrow_mut().take();
-        if let Some(build) = build {
-            let built = build.recv().expect("the index worker answers");
-            *provider.surface_snapshot.borrow_mut() = Some(Rc::new(built));
+        let worker = provider.surface_build.borrow_mut().take();
+        if let Some(worker) = worker {
+            let index = worker.recv().expect("the index worker answers");
+            *provider.surface_snapshot.borrow_mut() = Some(Rc::new(index));
         }
     };
-    let stale: RefCell<Vec<String>> = RefCell::new(Vec::new());
-    let mut settled = None;
+    let went_stale: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    let mut whole = None;
     for listing in 0..=CONNECTIONS + 3 {
         let catalog = query();
         for incomplete in &catalog.completion().incomplete {
             if incomplete.reason == QueryIncompleteReason::StaleCursor {
-                stale
+                went_stale
                     .borrow_mut()
                     .push(format!("listing {listing}: {}", incomplete.provider));
             }
         }
         if catalog.completion().complete {
-            settled = Some(catalog);
+            whole = Some(catalog);
             break;
         }
         land_index();
     }
     assert!(
-        stale.borrow().is_empty(),
+        went_stale.borrow().is_empty(),
         "no listing goes stale while it is paged: {:?}",
-        stale.borrow()
+        went_stale.borrow()
     );
-    let settled = settled.expect("the listing settles complete");
+    let settled = whole.expect("the listing settles complete");
     assert_eq!(
         listed(&settled),
-        CONNECTIONS as usize * ROWS,
+        CONNECTIONS * ROWS,
         "every connection's every row"
     );
     assert!(
-        replies.get() >= CONNECTIONS as usize,
+        replies.get() >= CONNECTIONS,
         "replies arrived between pages ({})",
         replies.get()
     );

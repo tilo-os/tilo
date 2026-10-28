@@ -3669,13 +3669,13 @@ mod tests {
             query_scope: Some(SearchScope::All),
             ..context("", &state, &doc)
         };
-        *provider.surface_snapshot.borrow_mut() =
-            Some(LiveAppActionsProvider::build_local_snapshot(
+        *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(
+            LiveAppActionsProvider::build_local_snapshot(
                 &broker,
                 &LiveAppActionsProvider::build_scope(&ctx),
                 &provider.build_probe,
-            ))
-            .map(std::rc::Rc::new);
+            ),
+        ));
         let (_, ready) = registry.query_catalogue(&args, true);
         assert!(ready.complete);
         broker.replace_published_surfaces_for_test(Vec::new());
@@ -3723,13 +3723,13 @@ mod tests {
             query_scope: Some(SearchScope::All),
             ..context("", &state, &doc)
         };
-        *provider.surface_snapshot.borrow_mut() =
-            Some(LiveAppActionsProvider::build_local_snapshot(
+        *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(
+            LiveAppActionsProvider::build_local_snapshot(
                 &broker,
                 &LiveAppActionsProvider::build_scope(&ctx),
                 &provider.build_probe,
-            ))
-            .map(std::rc::Rc::new);
+            ),
+        ));
         let mut registry = SearchRegistry::new();
         registry.register(provider.clone());
         let args = QueryArgs {
@@ -4159,14 +4159,13 @@ mod tests {
                 .semantic_identity
                 .is_none()
         );
-        *provider.surface_snapshot.borrow_mut() = Some(SurfaceSnapshot::new(
+        *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(SurfaceSnapshot::new(
             broker.surfaces_generation(),
             String::new(),
             entries,
             None,
             None,
-        ))
-        .map(std::rc::Rc::new);
+        )));
         assert_eq!(
             provider.action_hierarchy(&id).unwrap().semantic_identity,
             Some(identity)
@@ -4282,13 +4281,13 @@ mod tests {
             ..context("", &state, &doc)
         };
         // The index worker builds this off the main loop.
-        *provider.surface_snapshot.borrow_mut() =
-            Some(LiveAppActionsProvider::build_local_snapshot(
+        *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(
+            LiveAppActionsProvider::build_local_snapshot(
                 &broker,
                 &LiveAppActionsProvider::build_scope(&ctx),
                 &provider.build_probe,
-            ))
-            .map(std::rc::Rc::new);
+            ),
+        ));
         let mut registry = SearchRegistry::new();
         registry.register(provider);
         let args = crate::shell::search::QueryArgs {
@@ -4418,13 +4417,13 @@ mod tests {
         let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
         let doc = AutoCommit::new();
         let ctx = context("Inspect playback", &state, &doc);
-        *provider.surface_snapshot.borrow_mut() =
-            Some(LiveAppActionsProvider::build_local_snapshot(
+        *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(
+            LiveAppActionsProvider::build_local_snapshot(
                 &broker,
                 &LiveAppActionsProvider::build_scope(&ctx),
                 &provider.build_probe,
-            ))
-            .map(std::rc::Rc::new);
+            ),
+        ));
         let before = provider.query_page(ctx, None, SearchBudget::PALETTE);
         assert_eq!(
             before.results.len(),
@@ -4565,7 +4564,7 @@ mod tests {
                     initial_page: true,
                 },
             );
-            *provider.auxiliary_snapshot.borrow_mut() = Some(AuxiliarySnapshot {
+            *provider.auxiliary_snapshot.borrow_mut() = Some(std::rc::Rc::new(AuxiliarySnapshot {
                 revision: "r1".into(),
                 query: "read".into(),
                 scope: String::new(),
@@ -4576,8 +4575,7 @@ mod tests {
                 entries: Vec::new(),
                 pending_directory: Vec::new(),
                 next_resume: None,
-            })
-            .map(std::rc::Rc::new);
+            }));
             match outcome {
                 "refused" => sender.complete(Err(ActionHostError::NotPermitted)),
                 "stale" => {
@@ -4624,7 +4622,15 @@ mod tests {
 
         provider.poll_directory_pages_at(deadline + Duration::from_secs(3));
 
-        assert_eq!(provider.directory_pages.borrow()[&key].revision, "r1");
+        assert_eq!(
+            provider
+                .directory_pages
+                .borrow()
+                .get(&key)
+                .map(|page| page.revision.clone())
+                .as_deref(),
+            Some("r1")
+        );
         assert!(provider.directory_pending.borrow().is_empty());
         assert_eq!(
             provider
@@ -4649,7 +4655,7 @@ mod tests {
                 initial_page: true,
             },
         );
-        *provider.auxiliary_snapshot.borrow_mut() = Some(AuxiliarySnapshot {
+        *provider.auxiliary_snapshot.borrow_mut() = Some(std::rc::Rc::new(AuxiliarySnapshot {
             revision: "r1".into(),
             query: "read".into(),
             scope: String::new(),
@@ -4660,8 +4666,7 @@ mod tests {
             entries: Vec::new(),
             pending_directory: Vec::new(),
             next_resume: None,
-        })
-        .map(std::rc::Rc::new);
+        }));
 
         provider.poll_directory_pages_at(deadline + Duration::from_secs(3));
 
@@ -4902,7 +4907,7 @@ mod tests {
                     "directory{ID_SEPARATOR}7{ID_SEPARATOR}r1{ID_SEPARATOR}resource:one{ID_SEPARATOR}one"
                 )
             );
-            *provider.auxiliary_snapshot.borrow_mut() = Some(AuxiliarySnapshot {
+            *provider.auxiliary_snapshot.borrow_mut() = Some(std::rc::Rc::new(AuxiliarySnapshot {
                 revision,
                 query: "open".into(),
                 scope,
@@ -4922,8 +4927,7 @@ mod tests {
                     .collect(),
                 pending_directory: Vec::new(),
                 next_resume: None,
-            })
-            .map(std::rc::Rc::new);
+            }));
             let budget = SearchBudget {
                 max_results: 1,
                 max_bytes: usize::MAX,
@@ -5214,13 +5218,13 @@ mod tests {
         let doc = AutoCommit::new();
         let state = chrome.borrow();
         let ctx = context("", &state, &doc);
-        *provider.surface_snapshot.borrow_mut() =
-            Some(LiveAppActionsProvider::build_local_snapshot(
+        *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(
+            LiveAppActionsProvider::build_local_snapshot(
                 &broker,
                 &LiveAppActionsProvider::build_scope(&ctx),
                 &provider.build_probe,
-            ))
-            .map(std::rc::Rc::new);
+            ),
+        ));
         let page = provider.query_page(ctx, None, SearchBudget::PALETTE);
         assert_eq!(page.results.len(), 1);
         assert!(page.results.iter().all(|row| row.id != id));
@@ -5280,13 +5284,13 @@ mod tests {
         let doc = AutoCommit::new();
         let chrome_state = chrome.borrow();
         let ctx = context("", &chrome_state, &doc);
-        *provider.surface_snapshot.borrow_mut() =
-            Some(LiveAppActionsProvider::build_local_snapshot(
+        *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(
+            LiveAppActionsProvider::build_local_snapshot(
                 &broker,
                 &LiveAppActionsProvider::build_scope(&ctx),
                 &provider.build_probe,
-            ))
-            .map(std::rc::Rc::new);
+            ),
+        ));
         let preview = provider.query_page(ctx, None, SearchBudget::PALETTE);
         drop(chrome_state);
         assert!(preview.results.iter().all(|row| row.id != id));
@@ -5663,13 +5667,13 @@ mod tests {
         let doc = AutoCommit::new();
         let chrome = chrome.borrow();
         let ctx = context("", &chrome, &doc);
-        *provider.surface_snapshot.borrow_mut() =
-            Some(LiveAppActionsProvider::build_local_snapshot(
+        *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(
+            LiveAppActionsProvider::build_local_snapshot(
                 &broker,
                 &LiveAppActionsProvider::build_scope(&ctx),
                 &provider.build_probe,
-            ))
-            .map(std::rc::Rc::new);
+            ),
+        ));
         let id = LiveAppActionsProvider::result_id(&surface, &surface.actions[0]);
         assert_eq!(
             provider
@@ -5711,13 +5715,13 @@ mod tests {
                 .results
                 .is_empty()
         );
-        *provider.surface_snapshot.borrow_mut() =
-            Some(LiveAppActionsProvider::build_local_snapshot(
+        *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(
+            LiveAppActionsProvider::build_local_snapshot(
                 &broker,
                 &LiveAppActionsProvider::build_scope(&ctx),
                 &provider.build_probe,
-            ))
-            .map(std::rc::Rc::new);
+            ),
+        ));
         let fresh = provider.query_page(ctx, None, SearchBudget::PALETTE);
         assert_eq!(fresh.results.len(), 1);
         assert_eq!(
@@ -5746,13 +5750,13 @@ mod tests {
         let doc = AutoCommit::new();
         let chrome = chrome.borrow();
         let ctx = context("", &chrome, &doc);
-        *provider.surface_snapshot.borrow_mut() =
-            Some(LiveAppActionsProvider::build_local_snapshot(
+        *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(
+            LiveAppActionsProvider::build_local_snapshot(
                 &broker,
                 &LiveAppActionsProvider::build_scope(&ctx),
                 &provider.build_probe,
-            ))
-            .map(std::rc::Rc::new);
+            ),
+        ));
         let id = LiveAppActionsProvider::result_id(&surface, &surface.actions[0]);
         assert_eq!(
             provider
@@ -5818,13 +5822,13 @@ mod tests {
         {
             let chrome = chrome.borrow();
             let ctx = context("", &chrome, &doc);
-            *provider.surface_snapshot.borrow_mut() =
-                Some(LiveAppActionsProvider::build_local_snapshot(
+            *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(
+                LiveAppActionsProvider::build_local_snapshot(
                     &broker,
                     &LiveAppActionsProvider::build_scope(&ctx),
                     &provider.build_probe,
-                ))
-                .map(std::rc::Rc::new);
+                ),
+            ));
         }
         let mut old_peer = broker.capture_invocations_for_test(7);
         let mut new_peer = broker.capture_invocations_for_test(8);
@@ -5902,14 +5906,13 @@ mod tests {
             .replace_published_surfaces_for_test(vec![published]);
         let index = Some(index_actions(&entries, false));
         let machine_index = Some(index_actions(&entries, true));
-        *provider.surface_snapshot.borrow_mut() = Some(SurfaceSnapshot::new(
+        *provider.surface_snapshot.borrow_mut() = Some(std::rc::Rc::new(SurfaceSnapshot::new(
             provider.broker.surfaces_generation(),
             LiveAppActionsProvider::surface_scope(&ctx),
             entries,
             index,
             machine_index,
-        ))
-        .map(std::rc::Rc::new);
+        )));
         let page = provider.query_page(
             ctx,
             None,

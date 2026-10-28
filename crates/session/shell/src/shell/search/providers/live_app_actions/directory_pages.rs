@@ -162,14 +162,6 @@ impl DirectoryPages {
 
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
-        self.listings.len() + self.searches.len()
-    }
-}
-
-impl std::ops::Index<&DirectoryCacheKey> for DirectoryPages {
-    type Output = CataloguePage;
-
-    fn index(&self, key: &DirectoryCacheKey) -> &CataloguePage {
-        self.get(key).expect("no directory page at this key")
+        self.listings.len().saturating_add(self.searches.len())
     }
 }
