@@ -1398,7 +1398,7 @@ fn the_dock_opens_and_closes_from_the_bar_the_keyboard_and_escape_inside_the_vie
 fn format_on_save_writes_what_the_formatter_answered() {
     fn at_start(text: &str) -> crate::lsp::TextEdit {
         crate::lsp::TextEdit {
-            range: crate::lsp::LspRange::default(),
+            range: crate::lsp::Range::default(),
             new_text: text.into(),
         }
     }

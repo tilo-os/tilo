@@ -10,9 +10,10 @@
 use super::super::Caret;
 use super::*;
 use crate::doc::EditorDoc;
-use crate::lsp::{LspDiagnostic, LspRange, Position};
+use crate::lsp::{LspDiagnostic, Position, Range};
 use crate::model::Language;
 use automerge::AutoCommit;
+use lsp_types::DiagnosticSeverity;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::widget::Widget as _;
@@ -378,7 +379,7 @@ fn a_state_that_must_never_come_from_a_kept_row_is_painted_fresh() {
     // A diagnostic and a find match first: stepping to the current match
     // moves the caret, and the selection below stays where the test puts it.
     view.set_diagnostics(&[LspDiagnostic {
-        range: LspRange {
+        range: Range {
             start: Position {
                 line: 6,
                 character: 0,
@@ -388,7 +389,7 @@ fn a_state_that_must_never_come_from_a_kept_row_is_painted_fresh() {
                 character: 3,
             },
         },
-        severity: 1,
+        severity: DiagnosticSeverity::ERROR,
         message: "declared but never used".to_owned(),
         source: Some("test".to_owned()),
     }]);

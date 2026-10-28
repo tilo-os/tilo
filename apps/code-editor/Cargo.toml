@@ -50,6 +50,8 @@ tilo-files = { path = "../../crates/platform/tilo-files" }
 # exact for paths containing spaces and non-ASCII.
 url.workspace = true
 uuid.workspace = true
+# The Language Server Protocol's message types.
+lsp-types = "0.97"
 bounded-command = { path = "../../crates/system/bounded-command" }
 # Language servers start as independent jobs (`tilo_process::job`): a
 # runaway server ends alone, never the editor.
