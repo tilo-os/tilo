@@ -8,8 +8,9 @@
 //! settings change asks for, the pinned people overlay, which pinning
 //! who is here asks for, the emoji catalogue, which the first picker,
 //! reaction name or `:name:` completion asks for, History, which the
-//! first window that registers it asks for, and desktop search, which the
-//! desktop asks for as it first lays out.
+//! first window that registers it asks for, desktop search, which the
+//! desktop asks for as it first lays out, and the notification centre,
+//! which opening it asks for.
 //!
 //! Like an app's `definition()` (`crate::split`), each export below is the
 //! only way to the code it hands over, so the splitter moves that code into
@@ -298,6 +299,12 @@ split_code! {
 }
 
 split_code! {
+    /// The notification centre: the first time it opens asks for it.
+    mod notification_centre: tilo_desktop_surface::notifications::MakeNotificationCentre = tilo_desktop_surface::notifications::builtin_notification_centre()
+        => tilo_desktop_surface::notifications::NOTIFICATION_CENTRE, module = "notification_centre", hash = "3d94b0e6a1c7f258";
+}
+
+split_code! {
     /// History: the first window that registers it asks for it.
     mod history: tilo_ui::history_mode::MakeHistory = tilo_ui::history_mode::builtin_history()
         => tilo_ui::history_mode::HISTORY, module = "history", hash = "e1a7c5039b6d2f84";
@@ -357,4 +364,5 @@ pub(crate) fn register() {
     feedback_code::register();
     profile_card::register();
     desktop_search::register();
+    notification_centre::register();
 }
