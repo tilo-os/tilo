@@ -753,15 +753,16 @@ fn launch_resolved_installed_app(
         tree.desktop
             .active_workspace()
             .and_then(|ws| {
+                // An app runs once per workspace on this device: its own
+                // window here, however it opened (the person, a join's
+                // arrival, a restore), is the one to return to. A second
+                // process could not own the workspace's records, which the
+                // first holds.
                 crate::shell::peer_windows::opened_for_the_room(ws, package_id, salt)
                     .or_else(|| {
-                        (package_id == "so.tilo.terminal")
-                            .then(|| {
-                                crate::shell::peer_windows::opened_locally_in_workspace(
-                                    ws, package_id, salt,
-                                )
-                            })
-                            .flatten()
+                        crate::shell::peer_windows::opened_locally_in_workspace(
+                            ws, package_id, salt,
+                        )
                     })
                     .map(|(strip, group, tab)| (ws.id, strip, group, tab))
             })
@@ -1284,8 +1285,17 @@ mod tests {
         }
     }
 
+    /// An app this device already runs in the workspace, however it opened
+    /// (a join's arrival opens Chat), is focused when opened again, never
+    /// started a second time beside it.
     #[test]
-    fn opening_a_live_local_terminal_focuses_without_another_record_writer() {
+    fn opening_an_app_running_here_focuses_it_without_another_record_writer() {
+        for (package, name) in [("so.tilo.terminal", "Terminal"), ("so.tilo.chat", "Chat")] {
+            focuses_the_running_window(package, name);
+        }
+    }
+
+    fn focuses_the_running_window(package: &str, name: &str) {
         use crate::shell::state::{
             Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
             next_id,
@@ -1298,9 +1308,9 @@ mod tests {
             id: group_id,
             tabs: vec![Tab {
                 id: tab_id,
-                title: "Terminal".into(),
+                title: name.into(),
                 tile: TileContent::Foreign {
-                    app_id: "so.tilo.terminal".into(),
+                    app_id: package.into(),
                     surface_id: 7,
                 },
                 app_title: None,
@@ -1318,8 +1328,8 @@ mod tests {
         let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
         let chrome = ChromeState::new_with_handle(handle.clone());
         let provider = ApplicationsProvider::new();
-        let rows = provider.results_for("terminal", vec![app("so.tilo.terminal", "Terminal")]);
-        let row = rows.first().expect("installed Terminal action");
+        let rows = provider.results_for(&name.to_lowercase(), vec![app(package, name)]);
+        let row = rows.first().expect("installed app's action");
         let mut doc = AutoCommit::new();
         (row.on_open)(
             &mut ui::widget::Edits::lend(&mut doc),
@@ -1327,7 +1337,7 @@ mod tests {
             &chrome,
             &ActionArgs::none(),
         )
-        .expect("Open must focus the existing local Terminal");
+        .unwrap_or_else(|error| panic!("Open must focus the running {name}: {error:?}"));
         assert_eq!(chrome.borrow().active_tab_id(), Some(tab_id));
         assert!(
             chrome.borrow().notifications().is_empty(),

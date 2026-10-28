@@ -24,6 +24,7 @@ mod room_lane;
 #[cfg(test)]
 mod room_lane_tests;
 mod room_members;
+mod sealed_outbox;
 use room_members::Admission;
 pub(crate) use room_members::RosterDevice;
 
@@ -858,6 +859,11 @@ enum HostEvent {
         replayed: bool,
         msg: NeighbourMsg,
     },
+    /// The host keeps this device's sealed write sent as commit `op`
+    /// ([`sealed_outbox`]).
+    Kept {
+        op: [u8; 16],
+    },
     Closed,
 }
 
@@ -1354,6 +1360,10 @@ struct ActorState {
     /// Retained state published to a room while none of its hosts had a
     /// session (see [`ActorState::hold_for_host`]).
     host_backlog: HashMap<WorkspaceId, HostBacklog>,
+    /// This device's sealed writes to each room whose records are sealed
+    /// channels, until a host of the room keeps them (see
+    /// [`sealed_outbox`]).
+    sealed_outbox: HashMap<WorkspaceId, sealed_outbox::SealedOutbox>,
     wake: Option<crate::session_runtime::Wake>,
     /// Long-lived direct media connections. One unidirectional QUIC stream
     /// per frame avoids head-of-line blocking between viewers and frames.
@@ -1918,10 +1928,19 @@ impl ActorState {
                     .find(|((topic, _), runtime)| *topic == ws && runtime.native_scope.is_some())
                     .map(|(_, runtime)| runtime);
                 if let Some(runtime) = runtime {
-                    runtime
-                        .replaying
-                        .store(true, std::sync::atomic::Ordering::Release);
-                    if let Err(error) = runtime.session.resubscribe() {
+                    // One replay at a time on a session: a replay asked
+                    // while one runs (each app opened at once asks for one)
+                    // waits for that one's `Ready`, which carries everything
+                    // the host retained when it began; what is written after
+                    // arrives live. Asking again mid-replay makes the host
+                    // start over, and it ends the session whose replay it
+                    // replaced.
+                    if !begins_replay(&runtime.replaying) {
+                        tracing::debug!(
+                            ws,
+                            "joined room replay already running; its Ready answers this too"
+                        );
+                    } else if let Err(error) = runtime.session.resubscribe() {
                         tracing::debug!(ws, %error, "joined room replay not asked: not connected");
                     }
                 }
@@ -3177,7 +3196,15 @@ impl ActorState {
         if self.gossip_topics.contains(&ws) {
             self.subscribe_topic(ws);
         }
-        if !self.native_routes.contains(ws)
+        // Only a topic travels through this device's hosts, as the
+        // heartbeat and a newly known host dial them: a room travels on its
+        // own route alone. A session to a host for anything else would be
+        // let go as soon as it came up (`handle_host_connected`), and its
+        // subscription would already have opened the workspace at the host,
+        // which keeps it: a person's home relay holding an empty copy of a
+        // room nobody chose it for.
+        if self.topics.contains_key(&ws)
+            && !self.native_routes.contains(ws)
             && let Some(identity) = self.host_identity.as_ref()
         {
             let mut routes = HostRouteScheduler {
@@ -3989,6 +4016,7 @@ impl ActorState {
             HostEvent::Live { .. } => "HostLive",
             HostEvent::Member { .. } => "HostMember",
             HostEvent::Voice(_) => "HostVoice",
+            HostEvent::Kept { .. } => "HostKept",
             HostEvent::Closed => "HostClosed",
         });
         let event = self.admit_native_governance(ws, event).await;
@@ -4074,6 +4102,15 @@ impl ActorState {
                     replayed,
                     msg,
                 })
+            }
+            HostEvent::Kept { op } => {
+                if let Some(outbox) = self.sealed_outbox.get_mut(&ws)
+                    && outbox.kept(op)
+                    && outbox.is_empty()
+                {
+                    self.sealed_outbox.remove(&ws);
+                }
+                None
             }
             HostEvent::Closed => Some(self.host_session_closed(ws, peer)),
         };
@@ -4956,6 +4993,7 @@ async fn run(
         recent_input: HashMap::new(),
         governance: HashMap::new(),
         host_backlog: HashMap::new(),
+        sealed_outbox: HashMap::new(),
         wake: None,
         surface_connections: HashMap::new(),
         surface_fanout_tasks: HashMap::new(),
@@ -5784,6 +5822,13 @@ fn spawn_host_pump(
                 HostInbound::Voice(event) => HostEvent::Voice(event),
                 // The shell opens no on-demand record yet.
                 HostInbound::RecordOpened { .. } => continue,
+                HostInbound::Committed { op } => HostEvent::Kept { op },
+                // Not kept: the write stays held, and the room's next
+                // session sends it again.
+                HostInbound::CommitRefused { reason, .. } => {
+                    tracing::warn!(ws, host = %host, %reason, "the host did not keep a sealed write");
+                    continue;
+                }
                 HostInbound::RemoteAction { from, frame } => {
                     let Ok(author) = EndpointId::from_bytes(&from) else {
                         continue;
@@ -5888,3 +5933,32 @@ fn topic_id(ws: WorkspaceId) -> TopicId {
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 mod tests;
+
+/// Mark a replay of a room host's session as running: whether this begins
+/// one (`false` while one already runs, until its `Ready` clears the mark).
+/// The host serves one replay per session; a second asked mid-replay makes
+/// it start over and end the session whose replay it replaced.
+fn begins_replay(replaying: &std::sync::atomic::AtomicBool) -> bool {
+    !replaying.swap(true, std::sync::atomic::Ordering::AcqRel)
+}
+
+#[cfg(test)]
+mod replay_requests {
+    use super::begins_replay;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Apps opened at once each ask the room's host for a replay: the
+    /// first asks, the rest wait on it, and the next is asked once its
+    /// `Ready` came.
+    #[test]
+    fn only_one_replay_runs_on_a_session_at_a_time() {
+        let replaying = AtomicBool::new(false);
+        assert!(begins_replay(&replaying));
+        assert!(!begins_replay(&replaying));
+        assert!(!begins_replay(&replaying));
+        replaying.store(false, Ordering::Release);
+        assert!(begins_replay(&replaying));
+        // A session's own first replay counts as running.
+        assert!(!begins_replay(&AtomicBool::new(true)));
+    }
+}
