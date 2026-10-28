@@ -727,7 +727,7 @@ impl InitialReadBridge {
     /// channel's: a record a sealed room does not hold yet, which is new and
     /// which the app makes there. Never the primary route, which the bridge
     /// reads committed.
-    pub(crate) fn answered_by_own_channel(&self, checkout: &crate::record::RecordCheckout) -> bool {
+    pub fn answered_by_own_channel(&self, checkout: &crate::record::RecordCheckout) -> bool {
         !checkout.id.is_package_primary()
             && self.state.document_reads.answered_by_own_channel(
                 &RouteSpec::record(
@@ -903,10 +903,7 @@ impl InitialReadBridge {
     fn read_primary(&self) -> Result<CommittedDocument, String> {
         match self.never {}
     }
-    pub(crate) fn answered_by_own_channel(
-        &self,
-        _checkout: &crate::record::RecordCheckout,
-    ) -> bool {
+    pub fn answered_by_own_channel(&self, _checkout: &crate::record::RecordCheckout) -> bool {
         match self.never {}
     }
 }

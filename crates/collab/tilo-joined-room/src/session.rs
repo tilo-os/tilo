@@ -100,17 +100,14 @@ impl Connect {
         })
     }
 
-    /// Whether this device is the room's host itself: it governs the room
-    /// here, or the host its enrollment pins is this very device. Such a room
-    /// is never dialled. This device holds the host's copy, so there is
-    /// nothing to catch up on and nobody else to reach.
+    /// Whether this device is the room's host itself: the host its
+    /// enrollment pins is this very device. Such a room is never dialled.
+    /// This device holds the host's copy, so there is nothing to catch up on
+    /// and nobody else to reach.
     #[must_use]
     pub fn hosted_here(&self, identity: &HostIdentity) -> bool {
         self.owner
             .with_current(self.room, |view| {
-                if view.governed_here() {
-                    return Ok(true);
-                }
                 let (cert, _) = identity.current_native_material(view.workspace())?;
                 Ok(view.transport_hint()?.host.device_public_key == cert.device_public_key)
             })
