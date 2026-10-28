@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run what of the Windows imager can run without Windows, under Wine (x86_64
-# only: Fedora's Wine runs x86 programs only).
+# only: the builder's Wine runs x86 programs).
 #
 #   wine-test.sh units <imager-tests.exe>     the imager's unit tests
 #   wine-test.sh install <package-dir>        install the package silently, check what it
