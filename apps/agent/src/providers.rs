@@ -99,7 +99,7 @@ mod tests {
             .set_interaction_model(
                 Interaction::OneShot,
                 Some(AgentModel {
-                    profile: small.id.clone(),
+                    profile: small.id,
                     model: "small".into(),
                 }),
             )
@@ -108,7 +108,7 @@ mod tests {
             .set_interaction_model(
                 Interaction::Task,
                 Some(AgentModel {
-                    profile: large.id.clone(),
+                    profile: large.id,
                     model: "large".into(),
                 }),
             )

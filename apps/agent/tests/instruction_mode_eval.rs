@@ -11,8 +11,9 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
+    reason = "in a test these are the assertion and the accuracy counters it adds up, not a hazard"
 )]
 
 use std::sync::atomic::AtomicBool;
