@@ -453,6 +453,26 @@ impl SearchIndex {
         self.search_scored(query, page, |signals| signals.rank.unwrap_or(0))
     }
 
+    /// Every record that matches `query`, with its rank, in no order: what a
+    /// caller that wants one answer per record asks for, instead of paging
+    /// hits it then throws the order of away.
+    ///
+    /// The ranks are [`Self::search`]'s own, so `ranks` and a search over
+    /// every record agree row for row; only the ordering and the page are
+    /// left out. An empty query matches every record at rank 0.
+    #[must_use]
+    pub(crate) fn ranks(&self, query: &str) -> Vec<(u64, Option<i32>)> {
+        if let Some(direct) = &self.direct {
+            return direct.ranks(self.matching, self.ranks, query);
+        }
+        // Too large for a scan: the engine answers, as `search` would.
+        self.search(query, Page::first(self.len()))
+            .hits
+            .into_iter()
+            .map(|hit| (hit.key, hit.rank))
+            .collect()
+    }
+
     /// [`Self::search`], ordering field hits by `score` of their
     /// [`Signals`] instead of their rank. Body hits still follow them.
     #[must_use]
