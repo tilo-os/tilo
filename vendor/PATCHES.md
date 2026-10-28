@@ -798,3 +798,12 @@ caller's Cargo OUT_DIR is not registered as an input. All external descriptors
 remain tracked, including symlinks across the output-directory boundary.
 `vendor/buffa-build/PROVENANCE.md` records the checksum, revision and patch.
 The registry waproto source and its source/hash guards remain unchanged.
+
+## zbus blocking runtime
+
+`zbus` 5.16.0 is the checksum-verified MIT registry release. Its blocking API
+built its own tokio runtime with one worker thread per host CPU, so one
+blocking D-Bus call left hundreds of idle threads in the compositor on a large
+machine. `tilo-worker-threads.patch` gives that runtime one worker, as its
+`expect` message already says; nothing else changes. See
+`vendor/zbus/PROVENANCE.md`. Remove the copy once upstream bounds the runtime.
