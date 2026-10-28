@@ -43,7 +43,8 @@ curl -fsS --retry 3 -H "authorization: Bearer $T_ATTACH_TOKEN" -o "$agent" \
   || die "the t server at $T_ATTACH_URL served no attach agent"
 
 revision=$(cat "$disk_dir/revision")
-export TILO_DISTROBOX= TILO_VM_ARCH=$arch TMPDIR=/var/tmp TILO_USER=tester TILO_PASS=tilo
+# 10 GiB, as the smallest machine local models run on the processor (8 GiB) with room to spare.
+export TILO_DISTROBOX= TILO_VM_ARCH=$arch TMPDIR=/var/tmp TILO_USER=tester TILO_PASS=tilo TILO_MEM=10240
 export TILO_RUN=/var/tmp/tilo-os-vm-$arch TILO_SSH_PORT=2222
 export TILO_DISK=$TILO_RUN/disk.qcow2
 export TILO_SERIAL_SOCKET=$TILO_RUN/serial.sock TILO_VNC_SOCKET=$TILO_RUN/vnc.sock
