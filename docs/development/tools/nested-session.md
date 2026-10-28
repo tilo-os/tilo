@@ -12,16 +12,20 @@ From the checkout root, on the host's Wayland desktop:
 dist/dev/nested-session.sh --apps "notes chat"
 ```
 
-Required locally: `t`, Bash, Python 3, jq, bubblewrap, readelf, sha256sum, the
+Required locally: `rcargo` or `t`, Bash, Python 3, jq, bubblewrap, readelf, sha256sum, the
 usual Linux command-line tools and the runtime libraries the binaries load
 (including `libxkbcommon.so.0`). `XDG_RUNTIME_DIR` must exist. No local Rust
 toolchain is needed. Run the windowed script on the host, not inside a
 toolbox/container: it checks that boundary before launch.
 
-The script asks t for the architecture-specific `nested-session` build and
-downloads its outputs. Apps and `libruntime_dylib.so` must come from the same
-build; fetching individual executables is not a replacement. `--apps` selects
-which apps to install from that build's fixed set, not which apps t compiles.
+The script builds remotely with `dist/dev/nested-session-build.sh`: with rcargo
+on PATH as one `rcargo exec` on the builder rcargo's configuration names (of
+this machine's architecture), fetching the build into `target/nested-session`;
+otherwise as t's architecture-specific `nested-session` check, downloading its
+outputs. `--builder rcargo|t` chooses. Apps and `libruntime_dylib.so` must come
+from the same build; fetching individual executables is not a replacement.
+`--apps` selects which apps to install from that build's fixed set, not which
+apps are compiled.
 Discover the current set without building:
 
 ```sh
