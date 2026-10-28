@@ -519,6 +519,14 @@ pub(super) struct AccessibilityRuntime {
     /// again: its speech backends cut an utterance off when dropped, and it
     /// is still saying that the screen reader is off.
     pub(super) parting_screen_reader: Option<crate::screen_reader::ScreenReader>,
+    /// What a finger means while the screen reader is on
+    /// (`App::explore_by_touch`).
+    pub(super) touch_explorer: crate::screen_reader_touch::TouchExplorer,
+    /// The order the screen reader walks, read from
+    /// [`Self::semantic_tree`] at the revision it is keyed by.
+    pub(super) reading_order: Option<(u64, Vec<crate::screen_reader::ReadingItem>)>,
+    /// Counts the refreshes that changed [`Self::semantic_tree`].
+    pub(super) semantic_tree_revision: u64,
     pub(super) live_region_last: std::collections::HashMap<String, String>,
     pub(super) focus_trap_active: bool,
     pub(super) focus_before_trap: Option<NodeId>,
@@ -562,6 +570,9 @@ impl AccessibilityRuntime {
             screen_reader_chord: crate::screen_reader_chord::ScreenReaderChord::new(),
             on_screen_reader_chord: None,
             parting_screen_reader: None,
+            touch_explorer: crate::screen_reader_touch::TouchExplorer::new(),
+            reading_order: None,
+            semantic_tree_revision: 0,
             live_region_last: std::collections::HashMap::new(),
             focus_trap_active: false,
             focus_before_trap: None,

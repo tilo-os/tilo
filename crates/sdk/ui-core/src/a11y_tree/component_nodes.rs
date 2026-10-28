@@ -516,6 +516,7 @@ pub(super) fn resource_semantic_node(
         children,
         widget_taffy_id: None,
         semantic_target: None,
+        place: super::SetPlace::default(),
     }
 }
 

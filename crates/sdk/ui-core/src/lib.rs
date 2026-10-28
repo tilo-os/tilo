@@ -319,6 +319,7 @@ pub mod scale;
 pub mod scene_parts;
 pub mod screen_reader;
 pub mod screen_reader_chord;
+pub mod screen_reader_touch;
 pub mod scroll_copy;
 pub mod search;
 pub mod secret_paint;
