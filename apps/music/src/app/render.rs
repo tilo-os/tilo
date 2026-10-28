@@ -420,6 +420,20 @@ struct GridCard<'a> {
     portrait: bool,
 }
 
+/// The glyph a card's art stands for when it has no picture: what the
+/// object is, not its initials. An artist keeps the portrait's own
+/// placeholder (a person, in the disc).
+fn card_kind(action: &Action) -> Option<ui::icons::Icon> {
+    match action {
+        Action::Nav(View::Playlist(_) | View::Liked | View::Queue) => {
+            Some(ui::icons::Icon::ListMusic)
+        }
+        Action::Nav(View::Album(_) | View::Albums) => Some(ui::icons::Icon::Disc3),
+        Action::Nav(View::Songs | View::Downloads) => Some(ui::icons::Icon::Music),
+        _ => None,
+    }
+}
+
 impl Continuable for MusicApp {
     fn continuation_metadata(
         &self,
@@ -2948,6 +2962,7 @@ impl MusicApp {
                     .collect(),
                 image: self.art_image(card.art_id),
                 portrait: card.portrait,
+                kind: card_kind(&card.action),
                 action: card.action.clone(),
                 play: card.play.clone(),
                 menu: match &card.action {
