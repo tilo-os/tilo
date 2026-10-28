@@ -293,6 +293,16 @@ impl RoomRecord {
     }
 }
 
+/// The people `peer`'s governance admits now.
+fn member_roots(peer: &StatePeer, now: SystemTime) -> std::collections::BTreeSet<[u8; 32]> {
+    peer.governance()
+        .governed_access(now)
+        .map(|access| access.member_user_roots)
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+}
+
 impl GovernedRoom {
     fn create(
         dir: &Path,
@@ -647,15 +657,7 @@ impl GovernedRoom {
         }
         // A member admitted from now on is given the room as it stands, not
         // what was withdrawn before they joined.
-        let members = |peer: &StatePeer| {
-            peer.governance()
-                .governed_access(now)
-                .map(|access| access.member_user_roots)
-                .unwrap_or_default()
-                .into_iter()
-                .collect::<std::collections::BTreeSet<_>>()
-        };
-        let joined = !members(&candidate).is_subset(&members(&self.peer));
+        let joined = !member_roots(&candidate, now).is_subset(&member_roots(&self.peer, now));
         let preparing = crate::timing::start();
         prepare_governance(&mut candidate, key, now)?;
         crate::timing::window("room.commit.prepare", preparing);
