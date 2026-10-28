@@ -315,6 +315,14 @@ class GeneratorTests(unittest.TestCase):
         # (the Windows signer packages again with Inno Setup, an x86_64 program) and says
         # where it runs itself.
         product_only = {**manifest, "matrix": []}
+        # A product may say where its own publication runs: the builder's pushes
+        # both architectures' archives from arm64, because the x86_64 micro-VMs
+        # stalled pushing its layers (tools/ci/products.toml). Anything else the
+        # credentials do is placed by the generic credential rule.
+        placements = {tuple(products.CREDENTIAL_REQUIRES)}
+        placements |= {tuple(product["publish"]["requires"])
+                       for product in manifest["product"]
+                       if product.get("publish", {}).get("requires")}
         names = set()
         for family in products.families(manifest):
             for c in t_matrix.expand(tomllib.loads(products.render(manifest, family)))["check"]:
@@ -324,7 +332,7 @@ class GeneratorTests(unittest.TestCase):
                     self.assertTrue(c.get("requires"), c["name"])
             for c in t_matrix.expand(tomllib.loads(products.render(product_only, family)))["check"]:
                 if "id_token" in c:
-                    self.assertEqual(c["requires"], products.CREDENTIAL_REQUIRES, c["name"])
+                    self.assertIn(tuple(c.get("requires", ())), placements, c["name"])
 
 
 def publish_scripts(script: str, seen: set[str]) -> set[str]:
