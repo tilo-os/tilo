@@ -35,6 +35,7 @@ pub mod live;
 pub mod remote_page;
 mod room_layout;
 pub mod session;
+mod stewards;
 #[cfg(feature = "toolkit")]
 pub mod transport;
 pub mod voice;

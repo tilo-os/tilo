@@ -716,6 +716,7 @@ impl PeerHandle {
             ciphers: Ciphers::new(),
             channels,
             channel_changes: crate::channels::Changes::default(),
+            stewards: crate::stewards::Stewards::default(),
             opened: BTreeMap::new(),
             refused: (0, String::new()),
             held_inbound: BTreeMap::new(),
@@ -1249,6 +1250,8 @@ struct Task {
     channels: crate::channels::Channels,
     /// What channel state changed since the session last acted on it.
     channel_changes: crate::channels::Changes,
+    /// The channels of the person's own room this page stewards.
+    stewards: crate::stewards::Stewards,
     /// Documents opened per route, and those refused with the last reason,
     /// for the diagnostics.
     opened: BTreeMap<(DocumentRoute, [u8; 4]), u64>,
@@ -1916,7 +1919,7 @@ impl Task {
                 // keys the channel's own governance hands this session.
                 self.absorb(crate::channels::Changes {
                     keys: vec![(route, keys)],
-                    outgoing: Vec::new(),
+                    ..crate::channels::Changes::default()
                 });
                 true
             }
@@ -2001,7 +2004,7 @@ impl Task {
             if let Ok(keys) = answer {
                 self.absorb(crate::channels::Changes {
                     keys: vec![(route, keys)],
-                    outgoing: Vec::new(),
+                    ..crate::channels::Changes::default()
                 });
             }
             return None;
@@ -2666,6 +2669,17 @@ impl Task {
                 self.update(|status| {
                     status.rooms.insert(workspace_id, true);
                 });
+                // The host replayed the person's own room: whoever stewarded
+                // it before announced so in it, else this page stewards it.
+                if !self.config.watching
+                    && tilo_relay_protocol::own_room_workspace_id_matches(
+                        &self.config.cert.user_public_key,
+                        workspace_id,
+                    )
+                {
+                    let changes = self.channels.claim_own_room(now);
+                    self.absorb(changes);
+                }
                 // The replay's documents reach the page before its `Ready`,
                 // as they arrived.
                 self.decide_held(workspace_id);
@@ -2779,6 +2793,19 @@ impl Task {
             }
             Ok(neighbour_wire::NeighbourMsg::MlsGovernance { room, frame, .. }) => {
                 let changes = self.channels.receive_frame(author, &room, *frame, now);
+                self.absorb(changes);
+            }
+            Ok(
+                neighbour_wire::NeighbourMsg::MlsAccessRequest { room, request, .. }
+                | neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest { room, request, .. },
+            ) if request.device.as_bytes() == &author => {
+                let changes = self.channels.steward_request(&room, *request, now);
+                self.absorb(changes);
+            }
+            Ok(neighbour_wire::NeighbourMsg::MlsGovernanceAck { room, ack, .. })
+                if ack.device.as_bytes() == &author =>
+            {
+                let changes = self.channels.steward_ack(&room, *ack);
                 self.absorb(changes);
             }
             // The room's topology, for whether it shares its members' layout.
@@ -3038,6 +3065,81 @@ impl Task {
         }
     }
 
+    /// Do what stewarding the person's own room asks: take a channel up or
+    /// let it go, admit the person's devices that ask, take members'
+    /// acknowledgements and send the room what they still lack. New keys
+    /// go into `changes`. Returns `false` when the session could not take
+    /// an envelope.
+    async fn steward(
+        &mut self,
+        work: Vec<crate::channels::StewardChange>,
+        changes: &mut crate::channels::Changes,
+        client: Option<&Link>,
+    ) -> bool {
+        use crate::channels::StewardChange;
+        let mut delivered = true;
+        for change in work {
+            let vault = self.channels.vault();
+            let done = match change {
+                StewardChange::Take {
+                    route,
+                    workspace_id: id,
+                    saved,
+                } => {
+                    let saved = saved.as_deref();
+                    self.stewards
+                        .take(route, id, saved, &self.signer, vault)
+                        .await
+                }
+                StewardChange::Yield { channel } => {
+                    self.stewards.release(channel);
+                    self.ciphers
+                        .retain(|route, _| crate::channels::Channels::channel(route) != channel);
+                    continue;
+                }
+                StewardChange::Request { channel, request } => {
+                    let allowed = self.channels.person_devices();
+                    self.stewards
+                        .request(channel, request, &allowed, vault)
+                        .await
+                }
+                StewardChange::Ack { channel, ack } => Ok(self.stewards.acknowledge(channel, &ack)),
+                StewardChange::Redeliver { channel } => Ok(self.stewards.redeliver(channel, false)),
+            };
+            let done = match done {
+                Ok(done) => done,
+                Err(error) => {
+                    self.fail_on(FailureSubject::Storage, "storage-transaction-failed", error);
+                    continue;
+                }
+            };
+            if let Some((channel, bytes)) = done.saved {
+                self.channels.save_steward(channel, bytes);
+            }
+            for (_, _, frame) in &done.frames {
+                self.channels.announced(frame);
+            }
+            if let Some(keys) = done.keys {
+                changes.keys.push(keys);
+            }
+            let Some(client) = client else {
+                continue;
+            };
+            let device = self.config.cert.device_public_key;
+            for (workspace_id, room, frame) in done.frames {
+                let message = neighbour_wire::NeighbourMsg::MlsGovernance {
+                    room,
+                    frame: Box::new(frame),
+                    delivery: rand::random(),
+                };
+                if let Some(envelope) = governance_envelope(device, workspace_id, &message) {
+                    delivered &= client.send(envelope).is_ok();
+                }
+            }
+        }
+        delivered
+    }
+
     /// Act on channel changes: install new keys, open what waited for them,
     /// seal and commit what was held, and sign and send governance. Returns
     /// `false` when the session could not take an envelope.
@@ -3047,8 +3149,15 @@ impl Task {
         }
         let mut delivered = true;
         loop {
-            let changes = std::mem::take(&mut self.channel_changes);
-            if changes.keys.is_empty() && changes.outgoing.is_empty() {
+            let mut changes = std::mem::take(&mut self.channel_changes);
+            let steward = std::mem::take(&mut changes.steward);
+            if !steward.is_empty() {
+                delivered &= self.steward(steward, &mut changes, client).await;
+            }
+            if changes.keys.is_empty()
+                && changes.outgoing.is_empty()
+                && self.channel_changes.is_empty()
+            {
                 self.persist_channels(false);
                 let mut channels = self.channels.describe();
                 for ((route, from), count) in &self.opened {
