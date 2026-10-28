@@ -60,6 +60,9 @@ serde.workspace = true
 serde_json.workspace = true
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 tilo-actions = { path = "../../collab/actions" }
+# A recorded run becomes a Shortcut: the program type, its selectors and
+# bindings. Pure data, so the draft is built here and opened by Shortcuts.
+tilo-automation = { path = "../../collab/automation" }
 tilo-automerge-isolate.workspace = true
 tilo-desktop-model = { path = "../../session/desktop-model" }
 # The document-media capability over the content store, and the workspace
