@@ -1,6 +1,6 @@
 //! A live view: its tree, the fields and view state it depends on, and the events it can take.
 //!
-//! A view runs in a window (workspace-model.md section 3) for one person. The window's id is
+//! A view runs in a window (workspace-model.md, "Windows") for one person. The window's id is
 //! what its `window` state is kept under, shared by everyone who opens a view in the same
 //! window; `lens` state is kept per person and window.
 

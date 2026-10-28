@@ -1,4 +1,4 @@
-//! The runtime's budgets (docs/designs/app-language/native-apps.md section 4.1), held by the
+//! The runtime's budgets (`tilolang_tilo::bench`), held by the
 //! bench's own scenarios. A tilolang app that misses one is a runtime bug.
 //!
 //! The gate holds the work each scenario does, in counts that do not depend on the machine or

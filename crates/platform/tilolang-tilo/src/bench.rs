@@ -1,5 +1,5 @@
 //! `tilolang bench <package>`: the runtime's share of the performance budgets
-//! (docs/designs/app-language/native-apps.md section 4), measured headlessly.
+//! ([`over_budget`]), measured headlessly.
 //!
 //! A room is seeded with N items in the package's root collection (or, for a root that refers to
 //! other packages' roots, as a board does, in theirs), and each scenario runs the path a frame
@@ -41,7 +41,7 @@
 //!
 //! Beside its times each scenario records the work it did ([`Work`]), in counts that do not
 //! depend on the machine; `tests/budgets.rs` holds those to how they grow with the room. The
-//! times are held to section 4.1's budgets here, on the machine they are for, with `--budgets`
+//! times are held to the budgets here, on the machine they are for, with `--budgets`
 //! ([`over_budget`]): a recorded local check, not a test, since times depend on the machine
 //! and its load.
 
@@ -98,7 +98,7 @@ pub struct BenchConfig {
     /// Measure opening alone (`open`, `ready`, `load`, `thread_open`, and the memory when it is
     /// measured), none of the other scenarios.
     pub open_only: bool,
-    /// Check the records against section 4.1's budgets ([`over_budget`]).
+    /// Check the records against the budgets ([`over_budget`]).
     pub budgets: bool,
     pub env: Env,
 }

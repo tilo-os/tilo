@@ -1,4 +1,5 @@
-//! The parser: tokens to the syntax tree of implementation.md section 2.
+//! The parser: tokens to the syntax tree. `grammar.md` next to the crate's README writes out
+//! the grammar it reads.
 //!
 //! Syntax errors are recovered at statement and item boundaries, so one run reports several.
 
@@ -846,7 +847,8 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `search { ... }`: one `filter`, `sort` or `hide` per line (search.md section 2.2).
+    /// `search { ... }`: one `filter`, `sort` or `hide` per line (search.md, "What a type
+    /// declares").
     fn search_block(&mut self) -> PResult<SearchBlock> {
         let start = self.bump().span;
         self.expect(&Tok::LBrace)?;

@@ -1,10 +1,10 @@
-//! The `"tl"` import table (implementation design 4.4): names, wasm signatures and the
-//! dispatch tag of each import.
+//! The `"tl"` import table: names, wasm signatures and the dispatch tag of each import. It
+//! matches the compiler's table (`tilolang::abi`); `tests/abi_parity.rs` checks that.
 //!
 //! Signatures are written as strings of `i` (i32, which also carries handles and bools),
 //! `l` (i64) and `f` (f64): parameters, then the result (empty for none).
 //!
-//! Beyond the design's table the host fixes the suffixes the design leaves open:
+//! Imports with a `_*` suffix come in one form per value kind (`_i`, `_f`, `_h`):
 //! `tuple_set_*(t, idx: i32, x)`, `tuple_get_*(t, idx: i32)` and `rec_set_*(rec, field, x)`.
 
 /// The module name every import lives in.

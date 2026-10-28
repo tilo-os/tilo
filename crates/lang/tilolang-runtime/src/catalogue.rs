@@ -1,5 +1,10 @@
-//! Discovery (implementation design 6.3): signatures an agent reads, built from the
-//! metadata, doc comments included.
+//! Discovery: the signatures an agent reads, built from the metadata, doc comments included,
+//! and written like source:
+//!
+//! ```text
+//! /// Add one to the counter.
+//! action so.tilo.counter.increment(c: Counter)
+//! ```
 
 use crate::meta::{FieldMeta, MergeKind, PackageMeta, ParamMeta, VariantMeta};
 

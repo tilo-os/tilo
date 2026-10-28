@@ -274,8 +274,8 @@ impl Checker<'_> {
         Ex::error()
     }
 
-    /// `space.width_class`, `space.compact`, ... (layout.md section 4): reads of the space the
-    /// parent offers this view, through `space_i` and `space_f`.
+    /// `space.width_class`, `space.compact`, ... (layout.md, "Responding to space"): reads of the
+    /// space the parent offers this view, through `space_i` and `space_f`.
     fn space_field(&mut self, name: &ast::Ident) -> Ex {
         if self.st.ctx != Ctx::View {
             let who = self.st.ctx.word();

@@ -1,5 +1,5 @@
 //! The index: what the room record holds of one package's resources, kept on disk, paged, and
-//! stamped with the record heads it reflects (docs/designs/app-language/search.md, section 4).
+//! stamped with the record heads it reflects (docs/designs/app-language/search.md, "Who indexes").
 //!
 //! The store reads lists, filters and the fields rows show from the index, not from the
 //! record, so opening a window costs what it shows; search and publication read the same

@@ -1,8 +1,8 @@
 # tilolang
 
-The compiler of tilolang, the Tilo app language, and its command line. The language is
-specified in `docs/designs/app-language/` (spec, implementation, layout); the choices this crate
-made where those are silent are in [DECISIONS.md](DECISIONS.md).
+The compiler of tilolang, the Tilo app language, and its command line. The design is in
+`docs/designs/app-language/`; the grammar is [grammar.md](grammar.md); the choices this crate
+made where the design is silent are in [DECISIONS.md](DECISIONS.md).
 
 ## A package
 
@@ -57,11 +57,10 @@ package directory, or a directory of packages, to look in.
 
 ## Syntax reference
 
-The grammar is implementation.md section 2 with the changes in [DECISIONS.md](DECISIONS.md)
-("Syntax revision"). In short:
+The full grammar is [grammar.md](grammar.md). In short:
 
 **Declarations.** A package is `type`s, `enum`s, `action`s, `flow`s, `view`s and `fn`s, plus two
-package-level declarations (workspace-model.md sections 2 and 7):
+package-level declarations (workspace-model.md, "Apps"):
 
 ```
 type Note { title: Text, pinned: Bool = false, tags: Set<Text> }
@@ -180,14 +179,14 @@ The options and their values: `gap:`/`padding:` `.tight .related .sibling .secti
 .code`. `space.width_class` (`.compact .medium .expanded .wide`) and `space.orientation`
 (`.portrait .landscape .ultrawide`) compare with the same literals.
 
-**View state** (workspace-model.md sections 1, 4 and 7) is declared at the top of a view:
+**View state** (workspace-model.md, "In the language") is declared at the top of a view:
 `window name: T = default` is the window's and shared, `lens name: T = default` is each
 person's own in that window. The view reads them like variables; they change only through a
 control bound to them (`input(bind: query)`, `checkbox("Open", bind: open)`) or the platform
 action `set(name, value)` on a control. `open(r)` and `open(r, view: v)` are platform actions
 too: they go to the window of `r`.
 
-**Search** (search.md section 2.2). A type may end with a `search` block: its filters in
+**Search** (search.md, "What a type declares"). A type may end with a `search` block: its filters in
 order (the first are the visible chips), its default order, and fields kept out of filters.
 Without one, every Bool, enum, Date, Time, number, reference, identifier and Set field is a
 filter in field order, and the first Time the default order, newest first.

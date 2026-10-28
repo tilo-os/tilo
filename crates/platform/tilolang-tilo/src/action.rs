@@ -1,11 +1,10 @@
 //! [`DynAction`]: a tilolang action as a replayable tilo action.
 //!
 //! At the origin a tilolang action runs in wasm as a planner; its writes are recorded as
-//! [`DynEdit`]s. The recorded action is plain data whose `apply` replays those edits without
-//! wasm, so a peer that never loaded the module still verifies and applies the change
-//! (implementation design 7.3). It is committed through the framework executor, so the change
-//! carries the normal `ActionContext`: invoker, group, encoded action. Undo and history work as
-//! for any app.
+//! [`DynEdit`]s. The recorded action is plain data whose `apply` replays those edits without wasm,
+//! so a peer that never loaded the module still verifies and applies the change. It is committed
+//! through the framework executor, so the change carries the normal `ActionContext`: invoker,
+//! group, encoded action. Undo and history work as for any app.
 
 use automerge::transaction::Transactable;
 use automerge::{ObjType, ROOT, ReadDoc, Value as AmValue};
@@ -25,7 +24,8 @@ pub const ACTION_TYPE: &str = "tl.action";
 /// The key of the map in the room record that holds every tilolang resource.
 pub const RECORDS_KEY: &str = "tl";
 
-/// The facet naming the authorship chain of a change (spec 4.3, point 10).
+/// The facet naming the authorship chain of a change, so history can say "you, via Alex's
+/// view" (authority.md).
 pub const AUTHORSHIP_FACET: &str = "tl.via";
 
 /// The action id of a bound text input changing its field.

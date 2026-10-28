@@ -1,7 +1,11 @@
-//! The ids lock file `app.ids` (implementation.md section 1.1).
+//! The ids lock file `app.ids`.
 //!
-//! A sorted text file of `qualified.name = id` lines. Declarations that disappear move to a
-//! `# retired` section and their ids are never handed out again.
+//! Every declaration (type, field, enum variant, action, flow, view, fn, anchor) has a stable
+//! id: 8 base32 characters, drawn when the compiler first sees it. Storage keys, action
+//! addresses and grants use ids; names appear only in source, errors and display. The lock is a
+//! sorted text file of `qualified.name = id` lines. Declarations that disappear move to a
+//! `# retired` section and their ids are never handed out again. `tilolang ids --rename` renames
+//! a declaration and keeps its id, and with it the data stored under it.
 
 use crate::ast::{Item, Module};
 use std::collections::{BTreeMap, BTreeSet};

@@ -1,4 +1,4 @@
-//! Action blocks in messages (implementation design 7.8): evaluated once, when the message is
+//! Action blocks in messages: evaluated once, when the message is
 //! posted, and recorded as `Invocation` resources.
 //!
 //! Rendering never runs an action. An action asks the host, with `run_block`, to evaluate a
@@ -128,7 +128,7 @@ impl Core {
         self.create_invocation(&record, &note(invoker, &identity, "$invocation", None))
     }
 
-    /// Evaluate the source of a block an agent wrote, as `agent` (implementation design 6.1).
+    /// Evaluate the source of a block an agent wrote, as `agent`.
     ///
     /// # Errors
     ///

@@ -1,4 +1,4 @@
-//! The UI primitives a view can build (layout.md section 3), the sizing arguments every node
+//! The UI primitives a view can build (layout.md, "Primitives"), the sizing arguments every node
 //! takes, the built-in enums of their options, and the built-in free functions.
 
 /// A UI primitive: its positional properties, the named properties it accepts and the bare
@@ -33,7 +33,7 @@ pub const PRIMS: &[Prim] = &[
         named: &[],
         flags: &["full"],
     },
-    // Content groups and native controls (section 3.3).
+    // Content groups and native controls.
     prim_of("section", &["title"], &[]),
     prim_of("facts", &[], &[]),
     prim_of("form", &[], &[]),
@@ -68,7 +68,7 @@ pub const PRIMS: &[Prim] = &[
     prim_of("image", &["src"], &["alt", "width", "height"]),
     prim_of("progress", &["value"], &[]),
     prim_of("divider", &[], &[]),
-    // A block's source rendered inline (implementation.md 7.8). `source` is `Text`, `author` a
+    // A block's source rendered inline (`tilolang_runtime::embed`). `source` is `Text`, `author` a
     // `Principal`, and `invocation` the `host.Invocation` recorded for an action block.
     prim_of("embed", &["source"], &["author", "invocation"]),
 ];
@@ -197,7 +197,7 @@ pub const BUILTINS: &[&str] = &[
     "set",
 ];
 
-/// The fields of `space` (layout.md section 4).
+/// The fields of `space` (layout.md, "Responding to space").
 pub const SPACE_FIELDS: &str = "width_class, compact, wide, orientation, width, height";
 
 pub fn prim(name: &str) -> Option<&'static Prim> {

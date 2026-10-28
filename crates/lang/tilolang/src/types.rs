@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// How a field merges concurrent edits (spec section 2.2).
+/// How a field merges concurrent edits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MergeKind {
@@ -25,7 +25,7 @@ impl MergeKind {
     }
 }
 
-/// The effect class of an action, derived by the compiler (spec section 3.2).
+/// The effect class of an action, derived by the compiler (`effects`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EffectClass {
@@ -34,7 +34,7 @@ pub enum EffectClass {
     Outside,
 }
 
-/// A unit of a length literal such as `11rem` (layout.md section 2).
+/// A unit of a length literal such as `11rem` (layout.md, "Units and sizes").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LengthUnit {
     Rem,
@@ -117,7 +117,8 @@ impl Vt {
 }
 
 impl Ty {
-    /// The wasm representation (spec section 4.1); `None` for no value.
+    /// The wasm representation: `i64`, `f64`, or an `i32` (a bool or a handle); `None` for no
+    /// value.
     pub const fn repr(&self) -> Option<Vt> {
         match self {
             Self::Float | Self::Length(_) => Some(Vt::F64),

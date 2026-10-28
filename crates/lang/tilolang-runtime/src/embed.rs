@@ -1,4 +1,4 @@
-//! `embed(source, author: who)` (implementation design 7.8): a block's source rendered inline.
+//! `embed(source, author: who)`: a block's source rendered inline, as in a chat message.
 //!
 //! The node carries the block's source, its author as a `Principal`, and for an action block
 //! the `Invocation` the host recorded when the message was posted. The host compiles the source
