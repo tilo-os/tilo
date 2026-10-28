@@ -1,6 +1,9 @@
 //! Dynamic provider backed by the resource/action surfaces live Tilo apps
 //! publish through the session collaboration broker.
 
+#[path = "live_app_actions/directory_pages.rs"]
+mod directory_pages;
+
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -75,8 +78,10 @@ const MAX_DIRECTORY_ROOTS_PER_QUERY: usize = 16;
 /// search corpus.  They are deliberately a small first stage before remote
 /// and local actions.
 const MAX_JOB_ROWS_PER_QUERY: usize = 4;
-/// Directory responses are an acceleration cache, not a second unbounded
-/// replica of every connected application's action namespace.
+/// How many search pages are kept: an acceleration cache, not a second
+/// unbounded replica of every connected application's action namespace.
+/// Each connection's listing is kept apart from them, for as long as the
+/// connection ([`directory_pages::DirectoryPages`]).
 const MAX_RETAINED_DIRECTORY_PAGES: usize = 64;
 /// How many resources an enumeration opens below the roots, and how deep.
 /// Notes' pages (and their blocks) are the motivating case: a bounded,
@@ -275,7 +280,13 @@ pub(crate) use super::live_app_jobs::{job_control_target, job_subtitle};
 pub struct LiveAppActionsProvider {
     broker: AppActionBroker,
     action_sessions: ActionSessionSource,
-    directory_pages: RefCell<HashMap<DirectoryCacheKey, CataloguePage>>,
+    /// Each connection's listing, and the search pages beside it
+    /// ([`directory_pages::DirectoryPages`]).
+    directory_pages: RefCell<directory_pages::DirectoryPages>,
+    /// The surfaces and directory roots the cached pages were fetched for,
+    /// by connection: a change to one connection's publication retires that
+    /// connection's pages only.
+    directory_publications: RefCell<HashMap<u64, directory_pages::DirectoryPublication>>,
     directory_pending: RefCell<HashMap<DirectoryCacheKey, PendingDirectoryPage>>,
     /// Pages of resources below a root, fetched only while enumerating.
     nested_pages: RefCell<HashMap<NestedCacheKey, CataloguePage>>,
@@ -589,9 +600,7 @@ fn deadline_after(duration: std::time::Duration) -> std::time::Instant {
 }
 
 impl LiveAppActionsProvider {
-    fn directory_pages_mut(
-        &self,
-    ) -> std::cell::RefMut<'_, HashMap<DirectoryCacheKey, CataloguePage>> {
+    fn directory_pages_mut(&self) -> std::cell::RefMut<'_, directory_pages::DirectoryPages> {
         self.pages_epoch.set(self.pages_epoch.get().wrapping_add(1));
         self.directory_pages.borrow_mut()
     }
@@ -692,7 +701,10 @@ impl LiveAppActionsProvider {
         Self {
             action_sessions: ActionSessionSource::new(broker.clone()),
             broker,
-            directory_pages: RefCell::new(HashMap::new()),
+            directory_pages: RefCell::new(directory_pages::DirectoryPages::new(
+                MAX_RETAINED_DIRECTORY_PAGES,
+            )),
+            directory_publications: RefCell::new(HashMap::new()),
             directory_pending: RefCell::new(HashMap::new()),
             nested_pages: RefCell::new(HashMap::new()),
             nested_pending: RefCell::new(HashMap::new()),
@@ -1176,16 +1188,40 @@ impl LiveAppActionsProvider {
             self.broker.surfaces_generation(),
             self.broker.action_directory_root_page(None, 0).generation,
         );
-        if self.directory_source_generation.replace(source) != source {
-            // A native edit can change Undo availability without changing the
-            // query, publisher or action address. Retire both old pages and
-            // outstanding replies before observing their previous contracts.
+        if self.directory_source_generation.replace(source) == source {
+            return;
+        }
+        // A native edit can change Undo availability without changing the
+        // query, publisher or action address: a connection whose publication
+        // changed has its pages and outstanding replies retired before its
+        // previous contracts are observed. Every other connection keeps its
+        // listing, so one app republishing never empties the rest.
+        let now = directory_pages::publications(&self.broker);
+        let previous = self.directory_publications.replace(now.clone());
+        let changed: HashSet<u64> = previous
+            .keys()
+            .chain(now.keys())
+            .copied()
+            .filter(|peer| previous.get(peer) != now.get(peer))
+            .collect();
+        if changed.is_empty() {
+            // A change the publications do not show: retire every page, as
+            // nothing tells which connection it was.
             self.directory_pages_mut().clear();
             self.directory_pending.borrow_mut().clear();
             self.directory_failures.borrow_mut().clear();
-            self.auxiliary_snapshot.borrow_mut().take();
-            self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.directory_pages_mut()
+                .retain(|key, _| !changed.contains(&key.0));
+            self.directory_pending
+                .borrow_mut()
+                .retain(|key, _| !changed.contains(&key.0));
+            self.directory_failures
+                .borrow_mut()
+                .retain(|key, _| !changed.contains(&key.0));
         }
+        self.auxiliary_snapshot.borrow_mut().take();
+        self.directory_epoch.fetch_add(1, Ordering::Relaxed);
     }
 
     fn poll_directory_pages_at(&self, now: Instant) {
@@ -1297,12 +1333,8 @@ impl LiveAppActionsProvider {
                         || existing.2 != key.2
                 });
             }
-            if !pages.contains_key(&key)
-                && pages.len() >= MAX_RETAINED_DIRECTORY_PAGES
-                && let Some(evicted) = pages.keys().next().cloned()
-            {
-                pages.remove(&evicted);
-            }
+            // Search pages make room for one another, least recently
+            // used first; a connection's listing is never displaced.
             pages.insert(key, page);
             if initial_page {
                 self.directory_epoch.fetch_add(1, Ordering::Relaxed);
@@ -1487,12 +1519,15 @@ impl LiveAppActionsProvider {
         self.directory_failures.borrow_mut().clear();
         // Dropping stale receivers explicitly cancels their shell-side
         // tickets. The LocalSet may still finish its bounded work, but cannot
-        // grow this UI cache or revive an old query's results.
+        // grow this UI cache or revive an old query's results. Each
+        // connection's listing (the empty query's pages) is not a query's:
+        // it stays whatever is searched for, so a listing asked for again
+        // between searches is still whole.
         self.directory_pages_mut()
-            .retain(|(_, _, cached_needle, _), _| cached_needle == &next);
+            .retain(|key, _| directory_pages::is_listing(key) || key.2 == next);
         self.directory_pending
             .borrow_mut()
-            .retain(|(_, _, cached_needle, _), _| cached_needle == &next);
+            .retain(|key, _| directory_pages::is_listing(key) || key.2 == next);
         self.nested_pages_mut()
             .retain(|(_, _, _, cached_needle), _| cached_needle == &next);
         self.nested_pending
@@ -3592,7 +3627,7 @@ mod tests {
         }
     }
 
-    fn chrome() -> crate::shell::chrome_state::Chrome {
+    pub(super) fn chrome() -> crate::shell::chrome_state::Chrome {
         let mut workspace_tree = WorkspaceTree::default();
         workspace_tree
             .desktop
@@ -3932,7 +3967,7 @@ mod tests {
         }
     }
 
-    fn exported(label: &str, action: &str) -> tilo_actions::ActionDescriptor {
+    pub(super) fn exported(label: &str, action: &str) -> tilo_actions::ActionDescriptor {
         tilo_actions::ActionDescriptor {
             semantic_identity: None,
             address: tilo_actions::ActionAddress::new(format!("resource:{action}"), action),
@@ -4163,7 +4198,7 @@ mod tests {
         crate::shell::broker_services::test_broker_with_membership(chrome.borrow().tree_handle())
     }
 
-    fn page(rows: Vec<CatalogueRow>, next_cursor: Vec<u8>) -> CataloguePage {
+    pub(super) fn page(rows: Vec<CatalogueRow>, next_cursor: Vec<u8>) -> CataloguePage {
         CataloguePage {
             revision: "r1".into(),
             exhausted: next_cursor.is_empty(),
@@ -6389,6 +6424,10 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "live_app_actions/listing_tests.rs"]
+mod listing_tests;
 
 #[cfg(test)]
 #[path = "live_app_actions/job_progress_tests.rs"]
