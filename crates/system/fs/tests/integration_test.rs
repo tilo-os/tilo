@@ -1075,6 +1075,129 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fuse_keeps_a_link_and_a_files_permission_bits() {
+    require_fuse!();
+    tilo_test_env::within("the real-FUSE link and mode test", async {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let first_mount = tempdir().expect("mount temp dir");
+        let second_mount = tempdir().expect("mount temp dir");
+        let store = Arc::new(ContentStore::memory());
+        let namespace = Arc::new(Mutex::new(Namespace::new("posix-peer").unwrap()));
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+        let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
+        let mut config = Config::default();
+        config.mount_options = vec![MountOption::FSName("quickfs_posix".into())];
+        let session = fuser::spawn_mount(fs, &first_mount.path(), &config).unwrap();
+        wait_for_mount(first_mount.path()).await;
+
+        let root = first_mount.path();
+        // A link is a link to the kernel, not a file holding its target, and
+        // readlink returns exactly what was created.
+        std::fs::write(root.join("script.sh"), b"#!/bin/sh\necho hi\n").unwrap();
+        std::os::unix::fs::symlink("script.sh", root.join("link-rel")).unwrap();
+        std::os::unix::fs::symlink("/nonexistent/target", root.join("link-dangling")).unwrap();
+        assert_eq!(
+            std::fs::read_link(root.join("link-rel")).unwrap(),
+            std::path::Path::new("script.sh"),
+        );
+        assert_eq!(
+            std::fs::read_link(root.join("link-dangling")).unwrap(),
+            std::path::Path::new("/nonexistent/target"),
+            "a dangling link keeps its target",
+        );
+        let listing = std::fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect::<Vec<_>>();
+        assert!(listing.contains(&"link-rel".to_string()));
+        assert!(
+            std::fs::symlink_metadata(root.join("link-rel"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "a created link must be listed as one, not as a file",
+        );
+
+        // The mode a create asked for is the mode stat reports, and chmod
+        // changes it.
+        std::fs::set_permissions(
+            root.join("script.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::metadata(root.join("script.sh")).unwrap().mode() & 0o777,
+            0o755,
+            "the executable bit a chmod asked for must survive",
+        );
+        assert_ne!(
+            std::fs::metadata(root.join("link-rel")).unwrap().mode() & 0o777,
+            0,
+            "a link reports a mode",
+        );
+        std::fs::set_permissions(
+            root.join("script.sh"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::metadata(root.join("script.sh")).unwrap().mode() & 0o777,
+            0o600,
+        );
+        std::fs::set_permissions(
+            root.join("script.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+
+        // Every materialised path belongs to the local person, so asking for
+        // that owner is already true and must not fail.
+        std::os::unix::fs::chown(root.join("script.sh"), None, None)
+            .expect("chown to the local person");
+
+        // Everything survives a restart: the link with its target, the script
+        // with its executable bit.
+        let snapshot = namespace.lock().unwrap().save();
+        fs::fuse_session::unmount_and_join(session).unwrap();
+        let reopened = Arc::new(Mutex::new(
+            Namespace::from_bytes("reopened", &snapshot).unwrap(),
+        ));
+        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+        let fs = QuickFS::new(reopened, hydrator, heuristics);
+        let session = fuser::spawn_mount(fs, &second_mount.path(), &config).unwrap();
+        wait_for_mount(second_mount.path()).await;
+        let root = second_mount.path();
+        assert_eq!(
+            std::fs::read_link(root.join("link-rel")).unwrap(),
+            std::path::Path::new("script.sh"),
+            "a link's target survives a restart",
+        );
+        assert_eq!(
+            std::fs::read_link(root.join("link-dangling")).unwrap(),
+            std::path::Path::new("/nonexistent/target"),
+        );
+        assert_eq!(
+            std::fs::metadata(root.join("script.sh")).unwrap().mode() & 0o777,
+            0o755,
+            "an executable script stays executable across a restart",
+        );
+        assert_eq!(
+            std::fs::read(root.join("link-rel")).unwrap(),
+            b"#!/bin/sh\necho hi\n",
+            "a link reads through to its target",
+        );
+        fs::fuse_session::unmount_and_join(session).unwrap();
+        endpoint.close().await;
+        store.store().shutdown().await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
     clippy::too_many_lines,
     reason = "each phase keeps one former test's body verbatim"
