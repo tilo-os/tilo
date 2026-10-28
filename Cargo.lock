@@ -21512,7 +21512,6 @@ dependencies = [
  "tasks",
  "themes",
  "tilo-app",
- "tilo-browser-peer",
  "tilo-browser-runtime",
  "tilo-desktop",
  "tilo-desktop-search",

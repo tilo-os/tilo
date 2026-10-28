@@ -848,7 +848,6 @@ export async function startEntryPage({mode}) {
         return watch();
       }
     },
-    memberOf: workspace => Boolean(remembering(() => keptMembership(workspace))),
     // A peer in the home workspace while the page is in another room, which
     // carries the desktop's problem reports to the home's channel. Only for
     // a person the home already let in, as themselves (a paired device's
@@ -867,20 +866,6 @@ export async function startEntryPage({mode}) {
       const name = chosenDisplayName(identity.userPublicKey) ?? defaultDisplayName(identity.userPublicKey);
       return joinViaHost({workspace: home, identity, displayName: name, runtime, live: false, voice: false, background: true,
         wait: () => Promise.reject(new Error('the home workspace did not let this device in'))});
-    },
-    // The person's own room, on the host that let them in through `home`'s
-    // door: the room their root names (`ownRoom`), which that host carries
-    // for them alone. A device paired to a person kept elsewhere connects
-    // as them, with the device key it was paired with.
-    enterOwnRoom: async home => {
-      const kept = remembering(() => keptMembership(home));
-      const origin = kept?.origin ?? home.host.origin;
-      const identity = kept?.paired ? undefined : await browserPerson();
-      const userPublicKey = identity?.userPublicKey ?? kept.userPublicKey;
-      runtime ??= await loadRuntime();
-      displayName = chosenDisplayName(userPublicKey) ?? defaultDisplayName(userPublicKey);
-      return connectPeer({origin, room: runtime.ownRoom(userPublicKey), identity, userPublicKey, runtime, displayName,
-        ...(identity ? {} : {profile: identityProfile(kept, kept.origin)})});
     },
     inspectInvitation: (origin, invitation) => inspectInvitation(origin, invitation, {runtime}),
     confirmInvitation: offer => {
