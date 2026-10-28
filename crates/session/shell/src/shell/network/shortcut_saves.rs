@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use super::relay_rooms::receipt_value;
 use super::{NetCmd, ShellNetwork, room_topic_id};
-use crate::network::actor::room_governance::trace;
 use crate::shell::state::RoomId;
+use tilo_network_actor::room_governance::trace;
 use tilo_relay_session::rooms::SAVE_SHORTCUT;
 
 impl ShellNetwork {

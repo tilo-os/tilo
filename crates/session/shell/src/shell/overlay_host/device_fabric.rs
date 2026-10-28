@@ -9,7 +9,7 @@
     reason = "presence and independently negotiated output/display capabilities are orthogonal facts"
 )]
 pub struct FabricDeviceView {
-    pub id: crate::shell::personal_continuity::DeviceId,
+    pub id: tilo_network_actor::fabric::DeviceId,
     pub label: String,
     pub kind: crate::shell::device_fabric::DeviceKind,
     pub is_local: bool,
@@ -29,7 +29,7 @@ pub struct FabricMediaView {
     pub title: String,
     pub playing: bool,
     pub has_video: bool,
-    pub targets: Vec<crate::shell::personal_continuity::DeviceId>,
+    pub targets: Vec<tilo_network_actor::fabric::DeviceId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,7 +60,7 @@ pub enum FabricTransferStatus {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FabricTransferView {
-    pub target: crate::shell::personal_continuity::DeviceId,
+    pub target: tilo_network_actor::fabric::DeviceId,
     pub sent_bytes: u64,
     pub total_bytes: u64,
     pub status: FabricTransferStatus,
@@ -98,7 +98,7 @@ pub struct DeviceFabricView {
     pub speaker_groups: crate::shell::speaker_group_runtime::SpeakerGroupsView,
     pub device_health: Vec<crate::shell::spatial_calibration::DeviceHealthView>,
     pub calibration_proposals: Vec<crate::shell::spatial_calibration::CalibrationProposal>,
-    pub revertible_calibrations: Vec<crate::shell::personal_continuity::DeviceId>,
+    pub revertible_calibrations: Vec<tilo_network_actor::fabric::DeviceId>,
     pub tethering: Vec<crate::shell::personal_tethering_runtime::TetheringStatusView>,
     pub(crate) remote_capture: crate::shell::remote_capture::runtime::RemoteCaptureView,
     /// Boots of the person's devices waiting for `device.unlock` here.
@@ -123,11 +123,11 @@ pub enum DeviceFabricUiAction {
     /// Move the window in front here to `target`, another of the person's
     /// devices: it shows that window from now on.
     ShowWindowOn {
-        target: crate::shell::personal_continuity::DeviceId,
+        target: tilo_network_actor::fabric::DeviceId,
     },
     HandoffMedia {
         session_id: String,
-        target: crate::shell::personal_continuity::DeviceId,
+        target: tilo_network_actor::fabric::DeviceId,
     },
     CancelMediaHandoff {
         request_id: [u8; 16],
@@ -150,7 +150,7 @@ pub enum DeviceFabricUiAction {
     HandoffBluetooth {
         address: String,
         name: String,
-        target: crate::shell::personal_continuity::DeviceId,
+        target: tilo_network_actor::fabric::DeviceId,
     },
     AuthorizeBluetoothHandoff {
         request_id: [u8; 16],
@@ -168,14 +168,14 @@ pub enum DeviceFabricUiAction {
     },
     StartPhysicalGamepad {
         source_token: u64,
-        target: crate::shell::personal_continuity::DeviceId,
+        target: tilo_network_actor::fabric::DeviceId,
     },
     StopPhysicalGamepad {
         session: u64,
     },
     StartRemoteAudio {
         source_token: u64,
-        target: crate::shell::personal_continuity::DeviceId,
+        target: tilo_network_actor::fabric::DeviceId,
     },
     AuthorizeRemoteAudio {
         session_id: [u8; 16],
@@ -209,7 +209,7 @@ pub enum DeviceFabricUiAction {
         session_id: [u8; 16],
     },
     RequestRemoteCapture {
-        peer: crate::shell::personal_continuity::DeviceId,
+        peer: tilo_network_actor::fabric::DeviceId,
         kind: crate::shell::remote_capture::device::RemoteCaptureKind,
     },
     AuthorizeRemoteCapture {
@@ -223,7 +223,7 @@ pub enum DeviceFabricUiAction {
         session_id: [u8; 16],
     },
     RequestPhoneTethering {
-        phone: crate::shell::personal_continuity::DeviceId,
+        phone: tilo_network_actor::fabric::DeviceId,
     },
     AuthorizePhoneTethering {
         request_id: [u8; 16],
@@ -255,26 +255,26 @@ pub enum DeviceFabricUiAction {
     },
     /// Remove a device from the person's fleet.
     RemoveDevice {
-        device: crate::shell::personal_continuity::DeviceId,
+        device: tilo_network_actor::fabric::DeviceId,
     },
     Place {
-        device: crate::shell::personal_continuity::DeviceId,
+        device: tilo_network_actor::fabric::DeviceId,
         edge: crate::shell::device_fabric::DisplayEdge,
     },
     ApplyCalibration {
-        device: crate::shell::personal_continuity::DeviceId,
+        device: tilo_network_actor::fabric::DeviceId,
     },
     DismissCalibration {
-        device: crate::shell::personal_continuity::DeviceId,
+        device: tilo_network_actor::fabric::DeviceId,
     },
     RevertCalibration {
-        device: crate::shell::personal_continuity::DeviceId,
+        device: tilo_network_actor::fabric::DeviceId,
     },
     GrantControl {
-        controller: crate::shell::personal_continuity::DeviceId,
+        controller: tilo_network_actor::fabric::DeviceId,
     },
     RevokeControl {
-        controller: crate::shell::personal_continuity::DeviceId,
+        controller: tilo_network_actor::fabric::DeviceId,
     },
 }
 
@@ -286,7 +286,7 @@ pub enum RealtimeContinuityUiAction {
     Snapshot,
     Propose {
         session: String,
-        target: crate::shell::personal_continuity::DeviceId,
+        target: tilo_network_actor::fabric::DeviceId,
     },
     ResolveConsent {
         session: String,
@@ -303,7 +303,7 @@ pub type RealtimeContinuityBridge = std::rc::Rc<
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum DeviceFabricPaneRow {
     CalibrationProposal(crate::shell::spatial_calibration::CalibrationProposal),
-    CalibrationRevert(crate::shell::personal_continuity::DeviceId),
+    CalibrationRevert(tilo_network_actor::fabric::DeviceId),
     RemoteAudioConsent(crate::shell::remote_audio::RemoteAudioConsentView),
     RemoteAudioSource(crate::shell::remote_audio::RemoteAudioSourceView),
     RemoteAudioRoute(crate::shell::remote_audio::RemoteAudioRouteView),

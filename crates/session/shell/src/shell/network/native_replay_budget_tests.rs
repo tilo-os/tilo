@@ -1,8 +1,8 @@
 use super::*;
-use crate::network::actor::{HostIdentity, native_ingress};
 use ed25519_dalek::SigningKey;
 use std::collections::HashMap;
 use tilo_joined_room::testing::{APP, ROOM, raw_fixture};
+use tilo_network_actor::{HostIdentity, native_ingress};
 
 #[test]
 fn native_replay_yields_between_signed_admissions_without_reordering_control() {

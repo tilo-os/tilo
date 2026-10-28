@@ -417,6 +417,7 @@ members = [
     "crates/session/install-profile-model",
     "crates/session/installer",
     "crates/session/liveness",
+    "crates/session/network-actor",
     "crates/session/network-secret-agent",
     "crates/session/output-passes",
     "crates/session/polkit-agent",

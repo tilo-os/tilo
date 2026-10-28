@@ -438,7 +438,9 @@ impl ShellNetwork {
         )?;
         let id = attempt.id();
         self.cmd_tx
-            .try_send(NetCmd::NativeEnrollment(command))
+            .try_send(NetCmd::NativeEnrollment(
+                tilo_network_actor::services::ServiceCommand::new(command),
+            ))
             .map_err(|_| "native enrollment command queue unavailable")?;
         attempts.insert(id, attempt);
         drop(attempts);

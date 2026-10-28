@@ -637,18 +637,18 @@ impl ShellNetwork {
         if key.verifying_key().to_bytes() != device.device_public_key {
             return Err("the room's enrollment names another device".into());
         }
-        let connect = crate::network::actor::native_ingress::Connect::new(owner, room)?;
+        let connect = tilo_network_actor::native_ingress::Connect::new(owner, room)?;
         let origin = self
             .hosted_sites
             .origin(room)
             .ok_or("the workspace's host is unknown")?;
-        let https = crate::network::actor::HttpsRoute(HostHttp::new(&origin)?);
+        let https = tilo_network_actor::HttpsRoute(HostHttp::new(&origin)?);
         self.wait_on(async move { readmit(&entry, room, (user, name), device, &key).await })?
             .map_err(|error| error.to_string())?;
         tracing::info!(%room, "joined a site's workspace again after its host let the person go");
         self.hosted_sites.end_join(room);
         self.cmd_tx
-            .try_send(crate::network::actor::NetCmd::NativeConnect(
+            .try_send(tilo_network_actor::NetCmd::NativeConnect(
                 connect,
                 Some(https),
             ))

@@ -4423,7 +4423,7 @@ impl FrameBuilder {
     }
 
     /// Where the room of the workspace holding `app_id`'s window stands
-    /// with its host (`crate::shell::room_sync`); `None` for a workspace
+    /// with its host (`tilo_network_actor::room_sync`); `None` for a workspace
     /// that syncs with no host.
     #[must_use]
     pub fn room_sync_for_app(&self, app_id: &str) -> Option<ui::room_sync::RoomSync> {
@@ -4431,8 +4431,8 @@ impl FrameBuilder {
             .with_app_workspace(app_id, crate::shell::state::Workspace::room)
             .map(|room| self.chrome.borrow().local_user_for_room(&room))?;
         self.with_app_workspace(app_id, |workspace| {
-            crate::shell::room_sync::told(
-                crate::shell::network::room_topic_id(workspace.room()),
+            tilo_network_actor::room_sync::told(
+                tilo_network_actor::room_topic_id(workspace.room()),
                 &workspace.name,
                 app_writes(workspace, &person, app_id, tilo_clock::unix_now()),
             )

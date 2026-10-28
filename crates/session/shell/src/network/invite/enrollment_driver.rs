@@ -1,9 +1,6 @@
 //! Bounded actor work and cancellation for canonical native enrollment.
 use super::VerifiedNativeEnrollment;
-use crate::{
-    network::actor::HostIdentity,
-    shell::{native_workspace_owner::NativeWorkspaceOwner, state::WorkspaceId},
-};
+use crate::shell::{native_workspace_owner::NativeWorkspaceOwner, state::WorkspaceId};
 use std::{
     sync::{
         Arc, Mutex,
@@ -12,6 +9,7 @@ use std::{
     time::Duration,
 };
 use tilo_lock::MutexRecover as _;
+use tilo_network_actor::HostIdentity;
 use tokio::sync::watch;
 
 const MAX_PENDING: usize = 8;

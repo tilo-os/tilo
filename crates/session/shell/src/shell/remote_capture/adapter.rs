@@ -18,13 +18,13 @@ use crate::portal::{
     CaptureAuthorizationId, CaptureBroker, CaptureKind, CaptureLeaseId, CaptureSessionBinding,
     LocalCaptureHandle,
 };
-use crate::shell::personal_continuity::DeviceId;
 use crate::shell::realtime_session::VerifiedAppRegistration;
 use crate::shell::remote_capture::device::{
     MAX_REMOTE_CAPTURE_SESSIONS, RemoteCaptureChunk, RemoteCaptureGrant, RemoteCaptureKind,
     RemoteCaptureProfile, RemoteCaptureRequest,
 };
 use crate::shell::remote_capture::host::CaptureHost;
+use tilo_network_actor::fabric::DeviceId;
 
 /// A provisioned, target-local media endpoint. These values must never enter a
 /// fabric action, collaborative document, log, or app-visible resource.

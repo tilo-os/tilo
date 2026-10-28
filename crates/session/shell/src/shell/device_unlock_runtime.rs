@@ -33,7 +33,7 @@ use crate::shell::device_unlock::{
     UnlockSibling, UnlockView, merged_unlock_state,
 };
 use crate::shell::network::ShellNetwork;
-use crate::shell::personal_continuity::DeviceId;
+use tilo_network_actor::fabric::DeviceId;
 
 /// How long a boot may take to answer its challenge.
 const ANSWER_TIMEOUT: Duration = Duration::from_nanos(CHALLENGE_LIFETIME_NS);
@@ -511,7 +511,7 @@ fn try_enrol(request: &EnrolRequest) -> Result<EnrolResponse, String> {
             endpoint: String::new(),
         })
         .collect();
-    let stamp = crate::shell::device_fabric::FabricStamp {
+    let stamp = tilo_network_actor::fabric::FabricStamp {
         counter: 0,
         device: DeviceId::new(hex::encode(local)).map_err(|error| error.to_string())?,
     };

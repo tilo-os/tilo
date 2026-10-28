@@ -89,17 +89,17 @@ pub(super) enum Sessions {
 /// What became of invocations to a room's host, kept in tests only, so a
 /// test that times out waiting on one says where it stopped: output from
 /// the network's threads is not captured with the test's.
-pub(crate) mod trace {
-    #[cfg(test)]
+pub mod trace {
+    #[cfg(any(test, feature = "test-support"))]
     static SAID: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
     /// Note `line`, in tests.
     #[cfg_attr(
-        not(test),
+        not(any(test, feature = "test-support")),
         expect(unused_variables, reason = "only tests keep what is noted")
     )]
-    pub(crate) fn note(line: impl FnOnce() -> String) {
-        #[cfg(test)]
+    pub fn note(line: impl FnOnce() -> String) {
+        #[cfg(any(test, feature = "test-support"))]
         {
             let started = *STARTED.get_or_init(std::time::Instant::now);
             // Formatted before the lock: `line` may take its time.
@@ -115,14 +115,14 @@ pub(crate) mod trace {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
     /// Keep every warning logged in this process from now on with what is
     /// noted, from the network's threads and the hosts' as well, and what
     /// the hosts say of their work.
-    #[cfg(test)]
-    pub(crate) fn capture_warnings() {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn capture_warnings() {
         use tracing_subscriber::layer::SubscriberExt as _;
         static INSTALLED: std::sync::Once = std::sync::Once::new();
         INSTALLED.call_once(|| {
@@ -140,10 +140,10 @@ pub(crate) mod trace {
     /// Notes each event it sees, a line each. It keeps nothing per thread,
     /// so an event logged while a thread's locals are destroyed (a store
     /// dropped with its thread) is noted too, never a panic.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     struct Noting;
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Noting {
         fn on_event(
             &self,
@@ -173,8 +173,8 @@ pub(crate) mod trace {
     }
 
     /// Everything noted so far, a line each.
-    #[cfg(test)]
-    pub(crate) fn said() -> String {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn said() -> String {
         SAID.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()

@@ -218,7 +218,7 @@ pub async fn serve_connection(connection: iroh::endpoint::Connection) {
     device_vpn().exit.serve(connection).await;
 }
 
-fn key_of(device: &crate::shell::personal_continuity::DeviceId) -> Option<[u8; 32]> {
+fn key_of(device: &tilo_network_actor::fabric::DeviceId) -> Option<[u8; 32]> {
     let mut key = [0_u8; 32];
     hex::decode_to_slice(device.as_str(), &mut key).ok()?;
     Some(key)

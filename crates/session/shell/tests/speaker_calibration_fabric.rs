@@ -16,9 +16,8 @@ use std::time::Instant;
 
 use shell::shell::device_fabric::{
     DeviceFabric, DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
-    FabricCapabilities, FabricStamp, OwnerSession, PersonalFabricAction,
+    FabricCapabilities, OwnerSession, PersonalFabricAction,
 };
-use shell::shell::personal_continuity::DeviceId;
 use shell::shell::speaker_calibration::{
     CalibrationPhase, CalibrationRun, HearingFailure, MeasurementSource, MemberProgress,
     MicrophoneConsent, MicrophoneHearing, MicrophoneProgress, SpeakerHearing, SweepRequest,
@@ -28,6 +27,8 @@ use shell::shell::speaker_group::{
 };
 use shell::shell::speaker_group_runtime::{Egress, ListenerState, MemberSpec, SpeakerGroupCore};
 use shell::shell::speaker_settings::plan_microphones;
+use tilo_network_actor::fabric::DeviceId;
+use tilo_network_actor::fabric::FabricStamp;
 
 const SPEED_OF_SOUND_M_PER_S: f64 = 343.0;
 

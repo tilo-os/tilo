@@ -4,10 +4,10 @@ use crate::shell::collab_broker_capnp::{
     RealtimeConsentUiView, RealtimeContinuityUiView, RealtimeSourceUiView,
 };
 use crate::shell::device_fabric::DeviceKind;
-use crate::shell::personal_continuity::DeviceId;
 use crate::shell::state::WorkspaceTree;
 use std::cell::RefCell;
 use std::rc::Rc;
+use tilo_network_actor::fabric::DeviceId;
 use ui::widget::Container;
 
 fn fixture() -> (DeviceFabricView, DeviceId) {
@@ -600,13 +600,13 @@ fn device_pane_settings_controllers_and_calls_require_explicit_choices() {
         view.calibration_proposals = vec![crate::shell::spatial_calibration::CalibrationProposal {
             peer: remote.clone(),
             edge: crate::shell::device_fabric::DisplayEdge::Right,
-            previous: crate::shell::device_fabric::DisplayRect {
+            previous: tilo_network_actor::fabric::DisplayRect {
                 x: 800,
                 y: 0,
                 width: 100,
                 height: 80,
             },
-            proposed: crate::shell::device_fabric::DisplayRect {
+            proposed: tilo_network_actor::fabric::DisplayRect {
                 x: 100,
                 y: 0,
                 width: 100,

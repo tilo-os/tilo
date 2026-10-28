@@ -59,7 +59,7 @@ pub(crate) fn load_session_tree(enable_peer_sync: bool) -> LoadedSession {
         }
     };
     if peer_sync_possible {
-        match crate::network::behaviour::load_or_create_keypair(&peer_key_path) {
+        match tilo_network_actor::behaviour::load_or_create_keypair(&peer_key_path) {
             Ok(kp) => {
                 tracing::info!(endpoint = %kp.public(), "peer-sync: device identity loaded");
             }

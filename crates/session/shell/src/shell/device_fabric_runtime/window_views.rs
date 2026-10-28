@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use crate::shell::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
 use crate::shell::device_fabric::{HardwareDecode, PersonalFabricAction, WindowView};
 use crate::shell::network::ShellNetwork;
-use crate::shell::personal_continuity::DeviceId;
+use tilo_network_actor::fabric::DeviceId;
 
 /// How often an unchanged, non-empty list is repeated.
 const REFRESH: Duration = Duration::from_secs(2);
@@ -174,7 +174,9 @@ fn outbound() -> &'static Mutex<Outbound> {
 pub(crate) fn peer_handle(device: &DeviceId) -> Option<u64> {
     let bytes: [u8; 32] = hex::decode(device.as_str()).ok()?.try_into().ok()?;
     let endpoint = iroh::EndpointId::from_bytes(&bytes).ok()?;
-    Some(crate::network::behaviour::peer_liveness_handle(&endpoint))
+    Some(tilo_network_actor::behaviour::peer_liveness_handle(
+        &endpoint,
+    ))
 }
 
 /// Take what `source` says it shows now.

@@ -498,7 +498,7 @@ impl Drop for Door {
         if std::thread::panicking() {
             eprintln!(
                 "what became of requests to rooms' hosts:{}",
-                crate::network::actor::room_governance::trace::said()
+                tilo_network_actor::room_governance::trace::said()
             );
         }
     }
@@ -506,7 +506,7 @@ impl Drop for Door {
 
 impl Door {
     fn open() -> Self {
-        crate::network::actor::room_governance::trace::capture_warnings();
+        tilo_network_actor::room_governance::trace::capture_warnings();
         let dir = tempfile::tempdir().expect("socket directory");
         // The broker binds only inside an owner-only directory.
         std::fs::set_permissions(

@@ -13,11 +13,9 @@ use super::idle_quiet_tests::{
     LONE_CPU_BUDGET, LONE_IDLE, LONE_SETTLE, device_reaching, session_threads,
 };
 use super::{NetCmd, Reach, ShellNetwork, host_identity_for_key, needs_reachability};
-use crate::network::actor::{
-    gossip_caches_drain_within, shorten_gossip_retention_for_this_process,
-};
 use crate::shell::peer_sync_overlay::PeerSyncResponse;
 use crate::shell::state::{GovernanceRequest, RoomId, WorkspaceTree, WorkspaceTreeHandle};
+use tilo_network_actor::{gossip_caches_drain_within, shorten_gossip_retention_for_this_process};
 
 /// How long a test desktop's relays stay up once nothing needs them: long
 /// enough that a pair still converging keeps them, short enough to watch

@@ -724,17 +724,17 @@ struct HostLaunchActivation {
 /// The single value the calloop event loop hands to every callback, so every Wayland global gets unsynchronised mutable access without `Rc`/`Arc` plumbing.
 #[derive(Debug, Default)]
 struct PersonalFabricInputHolders {
-    keys: HashMap<crate::shell::personal_continuity::DeviceId, HashSet<u32>>,
+    keys: HashMap<tilo_network_actor::fabric::DeviceId, HashSet<u32>>,
     key_counts: HashMap<u32, usize>,
-    buttons: HashMap<crate::shell::personal_continuity::DeviceId, HashSet<u32>>,
+    buttons: HashMap<tilo_network_actor::fabric::DeviceId, HashSet<u32>>,
     button_counts: HashMap<u32, usize>,
 }
 
 impl PersonalFabricInputHolders {
     fn transition(
-        holders: &mut HashMap<crate::shell::personal_continuity::DeviceId, HashSet<u32>>,
+        holders: &mut HashMap<tilo_network_actor::fabric::DeviceId, HashSet<u32>>,
         counts: &mut HashMap<u32, usize>,
-        controller: &crate::shell::personal_continuity::DeviceId,
+        controller: &tilo_network_actor::fabric::DeviceId,
         code: u32,
         pressed: bool,
     ) -> bool {
@@ -774,7 +774,7 @@ impl PersonalFabricInputHolders {
 
     fn key_transition(
         &mut self,
-        controller: &crate::shell::personal_continuity::DeviceId,
+        controller: &tilo_network_actor::fabric::DeviceId,
         keycode: u32,
         pressed: bool,
     ) -> bool {
@@ -789,7 +789,7 @@ impl PersonalFabricInputHolders {
 
     fn button_transition(
         &mut self,
-        controller: &crate::shell::personal_continuity::DeviceId,
+        controller: &tilo_network_actor::fabric::DeviceId,
         button: u32,
         pressed: bool,
     ) -> bool {
@@ -804,7 +804,7 @@ impl PersonalFabricInputHolders {
 
     fn release_controller(
         &mut self,
-        controller: &crate::shell::personal_continuity::DeviceId,
+        controller: &tilo_network_actor::fabric::DeviceId,
     ) -> (Vec<u32>, Vec<u32>) {
         let mut keys = self
             .keys
@@ -831,7 +831,7 @@ impl PersonalFabricInputHolders {
         (keys, buttons)
     }
 
-    fn controllers(&self) -> Vec<crate::shell::personal_continuity::DeviceId> {
+    fn controllers(&self) -> Vec<tilo_network_actor::fabric::DeviceId> {
         let mut controllers = self
             .keys
             .keys()
@@ -847,7 +847,7 @@ impl PersonalFabricInputHolders {
 #[cfg(test)]
 mod personal_fabric_input_holder_tests {
     use super::PersonalFabricInputHolders;
-    use crate::shell::personal_continuity::DeviceId;
+    use tilo_network_actor::fabric::DeviceId;
 
     #[test]
     fn cleanup_releases_only_the_final_controller_holding_an_input() {
@@ -4314,7 +4314,7 @@ impl State {
     /// device's own input: to the desktop, its apps and its clients alike.
     pub fn apply_personal_fabric_input(
         &mut self,
-        controller: &crate::shell::personal_continuity::DeviceId,
+        controller: &tilo_network_actor::fabric::DeviceId,
         event: crate::shell::device_fabric::FabricInputEvent,
     ) -> bool {
         use crate::shell::device_fabric::FabricInputEvent;
@@ -4362,7 +4362,7 @@ impl State {
     /// in a stuck state.
     pub fn release_personal_fabric_input(
         &mut self,
-        controller: &crate::shell::personal_continuity::DeviceId,
+        controller: &tilo_network_actor::fabric::DeviceId,
     ) -> bool {
         use crate::shell::device_fabric::FabricInputEvent;
         let (keys, buttons) = self.personal_fabric_input.release_controller(controller);
@@ -4832,7 +4832,7 @@ fn share_receivers(
     recipients
         .iter()
         .map(|peer| {
-            let mut caps = crate::network::media_caps::capabilities(*peer);
+            let mut caps = tilo_network_actor::media_caps::capabilities(*peer);
             if let Some(limits) = decode_limits.get(peer) {
                 caps.hardware_decode.extend(limits.keys().copied());
                 caps.hardware_decode_max.clone_from(limits);
@@ -9395,7 +9395,7 @@ mod tick_hook_tests {
         }));
         let frames = crate::compositor::foreign::store();
         frames.publish_rgba(SURFACE, &[0x80; 32 * 32 * 4], 32, 32);
-        crate::network::media_caps::record(VIEWER, &[], &["hevc-main10".into()], &[], &[]);
+        tilo_network_actor::media_caps::record(VIEWER, &[], &["hevc-main10".into()], &[], &[]);
         let desired = HashMap::from([(
             SURFACE,
             LegacyShare {
@@ -9427,7 +9427,7 @@ mod tick_hook_tests {
             "the next pump does not try again for the same viewers"
         );
 
-        crate::network::media_caps::record(
+        tilo_network_actor::media_caps::record(
             VIEWER,
             &[],
             &["hevc-main10".into(), "h264".into()],
@@ -9439,7 +9439,7 @@ mod tick_hook_tests {
         assert!(!state.legacy_share_failures.contains_key(&SURFACE));
 
         state.reconcile_legacy_share_sessions(HOST, &HashMap::new(), &cfg());
-        crate::network::media_caps::forget(VIEWER);
+        tilo_network_actor::media_caps::forget(VIEWER);
         frames.forget(SURFACE);
     }
 

@@ -9,14 +9,14 @@
 //! The frames are relayed to the Remote app, whose decoder takes H.264 only
 //! (the broker's stream events carry no codec). While a session exists this
 //! peer therefore advertises H.264-only decode (see
-//! [`crate::network::media_caps::H264OnlyViewer`]), so the target's share
+//! [`crate::media_caps::H264OnlyViewer`]), so the target's share
 //! negotiates H.264; frames of any other codec are not relayed.
 
 use iroh::EndpointId;
 
-use crate::network::actor::WorkspaceControlRoute;
-use crate::network::behaviour::peer_liveness_handle;
-use crate::network::protocol::{NeighbourMsg, SurfaceId};
+use crate::WorkspaceControlRoute;
+use crate::behaviour::peer_liveness_handle;
+use neighbour_wire::{NeighbourMsg, SurfaceId};
 pub use runtime_collab::WorkspaceControlCloseReason;
 use tilo_window_share::streaming::InputEvent;
 
@@ -60,7 +60,7 @@ pub struct WorkspaceControlSession {
     /// Whether the target's current stream is H.264, the only codec the
     /// Remote app decodes.
     stream_is_h264: bool,
-    _h264_only: crate::network::media_caps::H264OnlyViewer,
+    _h264_only: crate::media_caps::H264OnlyViewer,
 }
 
 impl WorkspaceControlSession {
@@ -80,7 +80,7 @@ impl WorkspaceControlSession {
             granted_surface: None,
             pending_start: None,
             stream_is_h264: true,
-            _h264_only: crate::network::media_caps::H264OnlyViewer::new(),
+            _h264_only: crate::media_caps::H264OnlyViewer::new(),
         }
     }
 

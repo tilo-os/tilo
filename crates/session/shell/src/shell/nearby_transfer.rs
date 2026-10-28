@@ -1905,6 +1905,10 @@ fn display(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
+/// Two real endpoints resume a Nearby spool through the network actor.
+#[cfg(test)]
+mod actor_resume_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2179,7 +2183,7 @@ mod tests {
             let tmp = TempDir::new().unwrap();
             let mut store = NearbyTransferStore::open(tmp.path().join("spool"), 10).unwrap();
             let transfer_id = [0x33; 16];
-            let chunk = crate::network::actor::PERSONAL_TRANSFER_CHUNK_BYTES;
+            let chunk = tilo_network_actor::PERSONAL_TRANSFER_CHUNK_BYTES;
             let bytes = vec![0x5a; chunk.saturating_add(17)];
             let manifest = media_manifest(transfer_id, "source", &bytes);
             store.begin_incoming(manifest, 10).unwrap();

@@ -668,9 +668,10 @@ pub(crate) mod tests {
     #[serial_test::serial(process_env)]
     fn owner_takeover_reserves_bounded_acknowledgement_capacity() {
         use crate::shell::personal_continuity::{
-            AppInstanceState, ContinuityStamp, DeviceContinuationSnapshot, DeviceId, TabPlacement,
+            AppInstanceState, ContinuityStamp, DeviceContinuationSnapshot, TabPlacement,
             WorkspaceContinuation,
         };
+        use tilo_network_actor::fabric::DeviceId;
         let (_store, _env) = app_store(
             "so.tilo.code-editor",
             Some("text-position-v1"),

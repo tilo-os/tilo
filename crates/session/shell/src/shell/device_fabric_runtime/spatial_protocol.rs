@@ -3,14 +3,12 @@
 use super::{
     FabricInputEvent, InputLease, OutboundSpatialInput, PersonalFabricAction, SpatialInputState,
 };
-use crate::shell::{
-    network::{AuthenticatedPersonalRoute, ShellNetwork},
-    personal_continuity::DeviceId,
-};
+use crate::shell::network::{AuthenticatedPersonalRoute, ShellNetwork};
 use std::{
     collections::BTreeMap,
     time::{Duration, Instant},
 };
+use tilo_network_actor::fabric::DeviceId;
 
 #[derive(Default)]
 pub(super) struct SpatialProtocol {
