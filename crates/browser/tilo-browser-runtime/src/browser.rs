@@ -1283,6 +1283,7 @@ fn present_component(
     context.provide_workspace_records(in_page(&owners, &stores, &config.room, config.author()));
     crate::person_records::provide(&mut context, dyn_store).map_err(error)?;
     config.lend_provider_admin(&mut context)?;
+    crate::app_loans::lend(&mut context);
     let loaders = Rc::new(RefCell::new(Vec::new()));
     let destination = Rc::clone(&loaders);
     let component = ui::ImageStore::with_host_factory_with_max_dimension(

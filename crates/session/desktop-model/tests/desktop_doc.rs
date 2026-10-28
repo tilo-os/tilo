@@ -344,9 +344,11 @@ fn a_group_moved_to_another_strip_follows_the_tree() {
     }
 }
 
-fn shortcut(id: &str, name: &str) -> tilo_automation::Shortcut {
-    serde_json::from_value(serde_json::json!({ "id": id, "name": name, "steps": [] }))
-        .expect("a shortcut with no steps")
+fn shortcut(id: &str, name: &str) -> tilo_automation::SavedShortcut {
+    tilo_automation::SavedShortcut::encode(
+        &serde_json::from_value(serde_json::json!({ "id": id, "name": name, "steps": [] }))
+            .expect("a shortcut with no steps"),
+    )
 }
 
 #[test]

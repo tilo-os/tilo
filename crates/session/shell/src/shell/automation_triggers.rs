@@ -204,7 +204,7 @@ impl Clock for ManualClock {
 #[derive(Clone, Debug)]
 pub struct Armed<'a> {
     pub room: String,
-    pub shortcut: &'a Shortcut,
+    pub shortcut: Shortcut,
     /// Who saved it, by their device's proof: its triggers fire on their
     /// behalf only.
     pub saver: String,
@@ -228,6 +228,7 @@ pub fn armed(
         let mut triggered = workspace
             .shortcuts
             .iter()
+            .filter_map(|saved| saved.decode().ok())
             .filter(|shortcut| !shortcut.triggers.is_empty())
             .peekable();
         if triggered.peek().is_none() {
@@ -239,7 +240,7 @@ pub fn armed(
         let person = local_person(workspace);
         let room = workspace.room().to_string();
         for shortcut in triggered {
-            if tilo_peer_state::room::proven_saver(&room, shortcut, &revocations, now_ns).as_ref()
+            if tilo_peer_state::room::proven_saver(&room, &shortcut, &revocations, now_ns).as_ref()
                 == Some(&person)
             {
                 armed.push(Armed {
@@ -1141,7 +1142,7 @@ fn record_firings(
                     shortcut: &armed.shortcut.id,
                     saver,
                 },
-                shortcut: armed.shortcut,
+                shortcut: &armed.shortcut,
             }],
             Event::Record(event),
         );
@@ -1473,7 +1474,7 @@ mod tests {
         });
         let armed = [Armed {
             room: "room".into(),
-            shortcut: &saved,
+            shortcut: saved,
             saver: me(),
             claims: &[],
         }];
@@ -1572,10 +1573,12 @@ mod tests {
             .find(|held| held.id == workspace)
             .expect("the personal workspace")
             .shortcuts
-            .push(shortcut(&TriggerSpec::Schedule {
-                schedule: Schedule::Interval { seconds: 3600 },
-                catch_up: CatchUp::Skip,
-            }));
+            .push(tilo_automation::SavedShortcut::encode(&shortcut(
+                &TriggerSpec::Schedule {
+                    schedule: Schedule::Interval { seconds: 3600 },
+                    catch_up: CatchUp::Skip,
+                },
+            )));
         sync(&laptop, &mut desktop);
         assert_eq!(
             desktop.tree.desktop.workspaces[0].shortcuts.len(),
@@ -1772,7 +1775,7 @@ mod tests {
     ) -> Vec<Firing> {
         let armed = [Armed {
             room: room.into(),
-            shortcut: saved,
+            shortcut: saved.clone(),
             saver: me(),
             claims: &[],
         }];
@@ -2006,7 +2009,7 @@ mod tests {
         );
         let armed = [Armed {
             room: "room".into(),
-            shortcut: &saved,
+            shortcut: saved,
             saver: me(),
             claims: &[],
         }];
@@ -2215,12 +2218,12 @@ mod tests {
                 .with_id("me-host"),
             )
             .expect("the owner shares a host");
-        workspace.shortcuts = vec![event_shortcut(
+        workspace.shortcuts = vec![tilo_automation::SavedShortcut::encode(&event_shortcut(
             &TriggerSpec::FileChanged {
                 capability: "inbox-read".into(),
             },
             &[],
-        )];
+        ))];
         let folders = |workspaces: &[Workspace]| {
             let armed = armed(
                 workspaces,
@@ -2324,7 +2327,7 @@ mod tests {
     ) -> Vec<Firing> {
         let armed = [Armed {
             room: "room".into(),
-            shortcut: saved,
+            shortcut: saved.clone(),
             saver: me(),
             claims: &[],
         }];
@@ -2441,7 +2444,7 @@ mod tests {
     ) -> Vec<Firing> {
         let armed = [Armed {
             room: PERSONAL.into(),
-            shortcut: tidy,
+            shortcut: tidy.clone(),
             saver: me(),
             claims: &[],
         }];
@@ -2589,7 +2592,10 @@ mod tests {
             personal_room(),
             "Personal",
         );
-        workspace.shortcuts = shortcuts;
+        workspace.shortcuts = shortcuts
+            .iter()
+            .map(tilo_automation::SavedShortcut::encode)
+            .collect();
         let workspaces = [workspace];
         armed(
             &workspaces,

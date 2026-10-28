@@ -2519,7 +2519,7 @@ impl WorkspaceTree {
         if !workspace
             .shortcuts
             .iter()
-            .any(|shortcut| shortcut.id == claim.shortcut)
+            .any(|shortcut| shortcut.id() == claim.shortcut)
         {
             return false;
         }
@@ -2527,7 +2527,7 @@ impl WorkspaceTree {
         workspace.schedule_claims.retain(|held| {
             shortcuts
                 .iter()
-                .any(|shortcut| shortcut.id == held.shortcut)
+                .any(|shortcut| shortcut.id() == held.shortcut)
         });
         match workspace
             .schedule_claims

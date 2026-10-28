@@ -2,7 +2,7 @@
 //! credential decision, message route or storage access to an application.
 use crate::{LinkedAccount, Pairing, PairingFuture, SendError, ServiceAccount};
 use std::{future::Future, pin::Pin, sync::Arc};
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnrollmentPhase {
     Empty,
     Linking,

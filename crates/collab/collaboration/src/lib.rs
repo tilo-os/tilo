@@ -102,6 +102,7 @@
 )]
 
 pub mod app_surface;
+pub mod document_routes;
 pub mod invocation_scope;
 pub mod local_document_action;
 pub mod local_identity;

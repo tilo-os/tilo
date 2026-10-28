@@ -175,6 +175,8 @@ def apps_rs(apps: list[dict]) -> str:
             "\n"
             "    use crate::split::Callback;\n"
             "\n"
+            f"    const APP: &str = {json.dumps(app['id'])};\n"
+            "\n"
             '    #[link(wasm_import_module = "./__wasm_split.js")]\n'
             '    #[allow(improper_ctypes, reason = "the definition only passes between Rust")]\n'
             '    unsafe extern "C" {\n'
@@ -191,11 +193,11 @@ def apps_rs(apps: list[dict]) -> str:
             "    }\n"
             "\n"
             "    fn open() -> Loading {\n"
-            "        Box::pin(crate::split::definition(load, definition))\n"
+            "        Box::pin(crate::split::definition(APP, load, definition))\n"
             "    }\n"
             "\n"
             "    pub(super) fn register() {\n"
-            f"        registry::defer({json.dumps(app['id'])}, {json.dumps(app['name'], ensure_ascii=False)}, open);\n"
+            f"        registry::defer(APP, {json.dumps(app['name'], ensure_ascii=False)}, open);\n"
             "    }\n"
             "}\n"
         )

@@ -1256,14 +1256,16 @@ impl DocumentAuthorization {
         bytes = bytes
             .checked_add(self.0.from.capacity().checked_mul(32)?)?
             .checked_add(self.0.to.capacity().checked_mul(32)?)?;
-        bytes = bytes
-            .checked_add(self.0.exported.len().checked_mul(64)?)?
-            .checked_add(
+        bytes = bytes.checked_add(self.0.exported.len().checked_mul(64)?)?;
+        #[cfg(feature = "broker-transport")]
+        {
+            bytes = bytes.checked_add(
                 self.0
                     .acknowledgements
                     .capacity()
                     .checked_mul(std::mem::size_of::<Arc<AtomicBool>>())?,
             )?;
+        }
         for group in &self.0.contributions {
             bytes = bytes
                 .checked_add(std::mem::size_of::<Contribution>())?

@@ -193,6 +193,12 @@ build_phase() {
   started=$now
 }
 trap 'status=$?; printf "TILO_BUILD_TIMING phase=%s elapsed_seconds=%s exit_code=%s\n" "$phase" "$(( $(date +%s) - started ))" "$status"; command -v sccache >/dev/null && sccache --show-stats 2>/dev/null || true; exit "$status"' EXIT
+# The greeter is built twice. The release build above resolves features for
+# the whole workspace through workspace-hack, which hands the greeter the media
+# stack other members enable. Its initramfs copy (phase rust-boot-greeter,
+# profile `initrd`) links the empty os/initrd/workspace-hack instead, so it
+# takes only what its own manifests name and every boot unpacks no GStreamer or
+# PipeWire. The resolve that build writes to Cargo.lock is put back after it.
 if [[ $TILO_COMPILER_CACHE == off ]]; then
   if [[ -n ${RUSTC_WRAPPER:-}${SCCACHE_BUCKET:-}${SCCACHE_ENDPOINT:-}${SCCACHE_DIR:-}${ACTIONS_CACHE_URL:-}${ACTIONS_RUNTIME_TOKEN:-}${AWS_ACCESS_KEY_ID:-} ]]; then
     echo 'a build without the compiler cache received compiler-cache settings' >&2; exit 1
@@ -406,6 +412,14 @@ case "$TILO_RUST_LTO" in \
          && [ -n "${LIBSTD}" ] \
          && cp "${LIBSTD}" "$out"/; \
        fi \
+    && build_phase rust-boot-greeter \
+    && cp Cargo.lock "$scratch/Cargo.lock" \
+    && { CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
+         CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$release_units" \
+         cargo build --profile initrd -p greeter --bin tilo-greeter \
+           --config 'patch.crates-io.workspace-hack.path="os/initrd/workspace-hack"'; \
+         boot_status=$?; cp "$scratch/Cargo.lock" Cargo.lock; [ "$boot_status" = 0 ]; } \
+    && cp $target/initrd/tilo-greeter "$out"/tilo-greeter-boot \
     && build_phase chromium-engine \
     && if [ "${TILO_WITH_BROWSER}" = 0 ] || [ "${TILO_CHROMIUM_ENGINE:-}" = apart ]; then \
          :; \

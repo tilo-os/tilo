@@ -572,6 +572,7 @@ RUN chmod 0755 /usr/libexec/tilo-rollback-common /usr/libexec/tilo-rollback-conf
         /usr/lib/systemd/system-generators/tilo-root-generator \
         /usr/lib/dracut/modules.d/91tilo-rollback/module-setup.sh \
         /usr/lib/dracut/modules.d/92tilo-sibling-unlock/module-setup.sh \
+        /usr/lib/dracut/modules.d/94tilo-greeter/module-setup.sh \
         /usr/libexec/tilo-rollback-harden /usr/libexec/tilo-rollback-boot-check \
         /usr/libexec/tilo/boot-units-gate.sh \
  && install -d -m 0755 /usr/share/tilo/pcr-predictions

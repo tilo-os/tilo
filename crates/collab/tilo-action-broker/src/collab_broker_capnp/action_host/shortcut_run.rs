@@ -245,7 +245,9 @@ impl CapnpBrokerState {
         let catalog =
             tilo_automation::ActionCatalog::new(self.eager_catalogue(caller, RowScope::All).0);
         let others = self
-            .decide_for(caller, room, |workspace, _, _| workspace.shortcuts.clone())
+            .decide_for(caller, room, |workspace, _, _| {
+                tilo_automation::decode_saved(&workspace.shortcuts)
+            })
             .unwrap_or_default();
         let resolver = |id: &str| others.iter().find(|other| other.id == id).cloned();
         tilo_automation::check(&shortcut, &catalog, &resolver).map_err(|errors| {
@@ -315,8 +317,8 @@ impl CapnpBrokerState {
             workspace
                 .shortcuts
                 .iter()
-                .find(|shortcut| shortcut.id == shortcut_id)
-                .cloned()
+                .find(|shortcut| shortcut.id() == shortcut_id)
+                .and_then(|shortcut| shortcut.decode().ok())
         })
         .flatten()
     }

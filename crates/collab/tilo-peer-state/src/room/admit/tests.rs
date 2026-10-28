@@ -494,7 +494,11 @@ fn refusals_keep_the_peer_state_messages() {
 /// The changes saving `shortcut` makes on top of `before`.
 fn saving(before: &AutoCommit, shortcut: tilo_automation::Shortcut) -> Vec<Vec<u8>> {
     changes_after(before, |doc| {
-        tilo_desktop_model::projection::project_workspace_shortcuts(doc, &[shortcut]).unwrap();
+        tilo_desktop_model::projection::project_workspace_shortcuts(
+            doc,
+            &[tilo_automation::SavedShortcut::encode(&shortcut)],
+        )
+        .unwrap();
     })
 }
 
@@ -603,7 +607,10 @@ fn a_shortcut_names_as_its_saver_only_whose_device_signed_it() {
     let mut held = relayed;
     tilo_desktop_model::projection::project_workspace_shortcuts(
         &mut held,
-        &[editor.saves(ROOM, shortcut("water")), legacy],
+        &[
+            tilo_automation::SavedShortcut::encode(&editor.saves(ROOM, shortcut("water"))),
+            tilo_automation::SavedShortcut::encode(&legacy),
+        ],
     )
     .unwrap();
     held.commit();

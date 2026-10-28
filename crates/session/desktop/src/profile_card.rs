@@ -1378,16 +1378,22 @@ ui::lazy_code! {
 
 /// A profile card whose code may still be on its way: it opens once it is
 /// in, and a quiet panel stands under the avatar meanwhile.
-#[derive(Default)]
 pub struct LazyProfileCard {
+    /// Where the card's code comes from: [`PROFILE_CARD`].
+    code: &'static ui::lazy_code::LazyCode<MakeProfileCard>,
     card: Option<Box<dyn ProfileCardApi>>,
     /// The card was asked to open before its code was in: with what, under
-    /// which anchor and in which viewport.
+    /// which anchor and in which viewport. Linked accounts that arrive
+    /// meanwhile go into this model, so the card opens showing them.
     opening: Option<(ProfileModel, Rect, Rect)>,
-    /// Linked accounts handed over before the card was made.
-    linked: Option<Vec<LinkedAccount>>,
     /// The empty node a card that is not made yet lays out as.
     empty: Option<NodeId>,
+}
+
+impl Default for LazyProfileCard {
+    fn default() -> Self {
+        Self::with_code(&PROFILE_CARD)
+    }
 }
 
 impl LazyProfileCard {
@@ -1396,15 +1402,21 @@ impl LazyProfileCard {
         Self::default()
     }
 
+    /// A card whose code comes from `code`.
+    fn with_code(code: &'static ui::lazy_code::LazyCode<MakeProfileCard>) -> Self {
+        Self {
+            code,
+            card: None,
+            opening: None,
+            empty: None,
+        }
+    }
+
     /// The card, made once its code is in; `None` until then.
     fn card(&mut self) -> Option<&mut Box<dyn ProfileCardApi>> {
         if self.card.is_none() {
-            let make = PROFILE_CARD.get()?;
-            let mut card = (make.0)();
-            if let Some(linked) = self.linked.take() {
-                card.set_linked(linked);
-            }
-            self.card = Some(card);
+            let make = self.code.get()?;
+            self.card = Some((make.0)());
         }
         self.card.as_mut()
     }
@@ -1424,7 +1436,7 @@ impl LazyProfileCard {
     /// before its code was in opens here once it is.
     pub fn follow_anchor(&mut self, anchor: Rect, viewport: Rect) -> bool {
         if let Some((model, _, _)) = self.opening.as_ref()
-            && PROFILE_CARD.get().is_some()
+            && self.code.get().is_some()
         {
             let model = model.clone();
             self.opening = None;
@@ -1444,10 +1456,17 @@ impl LazyProfileCard {
             .is_some_and(|card| card.follow_anchor(anchor, viewport))
     }
 
+    /// As [`ProfileCard::set_linked`]. A card still waiting on its code
+    /// takes them into the model it opens with: they answer the refresh
+    /// its opening asked for, and arrive before a card made later would
+    /// take them (a card that never opened has no model to put them in).
     pub fn set_linked(&mut self, linked: Vec<LinkedAccount>) {
-        match self.card.as_mut() {
-            Some(card) => card.set_linked(linked),
-            None => self.linked = Some(linked),
+        if let Some(card) = self.card.as_mut() {
+            card.set_linked(linked);
+        } else if let Some((model, _, _)) = self.opening.as_mut()
+            && model.other.is_none()
+        {
+            model.linked = linked;
         }
     }
 
@@ -1699,7 +1718,6 @@ mod tests {
         harness.inspection_json().unwrap()
     }
 
-    /// Opening the card is not editing: focus rests on the card itself, and
     /// A build that links the card makes it at once: the lazy card opens,
     /// shows it as its child and closes as the card does.
     #[test]
@@ -1727,6 +1745,37 @@ mod tests {
         assert!(!card.layout_needs_measure());
     }
 
+    /// Linked accounts that arrive while the card's code is on its way
+    /// (the refresh opening the own card asks for) show once it opens: the
+    /// Discord row is there, as it is on a card whose code was linked.
+    #[test]
+    fn a_lazy_card_opens_with_accounts_that_arrived_while_it_loaded() {
+        static CODE: ui::lazy_code::LazyCode<MakeProfileCard> = ui::lazy_code::LazyCode::fetched();
+        ui::i18n::I18nManager::init("en-US");
+        let mut card = LazyProfileCard::with_code(&CODE);
+        let anchor = Rect::new(1200.0, 2.0, 1220.0, 22.0);
+        let viewport = Rect::new(0.0, 0.0, 1280.0, 720.0);
+        card.toggle(&model(), anchor, viewport);
+        assert!(
+            card.is_open() && card.children().is_empty(),
+            "still loading"
+        );
+        card.set_linked(vec![discord(unlinked())]);
+        CODE.install(builtin_profile_card());
+        assert!(
+            card.follow_anchor(anchor, viewport),
+            "opens once the code is in"
+        );
+        let mut frame =
+            ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark());
+        let harness = ui::headless::Framed::harness_mut(&mut frame);
+        harness.poll_frame().unwrap();
+        let said = harness.inspection_json().unwrap();
+        assert!(said.contains("Connect Discord"), "{said}");
+        assert!(said.contains("type /link"), "{said}");
+    }
+
+    /// Opening the card is not editing: focus rests on the card itself, and
     /// Tab (or a click) enters the name field.
     #[test]
     fn the_card_opens_focused_on_itself_and_tab_enters_the_name() {

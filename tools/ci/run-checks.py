@@ -14,8 +14,9 @@ What a check gets, as on t (t's README, "Where checks run" and "Micro-VM steps")
   * t.toml's [env] and its own `env`, HOME, TMPDIR and CARGO_TARGET_DIR (a directory of its own
     below /target, kept between runs: cargo builds of checks run at once must not share one), and
     T_COMMIT with `git = true`, secrets or identity tokens; T_REF from --ref;
-  * `isolation = "vm"`: root with rootful podman, loop devices and /dev/kvm (here a privileged
-    container with its own /var/lib/containers, /tmp and /var/tmp);
+  * `isolation = "vm"`: root with podman of its own and /dev/kvm (here a privileged container
+    with its own /var/lib/containers, /tmp and /var/tmp; loop devices only with --vm-podman
+    running as root);
   * its `setup` before its `run`, its `requirement` as the container's cores and memory, and
     `timeout_secs`.
 
@@ -202,34 +203,41 @@ class Runner:
         stamp = self.state / f"{name}.passed"
         return stamp.is_file() and stamp.read_text().strip() == self.key(name)
 
-    def podman(self, *argv: str, **kw) -> subprocess.CompletedProcess:
-        return subprocess.run(["podman", *argv], **kw)
+    def command(self, name: str) -> list[str]:
+        """The podman a check runs with: --vm-podman's for a micro-VM step, if given."""
+        if self.checks[name].get("isolation") == "vm" and self.args.vm_podman:
+            return shlex.split(self.args.vm_podman)
+        return ["podman"]
+
+    def podman(self, name: str, *argv: str, **kw) -> subprocess.CompletedProcess:
+        return subprocess.run([*self.command(name), *argv], **kw)
 
     def image(self, name: str) -> str:
         image = image_of(self.checks[name], self.project)
-        # One pull per image, however many checks start in it at once.
-        with self.pulling.setdefault(json.dumps(image, sort_keys=True), threading.Lock()):
+        # One pull per image and store, however many checks start in it at once.
+        key = json.dumps([image, self.command(name)], sort_keys=True)
+        with self.pulling.setdefault(key, threading.Lock()):
             return self.pull(name, image)
 
     def pull(self, name: str, image: str | dict) -> str:
         if isinstance(image, str):
-            if self.podman("image", "exists", image).returncode != 0:
-                self.podman("pull", "-q", image, check=True, stdout=subprocess.DEVNULL)
+            if self.podman(name, "image", "exists", image).returncode != 0:
+                self.podman(name, "pull", "-q", image, check=True, stdout=subprocess.DEVNULL)
             return image
         built = self.target / image["path"].removeprefix("/target/")
         transport = "oci" if (built / "index.json").is_file() else "oci-archive" if built.is_file() else None
         if transport is None:
             die(f"{name} runs in {image['check']}'s image, but {built} holds none")
-        out = self.podman("pull", "-q", f"{transport}:{built}", check=True, capture_output=True, text=True)
+        out = self.podman(name, "pull", "-q", f"{transport}:{built}", check=True, capture_output=True, text=True)
         return out.stdout.strip().splitlines()[-1]
 
     def container(self, name: str) -> str:
         return f"run-checks-{self.run_id}-{name.replace('/', '_')}"
 
-    def remove(self, path: Path, image: str) -> None:
+    def remove(self, name: str, path: Path, image: str) -> None:
         """Remove what a check's containers left, owned by the user ids they mapped, in its image."""
         if path.exists():
-            self.podman("run", "--rm", "--security-opt", "label=disable", "-v", f"{path.parent}:/w",
+            self.podman(name, "run", "--rm", "--security-opt", "label=disable", "-v", f"{path.parent}:/w",
                         "--entrypoint", "rm", image, "-rf", "--", f"/w/{path.name}", check=True)
 
     def run(self, name: str) -> None:
@@ -248,14 +256,14 @@ class Runner:
         vm = check.get("isolation") == "vm"
         scratch = self.work / name.replace("/", "_")
         image = self.image(name)
-        self.remove(scratch, image)
+        self.remove(name, scratch, image)
         # t gives a check the outputs of the checks it needs, never its own from an earlier run.
         for output in check.get("outputs", []):
             if output.startswith("/target/"):
                 static = output.split("*")[0]
                 stale = self.target / static.removeprefix("/target/").rstrip("/")
                 if stale != self.target:
-                    self.remove(stale, image)
+                    self.remove(name, stale, image)
         (self.target / ".cargo-target").mkdir(exist_ok=True)
         dirs = ["tmp", "var-tmp"] + (["containers"] if vm else [])
         for d in dirs:
@@ -316,17 +324,17 @@ class Runner:
         with log.open("w") as out:
             out.write(f"# podman {shlex.join(argv)}\n")
             out.flush()
-            proc = subprocess.Popen(["podman", *argv], stdout=out, stderr=subprocess.STDOUT)
+            proc = subprocess.Popen([*self.command(name), *argv], stdout=out, stderr=subprocess.STDOUT)
             try:
                 code = proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                self.podman("rm", "-f", self.container(name),
+                self.podman(name, "rm", "-f", self.container(name),
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 proc.wait()
                 code = None
         took = time.monotonic() - started
         if not self.args.keep_work:
-            self.remove(scratch, image)
+            self.remove(name, scratch, image)
         if code != 0:
             why = f"timed out after {timeout} s" if code is None else f"failed ({code})"
             raise RuntimeError(f"{name} {why} after {took:.0f} s; see {log}")
@@ -385,6 +393,10 @@ def main(argv: list[str]) -> int:
     p.add_argument("--no-limits", action="store_true", help="give checks every core and all memory")
     p.add_argument("--secret", action="append", default=[], metavar="NAME",
                    help="give checks that declare the secret NAME its value from this environment")
+    p.add_argument("--vm-podman", metavar="COMMAND",
+                   help="the podman micro-VM steps run with, such as `sudo podman --root DIR`: one that "
+                   "runs as root can attach loop devices, which a rootless one's containers can't, but "
+                   "unlike t's micro-VMs it shares the machine's devices with the step")
     p.add_argument("--given", action="append", default=[], metavar="CHECK",
                    help="take CHECK as passed: its outputs are in TARGET already, made elsewhere")
     p.add_argument("--keep-work", action="store_true", help="keep each check's scratch")

@@ -256,9 +256,9 @@ async fn a_member_saves_a_shortcut_only_as_themselves() {
     let held = || async {
         let governed = rooms.room(&room).await.unwrap();
         let governed = governed.lock().await;
-        tilo_desktop_model::projection::workspace_shortcuts_of(
+        tilo_automation::decode_saved(&tilo_desktop_model::projection::workspace_shortcuts_of(
             governed.peer().admitted_room().unwrap(),
-        )
+        ))
     };
 
     // Ada names the owner as who saved it, with her own device's proof.

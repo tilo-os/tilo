@@ -549,7 +549,12 @@ struct CommittedValue {
     value: CachedBytes,
 }
 enum CurrentValue {
-    Owned { value: CachedBytes },
+    Owned {
+        value: CachedBytes,
+    },
+    /// The value is the entry's committed one; only a private commit
+    /// (`PrivateActionsCapture`, Unix only) marks an entry so.
+    #[cfg(unix)]
     Committed,
 }
 impl CurrentValue {
@@ -569,13 +574,17 @@ struct Entry {
     committed: Option<CommittedValue>,
 }
 impl Entry {
-    #[expect(
-        clippy::expect_used,
-        reason = "an entry is only marked Committed together with its committed alias"
+    #[cfg_attr(
+        unix,
+        expect(
+            clippy::expect_used,
+            reason = "an entry is only marked Committed together with its committed alias"
+        )
     )]
     fn current(&self) -> &CachedBytes {
         match &self.value {
             CurrentValue::Owned { value, .. } => value,
+            #[cfg(unix)]
             CurrentValue::Committed => {
                 &self
                     .committed
@@ -611,9 +620,13 @@ impl CacheBinding {
     fn borrow_mut(&self) -> std::cell::RefMut<'_, Cache> {
         self.inner.borrow_mut()
     }
+    /// For a private commit (`PrivateActionsCapture`, Unix only), which may
+    /// run while the cache is borrowed and then answers busy.
+    #[cfg(unix)]
     fn try_borrow(&self) -> Result<std::cell::Ref<'_, Cache>, std::cell::BorrowError> {
         self.inner.try_borrow()
     }
+    #[cfg(unix)]
     fn try_borrow_mut(&self) -> Result<std::cell::RefMut<'_, Cache>, std::cell::BorrowMutError> {
         self.inner.try_borrow_mut()
     }

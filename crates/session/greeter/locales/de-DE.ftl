@@ -43,3 +43,32 @@ greeter-auth-respond = Anmeldeabfrage beantworten
 greeter-auth-cancel = Anmeldung abbrechen
 greeter-auth-cancelling = Anmeldung wird abgebrochen…
 greeter-auth-cancelled = Anmeldung abgebrochen
+
+# Der Anmeldebildschirm vor dem Öffnen des Systemlaufwerks, im initramfs.
+greeter-pin = PIN
+greeter-cant-sign-in = Anmeldung nicht möglich
+greeter-hint-pin = Gib deine PIN ein.
+greeter-error-pin = Falsche PIN. Versuch es noch einmal.
+greeter-error-pin-tries = Falsche PIN. { $count ->
+        [one] Noch 1 Versuch.
+       *[other] Noch { $count } Versuche.
+    }
+greeter-error-passcode-tries = Falsches Passwort. { $count ->
+        [one] Noch 1 Versuch.
+       *[other] Noch { $count } Versuche.
+    }
+greeter-error-pin-repeated = Diese PIN hast du schon versucht. Versuch eine andere.
+greeter-error-pin-repeated-tries = Diese PIN hast du schon versucht. { $count ->
+        [one] Noch 1 Versuch.
+       *[other] Noch { $count } Versuche.
+    }
+greeter-error-passcode-repeated = Dieses Passwort hast du schon versucht. Versuch ein anderes.
+greeter-error-passcode-repeated-tries = Dieses Passwort hast du schon versucht. { $count ->
+        [one] Noch 1 Versuch.
+       *[other] Noch { $count } Versuche.
+    }
+greeter-error-wait-minutes = Zu viele Fehlversuche. Versuch es in { $count ->
+        [one] einer Minute
+       *[other] { $count } Minuten
+    } noch einmal.
+greeter-error-wait-hours = Zu viele Fehlversuche. Versuch es in { $count } Stunden noch einmal.

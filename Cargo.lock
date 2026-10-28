@@ -2495,6 +2495,7 @@ version = "0.1.0"
 dependencies = [
  "bounded-command",
  "hex",
+ "iai-callgrind",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -6085,6 +6086,7 @@ dependencies = [
  "taffy",
  "tempfile",
  "tilo-automerge-fork",
+ "tilo-boot-signin",
  "tilo-face",
  "tilo-lock",
  "tilo-paths",
@@ -6092,6 +6094,7 @@ dependencies = [
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui",
+ "tilo-ui-kms",
  "tilo-vello",
  "tilo-winit",
  "tracing",
@@ -7081,6 +7084,42 @@ name = "i_tree"
 version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e9d4a992a9fe83130f41ceacceac3bb116a4355dfc9c8d6ecea4f1e4b4c6caf"
+
+[[package]]
+name = "iai-callgrind"
+version = "0.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b1e4910d3a9137442723dfb772c32dc10674c4181ca078d2fd227cd5dce9db0"
+dependencies = [
+ "bincode",
+ "derive_more",
+ "iai-callgrind-macros",
+ "iai-callgrind-runner",
+]
+
+[[package]]
+name = "iai-callgrind-macros"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d03775318d3f9f01b39ac6612b01464006dc397a654a89dd57df2fd34fb68c3"
+dependencies = [
+ "derive_more",
+ "proc-macro-error2",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "serde_json",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "iai-callgrind-runner"
+version = "0.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b74c9743c00c3bca4aaffc69c87cae56837796cd362438daf354a3f785788c68"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "iana-time-zone"
@@ -17651,6 +17690,7 @@ dependencies = [
  "hyper-util",
  "iroh",
  "iroh-base",
+ "messages",
  "n0-future",
  "neighbour-wire",
  "postcard",
@@ -17669,11 +17709,13 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-clock",
+ "tilo-contact-directory",
  "tilo-desktop-model",
  "tilo-identity-host",
  "tilo-joined-room",
  "tilo-lock",
  "tilo-media",
+ "tilo-messaging",
  "tilo-moq",
  "tilo-net",
  "tilo-paint-stream",
@@ -17690,6 +17732,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "url",
+ "uuid",
  "web-time",
  "workspace-hack",
 ]
@@ -19245,7 +19288,9 @@ version = "0.1.0"
 dependencies = [
  "accounts",
  "tilo-contact-directory",
+ "tilo-relay-protocol",
  "tilo-resource",
+ "uuid",
  "workspace-hack",
  "zeroize",
 ]
@@ -21169,6 +21214,7 @@ dependencies = [
 name = "tilo-ui-paint"
 version = "0.1.0"
 dependencies = [
+ "tilo-face",
  "tilo-vello",
  "workspace-hack",
 ]
@@ -21426,6 +21472,7 @@ dependencies = [
 name = "tilo-web-desktop"
 version = "0.1.0"
 dependencies = [
+ "accounts",
  "activity",
  "api-tester",
  "calculator",
@@ -21439,6 +21486,7 @@ dependencies = [
  "diffmerge",
  "ebook",
  "feeds",
+ "hex",
  "hex-editor",
  "maps",
  "messages",
@@ -21463,6 +21511,8 @@ dependencies = [
  "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-lock",
+ "tilo-messaging",
+ "tilo-relay-protocol",
  "tilo-search",
  "tilo-spellcheck",
  "tilo-ui",
@@ -21712,6 +21762,8 @@ name = "tilolang-tilo"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "collab-types",
+ "collaboration",
  "crc32fast",
  "redb",
  "serde",
@@ -21726,6 +21778,7 @@ dependencies = [
  "tilolang-runtime",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
+ "uuid",
  "workspace-hack",
 ]
 
@@ -25485,6 +25538,7 @@ dependencies = [
  "nom 7.1.3",
  "num-bigint 0.4.6",
  "num-integer",
+ "num-iter",
  "num-traits",
  "object 0.39.1",
  "once_cell",
@@ -26138,6 +26192,9 @@ dependencies = [
  "i_overlay",
  "i_shape",
  "i_tree",
+ "iai-callgrind",
+ "iai-callgrind-macros",
+ "iai-callgrind-runner",
  "iana-time-zone",
  "icu_collator",
  "icu_collator_data",
@@ -26473,6 +26530,8 @@ dependencies = [
  "print-centre",
  "priority-queue",
  "proc-macro-crate",
+ "proc-macro-error-attr2",
+ "proc-macro-error2",
  "proc-macro-hack",
  "proc-macro2",
  "profiling",
@@ -26971,6 +27030,7 @@ dependencies = [
  "tilo-ui",
  "tilo-ui-graph",
  "tilo-ui-host",
+ "tilo-ui-kms",
  "tilo-ui-macros",
  "tilo-ui-paint",
  "tilo-unicode-emoji",

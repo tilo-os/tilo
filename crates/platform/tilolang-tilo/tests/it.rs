@@ -19,6 +19,8 @@ mod index;
 mod outbox;
 mod outcomes;
 mod records;
+#[cfg(feature = "room")]
+mod room;
 mod scenarios;
 mod surface;
 mod sync;

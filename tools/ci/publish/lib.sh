@@ -128,16 +128,22 @@ push_plan() {
 }
 
 # The blobs (digest and size) the manifests and indexes below the index or manifest FILE of the
-# layout DIR name, recursively; read with grep, since the skopeo image has no jq.
+# layout DIR name, recursively; read with sed, since the skopeo image has no jq. Every key order
+# occurs (podman's, Python's, sorted), and a descriptor's nested objects (annotations, platform)
+# hold none of its digest, media type and size, so splitting at braces keeps each descriptor's
+# three in one piece.
 layout_blobs() {
-  local dir=$1 file=$2 type digest size
-  while read -r type digest size; do
+  local dir=$1 file=$2 piece type digest size
+  while IFS= read -r piece; do
+    digest=$(sed -n 's/.*"digest":"\(sha256:[0-9a-f]\{64\}\)".*/\1/p' <<< "$piece")
+    size=$(sed -n 's/.*"size":\([0-9]*\).*/\1/p' <<< "$piece")
+    [[ -n $digest && -n $size ]] || continue
+    type=$(sed -n 's/.*"mediaType":"\([^"]*\)".*/\1/p' <<< "$piece")
     case $type in
       *manifest* | *index*) layout_blobs "$dir" "$dir/blobs/${digest/://}" ;;
       *) printf '%s %s\n' "$digest" "$size" ;;
     esac
-  done < <(tr -d ' \n' < "$file" | grep -oE '"mediaType":"[^"]*","digest":"sha256:[0-9a-f]{64}","size":[0-9]+' \
-    | sed -E 's/"mediaType":"([^"]*)","digest":"([^"]*)","size":([0-9]+)/\1 \2 \3/')
+  done < <(tr -d ' \n' < "$file" | tr '{}' '\n\n')
 }
 
 # skopeo copy SRC DST (docker://REGISTRY/...), with the auth file AUTH and further skopeo flags,
