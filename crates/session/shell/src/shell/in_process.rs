@@ -374,6 +374,14 @@ impl InProcessApps {
         component.collaborate_through(broker(component.app_id(), room))
     }
 
+    /// Block until the store has committed every write the apps' records
+    /// handed it, the debounced ones included, as its own thread would
+    /// commit them a moment later.
+    #[cfg(test)]
+    pub(crate) fn await_accepted_writes(&self) -> Result<(), String> {
+        self.store.flush(None).map_err(|error| error.to_string())
+    }
+
     /// Acknowledge startup writes through the fixture's real canonical owner.
     #[cfg(test)]
     pub(crate) fn flush_fixture_records(

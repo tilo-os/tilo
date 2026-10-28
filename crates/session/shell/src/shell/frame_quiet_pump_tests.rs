@@ -27,15 +27,11 @@ fn a_quiet_pump_announces_no_tree_write_and_reads_no_launchpad_request() {
     );
     frame.relayout();
     let _ = frame.paint_with_damage();
-    // The demo's Notes window saves its startup record; the writer's
-    // acknowledgment, landing whenever its thread gets to it, would change
-    // the window from Saving to Saved under one of the quiet pumps.
-    frame.acknowledge_notes_startup_writes(1);
+    // The demo's Notes window saves its startup record; the store's commit,
+    // landing whenever its thread gets to it, would change the window from
+    // Saving to Saved under one of the quiet pumps.
     let mut doc = AutoCommit::new();
-    assert!(
-        (0..50).any(|_| !frame.pump_apps(&mut doc, &automerge::ROOT)),
-        "the populated desktop comes to rest"
-    );
+    frame.settle(&mut doc);
 
     let tree = frame.chrome().tree_handle();
     let generation = tree.generation();

@@ -110,6 +110,11 @@ struct State {
     /// Wakes to call, off the lock, once nothing is outstanding for a key
     /// ([`DurableStore::wake_when_settled`]).
     settle_wakes: BTreeMap<StorageKey, Vec<ReadyWake>>,
+    /// Settle wakes taken off the lock and still being called: a flush
+    /// waits for them too, so whoever it tells the write landed has been
+    /// woken by the time it returns, even when it was woken for another
+    /// key's commit and took the lock before these calls finished.
+    waking: usize,
     running: bool,
     stopping: bool,
 }
@@ -130,7 +135,11 @@ impl State {
         if self.outstanding(key) {
             return Vec::new();
         }
-        self.settle_wakes.remove(key).unwrap_or_default()
+        let wakes = self.settle_wakes.remove(key).unwrap_or_default();
+        if !wakes.is_empty() {
+            self.waking = self.waking.saturating_add(1);
+        }
+        wakes
     }
 }
 
@@ -149,10 +158,17 @@ fn arm_settle_wake(state: &mut State, key: &StorageKey, wake: ReadyWake) -> Sett
     SettleWatch::Armed
 }
 
-fn call_all(wakes: Vec<ReadyWake>) {
+/// Call wakes [`State::take_settle_wakes`] took, off the lock, and count
+/// them as called ([`State::waking`]).
+fn call_all(shared: &Shared, wakes: Vec<ReadyWake>) {
+    if wakes.is_empty() {
+        return;
+    }
     for wake in wakes {
         wake();
     }
+    let mut state = lock(&shared.state);
+    state.waking = state.waking.saturating_sub(1);
 }
 
 /// A commit under way on the writer thread.
@@ -745,6 +761,7 @@ impl DurableStore for FsStore {
             .chain(state.sync_queue.iter())
             .chain(state.syncing.iter())
             .any(&matches)
+            || state.waking > 0
         {
             if !told {
                 told = true;
@@ -1361,12 +1378,14 @@ impl Drop for WorkerGuard<'_> {
         }
         state.running = false;
         let keys: Vec<StorageKey> = state.settle_wakes.keys().cloned().collect();
-        let wakes: Vec<ReadyWake> = keys
+        let wakes: Vec<Vec<ReadyWake>> = keys
             .iter()
-            .flat_map(|key| state.take_settle_wakes(key))
+            .map(|key| state.take_settle_wakes(key))
             .collect();
         drop(state);
-        call_all(wakes);
+        for wakes in wakes {
+            call_all(self.shared, wakes);
+        }
         self.shared.changed.notify_all();
     }
 }
@@ -1502,7 +1521,7 @@ fn next_work(shared: &Shared) -> Option<Work> {
                 let wakes = state.take_settle_wakes(&key);
                 if !wakes.is_empty() {
                     drop(state);
-                    call_all(wakes);
+                    call_all(shared, wakes);
                     state = lock(&shared.state);
                 }
                 shared.changed.notify_all();
@@ -1546,7 +1565,7 @@ fn finish_sync(shared: &Shared, key: &StorageKey, result: &Result<(), StoreError
     drop(state);
     // Before a flusher waiting on `changed` returns: whoever it tells the
     // write landed has been woken by then.
-    call_all(wakes);
+    call_all(shared, wakes);
     shared.changed.notify_all();
 }
 
@@ -1593,7 +1612,7 @@ fn finish(
     drop(state);
     // Before a flusher waiting on `changed` returns: whoever it tells the
     // write landed has been woken by then.
-    call_all(wakes);
+    call_all(shared, wakes);
     shared.changed.notify_all();
 }
 

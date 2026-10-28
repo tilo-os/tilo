@@ -23,9 +23,10 @@ fn median(mut values: Vec<u64>) -> u64 {
     values[values.len() / 2]
 }
 
-/// The populated desktop, laid out, painted and at rest: a frame that
-/// owes it no layout. The top bar's clock stands still, as its minute
-/// would be a real change between two frames.
+/// The populated desktop, laid out, painted and at rest
+/// ([`crate::shell::test_support::PopulatedShellFixture::settle`]): a
+/// frame that owes it no layout. The top bar's clock stands still, as its
+/// minute would be a real change between two frames.
 fn settled() -> (
     crate::shell::test_support::PopulatedShellFixture,
     AutoCommit,
@@ -40,23 +41,8 @@ fn settled() -> (
     frame.relayout();
     let _ = frame.paint_with_damage();
     let mut doc = AutoCommit::new();
-    assert!(
-        (0..50).any(|_| !frame_of(&mut frame, &mut doc)),
-        "the populated desktop comes to rest"
-    );
+    frame.settle(&mut doc);
     (frame, doc, clock)
-}
-
-/// One painted frame as the compositor's loop makes it: the pump, the
-/// layout the frame owes, the paint. Whether it laid out.
-fn frame_of(
-    frame: &mut crate::shell::test_support::PopulatedShellFixture,
-    doc: &mut AutoCommit,
-) -> bool {
-    let _ = frame.pump_apps(doc, &automerge::ROOT);
-    let laid_out = frame.relayout_if_owed();
-    let _ = frame.paint_with_damage();
-    laid_out
 }
 
 /// A painted frame nothing on the desktop changed for (a client's new
@@ -102,10 +88,10 @@ fn frame_layout_owed_by_a_tree_change_lays_out_once() {
     frame.with_chrome(|chrome| {
         chrome.add_workspace("owed");
     });
-    assert!(frame_of(&mut frame, &mut doc), "the change is laid out");
+    assert!(frame.frame_of(&mut doc), "the change is laid out");
     let passes = frame.layout_passes;
     for _ in 0..5 {
-        frame_of(&mut frame, &mut doc);
+        frame.frame_of(&mut doc);
     }
     assert_eq!(frame.layout_passes, passes, "and only once");
 }
@@ -116,11 +102,11 @@ fn frame_layout_owed_by_a_tree_change_lays_out_once() {
 fn frame_layout_owed_by_input_and_by_layout_moves() {
     let (mut frame, mut doc, _clock) = settled();
     frame.owe_layout();
-    assert!(frame_of(&mut frame, &mut doc), "what an input changed");
-    assert!(!frame_of(&mut frame, &mut doc));
+    assert!(frame.frame_of(&mut doc), "what an input changed");
+    assert!(!frame.frame_of(&mut doc));
     ui::widget::note_layout_moved();
-    assert!(frame_of(&mut frame, &mut doc), "what an update moved");
-    assert!(!frame_of(&mut frame, &mut doc), "and nothing after");
+    assert!(frame.frame_of(&mut doc), "what an update moved");
+    assert!(!frame.frame_of(&mut doc), "and nothing after");
 }
 
 /// A painted frame nothing on the desktop changed for draws none of the
@@ -130,7 +116,7 @@ fn frame_layout_owed_by_nothing_draws_no_tab_bar() {
     let (mut frame, mut doc, _clock) = settled();
     let ((), phases) = tilo_resource::profiling::observe(|| {
         for _ in 0..20 {
-            let _ = frame_of(&mut frame, &mut doc);
+            let _ = frame.frame_of(&mut doc);
         }
     });
     let drawn = phases

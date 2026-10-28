@@ -156,6 +156,45 @@ impl PopulatedShellFixture {
         Self { frame, parent }
     }
 
+    /// One painted frame as the compositor's loop makes it: the pump, the
+    /// layout the frame owes, the paint. Whether it laid out.
+    pub(crate) fn frame_of(&mut self, doc: &mut automerge::AutoCommit) -> bool {
+        let _ = self.pump_apps(doc, &automerge::ROOT);
+        let laid_out = self.relayout_if_owed();
+        let _ = self.paint_with_damage();
+        laid_out
+    }
+
+    /// Bring the desktop to rest: frames until one lays nothing out, with
+    /// every record write its apps made committed and shown. A frame that
+    /// lays nothing out is not rest by itself: an app's write lands on the
+    /// store's own thread after its debounce, and that commit wakes the
+    /// window to turn its "Saving…" into "Saved" some frames later, owing a
+    /// layout nothing in the frame loop caused. So the store's writes are
+    /// awaited (the store wakes whoever waits on them before that returns),
+    /// and rest is the frame after it that still lays nothing out.
+    pub(crate) fn settle(&mut self, doc: &mut automerge::AutoCommit) {
+        let apps = self
+            .chrome()
+            .hosted_inputs()
+            .in_process()
+            .expect("fixture app owner")
+            .clone();
+        for _ in 0..20 {
+            assert!(
+                (0..50).any(|_| !self.frame_of(doc)),
+                "the populated desktop's frames come to rest"
+            );
+            apps.borrow()
+                .await_accepted_writes()
+                .expect("the apps' record writes commit");
+            if !self.frame_of(doc) {
+                return;
+            }
+        }
+        panic!("the populated desktop's apps kept writing their records");
+    }
+
     /// Acknowledge the startup writes of the fixture's `surfaces` Notes
     /// windows and present that. Startup creates real records, and the
     /// writer otherwise acknowledges them on its own thread whenever it gets
