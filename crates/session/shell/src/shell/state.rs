@@ -7137,10 +7137,16 @@ mod automerge_foundation_tests {
             }];
 
             // The guest takes the host's layout, closes the host's window in
-            // it, and offers that back.
+            // it, and offers that back. The layout names the host's person as
+            // the window's maker, so the guest takes it only from a device it
+            // knows acts for that person.
             let guest_device = [0x0b; 32];
+            let host_device = iroh::SecretKey::from_bytes(&[0x0c; 32]).public();
             guest
-                .hear_layout(&mut host, room, [0x0c; 32])
+                .authenticated_persons
+                .insert(PeerOrigin::peer(&host_device), [0x0a; 32]);
+            guest
+                .hear_layout(&mut host, room, *host_device.as_bytes())
                 .expect("the guest takes the host's layout");
             let doc = guest.layout_docs.get_mut(&room).expect("a layout record");
             let mut layout = tilo_desktop_model::shared_record::read(&*doc, None).expect("layout");

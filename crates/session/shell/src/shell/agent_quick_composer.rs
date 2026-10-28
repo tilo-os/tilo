@@ -1526,6 +1526,13 @@ mod tests {
             }),
             "a follow-up tells the agent what the person ruled"
         );
+        // The composer waits for the agent's receipt of a request before it
+        // sends another.
+        composer.observe_receipt(ComposerReceipt {
+            owner: tide.clone(),
+            submission: ruled.submission,
+            outcome: ComposerOutcome::Answered("Done.".into()),
+        });
 
         // The ruling was for that request: the next one asks the agent again.
         edit(&mut composer, &mut doc, "And how long is the section?");
