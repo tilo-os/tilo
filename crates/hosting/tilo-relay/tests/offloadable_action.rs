@@ -779,7 +779,10 @@ async fn an_offloadable_action_runs_on_the_placed_device_and_returns_the_local_o
     .await;
     assert_eq!(
         refused,
-        Err(OffloadError::Action("input 2 is not an image".into()))
+        Err(OffloadError::Action(format!(
+            "the content {} is not an image",
+            blake3::hash(b"not a photograph").to_hex()
+        )))
     );
 
     // Only workspace files the invoker resolved can be inputs.

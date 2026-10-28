@@ -1468,6 +1468,7 @@ impl WorkspaceStore {
         if actual_channel != *channel || !checkpoint {
             return Err(invalid("retained envelope channel or kind mismatch"));
         }
+        self.learn_retained_record(channel, bytes);
         let v2 = self.root.join(RETAINED_DIR).join("v2");
         let lineage = v2.join(format!("{}-{}", hex::encode(author), hex::encode(channel)));
         if !v2.is_dir() {
@@ -1673,6 +1674,7 @@ impl WorkspaceStore {
         if actual_channel != *channel || checkpoint != seq.is_none() {
             return Err(invalid("retained envelope channel or kind mismatch"));
         }
+        self.learn_retained_record(channel, &bytes);
         let fast = if checkpoint {
             None
         } else {

@@ -704,33 +704,7 @@ impl MessageReader {
             - 2.0 * f64::from(spacing.rhythm.section))
         .max(0.0);
         let body = Rect::new(x0, y, x1, y + body_h);
-        if body.height() > 0.0 && !queued.body.trim().is_empty() {
-            ctx.scene.push_layer(
-                Fill::NonZero,
-                BlendMode::default(),
-                1.0,
-                ctx.transform,
-                &body,
-            );
-            let style = theme.text(TextRole::Body);
-            let mut line_y = body.y0;
-            let line_h =
-                ctx.line_box(TextRole::Body) + f64::from(theme.tokens.spacing.rhythm.tight);
-            for line in queued.body.lines() {
-                if line_y + line_h > body.y1 {
-                    break;
-                }
-                ctx.text(
-                    line,
-                    &style,
-                    theme.text_primary,
-                    Point::new(body.x0, line_y),
-                    Some(ui::num::f32_of_f64(body.width())),
-                );
-                line_y += line_h;
-            }
-            ctx.scene.pop_layer();
-        }
+        paint_queued_body(ctx, body, &queued.body);
     }
 
     fn paint_empty(&self, ctx: &mut PaintCtx<'_>, state: &MailState) {
@@ -1769,6 +1743,38 @@ impl Widget for MessageReader {
             body.input.mark_drawn();
         }
     }
+}
+
+/// The words of a queued message, line by line, as many as fit in `body`.
+fn paint_queued_body(ctx: &mut PaintCtx<'_>, body: Rect, text: &str) {
+    if body.height() <= 0.0 || text.trim().is_empty() {
+        return;
+    }
+    let theme = ctx.theme;
+    ctx.scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        ctx.transform,
+        &body,
+    );
+    let style = theme.text(TextRole::Body);
+    let mut line_y = body.y0;
+    let line_h = ctx.line_box(TextRole::Body) + f64::from(theme.tokens.spacing.rhythm.tight);
+    for line in text.lines() {
+        if line_y + line_h > body.y1 {
+            break;
+        }
+        ctx.text(
+            line,
+            &style,
+            theme.text_primary,
+            Point::new(body.x0, line_y),
+            Some(ui::num::f32_of_f64(body.width())),
+        );
+        line_y += line_h;
+    }
+    ctx.scene.pop_layer();
 }
 
 #[cfg(test)]

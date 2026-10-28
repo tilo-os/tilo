@@ -47,7 +47,7 @@ tasks-links = Links
 ## Projects and areas: the resource above the tasks
 tasks-projects = Projects and areas
 tasks-new-project = New project
-tasks-create = Create
+tasks-create-button = Create
 tasks-cancel = Cancel
 tasks-project-none = No projects or areas yet.
 tasks-field-kind = Kind

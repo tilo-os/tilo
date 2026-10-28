@@ -636,6 +636,8 @@ pub struct FileExplorerWidget {
     is_loading: bool,
     /// Reads the archive being browsed off the window's thread.
     archive_listing: crate::archive::Listing,
+    /// A transfer a capture shows as running, for as long as the window.
+    staged_transfer: Option<crate::file_ops::Running>,
     /// Files being read out of archives to be opened.
     archive_members: ArchiveMembers,
     /// Archives waiting for the folder Extract to… asks for.
@@ -1980,6 +1982,7 @@ impl FileExplorerWidget {
                 crate::archive::Listing::new(move || wake.wake())
             },
             extract_chooser: None,
+            staged_transfer: None,
             archive_members: {
                 let wake = ui::WakeHandle::new();
                 ArchiveMembers::new(move || wake.wake())

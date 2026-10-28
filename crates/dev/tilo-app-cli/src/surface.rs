@@ -141,6 +141,32 @@ pub fn report_of(app_dir: &Path, executable: Option<&Path>) -> Result<SurfaceRep
     parse_report(&String::from_utf8_lossy(&output.stdout))
 }
 
+/// Keep the surface report `app`'s `executable` prints in `dir` as `<app>.json`, so a
+/// surface that is behind its code can be written without building the app again:
+/// `tilo-app surface apps/<app> --report <dir>/<app>.json` (certify's outputs on t).
+///
+/// # Errors
+/// Returns why the binary printed no report, or the file could not be written.
+pub fn keep_report(app: &Path, executable: &Path, dir: &Path) -> Result<PathBuf> {
+    let name = app.file_name().unwrap_or_default().to_string_lossy();
+    let output = ProcessCommand::new(executable)
+        .arg(FLAG)
+        .current_dir(app)
+        .output()
+        .with_context(|| format!("running {} {FLAG}", executable.display()))?;
+    if !output.status.success() {
+        bail!(
+            "{} {FLAG} failed with {}",
+            executable.display(),
+            output.status
+        );
+    }
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let file = dir.join(format!("{name}.json"));
+    std::fs::write(&file, output.stdout).with_context(|| format!("writing {}", file.display()))?;
+    Ok(file)
+}
+
 /// `value` without JSON nulls, which TOML cannot hold and which mean "not
 /// there" in a surface.
 fn normalized(value: &Value) -> Value {

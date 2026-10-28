@@ -130,26 +130,6 @@ impl TileHost {
             self.rect.x1,
             self.rect.y1,
         );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &panel,
-        );
-        let inset = f64::from(theme.padding_standard);
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a panel's width is far inside f32"
-        )]
-        let room = (width - 2.0 * inset).max(0.0) as f32;
-        tr.draw_style(
-            scene,
-            &crate::i18n::widget_format("history-loading", &[]),
-            theme.text_dim,
-            transform * Affine::translate((panel.x0 + inset, panel.y0 + inset)),
-            Some(room),
-            &theme.text(crate::tokens::TextRole::Body),
-        );
+        crate::lazy_code::draw_loading(scene, transform, tr, theme, panel, "history-loading");
     }
 }

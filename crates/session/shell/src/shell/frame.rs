@@ -2183,6 +2183,14 @@ impl FrameBuilder {
         frame.node_map.clear();
         *frame.host = ShellOverlayHost::with_fixture_content(content);
         frame.rebuild_layout_tree();
+        // Laid out as a desktop's first frames lay it out: the palette sizes
+        // against the host's first rect, then asks for one more pass.
+        for _ in 0..4 {
+            frame.relayout();
+            if !frame.host.structure_dirty() {
+                break;
+            }
+        }
         frame
     }
 

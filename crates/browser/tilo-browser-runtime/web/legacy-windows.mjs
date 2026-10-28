@@ -6,8 +6,9 @@
  * `decodableCodecs`, and a page that never did counts as H.264 only); the host
  * re-publishes those streams on live record tracks in the session device's
  * namespace (`tilo_relay_protocol::legacy_window`). This layer reads every
- * member's legacy-window index, opens a desktop window for each listed
- * stream (the runtime's `desktop_set_peer_windows`), decodes the stream with
+ * member's legacy-window index, shows each listed stream in the layout tab
+ * it names or else a desktop window of its own (the runtime's
+ * `desktop_set_peer_windows`), decodes the stream with
  * WebCodecs and draws it over that window's content, one canvas per stream
  * on a DOM layer above the WebGPU canvas.
  *
@@ -106,11 +107,12 @@ const text = new TextDecoder();
 
 function validStream(value) {
   if (!value || typeof value !== 'object') return null;
-  const {surface, app, codec, width, height, record} = value;
+  const {surface, app, codec, width, height, record, tab = ''} = value;
   if (!HEX16.test(surface) || typeof app !== 'string' || !app || app.length > 128
     || !CODECS.has(codec) || record !== `@tilo:legacy-window:${surface}`
+    || (tab !== '' && !HEX16.test(tab))
     || !Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0 || width > 8192 || height > 8192) return null;
-  return {surface, app, codec, width, height, record};
+  return {surface, app, codec, width, height, record, tab};
 }
 
 /** One legacy-window frame, or null for anything malformed. */
@@ -340,8 +342,10 @@ function defaultCancelFrame(handle) {
  *   focusing gives it back to `focusDesktop()`.
  * - `focusWindow(key)`: the person clicked into the window; the desktop
  *   focuses it too (`desktop_focus_peer_window`).
- * - `setWindows(list)`: show exactly `[{key, app, title}]` as windows
- *   (`desktop_set_peer_windows`).
+ * - `setWindows(list)`: show exactly `[{key, app, title, codec, tab}]` as
+ *   windows (`desktop_set_peer_windows`): a stream naming a layout `tab`
+ *   (16 hex digits) is shown in that tab, one naming none (`''`) in a window
+ *   of its own.
  * - `sendInput(publisher, surface, events)`: resolves whether the host took
  *   them (`peer.legacyInput`); with no events, whether this member may.
  * - `dismissed()`: the keys of windows the person closed since the last
@@ -396,7 +400,7 @@ export function createLegacyWindows({
     frame = requestFrame(tick);
   }
   function publishWindows() {
-    const list = [...streams].map(([key, entry]) => ({key, app: entry.stream.app, title: windowTitle(entry.stream.app), codec: entry.stream.codec}));
+    const list = [...streams].map(([key, entry]) => ({key, app: entry.stream.app, title: windowTitle(entry.stream.app), codec: entry.stream.codec, tab: entry.stream.tab}));
     const next = JSON.stringify(list);
     if (next === shown) return;
     shown = next;

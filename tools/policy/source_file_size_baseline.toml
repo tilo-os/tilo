@@ -74,7 +74,7 @@
 "crates/runtime/runtime-fs/src/operations.rs" = 7000
 "crates/runtime/runtime-identity/src/unix.rs" = 3500
 "crates/runtime/tilo-runtime/src/mcp.rs" = 3500
-"crates/sdk/tilo-app/src/framework/root.rs" = 4000
+"crates/sdk/tilo-app/src/framework/root.rs" = 3466
 "crates/sdk/tilo-resource/src/table.rs" = 4000
 "crates/sdk/ui-core/src/action_palette.rs" = 4500
 "crates/sdk/ui-core/src/app.rs" = 5500

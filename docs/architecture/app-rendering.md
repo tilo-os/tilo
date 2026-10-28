@@ -91,7 +91,7 @@ protocol violation on the control channel closes that app's connection.
 Neither stalls the service. Proptest checks that every scene the toolkit can
 draw passes unchanged, and that scribbled-over records never panic the
 decoder, the validator or vello's resolver; the `render_scene` fuzz target
-(`fuzz/`, run nightly by the `nightly-fuzz` check) does the same with
+(`fuzz/`, run on release candidates by the `nightly-fuzz-<target>` checks) does the same with
 coverage guidance.
 
 **GPU time.** Each frame's time is measured from decode to GPU completion.
