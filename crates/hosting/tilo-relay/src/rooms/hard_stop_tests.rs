@@ -17,10 +17,6 @@ fn published_on_disk(path: &Path) -> usize {
 /// a room killed then reopens publishing them again; one that counted them
 /// would never retain them, and pages would never read what they decided.
 #[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Relay::shutdown consumes the relay after the assertions"
-)]
 async fn a_room_file_counts_only_durable_changes_as_published() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
