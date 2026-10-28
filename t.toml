@@ -7684,7 +7684,7 @@ cargo_dev_dependencies = false
 # What its scripts read besides: the packaging tree, the install contract and the docs it checks
 # against, the OS files the payload installs, and the manifests and binaries the RPM build graph
 # test reads (tools/tests/test_rpm_build_graph.py).
-inputs = ["dist/**", "docs/install-contract.json", "docs/desktop-rpm-broker.md", "docs/packaging.md", "scripts/check-install-contract.py", "tools/tests/test_rpm_broker.py", "tools/tests/test_rpm_build_graph.py", "tools/ci/sccache.sh", "os/tests/portal_config_validity.sh", "os/usr/share/xdg-desktop-portal/**", "os/usr/share/pipewire/**", "os/usr/lib/systemd/user/**", "os/usr/share/user-tmpfiles.d/**", "os/etc/pam.d/tilo-unlock", "os/etc/profile.d/tilo-apps.sh", "os/scripts/install-components.py", "tools/ci/products.toml", ".forgejo/workflows/release-desktop.yml", ".forgejo/workflows/release-imager.yml", "Cargo.toml", "**/Cargo.toml", "**/src/main.rs", "**/src/bin/**"]
+inputs = ["dist/**", "docs/install-contract.json", "docs/desktop-rpm-broker.md", "docs/packaging.md", "docs/getting-started.md", "docs/release-pipeline.md", "scripts/check-install-contract.py", "tools/tests/test_rpm_broker.py", "tools/tests/test_rpm_build_graph.py", "tools/ci/sccache.sh", "os/tests/portal_config_validity.sh", "os/usr/share/xdg-desktop-portal/**", "os/usr/share/pipewire/**", "os/usr/lib/systemd/user/**", "os/usr/share/user-tmpfiles.d/**", "os/etc/pam.d/tilo-unlock", "os/etc/profile.d/tilo-apps.sh", "os/scripts/install-components.py", "tools/ci/products.toml", ".forgejo/workflows/release-desktop.yml", ".forgejo/workflows/release-imager.yml", "Cargo.toml", "**/Cargo.toml", "**/src/main.rs", "**/src/bin/**"]
 cost = "minutes"
 heavy = true
 on = ["stable", "dispatch", "idle"]
