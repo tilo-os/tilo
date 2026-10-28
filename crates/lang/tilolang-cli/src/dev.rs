@@ -39,19 +39,119 @@ const RUNTIME_SOURCES: [&str; 4] = [
     "crates/lang/tilolang",
 ];
 
-/// The build server's check that builds the runtime thin, against the runtime library a nested
-/// session runs (dist/dev/tilolang-runtime-build.sh), for this machine's architecture: a binary
-/// of a few megabytes, as the session's own runtime bundle carries.
+/// The build of the tilolang runtime binary alone, thin, against the runtime library a nested
+/// session runs, for this machine's architecture: a binary of a few megabytes, as the session's
+/// own runtime bundle carries. rcargo runs it on its builder; t runs it as a check.
+const RUNTIME_SCRIPT: &str = "dist/dev/tilolang-runtime-build.sh";
+
+/// t's check that runs [`RUNTIME_SCRIPT`] on a node of this machine's architecture.
 const RUNTIME_CHECK: &str = if cfg!(target_arch = "aarch64") {
     "tilolang-runtime-arm64"
 } else {
     "tilolang-runtime"
 };
 
-/// Where `t outputs` leaves that build, in the checkout: the binary and the runtime library it
-/// links.
+/// Where the build lands in the checkout's target directory, where rcargo fetches it and
+/// `t outputs` leaves it: the binary and the runtime library it links.
+const RUNTIME_OUT: &str = "tilolang-runtime";
 const RUNTIME_BINARY: &str = "target/tilolang-runtime/tilolang-app";
 const RUNTIME_LIBRARY: &str = "target/tilolang-runtime/libruntime_dylib.so";
+
+/// The environment variable that picks the builder, as it does for `nested-session.sh`.
+const BUILDER_ENV: &str = "TILO_NESTED_BUILDER";
+
+/// Where `--build-runtime` builds the runtime: on the rcargo builder that rcargo's
+/// configuration names (`rcargo exec`), or on t (`t outputs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Builder {
+    Rcargo,
+    T,
+}
+
+impl Builder {
+    /// The builder `name` names: `rcargo` or `t`.
+    fn parse(name: &str) -> Result<Self, String> {
+        match name {
+            "rcargo" => Ok(Self::Rcargo),
+            "t" => Ok(Self::T),
+            other => Err(format!("unknown builder {other} (rcargo or t)")),
+        }
+    }
+
+    fn program(self) -> &'static str {
+        match self {
+            Self::Rcargo => "rcargo",
+            Self::T => "t",
+        }
+    }
+
+    /// The builder asked for (`--builder`, else [`BUILDER_ENV`]), by default rcargo when it is
+    /// on PATH and t otherwise; it must be on PATH.
+    fn choose(asked: Option<&str>) -> Result<Self, String> {
+        let from_env = std::env::var(BUILDER_ENV)
+            .ok()
+            .filter(|name| !name.is_empty());
+        let builder = match asked.or(from_env.as_deref()) {
+            Some(name) => Self::parse(name)?,
+            None if on_path("rcargo") => Self::Rcargo,
+            None => Self::T,
+        };
+        if !on_path(builder.program()) {
+            return Err(format!(
+                "{} is required on PATH to build the runtime",
+                builder.program()
+            ));
+        }
+        Ok(builder)
+    }
+}
+
+/// Whether an executable `program` is on PATH.
+fn on_path(program: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|dir| {
+            std::fs::metadata(dir.join(program))
+                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        })
+    })
+}
+
+/// The ELF machine of this machine's architecture, as an ELF header names it (`e_machine`).
+const fn elf_machine() -> Option<u16> {
+    if cfg!(target_arch = "x86_64") {
+        Some(62)
+    } else if cfg!(target_arch = "aarch64") {
+        Some(183)
+    } else {
+        None
+    }
+}
+
+/// Fail if `path` is an ELF file of another architecture than this machine's: a builder of
+/// another architecture builds programs this machine cannot run.
+fn check_architecture(path: &Path) -> Result<(), String> {
+    use std::io::Read as _;
+    let Some(expected) = elf_machine() else {
+        return Ok(());
+    };
+    let mut header = [0_u8; 20];
+    std::fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut header))
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let [.., m0, m1] = header;
+    let machine = header
+        .starts_with(b"\x7fELF")
+        .then(|| u16::from_le_bytes([m0, m1]));
+    match machine {
+        Some(machine) if machine == expected => Ok(()),
+        _ => Err(format!(
+            "{} is not built for {}: build on a builder of this architecture (RCARGO_CONFIG)",
+            path.display(),
+            std::env::consts::ARCH
+        )),
+    }
+}
 
 /// What `tilolang dev` was asked for.
 #[derive(Clone, Debug)]
@@ -65,6 +165,8 @@ pub struct DevOptions {
     pub runtime: Option<PathBuf>,
     /// Build the runtime from the checkout and rebuild it on every change of its sources.
     pub build_runtime: bool,
+    /// Where to build it (`--builder`); by default as [`Builder::choose`] picks.
+    pub builder: Option<String>,
     /// The key the runtime bundle is signed with (default: the session's runtime publisher).
     pub runtime_identity: Option<PathBuf>,
     /// The Tilo checkout whose nested-session build has the session's tools.
@@ -98,9 +200,9 @@ const DEV_RUNTIME_PACKAGE: &str = "so.tilo.runtime.tilolang.dev";
 /// A tilolang runtime binary the apps run on, baked and installed as a runtime package.
 struct DevRuntime {
     binary: PathBuf,
-    /// The checkout the tool builds `binary` in, on every change of its sources; without one
-    /// the tool follows a binary built by hand.
-    built_in: Option<PathBuf>,
+    /// The checkout the tool builds `binary` in, on every change of its sources, and where it
+    /// builds it; without one the tool follows a binary built by hand.
+    built_in: Option<(PathBuf, Builder)>,
     /// The key its bundle is signed with: one the launcher trusts for runtime bundles.
     identity_file: PathBuf,
     version: String,
@@ -311,7 +413,7 @@ impl Dev {
             .collect();
         match self.runtime.as_ref() {
             Some(DevRuntime {
-                built_in: Some(repo),
+                built_in: Some((repo, _)),
                 ..
             }) => dirs.extend(
                 RUNTIME_SOURCES
@@ -336,12 +438,13 @@ impl Dev {
         Ok(())
     }
 
-    /// Build the runtime binary in its checkout on this repository's build server, thin, and
-    /// take it with `t outputs`. A thin binary runs only on the runtime library of its build
-    /// graph, so the library it was built with must be the one the session runs.
+    /// Build the runtime binary in its checkout, thin, on the rcargo builder (one `rcargo exec`
+    /// whose output is fetched) or on t (`t outputs`). A thin binary runs only on the runtime
+    /// library of its build graph, so the library it was built with must be the one the session
+    /// runs.
     fn build_runtime(&self) -> Result<(), String> {
         let Some(DevRuntime {
-            built_in: Some(repo),
+            built_in: Some((repo, builder)),
             binary,
             ..
         }) = &self.runtime
@@ -349,13 +452,21 @@ impl Dev {
             return Ok(());
         };
         let started = Instant::now();
-        session::status(
-            Command::new("t")
-                .current_dir(repo)
-                .args(["outputs", RUNTIME_CHECK, "--human"])
-                .stdout(std::process::Stdio::null()),
-            "building the runtime",
-        )?;
+        let mut command = Command::new(builder.program());
+        command.current_dir(repo);
+        match builder {
+            Builder::Rcargo => {
+                // Its output passes through: the build's progress and errors.
+                command.args(["--fetch", RUNTIME_OUT, "exec", RUNTIME_SCRIPT]);
+            }
+            Builder::T => {
+                command
+                    .args(["outputs", RUNTIME_CHECK, "--human"])
+                    .stdout(std::process::Stdio::null());
+            }
+        }
+        session::status(&mut command, "building the runtime")?;
+        check_architecture(binary)?;
         let built = repo.join(RUNTIME_LIBRARY);
         let running = self
             .bin
@@ -456,6 +567,7 @@ impl Dev {
             .runtime
             .as_ref()
             .and_then(|runtime| runtime.built_in.as_ref())
+            .map(|(repo, _)| repo)
         else {
             return false;
         };
@@ -550,11 +662,15 @@ pub fn dev(options: &DevOptions) -> Result<(), String> {
     let bin = repo.join(session::BUILD_DIR).join("bin");
     let peer = Peer::attach(&options.session, &repo)?;
     let (tilo_runtime, tilolang_runtime) = peer.runtimes_baked()?;
-    let built_in = options.build_runtime.then(|| repo.clone());
+    let built_in = if options.build_runtime {
+        Some((repo, Builder::choose(options.builder.as_deref())?))
+    } else {
+        None
+    };
     let binary = options
         .runtime
         .clone()
-        .or_else(|| built_in.as_ref().map(|repo| repo.join(RUNTIME_BINARY)));
+        .or_else(|| built_in.as_ref().map(|(repo, _)| repo.join(RUNTIME_BINARY)));
     let runtime = binary.as_ref().map(|binary| DevRuntime {
         binary: std::path::absolute(binary).unwrap_or_else(|_| binary.clone()),
         built_in: built_in.clone(),
@@ -608,4 +724,36 @@ fn set_executable(path: &Path) -> Result<(), String> {
     let mut permissions = std::fs::metadata(path).map_err(error)?.permissions();
     permissions.set_mode(permissions.mode() | 0o111);
     std::fs::set_permissions(path, permissions).map_err(error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_build_of_another_architecture_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let this = std::env::current_exe().unwrap();
+        check_architecture(&this).unwrap();
+        let mut other = std::fs::read(&this).unwrap();
+        let foreign: u16 = if cfg!(target_arch = "aarch64") {
+            62
+        } else {
+            183
+        };
+        other[18..20].copy_from_slice(&foreign.to_le_bytes());
+        let path = dir.path().join("tilolang-app");
+        std::fs::write(&path, &other).unwrap();
+        let error = check_architecture(&path).unwrap_err();
+        assert!(error.contains("is not built for"), "{error}");
+        std::fs::write(&path, b"#!/bin/sh\nexit 0\n# not an ELF file at all").unwrap();
+        assert!(check_architecture(&path).is_err());
+    }
+
+    #[test]
+    fn builders_are_named_rcargo_or_t() {
+        assert_eq!(Builder::parse("rcargo"), Ok(Builder::Rcargo));
+        assert_eq!(Builder::parse("t"), Ok(Builder::T));
+        assert!(Builder::parse("cargo").is_err());
+    }
 }

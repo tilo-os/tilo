@@ -124,10 +124,13 @@ tilolang dev apps/tl/notes --search apps/tl --session /tmp/s.json --build-runtim
 
 `tilolang dev` then:
 
-1. builds `tilolang-app` thin on the build server (`t outputs tilolang-runtime`,
-   `dist/dev/tilolang-runtime-build.sh`), and again on every change of
-   `apps/tilolang`, `tilolang-tilo`, `tilolang-runtime` or `tilolang`; a failed
-   build leaves the apps on the last good runtime;
+1. builds `tilolang-app` thin with `dist/dev/tilolang-runtime-build.sh`, on the
+   rcargo builder (`rcargo --fetch tilolang-runtime exec`) or on t (`t outputs
+   tilolang-runtime`), as `nested-session.sh` picks: `--builder rcargo|t` or
+   `TILO_NESTED_BUILDER`, by default rcargo when it is on PATH; a build for
+   another architecture than this machine's is refused. It builds again on every
+   change of `apps/tilolang`, `tilolang-tilo`, `tilolang-runtime` or `tilolang`;
+   a failed build leaves the apps on the last good runtime;
 2. bakes the binary into a runtime bundle signed by a key the launcher trusts;
 3. packs it as a runtime package (`so.tilo.runtime.tilolang.dev`, providing
    `tilolang/0.1.0+dev`) and installs it with `tilo-install`;

@@ -21,13 +21,14 @@ usage:
       as `tilolang dev`. --peers N runs N sessions in one workspace; --software renders with
       lavapipe only and never opens this machine's GPU.
   tilolang dev [DIR] --session SESSION [--search DIR]... [--runtime BIN | --build-runtime]
-               [--runtime-identity FILE] [--repo DIR]
+               [--builder rcargo|t] [--runtime-identity FILE] [--repo DIR]
       develop the package in a running nested session (SESSION: its --ready file, runtime
       directory or control socket): every saved .tl file is compiled, installed and taken over
       by the running app with its state; a compile error is printed and the app keeps running.
       --runtime BIN runs the apps on a tilolang runtime binary of your own build, and a new
-      build of it restarts them on it; --build-runtime builds it from the checkout (through
-      cargo, on the build server) and again on every change of its sources. See
+      build of it restarts them on it; --build-runtime builds it from the checkout and again
+      on every change of its sources, on the rcargo builder or on t (--builder, or
+      TILO_NESTED_BUILDER; by default rcargo when it is on PATH, t otherwise). See
       docs/tilolang-dev.md.
   tilolang check|fmt|ids ...
       the compiler's commands (tilolangc --help)";
@@ -143,6 +144,7 @@ fn dev_command(args: &[String]) -> Result<(), String> {
     let mut session = None;
     let mut runtime = None;
     let mut build_runtime = false;
+    let mut builder = None;
     let mut runtime_identity = None;
     let mut repo = None;
     let mut iter = args.iter();
@@ -152,6 +154,7 @@ fn dev_command(args: &[String]) -> Result<(), String> {
             "--session" => session = Some(PathBuf::from(value(&mut iter, arg)?)),
             "--runtime" => runtime = Some(PathBuf::from(value(&mut iter, arg)?)),
             "--build-runtime" => build_runtime = true,
+            "--builder" => builder = Some(value(&mut iter, arg)?),
             "--runtime-identity" => runtime_identity = Some(PathBuf::from(value(&mut iter, arg)?)),
             "--repo" => repo = Some(PathBuf::from(value(&mut iter, arg)?)),
             flag if flag.starts_with('-') => return Err(format!("unknown option {flag}\n{USAGE}")),
@@ -166,12 +169,18 @@ fn dev_command(args: &[String]) -> Result<(), String> {
             "--runtime names a binary built by hand, --build-runtime builds one: give one\n{USAGE}"
         ));
     }
+    if builder.is_some() && !build_runtime {
+        return Err(format!(
+            "--builder chooses where --build-runtime builds\n{USAGE}"
+        ));
+    }
     dev::dev(&DevOptions {
         dir,
         search,
         session,
         runtime,
         build_runtime,
+        builder,
         runtime_identity,
         repo,
     })
