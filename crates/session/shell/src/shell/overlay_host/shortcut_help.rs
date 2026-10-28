@@ -547,34 +547,25 @@ impl ShellOverlayHost {
                 );
                 let navigation_surface =
                     Rect::new(body.x0, body.y0, body.x1, body.y0 + navigation_height);
-                // The navigation chords sit on a recessed card in the panel.
-                let navigation_ground = colors.surfaces.sidebar;
-                ui::surface::card(
-                    scene,
-                    transform,
-                    navigation_surface,
-                    f64::from(theme.tokens.radii.detail),
-                    navigation_ground,
-                );
+                // Settings are not cards (docs/design-language.md, "Shape"):
+                // the navigation chords are a Section of the guide, told
+                // apart by its heading and the space under it.
+                let navigation_ground = ui::chrome::panel_ground(theme);
                 text_renderer.draw_style(
                     scene,
                     &t("guide-navigation-heading"),
-                    colors.text_dim,
-                    transform.pre_translate((body.x0 + 14.0, body.y0 + 11.0).into()),
+                    colors.text_primary,
+                    transform.pre_translate((body.x0, body.y0 + 11.0).into()),
                     None,
-                    &theme
-                        .text(TextRole::Caption)
-                        .with_weight(TextWeight::Semibold),
+                    &theme.text(TextRole::Subheading),
                 );
                 for (index, (label, previous, next)) in rows.iter().enumerate() {
                     let column = index.checked_rem(nav_columns).unwrap_or_default();
                     let row = index.checked_div(nav_columns).unwrap_or_default();
                     let column_width = (navigation_surface.width()
-                        - 28.0
                         - 8.0 * f64_of_usize(nav_columns.saturating_sub(1)))
                         / f64_of_usize(nav_columns);
-                    let x =
-                        navigation_surface.x0 + 14.0 + f64_of_usize(column) * (column_width + 8.0);
+                    let x = navigation_surface.x0 + f64_of_usize(column) * (column_width + 8.0);
                     let y = navigation_surface.y0
                         + 31.0
                         + f64_of_usize(row) * self.shortcut_navigation_step;
@@ -701,17 +692,15 @@ impl ShellOverlayHost {
                 text_renderer.draw_style(
                     scene,
                     &t("guide-essentials-heading"),
-                    colors.text_dim,
+                    colors.text_primary,
                     transform.pre_translate((body.x0, essentials_y).into()),
                     None,
-                    &theme
-                        .text(TextRole::Caption)
-                        .with_weight(TextWeight::Semibold),
+                    &theme.text(TextRole::Subheading),
                 );
                 let reference_columns = shortcut_reference_columns(body.width());
                 let reference_step = shortcut_reference_step();
                 let reference_top = essentials_y + 18.0;
-                let reference_gap = 12.0;
+                let reference_gap = f64::from(theme.tokens.spacing.rhythm.section);
                 let reference_width = (body.width()
                     - reference_gap * f64_of_usize(reference_columns.saturating_sub(1)))
                     / f64_of_usize(reference_columns);
@@ -736,23 +725,14 @@ impl ShellOverlayHost {
                     let y = reference_top + f64_of_usize(band) * (reference_height + reference_gap);
                     let group = Rect::new(x, y, x + reference_width, y + reference_height);
                     groups_bottom = groups_bottom.max(group.y1);
-                    ui::surface::card(
-                        scene,
-                        transform,
-                        group,
-                        f64::from(theme.tokens.radii.detail),
-                        qs::control_fill(theme, false),
-                    );
                     let group_title = group_titles.get(group_index).copied().unwrap_or_default();
                     text_renderer.draw_style(
                         scene,
                         &t(group_title),
-                        colors.text_dim,
-                        transform.pre_translate((group.x0 + 12.0, group.y0 + 10.0).into()),
-                        Some(f32_of_f64(group.width() - 24.0)),
-                        &theme
-                            .text(TextRole::Caption)
-                            .with_weight(TextWeight::Semibold),
+                        colors.text_primary,
+                        transform.pre_translate((group.x0, group.y0 + 10.0).into()),
+                        Some(f32_of_f64(group.width())),
+                        &theme.text(TextRole::Subheading),
                     );
                     for (row_index, (label, chord)) in group_rows.iter().enumerate() {
                         let entry_y = group.y0 + 29.0 + f64_of_usize(row_index) * reference_step;
@@ -760,13 +740,13 @@ impl ShellOverlayHost {
                             scene,
                             label,
                             colors.text_primary,
-                            transform.pre_translate((group.x0 + 12.0, entry_y).into()),
-                            Some(f32_of_f64(group.width() - 24.0)),
+                            transform.pre_translate((group.x0, entry_y).into()),
+                            Some(f32_of_f64(group.width())),
                             &chord_style,
                         );
                         // Real keycaps from the same component as the
                         // navigation rows; alternatives are split by a slash.
-                        let mut cap_x = group.x0 + 12.0;
+                        let mut cap_x = group.x0;
                         let cap_y = entry_y + label_gap;
                         for (alt_index, keys) in shortcut_chord_keycaps(chord).iter().enumerate() {
                             if alt_index > 0 {
@@ -791,16 +771,8 @@ impl ShellOverlayHost {
                         }
                     }
                 }
+                // The notes are a Section of their own: space, not a rule.
                 let pointer_y = groups_bottom + 4.0;
-                ui::surface::separator(
-                    scene,
-                    transform,
-                    body.x0,
-                    body.x1,
-                    pointer_y + 0.5,
-                    0.0,
-                    ui::chrome::ChromeRole::Panel.surface(theme),
-                );
                 let mut note_y = pointer_y + 14.0;
                 let mut note = |text: &str, scene: &mut Scene| {
                     text_renderer.draw_style(
