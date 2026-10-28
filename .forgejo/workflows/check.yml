@@ -331,12 +331,14 @@ jobs:
   test:
     if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && needs.select.outputs.rust_required == 'true' }}
     needs: [builder, select]
-    # Linking the shell test binaries is the memory peak of the whole check:
-    # it took the native class's 14/16 GiB job limit (the kernel killed rustc
-    # on both architectures), and the tree declares 48 GiB for those tests.
-    # Only that shard needs the large class; the others link within the native
-    # limit.
-    runs-on: ${{ contains(matrix.test_packages, '-p shell') && (matrix.arch == 'aarch64' && 'runner-large-arm64' || 'runner-large') || matrix.runner }}
+    # Linking a shard's test binaries is the memory peak of the whole check:
+    # the kernel killed a whole-workspace shard's build on both architectures
+    # at the native class's 16 GiB job limit (exit 137, ~100 packages each).
+    # The planner therefore names the class in `matrix.runner`:
+    # tools/ci/affected_packages.py asks for runner-large / runner-large-arm64
+    # when a shard's own links exceed the native class (a whole-workspace
+    # shard, or one carrying the tree's largest test link).
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     outputs:
       cleanup-shared-libraries: ${{ steps.cleanup.outputs.shared-libraries }}
