@@ -9,7 +9,7 @@ use std::collections::HashMap;
 ///
 /// Sized to the bytes an app's code actually is, not to "a few megabytes":
 /// `pkg/split.json` of a release desktop bundle measures 38.3 MB for the
-/// largest split app (typst_editor: 24.6 MB of its own plus 11 shared
+/// largest split app (`typst_editor`: 24.6 MB of its own plus 11 shared
 /// chunks), 13.0 MB for chat and 11.4 MB for notes. Over a 3 Mbps mobile
 /// link those are 102 s, 35 s and 30 s, so a 45 s bound declared a healthy
 /// download dead: the window said "could not be loaded" while the bytes
