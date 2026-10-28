@@ -1911,5 +1911,6 @@ fn reply_kind(reply: &Reply) -> &'static str {
         Reply::ConnectionSnapshot(_) => "connection snapshot",
         Reply::Busy => "busy",
         Reply::Absent => "absent",
+        Reply::Writes { .. } => "writes",
     }
 }
