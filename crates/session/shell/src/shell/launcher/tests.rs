@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use super::*;
 
 mod host_windows;
+mod launch_records;
 
 fn launch_event(kind: LaunchEventKind) -> LaunchEvent {
     LaunchEvent {
@@ -2536,59 +2537,6 @@ fn service_authority_is_bound_to_live_exact_pid_identity() {
     stale_start_time_is_never_accepted_as_pid_identity();
     compatibility_service_authority_is_exact_and_consumed_once();
     direct_launcher_pid_has_no_service_authority_to_redeem();
-}
-
-#[test]
-#[cfg(target_os = "linux")]
-fn private_window_launch_binding_is_exact_live_and_host_retained() {
-    let launcher = LauncherStandIn::spawn();
-    let pid = launcher.pid();
-    let identity = ServiceLaunchIdentity {
-        app_id: "so.tilo.code".into(),
-        workspace_id: "private-window-room".into(),
-        allowed_compat_entry_ids: Vec::new(),
-        compat_entry_generation: 0,
-        application_creation: None,
-    };
-    register_trusted_window_launch(pid, identity, Some(42), Some(9));
-    assert!(authenticated_window_launch(pid, "so.tilo.notes", "private-window-room").is_none());
-    assert!(authenticated_window_launch(pid, "so.tilo.code", "other-room").is_none());
-    assert!(
-        authenticated_window_launch(launcher.descendant(), "so.tilo.code", "private-window-room")
-            .is_none()
-    );
-    let bound = authenticated_window_launch(pid, "so.tilo.code", "private-window-room")
-        .expect("original exact launcher record");
-    assert_eq!(bound.continuation_instance, Some(42));
-    assert_eq!(bound.launch_ticket, Some(9), "the launch's own ticket");
-    // Kernel start time is part of the retained record, not app-reported identity.
-    lock(&TRUSTED_SERVICE_LAUNCHES)
-        .get_mut(&pid)
-        .unwrap()
-        .start_time = u64::MAX;
-    assert!(authenticated_window_launch(pid, "so.tilo.code", "private-window-room").is_none());
-    lock(&TRUSTED_SERVICE_LAUNCHES).remove(&pid);
-    assert!(authenticated_window_launch(pid, "so.tilo.code", "private-window-room").is_none());
-}
-
-#[test]
-#[cfg(target_os = "linux")]
-fn in_process_private_window_binding_is_single_use_and_exact() {
-    let app = format!("so.tilo.code.{}", uuid::Uuid::new_v4());
-    let room = uuid::Uuid::new_v4().to_string();
-    register_in_process_window(&app, &room, Some(42));
-    assert!(authenticated_window_launch(std::process::id(), &app, "other-room").is_none());
-    assert!(authenticated_window_launch(u32::MAX, &app, &room).is_none());
-    let bound = authenticated_window_launch(std::process::id(), &app, &room).unwrap();
-    assert_eq!(bound.continuation_instance, Some(42));
-    assert!(authenticated_window_launch(std::process::id(), &app, &room).is_none());
-    register_in_process_launch(&app, &room);
-    assert_eq!(
-        authenticated_window_launch(std::process::id(), &app, &room)
-            .unwrap()
-            .continuation_instance,
-        None
-    );
 }
 
 /// A live process standing in for a started `tilo-launcher`, with one

@@ -725,6 +725,9 @@ pub trait LauncherServices: Send + Sync {
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool;
     /// Snapshot the original launch facts while admitting this connection.
     /// Unsupported launchers retain no private window-instance authority.
+    /// `window_instance` is the window the connection says it was made for:
+    /// a host that makes connections for its own windows keys their launch
+    /// records by it; a launched process's record names its own.
     ///
     /// # Errors
     /// The original launch facts changed or cannot be read.
@@ -733,7 +736,9 @@ pub trait LauncherServices: Send + Sync {
         pid: u32,
         app: &str,
         room: &str,
+        window_instance: Option<u64>,
     ) -> Result<Option<AuthenticatedApplicationLaunch>, String> {
+        let _ = window_instance;
         if !self.attest_process(pid, app, room) {
             return Ok(None);
         }

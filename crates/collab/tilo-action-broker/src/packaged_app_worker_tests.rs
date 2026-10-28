@@ -29,6 +29,7 @@ impl crate::services::LauncherServices for LaunchedHere {
         pid: u32,
         app: &str,
         room: &str,
+        _window_instance: Option<u64>,
     ) -> Result<Option<crate::services::AuthenticatedApplicationLaunch>, String> {
         Ok(self.attest_process(pid, app, room).then_some(
             crate::services::AuthenticatedApplicationLaunch {
