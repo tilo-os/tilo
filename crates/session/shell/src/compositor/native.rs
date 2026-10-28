@@ -20093,7 +20093,6 @@ mod tests {
                 seat: None,
                 resolved: None,
                 listings: None,
-                listings: None,
             };
             let animating = state.chrome_state_json()["animating"].clone();
             assert!(
@@ -20170,7 +20169,6 @@ mod tests {
                 seat: None,
                 resolved: None,
                 listings: None,
-                listings: None,
             }
             .chrome_state_json()["displays"]
                 .clone()
@@ -20219,7 +20217,6 @@ mod tests {
                 seat: None,
                 resolved: None,
                 listings: None,
-                listings: None,
             };
             let chrome = state.chrome_state_json();
             let overlays = chrome
@@ -20256,7 +20253,6 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
-                listings: None,
                 listings: None,
             };
 
@@ -20342,7 +20338,6 @@ mod tests {
                 seat: None,
                 resolved: None,
                 listings: None,
-                listings: None,
             };
             let answer = state.enumerate_actions("").expect("enumerated actions");
             let row = answer["actions"]
@@ -20374,7 +20369,6 @@ mod tests {
                 seat: None,
                 resolved: None,
                 listings: None,
-                listings: None,
             };
             let tree = state.workspace_tree_json(false).to_value();
             let workspaces = tree
@@ -20400,7 +20394,6 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
-                listings: None,
                 listings: None,
             };
             let (resp, actions) = test_control::dispatch_command(
@@ -20617,7 +20610,6 @@ mod tests {
                 seat: None,
                 resolved: None,
                 listings: None,
-                listings: None,
             };
             let tree = state.workspace_tree_json(false).to_value();
             let found = tree
@@ -20652,7 +20644,6 @@ mod tests {
                 seat: None,
                 resolved: None,
                 listings: None,
-                listings: None,
             };
             let chrome = state.chrome_state_json();
             let auth = chrome
@@ -20679,7 +20670,6 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
-                listings: None,
                 listings: None,
             };
 
@@ -20765,7 +20755,6 @@ mod tests {
                 lock: None,
                 seat: None,
                 resolved: None,
-                listings: None,
                 listings: None,
             };
             let rows = state
