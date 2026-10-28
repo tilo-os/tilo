@@ -122,6 +122,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         app.set_high_contrast(comforts.high_contrast);
         app.apply_screen_reader_settings(&comforts.screen_reader_settings());
     }
+    // The chord turns the reader over here as everywhere; the toggle on the
+    // card follows it and the login screens keep it, not a settings file.
+    let chord = proxy_slot.clone();
+    app.on_screen_reader_chord(move |on| {
+        if let Some(proxy) = chord.get() {
+            let _ = proxy.send_event(UserEvent::External(greeter::comforts::chord_payload(on)));
+        }
+    });
     tilo_startup_metrics::mark("greeter-app-ready");
     // On a personal machine with one unambiguous interactive account, the
     // greeter hides the redundant username field and this lands on Passcode.

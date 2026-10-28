@@ -40,6 +40,27 @@ fn change(socket: &Path, changes: &Map<String, Value>) -> bool {
     })
 }
 
+/// The external-event payloads that tell the screen the screen reader
+/// chord turned the reader on or off.
+const CHORD_ON: &str = "\u{1}greeter-screen-reader-on";
+const CHORD_OFF: &str = "\u{1}greeter-screen-reader-off";
+
+/// The payload saying the chord turned the screen reader `on` or off.
+#[must_use]
+pub fn chord_payload(on: bool) -> String {
+    if on { CHORD_ON } else { CHORD_OFF }.to_owned()
+}
+
+/// What the chord turned the screen reader to, if `payload` says so.
+#[must_use]
+pub fn chord_toggle(payload: &str) -> Option<bool> {
+    match payload {
+        CHORD_ON => Some(true),
+        CHORD_OFF => Some(false),
+        _ => None,
+    }
+}
+
 /// Sends each change to the daemon in order, off the screen's thread.
 pub struct Changes {
     sender: Option<mpsc::Sender<Map<String, Value>>>,
