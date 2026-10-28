@@ -50,6 +50,7 @@ pub fn unbake_scroll() -> bool {
 
 thread_local! {
     static PAN_REPLAY: Cell<PanFrame> = const { Cell::new(PanFrame::Drawn) };
+    static LAST_PAN_FRAME: Cell<PanFrame> = const { Cell::new(PanFrame::Drawn) };
     static PAN_FRAMES: Cell<u64> = const { Cell::new(0) };
     static REPLAYED: Cell<usize> = const { Cell::new(0) };
 }
@@ -106,6 +107,7 @@ impl PanReplay {
     /// numbered in order, so a drawing can tell whether it was made in that
     /// host's frame just before ([`pan_frame`]).
     pub fn begin(frame: PanFrame, number: u64) -> Self {
+        LAST_PAN_FRAME.set(frame);
         Self {
             previous: (PAN_REPLAY.replace(frame), PAN_FRAMES.replace(number)),
         }
@@ -133,6 +135,12 @@ pub fn pan_replay() -> bool {
 /// The number of the frame being drawn ([`PanReplay::begin`]).
 pub fn pan_frame() -> u64 {
     PAN_FRAMES.get()
+}
+
+/// What the last frame drawn was: whether it only moved laid-out content, and
+/// so could show a window's last drawing moved ([`PanFrame`]).
+pub fn last_pan_frame() -> PanFrame {
+    LAST_PAN_FRAME.get()
 }
 
 /// Count one window shown by replaying its drawing.

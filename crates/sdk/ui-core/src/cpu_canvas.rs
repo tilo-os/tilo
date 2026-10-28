@@ -260,6 +260,11 @@ impl CpuCanvas {
         Ok(self.regions.iter().map(Region::pixels).sum())
     }
 
+    /// The canvas' extent in pixels, and where it has an extent at all.
+    pub fn extent(&self) -> (u32, u32) {
+        self.size
+    }
+
     /// The canvas: premultiplied RGBA8, rows of `width * 4` bytes.
     pub fn pixels(&self) -> &[u8] {
         &self.pixels

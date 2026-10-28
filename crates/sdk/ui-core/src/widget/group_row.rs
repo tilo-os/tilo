@@ -5021,6 +5021,16 @@ impl Widget for GroupRow {
             self.apart_window =
                 unbake.then(|| self.apart_window_of_lane(k, viewport, shift, (clip.y0, clip.y1)));
             let in_run: Vec<bool> = lane_of.iter().map(|&lane| lane == k).collect();
+            // A lane drawn in canvas coordinates draws its windows where they
+            // rest: a host that keeps each layer's pixels in a target of its
+            // own composites them a pan away from that
+            // (`crate::scene_parts::note_layer_offset`).
+            if shifted {
+                crate::scene_parts::note_layer_offset(
+                    crate::scene_parts::PartKey::new("ui.strip-lane", k),
+                    (-shift, 0.0),
+                );
+            }
             // A group is a damage part of the strip of its own: every pixel it
             // paints, its shadow and glow included, stays inside its sprites'
             // reach and the lane's clip, so a strip that only panned damages
@@ -5820,7 +5830,7 @@ impl GroupRow {
         // (a window off screen that changed while the strip rested: none of
         // the screen). Everything it paints stays inside its sprites' reach
         // and the lane's clip.
-        let key = crate::scene_parts::PartKey::new("ui.strip-group", id);
+        let key = crate::scene_parts::PartKey::layer("ui.strip-group", id);
         let bounds = vec![transform.transform_rect_bbox(
             Rect::new(reach.x0, window.rows.0, reach.x1, window.rows.1).intersect(row_bounds),
         )];
@@ -5887,7 +5897,7 @@ impl GroupRow {
     ) {
         let (id, rect) = (self.groups[i].id, self.groups[i].get_rect());
         let reach = rect.inflate(GROUP_SPRITE_REACH_PX, 0.0);
-        let key = crate::scene_parts::PartKey::new("ui.strip-group", id);
+        let key = crate::scene_parts::PartKey::layer("ui.strip-group", id);
         let bounds = vec![transform.transform_rect_bbox(
             Rect::new(reach.x0, row_bounds.y0, reach.x1, row_bounds.y1).intersect(row_bounds),
         )];
@@ -5995,7 +6005,7 @@ impl GroupRow {
             return;
         }
         let reach = rect.inflate(GROUP_SPRITE_REACH_PX, 0.0);
-        let key = crate::scene_parts::PartKey::new("ui.strip-group", id);
+        let key = crate::scene_parts::PartKey::layer("ui.strip-group", id);
         // The part a replayed group's move is reported inside: a part of its
         // own, so the move damages the copy's far edge and not the window.
         let move_key = crate::scene_parts::PartKey::new("ui.strip-group-move", id);

@@ -159,6 +159,7 @@ pub mod component_lifecycle;
 pub mod content;
 pub mod content_layout;
 pub mod cpu_canvas;
+pub mod cpu_layers;
 mod damage;
 pub mod date;
 pub mod diag;

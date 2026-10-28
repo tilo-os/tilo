@@ -43,7 +43,7 @@ pub use tilo_cpu_raster::DrawBounds;
 /// Identifies one part among the parts of a section. Two frames' parts are
 /// matched by key and position, so a key must name the same thing in both.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PartKey(u64, &'static str);
+pub struct PartKey(u64, &'static str, bool);
 
 impl std::fmt::Debug for PartKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -64,7 +64,20 @@ impl PartKey {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         kind.hash(&mut hasher);
         id.hash(&mut hasher);
-        Self(hasher.finish(), kind)
+        Self(hasher.finish(), kind, false)
+    }
+
+    /// [`Self::new`] for a part that is a layer of its own
+    /// ([`partition`]): a host that keeps its pixels draws it into a target
+    /// of its own and composites it, so a frame that only moves it
+    /// rasterizes nothing.
+    pub fn layer(kind: &'static str, id: impl Hash) -> Self {
+        Self(Self::new(kind, id).0, kind, true)
+    }
+
+    /// Whether this part is a layer of its own ([`Self::layer`]).
+    pub fn is_layer(self) -> bool {
+        self.2
     }
 }
 
@@ -98,6 +111,25 @@ impl Marks {
             glyphs: encoding.resources.glyphs.len(),
             glyph_runs: encoding.resources.glyph_runs.len(),
             normalized_coords: encoding.resources.normalized_coords.len(),
+        }
+    }
+
+    /// `self` as the marks of a scene that began where `start` was.
+    fn rebased(self, start: Self) -> Self {
+        Self {
+            path_tags: self.path_tags.saturating_sub(start.path_tags),
+            path_data: self.path_data.saturating_sub(start.path_data),
+            draw_tags: self.draw_tags.saturating_sub(start.draw_tags),
+            draw_data: self.draw_data.saturating_sub(start.draw_data),
+            transforms: self.transforms.saturating_sub(start.transforms),
+            styles: self.styles.saturating_sub(start.styles),
+            patches: self.patches.saturating_sub(start.patches),
+            color_stops: self.color_stops.saturating_sub(start.color_stops),
+            glyphs: self.glyphs.saturating_sub(start.glyphs),
+            glyph_runs: self.glyph_runs.saturating_sub(start.glyph_runs),
+            normalized_coords: self
+                .normalized_coords
+                .saturating_sub(start.normalized_coords),
         }
     }
 
@@ -160,6 +192,20 @@ pub struct DamageHint {
 }
 
 impl DamageHint {
+    /// The move `self` reports, when what it draws is the content of the
+    /// frame before drawn somewhere else: the one copy it carries. A host
+    /// that keeps this content's pixels in a target of its own
+    /// ([`crate::cpu_layers`]) draws those pixels moved, instead of drawing
+    /// the content again. The rects it also carries ([`Self::rects`]) are
+    /// what a host drawing one target repaints around such a copy; a host
+    /// drawing the layer alone has those pixels already.
+    pub fn moved_by(&self) -> Option<(f64, f64)> {
+        let [copy] = self.copies.as_slice() else {
+            return None;
+        };
+        Some((copy.delta.x, copy.delta.y))
+    }
+
     /// `self`'s damage when it describes the change from `previous`'s
     /// content: the same source placed in the same place, painting the
     /// generation that follows the one `previous` painted.
@@ -382,6 +428,39 @@ struct Log {
 
 thread_local! {
     static RECORDING: RefCell<Option<Vec<Log>>> = const { RefCell::new(None) };
+}
+
+thread_local! {
+    /// Where each part's coordinates sit relative to the screen's, by part
+    /// key: a strip drawn for a presenter that keeps its canvas
+    /// ([`crate::retained_present::unbake_scroll`]) draws its windows where
+    /// they rest, and the presenter moves the canvas. Noted while drawing
+    /// ([`note_layer_offset`]) and read when the frame is split into layers
+    /// ([`partition`]).
+    static OFFSETS: RefCell<Vec<(u64, (f64, f64))>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Note that the content part `key` draws is `offset` from where the screen
+/// shows it: negative the shift a strip drawn in canvas coordinates adds to
+/// its windows' places. A host that keeps each layer's pixels in a target of
+/// its own composites it where the screen shows it.
+pub fn note_layer_offset(key: PartKey, offset: (f64, f64)) {
+    OFFSETS.with_borrow_mut(|offsets| {
+        match offsets.iter_mut().find(|(held, _)| *held == key.value()) {
+            Some((_, held)) => *held = offset,
+            None => offsets.push((key.value(), offset)),
+        }
+    });
+}
+
+/// The offset noted for `key` ([`note_layer_offset`]), if one was.
+fn layer_offset(key: PartKey) -> Option<(f64, f64)> {
+    OFFSETS.with_borrow(|offsets| {
+        offsets
+            .iter()
+            .find(|(held, _)| *held == key.value())
+            .map(|(_, offset)| *offset)
+    })
 }
 
 /// Records parts for the sections registered with [`track`] until finished.
@@ -732,6 +811,288 @@ pub fn drawn_bounds(
         Some(parts) => drawn_from(scene, &parts.events, 0, bounds),
         None => bounds.of(scene.encoding()),
     }
+}
+
+/// One layer of a section ([`partition`]): a stretch of its draws that stands
+/// on its own, in section (device) coordinates.
+pub struct SectionLayer {
+    /// What made this stretch a layer: the [`PartKey::value`] of a layer part,
+    /// or a number of its own for the draws between them ([`Self::is_run`]).
+    /// Layers are matched by key from frame to frame.
+    pub key: u64,
+    /// The layer's own commands, at the place the section draws them.
+    pub scene: Scene,
+    /// The damage parts inside it, rebased onto `scene`
+    /// ([`Self::parts`]): what a host that keeps the layer's pixels compares
+    /// frame to frame.
+    pub parts: Option<SectionParts>,
+    /// What of the section it paints, in section coordinates: inside the
+    /// bounds of every part it is drawn in, and inside its own part's bounds.
+    /// Empty when it paints nothing.
+    pub bounds: Rect,
+    /// This layer is the section's own draws between layer parts — the
+    /// desktop ground and chrome, the overlays above the windows — rather
+    /// than a layer part.
+    pub run: bool,
+    /// What the layer's drawing said of itself, when it said anything
+    /// ([`DamageHint`]): a window that only moved offers the pixels it drew
+    /// in the frame before ([`DamageHint::moved_by`]).
+    pub hint: Option<DamageHint>,
+    /// How far the layer's own coordinates are from where the screen shows
+    /// it, in section coordinates: zero unless the section was drawn for a
+    /// presenter that keeps its canvas ([`crate::retained_present::unbake_scroll`])
+    /// and this layer sits in a strip drawn that way.
+    pub offset: (f64, f64),
+}
+
+/// Keys of the runs [`partition`] makes start here, above any part's key.
+const RUN_KEY: u64 = 1 << 63;
+
+/// The key of the run drawn after the layer part keyed `after` (`0` for the
+/// section's own draws before the first of them).
+fn run_key(after: u64) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    after.hash(&mut hasher);
+    RUN_KEY | (hasher.finish() & (RUN_KEY - 1))
+}
+
+/// Split a section into the layers it is drawn as, in draw order: each layer
+/// part ([`PartKey::layer`]) whose own content stands on its own, and the
+/// stretches of the section's own draws between them. A host that keeps
+/// each layer's pixels in a target of its own rasterizes a frame only where a
+/// layer's content changed, and composites the others where they are: a
+/// frame that only panned the strip draws no pixels at all.
+///
+/// `to_device` maps the section's draw coordinates onto the target (a page
+/// drawing at a device pixel ratio), `bounds` is the scratch the draw bounds
+/// need. `None` when the parts do not fit the encoding, or a layer's extent
+/// cannot be bounded: the caller then keeps a single target.
+pub fn partition(
+    scene: &Scene,
+    parts: &SectionParts,
+    to_device: vello::kurbo::Affine,
+    bounds: &mut tilo_cpu_raster::DrawBounds,
+) -> Option<Vec<SectionLayer>> {
+    let events = &parts.events;
+    let ends = part_ends(events).ok()?;
+    let encoding = scene.encoding();
+    // A layer part is drawn into a target of its own only where nothing but a
+    // plain clip is open around it: an alpha layer or another blend applies to
+    // what it draws, which a composite of its own pixels would lose.
+    let extractable: Vec<bool> = events
+        .iter()
+        .map(|event| match &event.boundary {
+            Boundary::Begin(key) => {
+                key.is_layer()
+                    && tilo_cpu_raster::plain_layers_open_at(encoding, event.marks.draw_tags)
+            }
+            Boundary::End(_) | Boundary::EndHinted(_) => false,
+        })
+        .collect();
+    // What each piece of the section belongs to: the outermost layer part open
+    // across it, or the section's own draws.
+    let pieces = events.len().saturating_add(1);
+    let mut owners: Vec<Option<usize>> = Vec::with_capacity(pieces);
+    let mut open: Vec<usize> = Vec::new();
+    for piece in 0..pieces {
+        owners.push(open.iter().copied().find(|index| extractable[*index]));
+        match events.get(piece).map(|event| &event.boundary) {
+            Some(Boundary::Begin(_)) => open.push(piece),
+            Some(Boundary::End(_) | Boundary::EndHinted(_)) => {
+                open.pop();
+            }
+            None => {}
+        }
+    }
+    let mut layers = Vec::new();
+    let mut first = 0;
+    // The layer part the run being read follows: a run keeps its target
+    // while the window before it comes and goes (`None` for the leading run).
+    let mut after = 0_u64;
+    while first < pieces {
+        let owner = owners[first];
+        let mut last = first;
+        while last + 1 < pieces && owners[last + 1] == owner {
+            last += 1;
+        }
+        let drawn = layer_of(
+            scene,
+            events,
+            &ends,
+            &Stretch {
+                owner,
+                first,
+                last,
+                after,
+                enclosing: open_at(events, first),
+            },
+            to_device,
+            bounds,
+        );
+        if let Some(index) = owner
+            && let Some(Boundary::Begin(key)) = events.get(index).map(|event| &event.boundary)
+        {
+            after = key.value();
+        }
+        if let Some(layer) = drawn {
+            layers.push(layer);
+        }
+        first = last + 1;
+    }
+    Some(layers)
+}
+
+/// The parts open across piece `piece` of a section.
+fn open_at(events: &[Event], piece: usize) -> Vec<usize> {
+    let mut open = Vec::new();
+    for (index, event) in events.iter().enumerate().take(piece) {
+        match event.boundary {
+            Boundary::Begin(_) => open.push(index),
+            Boundary::End(_) | Boundary::EndHinted(_) => {
+                open.pop();
+            }
+        }
+    }
+    open
+}
+
+/// One stretch of a section's draws that a layer is made of.
+struct Stretch {
+    /// The layer part the stretch belongs to, or `None` for the section's
+    /// own draws.
+    owner: Option<usize>,
+    /// The pieces it covers, and what the run before it follows.
+    first: usize,
+    last: usize,
+    after: u64,
+    /// The parts open across it.
+    enclosing: Vec<usize>,
+}
+
+/// The layer a section's `stretch` is drawn as, or `None` when it paints
+/// nothing.
+fn layer_of(
+    scene: &Scene,
+    events: &[Event],
+    ends: &[PartEnd<'_>],
+    stretch: &Stretch,
+    to_device: vello::kurbo::Affine,
+    bounds: &mut tilo_cpu_raster::DrawBounds,
+) -> Option<SectionLayer> {
+    let Stretch {
+        owner,
+        first,
+        last,
+        after,
+        enclosing,
+    } = stretch;
+    let (owner, first, last, after) = (*owner, *first, *last, *after);
+    let encoding = scene.encoding();
+    let (start, end) = (
+        piece_range(encoding, events, first).0,
+        piece_range(encoding, events, last).1,
+    );
+    let sliced = slice(encoding, (start, end))?;
+    // The events strictly inside the stretch: the boundary that ends it is
+    // the next stretch's, or the end of the part it is.
+    let mut parts = None;
+    if let Some(inside) = events.get(first..last) {
+        let events: Vec<Event> = inside
+            .iter()
+            .map(|event| Event {
+                boundary: event.boundary.clone(),
+                marks: event.marks.rebased(start),
+            })
+            .collect();
+        if !events.is_empty() {
+            parts = Some(SectionParts { events });
+        }
+    }
+    // A stretch that only opens or closes a layer paints nothing: a strip's
+    // lane clip is one, and a target of its own for it would hold nothing.
+    let paints = sliced.encoding().draw_tags.iter().any(|tag| {
+        *tag != vello_encoding::DrawTag::BEGIN_CLIP && *tag != vello_encoding::DrawTag::END_CLIP
+    });
+    if !paints {
+        return None;
+    }
+    let mut reach = match owner.and_then(|index| ends.get(index)) {
+        Some(PartEnd::Bounds(rects)) => union(rects)?,
+        // A hinted layer has no bounds of its own: what it draws is its own
+        // extent, which is what a target of its own must hold.
+        _ => union(&bounds.of(sliced.encoding())?)?,
+    };
+    // What a part it is drawn in bounds it by, and what clipping that part
+    // would do to it: a stretch drawn inside a lane's clip paints nothing
+    // outside it, and a target of its own must not either.
+    for index in enclosing {
+        if owner == Some(*index) {
+            continue;
+        }
+        if let Some(PartEnd::Bounds(rects)) = ends.get(*index) {
+            reach = reach.intersect(union(rects)?);
+        }
+    }
+    let key = match owner {
+        Some(index) => match events.get(index).map(|event| &event.boundary) {
+            Some(Boundary::Begin(key)) => key.value(),
+            _ => return None,
+        },
+        // The section's own draws between layer parts, keyed by the layer
+        // part they follow: a run keeps its target while the windows around
+        // it are drawn as they were.
+        None => run_key(after),
+    };
+    // A drawing that handed over its content's change as a hint explains the
+    // whole of it: whatever the hint says is what the layer did.
+    let hint = parts
+        .as_ref()
+        .and_then(|parts| match parts.events.as_slice() {
+            [
+                Event {
+                    boundary: Boundary::Begin(_),
+                    ..
+                },
+                Event {
+                    boundary: Boundary::EndHinted(hint),
+                    ..
+                },
+            ] => hint.clone(),
+            _ => None,
+        });
+    // Where the layer's coordinates sit on the screen: what the part it is
+    // drawn in (or the part itself) noted while drawing.
+    let offset = enclosing
+        .iter()
+        .rev()
+        .find_map(
+            |index| match events.get(*index).map(|event| &event.boundary) {
+                Some(Boundary::Begin(key)) => layer_offset(*key),
+                _ => None,
+            },
+        )
+        .unwrap_or((0.0, 0.0));
+    let from_origin = to_device * vello::kurbo::Point::ORIGIN;
+    let to_offset = to_device * vello::kurbo::Point::new(offset.0, offset.1);
+    let offset = (to_offset.x - from_origin.x, to_offset.y - from_origin.y);
+    Some(SectionLayer {
+        key,
+        scene: sliced,
+        parts,
+        bounds: to_device.transform_rect_bbox(reach),
+        run: owner.is_none(),
+        hint,
+        offset,
+    })
+}
+
+/// The rectangle covering `rects`, or `None` when none of them does.
+fn union(rects: &[Rect]) -> Option<Rect> {
+    rects
+        .iter()
+        .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+        .copied()
+        .reduce(|all, rect| all.union(rect))
 }
 
 fn end_of(events: &[Event], begin: usize) -> Option<usize> {

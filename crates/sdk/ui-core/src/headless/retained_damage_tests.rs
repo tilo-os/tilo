@@ -472,3 +472,91 @@ fn a_new_paragraph_repaints_its_line_not_the_editor() {
         }
     }
 }
+
+/// Lay `harness`'s frame out as the layers it is drawn as and bring `layers`
+/// up to date with it, as a page whose presenter composites them does.
+fn draw_layers(harness: &mut FrameHarness, layers: &mut crate::cpu_layers::CpuLayers) -> u64 {
+    // A page drawing on the CPU draws a strip's windows where they rest
+    // (`ui::retained_present::RetainedScene`) and moves the layers itself.
+    let _retained = crate::retained_present::RetainedScene::begin(true);
+    harness.poll_frame().unwrap();
+    let parts = harness
+        .scene_parts()
+        .cloned()
+        .expect("a tracked frame has parts");
+    let mut bounds = crate::scene_parts::DrawBounds::default();
+    let framed = crate::scene_parts::partition(
+        harness.frame_render_input().scene,
+        &parts,
+        Affine::IDENTITY,
+        &mut bounds,
+    )
+    .expect("the frame is drawn as layers");
+    layers
+        .update(&framed, SIZE, Affine::IDENTITY)
+        .expect("every layer draws")
+}
+
+/// A desktop of four windows, as the strip holds them.
+fn four_windows() -> FrameHarness {
+    let window = |id: u64, tab: u64, label: &str| {
+        WindowGroup::new(
+            id,
+            vec![(
+                TabDescriptor::new(tab, label),
+                TileContent::Stub {
+                    kind: crate::widget::AppKind::Settings,
+                    label: label.into(),
+                },
+            )],
+            tab,
+            WindowWidth::Normal,
+        )
+    };
+    let mut harness = FrameHarness::for_root(
+        crate::State::new(),
+        GroupRow::new(vec![
+            window(100, 1, "Notes"),
+            window(200, 2, "Tasks"),
+            window(300, 3, "Sheets"),
+            window(400, 4, "Docs"),
+        ]),
+        SIZE,
+        Theme::dark(),
+    );
+    harness.track_scene_parts(true);
+    harness.set_coalesce_input_frames(true);
+    harness.relayout();
+    harness
+}
+
+/// A strip that only panned draws no pixel at all: each window is a layer of
+/// its own, and the presenter moves the one the strip shows.
+#[test]
+fn a_panned_strip_draws_no_pixels() {
+    let mut harness = four_windows();
+    let mut layers = crate::cpu_layers::CpuLayers::new().expect("a raster to draw with");
+    assert!(
+        draw_layers(&mut harness, &mut layers) > 0,
+        "the first frame draws"
+    );
+    assert!(
+        harness.root::<GroupRow>().pan_max_scroll_x() > 0.0,
+        "the strip has more windows than the row shows"
+    );
+    for step in 1..=6 {
+        let moved = harness
+            .root_mut::<GroupRow>()
+            .pan_to(40.0 * f64::from(step));
+        assert!(moved, "pan {step} moved the strip");
+        let rasterized = draw_layers(&mut harness, &mut layers);
+        assert_eq!(
+            rasterized,
+            0,
+            "pan {step} to {} drew pixels instead of moving the windows ({})",
+            40 * step,
+            layers.report()
+        );
+        assert!(layers.moved(), "pan {step} showed the windows moved");
+    }
+}
