@@ -428,6 +428,19 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         }
     }
 
+    /// A finger on a child is the child's to claim.
+    fn touch_claim(&self, point: vello::kurbo::Point) -> crate::interaction::TouchClaim {
+        self.slots
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(index, _)| !self.layout.hidden(*index))
+            .find(|(_, slot)| slot.element.get_rect().contains(point))
+            .map_or(crate::interaction::TouchClaim::Pointer, |(_, slot)| {
+                slot.element.touch_claim(point)
+            })
+    }
+
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,

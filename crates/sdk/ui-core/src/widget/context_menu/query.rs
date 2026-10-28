@@ -148,7 +148,7 @@ impl ContextMenu {
             self.items.iter().take(owned).map(|item| {
                 let label = match item {
                     MenuItem::Action { label, .. } => Some(label.as_str()),
-                    MenuItem::Separator | MenuItem::Caption(_) => None,
+                    MenuItem::Separator | MenuItem::Caption(_) | MenuItem::Emoji(_) => None,
                 };
                 label
                     .into_iter()

@@ -36,10 +36,15 @@ fn every_description_is_documented_and_consistent() {
         assert_eq!(names.len(), all, "{} names each part once", d.name);
         assert!(d.slots.iter().filter(|s| s.default).count() <= 1);
         for slot in &d.slots {
-            if let Accepts::Component(name) = &slot.accepts {
+            let names = match &slot.accepts {
+                Accepts::View => Vec::new(),
+                Accepts::Component(name) => vec![name.clone()],
+                Accepts::OneOf(names) => names.clone(),
+            };
+            for name in names {
                 assert!(
-                    catalogue.get(name).is_some(),
-                    "{}.{} accepts a described component",
+                    catalogue.get(&name).is_some(),
+                    "{}.{} accepts described components, and {name} is one",
                     d.name,
                     slot.name
                 );
@@ -242,6 +247,7 @@ impl Source for ItemSource<'_> {
     fn slot_kinds(&mut self, slot: &str) -> Vec<Option<String>> {
         match slot {
             "row" => vec![Some("ListRow".to_owned())],
+            "menu" => vec![Some("MenuItem".to_owned())],
             _ => Vec::new(),
         }
     }

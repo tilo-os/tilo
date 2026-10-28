@@ -1673,11 +1673,13 @@ fn convert_with<T>(
     let field_name = |binding: &Binding| Instance::field_name(host, binding);
     let cases = |id: &str| cases(host, id);
     let toggles = |key: &str, event: &str| toggles(host, view, key, event);
+    let invokes = |key: &str, event: &str| invokes(view, key, event);
     run(&Convert {
         names,
         field_name: &field_name,
         cases: &cases,
         toggles: &toggles,
+        invokes: &invokes,
     })
 }
 
@@ -1697,6 +1699,7 @@ fn plain(names: &NoNames) -> Convert<'_> {
         field_name: &|_| String::new(),
         cases: &|_| Vec::new(),
         toggles: &|_, _| None,
+        invokes: &|_, _| None,
     }
 }
 
@@ -1735,6 +1738,16 @@ fn toggles(
     let field = action.toggles?;
     match aref.args.first() {
         Some(Value::Ref(subject)) => Some((ResourceRef::clone(&subject.target), field)),
+        _ => None,
+    }
+}
+
+/// The resource and the action the event `event` of the node `key` of `view` runs, when it
+/// runs an action on a resource: what a menu tells a placed command by.
+fn invokes(view: &ViewInstance, key: &str, event: &str) -> Option<(ResourceRef, String)> {
+    let aref = view.event_action(key, event)?;
+    match aref.args.first() {
+        Some(Value::Ref(subject)) => Some((ResourceRef::clone(&subject.target), aref.action)),
         _ => None,
     }
 }

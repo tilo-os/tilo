@@ -240,7 +240,9 @@ view page<R>(of: R, canvas: Bool = false, empty: Bool = false, header: View, con
 /// `row`, built as they show, above the composer, which stays at the foot. An item's `author`
 /// and `time` are drawn by the list as every conversation draws them: the author's avatar and
 /// name over each run of their messages, the time beside the name, and a divider where the
-/// day changes; the `row` then shows only what the item says.
+/// day changes; the `row` then shows only what the item says. Each item's menu offers its
+/// actions, after whatever menu the `row` attaches (`ui.ContextMenu`), so every action stays
+/// reachable; the row's hover toolbar and swipe are its own.
 view transcript<R, T>(
     of: R,
     items: List<T>,
@@ -264,16 +266,38 @@ view transcript<R, T>(
                 }
                 ui.VirtualList(transcript: true) {
                     for m in items {
+                        let offered = actions(m)
                         match author {
                             .some(by) => match time {
                                 .some(at) => ui.ListItem(item: m, author: by(m), time: at(m)) {
+                                    menu: {
+                                        for a in offered {
+                                            ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive) {
+                                                on choose: a.run
+                                            }
+                                        }
+                                    }
                                     row(m)
                                 },
                                 .none => ui.ListItem(item: m, author: by(m)) {
+                                    menu: {
+                                        for a in offered {
+                                            ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive) {
+                                                on choose: a.run
+                                            }
+                                        }
+                                    }
                                     row(m)
                                 },
                             },
                             .none => ui.ListItem(item: m) {
+                                menu: {
+                                    for a in offered {
+                                        ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive) {
+                                            on choose: a.run
+                                        }
+                                    }
+                                }
                                 row(m)
                             },
                         }

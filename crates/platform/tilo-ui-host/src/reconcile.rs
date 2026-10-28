@@ -204,6 +204,13 @@ fn position(node: &UiNode) -> Option<At> {
 /// within another view's layout takes the width that layout offers and adds no second gutter.
 #[must_use]
 pub fn normalize(node: &UiNode) -> UiNode {
+    let mut out = page_once(node);
+    crate::attach::hoist_in(&mut out);
+    out
+}
+
+/// The tree with a page inside another page, or inside a block's view, a plain stack.
+fn page_once(node: &UiNode) -> UiNode {
     fn walk(node: &UiNode, inside: bool) -> UiNode {
         let nested = inside || node.kind == "page" || node.kind == "embed";
         let mut out = node.clone();

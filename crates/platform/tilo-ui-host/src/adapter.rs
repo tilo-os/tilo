@@ -277,6 +277,12 @@ fn convert(value: &Value, ty: &Type, reconciler: &Reconciler) -> Option<Prop> {
         // person's way: the component decides how to show it.
         (Type::Time, Value::Text(at)) => Prop::Text(at.clone()),
         (Type::Choice { .. }, Value::Text(case)) => Prop::Choice(case.clone()),
+        (Type::List(inner), Value::List(items)) => Prop::List(
+            items
+                .iter()
+                .map(|item| convert(item, inner, reconciler))
+                .collect::<Option<Vec<_>>>()?,
+        ),
         _ => return None,
     })
 }
@@ -300,11 +306,16 @@ impl Source for NodeSource<'_> {
         let given = self.node.events.contains_key(name);
         let opens = name == "activate" && presented(self.node, self.description).is_some();
         if given || opens {
-            Event::View(Intent::new(
-                &self.reconciler.adapter().fired,
-                &self.node.key,
-                name,
-            ))
+            let intent = Intent::new(&self.reconciler.adapter().fired, &self.node.key, name);
+            let runs = self
+                .node
+                .events
+                .get(name)
+                .and_then(|event| event.invokes.as_ref());
+            Event::View(match runs {
+                Some((resource, action)) => intent.invoking_action(resource, action),
+                None => intent,
+            })
         } else {
             Event::None
         }
@@ -422,7 +433,7 @@ pub fn same_data(a: &UiNode, b: &UiNode, description: &Description) -> bool {
         && description
             .slots
             .iter()
-            .filter(|slot| matches!(slot.accepts, Accepts::Component(_)))
+            .filter(|slot| slot.accepts.reads_components())
             .filter(|slot| !(virtual_rows && slot.default))
             .all(|slot| {
                 let (old, new) = (
@@ -433,7 +444,10 @@ pub fn same_data(a: &UiNode, b: &UiNode, description: &Description) -> bool {
                     && old.iter().zip(&new).all(|(x, y)| {
                         x.kind == y.kind
                             && x.key == y.key
-                            && description_of(y).is_some_and(|d| same_data(x, y, d))
+                            && description_of(y).is_some_and(|d| {
+                                // A part's own views (a hover toolbar's buttons) are its data.
+                                same_data(x, y, d) && views_of(x, d) == views_of(y, d)
+                            })
                     })
             })
 }
