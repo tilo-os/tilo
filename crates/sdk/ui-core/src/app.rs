@@ -42,7 +42,9 @@ mod action_directory_snapshot;
 mod bound_record_sync;
 mod close_admission;
 mod document_history;
+mod follow_ups;
 mod handoff;
+mod held_answers;
 mod history_actions;
 mod host_commands;
 
@@ -1521,6 +1523,8 @@ impl App {
     }
 
     fn close_wake_scope(&mut self) {
+        // Nothing lands for a closing window: what it held is answered.
+        self.send_held_answers();
         self.retire_semantic_root();
         if let Some(scope) = self.wake_scope.as_mut() {
             scope.close();
