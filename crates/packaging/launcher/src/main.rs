@@ -269,6 +269,20 @@ enum Cmd {
         #[arg(long, conflicts_with_all = ["registry", "runtime_root"])]
         user: bool,
     },
+    /// Run a tilolang host: the launch kind that runs one author's tilolang
+    /// apps in one room as instances, in a sandbox holding only the verified
+    /// tilolang runtime, its storage and its door
+    /// (`launcher::run::tilolang_host`). The session starts it with the
+    /// door at descriptor 3; it never runs anything an app launch would.
+    #[command(name = "tilolang-host", hide = true)]
+    TilolangHost {
+        /// The tilolang runtime, `tilolang/<version>`.
+        #[arg(long)]
+        runtime: String,
+        /// The storage of the host's room and author.
+        #[arg(long)]
+        storage: PathBuf,
+    },
 }
 
 fn default_system_registry() -> String {
@@ -474,6 +488,25 @@ fn dispatch_command(
             runtime_root,
             user: false,
         } => runtime_resident(Path::new(&registry), &runtime_root),
+        Cmd::TilolangHost { runtime, storage } => tilolang_host(runtime, storage),
+    }
+}
+
+/// Run the tilolang host the session started, on the door it handed over at
+/// descriptor 3.
+fn tilolang_host(runtime: String, storage: PathBuf) -> ExitCode {
+    use launcher::run::tilolang_host::{DOOR_CHILD_FD, HostLaunch, run_tilolang_host};
+    // SAFETY: the session hands the door at this descriptor and nothing else
+    // owns it in this process.
+    let door =
+        unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(DOOR_CHILD_FD) };
+    let launch = HostLaunch { runtime, storage };
+    match run_tilolang_host(&launch, door, &launcher::run::RunOptions::default()) {
+        Ok(status) => ExitCode::from(u8::try_from(status.code().unwrap_or(1)).unwrap_or(1)),
+        Err(error) => {
+            eprintln!("tilo-launcher: the tilolang host did not start: {error}");
+            ExitCode::FAILURE
+        }
     }
 }
 
