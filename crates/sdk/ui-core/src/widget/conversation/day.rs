@@ -293,3 +293,72 @@ impl<'a> DayDividerFace<'a> {
 pub fn line_height(text: &mut TextRenderer, theme: &Theme, role: TextRole) -> f64 {
     f64::from(text.measure_style("Ag", None, &theme.text(role)).1)
 }
+
+/// [`DayDividerFace`] as a widget, for a list built of widgets: a band across its column with
+/// the day's label at its centre, where a conversation's day changes.
+pub struct DayDivider {
+    label: String,
+    rect: Rect,
+}
+
+impl DayDivider {
+    #[must_use]
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            rect: Rect::ZERO,
+        }
+    }
+}
+
+impl crate::widget::Widget for DayDivider {
+    fn build_layout(
+        &mut self,
+        taffy: &mut taffy::TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
+    ) -> taffy::NodeId {
+        use crate::widget::TaffyTreeExt as _;
+        let style = taffy::Style {
+            flex_shrink: 0.0,
+            size: taffy::Size {
+                width: taffy::style_helpers::percent(1.0_f32),
+                height: taffy::style_helpers::length(crate::num::f32_of_f64(
+                    DayDividerFace::height(theme),
+                )),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
+    }
+
+    crate::rect_geometry!();
+
+    fn draw(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) {
+        if presence.should_cull(self.rect) {
+            return;
+        }
+        DayDividerFace::new(&self.label).paint(
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            self.rect,
+            self.rect.x0,
+            self.rect.x1,
+        );
+    }
+
+    fn name(&self) -> &'static str {
+        "DayDivider"
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        Some(AccessNode::new(Role::Heading { level: 3 }).with_name(self.label.clone()))
+    }
+}

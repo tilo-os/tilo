@@ -212,12 +212,14 @@ mod cases {
         of_kind(tree, "embed")
     }
 
-    /// The values of the texts with the label role: the authors of a chat's messages.
-    fn labels(tree: &UiNode) -> Vec<String> {
-        of_kind(tree, "ui.Text")
+    /// The authors of a transcript's messages, as its items name them for the list to draw.
+    fn authors_of(tree: &UiNode) -> Vec<String> {
+        of_kind(tree, "ui.ListItem")
             .into_iter()
-            .filter(|t| t.props.get("role") == Some(&Value::text("label")))
-            .map(|t| text_prop(t, "value"))
+            .filter_map(|item| match item.props.get("author") {
+                Some(Value::Principal(who)) => Some(who.0.clone()),
+                _ => None,
+            })
             .collect()
     }
 
@@ -356,7 +358,7 @@ mod cases {
 
         let view = wb.view(&apps.chat, "thread", vec![res(&conv)]);
         assert_eq!(
-            labels(view.tree()),
+            authors_of(view.tree()),
             authors,
             "the view shows the messages in the converged order, with their authors"
         );
@@ -385,7 +387,7 @@ mod cases {
         assert_eq!(text_of(&w, &conv, "draft"), "");
         view.poll_patches().unwrap();
         assert_eq!(
-            labels(view.tree()),
+            authors_of(view.tree()),
             ["me"],
             "the composer posts as whoever is looking, as the runtime knows them"
         );
@@ -484,7 +486,7 @@ mod cases {
             first.contains("E0"),
             "the diagnostic keeps its code: {first}"
         );
-        assert_eq!(labels(view.tree()), ["agent:helper", "person:ada"]);
+        assert_eq!(authors_of(view.tree()), ["agent:helper", "person:ada"]);
     }
 
     #[test]
@@ -1371,7 +1373,7 @@ mod cases {
     }
 
     #[test]
-    fn chat_puts_each_authors_avatar_and_name_beside_their_message() {
+    fn chat_names_each_messages_author_for_the_transcript_to_draw() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let (_, conv) = start_chat(&w, &apps);
@@ -1380,9 +1382,9 @@ mod cases {
         let mut v = w.view(&apps.chat, "thread", vec![res(&conv)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
         for tree in [&compact, &wide] {
-            let who: Vec<Value> = of_kind(tree, "ui.Avatar")
+            let who: Vec<Value> = of_kind(tree, "ui.ListItem")
                 .iter()
-                .map(|a| a.props["who"].clone())
+                .map(|item| item.props["author"].clone())
                 .collect();
             assert_eq!(
                 who,
@@ -1391,7 +1393,7 @@ mod cases {
                     Value::Principal(Principal::new("person:bo"))
                 ]
             );
-            assert_eq!(labels(tree), ["person:ada", "person:bo"]);
+            assert_eq!(authors_of(tree), ["person:ada", "person:bo"]);
         }
     }
 

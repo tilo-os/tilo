@@ -264,6 +264,26 @@ impl PropType for Person {
     }
 }
 
+/// A moment, as a component shows one: the instant, in seconds since the Unix epoch. The
+/// component decides how it reads (a time of day, a day's divider).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Moment(pub i64);
+
+impl PropType for Moment {
+    fn ty() -> Type {
+        Type::Time
+    }
+
+    fn from_value(value: &Value) -> Result<Self, String> {
+        match value {
+            Value::Text(at) => chrono::DateTime::parse_from_rfc3339(at)
+                .map(|at| Self(at.timestamp()))
+                .map_err(|_| format!("is no moment: {at}")),
+            other => Err(wrong(&Self::ty(), other)),
+        }
+    }
+}
+
 /// The id of a resource a component presents.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ResourceId(pub String);

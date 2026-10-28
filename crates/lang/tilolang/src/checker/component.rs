@@ -766,6 +766,7 @@ fn lang_type(ty: &Type) -> Ty {
         Type::Float => Ty::Float,
         Type::Bool => Ty::Bool,
         Type::Principal => Ty::Principal,
+        Type::Time => Ty::Time,
         Type::Option(inner) => Ty::Option(Box::new(lang_type(inner))),
         Type::List(inner) => Ty::List(Box::new(lang_type(inner))),
         Type::Resource | Type::Icon | Type::Choice { .. } => Ty::Error,
@@ -785,6 +786,7 @@ fn fits(ty: &Type, found: &Ty) -> bool {
                 | (Type::Int, Ty::Int)
                 | (Type::Bool, Ty::Bool)
                 | (Type::Principal, Ty::Principal)
+                | (Type::Time, Ty::Time)
                 | (Type::Float, Ty::Float | Ty::Int)
                 | (Type::Resource, Ty::Record(_))
         ),
