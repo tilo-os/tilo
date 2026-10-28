@@ -673,6 +673,9 @@ pub struct GreeterApp {
     requests: Rc<Requests>,
     /// Whether this screen turned the screen reader on.
     screen_reader: bool,
+    /// Where a comfort turned on or off here is kept for the login screens;
+    /// `None` in shots and tests.
+    sign_in_comforts: Option<crate::comforts::Changes>,
     /// The time and date the current composition shows. Shots pin it.
     clock: ClockFace,
     clock_pinned: bool,
@@ -908,6 +911,7 @@ impl GreeterApp {
             last_power_action: None,
             requests: Rc::new(Requests::default()),
             screen_reader: false,
+            sign_in_comforts: None,
             clock: ClockFace::now(),
             clock_pinned: false,
             device: DeviceStatus::default(),
@@ -933,6 +937,19 @@ impl GreeterApp {
     #[must_use]
     pub fn with_proxy_slot(mut self, slot: Arc<OnceLock<EventLoopProxy<UserEvent>>>) -> Self {
         self.proxy = slot;
+        self
+    }
+
+    /// Start with the device's screen reader setting, and keep what is
+    /// turned on or off here for the login screens through `changes`.
+    #[must_use]
+    pub fn with_sign_in_comforts(
+        mut self,
+        screen_reader: bool,
+        changes: crate::comforts::Changes,
+    ) -> Self {
+        self.screen_reader = screen_reader;
+        self.sign_in_comforts = Some(changes);
         self
     }
 
@@ -2434,6 +2451,13 @@ impl Widget for GreeterApp {
         let request = self.requests.accessibility.take()?;
         if let AccessibilityRequest::ScreenReader(on) = request {
             self.screen_reader = on;
+        }
+        if let Some(changes) = &self.sign_in_comforts {
+            match request {
+                AccessibilityRequest::ScreenReader(on) => changes.set("screen_reader", on),
+                AccessibilityRequest::HighContrast(on) => changes.set("high_contrast", on),
+                AccessibilityRequest::TextScale(scale) => changes.set("text_scale", scale),
+            }
         }
         // The toggles show their new state; the App's theme change rebuilds.
         self.dirty_structure = true;

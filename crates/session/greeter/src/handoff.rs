@@ -24,7 +24,7 @@ pub const DEFAULT_SOCKET: &str = "/run/tilo-auth/socket";
 /// How long the greeter waits for the daemon before showing the ordinary
 /// screen. The daemon answers from memory; this only keeps a wedged daemon
 /// from holding the sign-in screen back.
-const EXCHANGE_BOUND: Duration = Duration::from_secs(2);
+pub(crate) const EXCHANGE_BOUND: Duration = Duration::from_secs(2);
 
 /// The longest reply line read. A name is at most 32 bytes.
 const REPLY_LIMIT: u64 = 4096;
@@ -68,7 +68,7 @@ pub fn key_held(socket: &Path, user: &str) -> bool {
     })
 }
 
-fn exchange(socket: &Path, request: &[u8], bound: Duration) -> Option<String> {
+pub(crate) fn exchange(socket: &Path, request: &[u8], bound: Duration) -> Option<String> {
     let mut stream = UnixStream::connect(socket).ok()?;
     stream.set_read_timeout(Some(bound)).ok()?;
     stream.set_write_timeout(Some(bound)).ok()?;
