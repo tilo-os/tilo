@@ -319,11 +319,18 @@ impl GovernedRoom {
             now,
         )?;
         select_exact_admission(&mut peer)?;
-        peer.install_seed(
-            tilo_peer_state::workspace_seed(&room, authority, &roster, name)?,
-            key,
-            now,
-        )?;
+        let stewardship = stewardship(dir, &room, authority, key);
+        let mut seed = tilo_peer_state::workspace_seed(&room, authority, &roster, name)?;
+        if stewardship.is_some() {
+            // The room's records are sealed channels its steward opens on
+            // first use: a seed record would go out in the clear before its
+            // channel exists, and every member who joins after the channel
+            // opened refuses that cleartext. The shared desktop starts with
+            // the first layout written to it, sealed, as in a room that never
+            // had one (`prepare_workspace_layout`).
+            seed.documents.clear();
+        }
+        peer.install_seed(seed, key, now)?;
         prepare_governance(&mut peer, key, now)?;
         let outgoing = peer
             .publication_mut()
@@ -350,7 +357,7 @@ impl GovernedRoom {
             wait_list: wait_list::WaitList::open(&path)?,
             parts,
             path,
-            stewardship: stewardship(dir, &room, authority, key),
+            stewardship,
             record,
             peer,
             publisher: Arc::default(),
