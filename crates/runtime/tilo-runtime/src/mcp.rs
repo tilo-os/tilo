@@ -2204,7 +2204,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Ok(value) => Ok(value),
             Err(error) => {
                 let moved = error.contains(tilo_actions::remote::STALE_REVISION_REASON);
-                match self.maybe_retry_stale(&mut a, &named, moved).await {
+                match self
+                    .maybe_retry_stale(&mut a, named.as_deref(), moved)
+                    .await
+                {
                     Some(retried) => retried,
                     None => Err(error),
                 }
@@ -2224,10 +2227,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     async fn maybe_retry_stale(
         &self,
         a: &mut OneCall,
-        named: &Option<String>,
+        named: Option<&str>,
         moved: bool,
     ) -> Option<Result<Value, String>> {
-        if !moved || named.as_deref().is_none_or(str::is_empty) {
+        if !moved || named.is_none_or(str::is_empty) {
             return None;
         }
         a.revision = None;

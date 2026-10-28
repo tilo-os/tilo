@@ -41,7 +41,8 @@ pub(crate) fn connecting(ws: u64) {
 /// A sync with the host of the room on topic `ws` completed.
 pub(crate) fn synced(ws: u64) {
     let before = ROOMS.lock_recover().insert(ws, RoomSyncState::Synced);
-    if let Some(since) = WAITING_SINCE.lock_recover().remove(&ws) {
+    let waited = WAITING_SINCE.lock_recover().remove(&ws);
+    if let Some(since) = waited {
         tracing::info!(
             target: "tilo::room_sync",
             ws,
