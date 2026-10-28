@@ -11,6 +11,12 @@
 //! them too while the page is hidden and the person allows it, and on its
 //! own for an application mounted without a desktop.
 //!
+//! Models are lent per mount, never ambient: the embedding host's model
+//! service when it supplies a session, else the page's own
+//! ([`tilo_model_client::page_service`]), which asks the providers the
+//! person set up in Model Providers with the keys kept in this browser's
+//! encrypted secret store. Only Model Providers is lent its administration.
+//!
 //! Browsers grant pickers, popups and permission prompts only inside a user
 //! gesture. Every call comes from the app's handling of an input event, which
 //! winit dispatches from the DOM listener, so it runs within that gesture's
@@ -22,6 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use agent_provider_config::ProviderConfig;
 use agent_provider_config::management::AdminFuture;
+use tilo_model_client::page_service::ProviderKeys;
 use ui::models::{
     CompletionFuture, CredentialStatus, ErrorKind, ModelBackend, ModelError, ModelRequest,
     ProviderAdmin, ProviderSnapshot, StreamSink,
@@ -30,6 +37,8 @@ use ui::models::{
 /// Model access belongs to a mount, never to the page's ambient services.
 /// The embedding host supplies a short-lived model-service session token,
 /// not a provider credential. The service enforces its audience and grants.
+/// A mount the host supplies none to is lent the page's own model service
+/// ([`page_models`]).
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ModelConfig {
@@ -62,9 +71,11 @@ impl ModelConfig {
             }
             _ => return Err("profileId and modelId must be supplied together and nonempty".into()),
         };
-        Ok(ui::models::Models::new(std::rc::Rc::new(LazyModels {
-            endpoint: self.endpoint.clone(),
-            session_token: zeroize::Zeroizing::new(self.session_token.clone()),
+        Ok(ui::models::Models::new(Rc::new(LazyModels {
+            service: Service::Host {
+                endpoint: self.endpoint.clone(),
+                session_token: zeroize::Zeroizing::new(self.session_token.clone()),
+            },
             choice,
             client: std::cell::OnceCell::new(),
         })))
@@ -87,11 +98,94 @@ impl ProviderManagementConfig {
         tilo_model_client::transport::check_endpoint(&self.endpoint)?;
         Ok(ui::models::ProviderAdministration::new(Arc::new(
             LazyAdministration {
-                endpoint: self.endpoint.clone(),
-                session_token: zeroize::Zeroizing::new(self.session_token.clone()),
+                service: Service::Host {
+                    endpoint: self.endpoint.clone(),
+                    session_token: zeroize::Zeroizing::new(self.session_token.clone()),
+                },
                 client: std::sync::OnceLock::new(),
             },
         )))
+    }
+}
+
+/// The page's own model service, for a mount its host lends none: the
+/// providers the person set up in Model Providers, asked from this page
+/// with the keys kept in the person's encrypted store in this browser.
+pub(crate) fn page_models() -> ui::models::Models {
+    ui::models::Models::new(Rc::new(LazyModels {
+        service: Service::Page,
+        choice: None,
+        client: std::cell::OnceCell::new(),
+    }))
+}
+
+/// Model Providers' administration of the page's own model service.
+pub(crate) fn page_provider_admin() -> ui::models::ProviderAdministration {
+    ui::models::ProviderAdministration::new(Arc::new(LazyAdministration {
+        service: Service::Page,
+        client: std::sync::OnceLock::new(),
+    }))
+}
+
+/// Whether the page's own model service has a provider to ask: something
+/// to lend a report's review rather than the room's model.
+pub(crate) fn page_models_set_up() -> bool {
+    ProviderConfig::load()
+        .profiles
+        .iter()
+        .any(|profile| profile.enabled)
+}
+
+/// Which model service a mount's clients talk to.
+enum Service {
+    /// The embedding host's, over its session.
+    Host {
+        endpoint: String,
+        session_token: zeroize::Zeroizing<String>,
+    },
+    /// The page's own.
+    Page,
+}
+
+/// Where the page's model service keeps the person's provider keys: the
+/// page's secret store (AES-GCM under a key the browser will not export,
+/// in `IndexedDB`), under a name of its own that no application's store
+/// reads.
+struct PageKeys(tilo_secrets::SecretStore);
+
+/// The secret store name the page's model service keeps keys under.
+const PAGE_KEYS: &str = "so.tilo.model-service";
+
+fn page_keys() -> Arc<dyn ProviderKeys> {
+    Arc::new(PageKeys(tilo_secrets::SecretStore::for_app(PAGE_KEYS)))
+}
+
+fn key_store_error(_: tilo_secrets::SecretError) -> ModelError {
+    ModelError {
+        kind: ErrorKind::Unavailable,
+        message: "This browser cannot keep provider keys; allow this site to store data".into(),
+    }
+}
+
+impl ProviderKeys for PageKeys {
+    fn get(&self, slot: &str) -> Result<Option<zeroize::Zeroizing<String>>, ModelError> {
+        Ok(self
+            .0
+            .get_blocking(slot)
+            .map_err(key_store_error)?
+            .map(|secret| {
+                zeroize::Zeroizing::new(String::from_utf8_lossy(secret.expose()).into_owned())
+            }))
+    }
+
+    fn put(&self, slot: &str, key: &str) -> Result<(), ModelError> {
+        self.0
+            .put_blocking(slot, key.as_bytes(), tilo_secrets::PutOptions::default())
+            .map_err(key_store_error)
+    }
+
+    fn delete(&self, slot: &str) -> Result<(), ModelError> {
+        self.0.delete_blocking(slot).map_err(key_store_error)
     }
 }
 
@@ -107,7 +201,16 @@ impl ProviderManagementConfig {
 pub struct ModelClients {
     models: MakeModels,
     administration: MakeAdministration,
+    page_models: MakePageModels,
+    page_administration: MakePageAdministration,
 }
+
+/// Starts the page's own model service over the person's keys.
+type MakePageModels = fn(Arc<dyn ProviderKeys>) -> Result<Rc<dyn ModelBackend>, ModelError>;
+
+/// Starts the page's own model service for Model Providers.
+type MakePageAdministration =
+    fn(Arc<dyn ProviderKeys>) -> Result<Arc<dyn ProviderAdmin>, ModelError>;
 
 /// Opens the model service client for a base URL, a token and an optional
 /// provider credential pair.
@@ -144,9 +247,22 @@ pub fn builtin_model_clients() -> ModelClients {
         let transport = FetchTransport::new(endpoint, session_token)?;
         Ok(Arc::new(AdministrationClient::new(transport)))
     }
+    fn page_models(keys: Arc<dyn ProviderKeys>) -> Result<Rc<dyn ModelBackend>, ModelError> {
+        let service = Arc::new(tilo_model_client::page_service::PageService::new(keys)?);
+        Ok(Rc::new(service.models(None)))
+    }
+    fn page_administration(
+        keys: Arc<dyn ProviderKeys>,
+    ) -> Result<Arc<dyn ProviderAdmin>, ModelError> {
+        Ok(Arc::new(tilo_model_client::page_service::PageService::new(
+            keys,
+        )?))
+    }
     ModelClients {
         models,
         administration,
+        page_models,
+        page_administration,
     }
 }
 
@@ -194,8 +310,7 @@ async fn model_clients() -> Result<ModelClients, ModelError> {
 
 /// A mount's models, connected on the first request.
 struct LazyModels {
-    endpoint: String,
-    session_token: zeroize::Zeroizing<String>,
+    service: Service,
     choice: Option<(String, String)>,
     client: std::cell::OnceCell<Rc<dyn ModelBackend>>,
 }
@@ -206,12 +321,14 @@ impl LazyModels {
             return Ok(Rc::clone(client));
         }
         let clients = model_clients().await?;
-        let client = (clients.models)(
-            &self.endpoint,
-            self.session_token.to_string(),
-            self.choice.clone(),
-        )
-        .map_err(|_| ModelError::new(ErrorKind::Transport))?;
+        let client = match &self.service {
+            Service::Host {
+                endpoint,
+                session_token,
+            } => (clients.models)(endpoint, session_token.to_string(), self.choice.clone())
+                .map_err(|_| ModelError::new(ErrorKind::Transport))?,
+            Service::Page => (clients.page_models)(page_keys())?,
+        };
         Ok(Rc::clone(self.client.get_or_init(|| client)))
     }
 }
@@ -232,8 +349,7 @@ impl ModelBackend for LazyModels {
 
 /// A mount's provider administration, connected on the first request.
 struct LazyAdministration {
-    endpoint: String,
-    session_token: zeroize::Zeroizing<String>,
+    service: Service,
     client: std::sync::OnceLock<Arc<dyn ProviderAdmin>>,
 }
 
@@ -243,8 +359,14 @@ impl LazyAdministration {
             return Ok(Arc::clone(client));
         }
         let clients = model_clients().await?;
-        let client = (clients.administration)(&self.endpoint, self.session_token.to_string())
-            .map_err(|_| ModelError::new(ErrorKind::Transport))?;
+        let client = match &self.service {
+            Service::Host {
+                endpoint,
+                session_token,
+            } => (clients.administration)(endpoint, session_token.to_string())
+                .map_err(|_| ModelError::new(ErrorKind::Transport))?,
+            Service::Page => (clients.page_administration)(page_keys())?,
+        };
         Ok(Arc::clone(self.client.get_or_init(|| client)))
     }
 }

@@ -2081,6 +2081,7 @@ dependencies = [
 name = "chat"
 version = "0.1.0"
 dependencies = [
+ "agent-provider-config",
  "durable-store",
  "emoji",
  "fnv",
@@ -2090,6 +2091,7 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
+ "settings-store",
  "taffy",
  "tempfile",
  "tilo-actions",
@@ -2108,6 +2110,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
+ "tokio",
  "uuid",
  "workspace-hack",
 ]
@@ -19195,6 +19198,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "settings-store",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-net",
