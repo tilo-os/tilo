@@ -154,7 +154,10 @@ fn an_export_is_rendered_on_the_host_kept_as_content_and_answered_again_unchange
     assert_eq!(answer["frames"], 24);
     let address = answer["content"].as_str().unwrap();
     assert_eq!(first.resources, vec![address.to_owned()]);
-    assert_eq!(answer["facts"]["titles"][0]["text"], "Agent", "{answer}");
+    assert_eq!(
+        answer["facts"]["tracks"][0]["clips"][0]["title"], "Agent",
+        "{answer}"
+    );
     let facts = offered(&agent, "facts").unwrap().address;
     let then = agent
         .invoke(
@@ -206,9 +209,9 @@ fn an_agents_record_states_its_facts_now_and_at_an_earlier_version() {
         .unwrap()
         .value
         .unwrap();
-    assert_eq!(now["frame"]["width"], 1280);
-    assert_eq!(now["titles"][0]["text"], "Agent");
-    assert_eq!(now["duration"], 1.0);
+    assert_eq!(now["project"]["width"], 1280);
+    assert_eq!(now["tracks"][0]["clips"][0]["title"], "Agent");
+    assert_eq!(now["project"]["duration"], 1.0);
     let then = agent
         .invoke(
             &facts.address,
@@ -218,10 +221,10 @@ fn an_agents_record_states_its_facts_now_and_at_an_earlier_version() {
         .unwrap()
         .value
         .unwrap();
-    assert_eq!(then["frame"]["width"], 320);
+    assert_eq!(then["project"]["width"], 320);
     assert_eq!(
         tilo_agent_participant::facts::changes(&then, &now),
-        vec!["frame.width: 320 -> 1280", "frame.height: 180 -> 720"]
+        vec!["project.width: 320 -> 1280", "project.height: 180 -> 720"]
     );
 }
 

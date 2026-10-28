@@ -756,3 +756,124 @@ fn a_past_version_reads_and_shows_its_title() {
         "{shown:?}"
     );
 }
+
+/// Two shots on V1 with a third of a second between them, the second fading
+/// out; a yellow title on V2 over the first two seconds; the first shot's
+/// sound on A1.
+fn promo() -> Project {
+    let mut project = Project::new("Harbour Days promo");
+    project.set_frame_size(1280, 720);
+    let mut source = |name: &str, kind: MediaKind, text: Option<crate::model::TextSource>| {
+        let id = Uuid::new_v4();
+        project.media.push(MediaItem {
+            id,
+            name: name.into(),
+            kind,
+            duration: 4.0,
+            text,
+            ..MediaItem::default()
+        });
+        id
+    };
+    let a = source("shot-a.mp4", MediaKind::Video, None);
+    let c = source("shot-c.mp4", MediaKind::Video, None);
+    let mut words = crate::model::TextSource::new("HARBOUR DAYS");
+    words.color = [1.0, 212.0 / 255.0, 0.0, 1.0];
+    words.size = 0.12;
+    let title = source("Title", MediaKind::Text, Some(words));
+    let mut lane = |name: &str, kind: TrackKind, index: u32| {
+        let id = Uuid::new_v4();
+        project.tracks.push(Track {
+            id,
+            name: name.into(),
+            kind,
+            index,
+            ..Track::default()
+        });
+        id
+    };
+    let v1 = lane("V1", TrackKind::Video, 1);
+    let v2 = lane("V2", TrackKind::Video, 2);
+    let a1 = lane("A1", TrackKind::Audio, 1);
+    for (track, media, start, (in_point, out_point), fade_out) in [
+        (v1, a, 0.0, (1.0, 4.0), 0.0),
+        (v1, c, 3.333, (0.5, 3.5), 1.0),
+        (v2, title, 0.0, (0.0, 2.0), 0.0),
+        (a1, a, 0.0, (1.0, 4.0), 0.0),
+    ] {
+        project.clips.push(Clip {
+            id: Uuid::new_v4(),
+            track,
+            media,
+            start,
+            in_point,
+            out_point,
+            fade_out,
+            ..Clip::default()
+        });
+    }
+    project
+}
+
+#[test]
+fn the_facts_are_the_timeline_read_without_ids() {
+    let mut app = editor(&promo());
+    let facts = app.call("facts", json!({})).unwrap().unwrap();
+    let read = call(&mut app, "read", json!({})).unwrap();
+    assert_eq!(read["tracks"][0]["clips"][0]["title"], "HARBOUR DAYS");
+    assert!(read["tracks"][0]["clips"][0]["id"].is_string());
+    assert!(read["bin"].is_array());
+    assert_eq!(
+        facts,
+        json!({
+            "project": {
+                "name": "Harbour Days promo", "width": 1280, "height": 720, "fps": 30.0,
+                "duration": 6.333,
+            },
+            "tracks": [
+                {
+                    "name": "V2", "kind": "video",
+                    "clips": [{
+                        "media_name": "Title", "track": "V2", "start": 0.0, "end": 2.0,
+                        "in": 0.0, "out": 2.0, "title": "HARBOUR DAYS", "colour": "#ffd400",
+                        "size": 0.12,
+                    }],
+                },
+                {
+                    "name": "V1", "kind": "video",
+                    "clips": [
+                        {
+                            "media_name": "shot-a.mp4", "track": "V1", "start": 0.0,
+                            "end": 3.0, "in": 1.0, "out": 4.0,
+                        },
+                        {
+                            "media_name": "shot-c.mp4", "track": "V1", "start": 3.333,
+                            "end": 6.333, "in": 0.5, "out": 3.5, "fade_out": 1.0,
+                        },
+                    ],
+                },
+                {
+                    "name": "A1", "kind": "audio",
+                    "clips": [{
+                        "media_name": "shot-a.mp4", "track": "A1", "start": 0.0, "end": 3.0,
+                        "in": 1.0, "out": 4.0,
+                    }],
+                },
+            ],
+            "gaps": [{ "track": "V1", "from": 3.0, "to": 3.333 }],
+            "markers": [],
+        })
+    );
+}
+
+#[test]
+fn an_empty_project_reads_no_length_and_a_marked_range_is_read() {
+    let mut project = Project::new("cut");
+    assert_eq!(facts_json(&project)["project"]["duration"], 0.0);
+    assert!(facts_json(&project).get("render_range").is_none());
+    project.set_mark_in(1.0);
+    assert_eq!(
+        facts_json(&project)["render_range"],
+        json!({ "start": 1.0, "end": 1.0 })
+    );
+}

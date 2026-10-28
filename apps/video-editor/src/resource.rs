@@ -43,7 +43,7 @@ fn instant(at: f64) -> Result<f64, Refusal> {
     params = video_project,
     search = crate::search::project_entries,
     read_content = crate::agent_timeline::read_timeline,
-    facts = crate::facts::facts,
+    facts = crate::agent_timeline::facts,
     answer = crate::agent_timeline::answer,
 )]
 impl Project {

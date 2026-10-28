@@ -939,6 +939,8 @@ pub fn clip_json(project: &Project, clip: &Clip) -> Value {
     out.insert("out".into(), json!(secs(clip.out_point)));
     if let Some(text) = media.and_then(|m| m.text.as_ref()) {
         out.insert("title".into(), json!(text.content));
+        out.insert("colour".into(), json!(colour_hex(text.color)));
+        out.insert("size".into(), json!(text.size));
     }
     let extras = [
         ("fade_in", clip.fade_in, 0.0),
@@ -1010,8 +1012,33 @@ fn track_json(project: &Project, track: &Track, budget: &mut usize) -> Value {
     Value::Object(out)
 }
 
-/// The whole timeline as a caller reads it: the project's format, each
-/// track (top picture lane first) with its clips, the bin and the markers.
+/// Gaps shorter than this are rounding, not a gap a person would see.
+const GAP: f64 = 0.0005;
+
+/// The stretches before the timeline's end where a lane holding shots
+/// shows none, from 0 s. Titles over nothing are not shots.
+fn gaps(project: &Project) -> Vec<Value> {
+    let mut gaps = Vec::new();
+    for track in project.display_tracks() {
+        let mut at = 0.0_f64;
+        let shots = project.clips_on(track.id).into_iter().filter(|clip| {
+            project
+                .media(clip.media)
+                .is_some_and(|media| media.kind.is_visual() && media.kind != MediaKind::Text)
+        });
+        for clip in shots {
+            if clip.start - at > GAP {
+                gaps.push(json!({ "track": track.name, "from": secs(at), "to": secs(clip.start) }));
+            }
+            at = at.max(clip.end());
+        }
+    }
+    gaps
+}
+
+/// The whole timeline as a caller reads it: the project's format, the
+/// render range when one is marked, each track (top picture lane first)
+/// with its clips, the gaps between shots, the bin and the markers.
 #[must_use]
 pub fn timeline_json(project: &Project) -> Value {
     let mut budget = MAX_READ_CLIPS;
@@ -1020,22 +1047,88 @@ pub fn timeline_json(project: &Project) -> Value {
         .into_iter()
         .map(|track| track_json(project, track, &mut budget))
         .collect();
-    json!({
-        "project": {
+    let duration = if project.clips.is_empty() {
+        0.0
+    } else {
+        secs(project.duration())
+    };
+    let mut out = Map::new();
+    out.insert(
+        "project".into(),
+        json!({
             "name": project.name,
             "width": project.width,
             "height": project.height,
             "fps": project.fps,
-            "duration": secs(project.duration()),
-        },
-        "tracks": tracks,
-        "bin": project.media.iter().map(media_json).collect::<Vec<_>>(),
-        "markers": project
+            "duration": duration,
+        }),
+    );
+    if project.mark_in.is_some() || project.mark_out.is_some() {
+        out.insert(
+            "render_range".into(),
+            json!({
+                "start": secs(project.mark_in.unwrap_or(0.0)),
+                "end": secs(project.mark_out.unwrap_or_else(|| project.duration())),
+            }),
+        );
+    }
+    out.insert("tracks".into(), Value::Array(tracks));
+    let gaps = gaps(project);
+    if !gaps.is_empty() {
+        out.insert("gaps".into(), Value::Array(gaps));
+    }
+    out.insert(
+        "bin".into(),
+        project
+            .media
+            .iter()
+            .map(media_json)
+            .collect::<Vec<_>>()
+            .into(),
+    );
+    out.insert(
+        "markers".into(),
+        project
             .markers
             .iter()
             .map(|m| json!({ "id": m.id.to_string(), "at": secs(m.t), "name": m.name }))
-            .collect::<Vec<_>>(),
-    })
+            .collect::<Vec<_>>()
+            .into(),
+    );
+    Value::Object(out)
+}
+
+/// The cut as a brief states it: [`timeline_json`] without the ids and the
+/// bin, so two versions' facts compare field by field and differ only where
+/// the cut does.
+#[must_use]
+pub fn facts_json(project: &Project) -> Value {
+    fn without_ids(value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                for id in ["id", "media", "linked"] {
+                    map.remove(id);
+                }
+                map.values_mut().for_each(without_ids);
+            }
+            Value::Array(items) => items.iter_mut().for_each(without_ids),
+            _ => {}
+        }
+    }
+    let mut facts = timeline_json(project);
+    if let Value::Object(map) = &mut facts {
+        map.remove("bin");
+    }
+    without_ids(&mut facts);
+    facts
+}
+
+/// `facts`: [`facts_json`].
+///
+/// # Errors
+/// Never; the signature is the one `#[resource(facts = path)]` takes.
+pub fn facts(project: &Project) -> Result<Value, String> {
+    Ok(facts_json(project))
 }
 
 /// `read`: the timeline, or one clip, source or track (by id, or a track or
