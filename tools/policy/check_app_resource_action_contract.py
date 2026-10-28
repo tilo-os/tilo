@@ -184,14 +184,12 @@ ACTION_BUTTON_BUILDERS = {
 ACTION_BUTTON_METHOD = re.compile(
     r"(?<!\.)\.\s*(" + "|".join(sorted(ACTION_BUTTON_BUILDERS)) + r")\s*\("
 )
-# A menu's entries, by the constructor's path.
-MENU_ENTRY_CALL = re.compile(r"\bMenuItem\s*::\s*(?:action|icon_action|destructive_action)\s*\(")
-ACTION_BUTTON_CALL = re.compile(f"{ACTION_BUTTON_METHOD.pattern}|{MENU_ENTRY_CALL.pattern}")
+ACTION_BUTTON_CALL = ACTION_BUTTON_METHOD
 # Closure-taking toolkit builders named `*action*` that are neither counted
 # above nor controls: why.
 NOT_ACTION_BUTTONS = {
-    "icon_action": "a menu entry, counted by its path (MENU_ENTRY_CALL)",
-    "destructive_action": "a menu entry, counted by its path (MENU_ENTRY_CALL)",
+    "icon_action": "a menu entry, published as the open menu's own control",
+    "destructive_action": "a menu entry, published as the open menu's own control",
     "actions_group": "binds each hit to its published action",
     "primary_action": "a dialog's footer button, published as the dialog's own control",
     "secondary_action": "a dialog's footer button, published as the dialog's own control",
@@ -261,8 +259,8 @@ def call_arguments(code: str, raw: str, open_paren: int) -> int:
 
 
 def closure_action_buttons(code: str, raw: str, matches: list[re.Match]) -> list[re.Match]:
-    """The closure-run buttons among `matches`: a menu entry's constructor,
-    or a builder method passed its toolkit arity."""
+    """The closure-run buttons among `matches`: a builder method passed its
+    toolkit arity."""
     kept = []
     for match in closure_controls(code, raw, matches):
         method = ACTION_BUTTON_METHOD.match(code, match.start())
@@ -348,8 +346,8 @@ RATCHETS = {
     ),
     "closure_action_button": (
         ACTION_BUTTON_CALL,
-        "new closure-run button of a toolkit composite (a dialog footer, a menu entry, a "
-        "row's or card's action); bind it to a resource action or publish it",
+        "new closure-run button of a toolkit composite (a row's, a property's or a card's "
+        "action); bind it to a resource action or publish it",
     ),
     "bespoke_command_entry": (
         re.compile(r"\bCommandEntry\s*::\s*new\s*\("),

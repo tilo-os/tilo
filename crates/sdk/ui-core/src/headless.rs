@@ -7464,6 +7464,11 @@ impl FrameHarness {
             );
             return;
         }
+        // A control an operation chose the way a person chooses it (a menu
+        // row) asked to be pressed where it is drawn.
+        for at in crate::widget::take_presses() {
+            self.click_at(at.x, at.y);
+        }
         self.idle_control_tick();
         // An Undo/Redo control the widget tree activated during that event.
         // Same route the live host takes: the widget asks, the host performs.
@@ -9997,6 +10002,7 @@ impl FrameHarness {
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         self.invalidate_local();
         self.pump_component_wakes();
+        let _ = crate::widget::take_presses();
         let resources = self.resources();
         let spec = tilo_actions::door::resolve(&resources, address)
             .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;

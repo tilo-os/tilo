@@ -1520,7 +1520,7 @@ impl App {
     /// target has already resolved to this exact point; routing the usual
     /// move/press/release sequence through the widget tree preserves the same
     /// behavior as hardware input instead of reporting a false success.
-    fn dispatch_semantic_click(&mut self, x: f64, y: f64) -> bool {
+    pub(super) fn dispatch_semantic_click(&mut self, x: f64, y: f64) -> bool {
         self.mark_semantic_tree_stale();
         self.refresh_control_action_availability();
         if self.layout.root_node.is_none() {
