@@ -40,6 +40,17 @@ impl ContentStoreServices for FakeStore {
             done: false,
         }))
     }
+
+    /// The room holds the puts nobody dropped: what the fixture's shelf has
+    /// stored for it.
+    fn holds(&self, room: &str, hash: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .stored
+            .iter()
+            .any(|(stored_room, stored_hash, _)| stored_room == room && stored_hash == hash)
+    }
 }
 
 struct FakeSink {
@@ -157,17 +168,8 @@ fn a_chunked_put_stores_the_bytes_in_the_callers_room_and_answers_their_referenc
     assert_eq!(shelf.stored, [(fixture.room.clone(), hash.clone(), bytes)]);
     assert_eq!(shelf.aborted, 0);
     // Who put it is kept, without the bytes.
-    let attributions = std::fs::read_to_string(
-        fixture
-            .journal
-            .join(super::super::invocation_journal::CONTENT_PUTS_FILE),
-    )
-    .unwrap();
-    let records: Vec<ContentPutRecord> = attributions
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    assert_eq!(records.len(), 1, "{attributions}");
+    let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
+    assert_eq!(records.len(), 1, "{records:?}");
     assert_eq!(records[0].actor, owner_id());
     assert_eq!(records[0].room, fixture.room);
     assert_eq!(records[0].hash, hash);
@@ -315,4 +317,83 @@ fn a_put_whose_attribution_cannot_be_written_is_refused_and_tags_nothing() {
     let shelf = fixture.shelf.lock().unwrap();
     assert!(shelf.stored.is_empty(), "nothing is kept or tagged");
     assert_eq!(shelf.aborted, 1, "the store's upload is dropped");
+}
+
+/// Put `bytes` into the fixture's room and answer its hash.
+fn put(fixture: &Fixture, bytes: &[u8]) -> String {
+    let mut upload = fixture
+        .puts
+        .begin(&owner(&fixture.room), bytes.len() as u64)
+        .unwrap();
+    upload.append(0, bytes).unwrap();
+    let reference = upload.finish().unwrap();
+    reference.trim_start_matches("tilo.content:").to_owned()
+}
+
+/// Each put appends one line beside the file's first, and the attributions
+/// stay bounded: once the lines reach the size of the snapshot, the next put
+/// rewrites the file whole instead of appending to it forever. Every
+/// attribution a room still holds survives that.
+#[test]
+fn the_attribution_log_stays_bounded_and_keeps_every_put_a_room_holds() {
+    let fixture = fixture();
+    let path = fixture
+        .journal
+        .join(super::super::invocation_journal::CONTENT_PUTS_FILE);
+    let mut hashes = Vec::new();
+    let mut longest = 0;
+    for n in 0..64_u32 {
+        let mut bytes = n.to_le_bytes().to_vec();
+        bytes.resize(64, b'x');
+        hashes.push(put(&fixture, &bytes));
+        let len = std::fs::metadata(&path).unwrap().len();
+        longest = longest.max(len);
+    }
+    // 64 puts of a 64-byte payload: appended lines would be tens of KiB. The
+    // file is bounded by its own snapshot instead, since compaction rewrote
+    // it rather than letting the lines grow-without-bound.
+    assert!(
+        longest <= 4096,
+        "the attribution log grew past its snapshot: {longest} bytes"
+    );
+    let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
+    let stored: Vec<String> = records.iter().map(|record| record.hash.clone()).collect();
+    for hash in &hashes {
+        assert!(
+            stored.contains(hash),
+            "a put the room holds was dropped: {hash}"
+        );
+    }
+}
+
+/// An attribution whose content the room no longer holds is dropped by a
+/// compaction, so the file stays as long as the content it describes is
+/// worth attributing.
+#[test]
+fn a_compaction_drops_the_attributions_of_content_no_room_holds() {
+    let fixture = fixture();
+    let dropped = put(&fixture, b"gone before the next compaction");
+    // The room drops the content: no put left it, so nothing holds it.
+    fixture
+        .shelf
+        .lock()
+        .unwrap()
+        .stored
+        .retain(|(_, hash, _)| *hash != dropped);
+    let kept = put(&fixture, b"still held");
+    let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
+    let stored: Vec<String> = records.iter().map(|record| record.hash.clone()).collect();
+    assert!(stored.contains(&kept), "the held put stays: {stored:?}");
+    // A compaction, made by enough further puts that the lines outgrow the
+    // snapshot, drops the one nothing holds.
+    for n in 0..64_u32 {
+        put(&fixture, &n.to_le_bytes().repeat(16));
+    }
+    let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
+    let stored: Vec<String> = records.iter().map(|record| record.hash.clone()).collect();
+    assert!(
+        !stored.contains(&dropped),
+        "an attribution of content no room holds is dropped: {stored:?}"
+    );
+    assert!(stored.contains(&kept), "the held put survives: {stored:?}");
 }
