@@ -23,7 +23,7 @@
 //! user's SDR white, plus each layer's weight times its signal decoded from
 //! its own description into the output's primaries, and encodes once. An SDR
 //! output of a mixed setup instead gets each layer tone-mapped with
-//! [`crate::shell::hdr_tonemap`]. Anything that renders the scene without
+//! [`crate::hdr_tonemap`]. Anything that renders the scene without
 //! the substitution (screenshots, screencasts, SDR outputs, a pass that
 //! cannot composite) sees the tone-mapped SDR rendition, so no path can show
 //! a hole.
@@ -38,12 +38,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::ImageData;
 
-use crate::shell::color_pipeline::{
+use crate::color_pipeline::{
     BT709_PRIMARIES, BT2020_PRIMARIES, DISPLAY_P3_PRIMARIES, Mat3, SDR_REFERENCE_WHITE_NITS,
     bt709_to_bt2020_matrix, gamut_matrix, hlg_inverse_oetf, pack_xbgr2101010, pq_eotf,
     pq10_from_nits, srgb_eotf, srgb_oetf,
 };
-use crate::shell::hdr_tonemap::{HdrTonemapConfig, tonemap_rgb_signal_to_sdr_linear};
+use crate::hdr_tonemap::{HdrTonemapConfig, tonemap_rgb_signal_to_sdr_linear};
 use neighbour_wire::colorimetry::{ColorPrimaries, Colorimetry, TransferCharacteristics};
 
 /// The GPU composite for PQ outputs; mirrors [`composite_hdr_pixel`].
@@ -241,7 +241,7 @@ impl HdrPlane {
             signal.colorimetry.range,
             neighbour_wire::colorimetry::ColorRange::Limited
         );
-        let planes = crate::shell::hdr_tonemap::P010Planes {
+        let planes = crate::hdr_tonemap::P010Planes {
             luma,
             chroma,
             luma_stride: y_stride,
@@ -710,7 +710,7 @@ impl CpuComposite<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::color_pipeline::pq_inverse_eotf;
+    use crate::color_pipeline::pq_inverse_eotf;
     use neighbour_wire::colorimetry::{ColorRange, MatrixCoefficients};
 
     fn pq_signal() -> SurfaceSignal {

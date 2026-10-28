@@ -18,7 +18,7 @@
 use neighbour_wire::colorimetry::{
     ColorPrimaries, ColorRange, Colorimetry, TransferCharacteristics,
 };
-use tilo_window_share::hdr_metadata::Hdr10Metadata;
+use neighbour_wire::hdr_metadata::Hdr10Metadata;
 
 /// Compute-shader source, same math as [`tonemap_p010_to_rgba8`]. Tests in
 /// `hdr_tonemap_shader.rs` compile it on an offscreen wgpu device and check
@@ -214,7 +214,7 @@ pub fn tonemap_rgb_signal_to_sdr_linear(
         TransferCharacteristics::Bt709
         | TransferCharacteristics::Srgb
         | TransferCharacteristics::Unspecified => {
-            return [r, g, b].map(crate::shell::color_pipeline::srgb_eotf);
+            return [r, g, b].map(crate::color_pipeline::srgb_eotf);
         }
     };
     let (r709, g709, b709) = bt2020_to_bt709(eotf(r), eotf(g), eotf(b));
@@ -436,7 +436,7 @@ mod tests {
         }
 
         fn tonemap_config_from_metadata_reads_mastering_peak() {
-            use tilo_window_share::hdr_metadata::{
+            use neighbour_wire::hdr_metadata::{
                 ContentLightLevel, Hdr10Metadata, MasteringDisplayColorVolume,
             };
             let md = Hdr10Metadata {

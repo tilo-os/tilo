@@ -205,7 +205,7 @@ fn production_producer_authorizes_only_matching_completed_headless_frames() {
 
 #[test]
 fn hdr_metadata_cannot_reuse_the_completed_sdr_image() {
-    use crate::shell::hdr_surface::{HdrLayer, HdrPlane, SurfaceSignal};
+    use tilo_color_pipeline::hdr_surface::{HdrLayer, HdrPlane, SurfaceSignal};
     let mut backend = HeadlessBackend::new(64, 48).expect("fixture renderer");
     backend.set_watched(true);
     let color = Color::from_rgb8(200, 20, 30);
@@ -215,7 +215,7 @@ fn hdr_metadata_cannot_reuse_the_completed_sdr_image() {
     let allocation = backend.last_frame().as_ptr();
     let signal = SurfaceSignal::for_colorimetry(
         neighbour_wire::colorimetry::Colorimetry::hdr10(),
-        crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
+        tilo_color_pipeline::hdr_tonemap::HdrTonemapConfig::default(),
     )
     .expect("HDR signal");
     let plane = HdrPlane::from_signal_rgb(1, 1, [[0.5; 3]], signal).expect("HDR plane");

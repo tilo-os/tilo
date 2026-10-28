@@ -1,6 +1,6 @@
 //! Output colour pipeline — the compositor's HDR/SDR composition maths.
 //!
-//! Counterpart to [`crate::shell::hdr_tonemap`], which only decodes HDR down
+//! Counterpart to [`crate::hdr_tonemap`], which only decodes HDR down
 //! to SDR; this module drives a real output: transfer functions in both
 //! directions, gamut matrices derived from CIE-1931 primaries via
 //! [`rgb_to_xyz`], SDR→HDR placement at the BT.2408 reference white, and the
@@ -10,9 +10,14 @@
 //! headless is driving a DRM connector in an HDR signalling mode, see
 //! [`OutputColorState::from_display`].
 
-use crate::shell::hdr_display::DisplayCapabilities;
-use crate::shell::hdr_tonemap::HdrTonemapConfig;
+use crate::hdr_display::DisplayCapabilities;
+use crate::hdr_tonemap::HdrTonemapConfig;
 use neighbour_wire::colorimetry::{ColorPrimaries, Colorimetry, TransferCharacteristics};
+
+/// The WGSL helpers every output pass shares to read its source turned to
+/// the output's orientation (`oriented_source_pixel`), concatenated in front
+/// of each pass's own source.
+pub const OUTPUT_ORIENTATION_SHADER: &str = include_str!("output_orientation.wgsl");
 
 /// WGSL source for the SDR → HDR output-encode compute shader, the GPU
 /// mirror of [`map_sdr_pixel_to_pq_bt2020`]. Validated through `naga` in tests.
@@ -254,7 +259,7 @@ pub fn hlg_oetf(e: f32) -> f32 {
 }
 
 /// Inverse HLG OETF: HLG signal `[0,1]` → scene-linear light `[0,1]`. Same
-/// maths as [`crate::shell::hdr_tonemap`]'s decode minus the display-peak scale.
+/// maths as [`crate::hdr_tonemap`]'s decode minus the display-peak scale.
 pub fn hlg_inverse_oetf(e_prime: f32) -> f32 {
     let e = e_prime.max(0.0);
     if e <= 0.5 {

@@ -28,9 +28,9 @@ use ui::widget::TaffyTreeExt;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
 use crate::network::protocol::{PeerId, SurfaceId};
-use crate::shell::color_pipeline::{OutputColorState, SurfaceColorOp, plan_surface_op};
-use crate::shell::hdr_tonemap::{HdrTonemapConfig, tonemap_p010_to_rgba8};
 use neighbour_wire::colorimetry::Colorimetry;
+use tilo_color_pipeline::color_pipeline::{OutputColorState, SurfaceColorOp, plan_surface_op};
+use tilo_color_pipeline::hdr_tonemap::{HdrTonemapConfig, tonemap_p010_to_rgba8};
 use tilo_window_share::diagnostics::PeerSurfaceMetrics;
 use tilo_window_share::streaming::InputEvent;
 
@@ -195,7 +195,7 @@ pub struct PeerView {
     cached_image: Option<vello::peniko::ImageData>,
     /// `latest` at full precision when it carries an HDR signal; composited
     /// in place of `cached_image` where the output shows HDR.
-    cached_hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
+    cached_hdr: Option<Arc<tilo_color_pipeline::hdr_surface::HdrPlane>>,
     /// Pending input events to ship back to the owner.
     pending_inputs: Vec<InputEvent>,
     /// Production sends directly through this non-blocking bridge; tests
@@ -295,7 +295,7 @@ impl PeerView {
         local_peer: PeerId,
         codec: &str,
         metrics: PeerSurfaceMetrics,
-        display_caps: &crate::shell::hdr_display::DisplayCapabilities,
+        display_caps: &tilo_color_pipeline::hdr_display::DisplayCapabilities,
         hdr_static_metadata: Option<tilo_window_share::hdr_metadata::Hdr10Metadata>,
     ) -> Self {
         // HDR streams announce their static metadata; they decode to 10-bit.
@@ -661,20 +661,21 @@ impl PeerView {
                     uv_stride,
                 } => {
                     let cfg = self.hdr_tonemap.as_ref().copied().unwrap_or_default();
-                    self.cached_hdr = crate::shell::hdr_surface::SurfaceSignal::for_colorimetry(
-                        frame.colorimetry,
-                        cfg,
-                    )
-                    .and_then(|signal| {
-                        crate::shell::hdr_surface::HdrPlane::p010(
-                            y,
-                            uv,
-                            (*y_stride, *uv_stride),
-                            (frame.width, frame.height),
-                            signal,
+                    self.cached_hdr =
+                        tilo_color_pipeline::hdr_surface::SurfaceSignal::for_colorimetry(
+                            frame.colorimetry,
+                            cfg,
                         )
-                    })
-                    .map(Arc::new);
+                        .and_then(|signal| {
+                            tilo_color_pipeline::hdr_surface::HdrPlane::p010(
+                                y,
+                                uv,
+                                (*y_stride, *uv_stride),
+                                (frame.width, frame.height),
+                                signal,
+                            )
+                        })
+                        .map(Arc::new);
                     tonemap_p010_to_rgba8(
                         y,
                         uv,
@@ -758,7 +759,7 @@ impl Widget for PeerView {
             .pre_translate((rect.x0, rect.y0).into())
             .pre_scale_non_uniform(sx, sy);
         if let Some(plane) = &self.cached_hdr {
-            crate::shell::hdr_surface::record(
+            tilo_color_pipeline::hdr_surface::record(
                 plane,
                 &image,
                 placement,
@@ -940,7 +941,7 @@ mod tests {
     }
 
     fn vp9_view(metrics: PeerSurfaceMetrics) -> PeerView {
-        let caps = crate::shell::hdr_display::DisplayCapabilities::sdr_default();
+        let caps = tilo_color_pipeline::hdr_display::DisplayCapabilities::sdr_default();
         PeerView::new_for_stream(42, 7, "vp9", metrics, &caps, None)
     }
 
@@ -1394,7 +1395,7 @@ mod tests {
         /// A stream-start label the receiver can't honour must never cost the
         /// viewer the share: it degrades to the SDR H.264 decoder.
         fn an_unknown_stream_label_degrades_to_h264() {
-            let caps = crate::shell::hdr_display::DisplayCapabilities::sdr_default();
+            let caps = tilo_color_pipeline::hdr_display::DisplayCapabilities::sdr_default();
             let unknown =
                 PeerView::new_for_stream(42, 7, "h266", PeerSurfaceMetrics::default(), &caps, None);
             assert_eq!(unknown.codec(), StreamCodec::H264);
@@ -1418,7 +1419,7 @@ mod tests {
         fn a_codec_switch_rebuilds_the_decoder() {
             const W: u32 = 64;
             const H: u32 = 64;
-            let caps = crate::shell::hdr_display::DisplayCapabilities::sdr_default();
+            let caps = tilo_color_pipeline::hdr_display::DisplayCapabilities::sdr_default();
             let mut view =
                 PeerView::new_for_stream(42, 7, "h264", PeerSurfaceMetrics::default(), &caps, None);
             view.restart_stream("vp9", Some((W, H)));

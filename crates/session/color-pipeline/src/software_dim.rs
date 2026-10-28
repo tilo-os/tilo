@@ -17,7 +17,7 @@
 //! screenshots, recordings and screen sharing read that frame, so none of
 //! them is dimmed.
 
-use crate::shell::color_pipeline::{PQ_MAX_NITS, pq_eotf, pq_inverse_eotf, srgb_eotf, srgb_oetf};
+use crate::color_pipeline::{PQ_MAX_NITS, pq_eotf, pq_inverse_eotf, srgb_eotf, srgb_oetf};
 
 /// How a display's signal encodes light, which a LUT must decode before it
 /// scales light and encode again after.

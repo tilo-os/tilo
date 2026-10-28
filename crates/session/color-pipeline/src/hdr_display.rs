@@ -15,7 +15,7 @@ use neighbour_wire::colorimetry::{ColorPrimaries, TransferCharacteristics};
 use tilo_wayland_ext::edid::HdrDisplayInfo;
 
 /// What the compositor can deliver to one output. Consumed by
-/// [`crate::shell::peer_view::PeerView::new_for_stream`] to pick between
+/// the shell's peer view (`PeerView::new_for_stream`) to pick between
 /// tone-map and passthrough.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DisplayCapabilities {

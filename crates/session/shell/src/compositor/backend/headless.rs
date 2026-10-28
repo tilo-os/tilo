@@ -840,7 +840,7 @@ impl SimulatedVblankPresenter {
                 .checked_add(SIMULATED_FRAME_DEADLINE)
                 .unwrap_or(started),
             OutputSignal {
-                sdr_white_nits: crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
+                sdr_white_nits: tilo_color_pipeline::color_pipeline::SDR_REFERENCE_WHITE_NITS,
                 hdr_layers: &frame.hdr_layers,
                 color_lut: None,
                 // Headless has no physical display brightness to control.

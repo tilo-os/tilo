@@ -157,7 +157,7 @@ impl ShellOverlayHost {
             local_peer,
             codec,
             tilo_window_share::diagnostics::PeerSurfaceMetrics::default(),
-            &crate::shell::hdr_display::DisplayCapabilities::sdr_default(),
+            &tilo_color_pipeline::hdr_display::DisplayCapabilities::sdr_default(),
             hdr_static_metadata,
         )
         .from_peer(&from);

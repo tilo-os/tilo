@@ -126,7 +126,7 @@ pub struct FramePaint {
     /// HDR surfaces drawn in `scene`, in scene pixels. A presenter driving an
     /// HDR output composites them at full precision; any other rendering of
     /// `scene` shows their tone-mapped SDR rendition.
-    pub hdr_layers: Vec<crate::shell::hdr_surface::HdrLayer>,
+    pub hdr_layers: Vec<tilo_color_pipeline::hdr_surface::HdrLayer>,
     /// What `scene`'s floating surfaces are drawn over. A renderer that
     /// composites materials blurs these before rendering the scene; any
     /// other shows the surfaces opaque.
@@ -453,7 +453,10 @@ impl FramePaint {
 
     /// The same frame, with `layers` composited where HDR is shown.
     #[must_use]
-    pub fn with_hdr_layers(mut self, layers: Vec<crate::shell::hdr_surface::HdrLayer>) -> Self {
+    pub fn with_hdr_layers(
+        mut self,
+        layers: Vec<tilo_color_pipeline::hdr_surface::HdrLayer>,
+    ) -> Self {
         if !layers.is_empty() {
             self.cache = None;
             self.repaint_copies();
@@ -914,7 +917,7 @@ pub struct FrameBuilder {
     /// copies; it keeps glyph outlines between frames.
     draw_bounds: std::cell::RefCell<tilo_cpu_raster::DrawBounds>,
     /// HDR layers of the latest [`Self::paint`], until taken.
-    painted_hdr_layers: Vec<crate::shell::hdr_surface::HdrLayer>,
+    painted_hdr_layers: Vec<tilo_color_pipeline::hdr_surface::HdrLayer>,
     /// The backdrops the latest [`Self::paint`] drew floating surfaces over.
     painted_backdrop: Option<Arc<BackdropFrame>>,
     /// What the pointer shows right now, so captures draw the same image.
@@ -2383,11 +2386,11 @@ impl FrameBuilder {
         let _dense_scope = ui::retained_present::RetainedScene::begin(false);
         let recording = self
             .hdr_layers_composited()
-            .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
+            .then(tilo_color_pipeline::hdr_surface::HdrLayerRecording::begin);
         let backdrop = BackdropRecording::begin();
         let (logical, sections) = self.paint_logical();
         let surfaces = backdrop.finish();
-        let layers = recording.map(crate::shell::hdr_surface::HdrLayerRecording::finish);
+        let layers = recording.map(tilo_color_pipeline::hdr_surface::HdrLayerRecording::finish);
         self.painted_hdr_layers = self.hdr_layers_to_scene(layers.unwrap_or_default());
         // A surface drawn into a section sits over the sections below it;
         // one drawn over them all, into the scene itself (layer 0), over
@@ -2398,7 +2401,7 @@ impl FrameBuilder {
     }
 
     /// The HDR layers the latest [`Self::paint`] drew, in scene pixels.
-    pub fn take_hdr_layers(&mut self) -> Vec<crate::shell::hdr_surface::HdrLayer> {
+    pub fn take_hdr_layers(&mut self) -> Vec<tilo_color_pipeline::hdr_surface::HdrLayer> {
         std::mem::take(&mut self.painted_hdr_layers)
     }
 
@@ -2477,8 +2480,8 @@ impl FrameBuilder {
     /// the scene they were drawn in: once per display, magnified and clipped.
     fn hdr_layers_to_scene(
         &self,
-        layers: Vec<crate::shell::hdr_surface::HdrLayer>,
-    ) -> Vec<crate::shell::hdr_surface::HdrLayer> {
+        layers: Vec<tilo_color_pipeline::hdr_surface::HdrLayer>,
+    ) -> Vec<tilo_color_pipeline::hdr_surface::HdrLayer> {
         match &self.outputs {
             Some(outputs) if !output_scene::is_identity(outputs) => outputs
                 .iter()
@@ -2690,7 +2693,7 @@ impl FrameBuilder {
         // they would be recorded in canvas coordinates.
         let recording = self
             .hdr_layers_composited()
-            .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
+            .then(tilo_color_pipeline::hdr_surface::HdrLayerRecording::begin);
         // Layers drawn at rest are no frame: they leave the pans' motion as
         // the frames noted it.
         let panning = self.drawing_layers_at_rest
@@ -2830,7 +2833,7 @@ impl FrameBuilder {
         let foreign_images = foreign_recording.finish();
         let hdr_layers = self.hdr_layers_to_scene(
             recording
-                .map(crate::shell::hdr_surface::HdrLayerRecording::finish)
+                .map(tilo_color_pipeline::hdr_surface::HdrLayerRecording::finish)
                 .unwrap_or_default(),
         );
         let panned = std::mem::take(&mut sections.panned);
@@ -7735,14 +7738,18 @@ mod tests {
     fn hdr_surfaces_are_recorded_as_frame_layers() {
         const SURFACE: u64 = 9_900_702;
         let _env_lock = tilo_test_env::lock();
-        let signal = crate::shell::hdr_surface::SurfaceSignal::for_colorimetry(
+        let signal = tilo_color_pipeline::hdr_surface::SurfaceSignal::for_colorimetry(
             neighbour_wire::colorimetry::Colorimetry::hdr10(),
-            crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
+            tilo_color_pipeline::hdr_tonemap::HdrTonemapConfig::default(),
         )
         .expect("PQ");
-        let plane =
-            crate::shell::hdr_surface::HdrPlane::from_signal_rgb(2, 2, [[0.6; 3]; 4], signal)
-                .expect("plane");
+        let plane = tilo_color_pipeline::hdr_surface::HdrPlane::from_signal_rgb(
+            2,
+            2,
+            [[0.6; 3]; 4],
+            signal,
+        )
+        .expect("plane");
         let plane_id = plane.id();
         crate::shell::foreign::store().publish_hdr_frame(SURFACE, &[40; 16], plane);
         let mut fb = FrameBuilder::new((1600, 900));

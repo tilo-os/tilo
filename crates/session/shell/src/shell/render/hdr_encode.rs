@@ -2,7 +2,7 @@
 //!
 //! One render pipeline per HDR scanout format (`Rgb10a2Unorm` for
 //! `XBGR2101010`, `Rgba16Float` for `ABGR16161616F`) running
-//! [`crate::shell::color_pipeline::OUTPUT_ENCODE_SHADER_SOURCE`]. Both formats
+//! [`tilo_color_pipeline::color_pipeline::OUTPUT_ENCODE_SHADER_SOURCE`]. Both formats
 //! carry the PQ-encoded BT.2020 signal the connector's HDR metadata announces.
 
 use vello::wgpu;
@@ -11,7 +11,7 @@ use settings_store::hardware::OutputTransform;
 
 use super::fullscreen_pass;
 use super::orientation::shader_code;
-use crate::shell::color_pipeline::{OUTPUT_ENCODE_SHADER_SOURCE, sanitize_sdr_white_nits};
+use tilo_color_pipeline::color_pipeline::{OUTPUT_ENCODE_SHADER_SOURCE, sanitize_sdr_white_nits};
 
 /// Bytes of the shader's `EncodeParams` uniform: SDR white (`f32`) and the output's
 /// orientation (`u32`), padded to 16.
@@ -110,8 +110,8 @@ impl HdrEncodePipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::color_pipeline::map_sdr_pixel_to_pq_bt2020_at;
     use pollster::FutureExt;
+    use tilo_color_pipeline::color_pipeline::map_sdr_pixel_to_pq_bt2020_at;
 
     const PIXELS: [[u8; 4]; 8] = [
         [0, 0, 0, 255],

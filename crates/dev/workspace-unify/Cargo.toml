@@ -1108,6 +1108,7 @@ doc = false
 "tilo-clipboard" = { path = "../../../crates/platform/tilo-clipboard", default-features = false, features = [] }
 "tilo-clock" = { path = "../../../crates/platform/tilo-clock", default-features = false, features = ["test-support"] }
 "tilo-cloud-files" = { path = "../../../crates/platform/tilo-cloud-files", default-features = false, features = [] }
+"tilo-color-pipeline" = { path = "../../../crates/session/color-pipeline", default-features = false, features = [] }
 "tilo-connector" = { path = "../../../crates/agent/connector", default-features = false, features = [] }
 "tilo-contact-directory" = { path = "../../../crates/platform/tilo-contact-directory", default-features = false, features = [] }
 "tilo-content" = { path = "../../../crates/system/content", default-features = false, features = ["default", "dir"] }

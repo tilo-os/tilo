@@ -231,11 +231,11 @@ fn a_rotated_hdr_output_matches_the_readback_pq_encode() {
     // GPU. The encodes differ by at most 2 of 1023 code values
     // (`gpu_encode_matches_the_cpu_reference`); the turn must add nothing to that.
     let size = (90, 52);
-    let white = crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS;
+    let white = tilo_color_pipeline::color_pipeline::SDR_REFERENCE_WHITE_NITS;
     let mut bridge = required_bridge(size.0, size.1);
     let scene = asymmetric_scene(size);
     let rgba = bridge.paint(&scene).expect("the dense render").to_vec();
-    let encoder = crate::shell::color_pipeline::SdrToPqEncoder::new(white);
+    let encoder = tilo_color_pipeline::color_pipeline::SdrToPqEncoder::new(white);
     for (revision, transform) in (1..).zip(ORIENTATIONS) {
         let view =
             OutputView::at(crate::shell::render::OutputId(0), (0, 0), size).oriented(transform);
