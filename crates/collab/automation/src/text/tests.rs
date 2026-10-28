@@ -1,5 +1,11 @@
 //! The text language's own tests: what a program prints to, and what that
 //! text reads back to.
+//!
+//! A stored program and the text a person reads are two views of one thing:
+//! these tests hold each view to the other, and hold an edit made in one to the
+//! steps the document already has.
+
+mod roundtrip;
 
 use super::*;
 use crate::shortcut::{Schedule, TriggerSpec};

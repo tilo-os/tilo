@@ -50,6 +50,7 @@ pub mod scenario;
 pub mod shortcut;
 mod template;
 pub mod text;
+mod text_read;
 mod types;
 
 #[cfg(test)]
