@@ -894,12 +894,6 @@ impl InitialReadBridge {
     ) -> Result<Option<CommittedDocument>, RecordReadError> {
         match self.never {}
     }
-    fn read(
-        &self,
-        _record: Option<&crate::record::RecordId>,
-    ) -> Result<Option<CommittedDocument>, String> {
-        match self.never {}
-    }
     fn read_primary(&self) -> Result<CommittedDocument, String> {
         match self.never {}
     }
