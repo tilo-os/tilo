@@ -86,7 +86,7 @@ impl Dismissal {
     }
 
     /// The close control the surface publishes, if it has one of its own.
-    pub(crate) fn resource(&self) -> Option<tilo_actions::Resource> {
+    pub(crate) fn resource(&self) -> Option<tilo_actions::ResourceSpec> {
         self.native.as_ref().map(NativeControl::resource)
     }
 

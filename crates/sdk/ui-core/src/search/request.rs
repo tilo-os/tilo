@@ -24,7 +24,7 @@
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
     ActionArgs, ActionBinding, ActionParam, ActionSpec, ControlInvocation, EncodedAction,
-    OperationKind, ParamType, Resource,
+    OperationKind, ParamType, ResourceSpec,
 };
 
 use crate::i18n::I18nManager;
@@ -341,7 +341,7 @@ pub(crate) fn search_address() -> tilo_actions::ActionAddress {
 /// The host search resource: one `open` action that opens search, plainly from
 /// a menu or the keyboard, or narrowed and pre-filled by its optional
 /// arguments.
-pub(crate) fn search_resource() -> Resource {
+pub(crate) fn search_resource() -> ResourceSpec {
     let label = I18nManager::lookup_plain("standalone-search-title");
     let open = ActionSpec::typed_operation(
         SEARCH_ACTION,
@@ -354,7 +354,7 @@ pub(crate) fn search_resource() -> Resource {
             ActionParam::optional(
                 SCOPE_PARAM,
                 ParamType::Text,
-                "Resource id of the part of the app to search",
+                "ResourceSpec id of the part of the app to search",
             ),
             ActionParam::optional(
                 SCOPE_LABEL_PARAM,
@@ -382,7 +382,7 @@ pub(crate) fn search_resource() -> Resource {
     // Opening search asks nothing first: a menu item, the shortcut and the
     // palette run it at once; a control or an agent passes the arguments.
     .with_immediate(SearchRequest::default().encode());
-    Resource::new(SEARCH_RESOURCE, "tilo.host.search", label).with_action(open)
+    ResourceSpec::new(SEARCH_RESOURCE, "tilo.host.search", label).with_action(open)
 }
 
 /// Bind a control to open the platform search with `request`

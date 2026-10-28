@@ -32,9 +32,9 @@ fn duplicating_a_rotated_page_keeps_its_orientation_and_source() {
 #[test]
 fn published_pages_carry_duplicate_and_delete() {
     fn find<'a>(
-        resource: &'a tilo_actions::Resource,
+        resource: &'a tilo_actions::ResourceSpec,
         id: &str,
-    ) -> Option<&'a tilo_actions::Resource> {
+    ) -> Option<&'a tilo_actions::ResourceSpec> {
         if resource.id.as_str() == id {
             return Some(resource);
         }
@@ -96,7 +96,7 @@ fn the_surface_publishes_find_hits_beside_the_resource_never_a_document_root() {
         app.find_match_count_for_test() > 0,
         "sample must yield find hits"
     );
-    let rows: Vec<tilo_actions::Resource> = app
+    let rows: Vec<tilo_actions::ResourceSpec> = app
         .document_rows()
         .into_iter()
         .map(LiveRow::into_resource)

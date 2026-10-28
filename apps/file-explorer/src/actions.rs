@@ -6,7 +6,7 @@
 //! unfinished rename value are observations or device-local interaction state.
 //! They must not be represented as fields in the shared Automerge document.
 //!
-//! The app instead publishes stable [`ui::tilo_actions::Resource`] identities
+//! The app instead publishes stable [`ui::tilo_actions::ResourceSpec`] identities
 //! and operation contracts. A resource action crosses the host's operation
 //! boundary, where it revalidates the current path/record identity before
 //! touching the filesystem or a remote authority. This avoids turning a stale
@@ -114,7 +114,7 @@ mod tests {
 
     /// What Files publishes while showing a real folder holding a file, synced
     /// against `document` exactly as the host drives it.
-    fn folder_resources(document: &AutoCommit) -> Vec<ui::tilo_actions::Resource> {
+    fn folder_resources(document: &AutoCommit) -> Vec<ui::tilo_actions::ResourceSpec> {
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(directory.path().join("notes.txt"), b"x").unwrap();
         let mut files = FileExplorerWidget::new();

@@ -31,7 +31,7 @@
 //! [`Widget::tooltip`](crate::widget::Widget::tooltip) already use.
 //!
 //! There is a third channel in the same family, one step earlier: an app whose
-//! edits are dispatched [`tilo_actions`](crate::action_host) actions reports the
+//! edits are dispatched [`tilo_actions`](crate::local_dispatch) actions reports the
 //! bracket around them through
 //! [`CommittedActions::take_committed_action`],
 //! and [`record_dispatched_action`] is where a host turns that into the undo
@@ -189,7 +189,7 @@ pub fn shortcut(
 ///
 /// * **Not draining at all.** [`take_committed_action`](crate::undo::CommittedActions::take_committed_action)
 ///   is rising-edge, so a host that never reads it records nothing — an app
-///   whose edits all travel through [`tilo_actions`](crate::action_host) then has
+///   whose edits all travel through [`tilo_actions`](crate::local_dispatch) then has
 ///   an empty undo history no matter how much the user changed. The driver did
 ///   exactly this, which made undo unobservable to every headless test of such
 ///   an app.

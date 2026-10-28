@@ -28,13 +28,13 @@ pub(super) struct SharedTreeCache {
 /// children ([`ChildrenParts::kept`](tilo_resource::items::ChildrenParts))
 /// and its items are the very ones it was built from.
 pub(super) struct DocumentChildren {
-    kept: Rc<[Rc<tilo_actions::Resource>]>,
+    kept: Rc<[Rc<tilo_actions::ResourceSpec>]>,
     /// `kept` as published.
     published: Vec<SharedResource>,
     items: SharedChildren,
     /// Whether the tree's children are `published` and `items` alone.
     whole: bool,
-    head: Rc<tilo_actions::Resource>,
+    head: Rc<tilo_actions::ResourceSpec>,
     tree: SharedResource,
 }
 
@@ -183,7 +183,7 @@ impl ResourceRoot {
             last.published.clone()
         } else {
             // A child published as it was is the very node it was.
-            let before: HashMap<*const tilo_actions::Resource, &SharedResource> = kept
+            let before: HashMap<*const tilo_actions::ResourceSpec, &SharedResource> = kept
                 .as_ref()
                 .filter(|_| epoch.is_some())
                 .map(|last| {
@@ -234,7 +234,7 @@ impl ResourceRoot {
     /// `child`, a document child of `state`, as the tree carries it.
     fn document_child_resource(
         &self,
-        mut child: tilo_actions::Resource,
+        mut child: tilo_actions::ResourceSpec,
         state: &dyn Any,
     ) -> SharedResource {
         if self.resource.readable {
@@ -630,7 +630,9 @@ impl ResourceRoot {
             None => match rows.next() {
                 Some(first) => first,
                 None => {
-                    return SharedResource::from_resource(tilo_actions::Resource::new("", "", ""));
+                    return SharedResource::from_resource(tilo_actions::ResourceSpec::new(
+                        "", "", "",
+                    ));
                 }
             },
         };
@@ -643,7 +645,7 @@ impl ResourceRoot {
 
     /// What the publication adds to each child, as `adds` says: `open` on
     /// items a view opens, and document actions queued as jobs.
-    fn decorate_child(&self, resource: &mut tilo_actions::Resource, adds: (bool, bool)) {
+    fn decorate_child(&self, resource: &mut tilo_actions::ResourceSpec, adds: (bool, bool)) {
         if adds.1 {
             mark_document_jobs(resource);
         }
@@ -768,7 +770,7 @@ fn nested_view_types(resources: &[SharedResource]) -> HashSet<String> {
 /// field edit, which names a path the host resolves), published as jobs: the
 /// invocation answers when what it queued has settled. Every other document
 /// action applies where it is invoked, at once.
-pub(super) fn mark_document_jobs(resource: &mut tilo_actions::Resource) {
+pub(super) fn mark_document_jobs(resource: &mut tilo_actions::ResourceSpec) {
     const OWN_JOB: [&str; 4] = ["field-edit", "undo", "redo", "restore"];
     for spec in &mut resource.actions {
         let outside = spec.contract.kind == tilo_actions::ActionKind::Outside;
@@ -897,7 +899,7 @@ mod tests {
 
     /// `resource` as inert data, children included: what agents, the
     /// palette and accessibility read.
-    fn outline(resource: &tilo_actions::Resource) -> serde_json::Value {
+    fn outline(resource: &tilo_actions::ResourceSpec) -> serde_json::Value {
         json!({
             "id": resource.id.as_str(),
             "kind": resource.kind,
@@ -911,7 +913,9 @@ mod tests {
     }
 
     /// The view operation types anywhere beneath `resources`.
-    fn views_beneath(resources: &[tilo_actions::Resource]) -> std::collections::BTreeSet<String> {
+    fn views_beneath(
+        resources: &[tilo_actions::ResourceSpec],
+    ) -> std::collections::BTreeSet<String> {
         let mut views = std::collections::BTreeSet::new();
         for resource in resources {
             views.extend(
@@ -1298,7 +1302,7 @@ mod tests {
     /// live revision they are of.
     fn tagged_tree(
         app: &mut TestApp<TaggedApp>,
-    ) -> (SharedResource, std::rc::Rc<tilo_actions::Resource>, u64) {
+    ) -> (SharedResource, std::rc::Rc<tilo_actions::ResourceSpec>, u64) {
         app.harness()
             .with_widget_mut(|root: &mut ResourceRoot| {
                 let state = root.typed::<Tagged>().expect("tagged").live.get();

@@ -78,7 +78,7 @@ impl OrdinaryConfirmation {
         self.asked.as_deref()
     }
     fn snapshot(
-        resources: &[tilo_actions::Resource],
+        resources: &[tilo_actions::ResourceSpec],
         address: &tilo_actions::ActionAddress,
         arguments: &ControlContinuationArguments,
         built_at: i64,

@@ -1,9 +1,9 @@
 //! Inert discovery index, built only from a normal validated publication.
-//! It never retains `Resource`/`ActionSpec` values or executable callbacks.
+//! It never retains `ResourceSpec`/`ActionSpec` values or executable callbacks.
 use super::{App, ResourceCacheKey};
 use runtime_collab::ActionDirectoryRow;
 use std::collections::HashMap;
-use tilo_actions::{ActionAddress, ActionDescriptor, OperationKind, Resource};
+use tilo_actions::{ActionAddress, ActionDescriptor, OperationKind, ResourceSpec};
 #[path = "directory_effective_witness.rs"]
 mod effective;
 
@@ -283,10 +283,10 @@ struct Builder<'a, F> {
     offset: usize,
     visibility: F,
 }
-impl<F: Fn(&Resource) -> Option<ActionAddress>> Builder<'_, F> {
+impl<F: Fn(&ResourceSpec) -> Option<ActionAddress>> Builder<'_, F> {
     fn node(
         &mut self,
-        resource: &Resource,
+        resource: &ResourceSpec,
         parent: &str,
         depth: usize,
     ) -> (Vec<ActionDirectoryRow>, Option<usize>) {
@@ -484,9 +484,9 @@ impl ActionDirectorySnapshot {
     }
 
     pub fn build(
-        resources: &[Resource],
+        resources: &[ResourceSpec],
         descriptors: &[ActionDescriptor],
-        visibility: impl Fn(&Resource) -> Option<ActionAddress>,
+        visibility: impl Fn(&ResourceSpec) -> Option<ActionAddress>,
     ) -> Self {
         let mut builder = Builder {
             effective: effective::Builder::new(),
@@ -581,7 +581,7 @@ impl App {
 
     pub(super) fn capture_action_directory_snapshot(
         &mut self,
-        resources: &[Resource],
+        resources: &[ResourceSpec],
         descriptors: &[ActionDescriptor],
     ) {
         // Establish current ownership/generation witnesses before comparing data.

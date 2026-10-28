@@ -2,7 +2,7 @@
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
-use tilo_actions::{ActionSpec, Resource};
+use tilo_actions::{ActionSpec, ResourceSpec};
 use ui::semantic_document_read::{
     ReadPage, RegisteredSemanticReader, SemanticReadError, decode_request,
 };
@@ -17,7 +17,7 @@ struct Request {
     channel: String,
 }
 
-fn validate(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError> {
+fn validate(resource: &ResourceSpec, payload: &[u8]) -> Result<(), SemanticReadError> {
     let request: Request = decode_request(payload)?;
     let named =
         ui::tilo_resource::items::item_of_resource::<crate::resource::Chat>(resource.id.as_str());

@@ -105,7 +105,7 @@ fn group_of(doc: &ui::automerge::AutoCommit) -> Uuid {
 }
 
 /// The library's published tree for `doc`, with the reader's effects.
-fn resources_for(doc: &ui::automerge::AutoCommit) -> Vec<Resource> {
+fn resources_for(doc: &ui::automerge::AutoCommit) -> Vec<ResourceSpec> {
     let mut library = ui::tilo_resource::publish::<Ebook>("ebook.library", "Books", &read(doc));
     library
         .actions

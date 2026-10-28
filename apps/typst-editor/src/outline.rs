@@ -10,7 +10,7 @@ use typst::syntax::{LinkedNode, Source, SyntaxKind, SyntaxNode, ast};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_actions::Resource;
+use ui::tilo_actions::ResourceSpec;
 use ui::tilo_resource::Effect;
 use ui::widget::{NavItem, NavList, NavSection, SidebarDrawer, Widget};
 use vello::Scene;
@@ -256,16 +256,16 @@ impl Outline {
     }
 
     /// The headings as resources, each with the effect that goes to it.
-    pub(crate) fn resources(&self) -> Vec<Resource> {
-        fn row(heading: &Heading) -> Resource {
-            Resource::new(heading_id(heading.line), "typst.heading", &heading.title)
+    pub(crate) fn resources(&self) -> Vec<ResourceSpec> {
+        fn row(heading: &Heading) -> ResourceSpec {
+            ResourceSpec::new(heading_id(heading.line), "typst.heading", &heading.title)
                 .with_action(TypstEffect::GoToHeading { line: heading.line }.bound())
         }
         if self.headings.is_empty() {
             return Vec::new();
         }
         vec![
-            Resource::new("typst.outline", "typst.outline", "Outline")
+            ResourceSpec::new("typst.outline", "typst.outline", "Outline")
                 .with_children(self.headings.iter().map(row)),
         ]
     }

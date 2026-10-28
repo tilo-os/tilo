@@ -47,7 +47,7 @@ pub struct Source<'a> {
 /// The ids of the actions `resource` publishes as destructive: what a
 /// deletion looks like in that record's history.
 #[must_use]
-pub fn destructive_verbs(resource: &tilo_actions::Resource) -> Vec<String> {
+pub fn destructive_verbs(resource: &tilo_actions::ResourceSpec) -> Vec<String> {
     resource
         .actions
         .iter()

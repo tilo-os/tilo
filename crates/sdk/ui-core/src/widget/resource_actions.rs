@@ -12,7 +12,7 @@ use crate::kurbo::Rect;
 use crate::taffy::{NodeId, TaffyTree};
 use crate::tilo_actions::{
     ActionBinding, ActionBindingError, ActionContract, ActionOutput, ActionParam, ActionSpec,
-    EncodedAction, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec,
+    EncodedAction, ExecutionMode, OperationKind, ParamType, ResourceSpec, ResultSpec,
 };
 use crate::widget::{ResourceOperation, ResourceOperationStart, TaffyTreeExt, Widget};
 
@@ -24,7 +24,7 @@ pub const OPERATION_TYPE: &str = "tilo.app.operation";
     clippy::expect_used,
     reason = "serializing the unit operation payload is infallible"
 )]
-pub fn resource(kind: &str, label: &str, action_id: &str, action_label: &str) -> Resource {
+pub fn resource(kind: &str, label: &str, action_id: &str, action_label: &str) -> ResourceSpec {
     let mut action = ActionSpec::operation(
         action_id,
         action_label,
@@ -38,7 +38,7 @@ pub fn resource(kind: &str, label: &str, action_id: &str, action_label: &str) ->
         result: ResultSpec::None,
         ..ActionContract::default()
     };
-    Resource::new(format!("{kind}:root"), kind, label).with_action(action)
+    ResourceSpec::new(format!("{kind}:root"), kind, label).with_action(action)
 }
 
 /// Build one resource whose arguments are schema-bound.
@@ -57,7 +57,7 @@ pub fn typed_resource(
     action_id: &str,
     action_label: &str,
     params: Vec<ActionParam>,
-) -> Resource {
+) -> ResourceSpec {
     let action = ActionSpec::typed_operation(
         action_id,
         action_label,
@@ -70,7 +70,7 @@ pub fn typed_resource(
                 .expect("bound arguments are serializable")
         },
     );
-    Resource::new(format!("{kind}:root"), kind, label).with_action(action)
+    ResourceSpec::new(format!("{kind}:root"), kind, label).with_action(action)
 }
 
 /// A value that can connect a [`LocalState`](crate::LocalState) field directly
@@ -206,7 +206,7 @@ impl ActionForm {
         self
     }
 
-    pub fn resource(&self) -> Resource {
+    pub fn resource(&self) -> ResourceSpec {
         typed_resource(
             &self.kind,
             &self.label,
@@ -300,7 +300,7 @@ type Immediate = Box<dyn FnMut(&[u8]) -> Result<ActionOutput, String>>;
 /// Transparent retained root that publishes and executes one app resource.
 pub struct ResourceActionHost {
     root: Box<dyn Widget>,
-    resource: Resource,
+    resource: ResourceSpec,
     run: Immediate,
     rect: Rect,
 }
@@ -308,7 +308,7 @@ pub struct ResourceActionHost {
 /// Wrap a root with a synchronous typed resource operation.
 pub fn immediate(
     root: Box<dyn Widget>,
-    resource: Resource,
+    resource: ResourceSpec,
     run: impl FnMut(&[u8]) -> Result<ActionOutput, String> + 'static,
 ) -> Box<dyn Widget> {
     Box::new(ResourceActionHost {
@@ -483,7 +483,7 @@ impl crate::widget::ResourceOperations for ResourceActionHost {
 }
 
 impl crate::resources::PublishesResources for ResourceActionHost {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
         vec![self.resource.clone()]
     }
 }

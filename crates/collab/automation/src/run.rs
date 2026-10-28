@@ -181,7 +181,7 @@ pub struct RunRequest<'a> {
     /// task that called the shortcut), named by its own group. Every step is
     /// stamped with it instead of this run's own group, so the run reads as
     /// part of what asked for it and is undone with it.
-    pub parent: Option<tilo_actions::context::ActionGroup>,
+    pub parent: Option<tilo_actions::context::WorkGroup>,
     /// The shortcuts already running above this one, outermost first: its own
     /// id when it is a triggered run, or the other shortcuts that called it.
     /// A step that would run one of them is not run, so two shortcuts that
@@ -797,7 +797,7 @@ struct Runner<'a, H, K> {
     /// output is taken as it was instead of being produced again.
     resumed: Vec<&'a StepRecord>,
     caused_by: Option<tilo_actions::context::Cause>,
-    parent: Option<tilo_actions::context::ActionGroup>,
+    parent: Option<tilo_actions::context::WorkGroup>,
     /// The shortcuts running above this one (see [`RunRequest::chain`]).
     chain: Vec<String>,
     /// How long each step of the run may take.

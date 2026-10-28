@@ -265,7 +265,7 @@ impl ChatApp {
 
     /// Give an open shared context menu first refusal. Its selection index is
     /// translated back to Chat's typed action only after the widget closes,
-    /// keeping all mutation in the existing `ActionHost` path.
+    /// keeping all mutation in the existing `LocalDispatch` path.
     fn route_context_menu_event(
         &mut self,
         event: &WindowEvent,

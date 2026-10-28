@@ -104,7 +104,7 @@ fn edit(
     };
     let spec =
         tilo_actions::ActionSpec::immediate("text", "Edit text", "burst.text", &action).unwrap();
-    let resource = tilo_actions::Resource::new("burst", "burst", "Text");
+    let resource = tilo_actions::ResourceSpec::new("burst", "burst", "Text");
     binding
         .with_record_frame(outer, false, |doc, path| {
             let mut operation =

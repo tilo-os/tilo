@@ -1,7 +1,7 @@
 use super::*;
 use tilo_actions::ActionContract;
-fn resource() -> Resource {
-    Resource::new(
+fn resource() -> ResourceSpec {
+    ResourceSpec::new(
         "word-processor.document",
         "word-processor.document",
         "Document",

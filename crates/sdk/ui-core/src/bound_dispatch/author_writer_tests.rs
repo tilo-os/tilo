@@ -14,9 +14,9 @@ fn publication_retains_original_typed_identity_not_a_supplied_alias() {
     records.create_record(&checkout).unwrap();
     let (binding, _scope, _owner) = mount(&records, &checkout, "You", 1, true);
     let publication = BoundPublication::default();
-    let mut resource = tilo_actions::Resource::new("app:so.tilo.chat", "store.app", "Chat");
+    let mut resource = tilo_actions::ResourceSpec::new("app:so.tilo.chat", "store.app", "Chat");
     resource.semantic_identity = tilo_actions::ResourceSemanticIdentity::new("person", "forged");
-    resource.children.push(tilo_actions::Resource::new(
+    resource.children.push(tilo_actions::ResourceSpec::new(
         "chat.person:scribe",
         "chat.agent",
         "An unrelated display name",
@@ -53,7 +53,10 @@ fn publication_retains_original_typed_identity_not_a_supplied_alias() {
     binding.closing.set(true);
     assert!(
         publication
-            .project(&binding, tilo_actions::Resource::new("x", "store.app", "X"))
+            .project(
+                &binding,
+                tilo_actions::ResourceSpec::new("x", "store.app", "X")
+            )
             .is_err()
     );
 }

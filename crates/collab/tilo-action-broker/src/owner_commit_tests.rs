@@ -1194,7 +1194,7 @@ mod owner_commit_tests {
                 app.control_action_coverage(),
                 {
                     fn addresses(
-                        resources: &[tilo_actions::Resource],
+                        resources: &[tilo_actions::ResourceSpec],
                     ) -> Vec<(String, Vec<String>)> {
                         let mut rows = Vec::new();
                         for resource in resources {

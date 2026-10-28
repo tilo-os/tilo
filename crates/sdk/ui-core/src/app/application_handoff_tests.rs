@@ -40,7 +40,7 @@ fn application_action_handoff_requires_workspace_admission_and_routes_exact_dest
         "files.remote-account:616461",
         "open-remote-account",
     );
-    let resource = Resource::new("settings.account:ada", "settings.account", "Ada")
+    let resource = ResourceSpec::new("settings.account:ada", "settings.account", "Ada")
         .with_action(launch.spec("open-files", "Browse files", "Browse this account in Files"));
     let mut app = App::new_with_controlled_inputs(
         State::new(),

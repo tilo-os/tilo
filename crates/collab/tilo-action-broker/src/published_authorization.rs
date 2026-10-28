@@ -165,7 +165,7 @@ mod tests {
                     Ok(true) => Answered::AsksFirst,
                     Err(_) => Answered::Refused,
                 };
-                let resource = tilo_actions::Resource::new(
+                let resource = tilo_actions::ResourceSpec::new(
                     published.resource.as_str(),
                     published.resource_kind.as_str(),
                     "Document",

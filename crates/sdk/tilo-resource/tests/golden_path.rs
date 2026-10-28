@@ -567,7 +567,7 @@ fn an_action_without_arguments_is_built_when_it_is_taken() {
             clear.build_action(args, now)
         }
     });
-    let resource = tilo_actions::Resource::new("board", "test.board", "Board")
+    let resource = tilo_actions::ResourceSpec::new("board", "test.board", "Board")
         .with_action(tilo_resource::declaration_spec(&decl));
     assert_eq!(
         takings.load(Ordering::SeqCst),
@@ -594,7 +594,7 @@ fn an_action_without_arguments_is_built_when_it_is_taken() {
         tilo_resource::ActionDecl::<Board>::new("refuse", "Refuse", Vec::new(), |_, _| {
             Err("nothing to clear".into())
         });
-    let resource = tilo_actions::Resource::new("board", "test.board", "Board")
+    let resource = tilo_actions::ResourceSpec::new("board", "test.board", "Board")
         .with_action(tilo_resource::declaration_spec(&refusing));
     let refused = tilo_actions::door::encode(
         std::slice::from_ref(&resource),
@@ -646,7 +646,7 @@ fn schema_reuse_keeps_resource_types_and_live_children_distinct() {
             schema["description"] = serde_json::json!("The schema probe's board action");
             Some(schema)
         }
-        fn children(state: &Board) -> Vec<tilo_actions::Resource> {
+        fn children(state: &Board) -> Vec<tilo_actions::ResourceSpec> {
             Board::children(state)
         }
     }
@@ -662,7 +662,7 @@ fn schema_reuse_keeps_resource_types_and_live_children_distinct() {
         1,
         "live rows are never cached with type schemas"
     );
-    let schema = |resource: &tilo_actions::Resource| {
+    let schema = |resource: &tilo_actions::ResourceSpec| {
         resource
             .actions
             .iter()

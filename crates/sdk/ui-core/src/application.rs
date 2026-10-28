@@ -2200,7 +2200,7 @@ impl crate::search::SearchProvider for ComponentProvider {
     fn resolve_action_resource(
         &self,
         address: &tilo_actions::ActionAddress,
-    ) -> Option<tilo_actions::Resource> {
+    ) -> Option<tilo_actions::ResourceSpec> {
         self.invoke(|provider| provider.resolve_action_resource(address))
             .flatten()
             .and_then(|resource| crate::bound_dispatch::filter_resource(&self.binding, resource))

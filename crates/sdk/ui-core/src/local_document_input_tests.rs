@@ -34,7 +34,7 @@ fn route_snapshot_aliases_are_frozen_before_typed_execution_and_suspend_restores
         arguments: serde_json::Map::new(),
     });
     let mut doc = AutoCommit::new();
-    let mut host = crate::action_host::ActionHost::new();
+    let mut host = crate::local_dispatch::LocalDispatch::new();
     host.try_dispatch(&mut doc, "put", &Put(1)).unwrap();
     {
         let _background = suspend();

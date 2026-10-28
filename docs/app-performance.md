@@ -256,12 +256,12 @@ although the key edits the draft, which no item depends on. `sample` at
 10,000 tasks: 58 % rebuilding and diffing a semantic node per item, 25 %
 rebuilding, copying and permission-filtering every item resource on the
 frame's cache miss, 12 % the same in the door that resolves the draft's edit,
-14 % `nested_views` building every item once more. `tilo_actions::Resource`
+14 % `nested_views` building every item once more. `tilo_actions::ResourceSpec`
 owns its children inline, so no consumer could tell an unchanged item from a
 changed one.
 
 `ui_core::published::SharedResource` holds the same tree with its children
-behind `Rc`s, beside `tilo_actions::Resource` (whose shape does not change):
+behind `Rc`s, beside `tilo_actions::ResourceSpec` (whose shape does not change):
 
 * **Publication.** `ResourceRoot` builds the document tree from
   `Resource::children_parts` (`#[resource]` splits its item collections from

@@ -104,7 +104,7 @@ impl Surface {
     /// Every resource the room's packages hold, each with its actions; the host's own resource;
     /// and each package's actions that take no record. Built now, so an invocation resolves
     /// against what the record holds now.
-    fn resources(&self) -> Vec<tilo_actions::Resource> {
+    fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         let mut out = vec![host_resource(&self.committer)];
         out.extend(self.publications.borrow().trees().values().cloned());
         for package in self.host.packages() {
@@ -541,7 +541,7 @@ fn failed(invocation: InvocationId, refused: Refused) -> InvocationUpdate {
 /// The action `address` names, built through its published spec from `argument`: typed JSON
 /// arguments, or the legacy text of a prompted action.
 fn encode(
-    resources: &[tilo_actions::Resource],
+    resources: &[tilo_actions::ResourceSpec],
     address: &ActionAddress,
     argument: Option<&str>,
 ) -> Result<EncodedAction, tilo_actions::DoorError> {

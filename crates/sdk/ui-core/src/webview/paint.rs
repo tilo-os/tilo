@@ -48,7 +48,7 @@ const MAX_SHARE_BLOB: usize = MAX_SHARE_PAYLOAD - 1024;
 const MAX_SHARE_QUEUE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Resource {
+enum ResourceSpec {
     Pending(u32),
     Ready([u8; 32]),
     Failed,
@@ -72,7 +72,7 @@ pub struct PaintSource {
     /// arrives later re-resolves it without another capture.
     raw: Option<Frame>,
     frame: Option<Arc<Frame>>,
-    resources: HashMap<String, Resource>,
+    resources: HashMap<String, ResourceSpec>,
     resource_requests: HashMap<u32, (String, Instant)>,
     blobs: HashMap<[u8; 32], Arc<Vec<u8>>>,
     /// SVG images as vector drawings; `None` for blobs that are not SVG.
@@ -149,7 +149,7 @@ impl PaintSource {
             .collect();
         for id in expired {
             if let Some((url, _)) = self.resource_requests.remove(&id) {
-                self.resources.insert(url, Resource::Failed);
+                self.resources.insert(url, ResourceSpec::Failed);
             }
         }
         let rested = self
@@ -186,7 +186,7 @@ impl PaintSource {
             }
             let request_id = self.request_id();
             self.resources
-                .insert(url.clone(), Resource::Pending(request_id));
+                .insert(url.clone(), ResourceSpec::Pending(request_id));
             self.resource_requests
                 .insert(request_id, (url.clone(), now));
             out.push(WebViewCommand::PaintResource { request_id, url });
@@ -210,7 +210,7 @@ impl PaintSource {
         for url in inline {
             let state = data_url_bytes(&url)
                 .and_then(|bytes| self.store(bytes))
-                .map_or(Resource::Failed, Resource::Ready);
+                .map_or(ResourceSpec::Failed, ResourceSpec::Ready);
             self.resources.insert(url, state);
         }
     }
@@ -254,8 +254,8 @@ impl PaintSource {
                 let state = bytes
                     .clone()
                     .and_then(|b| self.store(b))
-                    .map_or(Resource::Failed, Resource::Ready);
-                let ready = matches!(state, Resource::Ready(_));
+                    .map_or(ResourceSpec::Failed, ResourceSpec::Ready);
+                let ready = matches!(state, ResourceSpec::Ready(_));
                 self.resources.insert(url, state);
                 (if ready { self.publish() } else { None }, true)
             }
@@ -299,7 +299,7 @@ impl PaintSource {
         let hash = match &blob {
             BlobRef::Hash(hash) => *hash,
             BlobRef::Url(url) => match self.resources.get(url.as_str()) {
-                Some(Resource::Ready(hash)) => *hash,
+                Some(ResourceSpec::Ready(hash)) => *hash,
                 _ => return None,
             },
         };

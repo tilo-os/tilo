@@ -46,7 +46,7 @@ pub fn find_semantic(
 #[must_use]
 pub fn resource_snapshot(driver: &FrameHarness) -> Vec<(String, String, Vec<String>)> {
     fn collect(
-        resource: &crate::tilo_actions::Resource,
+        resource: &crate::tilo_actions::ResourceSpec,
         out: &mut Vec<(String, String, Vec<String>)>,
     ) {
         out.push((

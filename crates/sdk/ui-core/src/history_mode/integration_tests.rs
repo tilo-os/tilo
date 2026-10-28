@@ -2002,8 +2002,8 @@ fn admit(
     ));
 }
 
-fn retained_lifecycle_resource(id: &str) -> tilo_actions::Resource {
-    tilo_actions::Resource::new(id, "fixture", "Retained lifecycle").with_action(
+fn retained_lifecycle_resource(id: &str) -> tilo_actions::ResourceSpec {
+    tilo_actions::ResourceSpec::new(id, "fixture", "Retained lifecycle").with_action(
         tilo_actions::ActionSpec::operation(
             "receive",
             "Receive queued result",
@@ -2248,7 +2248,7 @@ impl crate::record::capability::RecordScoped for RetainedLifecycleProbe {
 }
 
 impl crate::resources::PublishesResources for RetainedLifecycleProbe {
-    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         vec![retained_lifecycle_resource(self.id)]
     }
 }

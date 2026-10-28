@@ -1183,7 +1183,7 @@ fn history_is_one_glyph_in_the_window_top_trailing_corner() {
 #[test]
 fn a_status_the_person_can_act_on_has_its_button_beside_it_in_the_row() {
     const NOT_SAVED: &str = "Couldn't save this change to your history";
-    let mut resource = tilo_actions::Resource::new("test.unsaved", "test.unsaved", NOT_SAVED);
+    let mut resource = tilo_actions::ResourceSpec::new("test.unsaved", "test.unsaved", NOT_SAVED);
     resource.actions.push(
         tilo_actions::ActionSpec::operation(
             "retry",
@@ -1373,7 +1373,7 @@ fn an_open_drawer_keeps_the_contents_wake_deadline() {
 
 #[test]
 fn a_drawer_leaves_the_contents_action_emitters_published() {
-    let resource = tilo_actions::Resource::new("test-pane", "test", "Test").with_action(
+    let resource = tilo_actions::ResourceSpec::new("test-pane", "test", "Test").with_action(
         tilo_actions::ActionSpec::operation(
             "go",
             "Go",

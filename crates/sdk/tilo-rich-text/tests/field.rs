@@ -59,7 +59,7 @@ impl Resource for Message {
     }
 
     /// The body, edited as a rich-text resource of its own.
-    fn children(_state: &String) -> Vec<ui::tilo_actions::Resource> {
+    fn children(_state: &String) -> Vec<ui::tilo_actions::ResourceSpec> {
         vec![publish_child::<RichText, Self>(
             &body_id(),
             "Body",

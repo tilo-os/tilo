@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use automerge::AutoCommit;
 use serde_json::{Value as Json, json};
-use tilo_actions::{Resource, Target};
+use tilo_actions::{ResourceSpec, Target};
 use tilo_resource::{Edit, EditOp, Id, Segment};
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
 use tilolang_tilo::publish::{
@@ -166,7 +166,7 @@ impl Planner for Refusing {
 }
 
 /// A published tree as text: ids, kinds, labels and action names, children in order.
-fn shape(resource: &Resource) -> String {
+fn shape(resource: &ResourceSpec) -> String {
     let actions: Vec<String> = resource.actions.iter().map(|a| a.id.clone()).collect();
     let children: Vec<String> = resource.children.iter().map(shape).collect();
     format!(
@@ -521,7 +521,7 @@ fn edit_text(replica: &mut Replica, root: &str, path: Vec<Segment>, text: &str) 
 /// Every published resource with a deferred action, by id, and the target that action is bound
 /// to: a resource republished is bound to a target of its own, one kept keeps it. (The action's
 /// builder is its type's, shared by every item of the type.)
-fn targets(resource: &Resource, out: &mut std::collections::BTreeMap<String, Target>) {
+fn targets(resource: &ResourceSpec, out: &mut std::collections::BTreeMap<String, Target>) {
     if let Some(action) = resource
         .actions
         .iter()
@@ -634,7 +634,7 @@ fn a_change_within_an_item_republishes_only_the_resources_it_reached() {
     check_kept(&ada, &published, &before, "posting a note", &anew);
 }
 
-fn find<'r>(resource: &'r Resource, id: &str) -> Option<&'r Resource> {
+fn find<'r>(resource: &'r ResourceSpec, id: &str) -> Option<&'r ResourceSpec> {
     if resource.id.as_str() == id {
         return Some(resource);
     }

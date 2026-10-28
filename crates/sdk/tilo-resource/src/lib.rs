@@ -209,7 +209,7 @@ pub mod __private {
     pub use serde_json;
     pub use tilo_actions::{
         ActionArgs, ActionKind, ActionParam, ActionRegistry, ActionSpec, Audience, ChangeKind,
-        HOST_RENDER_TAG, OperationKind, PROMPTED_PARAM, ParamType, Resource, ResourceViewSpec,
+        HOST_RENDER_TAG, OperationKind, PROMPTED_PARAM, ParamType, ResourceSpec, ResourceViewSpec,
         RiskLevel, picked_resource_schema,
     };
 

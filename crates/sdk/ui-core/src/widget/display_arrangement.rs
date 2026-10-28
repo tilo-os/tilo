@@ -1573,9 +1573,12 @@ mod tests {
                     .find(|decl| decl.id == "move-display")
                     .expect("moving a display is an effect")
                     .spec("test.display");
-                let resource =
-                    ui::tilo_actions::Resource::new("settings.root", "settings.root", "Settings")
-                        .with_action(spec.clone());
+                let resource = ui::tilo_actions::ResourceSpec::new(
+                    "settings.root",
+                    "settings.root",
+                    "Settings",
+                )
+                .with_action(spec.clone());
                 let connector = display.connector.clone();
                 let binding = ui::tilo_actions::ActionBinding::fallible(
                     &resource,

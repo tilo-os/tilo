@@ -95,7 +95,7 @@ struct RetainedSubtree {
     kept: bool,
 }
 use serde::{Deserialize, Serialize};
-use tilo_actions::{ActionSpec, Collects, EncodedAction, OperationKind, Resource};
+use tilo_actions::{ActionSpec, Collects, EncodedAction, OperationKind, ResourceSpec};
 
 /// Operation type used when the retained semantic tree projects an ordinary
 /// UI affordance into the resource/action catalogue. This makes the same
@@ -408,7 +408,7 @@ impl SemanticTree {
         root: &dyn Widget,
         node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
         focused: Option<TaffyNodeId>,
-        resources: &[Resource],
+        resources: &[ResourceSpec],
     ) -> TreeDelta {
         self.refresh_impl::<false>(root, node_map, None, focused, resources, &[], false)
     }
@@ -418,7 +418,7 @@ impl SemanticTree {
         node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
         admitted: &AdmittedNodeNames,
         focused: Option<TaffyNodeId>,
-        resources: &[Resource],
+        resources: &[ResourceSpec],
     ) -> TreeDelta {
         self.refresh_impl::<true>(
             root,
@@ -450,7 +450,7 @@ impl SemanticTree {
         node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
         admitted: &AdmittedNodeNames,
         focused: Option<TaffyNodeId>,
-        resources: &[Resource],
+        resources: &[ResourceSpec],
         components: &[crate::bound_dispatch::BoundResourceSnapshot],
     ) -> TreeDelta {
         self.refresh_impl::<true>(
@@ -498,7 +498,7 @@ impl SemanticTree {
         node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
         admitted: Option<&AdmittedNodeNames>,
         focused: Option<TaffyNodeId>,
-        resources: &[Resource],
+        resources: &[ResourceSpec],
         components: &[crate::bound_dispatch::BoundResourceSnapshot],
         actions_only: bool,
     ) -> TreeDelta {
@@ -871,7 +871,7 @@ impl SemanticTree {
     /// Tilo resource/action surface. Bespoke app actions remain preferable for
     /// domain operations; this projection closes the driveability gap for
     /// ordinary controls such as buttons, fields, tabs, toggles, and sliders.
-    pub(crate) fn action_resources(&self) -> Vec<Resource> {
+    pub(crate) fn action_resources(&self) -> Vec<ResourceSpec> {
         self.iter()
             .filter(|node| node.id != self.root && !node.id.0.starts_with("r:"))
             .filter(|node| node.durable_identity)
@@ -911,7 +911,7 @@ impl SemanticTree {
                     percent_encoding::NON_ALPHANUMERIC,
                 );
                 let mut resource =
-                    Resource::new(format!("ui:{encoded_node_id}"), "tilo.ui.control", label);
+                    ResourceSpec::new(format!("ui:{encoded_node_id}"), "tilo.ui.control", label);
                 for (action, verb) in verbs {
                     let operation = SemanticOperation {
                         node: node.id.0.clone(),
@@ -1599,7 +1599,7 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
     }
 
     /// A declared resource's node and its children's, beneath the root.
-    fn visit_resource(&mut self, res: &Resource) -> SemanticId {
+    fn visit_resource(&mut self, res: &ResourceSpec) -> SemanticId {
         let id = SemanticId::resource(res.id.as_str());
         let actions = component_nodes::resource_actions(&id, res, None, &mut self.prompted, None);
         let mut children: Vec<SemanticId> = Vec::new();

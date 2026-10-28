@@ -11,8 +11,8 @@
 use serde_json::{Map, Value, json};
 use tilo_actions::{
     ActionArgs, ActionContract, ActionKind, ActionOutput, ActionParam, ActionSpec, Availability,
-    ConfirmationPolicy, EncodedAction, OperationKind, ParamType, Resource, ResourcePresentation,
-    ResultSpec, RiskLevel,
+    ConfirmationPolicy, EncodedAction, OperationKind, ParamType, ResourcePresentation,
+    ResourceSpec, ResultSpec, RiskLevel,
 };
 use zeroize::Zeroizing;
 
@@ -53,10 +53,10 @@ enum OnlineControl {
 }
 
 /// Keep guidance within publication limits without silently dropping it.
-fn with_guidance(mut resource: Resource, id: &str, guidance: &str) -> Resource {
+fn with_guidance(mut resource: ResourceSpec, id: &str, guidance: &str) -> ResourceSpec {
     for (index, sentence) in guidance.split(". ").enumerate() {
         resource = resource.with_child(
-            Resource::new(
+            ResourceSpec::new(
                 format!("{id}.guidance:{index}"),
                 "installer.guidance",
                 "Installation guidance",
@@ -177,8 +177,8 @@ impl InstallerApp {
     /// The resource tree the installer has open right now. Recomputed on
     /// every call; an address that stopped naming anything is refused by
     /// the door instead of reaching a stale handler.
-    pub fn publish(&self) -> Vec<Resource> {
-        let mut root = Resource::new(SESSION, "installer.session", "Tilo installer")
+    pub fn publish(&self) -> Vec<ResourceSpec> {
+        let mut root = ResourceSpec::new(SESSION, "installer.session", "Tilo installer")
             .with_presentation(ResourcePresentation {
                 detail: Some(format!(
                     "Step {} of {}: {}",
@@ -239,7 +239,7 @@ impl InstallerApp {
         }
     }
 
-    fn online_accounts_resource(&self) -> Resource {
+    fn online_accounts_resource(&self) -> ResourceSpec {
         use crate::online_accounts::view::AccountsStatus;
         let status = self.accounts_controller.as_ref().map_or(
             if self.accounts_initialized {
@@ -256,7 +256,7 @@ impl InstallerApp {
             AccountsStatus::Failed => "failed",
             AccountsStatus::Added => "added",
         };
-        let mut resource = Resource::new(
+        let mut resource = ResourceSpec::new(
             ONLINE_ACCOUNTS,
             "installer.online-accounts",
             "Online accounts",
@@ -409,8 +409,8 @@ impl InstallerApp {
         gate(nullary("back", label, &Operation::Back), blocked)
     }
 
-    fn keyboard_resource(&self) -> Resource {
-        Resource::new(KEYBOARD, "installer.keyboard", "Keyboard layout")
+    fn keyboard_resource(&self) -> ResourceSpec {
+        ResourceSpec::new(KEYBOARD, "installer.keyboard", "Keyboard layout")
             .with_presentation(ResourcePresentation {
                 detail: Some(self.keymap().trim().to_owned()),
                 ..ResourcePresentation::default()
@@ -431,7 +431,7 @@ impl InstallerApp {
             ))
     }
 
-    fn network_resource(&self) -> Resource {
+    fn network_resource(&self) -> ResourceSpec {
         let on_step = self.off_step(Step::Network);
         let busy = self.network.is_busy().then(|| {
             (
@@ -471,7 +471,7 @@ impl InstallerApp {
         if !visible.is_empty() {
             select_param = select_param.with_choices(visible);
         }
-        Resource::new(NETWORK, "installer.network", "Network")
+        ResourceSpec::new(NETWORK, "installer.network", "Network")
             .with_presentation(ResourcePresentation {
                 detail: Some(bounded(&self.network.connection_summary(), 160)),
                 ..ResourcePresentation::default()
@@ -528,9 +528,9 @@ impl InstallerApp {
         clippy::too_many_lines,
         reason = "the method, the disks and the free regions are one Disk-step resource"
     )]
-    fn storage_resource(&self) -> Resource {
+    fn storage_resource(&self) -> ResourceSpec {
         let on_step = self.off_step(Step::Disk);
-        let mut storage = Resource::new(STORAGE, "installer.storage", "Installation target")
+        let mut storage = ResourceSpec::new(STORAGE, "installer.storage", "Installation target")
             .with_presentation(ResourcePresentation {
                 detail: Some(if self.install_method == InstallMethod::Alongside {
                     bounded(&self.alongside_storage_guidance(), 160)
@@ -592,7 +592,7 @@ impl InstallerApp {
             };
             let device = disk.name.clone();
             storage = storage.with_child(
-                Resource::new(disk_resource(&disk.name), "installer.disk", disk.label())
+                ResourceSpec::new(disk_resource(&disk.name), "installer.disk", disk.label())
                     .with_presentation(ResourcePresentation {
                         detail: Some(bounded(
                             &format!("{} · {}", disk.size, disk.contents_summary()),
@@ -615,7 +615,7 @@ impl InstallerApp {
         if plans.len() > 1 {
             for (index, plan) in plans.iter().enumerate() {
                 storage = storage.with_child(
-                    Resource::new(
+                    ResourceSpec::new(
                         region_resource(index),
                         "installer.region",
                         format!(
@@ -675,14 +675,14 @@ impl InstallerApp {
         clippy::too_many_lines,
         reason = "one resource publishes every account control beside its gate"
     )]
-    fn account_resource(&self) -> Resource {
+    fn account_resource(&self) -> ResourceSpec {
         let on_step = self.off_step(Step::Account);
         let secret = if self.startup_secret_is_pin() {
             "TPM-protected startup PIN: at least 6 digits, not a trivial sequence"
         } else {
             "Startup and unlock passphrase: at least 15 characters, ideally several unrelated words"
         };
-        Resource::new(ACCOUNT, "installer.account", "Account")
+        ResourceSpec::new(ACCOUNT, "installer.account", "Account")
             .with_presentation(ResourcePresentation {
                 detail: self.username.with(|name| {
                     (!name.trim().is_empty()).then(|| bounded(name.trim(), 160))
@@ -787,9 +787,9 @@ impl InstallerApp {
             ))
     }
 
-    fn options_resource(&self) -> Resource {
+    fn options_resource(&self) -> ResourceSpec {
         let on_step = self.off_step(Step::Options);
-        Resource::new(OPTIONS, "installer.options", "Installation options")
+        ResourceSpec::new(OPTIONS, "installer.options", "Installation options")
             .with_presentation(ResourcePresentation {
                 detail: Some(bounded(
                     &format!(
@@ -871,8 +871,8 @@ impl InstallerApp {
             ))
     }
 
-    fn media_resource(&self) -> Resource {
-        Resource::new(MEDIA, "installer.media", "More video and audio formats")
+    fn media_resource(&self) -> ResourceSpec {
+        ResourceSpec::new(MEDIA, "installer.media", "More video and audio formats")
             .with_presentation(ResourcePresentation {
                 detail: Some(
                     if self.codecs {
@@ -923,7 +923,7 @@ impl InstallerApp {
             })
     }
 
-    fn review_resource(&self) -> Resource {
+    fn review_resource(&self) -> ResourceSpec {
         let target = self.destructive_confirmation_target();
         let erase = self.install_method == InstallMethod::Erase;
         let description = match (&target, erase) {
@@ -969,7 +969,7 @@ impl InstallerApp {
             confirmation: ConfirmationPolicy::Phrase { phrase },
             ..ActionContract::default()
         });
-        let review = Resource::new(REVIEW, "installer.review", "Review and install");
+        let review = ResourceSpec::new(REVIEW, "installer.review", "Review and install");
         let review = if erase {
             review
         } else {
@@ -1010,10 +1010,10 @@ impl InstallerApp {
             .with_action(begin)
     }
 
-    fn recovery_resource(&self) -> Option<Resource> {
+    fn recovery_resource(&self) -> Option<ResourceSpec> {
         self.recovery_key.as_ref()?;
         Some(
-            Resource::new(RECOVERY, "installer.recovery", "Recovery key")
+            ResourceSpec::new(RECOVERY, "installer.recovery", "Recovery key")
                 .with_presentation(ResourcePresentation {
                     detail: Some(
                         if self.recovery_key_saved {
@@ -1046,7 +1046,7 @@ impl InstallerApp {
         )
     }
 
-    fn power_resource(&self) -> Option<Resource> {
+    fn power_resource(&self) -> Option<ResourceSpec> {
         if self.step != Step::Install || self.install_state != InstallState::Done {
             return None;
         }
@@ -1059,7 +1059,7 @@ impl InstallerApp {
             })
         };
         Some(
-            Resource::new(POWER, "installer.power", "Finish")
+            ResourceSpec::new(POWER, "installer.power", "Finish")
                 .with_action(gate(
                     nullary("reboot", "Reboot now", &Operation::Reboot),
                     unsaved("rebooting"),

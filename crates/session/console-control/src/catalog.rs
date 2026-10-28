@@ -12,7 +12,7 @@ use serde_json::{Map, Value, json};
 use tilo_actions::door::{self, ActionAddress};
 use tilo_actions::{
     ActionParam, Availability, ConfirmationPolicy, EncodedAction, OperationKind, ParamType,
-    Resource,
+    ResourceSpec,
 };
 
 /// Boolean argument that carries an explicit confirmation.
@@ -57,7 +57,7 @@ pub fn projected_params(params: &[ActionParam], policy: &ConfirmationPolicy) -> 
 /// whitespace-separated word must appear in the action's label, resource
 /// label, id or kind; an empty query lists everything). Nothing in the reply
 /// can perform an action: it carries addresses, never handles.
-pub fn enumerate(provider: &str, resources: &[Resource], query: &str) -> Value {
+pub fn enumerate(provider: &str, resources: &[ResourceSpec], query: &str) -> Value {
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
     let mut actions = Vec::new();
     for resource in resources {
@@ -66,7 +66,7 @@ pub fn enumerate(provider: &str, resources: &[Resource], query: &str) -> Value {
     json!({ "query": query, "count": actions.len(), "actions": actions })
 }
 
-fn describe_into(provider: &str, resource: &Resource, words: &[String], out: &mut Vec<Value>) {
+fn describe_into(provider: &str, resource: &ResourceSpec, words: &[String], out: &mut Vec<Value>) {
     for spec in &resource.actions {
         let address = ActionAddress::new(resource.id.as_str(), &spec.id);
         let id = id_for(&address);
@@ -172,7 +172,7 @@ pub struct Admitted {
 /// parameters (`invalid_arguments`).
 pub fn admit(
     provider: &str,
-    resources: &[Resource],
+    resources: &[ResourceSpec],
     requested_provider: &str,
     id: &str,
     args: &Map<String, Value>,
@@ -245,9 +245,9 @@ mod tests {
         EncodedAction::encode_operation(OP, value).unwrap()
     }
 
-    fn tree() -> Vec<Resource> {
+    fn tree() -> Vec<ResourceSpec> {
         vec![
-            Resource::new("session", "test.session", "Session")
+            ResourceSpec::new("session", "test.session", "Session")
                 .with_action(ActionSpec::typed_operation(
                     "rename",
                     "Rename",
@@ -263,7 +263,7 @@ mod tests {
                         .unavailable("not_now", "Finish the current step first"),
                 )
                 .with_child(
-                    Resource::new("disk:/dev/vdb", "test.disk", "vdb").with_action(
+                    ResourceSpec::new("disk:/dev/vdb", "test.disk", "vdb").with_action(
                         ActionSpec::operation(
                             "erase",
                             "Erase",
@@ -283,7 +283,7 @@ mod tests {
                     ),
                 )
                 .with_child(
-                    Resource::new("power", "test.power", "Power").with_action(
+                    ResourceSpec::new("power", "test.power", "Power").with_action(
                         ActionSpec::operation(
                             "off",
                             "Power off",

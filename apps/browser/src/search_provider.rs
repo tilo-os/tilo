@@ -9,7 +9,7 @@
 
 use ui::icons::Icon;
 use ui::lock::RwLockRecover as _;
-use ui::tilo_actions::Resource;
+use ui::tilo_actions::ResourceSpec;
 use ui::tilo_resource::SearchEntry;
 
 #[derive(Clone)]
@@ -167,11 +167,11 @@ impl BrowserSearchIndex {
 
     /// The row a hit opens: the same row, with the same effect, the window
     /// publishes for it. `None` once the entry is gone.
-    pub fn resource(&self, id: &str) -> Option<Resource> {
+    pub fn resource(&self, id: &str) -> Option<ResourceSpec> {
         use ui::tilo_resource::Effect as _;
         let action = self.opened(id)?.bound();
         let row = self.state.read_recover().rows.get(id).cloned()?;
-        Some(Resource::new(&row.resource_id, row.resource_kind, &row.title).with_action(action))
+        Some(ResourceSpec::new(&row.resource_id, row.resource_kind, &row.title).with_action(action))
     }
 
     /// The search source the framework builds over these entries, resolving

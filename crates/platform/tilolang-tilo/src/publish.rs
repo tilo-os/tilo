@@ -1,6 +1,6 @@
 //! Publishing tilolang resources on the action door.
 //!
-//! Every resource in the room record is published as a `tilo_actions::Resource` of kind
+//! Every resource in the room record is published as a `tilo_actions::ResourceSpec` of kind
 //! `tl.<app>.<Type>`, with one typed action per tilolang action whose subject is its type. The
 //! desktop agent, the runtime door, shortcuts and grants therefore reach tilolang actions with
 //! no agent-side code. The build closure of each action runs the wasm **planner** and encodes
@@ -12,7 +12,7 @@ use serde_json::Value as Json;
 use tilo_actions::resource::INVALID_ARGUMENTS_TYPE;
 use tilo_actions::{
     ActionArgs, ActionParam, ActionSpec, ActionType, EncodedAction, ExecutionLocus, ParamType,
-    Resource, Target,
+    ResourceSpec, Target,
 };
 
 use crate::action::DynAction;
@@ -277,8 +277,8 @@ impl ActionTypes {
 
     /// The resource `id` of the type `type_name`, labelled `label`, carrying its `open`, the
     /// direct edits when it is a record (`edits`), and the actions on its type.
-    fn resource(&self, type_name: &str, id: &str, label: String, edits: bool) -> Resource {
-        let mut resource = Resource::new(
+    fn resource(&self, type_name: &str, id: &str, label: String, edits: bool) -> ResourceSpec {
+        let mut resource = ResourceSpec::new(
             resource_id(&self.meta.app, id),
             self.meta.kind_of(type_name),
             label,
@@ -298,7 +298,7 @@ impl ActionTypes {
 
 /// The resource `id` of the type `type_name`, published with the actions of that type.
 #[must_use]
-pub fn publish_record(types: &ActionTypes, type_name: &str, id: &str, label: &str) -> Resource {
+pub fn publish_record(types: &ActionTypes, type_name: &str, id: &str, label: &str) -> ResourceSpec {
     types.resource(type_name, id, label.to_owned(), true)
 }
 
@@ -324,7 +324,7 @@ pub fn publish_tree(
     type_name: &str,
     doc: &str,
     label: &str,
-) -> Resource {
+) -> ResourceSpec {
     let mut resource = publish_record(types, type_name, doc, label);
     for child in item_resources(types, record, doc) {
         resource = resource.with_child(child);
@@ -336,7 +336,7 @@ fn item_resources(
     types: &ActionTypes,
     record: &crate::record::DynRecord,
     parent: &str,
-) -> Vec<Resource> {
+) -> Vec<ResourceSpec> {
     use crate::record::DynValue;
     let mut out = Vec::new();
     for field in &record.schema().fields {
@@ -352,7 +352,7 @@ fn item_resources(
 }
 
 /// The item `item` at `path`, published with its type's actions and its own items.
-fn item_resource(types: &ActionTypes, item: &crate::record::DynRecord, path: &str) -> Resource {
+fn item_resource(types: &ActionTypes, item: &crate::record::DynRecord, path: &str) -> ResourceSpec {
     let type_name = &item.schema().name;
     let label = item_label(item).unwrap_or_else(|| type_name.clone());
     let mut resource = types.resource(type_name, path, label, false);
@@ -373,7 +373,7 @@ fn item_resource(types: &ActionTypes, item: &crate::record::DynRecord, path: &st
 /// does ([`crate::search::SearchIndex`]): until it ends, updates change nothing.
 pub struct Publications {
     watch: crate::store::Watch,
-    trees: std::collections::BTreeMap<String, Resource>,
+    trees: std::collections::BTreeMap<String, ResourceSpec>,
     /// Per record, the resource whose text names it now.
     named_by: std::collections::BTreeMap<String, Option<String>>,
     /// Records being built whole off the frame.
@@ -386,7 +386,7 @@ pub struct Publications {
 /// A record built whole off the frame: its tree and the resource whose text names it.
 struct Built {
     doc: String,
-    tree: Resource,
+    tree: ResourceSpec,
     named_by: Option<String>,
 }
 
@@ -436,7 +436,7 @@ fn indexed_items(
     view: &crate::index::view::View<'_>,
     parent: &str,
     schema: &crate::schema::TypeSchema,
-) -> Vec<Resource> {
+) -> Vec<ResourceSpec> {
     let mut out = Vec::new();
     for field in schema
         .fields
@@ -466,7 +466,7 @@ fn indexed_item(
     view: &crate::index::view::View<'_>,
     path: &str,
     item_type: Option<&str>,
-) -> Option<Resource> {
+) -> Option<ResourceSpec> {
     let ty = view.type_of(path).ok().flatten();
     let schema = ty
         .as_deref()
@@ -597,7 +597,7 @@ impl Publications {
 
     /// The published records, by document id.
     #[must_use]
-    pub fn trees(&self) -> &std::collections::BTreeMap<String, Resource> {
+    pub fn trees(&self) -> &std::collections::BTreeMap<String, ResourceSpec> {
         &self.trees
     }
 
@@ -827,7 +827,7 @@ impl Published<'_> {
     /// whose text names the record, kept up to date.
     fn republish(
         &self,
-        tree: &mut Resource,
+        tree: &mut ResourceSpec,
         (fields, changes): (
             &std::collections::BTreeSet<tilolang_runtime::store::FieldKey>,
             &crate::store::Changes,
@@ -884,7 +884,7 @@ impl Published<'_> {
     /// of `nodes`).
     fn membership(
         &self,
-        tree: &mut Resource,
+        tree: &mut ResourceSpec,
         path: &str,
         field: &str,
         nodes: &mut std::collections::BTreeSet<String>,
@@ -952,7 +952,7 @@ impl Published<'_> {
 
     /// Rebuild the items at `paths` in place, each with its own items; drop those gone. An item
     /// within another one rebuilt is rebuilt with it.
-    fn rebuild(&self, tree: &mut Resource, paths: &std::collections::BTreeSet<String>) {
+    fn rebuild(&self, tree: &mut ResourceSpec, paths: &std::collections::BTreeSet<String>) {
         let app = &self.types.meta().app;
         for path in paths {
             let Some((parent, _)) = path.rsplit_once('/') else {
@@ -983,7 +983,7 @@ impl Published<'_> {
 
     /// Read again the labels of the items at `paths`: the first text in each, as
     /// [`item_resource`] names an item.
-    fn relabel(&self, tree: &mut Resource, paths: &std::collections::BTreeSet<String>) {
+    fn relabel(&self, tree: &mut ResourceSpec, paths: &std::collections::BTreeSet<String>) {
         for path in paths {
             let (Some(at), Some(schema)) = (self.at(path), self.schema_at(path)) else {
                 continue;
@@ -1004,7 +1004,7 @@ impl Published<'_> {
     /// are then not as many as the items: they are brought in line with the listing instead.
     fn splice_members(
         &self,
-        tree: &mut Resource,
+        tree: &mut ResourceSpec,
         (path, field): (&str, &str),
         nodes: &mut std::collections::BTreeSet<String>,
         splices: &[tilolang_runtime::store::Splice],
@@ -1021,7 +1021,7 @@ impl Published<'_> {
         let Some(node) = self.node_mut(tree, path) else {
             return false;
         };
-        let mut moving: Option<Resource> = None;
+        let mut moving: Option<ResourceSpec> = None;
         for splice in splices {
             match splice {
                 Splice::Remove { at: index, item } => {
@@ -1084,7 +1084,7 @@ impl Published<'_> {
 
     /// The index among `holder`'s children of the item at `path`, published as `id`: where
     /// its listing puts it, checked, else looked for.
-    fn child_index(&self, holder: &Resource, path: &str, id: &str) -> Option<usize> {
+    fn child_index(&self, holder: &ResourceSpec, path: &str, id: &str) -> Option<usize> {
         let placed = path.rsplit_once('/').and_then(|(parent, part)| {
             let (field, item) = part.split_once(':')?;
             let at = self.at(parent)?;
@@ -1098,7 +1098,7 @@ impl Published<'_> {
 
     /// The published resource at `path` in `tree`, the record's: each item found where its
     /// listing puts it.
-    fn node_mut<'t>(&self, tree: &'t mut Resource, path: &str) -> Option<&'t mut Resource> {
+    fn node_mut<'t>(&self, tree: &'t mut ResourceSpec, path: &str) -> Option<&'t mut ResourceSpec> {
         let app = &self.types.meta().app;
         let rest = path.strip_prefix(self.doc)?;
         let mut node = tree;
@@ -1114,7 +1114,7 @@ impl Published<'_> {
     }
 
     /// The item at `path`, read from the index and published.
-    fn item(&self, path: &str) -> Option<Resource> {
+    fn item(&self, path: &str) -> Option<ResourceSpec> {
         let schema = self.schema_at(path)?;
         let snapshot = self.store.snapshot();
         let view = snapshot.view(&self.types.meta().app)?;
@@ -1152,9 +1152,9 @@ fn item_label(item: &crate::record::DynRecord) -> Option<String> {
 
 /// The package's own resource, carrying the actions that take no record.
 #[must_use]
-pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>) -> Resource {
+pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>) -> ResourceSpec {
     let kind = meta.package_kind();
-    let mut resource = Resource::new(package_resource_id(&meta.app), kind.clone(), &meta.title);
+    let mut resource = ResourceSpec::new(package_resource_id(&meta.app), kind.clone(), &meta.title);
     for action in meta.offered_actions() {
         if meta.subject_of(&action.params).is_none() {
             resource = resource
@@ -1170,7 +1170,7 @@ pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>) -> Resource {
 /// It also carries the [`HostEffect`] vocabulary an agent uses: run a block, run a flow, read
 /// the catalogue. The window answers them with `Host::answer`.
 #[must_use]
-pub fn host_resource(committer: &Arc<dyn Committer>) -> Resource {
+pub fn host_resource(committer: &Arc<dyn Committer>) -> ResourceSpec {
     let classify = Arc::clone(committer);
     let committer = Arc::clone(committer);
     let commit = ActionSpec::typed(
@@ -1206,7 +1206,7 @@ pub fn host_resource(committer: &Arc<dyn Committer>) -> Resource {
             .unwrap_or_else(|| tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable))
     });
     let mut host =
-        Resource::new(HOST_RESOURCE, crate::surface::HOST_KIND, "tilolang").with_action(commit);
+        ResourceSpec::new(HOST_RESOURCE, crate::surface::HOST_KIND, "tilolang").with_action(commit);
     for spec in <crate::effects::HostEffect as tilo_resource::Effect>::specs() {
         host = host.with_action(spec);
     }

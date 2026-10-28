@@ -878,7 +878,7 @@ pub struct RunStart {
     /// a task that called the shortcut, named by its own group. The run's
     /// steps are stamped with it, so the run shows up inside that task rather
     /// than beside it, and undoing the task undoes what it asked for.
-    pub parent: Option<tilo_actions::context::ActionGroup>,
+    pub parent: Option<tilo_actions::context::WorkGroup>,
 }
 
 /// [`RunHooks`] for a run started through the door.

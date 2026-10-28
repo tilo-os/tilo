@@ -4,7 +4,7 @@
 //! the palette, agents and scripts.
 
 use tilo_actions::{
-    ActionSpec, OperationKind, Resource, ResourcePresentation, ResourceSemanticIdentity,
+    ActionSpec, OperationKind, ResourcePresentation, ResourceSemanticIdentity, ResourceSpec,
 };
 use tilo_resource::Effect;
 
@@ -29,7 +29,7 @@ use tilo_resource::Effect;
 /// again.
 #[derive(Clone)]
 pub struct LiveRow {
-    resource: std::rc::Rc<Resource>,
+    resource: std::rc::Rc<ResourceSpec>,
 }
 
 impl LiveRow {
@@ -38,7 +38,7 @@ impl LiveRow {
     /// time, a container id), a `kind` tag and a human `label`.
     pub fn new(id: impl Into<String>, kind: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
-            resource: std::rc::Rc::new(Resource::new(id, kind, label)),
+            resource: std::rc::Rc::new(ResourceSpec::new(id, kind, label)),
         }
     }
 
@@ -57,7 +57,7 @@ impl LiveRow {
     /// (a search hit, a catalogue entry), as a row: its presentation,
     /// views, operations and children. Its document actions are dropped at
     /// any depth: the resource's own publication carries them.
-    pub fn from_resource(resource: Resource) -> Self {
+    pub fn from_resource(resource: ResourceSpec) -> Self {
         Self {
             resource: std::rc::Rc::new(resolved_outside_document(resource)),
         }
@@ -118,7 +118,7 @@ impl LiveRow {
     }
 
     /// The row as the published tree carries it.
-    pub fn into_resource(self) -> Resource {
+    pub fn into_resource(self) -> ResourceSpec {
         let mut resource = std::rc::Rc::unwrap_or_clone(self.resource);
         tilo_resource::share::offer_tree(&mut resource);
         resource
@@ -146,7 +146,7 @@ fn admits(operation: &ActionSpec, on: &str) -> bool {
 
 /// `resource` without document actions, at any depth: what a content widget
 /// may add to the published tree beside the resource's own publication.
-pub(crate) fn outside_document(mut resource: Resource) -> Resource {
+pub(crate) fn outside_document(mut resource: ResourceSpec) -> ResourceSpec {
     let on = resource.id.as_str().to_owned();
     resource.actions.retain(|action| admits(action, &on));
     resource.children = resource
@@ -160,7 +160,7 @@ pub(crate) fn outside_document(mut resource: Resource) -> Resource {
 /// `resource`, resolved by id, without document actions. A lookup is asked
 /// for ids the resource itself publishes too (an item of its own), so this
 /// drops them without complaint: the resource's publication carries them.
-pub(crate) fn resolved_outside_document(mut resource: Resource) -> Resource {
+pub(crate) fn resolved_outside_document(mut resource: ResourceSpec) -> ResourceSpec {
     resource
         .actions
         .retain(|action| action.kind != OperationKind::Document);
@@ -176,7 +176,10 @@ pub(crate) fn resolved_outside_document(mut resource: Resource) -> Resource {
 /// the operations and rows that child lacks, and its presentation when the
 /// child has none; any other row is appended. The first publisher of an id
 /// keeps its label and kind.
-pub(crate) fn merge(children: &mut Vec<Resource>, rows: impl IntoIterator<Item = Resource>) {
+pub(crate) fn merge(
+    children: &mut Vec<ResourceSpec>,
+    rows: impl IntoIterator<Item = ResourceSpec>,
+) {
     for row in rows {
         match children.iter_mut().find(|child| child.id == row.id) {
             Some(existing) => join(existing, row),
@@ -187,7 +190,7 @@ pub(crate) fn merge(children: &mut Vec<Resource>, rows: impl IntoIterator<Item =
 
 /// Add to `existing` the presentation, semantic identity, operations, views and rows of `row`,
 /// which names it, that it lacks.
-pub(crate) fn join(existing: &mut Resource, row: Resource) {
+pub(crate) fn join(existing: &mut ResourceSpec, row: ResourceSpec) {
     if existing.presentation.is_none() {
         existing.presentation = row.presentation;
     }
@@ -215,7 +218,7 @@ pub(crate) fn join(existing: &mut Resource, row: Resource) {
     merge(&mut existing.children, row.children);
 }
 
-pub(crate) fn find(resources: &[Resource], id: &str) -> Option<Resource> {
+pub(crate) fn find(resources: &[ResourceSpec], id: &str) -> Option<ResourceSpec> {
     resources.iter().find_map(|resource| {
         if resource.id.as_str() == id {
             Some(resource.clone())
@@ -237,7 +240,7 @@ mod tests {
                 .semantic_identity(identity.clone())
                 .into_resource()
         };
-        let mut children = vec![Resource::new("agent:1", "chat.agent", "Document label")];
+        let mut children = vec![ResourceSpec::new("agent:1", "chat.agent", "Document label")];
         merge(&mut children, [row()]);
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].semantic_identity, Some(identity.clone()));

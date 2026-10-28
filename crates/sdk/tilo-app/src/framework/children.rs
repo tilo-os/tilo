@@ -249,7 +249,7 @@ pub(crate) struct ChildrenState<C: ChildRecord> {
     /// publishes for one whose record has not arrived.
     empty: Rc<C::State>,
     revision: Cell<u64>,
-    published: RefCell<Option<((u64, u64), tilo_actions::Resource)>>,
+    published: RefCell<Option<((u64, u64), tilo_actions::ResourceSpec)>>,
     /// The door of the parent the window shows, which the lifecycle writes
     /// through in the pass that lends it; `None` where the parent is held
     /// in the store (a tool's, a test's).
@@ -877,16 +877,19 @@ impl<C: ChildRecord> ChildrenState<C> {
     /// The container as it is published: `create`, and every child with
     /// its own actions, `delete` and `move` (a trashed one with `restore`),
     /// carried out on the container's door.
-    pub(crate) fn publish(&self) -> tilo_actions::Resource {
+    pub(crate) fn publish(&self) -> tilo_actions::ResourceSpec {
         let revision = (self.revision(), ui_core::i18n::I18nManager::revision());
         if let Some((at, published)) = self.published.borrow().as_ref()
             && *at == revision
         {
             return published.clone();
         }
-        let mut resource =
-            tilo_actions::Resource::new(self.id.clone(), format!("{}.children", C::KIND), C::LABEL)
-                .with_action(self.route(create_spec::<C>()));
+        let mut resource = tilo_actions::ResourceSpec::new(
+            self.id.clone(),
+            format!("{}.children", C::KIND),
+            C::LABEL,
+        )
+        .with_action(self.route(create_spec::<C>()));
         let held = self.held.borrow();
         for (id, child) in self.listed() {
             let state = held
@@ -895,7 +898,7 @@ impl<C: ChildRecord> ChildrenState<C> {
             let address = child_resource_id::<C>(&id);
             let label = tilo_resource::Model::label(&*state).unwrap_or_else(|| id.to_string());
             let mut published = if child.trashed.is_some() {
-                tilo_actions::Resource::new(address, C::KIND, label)
+                tilo_actions::ResourceSpec::new(address, C::KIND, label)
                     .with_action(self.route(step_spec(lifecycle::RESTORE, "Restore", &id)))
             } else {
                 let own = tilo_resource::publish::<C>(&address, &label, &state);
@@ -960,10 +963,10 @@ fn first_fields<C: ChildRecord>(fields: &serde_json::Value) -> Result<Vec<Edit<C
 /// `resource`'s document actions, and those of its children, carried out on
 /// child `child`'s record through the container's door `door`.
 fn route_child(
-    mut resource: tilo_actions::Resource,
+    mut resource: tilo_actions::ResourceSpec,
     door: &str,
     child: &Id,
-) -> tilo_actions::Resource {
+) -> tilo_actions::ResourceSpec {
     resource.actions = std::mem::take(&mut resource.actions)
         .into_iter()
         .filter(|spec| spec.kind == OperationKind::Document)
@@ -1116,7 +1119,7 @@ impl<C: ChildRecord> RecordDoor for ChildrenState<C> {
         ChildrenState::revision(self)
     }
 
-    fn publish(&self) -> tilo_actions::Resource {
+    fn publish(&self) -> tilo_actions::ResourceSpec {
         ChildrenState::publish(self)
     }
 
@@ -1340,7 +1343,7 @@ impl<C: ChildRecord> Children<C> {
 
     /// The container published as the door publishes it, for a test.
     #[must_use]
-    pub fn published(&self) -> tilo_actions::Resource {
+    pub fn published(&self) -> tilo_actions::ResourceSpec {
         self.state.publish()
     }
 
@@ -1589,15 +1592,16 @@ mod tests {
     fn the_door_offers_one_lifecycle_on_every_child_and_carries_each_childs_own_actions() {
         let (_, children) = room();
         let agent = ActionInvoker::actor("agent-1");
-        let invoke = |resource: &tilo_actions::Resource, action: &str, args: serde_json::Value| {
-            let spec = resource
-                .actions
-                .iter()
-                .find(|spec| spec.id == action)
-                .unwrap_or_else(|| panic!("`{action}` on {}", resource.id.as_str()));
-            let encoded = spec.build_json(args.as_object().unwrap()).unwrap();
-            children.invoke_published(&encoded, &agent)
-        };
+        let invoke =
+            |resource: &tilo_actions::ResourceSpec, action: &str, args: serde_json::Value| {
+                let spec = resource
+                    .actions
+                    .iter()
+                    .find(|spec| spec.id == action)
+                    .unwrap_or_else(|| panic!("`{action}` on {}", resource.id.as_str()));
+                let encoded = spec.build_json(args.as_object().unwrap()).unwrap();
+                children.invoke_published(&encoded, &agent)
+            };
         let made = invoke(
             &children.published(),
             lifecycle::CREATE,

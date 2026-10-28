@@ -14,8 +14,8 @@ fn spec(calls: &Arc<AtomicUsize>) -> ActionSpec {
         },
     )
 }
-fn resource(spec: ActionSpec) -> Resource {
-    Resource::new("test", "test", "Test").with_action(spec)
+fn resource(spec: ActionSpec) -> ResourceSpec {
+    ResourceSpec::new("test", "test", "Test").with_action(spec)
 }
 
 #[test]

@@ -961,7 +961,7 @@ fn albums_merge_names_and_memberships_and_deletes_win_stale_imports() {
     assert!(delete.state().unwrap().photo(&left_photo.id).is_none());
 }
 
-fn check_contracts(resource: &tilo_actions::Resource) {
+fn check_contracts(resource: &tilo_actions::ResourceSpec) {
     for action in &resource.actions {
         assert!(
             action.contract.validate_declaration().is_empty(),

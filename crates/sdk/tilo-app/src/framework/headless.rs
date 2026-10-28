@@ -2220,7 +2220,7 @@ fn strict_bindings() {
 
 /// `resource` without the actions another provider runs and publishes
 /// ([`tilo_actions::ActionSpec::run_by`]).
-fn published_here(resource: &mut tilo_actions::Resource) {
+fn published_here(resource: &mut tilo_actions::ResourceSpec) {
     resource.actions.retain(|spec| spec.provider().is_none());
     resource.children.iter_mut().for_each(published_here);
 }

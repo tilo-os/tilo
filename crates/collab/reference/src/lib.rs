@@ -3,7 +3,7 @@
 //! Elsewhere a reference degrades into prose somewhere between the selection
 //! and the message, and whoever reads it — a colleague, a search index, an
 //! agent — has to guess what "this" meant. Here objects already have addresses,
-//! because apps publish a tree of [`Resource`](tilo_actions::Resource)s, so a
+//! because apps publish a tree of [`Resource`](tilo_actions::ResourceSpec)s, so a
 //! selection in any app becomes a [`ResourceRef`] carried beside the text
 //! rather than inside it.
 //!

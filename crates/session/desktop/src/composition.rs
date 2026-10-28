@@ -488,7 +488,7 @@ impl DesktopSurface {
 
     /// Every private window this surface hosts, by tab, with the resources
     /// it offers this device's automation ([`ui::widget::AppWidget::device_local_resources`]).
-    pub fn device_local_windows(&mut self) -> Vec<(u64, Vec<tilo_actions::Resource>)> {
+    pub fn device_local_windows(&mut self) -> Vec<(u64, Vec<tilo_actions::ResourceSpec>)> {
         let mut windows = Vec::new();
         self.for_each_app(|tab, app| {
             if let Some(resources) = app.device_local_resources() {

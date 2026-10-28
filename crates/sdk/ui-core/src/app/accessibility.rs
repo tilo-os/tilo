@@ -1253,7 +1253,7 @@ impl App {
         })
     }
     fn find_resource_action(
-        resources: &[tilo_actions::Resource],
+        resources: &[tilo_actions::ResourceSpec],
         target: accesskit::NodeId,
     ) -> Option<tilo_actions::ActionAddress> {
         resources.iter().find_map(|resource| {

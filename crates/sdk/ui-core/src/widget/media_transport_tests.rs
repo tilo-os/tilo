@@ -32,8 +32,8 @@ fn playing() -> TransportState {
 /// The player resource the test app publishes: one action per control.
 const PLAYER: &str = "test.player:player";
 
-fn player() -> tilo_actions::Resource {
-    let mut player = tilo_actions::Resource::new(PLAYER, "test.player", "Player");
+fn player() -> tilo_actions::ResourceSpec {
+    let mut player = tilo_actions::ResourceSpec::new(PLAYER, "test.player", "Player");
     for id in [
         "play-pause",
         "previous",

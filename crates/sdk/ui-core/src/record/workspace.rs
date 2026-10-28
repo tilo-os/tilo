@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use automerge::AutoCommit;
 
-use super::person::PersonRecord;
+use super::person::StoredRecord;
 use super::{RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordOwners, RecordStore};
 use crate::permissions::UserId;
 
@@ -32,9 +32,6 @@ impl RecordOwners {
         self.open_with(package_id, room, false)
     }
 }
-
-/// A workspace record, open: held as one of the person's is.
-pub type WorkspaceRecord = PersonRecord;
 
 /// Opens the store an app keeps in the window's room.
 type OpenStore = dyn Fn(&str) -> Result<RecordStore, RecordOpenError>;
@@ -88,7 +85,7 @@ impl WorkspaceRecords {
         owner: &str,
         kind: &str,
         initialize: &dyn Fn(&mut AutoCommit) -> Result<(), String>,
-    ) -> Result<WorkspaceRecord, RecordOpenError> {
+    ) -> Result<StoredRecord, RecordOpenError> {
         let id = collab_types::workspace_record_id(kind);
         if collab_types::workspace_record(owner, &id).is_none() {
             return Err(RecordOpenError::IdentityMismatch);
@@ -97,7 +94,7 @@ impl WorkspaceRecords {
         let id = RecordId::parse(&id).ok_or(RecordOpenError::IdentityMismatch)?;
         let checkout = RecordCheckout::new(id, RecordKind::new(kind));
         super::person::open_in(&store, &checkout, initialize)?;
-        Ok(PersonRecord::new(store, checkout, self.author.clone()))
+        Ok(StoredRecord::new(store, checkout, self.author.clone()))
     }
 }
 

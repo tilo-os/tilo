@@ -198,8 +198,14 @@ mod tests {
             || node.children.iter().any(|child| selected(child, name))
     }
 
-    fn published(app: &mut TestApp<PasswordsShell>, id: &str) -> Option<tilo_actions::Resource> {
-        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+    fn published(
+        app: &mut TestApp<PasswordsShell>,
+        id: &str,
+    ) -> Option<tilo_actions::ResourceSpec> {
+        fn find(
+            resources: &[tilo_actions::ResourceSpec],
+            id: &str,
+        ) -> Option<tilo_actions::ResourceSpec> {
             resources.iter().find_map(|resource| {
                 if resource.id.as_str() == id {
                     Some(resource.clone())

@@ -36,7 +36,7 @@ fn deferred_fixture() -> (
         })
     });
     spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
-    let resource = Resource::new("ordinary:fixture", "fixture", "Fixture").with_action(spec);
+    let resource = ResourceSpec::new("ordinary:fixture", "fixture", "Fixture").with_action(spec);
     let binding = ActionBinding::unit(&resource, &resource.actions[0]).unwrap();
     let widget = Fixture {
         child: Box::new(

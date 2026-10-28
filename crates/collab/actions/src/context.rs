@@ -53,7 +53,7 @@ pub struct ActionContext {
     pub purpose: Option<String>,
     /// Stable cross-action work unit: issue, agent run, task, or session.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub group: Option<ActionGroup>,
+    pub group: Option<WorkGroup>,
     /// Browseable dimensions that do not fit the resource hierarchy.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub facets: Vec<ActionFacet>,
@@ -102,7 +102,7 @@ read_through_json_value!(ActionContext);
 /// The gesture a change records for the undo step `gesture` its caller
 /// named, under the caller's `group`: one id for every change of that step,
 /// and never one the caller chose.
-fn ambient_gesture(gesture: crate::ActionId, group: Option<&ActionGroup>) -> crate::ActionId {
+fn ambient_gesture(gesture: crate::ActionId, group: Option<&WorkGroup>) -> crate::ActionId {
     let mut hasher = blake3::Hasher::new_derive_key("tilo ambient gesture v1");
     hasher.update(gesture.0.as_bytes());
     if let Some(group) = group {
@@ -337,7 +337,7 @@ impl ActionContext {
         label: impl Into<String>,
         kind: impl Into<String>,
     ) -> Self {
-        self.group = Some(ActionGroup {
+        self.group = Some(WorkGroup {
             id: id.into(),
             label: label.into(),
             kind: kind.into(),
@@ -572,8 +572,8 @@ mod wire {
     use serde::{Deserialize, Serialize};
 
     use super::{
-        ActionApp, ActionContext, ActionFacet, ActionGroup, ActionInvoker, ActionItem,
-        ActionResource, Cause, ChangeKind,
+        ActionApp, ActionContext, ActionFacet, ActionInvoker, ActionItem, ActionResource, Cause,
+        ChangeKind, WorkGroup,
     };
     use crate::entry::{Did, PathStep};
     use crate::key::ActionKind;
@@ -602,7 +602,7 @@ mod wire {
         #[serde(rename = "pu", skip_serializing_if = "Option::is_none")]
         purpose: Option<String>,
         #[serde(rename = "gr", skip_serializing_if = "Option::is_none")]
-        group: Option<ActionGroup>,
+        group: Option<WorkGroup>,
         #[serde(rename = "f", skip_serializing_if = "Vec::is_empty")]
         facets: Vec<ActionFacet>,
         #[serde(rename = "by", skip_serializing_if = "Option::is_none")]
@@ -1309,8 +1309,10 @@ pub struct Cause {
     pub depth: u8,
 }
 
+/// The unit of work an action belongs to: an issue, a task, an agent run.
+/// Not a group of actions applied as one; that is `tilo_resource::ActionGroup`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ActionGroup {
+pub struct WorkGroup {
     /// Stable key shared by every action in the work unit.
     pub id: String,
     pub label: String,

@@ -1,6 +1,8 @@
 //! Fixed session diagnostics, available only to the authenticated local owner.
 use serde_json::json;
-use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource};
+use tilo_actions::{
+    ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, ResourceSpec,
+};
 
 use crate::shell::launcher::{
     LaunchSession,
@@ -20,7 +22,7 @@ pub(super) fn owner_required(command: &Command) -> Option<Response> {
     })
 }
 
-fn resources() -> Vec<Resource> {
+fn resources() -> Vec<ResourceSpec> {
     let mut configure = ActionSpec::typed_operation(
         "configure",
         crate::shell::i18n::t("session-diagnostics-configure"),
@@ -96,7 +98,7 @@ fn resources() -> Vec<Resource> {
     inspect.type_mut().contract.result = result;
     inspect.type_mut().contract.kind = tilo_actions::ActionKind::Read;
     vec![
-        Resource::new(
+        ResourceSpec::new(
             PROVIDER,
             "session-diagnostics/v1",
             crate::shell::i18n::t("session-diagnostics-title"),

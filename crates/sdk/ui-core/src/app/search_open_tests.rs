@@ -9,7 +9,7 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::{Button, Widget};
 use automerge::AutoCommit;
 use std::collections::HashMap;
-use tilo_actions::{ActionSpec, Resource};
+use tilo_actions::{ActionSpec, ResourceSpec};
 
 /// Mail stand-in: anchors are paths under their folder.
 struct Mailbox;
@@ -78,9 +78,9 @@ impl crate::search::capability::SearchSource for MailRoot {
 }
 
 impl crate::resources::PublishesResources for MailRoot {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
         let archive = |id: &str, label: &str| {
-            Resource::new(id, "mail.folder", label).with_action(
+            ResourceSpec::new(id, "mail.folder", label).with_action(
                 ActionSpec::operation(
                     "archive",
                     format!("Archive {label}"),

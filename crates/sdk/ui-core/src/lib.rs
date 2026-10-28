@@ -108,11 +108,11 @@ pub mod a11y_tree;
 #[cfg(all(feature = "native", target_os = "android"))]
 mod accesskit_android_adapter;
 pub mod accesskit_bridge;
+mod action_locus;
 /// The document action host behind the framework's dispatcher. Apps submit
 /// edits through the framework, never through this host.
 #[doc(hidden)]
-pub mod action_host;
-mod action_locus;
+pub mod local_dispatch;
 pub mod local_document_action;
 pub mod table_model;
 pub use action_locus::{ActionUiRoute, PaintedActionMarker};

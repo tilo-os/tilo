@@ -110,13 +110,13 @@ impl BrowserWidget {
         }
     }
 
-    pub(super) fn continuity_resource(&self) -> Option<ui::tilo_actions::Resource> {
+    pub(super) fn continuity_resource(&self) -> Option<ui::tilo_actions::ResourceSpec> {
         if let Some(controller) = &self.continuity {
             use crate::continuity_handoff::Status;
             if controller.status() == Status::Absent {
                 return None;
             }
-            let mut resource = ui::tilo_actions::Resource::new(
+            let mut resource = ui::tilo_actions::ResourceSpec::new(
                 "browser.continuity",
                 "browser.continuity",
                 "Bring your browsing",

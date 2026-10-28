@@ -52,9 +52,9 @@ pub struct ResourceKind {
     version: u32,
     read: fn(&Doc) -> Result<Box<dyn Any>, ModelError>,
     name: fn(&dyn Any) -> Option<String>,
-    publish: fn(&str, &str, &dyn Any) -> Option<tilo_actions::Resource>,
+    publish: fn(&str, &str, &dyn Any) -> Option<tilo_actions::ResourceSpec>,
     search: fn(&dyn Any) -> Option<Vec<SearchEntry>>,
-    child: fn(&dyn Any, &Doc, &str) -> Option<tilo_actions::Resource>,
+    child: fn(&dyn Any, &Doc, &str) -> Option<tilo_actions::ResourceSpec>,
     register: fn(&mut ActionRegistry),
     initialize: fn(&mut Doc) -> Result<(), ModelError>,
     encode: fn(serde_json::Value) -> Result<EncodedAction, String>,
@@ -87,7 +87,7 @@ fn no_name(_state: &dyn Any) -> Option<String> {
     None
 }
 
-fn no_publish(_id: &str, _label: &str, _state: &dyn Any) -> Option<tilo_actions::Resource> {
+fn no_publish(_id: &str, _label: &str, _state: &dyn Any) -> Option<tilo_actions::ResourceSpec> {
     None
 }
 
@@ -95,7 +95,7 @@ fn no_search(_state: &dyn Any) -> Option<Vec<SearchEntry>> {
     None
 }
 
-fn no_child(_state: &dyn Any, _doc: &Doc, _id: &str) -> Option<tilo_actions::Resource> {
+fn no_child(_state: &dyn Any, _doc: &Doc, _id: &str) -> Option<tilo_actions::ResourceSpec> {
     None
 }
 
@@ -154,13 +154,17 @@ fn resource_label<R: Resource>(state: &dyn Any) -> Option<String> {
         .map(|_| R::LABEL.to_owned())
 }
 
-fn publish<R: Resource>(id: &str, label: &str, state: &dyn Any) -> Option<tilo_actions::Resource> {
+fn publish<R: Resource>(
+    id: &str,
+    label: &str,
+    state: &dyn Any,
+) -> Option<tilo_actions::ResourceSpec> {
     state
         .downcast_ref::<R::State>()
         .map(|state| resource::publish::<R>(id, label, state))
 }
 
-fn child<R: Resource>(state: &dyn Any, doc: &Doc, id: &str) -> Option<tilo_actions::Resource> {
+fn child<R: Resource>(state: &dyn Any, doc: &Doc, id: &str) -> Option<tilo_actions::ResourceSpec> {
     resource::child_by_id::<R>(state.downcast_ref::<R::State>()?, doc, id)
 }
 
@@ -416,7 +420,7 @@ impl ResourceKind {
     ///
     /// # Errors
     /// Returns [`ModelError`] when the document does not hold this resource.
-    pub fn publish(&self, id: &str, doc: &Doc) -> Result<tilo_actions::Resource, ModelError> {
+    pub fn publish(&self, id: &str, doc: &Doc) -> Result<tilo_actions::ResourceSpec, ModelError> {
         let state = self.read(doc)?;
         self.publish_state(id, state.as_ref())
     }
@@ -426,7 +430,11 @@ impl ResourceKind {
     ///
     /// # Errors
     /// Returns why this document does not hold the publishing resource.
-    pub fn child(&self, doc: &Doc, id: &str) -> Result<Option<tilo_actions::Resource>, ModelError> {
+    pub fn child(
+        &self,
+        doc: &Doc,
+        id: &str,
+    ) -> Result<Option<tilo_actions::ResourceSpec>, ModelError> {
         let state = self.read(doc)?;
         Ok((self.child)(state.as_ref(), doc, id))
     }
@@ -439,7 +447,7 @@ impl ResourceKind {
         &self,
         id: &str,
         state: &dyn Any,
-    ) -> Result<tilo_actions::Resource, ModelError> {
+    ) -> Result<tilo_actions::ResourceSpec, ModelError> {
         let name = self.name(state);
         (self.publish)(id, &name, state)
             .ok_or_else(|| ModelError::invalid(format!("{} state is another type", self.kind)))

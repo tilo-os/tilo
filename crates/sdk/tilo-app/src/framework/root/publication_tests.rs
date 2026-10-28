@@ -95,10 +95,10 @@ impl Resource for Shelf {
         ]
     }
 
-    fn children(count: &i64) -> Vec<tilo_actions::Resource> {
+    fn children(count: &i64) -> Vec<tilo_actions::ResourceSpec> {
         (0..*count)
             .map(|item| {
-                tilo_actions::Resource::new(
+                tilo_actions::ResourceSpec::new(
                     format!("shelf/item:{item}"),
                     "test.shelf.item",
                     format!("Item {item}"),
@@ -259,7 +259,7 @@ impl ResourceApp for ShelfApp {
 
 /// `resource` as inert data, children included: what agents, the palette
 /// and accessibility read.
-fn outline(resource: &tilo_actions::Resource) -> serde_json::Value {
+fn outline(resource: &tilo_actions::ResourceSpec) -> serde_json::Value {
     json!({
         "id": resource.id.as_str(),
         "kind": resource.kind,

@@ -13,7 +13,7 @@ use crate::model::Entry;
 use crate::open_with::{OpenWithCandidates, SharedOpenWithRoute};
 use crate::recent::RecentUse;
 use std::path::{Path, PathBuf};
-use ui::tilo_actions::{ActionParam, ParamType, Resource};
+use ui::tilo_actions::{ActionParam, ParamType, ResourceSpec};
 use ui::tilo_resource::Effect as _;
 use ui::widget::command_palette::CommandEntry;
 use ui::widget::context_menu::MenuItem;
@@ -432,7 +432,7 @@ pub(super) struct OpenWithFacts {
 pub(super) fn append_open_with_actions(
     facts: &OpenWithFacts,
     resource_id: &str,
-    resource: &mut Resource,
+    resource: &mut ResourceSpec,
 ) {
     let candidates = &facts.candidates;
     let access = facts.access;
@@ -500,7 +500,7 @@ fn append_open_with_chooser_actions(
     candidates: &OpenWithCandidates,
     in_place: &[bool],
     resource_id: &str,
-    resource: &mut Resource,
+    resource: &mut ResourceSpec,
 ) {
     for (app, in_place) in candidates.apps.iter().zip(in_place) {
         let access =

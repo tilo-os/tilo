@@ -439,13 +439,13 @@ pub(crate) fn route_to_mounted<T>(
 pub(crate) fn collect_widget_resources(
     widget: &dyn Widget,
     doc: &AutoCommit,
-    resources: &mut Vec<tilo_actions::Resource>,
+    resources: &mut Vec<tilo_actions::ResourceSpec>,
 ) {
     fn visit(
         widget: &dyn Widget,
         doc: &AutoCommit,
         inherited: Option<crate::bound_dispatch::CallbackBinding>,
-        resources: &mut Vec<tilo_actions::Resource>,
+        resources: &mut Vec<tilo_actions::ResourceSpec>,
     ) {
         if widget.has_separate_document_owner() && widget.callback_binding().is_none() {
             return;
@@ -480,7 +480,10 @@ pub(crate) fn collect_widget_resources(
 /// Every resource `widget`'s subtree publishes, as the host's action
 /// catalogue collects them. A host that embeds components under its own
 /// root (a desktop surface) reads what its search offers through this.
-pub fn published_resources(widget: &dyn Widget, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+pub fn published_resources(
+    widget: &dyn Widget,
+    doc: &AutoCommit,
+) -> Vec<tilo_actions::ResourceSpec> {
     let mut resources = Vec::new();
     collect_widget_resources(widget, doc, &mut resources);
     resources
@@ -521,7 +524,7 @@ pub(crate) fn resolve_widget_resource(
     widget: &dyn Widget,
     doc: &AutoCommit,
     id: &str,
-) -> Option<tilo_actions::Resource> {
+) -> Option<tilo_actions::ResourceSpec> {
     resolve_bound_resource(widget, doc, None, &mut |widget, doc| {
         crate::resources::resource(widget, doc, id)
     })
@@ -564,7 +567,7 @@ fn resolve_bound_resource<R>(
 /// is meaningful only while `exhausted` is false and is never interpreted by
 /// a different widget or document revision.
 pub struct ActionDirectoryResourcePage {
-    pub resources: Vec<tilo_actions::Resource>,
+    pub resources: Vec<tilo_actions::ResourceSpec>,
     pub next_cursor: Vec<u8>,
     pub exhausted: bool,
 }
@@ -766,7 +769,7 @@ impl<I> ActionEmitter<I> {
 #[cfg(test)]
 pub(crate) fn test_bool_action_binding() -> tilo_actions::ActionBinding<bool> {
     use tilo_actions::{
-        ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource,
+        ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, ResourceSpec,
     };
     let spec = ActionSpec::typed_operation(
         "set",
@@ -777,7 +780,7 @@ pub(crate) fn test_bool_action_binding() -> tilo_actions::ActionBinding<bool> {
         vec![ActionParam::required("value", ParamType::Boolean, "Value")],
         |args| EncodedAction::encode_operation("test.set_bool", &args.boolean("value")).unwrap(),
     );
-    let resource = Resource::new("test:control", "test", "Test").with_action(spec.clone());
+    let resource = ResourceSpec::new("test:control", "test", "Test").with_action(spec.clone());
     tilo_actions::ActionBinding::new(&resource, &spec, |value| {
         serde_json::json!({"value": value})
             .as_object()
@@ -790,7 +793,7 @@ pub(crate) fn test_bool_action_binding() -> tilo_actions::ActionBinding<bool> {
 #[cfg(test)]
 pub(crate) fn test_string_action_binding() -> tilo_actions::ActionBinding<String> {
     use tilo_actions::{
-        ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource,
+        ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, ResourceSpec,
     };
     let spec = ActionSpec::typed_operation(
         "set",
@@ -801,7 +804,7 @@ pub(crate) fn test_string_action_binding() -> tilo_actions::ActionBinding<String
         vec![ActionParam::required("value", ParamType::Text, "Value")],
         |args| EncodedAction::encode_operation("test.set_string", &args.text("value")).unwrap(),
     );
-    let resource = Resource::new("test:control", "test", "Test").with_action(spec.clone());
+    let resource = ResourceSpec::new("test:control", "test", "Test").with_action(spec.clone());
     tilo_actions::ActionBinding::new(&resource, &spec, |value| {
         serde_json::json!({"value": value})
             .as_object()
@@ -814,7 +817,7 @@ pub(crate) fn test_string_action_binding() -> tilo_actions::ActionBinding<String
 #[cfg(test)]
 pub(crate) fn test_number_action_binding() -> tilo_actions::ActionBinding<f64> {
     use tilo_actions::{
-        ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource,
+        ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, ResourceSpec,
     };
     let spec = ActionSpec::typed_operation(
         "set",
@@ -825,7 +828,7 @@ pub(crate) fn test_number_action_binding() -> tilo_actions::ActionBinding<f64> {
         vec![ActionParam::required("value", ParamType::Number, "Value")],
         |args| EncodedAction::encode_operation("test.set_number", &args.number("value")).unwrap(),
     );
-    let resource = Resource::new("test:control", "test", "Test").with_action(spec.clone());
+    let resource = ResourceSpec::new("test:control", "test", "Test").with_action(spec.clone());
     tilo_actions::ActionBinding::new(&resource, &spec, |value| {
         serde_json::json!({"value": value})
             .as_object()
@@ -1190,7 +1193,7 @@ impl<'a> Edits<'a> {
     #[doc(hidden)]
     pub fn apply<A>(
         &mut self,
-        host: &mut crate::action_host::ActionHost,
+        host: &mut crate::local_dispatch::LocalDispatch,
         type_id: &str,
         action: &A,
         context: tilo_actions::ActionContext,
@@ -3778,7 +3781,7 @@ pub(crate) mod control_result_probe {
     }
 
     impl crate::resources::PublishesResources for Probe {
-        fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
             let mut contract = tilo_actions::ActionContract::default();
             if self.accepted {
                 contract.execution = tilo_actions::ExecutionMode::Background { cancellable: false };
@@ -3818,7 +3821,7 @@ pub(crate) mod control_result_probe {
                 .unwrap()
             };
             vec![
-                tilo_actions::Resource::new("test.control-result", "test", "Probe")
+                tilo_actions::ResourceSpec::new("test.control-result", "test", "Probe")
                     .with_action(action.with_contract(contract)),
             ]
         }

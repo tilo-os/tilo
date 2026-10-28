@@ -75,9 +75,9 @@ impl ResourceApp for QueriesApp {
 }
 
 fn find<'a>(
-    resources: &'a [tilo_actions::Resource],
+    resources: &'a [tilo_actions::ResourceSpec],
     id: &str,
-) -> Option<&'a tilo_actions::Resource> {
+) -> Option<&'a tilo_actions::ResourceSpec> {
     resources.iter().find_map(|resource| {
         (resource.id.as_str() == id)
             .then_some(resource)

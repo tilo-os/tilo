@@ -6441,7 +6441,7 @@ pub(super) fn with_owner_callback(callback: impl FnOnce() + 'static) {
 
     struct Probe<F>(RefCell<Option<F>>);
     impl<F: FnOnce() + 'static> ui::resources::PublishesResources for Probe<F> {
-        fn resources(&self, _: &automerge::AutoCommit) -> Vec<ui::tilo_actions::Resource> {
+        fn resources(&self, _: &automerge::AutoCommit) -> Vec<ui::tilo_actions::ResourceSpec> {
             assert!(ui::bound_dispatch::host_person_invocation_permitted());
             self.0.borrow_mut().take().unwrap()();
             Vec::new()

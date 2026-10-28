@@ -32,7 +32,7 @@ fn canonical_component_starts_empty_projects_existing_records_read_only() {
         fn collect(
             widget: &dyn Widget,
             doc: &AutoCommit,
-            resources: &mut Vec<tilo_actions::Resource>,
+            resources: &mut Vec<tilo_actions::ResourceSpec>,
         ) {
             resources.extend(ui::resources::resources(widget, doc));
             for child in widget.children() {

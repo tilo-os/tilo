@@ -9,7 +9,7 @@
 //! selection filled in — bookmark this page, note this page, highlight or
 //! note the selection.
 
-use tilo_actions::{ActionSpec, Resource};
+use tilo_actions::{ActionSpec, ResourceSpec};
 use ui::tilo_resource::{ActionDecl, Effect};
 
 use crate::model::HiColor;
@@ -92,8 +92,8 @@ pub struct BookResourceCtx {
 /// chrome and passage selection, which change only this reader's view and
 /// never the library. The library's verbs bound to the same place are
 /// [`reading_declarations`].
-pub(crate) fn reading_resource(ctx: &BookResourceCtx) -> Resource {
-    let mut resource = Resource::new(
+pub(crate) fn reading_resource(ctx: &BookResourceCtx) -> ResourceSpec {
+    let mut resource = ResourceSpec::new(
         format!("ebook.selection:{}", ctx.book_id),
         "ebook.selection",
         "Current reading",

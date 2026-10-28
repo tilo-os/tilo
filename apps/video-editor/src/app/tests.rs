@@ -1896,7 +1896,7 @@ fn imports_add_real_clips_through_the_document() {
         // trigger asks the host chooser, which answers a multi-select outcome
         // carrying one real file. This proves the import code path is compiled
         // into the default build (no feature wall) and that draining it routes
-        // the clip through the `UpsertMedia` action on `ui::ActionHost`, so it
+        // the clip through the `UpsertMedia` action on `ui::LocalDispatch`, so it
         // lands in the shared document a peer replicates.
         let f = write_real_png(480, 270);
         let mut app = editor();

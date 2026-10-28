@@ -272,7 +272,7 @@ impl PartialEq for Place {
 impl Place {
     /// The child resource this is published as, among the derived resources
     /// of a record of `vocabulary`.
-    fn publish(&self, vocabulary: &'static crate::Vocabulary) -> tilo_actions::Resource {
+    fn publish(&self, vocabulary: &'static crate::Vocabulary) -> tilo_actions::ResourceSpec {
         self.publish_under(
             &format!(
                 "{}/{}",
@@ -287,7 +287,7 @@ impl Place {
         &self,
         parent: &str,
         vocabulary: &'static crate::Vocabulary,
-    ) -> tilo_actions::Resource {
+    ) -> tilo_actions::ResourceSpec {
         let id = format!("{parent}/{}", self.id);
         // Built only when a verb is bound here: a long list of derived
         // places offering effects alone stays cheap to publish.
@@ -297,8 +297,11 @@ impl Place {
             vocabulary.declarations()
         };
         let kind = self.kind.as_deref().unwrap_or("derived");
-        let mut child =
-            tilo_actions::Resource::new(&id, format!("{}.{kind}", vocabulary.kind), &self.label);
+        let mut child = tilo_actions::ResourceSpec::new(
+            &id,
+            format!("{}.{kind}", vocabulary.kind),
+            &self.label,
+        );
         for bound in &self.actions {
             if let Some(decl) = declarations.iter().find(|decl| decl.id == bound.action) {
                 child = child.with_action(crate::items::bound(decl, &bound.values));
@@ -478,13 +481,13 @@ impl<R: Resource> Derived<R> {
 
     /// The child resource this is published as.
     #[must_use]
-    pub fn publish(&self) -> tilo_actions::Resource {
+    pub fn publish(&self) -> tilo_actions::ResourceSpec {
         self.place.publish(crate::vocabulary::<R>())
     }
 
     /// The published resource `id` among `derived` and their children.
     #[must_use]
-    pub fn find(derived: &[Self], id: &str) -> Option<tilo_actions::Resource> {
+    pub fn find(derived: &[Self], id: &str) -> Option<tilo_actions::ResourceSpec> {
         let vocabulary = crate::vocabulary::<R>();
         derived
             .iter()
@@ -493,7 +496,10 @@ impl<R: Resource> Derived<R> {
 }
 
 /// The resource `id` among `resource` and its children.
-fn find_published(resource: tilo_actions::Resource, id: &str) -> Option<tilo_actions::Resource> {
+fn find_published(
+    resource: tilo_actions::ResourceSpec,
+    id: &str,
+) -> Option<tilo_actions::ResourceSpec> {
     if resource.id.as_str() == id {
         return Some(resource);
     }
@@ -508,7 +514,7 @@ fn find_published(resource: tilo_actions::Resource, id: &str) -> Option<tilo_act
 /// offer with arguments bound.
 #[derive(Default)]
 pub struct PublishedDerived {
-    resources: Rc<[Rc<tilo_actions::Resource>]>,
+    resources: Rc<[Rc<tilo_actions::ResourceSpec>]>,
     /// Each action id they offer, with the fewest parameters it takes on
     /// one of them.
     offered: HashMap<String, usize>,
@@ -518,7 +524,7 @@ impl PublishedDerived {
     /// The published resources, in order: each the very one published last
     /// while the derived resource it publishes is unchanged.
     #[must_use]
-    pub fn resources(&self) -> &Rc<[Rc<tilo_actions::Resource>]> {
+    pub fn resources(&self) -> &Rc<[Rc<tilo_actions::ResourceSpec>]> {
         &self.resources
     }
 
@@ -531,7 +537,7 @@ impl PublishedDerived {
 
     /// Copies of the published resources, in order.
     #[must_use]
-    pub fn to_resources(&self) -> Vec<tilo_actions::Resource> {
+    pub fn to_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         self.resources
             .iter()
             .map(|resource| (**resource).clone())
@@ -540,11 +546,11 @@ impl PublishedDerived {
 
     /// The published resource `id` among them and their children.
     #[must_use]
-    pub fn find(&self, id: &str) -> Option<tilo_actions::Resource> {
+    pub fn find(&self, id: &str) -> Option<tilo_actions::ResourceSpec> {
         fn walk<'a>(
-            resource: &'a tilo_actions::Resource,
+            resource: &'a tilo_actions::ResourceSpec,
             id: &str,
-        ) -> Option<&'a tilo_actions::Resource> {
+        ) -> Option<&'a tilo_actions::ResourceSpec> {
             if resource.id.as_str() == id {
                 return Some(resource);
             }
@@ -649,7 +655,7 @@ fn published_places(
     }) {
         return Rc::clone(&kept.published);
     }
-    let resources: Rc<[Rc<tilo_actions::Resource>]> = match &kept {
+    let resources: Rc<[Rc<tilo_actions::ResourceSpec>]> = match &kept {
         Some(kept) => {
             let last = &*kept.derived;
             let nested = kept.published.resources.len().saturating_sub(last.len());
@@ -714,7 +720,7 @@ fn equal(a: &dyn Places, b: &dyn Places) -> bool {
 
 /// Note each action `resource` and its children offer in `offered`, with
 /// the fewest parameters it takes on one of them.
-fn offered_on(resource: &tilo_actions::Resource, offered: &mut HashMap<String, usize>) {
+fn offered_on(resource: &tilo_actions::ResourceSpec, offered: &mut HashMap<String, usize>) {
     for spec in &resource.actions {
         let taken = spec.params().len();
         offered

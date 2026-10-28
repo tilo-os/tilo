@@ -3618,7 +3618,7 @@ impl crate::widget::ResourceOperations for ListRow {
 }
 
 impl crate::resources::PublishesResources for ListRow {
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.activation.native_resources()
     }
 }

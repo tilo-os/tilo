@@ -1074,7 +1074,7 @@ fn the_record_offers_each_item_its_views_with_no_window_open() {
             .unwrap_or_else(|| panic!("{wanted} is published"))
             .clone()
     };
-    let actions = |resource: &ui::tilo_actions::Resource| {
+    let actions = |resource: &ui::tilo_actions::ResourceSpec| {
         resource
             .actions
             .iter()

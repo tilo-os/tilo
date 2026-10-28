@@ -4,7 +4,7 @@
 use super::*;
 use crate::model::Resolution;
 use ui::framework::testing::TestApp;
-use ui::tilo_actions::Resource as Published;
+use ui::tilo_actions::ResourceSpec as Published;
 use ui::tilo_resource::{Edit, Effect as _, Replica, Resource as _};
 
 fn edit(session: &mut Replica<Session>, edit: &Edit<Session>) -> Result<(), String> {

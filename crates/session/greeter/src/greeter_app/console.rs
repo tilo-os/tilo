@@ -18,7 +18,7 @@ use console_control::{Request, catalog, wire};
 use serde_json::{Value, json};
 use ui::tilo_actions::{
     ActionArgs, ActionParam, ActionSpec, Availability, EncodedAction, OperationKind, ParamType,
-    Resource,
+    ResourceSpec,
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -405,8 +405,9 @@ fn diagnostics_action() -> ActionSpec {
 }
 
 impl ui::resources::PublishesResources for GreeterApp {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut resource = Resource::new(PROVIDER, "greeter.sign-in", super::t("greeter-sign-in"));
+    fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
+        let mut resource =
+            ResourceSpec::new(PROVIDER, "greeter.sign-in", super::t("greeter-sign-in"));
         let mut specs = vec![
             diagnostics_action(),
             console_action(

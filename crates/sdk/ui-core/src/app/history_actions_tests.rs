@@ -579,7 +579,7 @@ fn the_in_app_palette_lists_one_history_launcher() {
     );
 }
 
-fn survey_has(resources: &[tilo_actions::Resource], action: &str) -> bool {
+fn survey_has(resources: &[tilo_actions::ResourceSpec], action: &str) -> bool {
     tilo_actions::door::survey(resources)
         .iter()
         .any(|descriptor| {

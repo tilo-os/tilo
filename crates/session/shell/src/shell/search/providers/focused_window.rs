@@ -64,12 +64,12 @@ impl WindowReading {
     /// What a window published, for tab `tab` of `app`.
     #[must_use]
     pub fn from_publication(
-        resources: Vec<tilo_actions::Resource>,
+        resources: Vec<tilo_actions::ResourceSpec>,
         providers: Vec<Box<dyn ui::search::SearchProvider>>,
         tab: u64,
         app: String,
     ) -> Self {
-        fn labels(resource: &tilo_actions::Resource, hasher: &mut impl Hasher) {
+        fn labels(resource: &tilo_actions::ResourceSpec, hasher: &mut impl Hasher) {
             resource.id.as_str().hash(hasher);
             resource.label.hash(hasher);
             for child in &resource.children {

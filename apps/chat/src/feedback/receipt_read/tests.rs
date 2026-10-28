@@ -3,11 +3,11 @@ use automerge::{ObjType, ROOT, transaction::Transactable};
 use tilo_actions::EncodedAction;
 use ui::feedback::{Destination, Receipt, ReviewedFeedback, Submission};
 
-fn submitted() -> (automerge::AutoCommit, Submission, Resource) {
+fn submitted() -> (automerge::AutoCommit, Submission, ResourceSpec) {
     submitted_as("visitor")
 }
 
-fn submitted_as(author: &str) -> (automerge::AutoCommit, Submission, Resource) {
+fn submitted_as(author: &str) -> (automerge::AutoCommit, Submission, ResourceSpec) {
     let mut doc = crate::testing::demo_chat();
     let channel = crate::testing::channels(&doc)
         .into_iter()
@@ -42,7 +42,7 @@ fn submitted_as(author: &str) -> (automerge::AutoCommit, Submission, Resource) {
     (doc, submission, resource)
 }
 
-fn encoded(resource: &Resource) -> EncodedAction {
+fn encoded(resource: &ResourceSpec) -> EncodedAction {
     tilo_actions::door::encode_json(
         std::slice::from_ref(resource),
         &resource

@@ -27,7 +27,7 @@ use ui::widget::{
 };
 use ui::window_toolbar::ToolbarAction;
 
-use ui::tilo_actions::{Resource, ResourcePresentation};
+use ui::tilo_actions::{ResourcePresentation, ResourceSpec};
 
 use crate::CATALOG;
 use crate::capabilities::ExtensionQuestion;
@@ -2009,7 +2009,7 @@ impl ExtensionController {
     /// The installed extensions as resources, each with what its Library
     /// row offers, so a screen reader, a script or an agent manages them as
     /// the person does.
-    pub fn resources(&self) -> Vec<Resource> {
+    pub fn resources(&self) -> Vec<ResourceSpec> {
         use crate::effects::BrowserEffect as E;
         use ui::tilo_resource::Effect as _;
         self.infos
@@ -2018,7 +2018,7 @@ impl ExtensionController {
             .map(|(info, extension)| {
                 let id = extension.id.clone();
                 let granted = granted_line(&extension.access.granted);
-                let mut resource = Resource::new(
+                let mut resource = ResourceSpec::new(
                     extensions::resource_id(&info.id),
                     "browser.extension",
                     info.name.clone(),

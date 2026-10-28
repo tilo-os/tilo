@@ -1499,7 +1499,7 @@ impl crate::widget::controls::ActionControls for Toolbar {
 }
 
 impl crate::resources::PublishesResources for Toolbar {
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         let mut resources: Vec<_> = self
             .items
             .iter()
@@ -2609,16 +2609,17 @@ mod tests {
         };
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        let resource = tilo_actions::Resource::new("doc:toolbar", "doc", "Document").with_action(
-            tilo_actions::ActionSpec::operation(
-                "save",
-                "Save",
-                tilo_actions::OperationKind::Effect,
-                "test.save",
-                &(),
-            )
-            .unwrap(),
-        );
+        let resource = tilo_actions::ResourceSpec::new("doc:toolbar", "doc", "Document")
+            .with_action(
+                tilo_actions::ActionSpec::operation(
+                    "save",
+                    "Save",
+                    tilo_actions::OperationKind::Effect,
+                    "test.save",
+                    &(),
+                )
+                .unwrap(),
+            );
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "save").unwrap();
         for width in [800.0, 45.0] {
             let calls = std::rc::Rc::new(std::cell::Cell::new(0));

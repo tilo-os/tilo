@@ -881,7 +881,7 @@ fn a_step_output_feeds_the_next_steps_input() {
 fn a_run_a_task_asked_for_stamps_its_steps_with_that_tasks_group() {
     let host = FakeHost::new();
     let tidy = shortcut("tidy", vec![list()]);
-    let parent = tilo_actions::context::ActionGroup {
+    let parent = tilo_actions::context::WorkGroup {
         id: "task-run-7".into(),
         label: "Sort the inbox".into(),
         kind: "task".into(),

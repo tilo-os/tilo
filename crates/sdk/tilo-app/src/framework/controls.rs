@@ -164,7 +164,7 @@ pub(crate) struct ActionTable {
 /// built it, and the few actions the views bound over it since, which win
 /// over the shared ones of the same id.
 struct Published {
-    base: Rc<tilo_actions::Resource>,
+    base: Rc<tilo_actions::ResourceSpec>,
     overlay: Vec<tilo_actions::ActionSpec>,
 }
 
@@ -188,7 +188,11 @@ impl Published {
 }
 
 impl ActionTable {
-    fn new(app: &'static str, kind: &'static str, published: Rc<tilo_actions::Resource>) -> Self {
+    fn new(
+        app: &'static str,
+        kind: &'static str,
+        published: Rc<tilo_actions::ResourceSpec>,
+    ) -> Self {
         Self {
             app,
             kind,
@@ -209,7 +213,7 @@ impl ActionTable {
     }
 
     /// Follow the canonical publication of this same hosted resource.
-    pub(crate) fn update(&self, published: tilo_actions::Resource) {
+    pub(crate) fn update(&self, published: tilo_actions::ResourceSpec) {
         self.update_shared(Rc::new(published), Vec::new());
     }
 
@@ -218,7 +222,7 @@ impl ActionTable {
     /// `base` is copied, and the last one is only let go.
     pub(crate) fn update_shared(
         &self,
-        base: Rc<tilo_actions::Resource>,
+        base: Rc<tilo_actions::ResourceSpec>,
         overlay: Vec<tilo_actions::ActionSpec>,
     ) {
         let mut current = self.resource.borrow_mut();
@@ -396,9 +400,9 @@ impl ActionTable {
     /// The resource as a binding names it, exporting `spec` alone: one of
     /// its published actions, or an effect, which the handler a view or
     /// surface registers publishes beside them.
-    fn exporting(&self, spec: tilo_actions::ActionSpec) -> tilo_actions::Resource {
+    fn exporting(&self, spec: tilo_actions::ActionSpec) -> tilo_actions::ResourceSpec {
         let published = &self.resource.borrow().base;
-        tilo_actions::Resource {
+        tilo_actions::ResourceSpec {
             id: published.id.clone(),
             semantic_identity: published.semantic_identity.clone(),
             app_id: published.app_id.clone(),
@@ -444,7 +448,7 @@ impl ActionTable {
         &self,
         key: &ActionKey,
         spec: Option<tilo_actions::ActionSpec>,
-    ) -> Option<(tilo_actions::Resource, tilo_actions::ActionSpec)> {
+    ) -> Option<(tilo_actions::ResourceSpec, tilo_actions::ActionSpec)> {
         let spec = match spec {
             Some(spec) if spec.id == key.action => spec,
             Some(_) | None => {
@@ -479,7 +483,7 @@ impl<R: Resource> Clone for Actions<R> {
 }
 
 impl<R: Resource> Actions<R> {
-    pub(crate) fn new(app: &'static str, published: Rc<tilo_actions::Resource>) -> Self {
+    pub(crate) fn new(app: &'static str, published: Rc<tilo_actions::ResourceSpec>) -> Self {
         Self {
             table: ActionTable::new(app, R::KIND, published),
             marker: PhantomData,

@@ -68,7 +68,7 @@ impl SheetsApp {
     }
 
     /// Open the command palette on `resources`, the workbook as published.
-    pub(super) fn open_palette_with(&mut self, resources: &[tilo_actions::Resource]) {
+    pub(super) fn open_palette_with(&mut self, resources: &[tilo_actions::ResourceSpec]) {
         // Close any other overlay so the palette owns the surface.
         self.settings_panel = SettingsPanel::None;
         self.tab_menu_target = None;

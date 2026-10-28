@@ -96,12 +96,12 @@ impl crate::search::SearchProvider for PagedProbe {
     fn resolve_action_resource(
         &self,
         address: &tilo_actions::ActionAddress,
-    ) -> Option<tilo_actions::Resource> {
+    ) -> Option<tilo_actions::ResourceSpec> {
         let counter = &self.resolutions[self.owner];
         counter.set(counter.get().saturating_add(1));
         address.resource.strip_prefix("bound:paged:")?;
         (address.action == "apply").then(|| {
-            tilo_actions::Resource::new(&address.resource, "probe", "Paged").with_action(
+            tilo_actions::ResourceSpec::new(&address.resource, "probe", "Paged").with_action(
                 tilo_actions::ActionSpec::immediate("apply", "Apply", "bound.apply", &FollowUp)
                     .unwrap(),
             )
@@ -112,7 +112,7 @@ impl crate::search::SearchProvider for PagedProbe {
 struct Probe {
     strict: bool,
     collision: Option<String>,
-    actions: crate::action_host::ActionHost,
+    actions: crate::local_dispatch::LocalDispatch,
 }
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct FollowUp;
@@ -151,7 +151,7 @@ fn probe_read_schema() -> &'static serde_json::Value {
 }
 
 fn probe_read_validate(
-    _: &tilo_actions::Resource,
+    _: &tilo_actions::ResourceSpec,
     payload: &[u8],
 ) -> Result<(), crate::semantic_document_read::SemanticReadError> {
     crate::semantic_document_read::decode_request::<()>(payload)
@@ -228,17 +228,17 @@ impl crate::search::SearchProvider for LazyProbe {
     fn resolve_action_resource(
         &self,
         address: &tilo_actions::ActionAddress,
-    ) -> Option<tilo_actions::Resource> {
+    ) -> Option<tilo_actions::ResourceSpec> {
         if address.resource == "bound:sealed" && address.action == "apply" {
             return Some(
-                tilo_actions::Resource::new("bound:sealed", "probe", "Sealed").with_action(
+                tilo_actions::ResourceSpec::new("bound:sealed", "probe", "Sealed").with_action(
                     tilo_actions::ActionSpec::immediate("apply", "Apply", "bound.apply", &FollowUp)
                         .unwrap(),
                 ),
             );
         }
         (address.resource == "bound:lazy" && address.action == "view").then(|| {
-            tilo_actions::Resource::new("bound:lazy", "probe", "Lazy").with_action(
+            tilo_actions::ResourceSpec::new("bound:lazy", "probe", "Lazy").with_action(
                 tilo_actions::ActionSpec::operation(
                     "view",
                     "View",
@@ -486,7 +486,7 @@ impl crate::search::capability::SearchSource for Probe {
 }
 
 impl crate::resources::PublishesResources for Probe {
-    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         DISCOVERY_COUNT.set(DISCOVERY_COUNT.get().saturating_add(1));
         let mut action = tilo_actions::ActionSpec::operation(
             "follow-up",
@@ -514,7 +514,7 @@ impl crate::resources::PublishesResources for Probe {
             contract.execution = tilo_actions::ExecutionMode::Background { cancellable: true };
             contract.result = tilo_actions::ResultSpec::Job;
         }
-        let mut resource = tilo_actions::Resource::new(
+        let mut resource = tilo_actions::ResourceSpec::new(
             self.collision.as_deref().unwrap_or("bound:probe"),
             "probe",
             "Probe",
@@ -569,7 +569,11 @@ impl crate::resources::PublishesResources for Probe {
             exhausted: true,
         })
     }
-    fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+    fn resource(
+        &self,
+        doc: &automerge::AutoCommit,
+        id: &str,
+    ) -> Option<tilo_actions::ResourceSpec> {
         self.resources(doc)
             .into_iter()
             .find(|resource| resource.id.as_str() == id)
@@ -649,7 +653,7 @@ fn build_probe(
         Box::new(Probe {
             strict,
             collision: None,
-            actions: crate::action_host::ActionHost::new(),
+            actions: crate::local_dispatch::LocalDispatch::new(),
         }),
         registry,
     ))
@@ -3216,7 +3220,7 @@ fn unchanged_component_snapshots_keep_their_controls_and_semantic_nodes() {
 fn broker_text_slot_keeps_the_advertised_primary_parameter_through_model_resolution() {
     use tilo_actions::remote::{InvokeArgument, RemoteActionFrame, RemoteActionMessage};
     let address = tilo_actions::ActionAddress::new("bound:text-door", "replace-text");
-    let resource = tilo_actions::Resource::new(&address.resource, "document", "Document")
+    let resource = tilo_actions::ResourceSpec::new(&address.resource, "document", "Document")
         .with_action(tilo_actions::ActionSpec::typed(
             &address.action,
             "Replace text",

@@ -1,4 +1,4 @@
-use ui::tilo_actions::Resource;
+use ui::tilo_actions::ResourceSpec;
 use ui::tilo_resource::Effect;
 
 use super::{Input, suggestion, suggestions};
@@ -7,7 +7,7 @@ use crate::model::Library;
 
 pub const PREFERENCES: &str = "music.recommendation-preferences:library";
 
-pub fn resource_by_id(lib: &Library, id: &str) -> Option<Resource> {
+pub fn resource_by_id(lib: &Library, id: &str) -> Option<ResourceSpec> {
     let open = || {
         MusicEffect::Open {
             place: Place::View("recommendations".into()),
@@ -16,7 +16,7 @@ pub fn resource_by_id(lib: &Library, id: &str) -> Option<Resource> {
     };
     if id == PREFERENCES {
         return Some(
-            Resource::new(
+            ResourceSpec::new(
                 id,
                 "music.recommendation-preferences",
                 crate::i18n::t("music-recommendations-title"),
@@ -31,7 +31,7 @@ pub fn resource_by_id(lib: &Library, id: &str) -> Option<Resource> {
         let input = Input::ALL.into_iter().find(|i| i.key() == key)?;
         let enabled = lib.recommendations.enabled(input);
         return Some(
-            Resource::new(
+            ResourceSpec::new(
                 id,
                 "music.recommendation-input",
                 format!(
@@ -56,7 +56,7 @@ pub fn resource_by_id(lib: &Library, id: &str) -> Option<Resource> {
             return None;
         }
         return Some(
-            Resource::new(
+            ResourceSpec::new(
                 id,
                 "music.recommendation-artist",
                 lib.artist(artist).map_or(artist, |a| a.name.as_str()),
@@ -67,7 +67,7 @@ pub fn resource_by_id(lib: &Library, id: &str) -> Option<Resource> {
     None
 }
 
-fn song_resource(lib: &Library, id: &str, track: &str) -> Option<Resource> {
+fn song_resource(lib: &Library, id: &str, track: &str) -> Option<ResourceSpec> {
     let dismissed = lib.recommendations.is_dismissed(track);
     let suggestion = suggestion(lib, track);
     if suggestion.is_none() && !dismissed {
@@ -91,7 +91,7 @@ fn song_resource(lib: &Library, id: &str, track: &str) -> Option<Resource> {
             crate::i18n::t("music-recommendations-missing-track"),
         )
     };
-    let row = Resource::new(id, "music.recommendation", label)
+    let row = ResourceSpec::new(id, "music.recommendation", label)
         .with_action(
             MusicEffect::Open {
                 place: Place::View("recommendations".into()),
@@ -102,7 +102,7 @@ fn song_resource(lib: &Library, id: &str, track: &str) -> Option<Resource> {
     Some(row)
 }
 
-pub fn resources(lib: &Library) -> Vec<Resource> {
+pub fn resources(lib: &Library) -> Vec<ResourceSpec> {
     let picks = suggestions(lib, 6);
     let artists = picks
         .iter()

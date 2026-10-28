@@ -4,7 +4,7 @@
 use super::*;
 use crate::model::{CompositionStyle, FontKind, LibrarySort, MAX_NOTE_BYTES, ReadMode, ReadTheme};
 use tilo_document::RichTextAction;
-use ui::tilo_actions::Resource as Published;
+use ui::tilo_actions::ResourceSpec as Published;
 use ui::tilo_resource::{Edit, Replica, Resource};
 
 const BOOK: &str = "book:0123456789abcdef0123456789abcdef";

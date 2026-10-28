@@ -492,7 +492,7 @@ pub extern "C" fn tilo_dev_publish_root() -> i32 {
 
     thread_local! {
         static SCHEMA_REVISION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-        static PUBLISHED_SCHEMA: std::cell::RefCell<Option<crate::tilo_actions::Resource>> = const { std::cell::RefCell::new(None) };
+        static PUBLISHED_SCHEMA: std::cell::RefCell<Option<crate::tilo_actions::ResourceSpec>> = const { std::cell::RefCell::new(None) };
     }
 
     #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -530,7 +530,7 @@ pub extern "C" fn tilo_dev_publish_root() -> i32 {
     }
 
     fn published_schema(
-        resource: &crate::tilo_actions::Resource,
+        resource: &crate::tilo_actions::ResourceSpec,
         action: &str,
     ) -> serde_json::Value {
         resource

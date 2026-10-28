@@ -31,7 +31,7 @@ pub enum HistoricalSupport {
 impl HistoricalSupport {
     /// What the scope's own declaration says its resource type supports;
     /// `reads_content` says the type declared a read adapter
-    /// (`Resource::READABLE`).
+    /// (`ResourceSpec::READABLE`).
     #[must_use]
     pub fn of(scope: &HistoryScopeDefinition, reads_content: bool) -> Self {
         if scope.content_schema.is_some() {

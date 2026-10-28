@@ -154,7 +154,7 @@ fn decode_snapshot(
 }
 
 fn validate_snapshot(
-    resource: &tilo_actions::Resource,
+    resource: &tilo_actions::ResourceSpec,
     payload: &[u8],
 ) -> Result<(), ui::semantic_document_read::SemanticReadError> {
     let request = decode_snapshot(payload)?;

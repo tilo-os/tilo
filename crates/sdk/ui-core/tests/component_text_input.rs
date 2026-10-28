@@ -519,7 +519,7 @@ fn component_publication_locus_refuses_ambiguous_controls_and_replaced_mounts() 
 }
 
 struct WithdrawableResource {
-    resource: tilo_actions::Resource,
+    resource: tilo_actions::ResourceSpec,
     published: std::sync::Arc<std::sync::atomic::AtomicBool>,
     calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -577,7 +577,7 @@ impl tilo_ui::host_operation::ResourceOperations for WithdrawableResource {
 }
 
 impl tilo_ui::resources::PublishesResources for WithdrawableResource {
-    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         if self.published.load(std::sync::atomic::Ordering::SeqCst) {
             vec![self.resource.clone()]
         } else {

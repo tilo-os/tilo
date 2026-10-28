@@ -16,7 +16,7 @@ use automerge::{AutoCommit, ObjId};
 use serde::{Deserialize, Serialize};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_actions::{
-    ActionBinding, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource,
+    ActionBinding, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, ResourceSpec,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -520,14 +520,14 @@ impl StandaloneHistoryHost {
     pub(crate) fn local_resources(
         &mut self,
         context: &HistoryReadContext<'_>,
-    ) -> Result<Vec<Resource>, HistoryHostError> {
+    ) -> Result<Vec<ResourceSpec>, HistoryHostError> {
         self.refresh(context)?;
         Ok(self.own_resources(context))
     }
 
     /// History, Search and the open session, each action available exactly
     /// when invoking it would do something.
-    fn own_resources(&self, context: &HistoryReadContext<'_>) -> Vec<Resource> {
+    fn own_resources(&self, context: &HistoryReadContext<'_>) -> Vec<ResourceSpec> {
         let mut resources = vec![history_resource(self.can_open(), self.is_open())];
         if self.has_search() {
             resources.push(search_resource());
@@ -549,7 +549,11 @@ impl StandaloneHistoryHost {
         resources
     }
 
-    fn set_restore_availability(&self, resource: &mut Resource, context: &HistoryReadContext<'_>) {
+    fn set_restore_availability(
+        &self,
+        resource: &mut ResourceSpec,
+        context: &HistoryReadContext<'_>,
+    ) {
         let can_review = self
             .session
             .as_ref()
@@ -922,7 +926,7 @@ impl StandaloneHistoryHost {
         &self,
         context: &HistoryReadContext<'_>,
         layout: HostHistoryLayout,
-    ) -> Result<Vec<Resource>, HistoryHostError> {
+    ) -> Result<Vec<ResourceSpec>, HistoryHostError> {
         self.validate_presentation(context, layout)?;
         let mut resources = self.own_resources(context);
         if self.is_open() {
@@ -1303,8 +1307,8 @@ fn unavailable(code: &str, reason: &str) -> tilo_actions::Availability {
     }
 }
 
-fn open_resource() -> Resource {
-    Resource::new(
+fn open_resource() -> ResourceSpec {
+    ResourceSpec::new(
         HISTORY_RESOURCE,
         "tilo.host.history",
         I18nManager::lookup_plain("standalone-history-title"),
@@ -1321,7 +1325,7 @@ fn open_resource() -> Resource {
 
 /// The stable History door, whichever History serves it: Open while there
 /// is a document to show, and Hide while History is showing.
-pub(crate) fn history_resource(can_open: bool, open: bool) -> Resource {
+pub(crate) fn history_resource(can_open: bool, open: bool) -> ResourceSpec {
     let mut resource = open_resource();
     if !can_open {
         for action in &mut resource.actions {
@@ -1375,7 +1379,7 @@ fn open_at_operation() -> ActionSpec {
     clippy::expect_used,
     reason = "typed History command payload contains only validated JSON strings and a session UUID"
 )]
-fn session_resource(session: uuid::Uuid) -> Resource {
+fn session_resource(session: uuid::Uuid) -> ResourceSpec {
     let select = ActionSpec::typed_operation("select", I18nManager::lookup_plain("standalone-history-select"), I18nManager::lookup_plain("standalone-history-select-hint"), OperationKind::View, HISTORY_OPERATION,
         vec![ActionParam::required_owned("entries", ParamType::Array, I18nManager::lookup_plain("standalone-history-entry-ids")).with_schema(serde_json::json!({"maxItems": 200, "items": {"type": "string", "pattern": "^[0-9a-f]{32}$"}}))],
         move |args| {
@@ -1383,7 +1387,7 @@ fn session_resource(session: uuid::Uuid) -> Resource {
             EncodedAction::encode_operation(HISTORY_OPERATION, &HistoryCommand::Select { session, entries }).expect("validated history selection serializes")
         })
         .of_kind(tilo_actions::ActionKind::Read);
-    Resource::new(
+    ResourceSpec::new(
         format!("tilo.host.history:{session}"),
         "tilo.host.history.session",
         I18nManager::lookup_plain("standalone-history-title"),
@@ -2047,7 +2051,7 @@ mod tests {
         host.invoke_local(&encoded, context)
     }
 
-    fn assert_restore_contract(session: &Resource) {
+    fn assert_restore_contract(session: &ResourceSpec) {
         let review = session
             .actions
             .iter()

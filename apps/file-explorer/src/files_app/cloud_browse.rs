@@ -649,7 +649,7 @@ impl FileExplorerWidget {
             .into_widget()
     }
 
-    pub(super) fn cloud_resources(&self) -> Vec<Resource> {
+    pub(super) fn cloud_resources(&self) -> Vec<ResourceSpec> {
         if !self.cloud.active {
             return vec![];
         }
@@ -657,7 +657,7 @@ impl FileExplorerWidget {
             .entries
             .iter()
             .map(|entry| {
-                let mut row = Resource::new(
+                let mut row = ResourceSpec::new(
                     format!("files.cloud-entry:{}", hex::encode(&entry.id)),
                     "files.cloud-entry",
                     entry.name.clone(),

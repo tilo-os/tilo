@@ -1,7 +1,7 @@
 //! `ActionPalette` — the one Ctrl+K surface for a `tilo_ui::App`.
 //!
 //! The **resource + action model** ([`tilo_actions`]) is the foundation: the
-//! focused app instance publishes a tree of open [`Resource`]s, each
+//! focused app instance publishes a tree of open [`ResourceSpec`]s, each
 //! exporting [`ActionSpec`](tilo_actions::ActionSpec)s — the operations
 //! Ctrl+K offers. An app can also fold in *searchable content* via
 //! [`SearchProvider`]s (contacts, files, …);
@@ -50,7 +50,8 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{SearchField, SearchResultsView, Widget};
 use tilo_actions::{
-    ActionContext, ActionInput, ConfirmationPolicy, EncodedAction, OperationKind, Resource, flatten,
+    ActionContext, ActionInput, ConfirmationPolicy, EncodedAction, OperationKind, ResourceSpec,
+    flatten,
 };
 #[cfg(test)]
 use tilo_actions::{ActionRegistry, ActionTransport, Dispatched};
@@ -265,7 +266,7 @@ impl PendingOperation {
 
     pub(crate) fn encode_at_local_owner(
         &self,
-        resources: &[Resource],
+        resources: &[ResourceSpec],
     ) -> Result<EncodedAction, tilo_actions::DoorError> {
         let spec = tilo_actions::door::resolve(resources, &self.address)
             .ok_or_else(|| tilo_actions::DoorError::Unknown(self.address.clone()))?;
@@ -360,7 +361,7 @@ pub struct ActionPalette {
     provider_row_owner: HashMap<String, usize>,
     validation_queue: VecDeque<String>,
     /// The focused instance's open resources (their exported actions are rows).
-    resources: Vec<Resource>,
+    resources: Vec<ResourceSpec>,
     bound_resources: Vec<crate::bound_dispatch::BoundResourceSnapshot>,
     /// Searchable-content sources folded in as navigable result groups.
     providers: Vec<Box<dyn SearchProvider>>,
@@ -647,7 +648,7 @@ impl ActionPalette {
 
     /// Populate from the focused instance's open-resource forest. Each exported
     /// action becomes an **Actions** row; rebuilds the result set + index.
-    pub fn load_open_resources(&mut self, resources: &[Resource]) {
+    pub fn load_open_resources(&mut self, resources: &[ResourceSpec]) {
         self.resources = resources.to_vec();
         let query = self.field.value().to_string();
         self.rebuild(&query);
@@ -657,7 +658,7 @@ impl ActionPalette {
     /// rows or cursor. The host calls this immediately before handling input;
     /// a selected row can then disappear/refuse safely instead of changing the
     /// user's selection to a different action during the same key press.
-    pub fn refresh_open_resources(&mut self, resources: &[Resource]) {
+    pub fn refresh_open_resources(&mut self, resources: &[ResourceSpec]) {
         if self.history_suspended {
             return;
         }
@@ -667,7 +668,7 @@ impl ActionPalette {
     /// Refresh displayed authority asynchronously without moving an existing
     /// selection onto a different control. Argument/confirmation fields retain
     /// their original address; dispatch still rechecks the fresh authority.
-    pub fn refresh_visible_resources(&mut self, resources: &[Resource]) {
+    pub fn refresh_visible_resources(&mut self, resources: &[ResourceSpec]) {
         self.resources = resources.to_vec();
         if self.in_argument_mode() {
             return;
@@ -1980,7 +1981,7 @@ impl ActionPalette {
         &self,
         address: &tilo_actions::ActionAddress,
         bound: Option<&crate::bound_dispatch::BoundActionTarget>,
-    ) -> Option<Vec<Resource>> {
+    ) -> Option<Vec<ResourceSpec>> {
         if let Some(target) = bound {
             let _entry = target.binding.enter().ok()?;
             let snapshot = self
@@ -3562,8 +3563,8 @@ mod tests {
     }
 
     /// A resource exporting an immediate and a prompted action.
-    fn thing_resource() -> Resource {
-        Resource::new("test.thing:1", "test.thing", "Thing")
+    fn thing_resource() -> ResourceSpec {
+        ResourceSpec::new("test.thing:1", "test.thing", "Thing")
             .with_action(
                 ActionSpec::immediate(
                     "mark",
@@ -3670,10 +3671,10 @@ mod tests {
         fn resolve_action_resource(
             &self,
             address: &tilo_actions::ActionAddress,
-        ) -> Option<Resource> {
+        ) -> Option<ResourceSpec> {
             address.resource.strip_prefix("lazy.item:")?;
             Some(
-                Resource::new(&address.resource, "lazy.item", &address.resource).with_action(
+                ResourceSpec::new(&address.resource, "lazy.item", &address.resource).with_action(
                     ActionSpec::immediate(
                         "open",
                         "Open",
@@ -3996,7 +3997,7 @@ mod tests {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         {
-            let resource = Resource::new("test.thing:1", "test.thing", "Thing").with_action(
+            let resource = ResourceSpec::new("test.thing:1", "test.thing", "Thing").with_action(
                 ActionSpec::immediate(
                     "mark",
                     "Mark done",
@@ -4257,7 +4258,7 @@ mod tests {
             },
         );
         spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
-        let resource = Resource::new("document", "document", "Document").with_action(spec);
+        let resource = ResourceSpec::new("document", "document", "Document").with_action(spec);
         let mut palette = ActionPalette::new();
         palette.load_open_resources(&[resource]);
         palette.open();

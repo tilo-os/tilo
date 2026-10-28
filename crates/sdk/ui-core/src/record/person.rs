@@ -12,9 +12,9 @@
 //!
 //! An app holds the person's records beside the record it shows, whatever
 //! room that one is in. [`PersonRecords`] is where they are kept on this
-//! device for one app; [`PersonRecord`] is one of them, opened, edited with
+//! device for one app; [`StoredRecord`] is one of them, opened, edited with
 //! attribution and undo, and synced on its own route
-//! ([`PersonRecord::history_owner`]) to the person's other devices.
+//! ([`StoredRecord::history_owner`]) to the person's other devices.
 //!
 //! Without a root identity there is no person room: the records are kept
 //! on this device only, in a scope no route can name.
@@ -176,7 +176,7 @@ impl PersonRecords {
         &self,
         kind: RecordKind,
         initialize: &dyn Fn(&mut AutoCommit) -> Result<(), String>,
-    ) -> Result<PersonRecord, RecordOpenError> {
+    ) -> Result<StoredRecord, RecordOpenError> {
         let checkout = RecordCheckout::new(record_id(&kind), kind);
         match open_in(&self.store, &checkout, initialize) {
             Err(RecordOpenError::Store(app_state::StoreError::WriterBusy { .. }))
@@ -185,14 +185,14 @@ impl PersonRecords {
                 let (package, _) = self.store.package_and_home();
                 let replica = Self::replica(&package, self.author.clone())?;
                 open_in(&replica.store, &checkout, initialize)?;
-                Ok(PersonRecord::new(
+                Ok(StoredRecord::new(
                     replica.store,
                     checkout,
                     self.author.clone(),
                 ))
             }
             Err(error) => Err(error),
-            Ok(()) => Ok(PersonRecord::new(
+            Ok(()) => Ok(StoredRecord::new(
                 self.store.clone(),
                 checkout,
                 self.author.clone(),
@@ -209,7 +209,7 @@ impl PersonRecords {
     pub fn open_existing_record(
         &self,
         kind: RecordKind,
-    ) -> Result<Option<PersonRecord>, RecordOpenError> {
+    ) -> Result<Option<StoredRecord>, RecordOpenError> {
         let checkout = RecordCheckout::new(record_id(&kind), kind);
         let store = match self.store.try_open_record(&checkout) {
             Ok(_) => self.store.clone(),
@@ -227,7 +227,7 @@ impl PersonRecords {
             }
             Err(error) => return Err(error),
         };
-        Ok(Some(PersonRecord::new(
+        Ok(Some(StoredRecord::new(
             store,
             checkout,
             self.author.clone(),
@@ -241,13 +241,13 @@ impl PersonRecords {
         &self,
         kind: RecordKind,
         initialize: impl Fn(&mut AutoCommit) -> Result<(), String>,
-    ) -> Result<PersonRecord, RecordOpenError> {
+    ) -> Result<StoredRecord, RecordOpenError> {
         if self.replica {
             return Err(RecordOpenError::IdentityMismatch);
         }
         let checkout = RecordCheckout::new(record_id(&kind), kind);
         open_in(&self.store, &checkout, &initialize)?;
-        Ok(PersonRecord::new(
+        Ok(StoredRecord::new(
             self.store.clone(),
             checkout,
             self.author.clone(),
@@ -273,7 +273,7 @@ pub(super) fn open_in(
 /// ([`super::workspace`]), held the same way. Edits are attributed to the
 /// person, recorded as undo steps of their own and synced on the record's
 /// route.
-pub struct PersonRecord {
+pub struct StoredRecord {
     store: RecordStore,
     checkout: RecordCheckout,
     author: UserId,
@@ -281,7 +281,7 @@ pub struct PersonRecord {
     lifetime: Rc<LegacyHistoryLifetime>,
 }
 
-impl PersonRecord {
+impl StoredRecord {
     pub(super) fn new(store: RecordStore, checkout: RecordCheckout, author: UserId) -> Self {
         Self {
             store,

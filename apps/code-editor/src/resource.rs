@@ -226,7 +226,7 @@ mod tests {
 
     use crate::doc::{CollaborativeFile, EditorDoc};
     use crate::test_support::{editor, sample};
-    use ui::tilo_actions::Resource as PublishedResource;
+    use ui::tilo_actions::ResourceSpec as PublishedResource;
     const PROJECT_KIND: &str = <Project as ui::tilo_resource::Resource>::KIND;
 
     fn file_id(state: &Project, path: &str) -> String {

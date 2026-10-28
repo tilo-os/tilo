@@ -520,10 +520,10 @@ impl Capabilities {
     /// site, what it asks for, and the same two answers the person's prompt
     /// offers. Refused here, the site's request is denied as its Block
     /// button denies it.
-    pub fn resource(&self) -> Option<ui::tilo_actions::Resource> {
+    pub fn resource(&self) -> Option<ui::tilo_actions::ResourceSpec> {
         use ui::tilo_resource::Effect as _;
         let (request, origin, rights) = self.pending()?;
-        let mut row = ui::tilo_actions::Resource::new(
+        let mut row = ui::tilo_actions::ResourceSpec::new(
             RESOURCE,
             RESOURCE,
             crate::CATALOG.t_args(

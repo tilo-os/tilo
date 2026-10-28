@@ -30,7 +30,7 @@ fn project(
         next_cursor: None,
     })
 }
-fn decode(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError> {
+fn decode(resource: &ResourceSpec, payload: &[u8]) -> Result<(), SemanticReadError> {
     if resource.id.as_str() != "fixture.document" || payload != b"{\"pageSize\":2}" {
         return Err(SemanticReadError::InvalidRequest);
     }
@@ -42,8 +42,8 @@ static READERS: [RegisteredSemanticReader; 1] = [RegisteredSemanticReader::new(
     decode,
     project,
 )];
-fn resource() -> Resource {
-    Resource::new("fixture.document", "fixture.document", "Document").with_action(
+fn resource() -> ResourceSpec {
+    ResourceSpec::new("fixture.document", "fixture.document", "Document").with_action(
         ActionSpec::typed_operation(
             "read",
             "Read text",
@@ -142,7 +142,7 @@ fn changed_contract_resource_and_closed_payload_are_refused() {
 
 #[test]
 fn oversized_request_is_refused_before_app_decoder() {
-    fn must_not_decode(_: &Resource, _: &[u8]) -> Result<(), SemanticReadError> {
+    fn must_not_decode(_: &ResourceSpec, _: &[u8]) -> Result<(), SemanticReadError> {
         panic!("oversized request reached app decoder")
     }
     let readers = [RegisteredSemanticReader::new(

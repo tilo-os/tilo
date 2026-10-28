@@ -96,7 +96,7 @@ impl<M: ListModel + 'static> crate::widget::ResourceOperations for VirtualList<M
 }
 
 impl<M: ListModel + 'static> crate::resources::PublishesResources for VirtualList<M> {
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.view
             .as_ref()
             .map(|(choice, _)| choice.resource_of_keys(self.entries()))

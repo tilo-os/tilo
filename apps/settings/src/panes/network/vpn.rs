@@ -1441,7 +1441,7 @@ impl NetworkModel {
     }
 
     /// The switch that brings `vpn` up or down.
-    fn vpn_switch_control(&self, vpn: &VpnInfo, live: &ui::tilo_actions::Resource) -> Toggle {
+    fn vpn_switch_control(&self, vpn: &VpnInfo, live: &ui::tilo_actions::ResourceSpec) -> Toggle {
         let connection = vpn.uuid.clone();
         let toggle = Toggle::from_state(&LocalState::new(self.set_to_connect(vpn)))
             .with_id(&format!("settings.network.vpn.switch.{}", vpn.uuid))

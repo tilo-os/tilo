@@ -486,19 +486,20 @@ impl tilo_resource::Resource for FrameworkProjection {
     fn read(_: &tilo_resource::Doc) -> Result<(), tilo_resource::ModelError> {
         Ok(())
     }
-    fn children((): &()) -> Vec<tilo_actions::Resource> {
+    fn children((): &()) -> Vec<tilo_actions::ResourceSpec> {
         vec![
-            tilo_actions::Resource::new("public-child", "text", "Public child"),
-            tilo_actions::Resource::new("private-child", "account", "Secret account").with_action(
-                tilo_actions::ActionSpec::operation(
-                    "render",
-                    "Private view",
-                    OperationKind::View,
-                    "test.private-view",
-                    &FrameworkReadAction,
-                )
-                .unwrap(),
-            ),
+            tilo_actions::ResourceSpec::new("public-child", "text", "Public child"),
+            tilo_actions::ResourceSpec::new("private-child", "account", "Secret account")
+                .with_action(
+                    tilo_actions::ActionSpec::operation(
+                        "render",
+                        "Private view",
+                        OperationKind::View,
+                        "test.private-view",
+                        &FrameworkReadAction,
+                    )
+                    .unwrap(),
+                ),
         ]
     }
     fn document_child((): &(), id: &str) -> bool {

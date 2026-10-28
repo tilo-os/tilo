@@ -67,8 +67,8 @@ impl HostedInvocation {
 /// provider runs, which that provider publishes itself. `None` where nothing
 /// of it is left to publish.
 pub(crate) fn published_here(
-    mut resource: tilo_actions::Resource,
-) -> Option<tilo_actions::Resource> {
+    mut resource: tilo_actions::ResourceSpec,
+) -> Option<tilo_actions::ResourceSpec> {
     let hosted = resource
         .actions
         .iter()

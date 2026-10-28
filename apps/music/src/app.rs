@@ -4029,7 +4029,7 @@ impl MusicApp {
         albums.chain(artists).chain(playlists).collect()
     }
 
-    fn catalogue_resources(&self) -> Vec<tilo_actions::Resource> {
+    fn catalogue_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         let Some((_, bundle)) = &self.live_bundle else {
             return Vec::new();
         };

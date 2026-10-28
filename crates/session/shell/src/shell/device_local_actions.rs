@@ -169,7 +169,7 @@ mod tests {
         let chrome = crate::shell::chrome_state::ChromeState::new(
             crate::shell::state::WorkspaceTree::bootstrap_default(),
         );
-        let resource = tilo_actions::Resource::new("draft", "tilo.feedback-draft", "Feedback")
+        let resource = tilo_actions::ResourceSpec::new("draft", "tilo.feedback-draft", "Feedback")
             .with_action(tilo_actions::ActionSpec::immediate_encoded(
                 "review",
                 "Review",

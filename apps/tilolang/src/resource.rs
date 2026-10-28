@@ -65,7 +65,7 @@ impl Published {
 
     /// Every resource the room's packages hold, each with its actions; the host's own resource;
     /// and each package's actions that take no record.
-    fn resources(&self) -> Vec<ui::tilo_actions::Resource> {
+    fn resources(&self) -> Vec<ui::tilo_actions::ResourceSpec> {
         let mut out = vec![host_resource(&self.committer)];
         out.extend(self.publications.trees().values().cloned());
         for package in self.host.packages() {
@@ -188,7 +188,7 @@ fn door_handles(host: &Host) -> (Arc<dyn Planner>, Arc<dyn Committer>) {
 
 /// Every resource the live window's room publishes, each with its actions.
 #[must_use]
-pub fn published() -> Vec<ui::tilo_actions::Resource> {
+pub fn published() -> Vec<ui::tilo_actions::ResourceSpec> {
     with_live(Published::resources).unwrap_or_default()
 }
 
@@ -246,7 +246,7 @@ impl Resource for Room {
             && previous.args.get("field") == next.args.get("field")
     }
 
-    fn children(_state: &RoomState) -> Vec<ui::tilo_actions::Resource> {
+    fn children(_state: &RoomState) -> Vec<ui::tilo_actions::ResourceSpec> {
         published()
     }
 

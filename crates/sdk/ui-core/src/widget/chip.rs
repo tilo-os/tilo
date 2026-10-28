@@ -1235,7 +1235,7 @@ impl crate::widget::ResourceOperations for Chip {
 }
 
 impl crate::resources::PublishesResources for Chip {
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.activation.native_resources()
     }
 }

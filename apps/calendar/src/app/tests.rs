@@ -339,7 +339,7 @@ impl CalendarApp {
 }
 
 /// The calendar root as it publishes `doc`.
-fn published_root(doc: &AutoCommit) -> tilo_actions::Resource {
+fn published_root(doc: &AutoCommit) -> tilo_actions::ResourceSpec {
     ui::tilo_resource::publish::<Calendar>(
         "calendar.calendar",
         "Calendar",
@@ -353,7 +353,7 @@ fn published_resource(
     app: &CalendarApp,
     doc: &AutoCommit,
     id: &str,
-) -> Option<tilo_actions::Resource> {
+) -> Option<tilo_actions::ResourceSpec> {
     use ui::tilo_resource::Resource as _;
     if id == "calendar.calendar" {
         return Some(published_root(doc));
@@ -1368,7 +1368,7 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
         assert_eq!(value["target"]["action"], "prepare-calendar-invitation");
         let arguments = value["arguments"].as_object().unwrap().clone();
 
-        let mut mailbox = tilo_actions::Resource::new("mail.mailbox", "mail.mailbox", "Mail");
+        let mut mailbox = tilo_actions::ResourceSpec::new("mail.mailbox", "mail.mailbox", "Mail");
         mailbox.actions = <mail::actions::MailEffect as ui::tilo_resource::Effect>::specs();
         let mail_roots = vec![mailbox];
         let encoded = tilo_actions::door::encode_json(

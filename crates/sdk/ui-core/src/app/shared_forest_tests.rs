@@ -8,7 +8,7 @@
 #[test]
 fn a_shared_forest_derives_exactly_what_a_fresh_tree_does_after_any_edit() {
     use crate::published::{SharedChildren, SharedResource};
-    use tilo_actions::{ActionSpec, OperationKind, Resource};
+    use tilo_actions::{ActionSpec, OperationKind, ResourceSpec};
 
     let fixture = ActionFixture::new();
     let binding = fixture.bindings[0].clone();
@@ -18,7 +18,7 @@ fn a_shared_forest_derives_exactly_what_a_fresh_tree_does_after_any_edit() {
     let node = |id: &str, label: &str, actions: &[&str], children: Vec<SharedResource>| {
         let head = actions
             .iter()
-            .fold(Resource::new(id, "probe.item", label), |head, id| {
+            .fold(ResourceSpec::new(id, "probe.item", label), |head, id| {
                 head.with_action(action(id))
             });
         SharedResource::new(head, SharedChildren::new(children))
@@ -27,8 +27,8 @@ fn a_shared_forest_derives_exactly_what_a_fresh_tree_does_after_any_edit() {
         let moved = fixture.permissions.borrow().clone().at_unix_time(time);
         fixture.permissions.set(moved);
     };
-    let outline = |resources: &[Resource]| {
-        fn walk(resource: &Resource, out: &mut Vec<String>) {
+    let outline = |resources: &[ResourceSpec]| {
+        fn walk(resource: &ResourceSpec, out: &mut Vec<String>) {
             out.push(format!(
                 "{} {} [{}] ({}",
                 resource.id.as_str(),
@@ -229,13 +229,13 @@ fn a_shared_forest_derives_exactly_what_a_fresh_tree_does_after_any_edit() {
 #[test]
 fn an_item_edit_updates_that_items_semantic_node_only() {
     use crate::published::{SharedChildren, SharedResource};
-    use tilo_actions::{ActionSpec, OperationKind, Resource};
+    use tilo_actions::{ActionSpec, OperationKind, ResourceSpec};
 
     let fixture = ActionFixture::new();
     let binding = fixture.bindings[0].clone();
     let item = |index: usize, label: &str| {
         SharedResource::new(
-            Resource::new(format!("item:{index}"), "probe.item", label).with_action(
+            ResourceSpec::new(format!("item:{index}"), "probe.item", label).with_action(
                 ActionSpec::operation(
                     "open",
                     "Open",
@@ -253,7 +253,7 @@ fn an_item_edit_updates_that_items_semantic_node_only() {
         .collect::<Vec<_>>();
     let forest = |items: &[SharedResource]| -> Rc<[SharedResource]> {
         Rc::from(vec![SharedResource::new(
-            Resource::new("bound:probe", "probe", "Probe"),
+            ResourceSpec::new("bound:probe", "probe", "Probe"),
             SharedChildren::new(items.to_vec()),
         )])
     };

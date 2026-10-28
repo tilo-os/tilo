@@ -1409,14 +1409,14 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublicat
 // What the surface publishes as a widget passes through here, without
 // document actions: those are the resource's, through its dispatcher.
 impl ui_core::resources::PublishesResources for HostedSurface {
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         ui_core::resources::resources(self.host.surface(), doc)
             .into_iter()
             .map(outside_document)
             .collect()
     }
 
-    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         ui_core::resources::caller_view_resources(self.host.surface(), doc)
             .into_iter()
             .map(outside_document)
@@ -1450,7 +1450,7 @@ impl ui_core::resources::PublishesResources for HostedSurface {
         ui_core::resources::action_directory_invocation_domain(self.host.surface(), doc)
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::ResourceSpec> {
         ui_core::resources::resource(self.host.surface(), doc, id).map(resolved_outside_document)
     }
 
@@ -1458,7 +1458,7 @@ impl ui_core::resources::PublishesResources for HostedSurface {
         &self,
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
-    ) -> Vec<tilo_actions::Resource> {
+    ) -> Vec<tilo_actions::ResourceSpec> {
         ui_core::resources::resources_for(self.host.surface(), participant, doc)
             .into_iter()
             .map(outside_document)
@@ -1470,7 +1470,7 @@ impl ui_core::resources::PublishesResources for HostedSurface {
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
         id: &str,
-    ) -> Option<tilo_actions::Resource> {
+    ) -> Option<tilo_actions::ResourceSpec> {
         ui_core::resources::resource_for(self.host.surface(), participant, doc, id)
             .map(resolved_outside_document)
     }

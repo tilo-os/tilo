@@ -917,15 +917,15 @@ impl SearchResult {
 #[derive(Clone)]
 pub struct OpenResourceSearch {
     catalog: SearchCatalog,
-    resources: Arc<BTreeMap<String, tilo_actions::Resource>>,
+    resources: Arc<BTreeMap<String, tilo_actions::ResourceSpec>>,
 }
 
 impl OpenResourceSearch {
     #[must_use]
-    pub fn new(resources: &[tilo_actions::Resource]) -> Self {
+    pub fn new(resources: &[tilo_actions::ResourceSpec]) -> Self {
         fn collect(
-            resource: &tilo_actions::Resource,
-            resources: &mut BTreeMap<String, tilo_actions::Resource>,
+            resource: &tilo_actions::ResourceSpec,
+            resources: &mut BTreeMap<String, tilo_actions::ResourceSpec>,
         ) {
             resources
                 .entry(resource.id.as_str().to_string())
@@ -1017,7 +1017,10 @@ impl SearchProvider for OpenResourceSearch {
         page
     }
 
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<tilo_actions::Resource> {
+    fn resolve_action_resource(
+        &self,
+        address: &ActionAddress,
+    ) -> Option<tilo_actions::ResourceSpec> {
         self.resources
             .get(&address.resource)
             .filter(|resource| {
@@ -1142,7 +1145,10 @@ pub trait SearchProvider {
 
     /// Lazily resolve a canonical search address that is intentionally absent
     /// from the small open-resource snapshot.
-    fn resolve_action_resource(&self, _address: &ActionAddress) -> Option<tilo_actions::Resource> {
+    fn resolve_action_resource(
+        &self,
+        _address: &ActionAddress,
+    ) -> Option<tilo_actions::ResourceSpec> {
         None
     }
 
@@ -1198,7 +1204,10 @@ pub trait CatalogSearchProvider {
     }
 
     /// As [`SearchProvider::resolve_action_resource`].
-    fn resolve_action_address(&self, _address: &ActionAddress) -> Option<tilo_actions::Resource> {
+    fn resolve_action_address(
+        &self,
+        _address: &ActionAddress,
+    ) -> Option<tilo_actions::ResourceSpec> {
         None
     }
 
@@ -1278,7 +1287,10 @@ impl<T: CatalogSearchProvider> SearchProvider for T {
         CatalogSearchProvider::search_scopes(self)
     }
 
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<tilo_actions::Resource> {
+    fn resolve_action_resource(
+        &self,
+        address: &ActionAddress,
+    ) -> Option<tilo_actions::ResourceSpec> {
         self.resolve_action_address(address)
     }
 }
@@ -1410,28 +1422,29 @@ mod tests {
     fn open_resource_search_indexes_nested_resources_within_hard_budgets() {
         // phase: open_resource_search_indexes_nested_resources_and_prefers_view_actions
         {
-            let nested = tilo_actions::Resource::new("note:launch", "notes.note", "Launch plan")
-                .with_action(
-                    tilo_actions::ActionSpec::operation(
-                        "delete",
-                        "Delete note",
-                        tilo_actions::OperationKind::Effect,
-                        "test.note",
-                        &serde_json::json!({}),
+            let nested =
+                tilo_actions::ResourceSpec::new("note:launch", "notes.note", "Launch plan")
+                    .with_action(
+                        tilo_actions::ActionSpec::operation(
+                            "delete",
+                            "Delete note",
+                            tilo_actions::OperationKind::Effect,
+                            "test.note",
+                            &serde_json::json!({}),
+                        )
+                        .unwrap(),
                     )
-                    .unwrap(),
-                )
-                .with_action(
-                    tilo_actions::ActionSpec::operation(
-                        "open",
-                        "Open note",
-                        tilo_actions::OperationKind::View,
-                        "test.note",
-                        &serde_json::json!({}),
-                    )
-                    .unwrap(),
-                );
-            let root = tilo_actions::Resource::new("notes", "notes.collection", "Notes")
+                    .with_action(
+                        tilo_actions::ActionSpec::operation(
+                            "open",
+                            "Open note",
+                            tilo_actions::OperationKind::View,
+                            "test.note",
+                            &serde_json::json!({}),
+                        )
+                        .unwrap(),
+                    );
+            let root = tilo_actions::ResourceSpec::new("notes", "notes.collection", "Notes")
                 .with_child(nested);
             let provider = OpenResourceSearch::new(&[root]);
 
@@ -1457,22 +1470,23 @@ mod tests {
             assert_eq!(provider.action_directory_generation(), None);
 
             // A resource's own detail is its secondary line.
-            let report = tilo_actions::Resource::new("file:report", "files.entry", "Report.pdf")
-                .with_presentation(tilo_actions::ResourcePresentation {
-                    detail: Some("Documents".into()),
-                    badge: None,
-                    preview: None,
-                })
-                .with_action(
-                    tilo_actions::ActionSpec::operation(
-                        "open",
-                        "Open",
-                        tilo_actions::OperationKind::View,
-                        "test.file",
-                        &serde_json::json!({}),
-                    )
-                    .unwrap(),
-                );
+            let report =
+                tilo_actions::ResourceSpec::new("file:report", "files.entry", "Report.pdf")
+                    .with_presentation(tilo_actions::ResourcePresentation {
+                        detail: Some("Documents".into()),
+                        badge: None,
+                        preview: None,
+                    })
+                    .with_action(
+                        tilo_actions::ActionSpec::operation(
+                            "open",
+                            "Open",
+                            tilo_actions::OperationKind::View,
+                            "test.file",
+                            &serde_json::json!({}),
+                        )
+                        .unwrap(),
+                    );
             let hit = OpenResourceSearch::new(&[report])
                 .search("report")
                 .pop()
@@ -1486,7 +1500,7 @@ mod tests {
         {
             let resources = (0..20)
                 .map(|index| {
-                    tilo_actions::Resource::new(
+                    tilo_actions::ResourceSpec::new(
                         format!("item:{index}"),
                         "test.item",
                         format!("Item {index}"),

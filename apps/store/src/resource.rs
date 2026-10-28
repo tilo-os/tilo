@@ -11,7 +11,7 @@ use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
     ResourceSurface, RunMode, SurfaceCx, ViewCx,
 };
-use ui::tilo_actions::Resource as PublishedResource;
+use ui::tilo_actions::ResourceSpec as PublishedResource;
 use ui::tilo_resource::{self, Effect, Invoke, Resource};
 use ui::widget::Element;
 

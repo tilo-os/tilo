@@ -1,7 +1,7 @@
 //! Test-only collaboration scenarios for the library document.
 //!
 //! Music's collaborative library state is owned by the platform's canonical
-//! app document and `ActionHost`. The platform supplies persistence, peer
+//! app document and `LocalDispatch`. The platform supplies persistence, peer
 //! replication, history, and collaboration; this application must not offer a
 //! second pairing or relay protocol. These scenarios drive the platform's
 //! fake net in unit tests only.

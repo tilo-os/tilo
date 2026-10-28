@@ -33,7 +33,7 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_actions::{ActionBinding, ControlInvocation, Resource};
+use ui::tilo_actions::{ActionBinding, ControlInvocation, ResourceSpec};
 use ui::webview::test_engine::TestEngine;
 use ui::webview::{
     MediaElementInfo, NavigationCommand, NavigationDirection, PageFailure, PageReply, PageRequest,
@@ -2295,8 +2295,8 @@ impl BrowserWidget {
         Ok(())
     }
 
-    fn resource_by_id(&self, wanted: &str) -> Option<Resource> {
-        fn walk(resources: &[Resource], wanted: &str) -> Option<Resource> {
+    fn resource_by_id(&self, wanted: &str) -> Option<ResourceSpec> {
+        fn walk(resources: &[ResourceSpec], wanted: &str) -> Option<ResourceSpec> {
             resources.iter().find_map(|resource| {
                 (resource.id.0 == wanted)
                     .then(|| resource.clone())
@@ -5228,13 +5228,13 @@ impl BrowserWidget {
     /// window's own controls bind to.
     #[allow(
         clippy::too_many_lines,
-        reason = "Resource definitions stay together so their action contracts remain discoverable."
+        reason = "ResourceSpec definitions stay together so their action contracts remain discoverable."
     )]
-    pub(crate) fn published(&self) -> Resource {
+    pub(crate) fn published(&self) -> ResourceSpec {
         use crate::effects::BrowserEffect as E;
         use ui::tilo_resource::Effect as _;
         const MATERIALIZED_LIMIT: usize = 100;
-        let mut page = Resource::new(
+        let mut page = ResourceSpec::new(
             "browser.page",
             "browser.page",
             if self.title.is_empty() {
@@ -5456,7 +5456,7 @@ impl BrowserWidget {
             });
         }
 
-        let mut session = Resource::new(
+        let mut session = ResourceSpec::new(
             "browser.session",
             "browser.history-pause",
             if self.history_paused() {
@@ -5471,7 +5471,7 @@ impl BrowserWidget {
         }
         session.actions.push(pause);
 
-        let mut history = Resource::new("browser.history", "browser.history", "History");
+        let mut history = ResourceSpec::new("browser.history", "browser.history", "History");
         history.actions.push(E::ShowHistory.bound());
         let clear = E::ClearHistory.bound();
         history.actions.push(if self.history.is_empty() {
@@ -5491,7 +5491,7 @@ impl BrowserWidget {
             } else {
                 entry.title.as_str()
             };
-            let mut row = Resource::new(
+            let mut row = ResourceSpec::new(
                 history_resource_id(&entry.url),
                 "browser.history-entry",
                 title,
@@ -5515,17 +5515,18 @@ impl BrowserWidget {
             history.children.push(row);
         }
 
-        let mut bookmarks = Resource::new("browser.bookmarks", "browser.bookmarks", "Bookmarks");
+        let mut bookmarks =
+            ResourceSpec::new("browser.bookmarks", "browser.bookmarks", "Bookmarks");
         bookmarks.actions.push(E::ShowBookmarks.bound());
         // Each bookmark is an item of the document; this window adds opening
         // its page to it.
-        let bookmark_rows: Vec<Resource> = self
+        let bookmark_rows: Vec<ResourceSpec> = self
             .bookmarks
             .entries()
             .iter()
             .take(MATERIALIZED_LIMIT)
             .map(|entry| {
-                Resource::new(
+                ResourceSpec::new(
                     bookmark_resource_id(&entry.id),
                     "browser.bookmark",
                     entry.title.clone(),
@@ -5539,7 +5540,8 @@ impl BrowserWidget {
             })
             .collect();
 
-        let mut downloads = Resource::new("browser.downloads", "browser.downloads", "Downloads");
+        let mut downloads =
+            ResourceSpec::new("browser.downloads", "browser.downloads", "Downloads");
         downloads.actions.push(E::ShowDownloads.bound());
         downloads
             .actions
@@ -5552,7 +5554,7 @@ impl BrowserWidget {
             .take(MATERIALIZED_LIMIT)
         {
             let id = entry.id.clone();
-            let mut child = Resource::new(
+            let mut child = ResourceSpec::new(
                 entry.resource_id(),
                 "browser.download",
                 entry.display_name(),
@@ -5585,7 +5587,7 @@ impl BrowserWidget {
         }
 
         let mut extensions =
-            Resource::new("browser.extensions", "browser.extensions", "Extensions");
+            ResourceSpec::new("browser.extensions", "browser.extensions", "Extensions");
         extensions.actions.push(E::ShowExtensions.bound());
         extensions.actions.extend(self.extensions.add_action());
         // Each installed extension, as the window last read the profile,
@@ -5596,7 +5598,7 @@ impl BrowserWidget {
         // unaddressable collection of tabs.  This lets keyboard users,
         // assistive technology, global action search, and agents all use the
         // same section operations as the visible surface.
-        let mut library = Resource::new("browser.library", "browser.library", "Library");
+        let mut library = ResourceSpec::new("browser.library", "browser.library", "Library");
         for effect in [
             E::ShowHistory,
             E::ShowBookmarks,
@@ -5620,11 +5622,11 @@ impl BrowserWidget {
                 clear_filter
             });
 
-        let mut settings = Resource::new("browser.settings", "browser.settings", "Settings");
+        let mut settings = ResourceSpec::new("browser.settings", "browser.settings", "Settings");
         settings.actions.push(E::ShowSettings.bound());
         settings.actions.push(E::RequestSiteDataClear.bound());
 
-        let mut browser = Resource::new(
+        let mut browser = ResourceSpec::new(
             crate::resource::Browser::KIND,
             crate::resource::Browser::KIND,
             "Browser",
@@ -5640,7 +5642,7 @@ impl BrowserWidget {
             browser.children.push(selection.resource());
         }
         browser.children.push(
-            Resource::new(
+            ResourceSpec::new(
                 "browser.service-sessions",
                 "browser.service-sessions",
                 "Accounts",
@@ -5653,7 +5655,7 @@ impl BrowserWidget {
             || self.service_observation.is_some()
         {
             browser.children.push(
-                Resource::new(
+                ResourceSpec::new(
                     "browser.service-status",
                     "browser.service-status",
                     "Account",

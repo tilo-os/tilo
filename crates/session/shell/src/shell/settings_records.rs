@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use accounts::person::PersonAccounts;
 use agent_provider_config::{OfferedModels, ProviderConfig};
 use tilo_actions::remote::Pending;
-use tilo_actions::{ActionAddress, ActionDescriptor, ActionInvoker, Resource, RiskLevel};
+use tilo_actions::{ActionAddress, ActionDescriptor, ActionInvoker, ResourceSpec, RiskLevel};
 use tilo_app::framework::SettingsRecords;
 use tilo_contact_directory::ContactDirectory;
 use tilo_resource::SharedRecord;
@@ -75,7 +75,7 @@ struct Port {
 #[derive(Default)]
 struct Actions {
     at: Option<Described>,
-    resources: Vec<Resource>,
+    resources: Vec<ResourceSpec>,
     descriptors: Vec<ActionDescriptor>,
 }
 

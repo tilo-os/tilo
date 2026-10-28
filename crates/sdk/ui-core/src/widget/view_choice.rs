@@ -58,14 +58,14 @@ impl ViewChoice {
     }
 
     /// The control as published now, offering `entries` (key, label).
-    pub(crate) fn resource(&self, entries: Vec<(String, String)>) -> tilo_actions::Resource {
+    pub(crate) fn resource(&self, entries: Vec<(String, String)>) -> tilo_actions::ResourceSpec {
         Self::resource_of(&self.id, self.label, Some(Choices::Labelled(entries)))
     }
 
     /// The control as published now, offering its entries by key alone, for
     /// entries whose labels change (a renamed page) while what is offered
     /// stays as it was.
-    pub(crate) fn resource_of_keys(&self, keys: Vec<String>) -> tilo_actions::Resource {
+    pub(crate) fn resource_of_keys(&self, keys: Vec<String>) -> tilo_actions::ResourceSpec {
         Self::resource_of(&self.id, self.label, Some(Choices::Keys(keys)))
     }
 
@@ -77,7 +77,7 @@ impl ViewChoice {
         id: &str,
         label: &'static str,
         entries: Option<Choices>,
-    ) -> tilo_actions::Resource {
+    ) -> tilo_actions::ResourceSpec {
         use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType};
         let mut entry = ActionParam::required("entry", ParamType::Text, "The entry to choose");
         match entries {
@@ -105,7 +105,7 @@ impl ViewChoice {
             },
         )
         .for_audience(tilo_actions::Audience::Agents);
-        tilo_actions::Resource::new(format!("tilo.control:{id}"), "tilo.control.choice", id)
+        tilo_actions::ResourceSpec::new(format!("tilo.control:{id}"), "tilo.control.choice", id)
             .with_action(spec)
     }
 

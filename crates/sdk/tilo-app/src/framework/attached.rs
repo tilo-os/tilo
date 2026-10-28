@@ -354,7 +354,7 @@ impl AttachedView {
 
     /// The tree the view publishes, as the participant may reach it.
     #[must_use]
-    pub fn resources(&self) -> Vec<tilo_actions::Resource> {
+    pub fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         let permissions = self.permissions.borrow();
         self.frame
             .resources()

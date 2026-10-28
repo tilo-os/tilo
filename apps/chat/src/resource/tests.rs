@@ -515,7 +515,7 @@ fn a_new_room_record_opens_with_chat_and_voice_and_nothing_else() {
 /// The root's action `id`, as the window publishes it now.
 fn root_action(app: &mut TestApp<ChatShell>, id: &str) -> ui::tilo_actions::ActionSpec {
     fn find(
-        resources: &[ui::tilo_actions::Resource],
+        resources: &[ui::tilo_actions::ResourceSpec],
         id: &str,
     ) -> Option<ui::tilo_actions::ActionSpec> {
         resources.iter().find_map(|resource| {

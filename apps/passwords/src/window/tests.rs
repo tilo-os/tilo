@@ -41,7 +41,7 @@ fn spoken_tree(widget: &dyn ui::widget::Widget) -> String {
 }
 
 /// The text a resource tree makes public: ids, kinds, labels and payloads.
-fn public_text(resources: &[ui::tilo_actions::Resource]) -> String {
+fn public_text(resources: &[ui::tilo_actions::ResourceSpec]) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
     for resource in resources {

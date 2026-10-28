@@ -130,7 +130,7 @@ impl<R: Resource> ViewCx<R> {
         live: Live<R>,
         alive: &Rc<()>,
         dispatch: Dispatcher<R>,
-        published: tilo_actions::Resource,
+        published: tilo_actions::ResourceSpec,
         run: Run,
         storage: Rc<ViewStorage>,
     ) -> Self {
@@ -210,7 +210,7 @@ impl FreshScope {
 /// bindable like its own. Not generic, so it is compiled once rather than
 /// for every resource.
 #[inline(never)]
-fn with_history_verbs(published: tilo_actions::Resource) -> Rc<tilo_actions::Resource> {
+fn with_history_verbs(published: tilo_actions::ResourceSpec) -> Rc<tilo_actions::ResourceSpec> {
     let mut published = published;
     for spec in super::history::specs() {
         if !published.actions.iter().any(|action| action.id == spec.id) {

@@ -11,7 +11,7 @@ struct Probe {
     owner: crate::bound_dispatch::CallbackBinding,
     invocations: Invocations,
     /// A record the window keeps beside the one it shows, when it keeps one.
-    beside: Option<crate::record::workspace::WorkspaceRecord>,
+    beside: Option<crate::record::StoredRecord>,
     _temp: tempfile::TempDir,
 }
 
@@ -225,7 +225,7 @@ fn a_window_whose_beside_record_never_opens_still_offers_its_actions() {
     let beside = probe
         .beside
         .as_ref()
-        .and_then(crate::record::workspace::WorkspaceRecord::route)
+        .and_then(crate::record::StoredRecord::route)
         .expect("the record kept beside syncs on its own route");
     let first = probe.invoke_effect();
     probe.pump_until_answered();

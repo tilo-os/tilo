@@ -8,14 +8,14 @@ use crate::action_palette::{ActionPaletteBox, PendingOperation};
 #[derive(Default)]
 pub(super) struct CallerPalette {
     pub palette: Option<ActionPaletteBox>,
-    pub resources: Vec<tilo_actions::Resource>,
+    pub resources: Vec<tilo_actions::ResourceSpec>,
     pub pending: Option<PendingOperation>,
     /// Set by a root that answers the command chord itself.
     pub disabled: bool,
 }
 
 impl FrameHarness {
-    pub(super) fn caller_resources(&self) -> Vec<tilo_actions::Resource> {
+    pub(super) fn caller_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         let mut resources = self.caller_palette.resources.clone();
         resources.extend(
             crate::resources::caller_view_resources(self.root.as_ref(), &self.state.doc)
@@ -38,7 +38,7 @@ impl FrameHarness {
         self.caller_palette.disabled = !enabled;
     }
 
-    pub fn set_caller_actions(&mut self, resources: Vec<tilo_actions::Resource>) {
+    pub fn set_caller_actions(&mut self, resources: Vec<tilo_actions::ResourceSpec>) {
         self.invalidate_local();
         self.caller_palette.resources = resources;
         let resources = self.caller_resources();
@@ -318,7 +318,7 @@ mod tests {
     fn resources(
         confirmation: tilo_actions::ConfirmationPolicy,
         params: Vec<tilo_actions::ActionParam>,
-    ) -> Vec<tilo_actions::Resource> {
+    ) -> Vec<tilo_actions::ResourceSpec> {
         let mut action = tilo_actions::ActionSpec::typed(
             "insert",
             "Insert table",
@@ -333,7 +333,7 @@ mod tests {
         action.type_mut().kind = tilo_actions::OperationKind::Effect;
         action.type_mut().contract.confirmation = confirmation;
         vec![
-            tilo_actions::Resource::new(
+            tilo_actions::ResourceSpec::new(
                 "certified-host/room/record/revision",
                 "document",
                 "Writer",

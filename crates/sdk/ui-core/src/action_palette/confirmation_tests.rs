@@ -56,7 +56,7 @@ fn confirmation_refreshes_never_turn_the_question_back_into_search() {
     .with_description("Remove this message for everyone");
     spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
     spec.type_mut().contract.risk = tilo_actions::RiskLevel::Destructive;
-    let resources = vec![Resource::new("chat", "chat", "Chat").with_action(spec)];
+    let resources = vec![ResourceSpec::new("chat", "chat", "Chat").with_action(spec)];
     let mut palette = ActionPalette::new();
     palette.load_open_resources(&resources);
     palette.open();
@@ -145,7 +145,7 @@ fn the_standard_confirmation_button_keeps_exact_evidence_and_cancels_on_escape()
     .unwrap();
     spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
     spec.type_mut().contract.risk = tilo_actions::RiskLevel::Destructive;
-    let resource = Resource::new("chat", "chat", "Chat").with_action(spec);
+    let resource = ResourceSpec::new("chat", "chat", "Chat").with_action(spec);
     let mut palette = ActionPalette::new();
     palette.load_open_resources(&[resource]);
     let mut doc = automerge::AutoCommit::new();
@@ -199,7 +199,7 @@ fn a_confirmation_asks_the_actions_question_and_one_enter_goes_ahead() {
     .unwrap()
     .with_description("Remove this message for everyone");
     spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
-    let resource = Resource::new("chat", "chat", "Chat").with_action(spec);
+    let resource = ResourceSpec::new("chat", "chat", "Chat").with_action(spec);
     let mut palette = ActionPalette::new();
     palette.load_open_resources(&[resource]);
     palette.open();
@@ -277,7 +277,7 @@ fn a_confirmation_field_never_shows_search_results() {
         phrase: "nvme0n1".into(),
     };
     let resources = vec![
-        Resource::new("disks", "disks.drive", "nvme0n1")
+        ResourceSpec::new("disks", "disks.drive", "nvme0n1")
             .with_action(erase)
             .with_action(
                 ActionSpec::immediate(
@@ -370,10 +370,10 @@ fn listed_action_rows_read_as_outcomes_once_without_ids_glyphs_or_control_verbs(
     let mut focus = new_folder();
     focus.type_mut().label = "Focus".into();
     let resources = vec![
-        Resource::new("feeds.library", "feeds.library", "Feeds")
+        ResourceSpec::new("feeds.library", "feeds.library", "Feeds")
             .with_action(new_folder())
             .with_child(
-                Resource::new("feeds.library/feeds/1", "feed", "Hacker News").with_action(
+                ResourceSpec::new("feeds.library/feeds/1", "feed", "Hacker News").with_action(
                     ActionSpec::immediate(
                         "unsubscribe",
                         "Unsubscribe",
@@ -388,10 +388,10 @@ fn listed_action_rows_read_as_outcomes_once_without_ids_glyphs_or_control_verbs(
             ),
         // A bar button's own verb, as the control projection publishes
         // it: for agents, never a person's row.
-        Resource::new("ui:new-folder", "tilo.ui.control", "New folder")
+        ResourceSpec::new("ui:new-folder", "tilo.ui.control", "New folder")
             .with_action(focus.for_audience(tilo_actions::Audience::Agents)),
         // The same action published twice (the bar and the document).
-        Resource::new("feeds.library", "feeds.library", "Feeds").with_action(new_folder()),
+        ResourceSpec::new("feeds.library", "feeds.library", "Feeds").with_action(new_folder()),
     ];
     let mut palette = ActionPalette::new();
     palette.load_open_resources(&resources);
@@ -446,8 +446,8 @@ fn the_same_action_of_two_documents_is_two_rows_naming_each() {
         .unwrap()
     };
     let resources = vec![
-        Resource::new("a", "thing", "Alpha").with_action(mark()),
-        Resource::new("b", "thing", "Beta").with_action(mark()),
+        ResourceSpec::new("a", "thing", "Alpha").with_action(mark()),
+        ResourceSpec::new("b", "thing", "Beta").with_action(mark()),
     ];
     let mut palette = ActionPalette::new();
     palette.load_open_resources(&resources);
@@ -541,7 +541,7 @@ fn asking_to_erase() -> ActionPalette {
     };
     let mut palette = ActionPalette::new();
     palette.load_open_resources(&[
-        Resource::new("drive:t7", "drive", "Samsung T7").with_action(erase)
+        ResourceSpec::new("drive:t7", "drive", "Samsung T7").with_action(erase)
     ]);
     palette.open();
     palette.set_query("Erase");

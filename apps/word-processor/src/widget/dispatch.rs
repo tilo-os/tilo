@@ -821,7 +821,7 @@ impl WordProcessorWidget {
         &self,
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
-    ) -> Vec<tilo_actions::Resource> {
+    ) -> Vec<tilo_actions::ResourceSpec> {
         let ctx = match participant {
             None => self.wp_resource_ctx(doc),
             Some(participant) => self

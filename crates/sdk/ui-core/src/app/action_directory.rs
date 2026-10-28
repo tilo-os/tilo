@@ -96,7 +96,7 @@ impl App {
 
     fn directory_resource_row(
         &self,
-        resource: &tilo_actions::Resource,
+        resource: &tilo_actions::ResourceSpec,
         parent_resource: &str,
         may_descend: bool,
     ) -> Option<runtime_collab::ActionDirectoryRow> {
@@ -104,7 +104,7 @@ impl App {
         // needed descriptor in this bounded provider result, not surveying a
         // complete action catalogue for each displayed row.
         fn visibility(
-            resource: &tilo_actions::Resource,
+            resource: &tilo_actions::ResourceSpec,
             explicit: Option<&tilo_actions::ActionAddress>,
         ) -> Option<tilo_actions::ActionDescriptor> {
             resource
@@ -152,7 +152,7 @@ impl App {
     }
 
     fn directory_action_row(
-        resource: &tilo_actions::Resource,
+        resource: &tilo_actions::ResourceSpec,
         action_id: &str,
     ) -> Option<runtime_collab::ActionDirectoryRow> {
         let action = resource
@@ -248,9 +248,9 @@ impl App {
                 .collect()
         } else {
             fn find<'a>(
-                resources: &'a [tilo_actions::Resource],
+                resources: &'a [tilo_actions::ResourceSpec],
                 id: &str,
-            ) -> Option<&'a tilo_actions::Resource> {
+            ) -> Option<&'a tilo_actions::ResourceSpec> {
                 resources.iter().find_map(|resource| {
                     (resource.id.as_str() == id)
                         .then_some(resource)
@@ -845,7 +845,7 @@ impl App {
         &mut self,
         resource_id: &str,
         action_id: &str,
-    ) -> Option<tilo_actions::Resource> {
+    ) -> Option<tilo_actions::ResourceSpec> {
         let address = tilo_actions::ActionAddress::new(resource_id, action_id);
         match self.actions.bound_publication.target(&address) {
             Ok(Some(target)) => {

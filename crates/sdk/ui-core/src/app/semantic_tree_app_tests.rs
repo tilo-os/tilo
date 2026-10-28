@@ -21,7 +21,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use tilo_actions::{
     Action as QAction, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus, OperationKind,
-    Resource,
+    ResourceSpec,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,24 +68,25 @@ impl LargeDirectoryProvider {
         }
     }
 
-    fn resource_for(address: &tilo_actions::ActionAddress) -> Option<Resource> {
+    fn resource_for(address: &tilo_actions::ActionAddress) -> Option<ResourceSpec> {
         address
             .resource
             .strip_prefix("test.item:")?
             .parse::<usize>()
             .ok()?;
         Some(
-            Resource::new(address.resource.clone(), "test.item", "Synthetic record").with_action(
-                ActionSpec::operation(
-                    "open",
-                    "Open",
-                    OperationKind::View,
-                    COUNTER_TYPE,
-                    &CounterAction::Bump,
-                )
-                .ok()?
-                .with_contract(tilo_actions::ActionContract::view()),
-            ),
+            ResourceSpec::new(address.resource.clone(), "test.item", "Synthetic record")
+                .with_action(
+                    ActionSpec::operation(
+                        "open",
+                        "Open",
+                        OperationKind::View,
+                        COUNTER_TYPE,
+                        &CounterAction::Bump,
+                    )
+                    .ok()?
+                    .with_contract(tilo_actions::ActionContract::view()),
+                ),
         )
     }
 }
@@ -122,7 +123,10 @@ impl crate::search::SearchProvider for LargeDirectoryProvider {
             .query_page(query.text(), cursor, work_budget, result_limit)
     }
 
-    fn resolve_action_resource(&self, address: &tilo_actions::ActionAddress) -> Option<Resource> {
+    fn resolve_action_resource(
+        &self,
+        address: &tilo_actions::ActionAddress,
+    ) -> Option<ResourceSpec> {
         Self::resource_for(address)
     }
 }
@@ -160,7 +164,7 @@ impl QAction for CounterAction {
 struct CounterCard {
     button: Button,
     destructive: bool,
-    lazy_resource: Option<Resource>,
+    lazy_resource: Option<ResourceSpec>,
     directory_provider: Option<LargeDirectoryProvider>,
     directory_roots: usize,
     post_bump_reset: bool,
@@ -179,18 +183,18 @@ struct CounterCard {
     replaced: bool,
 }
 
-fn counter_resource(destructive: bool) -> Resource {
+fn counter_resource(destructive: bool) -> ResourceSpec {
     counter_resource_with_reset(destructive, false)
 }
 
-fn counter_resource_with_reset(destructive: bool, reset_visible: bool) -> Resource {
+fn counter_resource_with_reset(destructive: bool, reset_visible: bool) -> ResourceSpec {
     let bump = ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump).unwrap();
     let bump = if destructive {
         bump.destructive()
     } else {
         bump
     };
-    let resource = Resource::new("test.counter", "test.counter", "Counter")
+    let resource = ResourceSpec::new("test.counter", "test.counter", "Counter")
         .with_action(bump)
         .with_action(
             ActionSpec::immediate(
@@ -284,7 +288,7 @@ impl CounterCard {
         card
     }
 
-    fn with_lazy_resource(resource: Resource) -> Self {
+    fn with_lazy_resource(resource: ResourceSpec) -> Self {
         Self {
             button: Button::new("lazy-resource", "Lazy resource"),
             destructive: false,
@@ -316,7 +320,7 @@ impl CounterCard {
         card
     }
 
-    fn current_resource(&self, doc: &automerge::AutoCommit) -> Resource {
+    fn current_resource(&self, doc: &automerge::AutoCommit) -> ResourceSpec {
         let mut resource = counter_resource_with_reset(
             self.destructive,
             self.post_bump_reset && counter_in_doc(doc) > 0,
@@ -380,7 +384,7 @@ impl Widget for CounterCard {
             self.replaced = true;
         }
         self.button.settle(edits, p);
-        let mut actions = crate::action_host::ActionHost::new();
+        let mut actions = crate::local_dispatch::LocalDispatch::new();
         for scope in std::mem::take(&mut self.scoped_jobs) {
             let invocation = scope.invocation();
             let result = scope.with_document_mutation(edits.document_mut(), |doc| {
@@ -536,7 +540,7 @@ impl crate::search::capability::SearchSource for CounterCard {
 }
 
 impl crate::resources::PublishesResources for CounterCard {
-    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
+    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         self.lazy_resource
             .is_none()
             .then(|| self.current_resource(doc))
@@ -559,7 +563,7 @@ impl crate::resources::PublishesResources for CounterCard {
                 if index == 0 {
                     self.current_resource(doc)
                 } else {
-                    Resource::new(
+                    ResourceSpec::new(
                         format!("test.counter:{index}"),
                         "test.counter",
                         format!("Counter {index}"),
@@ -584,7 +588,7 @@ impl crate::resources::PublishesResources for CounterCard {
             exhausted: end >= self.directory_roots,
         })
     }
-    fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<Resource> {
+    fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<ResourceSpec> {
         if let Some(resource) = self
             .lazy_resource
             .as_ref()
@@ -599,7 +603,7 @@ impl crate::resources::PublishesResources for CounterCard {
             .and_then(|suffix| suffix.parse::<usize>().ok())
             .filter(|index| *index < self.directory_roots)
             .map(|index| {
-                Resource::new(
+                ResourceSpec::new(
                     format!("test.counter:{index}"),
                     "test.counter",
                     format!("Counter {index}"),
@@ -681,13 +685,13 @@ fn published_delivery_on_disabled_transport_refuses_before_document_handler() {
     assert!(app.actions.directed_invocations.is_empty());
 }
 
-fn lazy_resource(id: &str) -> Resource {
-    Resource::new(id, id, "Lazy counter").with_action(
+fn lazy_resource(id: &str) -> ResourceSpec {
+    ResourceSpec::new(id, id, "Lazy counter").with_action(
         ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump).unwrap(),
     )
 }
 
-fn lazy_app(resource: Resource) -> App {
+fn lazy_app(resource: ResourceSpec) -> App {
     let mut app = App::new(
         State::new(),
         Box::new(CounterCard::with_lazy_resource(resource)),
@@ -706,7 +710,7 @@ fn background_document_job_from_an_unbound_resource_waits_for_broker_admission()
         .execution(tilo_actions::ExecutionMode::Background { cancellable: true })
         .returns(tilo_actions::ResultSpec::Job);
     let mut app =
-        lazy_app(Resource::new(&address.resource, "test.counter", "Counter").with_action(spec));
+        lazy_app(ResourceSpec::new(&address.resource, "test.counter", "Counter").with_action(spec));
     let sent = Rc::new(RefCell::new(Vec::new()));
     app.collaboration.manager =
         CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
@@ -836,7 +840,7 @@ fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
     {
         let child = lazy_resource("test.lazy.child");
         let tree =
-            Resource::new("test.lazy.parent", "test.lazy.parent", "Parent").with_child(child);
+            ResourceSpec::new("test.lazy.parent", "test.lazy.parent", "Parent").with_child(child);
         let mut app = lazy_app(tree);
         let resolved = crate::widget::resolve_widget_resource(
             app.root_widget.as_ref(),
@@ -1188,15 +1192,16 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
 
     // Case `undecodable_document_action_preserves_pending_edit`.
     {
-        let resource = Resource::new("test.invalid", "test.invalid", "Invalid action").with_action(
-            ActionSpec::immediate(
-                "decode",
-                "Decode",
-                "test.unregistered",
-                &CounterAction::Bump,
-            )
-            .unwrap(),
-        );
+        let resource = ResourceSpec::new("test.invalid", "test.invalid", "Invalid action")
+            .with_action(
+                ActionSpec::immediate(
+                    "decode",
+                    "Decode",
+                    "test.unregistered",
+                    &CounterAction::Bump,
+                )
+                .unwrap(),
+            );
         let mut app = lazy_app(resource);
         let before = app.state.doc.get_heads();
         app.state.doc.put(ROOT, "draft", "unfinished").unwrap();
@@ -1316,7 +1321,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             /// Count the copies.
             Count,
         }
-        let mut resource = Resource::new("test.folder", "test.folder", "Folder");
+        let mut resource = ResourceSpec::new("test.folder", "test.folder", "Folder");
         for spec in <Folder as tilo_resource::Effect>::specs() {
             resource = resource.with_action(spec);
         }
@@ -1548,7 +1553,7 @@ fn semantic_invocation_matches_the_affordance_dispatch() {
             .action(&SemanticId("r:test.counter".into()), "bump")
             .expect("bump affordance");
 
-        let mut host = crate::action_host::ActionHost::new();
+        let mut host = crate::local_dispatch::LocalDispatch::new();
         let mut host_doc = automerge::AutoCommit::new();
         host.dispatch(&mut host_doc, COUNTER_TYPE, &CounterAction::Bump);
         let from_affordance = host
@@ -1609,7 +1614,7 @@ fn semantic_invocation_matches_the_affordance_dispatch() {
         app.invoke_semantic_action(&SemanticId("r:test.counter".into()), "bump", None)
             .unwrap();
 
-        let mut host = crate::action_host::ActionHost::new();
+        let mut host = crate::local_dispatch::LocalDispatch::new();
         let mut host_doc = automerge::AutoCommit::new();
         host.dispatch(&mut host_doc, COUNTER_TYPE, &CounterAction::Bump);
 

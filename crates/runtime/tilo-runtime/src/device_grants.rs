@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use console_control::{ConsoleServer, Endpoint, Request, catalog, wire};
 use serde_json::json;
-use tilo_actions::{ActionSpec, EncodedAction, OperationKind, Resource, ResourcePresentation};
+use tilo_actions::{ActionSpec, EncodedAction, OperationKind, ResourcePresentation, ResourceSpec};
 use tilo_capture::DeviceKind;
 use tilo_capture::grants::{Decision, DeviceGrants, Grant};
 
@@ -41,7 +41,7 @@ fn parse_resource_id(id: &str) -> Option<(DeviceKind, &str, &str)> {
 }
 
 /// Every grant as a resource with its `revoke` action.
-pub fn resources(grants: &DeviceGrants) -> Vec<Resource> {
+pub fn resources(grants: &DeviceGrants) -> Vec<ResourceSpec> {
     let children = grants.list().into_iter().map(|grant| {
         let args = device_args(&grant.app, grant.device);
         let label = t_args(
@@ -56,7 +56,7 @@ pub fn resources(grants: &DeviceGrants) -> Vec<Resource> {
                 type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                 payload: Vec::new(),
             });
-        Resource::new(resource_id(&grant), "tilo.device-grant", label)
+        ResourceSpec::new(resource_id(&grant), "tilo.device-grant", label)
             .with_presentation(ResourcePresentation {
                 detail: Some(t_args(
                     "device-grant-room",
@@ -78,7 +78,7 @@ pub fn resources(grants: &DeviceGrants) -> Vec<Resource> {
                 .with_description(t("device-grant-revoke-description")),
             )
     });
-    vec![Resource::new(ROOT, "tilo.device-grants", t("device-grants")).with_children(children)]
+    vec![ResourceSpec::new(ROOT, "tilo.device-grants", t("device-grants")).with_children(children)]
 }
 
 /// One console request against `grants`, answered as the wire expects.

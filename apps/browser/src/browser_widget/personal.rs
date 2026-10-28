@@ -169,8 +169,8 @@ impl BrowserWidget {
         }
         personal
     }
-    pub(super) fn personal_bookmark_resources(&self) -> Resource {
-        let mut root = Resource::new(
+    pub(super) fn personal_bookmark_resources(&self) -> ResourceSpec {
+        let mut root = ResourceSpec::new(
             crate::personal_bookmarks::SCOPE,
             "browser.personal-bookmarks",
             "Personal bookmarks",
@@ -215,7 +215,7 @@ impl BrowserWidget {
 pub(crate) fn request_resource(
     state: &PersonalBookmarkState,
     request: ViewRequest,
-) -> Option<Resource> {
+) -> Option<ResourceSpec> {
     let resource = match request {
         ViewRequest::Open { source, id } => {
             return crate::personal_bookmarks::resolve(
@@ -294,7 +294,7 @@ pub(crate) fn request_resource(
         blake3::hash(&serde_json::to_vec(&resource.arguments()).ok()?).to_hex()
     );
     Some(
-        Resource::new(
+        ResourceSpec::new(
             id,
             "browser.personal-bookmark-navigation",
             "Bookmark navigation",

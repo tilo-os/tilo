@@ -26,8 +26,8 @@ pub(crate) trait ActionPaletteApi: crate::widget::Widget {
     fn result_rows(&self) -> Vec<(String, Option<String>)>;
     fn asking(&self) -> Option<(&tilo_actions::ActionAddress, &str)>;
     fn confirming_target(&self) -> Option<String>;
-    fn load_open_resources(&mut self, resources: &[Resource]);
-    fn refresh_visible_resources(&mut self, resources: &[Resource]);
+    fn load_open_resources(&mut self, resources: &[ResourceSpec]);
+    fn refresh_visible_resources(&mut self, resources: &[ResourceSpec]);
     fn set_providers(&mut self, providers: Vec<Box<dyn SearchProvider>>);
     fn is_open(&self) -> bool;
     fn activate_ordinary(&mut self, request: crate::bound_dispatch::OrdinaryConfirmation);
@@ -122,10 +122,10 @@ impl ActionPaletteApi for ActionPalette {
     fn confirming_target(&self) -> Option<String> {
         ActionPalette::confirming_target(self)
     }
-    fn load_open_resources(&mut self, resources: &[Resource]) {
+    fn load_open_resources(&mut self, resources: &[ResourceSpec]) {
         ActionPalette::load_open_resources(self, resources)
     }
-    fn refresh_visible_resources(&mut self, resources: &[Resource]) {
+    fn refresh_visible_resources(&mut self, resources: &[ResourceSpec]) {
         ActionPalette::refresh_visible_resources(self, resources)
     }
     fn set_providers(&mut self, providers: Vec<Box<dyn SearchProvider>>) {

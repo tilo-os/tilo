@@ -438,7 +438,7 @@ type PresenceBroadcastSink = Box<dyn Fn(&PresenceKey, &PresencePayload) + Send +
 type FrameTick = Box<dyn FnMut(&mut PresenceCtx) -> bool + Send + Sync>;
 type ResolvedResourceInvocation<'a> = (
     Option<serde_json::Map<String, serde_json::Value>>,
-    &'a tilo_actions::Resource,
+    &'a tilo_actions::ResourceSpec,
     &'a tilo_actions::ActionSpec,
 );
 
@@ -453,16 +453,16 @@ struct ResourceCacheKey {
 
 struct ResourceCache {
     key: ResourceCacheKey,
-    declared: Vec<tilo_actions::Resource>,
+    declared: Vec<tilo_actions::ResourceSpec>,
     // None is deferred; Some(empty) is a completed, rejected surface.
-    complete: Option<Vec<tilo_actions::Resource>>,
+    complete: Option<Vec<tilo_actions::ResourceSpec>>,
 }
 
 struct LocalResourceCache {
     key: ResourceCacheKey,
     permission_generation: u64,
     // Control availability can exist before the complete local catalogue.
-    resources: Option<Vec<tilo_actions::Resource>>,
+    resources: Option<Vec<tilo_actions::ResourceSpec>>,
     allowed: std::collections::HashSet<tilo_actions::ActionAddress>,
 }
 
@@ -1671,7 +1671,7 @@ impl App {
     fn ensure_local_control_cache(&self) -> (ResourceCacheKey, u64) {
         use crate::profiling::resource_trace::{CacheResult, Stage};
         fn collect_addresses(
-            resources: &[tilo_actions::Resource],
+            resources: &[tilo_actions::ResourceSpec],
             allowed: &mut std::collections::HashSet<tilo_actions::ActionAddress>,
         ) {
             for resource in resources {
@@ -1747,9 +1747,9 @@ impl App {
     /// under them, by resource id, found in one walk of the widget tree.
     fn directory_explicit_visibilities(
         &self,
-        resources: &[tilo_actions::Resource],
+        resources: &[tilo_actions::ResourceSpec],
     ) -> std::collections::HashMap<String, tilo_actions::ActionAddress> {
-        fn ids<'a>(resources: &'a [tilo_actions::Resource], out: &mut Vec<&'a str>) {
+        fn ids<'a>(resources: &'a [tilo_actions::ResourceSpec], out: &mut Vec<&'a str>) {
             for resource in resources {
                 out.push(resource.id.as_str());
                 ids(&resource.children, out);
@@ -1804,7 +1804,7 @@ impl App {
 
     fn directory_explicit_visibility(
         &self,
-        resource: &tilo_actions::Resource,
+        resource: &tilo_actions::ResourceSpec,
     ) -> Option<tilo_actions::ActionAddress> {
         let target = self
             .actions
@@ -1833,7 +1833,7 @@ impl App {
     }
 
     fn directory_descriptor(
-        resource: &tilo_actions::Resource,
+        resource: &tilo_actions::ResourceSpec,
         action: &tilo_actions::ActionSpec,
     ) -> tilo_actions::ActionDescriptor {
         tilo_actions::ActionDescriptor {
@@ -3815,7 +3815,7 @@ pub(crate) mod ordinary_confirmation_tests {
     use winit::keyboard::{Key, NamedKey};
     pub(crate) struct Fixture {
         child: Box<dyn Widget>,
-        pub resources: Rc<RefCell<Vec<tilo_actions::Resource>>>,
+        pub resources: Rc<RefCell<Vec<tilo_actions::ResourceSpec>>>,
         pub ledger: Rc<RefCell<Vec<serde_json::Value>>>,
         output: Rc<RefCell<Option<crate::ControlOutbox>>>,
     }
@@ -3879,7 +3879,7 @@ pub(crate) mod ordinary_confirmation_tests {
     }
 
     impl crate::resources::PublishesResources for Fixture {
-        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
             self.resources.borrow().clone()
         }
     }
@@ -3918,7 +3918,7 @@ pub(crate) mod ordinary_confirmation_tests {
     ) -> (
         Fixture,
         Rc<RefCell<Vec<serde_json::Value>>>,
-        Rc<RefCell<Vec<tilo_actions::Resource>>>,
+        Rc<RefCell<Vec<tilo_actions::ResourceSpec>>>,
     ) {
         use tilo_actions::*;
         let mut spec = ActionSpec::typed_operation(
@@ -3931,7 +3931,8 @@ pub(crate) mod ordinary_confirmation_tests {
             |args| EncodedAction::encode_operation("fixture.control", &args.to_json()).unwrap(),
         );
         spec.type_mut().contract.confirmation = policy;
-        let resource = Resource::new("ordinary:fixture", "fixture", "Fixture").with_action(spec);
+        let resource =
+            ResourceSpec::new("ordinary:fixture", "fixture", "Fixture").with_action(spec);
         let binding = ActionBinding::new(&resource, &resource.actions[0], move |()| {
             source.lock().unwrap().clone()
         })
@@ -3977,7 +3978,7 @@ pub(crate) mod ordinary_confirmation_tests {
     ) -> (
         ManagedRoot,
         Rc<RefCell<Vec<serde_json::Value>>>,
-        Rc<RefCell<Vec<tilo_actions::Resource>>>,
+        Rc<RefCell<Vec<tilo_actions::ResourceSpec>>>,
     ) {
         let (widget, ledger, resources) = fixture_widget(policy, source());
         (managed(Box::new(widget)), ledger, resources)
@@ -4368,7 +4369,7 @@ pub(crate) mod ordinary_confirmation_tests {
         // An edit actually recorded without an authenticated publication is
         // still the person's change, saved here: nothing to say.
         let input = app.begin_local_input_capture();
-        crate::action_host::ActionHost::new()
+        crate::local_dispatch::LocalDispatch::new()
             .try_dispatch(&mut app.state.doc, "fixture.edit", &FixtureEdit)
             .unwrap();
         drop(input);
@@ -5234,10 +5235,10 @@ pub(crate) mod ordinary_confirmation_tests {
 
     #[test]
     fn native_control_coverage_admits_only_declared_app_and_host_actions() {
-        use tilo_actions::{ActionBinding, ActionSpec, OperationKind, Resource};
+        use tilo_actions::{ActionBinding, ActionSpec, OperationKind, ResourceSpec};
         let (widget, _, _) = fixture_widget(tilo_actions::ConfirmationPolicy::None, source());
         let missing_binding = |resource_id: &str| {
-            let resource = Resource::new(resource_id, "fixture.coverage", "Missing action")
+            let resource = ResourceSpec::new(resource_id, "fixture.coverage", "Missing action")
                 .with_action(
                     ActionSpec::operation(
                         "nonexistent",

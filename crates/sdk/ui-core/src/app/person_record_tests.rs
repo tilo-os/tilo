@@ -3,7 +3,7 @@
 //! person's room, and merged from the person's other devices.
 
 use super::*;
-use crate::record::person::{PersonRecord, PersonRecords};
+use crate::record::person::{PersonRecords, StoredRecord};
 use crate::record::{RecordKind, RecordOwners};
 use automerge::ReadDoc as _;
 use automerge::transaction::Transactable as _;
@@ -17,7 +17,7 @@ fn person() -> crate::permissions::UserId {
 }
 
 /// One device's copy of the person's watched list.
-fn device() -> PersonRecord {
+fn device() -> StoredRecord {
     let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
     PersonRecords::open(&mut owners, APP, person())
         .unwrap()
@@ -29,7 +29,7 @@ fn device() -> PersonRecord {
         .unwrap()
 }
 
-fn watch(record: &PersonRecord, video: &str) {
+fn watch(record: &StoredRecord, video: &str) {
     record
         .edit(true, |doc| {
             let watched = doc.get(automerge::ROOT, "watched").unwrap().unwrap().1;
@@ -39,7 +39,7 @@ fn watch(record: &PersonRecord, video: &str) {
         .unwrap();
 }
 
-fn watched(record: &PersonRecord) -> Vec<String> {
+fn watched(record: &StoredRecord) -> Vec<String> {
     record
         .read(|doc| {
             let watched = doc.get(automerge::ROOT, "watched").unwrap().unwrap().1;
@@ -67,7 +67,7 @@ impl crate::widget::Decorator for Holds {
     }
 }
 
-fn app_holding(record: &PersonRecord) -> App {
+fn app_holding(record: &StoredRecord) -> App {
     let mut app = App::new_with_controlled_inputs(
         State::new(),
         Box::new(Holds {

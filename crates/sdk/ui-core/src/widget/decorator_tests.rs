@@ -323,9 +323,11 @@ impl crate::widget::ResourceOperations for Recorder {
 }
 
 impl crate::resources::PublishesResources for Recorder {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.note("resources");
-        vec![tilo_actions::Resource::new("recorder", "test", "Recorder")]
+        vec![tilo_actions::ResourceSpec::new(
+            "recorder", "test", "Recorder",
+        )]
     }
 }
 

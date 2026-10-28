@@ -241,7 +241,7 @@ impl FileExplorerWidget {
 
     /// One resource per drive, so an agent or assistive tool can list them
     /// and open one; opening still goes through the shell's sheet.
-    pub(super) fn live_drive_resources(&self) -> Vec<Resource> {
+    pub(super) fn live_drive_resources(&self) -> Vec<ResourceSpec> {
         if !ui::bound_dispatch::host_person_invocation_permitted() {
             return Vec::new();
         }
@@ -250,7 +250,7 @@ impl FileExplorerWidget {
             .iter()
             .map(|drive| {
                 let place = drive_place(drive);
-                let mut resource = Resource::new(
+                let mut resource = ResourceSpec::new(
                     format!("files.drive:{}", drive.id),
                     "files.drive",
                     place.label,

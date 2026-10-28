@@ -265,7 +265,7 @@ const OPEN_TYPE: &str = "keyboard.open";
 /// The app's `open`, as a framework app publishes it: show the item at an
 /// anchor, as picking one of its search hits does.
 impl ui::resources::PublishesResources for Root {
-    fn resources(&self, _: &ui::automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _: &ui::automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         let open = tilo_actions::ActionSpec::typed(
             "open",
             "Open",
@@ -290,7 +290,7 @@ impl ui::resources::PublishesResources for Root {
             .with_borrow(|search| search.labels.get(&self.tab).cloned())
             .unwrap_or_else(|| "Videos".to_owned());
         vec![
-            tilo_actions::Resource::new(videos(self.tab), "keyboard.videos", label)
+            tilo_actions::ResourceSpec::new(videos(self.tab), "keyboard.videos", label)
                 .with_action(open),
         ]
     }

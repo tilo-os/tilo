@@ -2008,7 +2008,7 @@ mod tests {
         .expect_err("deleting a set asks first");
     }
 
-    fn has_speaker_group(resources: &[ui::tilo_actions::Resource]) -> bool {
+    fn has_speaker_group(resources: &[ui::tilo_actions::ResourceSpec]) -> bool {
         resources.iter().any(|resource| {
             resource.id.as_str().starts_with("settings.speaker-group:")
                 || has_speaker_group(&resource.children)

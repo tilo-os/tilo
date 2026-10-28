@@ -356,7 +356,7 @@ fn resource_actions_enqueue_addresses_and_bind_arguments() {
         )
         .unwrap();
         let resources = vec![
-            tilo_actions::Resource::new("document:1", "document", "Document").with_action(spec),
+            tilo_actions::ResourceSpec::new("document:1", "document", "Document").with_action(spec),
         ];
         let flat = tilo_actions::flatten(&resources);
         let mut palette = CommandPalette::commands();
@@ -387,7 +387,7 @@ fn resource_actions_enqueue_addresses_and_bind_arguments() {
             |name| tilo_actions::EncodedAction::encode_operation("test.rename", &name).unwrap(),
         );
         let resources = vec![
-            tilo_actions::Resource::new("document:1", "document", "Document").with_action(spec),
+            tilo_actions::ResourceSpec::new("document:1", "document", "Document").with_action(spec),
         ];
         let flat = tilo_actions::flatten(&resources);
         let entry = CommandEntry::from_flat_action(&flat[0]);
@@ -424,7 +424,7 @@ fn resource_actions_enqueue_addresses_and_bind_arguments() {
             |title| tilo_actions::EncodedAction::encode_operation("test.rename", &title).unwrap(),
         );
         let resources = vec![
-            tilo_actions::Resource::new("document:1", "document", "Document").with_action(spec),
+            tilo_actions::ResourceSpec::new("document:1", "document", "Document").with_action(spec),
         ];
         let flat = tilo_actions::flatten(&resources);
         let entry = CommandEntry::from_flat_action(&flat[0]);
@@ -462,7 +462,7 @@ fn resource_actions_enqueue_addresses_and_bind_arguments() {
             },
         );
         let resources = vec![
-            tilo_actions::Resource::new("document:1", "document", "Document").with_action(spec),
+            tilo_actions::ResourceSpec::new("document:1", "document", "Document").with_action(spec),
         ];
         let flat = tilo_actions::flatten(&resources);
         let entry = CommandEntry::from_flat_action(&flat[0]);

@@ -29,7 +29,7 @@
 use automerge::{ActorId, AutoCommit, ChangeHash};
 use tilo_actions::{
     ActionInput, ActionRegistry, ActionSpec, ArgValue, EncodedAction, OperationKind,
-    PROMPTED_PARAM, ParamType, Resource,
+    PROMPTED_PARAM, ParamType, ResourceSpec,
 };
 
 use crate::action_palette::ActionPalette;
@@ -285,11 +285,11 @@ pub fn assert_one_undo_boundary_reverts(
 
 /// The first resource, depth-first, whose id is `resource`, or failing that
 /// whose kind is `resource`.
-pub fn find_resource<'a>(resources: &'a [Resource], resource: &str) -> &'a Resource {
+pub fn find_resource<'a>(resources: &'a [ResourceSpec], resource: &str) -> &'a ResourceSpec {
     fn walk<'a>(
-        resources: &'a [Resource],
-        hit: &dyn Fn(&Resource) -> bool,
-    ) -> Option<&'a Resource> {
+        resources: &'a [ResourceSpec],
+        hit: &dyn Fn(&ResourceSpec) -> bool,
+    ) -> Option<&'a ResourceSpec> {
         resources.iter().find_map(|r| {
             if hit(r) {
                 Some(r)
@@ -305,10 +305,10 @@ pub fn find_resource<'a>(resources: &'a [Resource], resource: &str) -> &'a Resou
 
 /// The action `action` on the resource [`find_resource`] picks for `resource`.
 pub fn find_spec<'a>(
-    resources: &'a [Resource],
+    resources: &'a [ResourceSpec],
     resource: &str,
     action: &str,
-) -> (&'a Resource, &'a ActionSpec) {
+) -> (&'a ResourceSpec, &'a ActionSpec) {
     let owner = find_resource(resources, resource);
     let spec = owner
         .actions
@@ -425,7 +425,7 @@ pub fn assert_spec_encodes_as(spec: &ActionSpec, arg: Option<&str>, expected: &E
 pub fn assert_every_immediate_action_honours_contract(
     seed: &AutoCommit,
     registry: &ActionRegistry,
-    resources: &[Resource],
+    resources: &[ResourceSpec],
 ) -> usize {
     assert!(
         !tilo_actions::flatten(resources).is_empty(),
@@ -477,7 +477,7 @@ pub fn assert_every_immediate_action_honours_contract(
 
 /// Assert the Ctrl+K palette, loaded with `resources`, offers a row for each
 /// of `labels` when the user types it.
-pub fn assert_ctrl_k_publishes(resources: &[Resource], labels: &[&str]) {
+pub fn assert_ctrl_k_publishes(resources: &[ResourceSpec], labels: &[&str]) {
     let mut palette = ActionPalette::new();
     palette.load_open_resources(resources);
     palette.open();
@@ -566,7 +566,7 @@ macro_rules! action_contract_tests {
 
             fn contract_resources(
                 doc: &$crate::automerge::AutoCommit,
-            ) -> ::std::vec::Vec<$crate::tilo_actions::Resource> {
+            ) -> ::std::vec::Vec<$crate::tilo_actions::ResourceSpec> {
                 let $rdoc = doc;
                 $resources
             }
@@ -729,9 +729,9 @@ mod tests {
         EncodedAction::encode(TYPE, probe).unwrap()
     }
 
-    fn published(probe: &Probe) -> Vec<Resource> {
+    fn published(probe: &Probe) -> Vec<ResourceSpec> {
         vec![
-            Resource::new("probe:doc", "probe.doc", "Probe")
+            ResourceSpec::new("probe:doc", "probe.doc", "Probe")
                 .with_action(ActionSpec::immediate("act", "Act on probe", TYPE, probe).unwrap()),
         ]
     }
@@ -774,7 +774,7 @@ mod tests {
                 |name| encode(&Probe::Set(name.to_string())),
             );
             let resources =
-                vec![Resource::new("probe:doc", "probe.doc", "Probe").with_action(prompted)];
+                vec![ResourceSpec::new("probe:doc", "probe.doc", "Probe").with_action(prompted)];
             assert_eq!(
                 assert_every_immediate_action_honours_contract(&seed(), &registry(), &resources),
                 0
@@ -803,7 +803,7 @@ mod tests {
             )
             .unwrap();
             let resources =
-                vec![Resource::new("probe:doc", "probe.doc", "Probe").with_action(effect)];
+                vec![ResourceSpec::new("probe:doc", "probe.doc", "Probe").with_action(effect)];
             assert_every_immediate_action_honours_contract(&seed(), &registry(), &resources);
         };
         let sweep_protocol = || {

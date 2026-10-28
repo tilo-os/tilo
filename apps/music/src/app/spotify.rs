@@ -167,7 +167,7 @@ impl MusicApp {
         else {
             return;
         };
-        let resource = tilo_actions::Resource::new("music.library", "music.library", "Music")
+        let resource = tilo_actions::ResourceSpec::new("music.library", "music.library", "Music")
             .with_action(spec.clone());
         let arguments = effect.arguments();
         let Ok(binding) =
@@ -649,9 +649,12 @@ impl MusicApp {
                         _ => "music-spotify-select-device",
                     };
                     let label = crate::i18n::t_args(key, &[("device", (&device.name).into())]);
-                    let resource =
-                        tilo_actions::Resource::new(&address, "music.spotify-device", &device.name)
-                            .with_action(effect.bound());
+                    let resource = tilo_actions::ResourceSpec::new(
+                        &address,
+                        "music.spotify-device",
+                        &device.name,
+                    )
+                    .with_action(effect.bound());
                     let binding =
                         tilo_actions::ActionBinding::unit_for(&resource, effect.id()).ok()?;
                     Some(

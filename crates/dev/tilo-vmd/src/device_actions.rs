@@ -3,7 +3,8 @@
 use console_control::{catalog, wire};
 use serde_json::{Value, json};
 use tilo_actions::{
-    ActionParam, ActionSpec, ConfirmationPolicy, EncodedAction, OperationKind, ParamType, Resource,
+    ActionParam, ActionSpec, ConfirmationPolicy, EncodedAction, OperationKind, ParamType,
+    ResourceSpec,
 };
 use tilo_vm_protocol::{DeviceUnlockEnrol, Request};
 
@@ -11,8 +12,8 @@ use crate::{Daemon, DaemonError};
 
 const PROVIDER: &str = "device-unlock";
 
-fn resources() -> Vec<Resource> {
-    let mut resource = Resource::new(PROVIDER, "device.encrypted-root", "Encrypted device");
+fn resources() -> Vec<ResourceSpec> {
+    let mut resource = ResourceSpec::new(PROVIDER, "device.encrypted-root", "Encrypted device");
     let mut spec = ActionSpec::typed_operation(
         "enroll",
         "Enroll sibling disk unlock",

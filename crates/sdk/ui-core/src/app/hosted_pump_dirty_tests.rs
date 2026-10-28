@@ -51,7 +51,7 @@ impl crate::widget::ResourceOperations for HostedPumpProbe {
 }
 
 impl crate::resources::PublishesResources for HostedPumpProbe {
-    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
+    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         self.calls.set(self.calls.get() + 1);
         let count = if doc.get(ROOT, "more").unwrap().is_some() {
             3
@@ -60,7 +60,7 @@ impl crate::resources::PublishesResources for HostedPumpProbe {
         };
         (0..count)
             .map(|index| {
-                let mut resource = Resource::new(
+                let mut resource = ResourceSpec::new(
                     format!("probe:{index}"),
                     "probe",
                     format!("{} {index}", self.label),
@@ -895,7 +895,7 @@ mod input_publication {
     }
 
     impl crate::resources::PublishesResources for InputProbe {
-        fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
+        fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ResourceSpec> {
             self.calls.set(self.calls.get() + 1);
             let hovered = doc.get(ROOT, "hovered").unwrap().is_some();
             let label = format!(
@@ -903,7 +903,7 @@ mod input_publication {
                 self.tab, self.menu_open, self.drag_x
             );
             vec![
-                Resource::new("probe", "probe", label).with_action(
+                ResourceSpec::new("probe", "probe", label).with_action(
                     ActionSpec::operation(
                         "inspect",
                         "Inspect",

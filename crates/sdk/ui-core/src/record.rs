@@ -44,6 +44,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 mod history_access;
 pub use history_access::HistoryUnavailable;
 pub mod person;
+pub use person::StoredRecord;
 pub mod transfer;
 pub mod workspace;
 

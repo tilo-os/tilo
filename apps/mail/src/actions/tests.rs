@@ -747,12 +747,12 @@ fn sample_window() -> TestApp<MailShell> {
 }
 
 /// Everything the window publishes, as the host's palette and agents see it.
-fn published(app: &mut TestApp<MailShell>) -> Vec<Resource> {
+fn published(app: &mut TestApp<MailShell>) -> Vec<ResourceSpec> {
     app.harness().resources()
 }
 
 /// The published mailbox root.
-fn mailbox_root(resources: &[Resource]) -> &Resource {
+fn mailbox_root(resources: &[ResourceSpec]) -> &ResourceSpec {
     let mut roots = resources.iter().filter(|r| r.kind == "mail.mailbox");
     let root = roots.next().expect("a published mailbox");
     assert!(roots.next().is_none(), "one mailbox root");
@@ -760,7 +760,7 @@ fn mailbox_root(resources: &[Resource]) -> &Resource {
 }
 
 /// The published resource `id`, wherever it sits in the tree.
-fn find<'a>(resources: &'a [Resource], id: &str) -> Option<&'a Resource> {
+fn find<'a>(resources: &'a [ResourceSpec], id: &str) -> Option<&'a ResourceSpec> {
     resources.iter().find_map(|resource| {
         if resource.id.as_str() == id {
             Some(resource)
@@ -771,7 +771,7 @@ fn find<'a>(resources: &'a [Resource], id: &str) -> Option<&'a Resource> {
 }
 
 /// Resolve `id` as the host resolves an address the tree does not list.
-fn resolve(app: &mut TestApp<MailShell>, id: &str) -> Option<Resource> {
+fn resolve(app: &mut TestApp<MailShell>, id: &str) -> Option<ResourceSpec> {
     let harness = app.harness();
     ui::resources::resource(harness.root_widget(), &harness.state().doc, id)
 }

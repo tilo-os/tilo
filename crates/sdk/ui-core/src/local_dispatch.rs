@@ -1,10 +1,10 @@
 //! Framework-owned action dispatch every app gets by default.
 //!
-//! [`ActionHost`] centralizes dispatch, undo-boundary, and test-observation
+//! [`LocalDispatch`] centralizes dispatch, undo-boundary, and test-observation
 //! bookkeeping so an app declares only its own action domain.
 //!
 //! ```ignore
-//! struct MyApp { actions: tilo_ui::ActionHost, /* … */ }
+//! struct MyApp { actions: tilo_ui::LocalDispatch, /* … */ }
 //!
 //! // At every affordance that mutates shared state:
 //! self.actions.dispatch(doc, MY_ACTION_TYPE, &action);
@@ -16,7 +16,7 @@
 //! }
 //! ```
 //!
-//! [`ActionHost`]: crate::action_host::ActionHost
+//! [`LocalDispatch`]: crate::local_dispatch::LocalDispatch
 
 use automerge::{AutoCommit, ChangeHash};
 use tilo_actions::{Action, ActionContext, EncodedAction};
@@ -28,7 +28,7 @@ use tilo_actions::{Action, ActionContext, EncodedAction};
 /// because an author-scoped undo claims unattributed entries too — see
 /// `UndoLog::claimable_by`.
 #[derive(Default)]
-pub struct ActionHost {
+pub struct LocalDispatch {
     /// Drained via
     /// [`CommittedActions::take_committed_action`](crate::undo::CommittedActions::take_committed_action)
     /// to record exactly one undo boundary bracketing the action(s).
@@ -40,7 +40,7 @@ pub struct ActionHost {
     ambient_context: Option<ActionContext>,
 }
 
-impl ActionHost {
+impl LocalDispatch {
     pub fn new() -> Self {
         Self::default()
     }
@@ -277,7 +277,7 @@ mod tests {
     fn dispatch_applies_actions_as_one_undo_boundary_with_the_clicking_actor() {
         {
             let mut doc = AutoCommit::new();
-            let mut host = ActionHost::new();
+            let mut host = LocalDispatch::new();
             host.dispatch(
                 &mut doc,
                 PUT_TYPE,
@@ -295,7 +295,7 @@ mod tests {
         {
             let actor = automerge::ActorId::from(vec![7, 8, 9, 10]);
             let mut doc = AutoCommit::new().with_actor(actor.clone());
-            let mut host = ActionHost::new();
+            let mut host = LocalDispatch::new();
             host.dispatch_with_context(
                 &mut doc,
                 PUT_TYPE,
@@ -319,7 +319,7 @@ mod tests {
                 .unwrap();
             let heads_before_actions = doc.get_heads();
 
-            let mut host = ActionHost::new();
+            let mut host = LocalDispatch::new();
             host.dispatch(
                 &mut doc,
                 PUT_TYPE,
@@ -352,7 +352,7 @@ mod tests {
 
         {
             let mut doc = AutoCommit::new();
-            let mut host = ActionHost::new();
+            let mut host = LocalDispatch::new();
             assert!(host.last_dispatched().is_none());
             let action = Put {
                 key: "k".into(),
@@ -367,7 +367,7 @@ mod tests {
 
         {
             let mut doc = AutoCommit::new();
-            let mut host = ActionHost::new();
+            let mut host = LocalDispatch::new();
             assert!(matches!(
                 host.try_dispatch(&mut doc, "test.refuse", &Refuse),
                 Err(tilo_actions::ActionError::Refused(_))
@@ -382,7 +382,7 @@ mod tests {
     fn dispatch_context_and_optimism_keep_the_action_host_contract() {
         {
             let mut doc = AutoCommit::new();
-            let mut host = ActionHost::new();
+            let mut host = LocalDispatch::new();
             host.dispatch_with_context(
                 &mut doc,
                 PUT_TYPE,
@@ -411,7 +411,7 @@ mod tests {
 
         {
             let mut doc = AutoCommit::new();
-            let mut host = ActionHost::new();
+            let mut host = LocalDispatch::new();
             host.set_ambient_context(Some(
                 ActionContext::default()
                     .with_purpose("Prepare launch")

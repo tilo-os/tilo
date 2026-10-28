@@ -30,7 +30,7 @@ struct Seen {
 struct OwnerProbe {
     seen: Seen,
     id: u64,
-    actions: crate::action_host::ActionHost,
+    actions: crate::local_dispatch::LocalDispatch,
 }
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct BackgroundWrite;
@@ -153,7 +153,7 @@ fn factory(
         Box::new(OwnerProbe {
             seen,
             id,
-            actions: crate::action_host::ActionHost::new(),
+            actions: crate::local_dispatch::LocalDispatch::new(),
         }),
         registry,
     ))

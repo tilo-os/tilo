@@ -18,7 +18,7 @@ struct Row {
     summary: String,
     favorite: bool,
     /// The item's published row, which its controls are bound to.
-    published: ui::tilo_actions::Resource,
+    published: ui::tilo_actions::ResourceSpec,
 }
 
 impl Row {

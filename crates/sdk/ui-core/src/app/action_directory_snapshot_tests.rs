@@ -17,7 +17,7 @@ fn directory_disclosure_prefers_document_reads_to_private_views() {
     )
     .unwrap()
     .reads_document();
-    let resource = Resource::new("readable", "test.document", "Document")
+    let resource = ResourceSpec::new("readable", "test.document", "Document")
         .with_action(view)
         .with_action(read);
     let (app, _) = declared_directory(0);
@@ -95,13 +95,13 @@ impl crate::search::capability::SearchSource for DeclaredDirectory {
 }
 
 impl crate::resources::PublishesResources for DeclaredDirectory {
-    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
+    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         self.calls.set(self.calls.get() + 1);
         let effect = doc.get(ROOT, "effect").unwrap().is_some();
         let wide = doc.get(ROOT, "wide").unwrap().is_some();
-        let mut resources: Vec<Resource> = (0..self.count)
+        let mut resources: Vec<ResourceSpec> = (0..self.count)
             .map(|index| {
-                let mut resource = Resource::new(
+                let mut resource = ResourceSpec::new(
                     format!("declared:{index}"),
                     "declared",
                     if doc.get(ROOT, "large-label").unwrap().is_some() {
@@ -356,10 +356,10 @@ fn retained_local_directory_rejects_oversized_snapshot() {
 #[test]
 fn directory_snapshot_estimate_bounds_its_measured_memory() {
     use crate::semantic_document_read::retirement::tests::allocations::allocations_only;
-    let resources = |count: usize, label: usize, extra: usize| -> Vec<Resource> {
+    let resources = |count: usize, label: usize, extra: usize| -> Vec<ResourceSpec> {
         (0..count)
             .map(|index| {
-                let mut resource = Resource::new(
+                let mut resource = ResourceSpec::new(
                     format!("declared:{index}"),
                     "declared",
                     if label > 0 {
@@ -741,7 +741,7 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
         let mut resources = app.publication_resources();
         let mut nested = resources.pop().unwrap();
         for depth in (0..17).rev() {
-            let mut parent = Resource::new(format!("depth:{depth}"), "depth", "Depth");
+            let mut parent = ResourceSpec::new(format!("depth:{depth}"), "depth", "Depth");
             parent.children.push(nested);
             nested = parent;
         }
@@ -947,9 +947,9 @@ fn directory_snapshot_revision_evicts_on_every_semantic_change() {
 
 struct ExtendedDirectory;
 impl ExtendedDirectory {
-    fn resource_tree(extra: bool) -> Resource {
-        fn inspect(id: &str, label: &str) -> Resource {
-            Resource::new(id, "extended", label).with_action(
+    fn resource_tree(extra: bool) -> ResourceSpec {
+        fn inspect(id: &str, label: &str) -> ResourceSpec {
+            ResourceSpec::new(id, "extended", label).with_action(
                 ActionSpec::operation(
                     "inspect",
                     "Inspect",
@@ -1014,10 +1014,10 @@ impl crate::widget::ResourceOperations for ExtendedDirectory {
 }
 
 impl crate::resources::PublishesResources for ExtendedDirectory {
-    fn resources(&self, _: &automerge::AutoCommit) -> Vec<Resource> {
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         vec![Self::resource_tree(false)]
     }
-    fn resource(&self, _: &automerge::AutoCommit, id: &str) -> Option<Resource> {
+    fn resource(&self, _: &automerge::AutoCommit, id: &str) -> Option<ResourceSpec> {
         let tree = Self::resource_tree(true);
         if id == tree.id.as_str() {
             Some(tree)

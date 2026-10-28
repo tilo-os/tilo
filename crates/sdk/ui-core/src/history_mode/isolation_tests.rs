@@ -20,13 +20,13 @@ use vello::{
 };
 use winit::event::WindowEvent;
 
-fn resource() -> tilo_actions::Resource {
+fn resource() -> tilo_actions::ResourceSpec {
     resource_for("live", "fixture.export")
 }
-fn resource_for(id: &str, operation: &str) -> tilo_actions::Resource {
+fn resource_for(id: &str, operation: &str) -> tilo_actions::ResourceSpec {
     let target = id.to_owned();
     let handler = operation.to_owned();
-    tilo_actions::Resource::new(id, "fixture", "Live owner").with_action(
+    tilo_actions::ResourceSpec::new(id, "fixture", "Live owner").with_action(
         tilo_actions::ActionSpec::operation(
             "export",
             "Export",
@@ -69,7 +69,7 @@ fn prompted_resource_for(
     id: &str,
     operation: &str,
     confirmation: tilo_actions::ConfirmationPolicy,
-) -> tilo_actions::Resource {
+) -> tilo_actions::ResourceSpec {
     let mut spec = tilo_actions::ActionSpec::prompted_operation(
         "export",
         "Export",
@@ -114,7 +114,7 @@ fn prompted_resource_for(
                 })
             }
         });
-    tilo_actions::Resource::new(id, "fixture", "Live owner").with_action(spec)
+    tilo_actions::ResourceSpec::new(id, "fixture", "Live owner").with_action(spec)
 }
 
 struct MutableContinuationIdentity {
@@ -130,7 +130,7 @@ fn mutable_identity_resources(
     id: &str,
     operation: &str,
     identity: &MutableContinuationIdentity,
-) -> Vec<tilo_actions::Resource> {
+) -> Vec<tilo_actions::ResourceSpec> {
     let target = identity.target.get();
     let handler = identity.handler.get();
     let supported = identity.supported.get();
@@ -176,11 +176,11 @@ fn mutable_identity_resources(
             .tags
             .push(tilo_actions::HOUSEKEEPING_TAG.to_owned());
     }
-    let resource = tilo_actions::Resource::new(id, "fixture", "Live owner").with_action(spec);
+    let resource = tilo_actions::ResourceSpec::new(id, "fixture", "Live owner").with_action(spec);
     if identity.duplicate_resource.get() {
         vec![
             resource,
-            tilo_actions::Resource::new(id, "fixture", "Duplicate declaration"),
+            tilo_actions::ResourceSpec::new(id, "fixture", "Duplicate declaration"),
         ]
     } else {
         vec![resource]
@@ -317,7 +317,7 @@ impl crate::widget::ResourceOperations for LiveOwner {
 }
 
 impl crate::resources::PublishesResources for LiveOwner {
-    fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         if let Some(identity) = &self.mutable_identity {
             return mutable_identity_resources(self.resource_id, self.type_id, identity);
         }

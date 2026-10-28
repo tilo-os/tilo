@@ -22,7 +22,7 @@ use tilo_ui::presence::PresenceCtx;
 use tilo_ui::search::{FieldWeight, ListIndex, SearchProvider, SearchResult};
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
-use tilo_ui::tilo_actions::{ActionSpec, EncodedAction, ExecutionLocus, Resource};
+use tilo_ui::tilo_actions::{ActionSpec, EncodedAction, ExecutionLocus, ResourceSpec};
 
 const WIDTH: u32 = 560;
 const MARGIN: f64 = 20.0;
@@ -42,8 +42,8 @@ fn action(id: &str, label: &str, desc: &str) -> ActionSpec {
 }
 
 /// The focused app's open resource + its exported actions (the Actions group).
-fn open_resource() -> Resource {
-    Resource::new("doc:design-notes", "doc", "Design Notes")
+fn open_resource() -> ResourceSpec {
+    ResourceSpec::new("doc:design-notes", "doc", "Design Notes")
         .with_action(action("rename", "Rename", "Give the document a new name"))
         .with_action(action(
             "share",

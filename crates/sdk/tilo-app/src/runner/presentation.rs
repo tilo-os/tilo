@@ -185,8 +185,8 @@ pub(crate) fn operation_types() -> &'static [&'static str] {
 }
 
 pub(crate) fn with_native_presentations(
-    mut resource: tilo_actions::Resource,
-) -> tilo_actions::Resource {
+    mut resource: tilo_actions::ResourceSpec,
+) -> tilo_actions::ResourceSpec {
     for spec in [render_spec(), activate_spec()] {
         if !resource
             .actions

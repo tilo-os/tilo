@@ -1,6 +1,6 @@
 //! What the room's apps currently have open, and what may be done to it.
 //!
-//! An app on the Tilo action model publishes a [`Resource`](tilo_actions::Resource) tree and the
+//! An app on the Tilo action model publishes a [`Resource`](tilo_actions::ResourceSpec) tree and the
 //! operations each resource exports (`docs/action-model-recipe.md`), and
 //! [`tilo_actions::door`] turns a live tree into inert, stably-addressed
 //! descriptors the agent can perform. The agent queries that tree each time,

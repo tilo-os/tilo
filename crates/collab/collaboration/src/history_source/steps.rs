@@ -472,7 +472,7 @@ struct Step {
 /// which run.
 #[derive(PartialEq)]
 struct Shared {
-    group: Option<tilo_actions::ActionGroup>,
+    group: Option<tilo_actions::WorkGroup>,
     invoker: Option<tilo_actions::ActionInvoker>,
 }
 

@@ -305,7 +305,7 @@ impl GitClientApp {
     // --- Durable view-preference actions -------------------------------
     // The diff-view preferences are the app's only shared-document state.
     // Each toggle updates the local snapshot for an immediate redraw AND
-    // dispatches its `GitClientAction` through the framework `ActionHost`,
+    // dispatches its `GitClientAction` through the framework `LocalDispatch`,
     // which brackets the undo boundary and applies it through the executor
     // (so it records one Ctrl+Z step and replays byte-identically on peers).
     // The next `sync` re-reads the same value straight back out of the doc.

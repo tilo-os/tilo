@@ -165,7 +165,7 @@ impl FrameHarness {
     /// the app registers one, else the document History chrome does; a
     /// window with neither still publishes the door, unavailable, as a
     /// native window does.
-    pub(super) fn host_door_resources(&self) -> Vec<tilo_actions::Resource> {
+    pub(super) fn host_door_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         let mut doors = vec![crate::search::search_resource()];
         if let Some(history) = &self.history {
             doors.push(history.door_resource());
@@ -192,7 +192,9 @@ impl FrameHarness {
         doors
     }
 
-    pub(super) fn history_resources_snapshot(&self) -> Result<Vec<tilo_actions::Resource>, String> {
+    pub(super) fn history_resources_snapshot(
+        &self,
+    ) -> Result<Vec<tilo_actions::ResourceSpec>, String> {
         let Some(layout) = self.history_layout else {
             return Ok(Vec::new());
         };
@@ -201,7 +203,7 @@ impl FrameHarness {
             .map_err(|error| format!("History is unavailable: {error:?}"))
     }
 
-    fn refresh_history_resources(&mut self) -> Result<Vec<tilo_actions::Resource>, String> {
+    fn refresh_history_resources(&mut self) -> Result<Vec<tilo_actions::ResourceSpec>, String> {
         self.with_history(|host, context| {
             let mut resources = host.local_resources(context)?;
             for root in host.presentation_roots(context)? {
@@ -214,7 +216,7 @@ impl FrameHarness {
 
     /// Local host actions are intentionally separate from `resources()`, the
     /// application's publishable catalogue. No remote actor is granted this door.
-    pub fn local_history_resources(&mut self) -> Result<Vec<tilo_actions::Resource>, String> {
+    pub fn local_history_resources(&mut self) -> Result<Vec<tilo_actions::ResourceSpec>, String> {
         self.invalidate_local();
         if !self.history_chrome_enabled {
             return Ok(Vec::new());

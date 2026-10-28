@@ -277,7 +277,7 @@ fn millis(start: Instant) -> f64 {
 }
 
 /// The resources the tree publishes, children included.
-fn count(resources: &[tilo_actions::Resource]) -> usize {
+fn count(resources: &[tilo_actions::ResourceSpec]) -> usize {
     resources
         .iter()
         .map(|resource| count(&resource.children).saturating_add(1))

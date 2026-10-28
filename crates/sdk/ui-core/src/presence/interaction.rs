@@ -1032,7 +1032,7 @@ mod tests {
 
         let mut shortcut = interaction(31, 1, InteractionPhase::Applying);
         shortcut.actor = InteractionActor::new("shortcut:morning", ActorKind::Shortcut);
-        shortcut.group = Some(tilo_actions::ActionGroup {
+        shortcut.group = Some(tilo_actions::WorkGroup {
             id: "run-7".into(),
             label: "Morning".into(),
             kind: "shortcut".into(),

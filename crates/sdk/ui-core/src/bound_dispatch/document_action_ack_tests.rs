@@ -159,7 +159,7 @@ fn execute_mode(
 ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
     let mut registry = tilo_actions::ActionRegistry::new();
     registry.register::<Write>("ack.write");
-    let resource = tilo_actions::Resource::new("ack.owner", "ack.owner", "Owner");
+    let resource = tilo_actions::ResourceSpec::new("ack.owner", "ack.owner", "Owner");
     let mut spec =
         tilo_actions::ActionSpec::immediate("write", "Write", "ack.write", action).unwrap();
     if background {
@@ -378,7 +378,7 @@ fn document_actions_acknowledge_only_locally_applied_exact_owner_frontiers() {
             commit_before_refusal: false,
         };
         let registry = tilo_actions::ActionRegistry::new();
-        let resource = tilo_actions::Resource::new("owner", "owner", "Owner");
+        let resource = tilo_actions::ResourceSpec::new("owner", "owner", "Owner");
         for kind in [
             tilo_actions::OperationKind::View,
             tilo_actions::OperationKind::Effect,

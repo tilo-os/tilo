@@ -311,7 +311,7 @@ fn visible_targets(driver: &FrameHarness) -> BTreeMap<String, [f64; 4]> {
     );
     out
 }
-fn resources(items: Vec<tilo_actions::Resource>) -> Value {
+fn resources(items: Vec<tilo_actions::ResourceSpec>) -> Value {
     Value::Array(items.into_iter().map(|r| json!({"id":r.id.0,"kind":r.kind,"label":r.label,
         "actions":r.actions.iter().map(|a| json!({"id":a.id,"label":a.label,"kind":a.kind})).collect::<Vec<_>>(),
         "children":resources(r.children)})).collect())

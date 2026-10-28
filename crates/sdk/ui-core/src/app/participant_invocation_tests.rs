@@ -8,7 +8,7 @@ use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use tilo_actions::{ActionSpec, ExecutionLocus, OperationKind, ParticipantId, Resource};
+use tilo_actions::{ActionSpec, ExecutionLocus, OperationKind, ParticipantId, ResourceSpec};
 
 const MARK_TYPE: &str = "test.participant-mark";
 const VIEW_TYPE: &str = "test.participant-view";
@@ -44,9 +44,9 @@ struct Probe {
 /// A two-view widget: its own view, plus one per joined participant.
 struct TwoViews(Rc<RefCell<Probe>>);
 
-fn tree(view: &str) -> Vec<Resource> {
+fn tree(view: &str) -> Vec<ResourceSpec> {
     vec![
-        Resource::new("test.doc", "test.document", "Document")
+        ResourceSpec::new("test.doc", "test.document", "Document")
             .with_action(ActionSpec::immediate_encoded(
                 "mark",
                 "Mark",
@@ -104,7 +104,7 @@ impl crate::widget::ResourceOperations for TwoViews {
 }
 
 impl crate::resources::PublishesResources for TwoViews {
-    fn resources(&self, _: &automerge::AutoCommit) -> Vec<Resource> {
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         tree(if self.0.borrow().host {
             "schema"
         } else {
@@ -115,7 +115,7 @@ impl crate::resources::PublishesResources for TwoViews {
         &self,
         participant: Option<&ParticipantId>,
         doc: &automerge::AutoCommit,
-    ) -> Vec<Resource> {
+    ) -> Vec<ResourceSpec> {
         match participant {
             None => self.resources(doc),
             Some(participant) if self.0.borrow().joined.contains(participant) => {
@@ -490,7 +490,7 @@ fn a_bound_component_builds_participant_trees_against_its_own_record() {
         widget: &dyn Widget,
         doc: &automerge::AutoCommit,
         participant: &ParticipantId,
-        found: &mut Option<Vec<Resource>>,
+        found: &mut Option<Vec<ResourceSpec>>,
     ) {
         if found.is_none() && widget.name() == "BoundComponent" {
             *found = Some(crate::resources::resources_for(

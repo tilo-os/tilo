@@ -1725,9 +1725,9 @@ fn govern_at_host(
 
 /// Find `id` in `resource`'s subtree.
 fn find_resource<'a>(
-    resource: &'a tilo_actions::Resource,
+    resource: &'a tilo_actions::ResourceSpec,
     id: &str,
-) -> Option<&'a tilo_actions::Resource> {
+) -> Option<&'a tilo_actions::ResourceSpec> {
     if resource.id.as_str() == id {
         return Some(resource);
     }

@@ -1439,7 +1439,7 @@ impl NavList {
 
     /// The published selection ([`Self::on_view`]), offering the current
     /// destinations.
-    fn view_resource(&self) -> Option<tilo_actions::Resource> {
+    fn view_resource(&self) -> Option<tilo_actions::ResourceSpec> {
         let shared = self.shared.borrow();
         let view = shared.view.as_ref()?;
         Some(view.choice.resource(destinations(&self.sections)))
@@ -2406,7 +2406,7 @@ mod component;
 pub use component::{NavItemProps, NavListProps};
 
 impl crate::resources::PublishesResources for NavList {
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.view_resource().into_iter().collect()
     }
 }

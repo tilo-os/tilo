@@ -483,7 +483,7 @@ struct BudgetReport<'a> {
     context: Option<&'a ActionContext>,
     original_heads: &'a [[u8; 32]],
     mutation_hashes: &'a [[u8; 32]],
-    group: Option<&'a tilo_actions::ActionGroup>,
+    group: Option<&'a tilo_actions::WorkGroup>,
 }
 
 struct ReportArgument<'a>(&'a serde_json::Map<String, serde_json::Value>);

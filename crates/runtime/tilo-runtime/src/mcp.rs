@@ -37,7 +37,7 @@ pub struct McpServer<H> {
     /// One transport-issued execution scope, independent of history labels.
     caller: Caller,
     /// The agent run every invocation of this connection is attributed to.
-    run: std::sync::Mutex<Option<tilo_actions::ActionGroup>>,
+    run: std::sync::Mutex<Option<tilo_actions::WorkGroup>>,
     /// Pixel fallback, when the host runs beside a compositor.
     computer: Option<std::sync::Arc<crate::computer::Computer>>,
     /// Tasks learned in legacy apps, kept in the profile so they survive the
@@ -1307,7 +1307,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         *self
             .run
             .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tilo_actions::ActionGroup {
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tilo_actions::WorkGroup {
             id: id.into(),
             label: label.into(),
             kind: "agent-run".into(),
@@ -1315,7 +1315,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         self
     }
     /// The agent run this session's invocations are attributed to now.
-    fn agent_run(&self) -> Option<tilo_actions::ActionGroup> {
+    fn agent_run(&self) -> Option<tilo_actions::WorkGroup> {
         self.run.lock_recover().clone()
     }
     /// The page detail this session answers with when a call names none.
@@ -1535,7 +1535,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             let mut run = self.run.lock_recover();
             if run.is_none() || continued.is_some() {
                 let label = run.take().map_or(label, |run| run.label);
-                *run = Some(tilo_actions::ActionGroup {
+                *run = Some(tilo_actions::WorkGroup {
                     id: continued.unwrap_or_else(|| format!("mcp:{}", uuid::Uuid::new_v4())),
                     label,
                     kind: "agent-run".into(),

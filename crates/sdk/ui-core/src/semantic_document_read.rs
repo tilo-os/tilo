@@ -10,7 +10,7 @@
 //! never commits a pending edit, and rechecks the original caller immediately
 //! before disclosure.
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
-use tilo_actions::{ActionSpec, EncodedAction, Resource};
+use tilo_actions::{ActionSpec, EncodedAction, ResourceSpec};
 use tilo_sort::CompactSort as _;
 
 pub mod retirement;
@@ -213,7 +213,7 @@ pub type ReadProjection =
 pub struct RegisteredSemanticReader {
     operation_type: &'static str,
     schema: fn() -> &'static serde_json::Value,
-    validate: fn(&Resource, &[u8]) -> Result<(), SemanticReadError>,
+    validate: fn(&ResourceSpec, &[u8]) -> Result<(), SemanticReadError>,
     project: ReadProjection,
 }
 
@@ -225,7 +225,7 @@ impl RegisteredSemanticReader {
     pub const fn new(
         operation_type: &'static str,
         schema: fn() -> &'static serde_json::Value,
-        validate: fn(&Resource, &[u8]) -> Result<(), SemanticReadError>,
+        validate: fn(&ResourceSpec, &[u8]) -> Result<(), SemanticReadError>,
         project: ReadProjection,
     ) -> Self {
         Self {
@@ -241,14 +241,14 @@ impl RegisteredSemanticReader {
 /// It owns no copied client contract and exposes no constructor outside the SDK.
 pub(crate) struct SelectedSemanticRead<'a> {
     registration: &'a RegisteredSemanticReader,
-    resource: &'a Resource,
+    resource: &'a ResourceSpec,
     spec: &'a ActionSpec,
     encoded: &'a EncodedAction,
 }
 
 pub(crate) fn select<'a>(
     table: &'a [RegisteredSemanticReader],
-    resource: &'a Resource,
+    resource: &'a ResourceSpec,
     spec: &'a ActionSpec,
     encoded: &'a EncodedAction,
 ) -> Result<Option<SelectedSemanticRead<'a>>, SemanticReadError> {
@@ -351,11 +351,11 @@ impl SelectedSemanticRead<'_> {
 /// bound SDK door and its canonical owner loan. Generic effects are excluded.
 pub fn registered_operations(
     widget: &dyn crate::widget::Widget,
-    resources: &[Resource],
+    resources: &[ResourceSpec],
 ) -> Vec<tilo_actions::ActionDescriptor> {
     fn collect(
         widget: &dyn crate::widget::Widget,
-        resource: &Resource,
+        resource: &ResourceSpec,
         addresses: &mut std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
         for spec in &resource.actions {

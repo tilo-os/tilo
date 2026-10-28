@@ -412,10 +412,12 @@ fn appliance_row(catalogue: &Catalogue) -> LiveRow {
 mod tests {
     use super::*;
     use crate::provider::CompatibilityProvider;
-    use tilo_actions::{ActionKind, ExecutionMode, OperationKind, Resource, ResultSpec, RiskLevel};
+    use tilo_actions::{
+        ActionKind, ExecutionMode, OperationKind, ResourceSpec, ResultSpec, RiskLevel,
+    };
 
     /// The rows the sample catalogue publishes beneath the manager.
-    fn sample_rows() -> Vec<Resource> {
+    fn sample_rows() -> Vec<ResourceSpec> {
         live_rows(&crate::provider::SampleProvider::new().catalogue())
             .into_iter()
             .map(LiveRow::into_resource)
