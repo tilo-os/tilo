@@ -2057,11 +2057,7 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
                 requests
                     .send(super::EngineRequest::watch(account.clone()))
                     .unwrap();
-                let deadline = tilo_test_env::hang_deadline();
-                while server.idling() == 0 {
-                    assert!(ui::time::now() < deadline, "the inbox is never watched");
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
+                tilo_test_env::wait_until("the inbox to be watched", || server.idling() > 0);
                 server.append("INBOX", &mail("m4", "Fresh", "Just now."), &[]);
                 server.flag("INBOX", 1, "\\Seen");
                 loop {
