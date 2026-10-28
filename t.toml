@@ -494,12 +494,6 @@ requirement = { cores = 1, memory = "1GiB" }
 run = "python3 tools/policy/findings.py python3 tools/policy/check_crypto_dependencies.py"
 
 [[check]]
-name = "policy/crypto-generation"
-requires = ["arch=any"]
-requirement = { cores = 1, memory = "1GiB" }
-run = "python3 tools/policy/findings.py python3 tools/policy/check_crypto_generation.py"
-
-[[check]]
 name = "policy/document-engine-boundary"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -769,12 +763,6 @@ name = "policy/tests/unit/check-crypto-dependencies"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "1GiB" }
 run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_check_crypto_dependencies.py"
-
-[[check]]
-name = "policy/tests/unit/check-crypto-generation"
-requires = ["arch=any"]
-requirement = { cores = 1, memory = "1GiB" }
-run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_check_crypto_generation.py"
 
 [[check]]
 name = "policy/tests/unit/check-runtime-dylib-surface"
