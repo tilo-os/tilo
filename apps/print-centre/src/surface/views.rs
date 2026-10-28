@@ -22,6 +22,10 @@ use super::{
     Door, El, PrintChoice, PrintPreview, ScanState, Snapshot, UiCommand, display_name,
     failed_areas, friendly_queue_state, friendly_reason, job_title, supply_level,
 };
+use crate::resource::{
+    OCR_LANGUAGES, PrintCentreEffect, PrintDefaults, SCAN_COLORS, SCAN_RESOLUTIONS, SCAN_SOURCES,
+};
+use ui::tilo_resource::Atom;
 
 fn text(s: &str, role: TextRole) -> El {
     Box::new(Text::new(s).with_role(role))
@@ -898,10 +902,10 @@ fn printer_picker(snapshot: &Snapshot, selected: Option<&str>, tx: &Door) -> Dro
     if let Some(selected) = selected {
         picker.set_selected(selected);
     }
-    let select_tx = tx.clone();
-    picker.on_change(move |name| {
-        let _ = select_tx.send(UiCommand::SelectPrinter(name.to_owned()));
-    })
+    match tx.1.as_ref() {
+        Some(actions) => actions.bind_effect(picker, PrintCentreEffect::CHOOSE_PRINTER),
+        None => picker,
+    }
 }
 
 /// What the print setup form is filled from: the range being typed, the
@@ -1057,17 +1061,16 @@ fn print_settings(picker: Dropdown, form: &PrintForm<'_>, tx: &Door) -> Form {
     }
     // A printer that reports no duplex mode keeps the one setting every CUPS
     // printer reads, so a person can still ask for both sides.
-    let defaults = tx.clone();
     if form.options.duplex_modes.len() < 2 {
-        options = options.field(
-            Field::new(
-                "Print on both sides",
-                Toggle::from_state(form.two_sided).on_change(move |value| {
-                    let _ = defaults.send(UiCommand::SetTwoSided(value));
-                }),
-            )
-            .with_trailing_control(),
-        );
+        let mut both_sides = Toggle::from_state(form.two_sided);
+        if let Some(binding) =
+            tx.1.as_ref()
+                .and_then(|actions| actions.field_binding(PrintDefaults::paths().two_sided))
+        {
+            both_sides = both_sides.on_action(binding);
+        }
+        options =
+            options.field(Field::new("Print on both sides", both_sides).with_trailing_control());
     }
     Form::new()
         .section(
@@ -1186,16 +1189,6 @@ fn setting(label: &str, control: ToggleGroup) -> El {
 
 fn segments(labels: &[&str]) -> Vec<Segment> {
     labels.iter().map(|label| Segment::new(*label)).collect()
-}
-
-/// A segmented choice that stores its index in `state` and rebuilds nothing.
-fn choice(id: &str, labels: &[&str], state: &ui::LocalState<usize>) -> ToggleGroup {
-    let state_for_change = state.clone();
-    ToggleGroup::new(segments(labels), state.get())
-        .with_id(id)
-        .on_view(&format!("{id}.select"), move |index| {
-            state_for_change.set(index);
-        })
 }
 
 /// What the scan looked like to the text reader, and what can be done to the
@@ -1428,63 +1421,94 @@ fn scanner_choices(snapshot: &Snapshot, selected: Option<&str>, tx: &Door) -> Ve
     devices
 }
 
+/// A scan setting's segments, bound to the default it sets: the choice is
+/// the defaults' field edit, as the palette and an agent make it.
+fn scan_choice<V: 'static>(
+    (id, labels): (&str, &[&str]),
+    state: &ui::LocalState<usize>,
+    tx: &Door,
+    path: ui::tilo_resource::Path<PrintDefaults, V>,
+    edit: impl Fn(
+        &ui::tilo_resource::Path<PrintDefaults, V>,
+        usize,
+    ) -> Option<ui::tilo_resource::Edit<PrintDefaults>>
+    + Send
+    + Sync
+    + 'static,
+) -> ToggleGroup {
+    let group = ToggleGroup::new(segments(labels), state.get()).with_id(id);
+    match tx.1.as_ref().and_then(|actions| {
+        actions.edit_binding_with(path, move |path, index: usize| {
+            edit(path, index).ok_or_else(|| "not one of the choices".to_owned())
+        })
+    }) {
+        Some(binding) => group.on_action(binding),
+        None => group,
+    }
+}
+
 fn scan_settings(scan: &ScanState, tx: &Door) -> Vec<El> {
+    let paths = PrintDefaults::paths();
+    let atom = |values: &'static [&'static str]| {
+        move |path: &ui::tilo_resource::Path<PrintDefaults, Atom>, index: usize| {
+            values
+                .get(index)
+                .map(|value| path.set(Atom((*value).to_owned())))
+        }
+    };
     vec![
         setting(
             "Quality",
-            choice(
-                "print-centre.scan.resolution",
-                &["150 dpi", "300 dpi", "600 dpi"],
+            scan_choice(
+                (
+                    "print-centre.scan.resolution",
+                    &["150 dpi", "300 dpi", "600 dpi"],
+                ),
                 &scan.resolution,
-            )
-            .on_change({
-                let tx = tx.clone();
-                move |index| {
-                    let _ = tx.send(UiCommand::SetScanResolution(index));
-                }
-            }),
+                tx,
+                paths.scan_resolution,
+                |path, index| SCAN_RESOLUTIONS.get(index).map(|dpi| path.set(*dpi)),
+            ),
         ),
         setting(
             "Appearance",
-            choice(
-                "print-centre.scan.color",
-                &["Color", "Grayscale", "Text"],
+            scan_choice(
+                ("print-centre.scan.color", &["Color", "Grayscale", "Text"]),
                 &scan.color,
-            )
-            .on_change({
-                let tx = tx.clone();
-                move |index| {
-                    let _ = tx.send(UiCommand::SetScanColor(index));
-                }
-            }),
+                tx,
+                paths.scan_color,
+                atom(&SCAN_COLORS),
+            ),
         ),
         setting(
             "Paper source",
-            choice(
-                "print-centre.scan.source",
-                &["Flatbed", "Feeder", "Two-sided"],
+            scan_choice(
+                (
+                    "print-centre.scan.source",
+                    &["Flatbed", "Feeder", "Two-sided"],
+                ),
                 &scan.source,
-            )
-            .on_change({
-                let tx = tx.clone();
-                move |index| {
-                    let _ = tx.send(UiCommand::SetScanSource(index));
-                }
-            }),
+                tx,
+                paths.scan_source,
+                atom(&SCAN_SOURCES),
+            ),
         ),
         setting(
             "Text language",
-            choice(
-                "print-centre.scan.language",
-                &["English", "German", "French", "Spanish"],
+            scan_choice(
+                (
+                    "print-centre.scan.language",
+                    &["English", "German", "French", "Spanish"],
+                ),
                 &scan.language,
-            )
-            .on_change({
-                let tx = tx.clone();
-                move |index| {
-                    let _ = tx.send(UiCommand::SetOcrLanguage(index));
-                }
-            }),
+                tx,
+                paths.ocr_language,
+                |path, index| {
+                    OCR_LANGUAGES
+                        .get(index)
+                        .map(|(value, _)| path.set(Atom((*value).to_owned())))
+                },
+            ),
         ),
     ]
 }

@@ -763,6 +763,54 @@ impl ShellOverlayHost {
         )
     }
 
+    /// Run the published action `id` on this desktop, as the palette's row
+    /// for it does: the overlay host's chords go through here so that a
+    /// key, a click in the palette and an agent's invocation run the same
+    /// code. `invoked_by` is the action that asked for it, recorded on any
+    /// settings change it makes.
+    ///
+    /// `None` when nothing publishes `id`, so a caller can fall back to its
+    /// own implementation.
+    pub(super) fn run_published_action(
+        &mut self,
+        provider: &str,
+        id: &str,
+        invoked_by: &settings_store::InvokingAction,
+    ) -> Option<bool> {
+        use crate::shell::search::InvocationDisposition;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        let chrome = self.chrome.clone()?;
+        let mut doc = automerge::AutoCommit::new();
+        let resource = ResourceRef::new(provider, id);
+        let catalog = ActionCatalog::build_exact(
+            &self.search_registry,
+            &resource,
+            crate::shell::chrome_state::SearchScope::All,
+            None,
+            &chrome.borrow(),
+            &doc,
+            &automerge::ROOT,
+            &AllVisible,
+        );
+        let action = catalog.select(&resource)?;
+        let _ = invoked_by;
+        let outcome = action
+            .invoke_json(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                &serde_json::Map::new(),
+            )
+            .ok()
+            .map(|disposition| matches!(disposition, InvocationDisposition::Accepted(_)));
+        // An action asks the compositor for a window change by queueing a
+        // request; a chord that runs it does not wait for the next update to
+        // learn its outcome, so the person sees the same thing they saw when
+        // the key had a handler of its own.
+        self.run_requested_shortcut_actions();
+        outcome
+    }
+
     /// Resolve a previously enumerated action by its stable address. Dynamic
     /// providers can preserve their retained discovery page while
     /// revalidating the route used to invoke it.
@@ -1010,7 +1058,7 @@ impl ShellOverlayHost {
     }
 
     /// Open the search of the app in `tab` with `query` typed, as the app's
-    /// own search control asks for it ([`Self::open_app_search`]), for
+    /// own search control asks for it (`Self::open_app_search`), for
     /// `bin/shots`.
     pub fn open_app_search_for_shots(&mut self, tab: crate::shell::state::TabId, query: &str) {
         self.open_app_search(

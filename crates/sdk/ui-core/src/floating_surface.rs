@@ -784,7 +784,7 @@ pub struct FloatingSurfaceServiceClient {
     /// Tells the readable watcher ([`Self::from_stream_waking`]) the app
     /// has read; dropping it stops the watcher.
     #[cfg(any(test, feature = "local-daemons"))]
-    rearm_wake: Option<std::sync::mpsc::Sender<()>>,
+    rearm_wake: Option<readable_watcher::Rearm>,
     /// The last appearance the shell told: the shell says it once per
     /// change, so a window this connection is handed to next
     /// ([`Self::hand_to_next_window`]) hears it from here.
@@ -862,7 +862,7 @@ impl FloatingSurfaceServiceClient {
     #[cfg(feature = "local-daemons")]
     fn hand_to_next_window(&mut self) {
         let wake = crate::wake::WakeHandle::new();
-        match spawn_readable_watcher(&self.stream, move || wake.wake(), || {}) {
+        match readable_watcher::spawn_readable_watcher(&self.stream, move || wake.wake(), || {}) {
             Ok(rearm) => self.rearm_wake = Some(rearm),
             Err(error) => {
                 tracing::warn!(%error, "the next window does not wake for the shell's messages");
@@ -874,7 +874,7 @@ impl FloatingSurfaceServiceClient {
     /// [`Self::from_stream`], calling `wake` whenever the shell has written
     /// something the app has not read yet: one wake, then nothing until the
     /// app has read ([`Self::pump`] rearms it), so unread bytes never spin
-    /// it. Dropping the client stops the watcher within one poll interval.
+    /// it. Dropping the client stops the watcher.
     #[cfg(any(test, feature = "local-daemons"))]
     fn from_stream_waking(
         stream: UnixStream,
@@ -891,7 +891,7 @@ impl FloatingSurfaceServiceClient {
         wake: impl Fn() + Send + 'static,
         parked: impl Fn() + Send + 'static,
     ) -> std::io::Result<Self> {
-        let rearm = spawn_readable_watcher(&stream, wake, parked)?;
+        let rearm = readable_watcher::spawn_readable_watcher(&stream, wake, parked)?;
         let mut client = Self::from_stream(stream)?;
         client.rearm_wake = Some(rearm);
         Ok(client)
@@ -988,7 +988,7 @@ impl FloatingSurfaceServiceClient {
         }
         #[cfg(any(test, feature = "local-daemons"))]
         if let Some(rearm) = &self.rearm_wake {
-            let _ = rearm.send(());
+            rearm.rearm();
         }
 
         let mut messages = std::mem::take(&mut self.replay);
@@ -1040,65 +1040,8 @@ impl FloatingSurfaceServiceClient {
     }
 }
 
-/// Watch `stream` for what the shell writes, calling `wake` once each time
-/// it has written something the app has not read yet; the app rearms the
-/// watch through the returned sender after reading, and dropping it stops
-/// the watcher within one poll interval. `parked` is called each time the
-/// watcher, having woken the app, starts waiting for that rearm.
 #[cfg(all(unix, any(test, feature = "local-daemons")))]
-fn spawn_readable_watcher(
-    stream: &UnixStream,
-    wake: impl Fn() + Send + 'static,
-    parked: impl Fn() + Send + 'static,
-) -> std::io::Result<std::sync::mpsc::Sender<()>> {
-    use std::os::fd::AsRawFd as _;
-    use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
-    const POLL: std::time::Duration = std::time::Duration::from_millis(500);
-    // Its own descriptor for the same socket: closing the client's never
-    // leaves the watcher polling a number the process reused.
-    let watched = stream.try_clone()?;
-    let (rearm, armed) = std::sync::mpsc::channel::<()>();
-    tilo_rt::spawn_thread("tilo-shell-ui-wake", move || {
-        loop {
-            let mut readable = libc::pollfd {
-                fd: watched.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            let timeout = libc::c_int::try_from(POLL.as_millis()).unwrap_or(500);
-            // SAFETY: one valid pollfd for a descriptor this thread owns.
-            let ready = unsafe { libc::poll(&raw mut readable, 1, timeout) };
-            if ready < 0 {
-                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return;
-            }
-            if ready == 0 {
-                // Idle: stop once the client is gone. A rearm that
-                // arrives while armed means nothing.
-                match armed.try_recv() {
-                    Err(TryRecvError::Disconnected) => return,
-                    Ok(()) | Err(TryRecvError::Empty) => continue,
-                }
-            }
-            wake();
-            if readable.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
-                return;
-            }
-            parked();
-            loop {
-                match armed.recv_timeout(POLL) {
-                    Ok(()) => break,
-                    Err(RecvTimeoutError::Timeout) => {}
-                    Err(RecvTimeoutError::Disconnected) => return,
-                }
-            }
-            while armed.try_recv().is_ok() {}
-        }
-    })?;
-    Ok(rearm)
-}
+mod readable_watcher;
 
 /// Non-Unix hosts cannot receive Tilo session-service file descriptors. Keep
 /// the optional client API available so applications compile and naturally
@@ -2810,6 +2753,58 @@ mod tests {
             FloatingSurfaceHostMessage::Closed { id: "pip".into() }.window_appearance(),
             None
         );
+    }
+
+    /// The watcher is never scheduled while nothing arrives: armed, or
+    /// parked over bytes the app has not read. Dropping the client ends it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_idle_watcher_is_never_scheduled_and_ends_with_its_client() {
+        use std::sync::{Arc, Mutex};
+
+        let (app_side, mut shell_side) = UnixStream::pair().unwrap();
+        let watcher = Arc::new(Mutex::new(None::<String>));
+        let seen = Arc::clone(&watcher);
+        let mut client = FloatingSurfaceServiceClient::from_stream_watched(
+            app_side,
+            move || {
+                let tid = tilo_test_env::idle::current_thread_id().unwrap();
+                *seen.lock().unwrap() = Some(tid.to_string());
+            },
+            || {},
+        )
+        .unwrap();
+        let mut bytes =
+            serde_json::to_vec(&FloatingSurfaceHostMessage::Closed { id: "pip".into() }).unwrap();
+        bytes.push(b'\n');
+        shell_side.write_all(&bytes).unwrap();
+        let tid = tilo_test_env::wait_for("the watcher wakes the app", || {
+            watcher.lock().unwrap().clone()
+        });
+        // Two windows back to back outlast any poll interval a watcher could
+        // hide in one of them.
+        for _ in 0..2 {
+            tilo_test_env::idle::assert_stays_asleep(&tid, "watcher parked over unread bytes");
+        }
+        assert_eq!(client.pump().unwrap().len(), 1);
+        for _ in 0..2 {
+            tilo_test_env::idle::assert_stays_asleep(&tid, "armed watcher with nothing to read");
+        }
+        // Every frame pumps the connection; reading while the watcher is
+        // armed does not wake it.
+        let settled = tilo_test_env::idle::asleep_switches(&tid);
+        for _ in 0..10 {
+            assert!(client.pump().unwrap().is_empty());
+        }
+        assert_eq!(
+            tilo_test_env::idle::asleep_switches(&tid),
+            settled,
+            "pumping an armed connection woke its watcher"
+        );
+        drop(client);
+        tilo_test_env::wait_until("the watcher ends with its client", || {
+            !std::path::Path::new(&format!("/proc/self/task/{tid}")).exists()
+        });
     }
 
     #[cfg(unix)]

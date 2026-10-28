@@ -38,7 +38,7 @@
 //!
 //! A thread cannot be unwound from outside. Each one is sent a real-time
 //! signal whose handler records its own return addresses into a slot of its
-//! own ([`capture`]), allocating nothing and taking no lock; the answering
+//! own (`capture`), allocating nothing and taking no lock; the answering
 //! thread symbolizes them. Every answer is kept, and a thread that did not
 //! answer is reported as such.
 //!

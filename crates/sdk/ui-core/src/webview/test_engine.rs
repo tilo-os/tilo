@@ -282,6 +282,18 @@ impl TestEngine {
                 PageRequest::Settle { .. } => {
                     Some(serde_json::json!({"settled": true, "waited_ms": 0}))
                 }
+                // A find answers the ref of the description it was asked
+                // for, as a page with that element would.
+                PageRequest::Find {
+                    role, name, nth, ..
+                } => Some(serde_json::json!({
+                    "element": "d1e1",
+                    "role": role.clone().unwrap_or_else(|| "textbox".into()),
+                    "name": name.clone().unwrap_or_default(),
+                    "line": "- textbox \"Email\" [ref=d1e1]",
+                    "nth": nth.unwrap_or(1),
+                    "matches": 1,
+                })),
                 _ => None,
             },
             // A capture answers with the picture it painted, and nothing else:

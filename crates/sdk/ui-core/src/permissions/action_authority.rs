@@ -54,7 +54,9 @@ impl ActionAuthoritySampler {
 
 impl PermissionContext {
     /// Decide this app's actions by the host's live view of the person's
-    /// authority, resampled at every decision.
+    /// authority, which `sample` answers at every decision. A view that
+    /// changes announces it (`permissions::outside_changed`), so what was
+    /// derived from it is derived again.
     #[must_use]
     pub(crate) fn with_action_authority(
         mut self,

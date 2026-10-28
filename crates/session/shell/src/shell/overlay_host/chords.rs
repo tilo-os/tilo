@@ -86,7 +86,7 @@ impl ShellOverlayHost {
             self.begin_motion(source);
         }
         if let Some(chrome) = self.chrome.clone() {
-            self.run_chrome_chord(&chrome, action);
+            self.run_desktop_chord_chrome(&chrome, action);
         }
         true
     }
@@ -94,7 +94,7 @@ impl ShellOverlayHost {
     /// The desktop chords that act on the chrome: open Files or a terminal,
     /// the clipboard history, notifications, fullscreen, the next input
     /// source and the power menu.
-    fn run_chrome_chord(
+    pub(super) fn run_desktop_chord_chrome(
         &mut self,
         chrome: &Chrome,
         action: settings_store::hardware::ShortcutAction,

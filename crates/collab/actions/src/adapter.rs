@@ -378,21 +378,22 @@ impl AdapterAction {
                 build,
             )
         };
-        spec.keywords.clone_from(&self.keywords);
-        spec.contract = self.contract.clone();
+        let ty = spec.type_mut();
+        ty.keywords.clone_from(&self.keywords);
+        ty.contract = self.contract.clone();
         // Undo is the one fact about a legacy app a caller cannot infer, and
         // it is stated in the vocabulary every gate already reads: an effect
         // Tilo snapshots is one Undo takes back (the restore is its
         // compensation), and one nothing can take back says so.
         match self.undo {
             Undo::Restore => {
-                if spec.contract.kind == ActionKind::Outside {
-                    spec.contract
+                if ty.contract.kind == ActionKind::Outside {
+                    ty.contract
                         .tags
                         .push(crate::COMPENSATED_UNDO_TAG.to_owned());
                 }
             }
-            Undo::None => spec.contract.tags.push(crate::IRREVERSIBLE_TAG.to_owned()),
+            Undo::None => ty.contract.tags.push(crate::IRREVERSIBLE_TAG.to_owned()),
             Undo::Native => {}
         }
         spec

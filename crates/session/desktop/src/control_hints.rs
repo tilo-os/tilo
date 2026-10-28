@@ -258,7 +258,18 @@ impl ControlHints {
             area: frame.area,
         };
         self.motion = theme.motion();
-        self.layer.draw(scene, transform, text, theme, now, &look);
+        // A damage part of its own: a hint coming, moving or folding into
+        // its dot repaints where it painted, not the page around it.
+        let key = ui::scene_parts::PartKey::new("desktop.control-hint", ());
+        let layer = &mut self.layer;
+        ui::scene_parts::part_drawn(scene, key, |scene| {
+            layer.draw(scene, transform, text, theme, now, &look);
+            layer
+                .painted_rect()
+                .map(|rect| transform.transform_rect_bbox(rect))
+                .into_iter()
+                .collect()
+        });
         *self.said.borrow_mut() = self.layer.access_node();
     }
 
@@ -626,5 +637,46 @@ mod tests {
         assert!(hints.is_showing());
         let learned = hints.take_changed().expect("shown");
         assert_eq!(learned.showings("move-window"), 1);
+    }
+
+    /// A hint coming onto the page repaints where it painted, a part of the
+    /// page's scene of its own, not the page.
+    #[test]
+    fn a_moving_hint_repaints_where_it_painted() {
+        let mut hints = ControlHints::new(Learned::default());
+        let start = ui::time::now();
+        let frame = frame();
+        performed::note(Performed::OpenedWindow);
+        hints.update(&frame, start);
+        assert!(hints.is_showing());
+        let theme = ui::Theme::dark();
+        let mut text = ui::text_render::TextRenderer::new();
+        let mut drawn = |hints: &mut ControlHints, at| {
+            let mut scene = vello::Scene::new();
+            let recording = ui::scene_parts::Recording::begin();
+            ui::scene_parts::track(&scene);
+            hints.draw(&frame, &mut scene, Affine::IDENTITY, &mut text, &theme, at);
+            let parts = recording.finish().of(&scene).expect("well nested parts");
+            (scene, parts, hints.painted_rect())
+        };
+        let (before, before_parts, was) = drawn(&mut hints, start);
+        let later = start + Duration::from_millis(80);
+        assert!(hints.needs_animation_frame(later), "the hint is coming");
+        let (after, after_parts, is) = drawn(&mut hints, later);
+        assert!(!after.encoding_eq(&before), "the hint moved");
+        let damage = ui::scene_parts::damage(&before, &before_parts, &after, &after_parts)
+            .expect("the frames compare part by part");
+        let painted = [was, is]
+            .into_iter()
+            .flatten()
+            .reduce(|all, rect| all.union(rect));
+        let painted = painted.expect("the hint painted");
+        assert!(!damage.is_empty());
+        for rect in &damage {
+            assert!(
+                painted.contains_rect(*rect),
+                "{rect:?} is beyond what the hint painted, {painted:?}"
+            );
+        }
     }
 }

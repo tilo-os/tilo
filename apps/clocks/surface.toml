@@ -60,6 +60,17 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "edit-alarm"
+kind = "undoable"
+params = [
+  { name = "alarm", required = true, schema = { type = "string" } },
+  { name = "label", required = true, schema = { type = "string" } },
+  { name = "hour", required = true, schema = { type = "integer", maximum = 255, minimum = 0 } },
+  { name = "minute", required = true, schema = { type = "integer", maximum = 255, minimum = 0 } },
+  { name = "weekdays", required = true, schema = { type = "array", items = { type = "string", enum = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] } } },
+]
+
+[[resources.verbs]]
 id = "remove-alarm"
 kind = "undoable"
 params = [

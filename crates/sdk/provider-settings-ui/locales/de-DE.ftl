@@ -184,6 +184,17 @@ agent-model-of-provider = { $model } von { $provider }
 agent-model-unavailable = Sein Anbieter ist ausgeschaltet: Er plant ohne Modell, bis du ihn einschaltest oder ein anderes wählst.
 agent-model-use-default = Standard verwenden
 agent-model-choice-incomplete = Nenne den Anbieter und sein Modell, oder keins von beiden für den Standard.
+agent-models-kinds-title = Worauf die einzelnen Arbeitsarten laufen
+agent-models-kinds-caption = Eine kurze Antwort läuft auf einem kleinen Modell und eine Aufgabe auf einem größeren; für jede Art kannst du ein anderes Modell wählen oder sie beim Standard lassen. Die Teile und Schritte einer Aufgabe folgen der Aufgabe, solange sie kein eigenes Modell bekommen.
+agent-kind-model-default = Das Standardmodell
+agent-kind-model-label = { $model } von { $provider }
+agent-kind-unknown = Diese Arbeitsart kennt diese Version von Tilo nicht.
+agent-kind-one-shot = Eine kurze Antwort
+agent-kind-task = Eine Aufgabe
+agent-kind-subtask = Ein Teil einer Aufgabe
+agent-kind-request = Eine Nachricht an einen Agenten
+agent-kind-classifier = Etwas in eine Kategorie einsortieren
+agent-kind-dictation = Diktierten Text aufräumen
 
 agent-hub-title = Modelle von Hugging Face
 agent-hub-caption = Durchsuche Hugging Face mit der Suche des Fensters, öffne ein beliebiges Modell per Name oder Link oder füge eine eigene GGUF-Datei hinzu. Ein Modell sind Daten: Es läuft in Tilos signierten Laufzeiten auf diesem Gerät, und seine Lizenz wird angezeigt, bevor etwas heruntergeladen wird.

@@ -184,6 +184,17 @@ agent-model-of-provider = { $model } from { $provider }
 agent-model-unavailable = Its provider is switched off: it plans with no model until you switch it on or choose another.
 agent-model-use-default = Use the default
 agent-model-choice-incomplete = Name both the provider and its model, or neither to use the default.
+agent-models-kinds-title = What each kind of work runs on
+agent-models-kinds-caption = A short answer runs on a small model and a task on a larger one; pick another model for any kind, or leave it on the default. A task's parts and steps follow the task unless they are given a model of their own.
+agent-kind-model-default = The default model
+agent-kind-model-label = { $model } from { $provider }
+agent-kind-unknown = That kind of work is unknown to this version of Tilo.
+agent-kind-one-shot = One short answer
+agent-kind-task = A task
+agent-kind-subtask = A task's part
+agent-kind-request = A message to an agent
+agent-kind-classifier = Sorting something into a category
+agent-kind-dictation = Tidying dictated text
 
 agent-hub-title = Models from Hugging Face
 agent-hub-caption = Search Hugging Face with the window's search, open any model by its name or link, or add a GGUF file of your own. A model is data: it runs in Tilo's signed runtimes on this device, and its license is shown before anything downloads.

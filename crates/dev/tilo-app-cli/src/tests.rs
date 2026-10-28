@@ -33,7 +33,7 @@ fn assert_generated_tree_source(source: &str) {
     syn::parse_file(source).unwrap();
     for needle in [
         "pub struct ProjectTreeConfig",
-        "M: TreeModel",
+        "M: TreeModel + 'static",
         "TreeView::from_model(model)",
         ".with_row_delegate(",
         ".reorderable()",

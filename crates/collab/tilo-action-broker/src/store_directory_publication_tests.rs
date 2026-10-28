@@ -16,7 +16,7 @@ fn store_genesis(room: &str) -> Vec<tilo_peer_state::SeedDocument> {
         Some(room)
     ));
     vec![tilo_peer_state::SeedDocument {
-        app_id: definition.app_id.into(),
+        app_id: definition.app_id().into(),
         record_id: record.as_str().into(),
         kind: definition.record_kind.as_str().into(),
         bytes: document.save(),
@@ -41,7 +41,7 @@ fn mount_store(env: &Environment, manager: ui::collaboration::CollaborationManag
     cache
         .hydrate(
             StorageKey::Record {
-                package: definition.app_id.into(),
+                package: definition.app_id().into(),
                 workspace: env.route.cluster_id.clone(),
                 record: record.as_str().into(),
             },
@@ -51,7 +51,7 @@ fn mount_store(env: &Environment, manager: ui::collaboration::CollaborationManag
         .unwrap();
     let mut owners = RecordOwners::portable(cache.clone());
     let records = owners
-        .open(definition.app_id, &env.route.cluster_id)
+        .open(definition.app_id(), &env.route.cluster_id)
         .unwrap();
     let views = Rc::new(
         ui::application_view::InstanceViewStore::portable(cache, &env.route.cluster_id).unwrap(),
@@ -207,7 +207,7 @@ fn prove_store_directory(mut env: Environment) {
     use ui::collaboration::{CertifiedEndpointIdentity, CollaborationManager};
     let private = env.root.path().canonicalize().unwrap();
     std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
-    env.route.app_id = store_definition().app_id.into();
+    env.route.app_id = store_definition().app_id().into();
     env.route.record_id = ui::record::RecordId::for_tab(1).as_str().into();
     env.authority = CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
     let broker = crate::collab_broker::spawn_native_peer_with_services(

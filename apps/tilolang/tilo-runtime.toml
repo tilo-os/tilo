@@ -1,0 +1,21 @@
+# The tilolang runtime bundle: the one binary every tilolang app runs on.
+#
+# A tilolang package is an app of its own whose payload is its compiled module; its manifest
+# names this runtime as its entrypoint (`[entrypoint] runtime = "tilolang/<version>"`,
+# `bin = "bin/tilolang-app"`). The launcher mounts the bundle read-only, executes `bin/tilolang-app`
+# and points it at the package's payload with `TILO_APP_MODULE`.
+#
+# The bundle is a signed runtime bundle (`tilo-runtime-bundle build --include-bin`), offered as a
+# `kind = "runtime"` package (`tools/apps/pack-runtime-package.sh ... tilolang`). The binary is
+# a thin app binary: it links the Tilo runtime its apps name.
+
+[package]
+id       = "so.tilo.runtime.tilolang"
+name     = "tilolang runtime"
+version  = "0.1.0"
+kind     = "runtime"
+provides = "tilolang/0.1.0+tilolang"
+
+[entrypoint]
+type = "cli"
+bin  = "bin/tilolang-app"

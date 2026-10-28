@@ -27,6 +27,11 @@ pub const ANY_ITEM: &str = "*";
 #[derive(Clone, Debug, Deserialize)]
 pub struct SurfaceFile {
     pub resources: Vec<Surface>,
+    /// The resource kinds of other apps this app reads (`reads = [kind]`):
+    /// a declared, read-only, live join to their records. The app changes
+    /// them only by invoking their actions.
+    #[serde(default)]
+    pub reads: Vec<String>,
 }
 
 impl SurfaceFile {
@@ -41,6 +46,16 @@ impl SurfaceFile {
         // a second, TOML-specific copy of their whole deserializer.
         let value: serde_json::Value = toml::from_str(text).map_err(|error| error.to_string())?;
         serde_json::from_value(value).map_err(|error| error.to_string())
+    }
+
+    /// Whether this app declares that it reads a resource kind of the app
+    /// whose surface is `other`.
+    #[must_use]
+    pub fn reads_any_of(&self, other: &Self) -> bool {
+        other
+            .resources
+            .iter()
+            .any(|surface| self.reads.contains(&surface.kind))
     }
 
     /// The resource of kind `kind`, or the app's first (its own record)

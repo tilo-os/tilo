@@ -284,16 +284,25 @@ def _first_int(text: str) -> int | None:
     return next((int(w) for w in text.split() if w.isdigit()), None)
 
 
-def _marks(ctx, since_ms: int, app: str = FILES, wait_s: float = MARKS_WAIT_S):
+def _marks(ctx, since_ms: int, app: str = FILES, wait_s: float = MARKS_WAIT_S, log_from: int | None = None):
     """The startup marks of `app`'s first launch since `since_ms`, once they hold its
-    first presented frame (or whatever they hold after `wait_s`)."""
+    first presented frame (or whatever they hold after `wait_s`). With `log_from`, the
+    session log's line number before the launch, the wait is for the app's startup summary
+    (written right after its marks) or the compositor's first-frame line in the log,
+    returning the moment either is written."""
+    started = time.monotonic()
+    if log_from is not None:
+        core.wait_log_line(ctx, SESSION_LOG, log_from + 1, wait_s, f"APP-STARTUP app={re.escape(app)} ",
+                           f"first frame presented .*package_id={re.escape(app)} ")
     script = (f'for f in "${{XDG_DATA_HOME:-$HOME/.local/share}}"/tilo-rooms/*/{app}/.local/state/startup-*.json; '
               'do [ -f "$f" ] || continue; printf "%s\\t" "$f"; tr -d "\\n" < "$f"; echo; done')
 
     def probe():
         m = parse_startup_marks(ctx.vm.exec(script, check=False), since_ms)
         return m if m and "first-frame-presented" in m["events"] else None
-    return wait_until(probe, wait_s, 1.0) or parse_startup_marks(ctx.vm.exec(script, check=False), since_ms)
+    left = max(0.0, wait_s - (time.monotonic() - started))
+    return wait_until(probe, left, 0.25 if log_from is not None else 1.0) \
+        or parse_startup_marks(ctx.vm.exec(script, check=False), since_ms)
 
 
 @check("A14", "apps", "Files draws its first frame within budget and lists the folder it opens on")
@@ -430,7 +439,9 @@ def _app_gone(ctx, app: str) -> dict | None:
         table = core.processes(ctx)
         return None if any(p["app"] == app for p in table["procs"].values()) else table
 
-    return wait_until(without_app, EXIT_WAIT_S, 1.0)
+    started = time.monotonic()
+    core.wait_app_exit(ctx, app, EXIT_WAIT_S)
+    return wait_until(without_app, max(0.0, EXIT_WAIT_S - (time.monotonic() - started)), 1.0)
 
 
 def _timed_open(ctx, app: str, shell_anon: list[float] | None = None,
@@ -448,7 +459,7 @@ def _timed_open(ctx, app: str, shell_anon: list[float] | None = None,
     log_lines, t0 = (numbers + [None, None])[:2]
     result = None
     if t0 is not None:
-        marks = _marks(ctx, t0, app, OPEN_WAIT_S)
+        marks = _marks(ctx, t0, app, OPEN_WAIT_S, log_from=log_lines)
         times = open_times(t0, marks)
         if times is not None:
             log = ctx.vm.exec(f'tail -n +{(log_lines or 0) + 1} "{SESSION_LOG}" | grep -a "tilo::launch_latency"',
@@ -554,7 +565,7 @@ def warm_opens(ctx, res):
     launches = WARM_LAUNCHES
     ctx.reset()
     ctx.vm.input("move", str(next(_NUDGE)), "300")
-    problems, unobserved, summary = [], [], {}
+    problems, over, unobserved, summary = [], [], [], {}
     # The compositor's anonymous RSS after each open has closed, in order: what an open
     # and close leaves behind in it.
     shell_anon: list[float] = []
@@ -592,13 +603,13 @@ def warm_opens(ctx, res):
             unobserved.append(f"{app}: the session log holds no compositor launch timing for {untimed} "
                               f"of {len(results)} opens")
         if opens and median(opens) > budget:
-            problems.append(f"{app} took {median(opens)} ms (median of {len(opens)}) from the open request "
+            over.append(f"{app} took {median(opens)} ms (median of {len(opens)}) from the open request "
                             f"to its first frame, over its {budget} ms budget on {kind} rendering "
                             f"(process start to first frame: median {median(starts)} ms; "
                             f"before it: {describe_before_main(summary[app]['median_ms'])})")
         target = kpi_p95_target(f"app.open.warm_ms.{short}")
         if kind == "gpu" and opens and target is not None and p95(opens) > target:
-            problems.append(f"{app} took {p95(opens)} ms (p95 of {len(opens)}) from the open request to its "
+            over.append(f"{app} took {p95(opens)} ms (p95 of {len(opens)}) from the open request to its "
                             f"first frame on a GPU, over the KPI's {target:.0f} ms")
     # Then one app over and over, unmeasured: the session must outlive it and the app open
     # every time. Its RSS stays out of `shell_anon`, whose slope is a KPI over the series above.
@@ -625,9 +636,10 @@ def warm_opens(ctx, res):
         unobserved.append(f"the compositor's anonymous RSS was read after {len(shell_anon)} closes, "
                           "too few for its growth per open")
     if problems:
-        raise CheckFailed("; ".join(problems + unobserved))
+        raise CheckFailed("; ".join(problems + over + unobserved))
     if unobserved:
-        raise Unobservable("; ".join(unobserved))
+        raise Unobservable("; ".join(over + unobserved))
+    core.judge([], over)
 
 
 @check("A16", "apps", "Every Tilo app the run launched drew its first frame within its budget")
@@ -643,7 +655,7 @@ def every_launch(ctx, res):
     res.metrics.update(launches=len(startups), apps=apps, history_opens=opens)
     if not startups:
         raise Unobservable("no app logged an APP-STARTUP line in the session's logs")
-    problems = app_startup.over_budget(startups) + app_startup.history_over_budget(opens)
+    over = app_startup.over_budget(startups) + app_startup.history_over_budget(opens)
     # A failed check keeps no files, so the slowest late launch's own phases go into the
     # failure text: which marks the first frame waited on, and whether the window named
     # its adapter (a launch with no adapter line is judged on the hardware budget).
@@ -652,7 +664,7 @@ def every_launch(ctx, res):
         slowest = max(late, key=lambda s: s["total_ms"])
         unnamed = (f" ({slowest['app']} logged no `tilo-gpu: window adapter` line before it)"
                    if slowest["renderer"] == "unknown" else "")
-        problems.append(f"slowest late launch{unnamed}: {slowest['line'][:1500]}")
+        over.append(f"slowest late launch{unnamed}: {slowest['line'][:1500]}")
         # The broker's own account of that app's joins (`COLLAB-JOIN`): a join slower on the
         # app's side than here waited for the broker's thread.
         joins = [line[line.index("COLLAB-JOIN"):] for line in ctx.vm.exec(
@@ -660,11 +672,9 @@ def every_launch(ctx, res):
                      check=False).splitlines()
                  if "COLLAB-JOIN" in line and slowest["app"] in line]
         if joins:
-            problems.append(f"the broker's joins for {slowest['app']}: {'; '.join(joins[-3:])}")
-    if "so.tilo.notes" not in apps:
-        problems.append("so.tilo.notes logged no APP-STARTUP line")
-    if problems:
-        raise CheckFailed("; ".join(problems))
+            over.append(f"the broker's joins for {slowest['app']}: {'; '.join(joins[-3:])}")
+    problems = [] if "so.tilo.notes" in apps else ["so.tilo.notes logged no APP-STARTUP line"]
+    core.judge(problems, over)
     res.detail = f"{len(startups)} launches of {len(apps)} apps within budget"
 
 

@@ -102,18 +102,18 @@ fn changed_contract_resource_and_closed_payload_are_refused() {
     for change in 0..5 {
         let mut resource = resource();
         match change {
-            0 => resource.actions[0].kind = OperationKind::View,
-            1 => resource.actions[0].contract.kind = tilo_actions::ActionKind::Undoable,
+            0 => resource.actions[0].type_mut().kind = OperationKind::View,
+            1 => resource.actions[0].type_mut().contract.kind = tilo_actions::ActionKind::Undoable,
             2 => {
-                resource.actions[0].contract.execution =
+                resource.actions[0].type_mut().contract.execution =
                     ExecutionMode::Background { cancellable: false }
             }
             3 => {
-                resource.actions[0].contract.result = ResultSpec::Json {
+                resource.actions[0].type_mut().contract.result = ResultSpec::Json {
                     schema: serde_json::json!({"type":"object"}),
                 }
             }
-            _ => resource.actions[0].operation_type = Some("client.assertion".into()),
+            _ => resource.actions[0].type_mut().operation_type = Some("client.assertion".into()),
         }
         assert!(matches!(
             select(&READERS, &resource, &resource.actions[0], &encoded()),

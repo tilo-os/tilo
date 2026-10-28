@@ -535,3 +535,72 @@ fn allowing_once_in_app_admits_one_call_and_the_next_asks_again() {
     ));
     assert_eq!(app.state().title, "Once", "the second call changed nothing");
 }
+
+thread_local! {
+    /// Whether the fragile view fails every frame from now on.
+    static FRAGILE_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A view that fails every frame once told to, as a view with a bug does.
+#[derive(Default)]
+struct Fragile {
+    rect: Rect,
+}
+
+impl Widget for Fragile {
+    fn sync(&mut self, _: &tilo_app::widget::AppModel, _: &tilo_app::widget::ModelPath) {
+        assert!(!FRAGILE_FAILS.get(), "the fragile view failed");
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut tilo_app::advanced::TaffyTree<()>,
+        _: &Theme,
+        _: &mut std::collections::HashMap<tilo_app::advanced::NodeId, *mut dyn Widget>,
+    ) -> tilo_app::advanced::NodeId {
+        taffy.new_leaf(tilo_app::taffy::Style::default()).unwrap()
+    }
+
+    fn apply_layout(
+        &mut self,
+        _: &tilo_app::advanced::TaffyTree<()>,
+        _: tilo_app::advanced::NodeId,
+        origin: Point,
+    ) {
+        self.rect = Rect::from_origin_size(origin, Size::ZERO);
+    }
+
+    fn name(&self) -> &'static str {
+        "Fragile"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+struct FragileApp;
+
+impl ResourceApp for FragileApp {
+    type Resource = Checklist;
+    const ID: &'static str = "so.tilo.test-fragile";
+    const TITLE: &'static str = "Fragile";
+
+    fn view(_: &mut ViewCx<Checklist>) -> Element {
+        Box::new(Fragile::default())
+    }
+}
+
+/// A test that fails while its app is open fails alone: closing the app as
+/// the failure unwinds runs none of its frames again, so the failure is not
+/// repeated in a destructor, which would abort every test in the binary.
+#[test]
+fn an_app_open_when_a_test_fails_closes_without_failing_again() {
+    let mut app = TestApp::<FragileApp>::new().unwrap();
+    FRAGILE_FAILS.set(true);
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        app.settle();
+    }));
+    FRAGILE_FAILS.set(false);
+    assert!(failed.is_err(), "the view's failure fails the test");
+}

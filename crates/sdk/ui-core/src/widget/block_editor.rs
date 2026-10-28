@@ -9094,14 +9094,17 @@ impl Widget for BlockEditor {
             }
         }
         let incoming = std::mem::take(scene);
+        // A selection, in one block or across several, is painted by each
+        // block it covers in its own line: a drag that extends it repaints
+        // the rows it changed (below), not the editor.
         let track_paragraphs = !self.blocks.is_empty()
             && !self.has_open_popup()
             && self.block_drag.is_none()
-            && self.document_selection.is_none()
             && self.retained_block_selection.is_none()
-            && self.blocks.iter().all(|block| {
-                damages_where_it_paints(&block.kind) && block.line.selection_range().is_none()
-            });
+            && self
+                .blocks
+                .iter()
+                .all(|block| damages_where_it_paints(&block.kind));
         let mut paragraph_parts = Vec::new();
         let mut paragraph_scene = Scene::new();
         self.line_overhang.clear();
@@ -9583,6 +9586,17 @@ impl Widget for BlockEditor {
                     (_, Some(painted)) => {
                         Rect::new(self.rect.x0, painted.y0, self.rect.x1, painted.y1).union(rect)
                     }
+                };
+                // A selection running past the line's end marks its break a
+                // little beyond the last glyph: its row across the editor,
+                // and past it by that mark.
+                let row = if b.line.selection_range().is_some() {
+                    let reach = f64::from(b.kind.font_size()) * self.text_scale;
+                    Rect::new(self.rect.x0, row.y0, self.rect.x1, row.y1)
+                        .union(row)
+                        .inflate(reach, 0.0)
+                } else {
+                    row
                 };
                 let mut damage = vec![row];
                 damage.extend(self.line_overhang.get(&b.id).copied());

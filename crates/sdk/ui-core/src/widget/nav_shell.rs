@@ -99,11 +99,13 @@ use crate::widget::flap::{FlapState, SplitLayout};
 use crate::widget::manual::{ManualContext, ManualInvalidation, ManualPolicy, MeasureConstraint};
 use crate::widget::window_header::{HistoryControl, WindowHeader};
 use crate::widget::{
-    AppModel, Button, Element, ModelPath, SearchField, TaffyTreeExt, Widget, WidgetLayoutError,
+    AppModel, Button, Element, ModelPath, SearchField, StructureChange, TaffyTreeExt, Widget,
+    WidgetLayoutError,
 };
 
 mod back;
 mod band;
+mod bar_resources;
 mod header_parts;
 mod inspector;
 pub(crate) mod memory;
@@ -1738,6 +1740,11 @@ pub struct NavShell {
     /// Buttons replaced since the host last built its tree, which may still
     /// point at them.
     retired_status_actions: Vec<Button>,
+    /// Whether Back goes back now, for a shell made from its description with a `back`
+    /// event: taken in place as the description changes.
+    can_back: Option<Rc<std::cell::Cell<bool>>>,
+    /// The slot a host is changing through [`crate::component::Described::slot_views`].
+    slot_edit: Option<component::SlotEdit>,
 }
 
 impl Default for NavShell {
@@ -1836,6 +1843,8 @@ impl NavShell {
             band: None,
             status_action_spec: None,
             retired_status_actions: Vec::new(),
+            can_back: None,
+            slot_edit: None,
         }
     }
 
@@ -2190,6 +2199,11 @@ impl NavShell {
         self.set_count(Column::Content, count);
     }
 
+    /// Show or clear the count after the overview's title.
+    pub fn set_overview_count(&mut self, count: Option<usize>) {
+        self.set_count(Column::Overview, count);
+    }
+
     /// Whether the content's page stack can go back, for an app that keeps
     /// it itself ([`Self::on_back`]).
     pub fn set_can_go_back(&mut self, can: bool) {
@@ -2205,23 +2219,32 @@ impl NavShell {
         }
     }
 
+    /// A title that comes or goes changes the header row; a shown title that says something
+    /// else is the same part, measured and painted again (an item's title as it is typed).
     fn set_title(&mut self, column: Column, title: String) {
         let title = (!title.trim().is_empty()).then_some(title);
-        if let Some(header) = self.headers.get_mut(column.index())
-            && header.title.title != title
-        {
-            header.title.title = title;
+        let Some(header) = self.headers.get_mut(column.index()) else {
+            return;
+        };
+        if header.title.title == title {
+            return;
+        }
+        let comes_or_goes = header.title.is_shown() != title.is_some();
+        header.title.title = title;
+        if comes_or_goes {
             self.slots_changed();
+        } else {
+            self.invalidate();
         }
     }
 
+    /// The count is drawn inside the title's part, which measures and paints it again.
     fn set_count(&mut self, column: Column, count: Option<usize>) {
         if let Some(header) = self.headers.get_mut(column.index())
             && header.title.count != count
         {
             header.title.count = count;
             self.invalidate();
-            self.structure_dirty = true;
         }
     }
 
@@ -2368,7 +2391,17 @@ impl NavShell {
         }
     }
 
+    /// A slot, header or column changed: the shell plans its parts again and the host builds
+    /// the tree anew.
     fn slots_changed(&mut self) {
+        self.refresh_slot_inputs();
+        self.structure_dirty = true;
+        self.invalidate();
+    }
+
+    /// Plan the parts from the slots, headers and columns as they are now (which columns and
+    /// titles there are, how many actions each holds), marking nothing.
+    fn refresh_slot_inputs(&self) {
         let shell_bar = self.shell_bar_wanted();
         {
             let mut inputs = self.inputs.borrow_mut();
@@ -2403,8 +2436,6 @@ impl NavShell {
                 );
             }
         }
-        self.structure_dirty = true;
-        self.invalidate();
     }
 
     fn invalidate(&mut self) {
@@ -2638,7 +2669,22 @@ impl NavShell {
     /// Bring `pane` to the front of a narrow window's push stack. In a wide
     /// window every pane is already showing; this records which one a later
     /// collapse keeps in front.
+    ///
+    /// The push follows the input that asked for it (HIG §9.7): a click or a
+    /// tap the person just made slides the screen in; a key, or a show nobody
+    /// visibly caused (an agent, a script, a sync, a restore), lands at once.
+    /// A host that knows where the open came from says so with
+    /// [`Self::show_from`].
     pub fn show(&mut self, pane: NavPane) {
+        let source = crate::motion::recent_input(crate::time::now())
+            .unwrap_or(crate::tokens::MotionSource::Action);
+        self.show_from(pane, source);
+    }
+
+    /// [`Self::show`] for an open whose origin the caller knows: `source` is
+    /// what asked for it ([`crate::tokens::MotionSource::Action`] for an
+    /// agent's action, a search hit or an `open` request).
+    pub fn show_from(&mut self, pane: NavPane, source: crate::tokens::MotionSource) {
         let pane = match pane {
             NavPane::Sidebar if !self.has_sidebar() => NavPane::Content,
             NavPane::Overview if !self.has_overview() => NavPane::Content,
@@ -2671,7 +2717,7 @@ impl NavShell {
                 let timing = crate::motion::Drill::SPEC.timing(
                     direction,
                     self.layout_theme.motion(),
-                    crate::tokens::MotionSource::Pointer,
+                    source,
                 );
                 inputs.push.set(to, timing, now);
                 inputs.push_pos = inputs.push.is_moving(now).then(|| inputs.push.get(now));
@@ -4059,6 +4105,7 @@ impl Widget for NavShell {
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.finish_slot_edit();
         let mut changed = self.take_requests();
         self.for_each_owned_mut(|child| changed |= child.update(state, path));
         changed |= self.follow_navigation();
@@ -4078,9 +4125,11 @@ impl Widget for NavShell {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The host is building a new tree: what waited for it goes in now.
+        // The host is building a new tree: what waited for it goes in now, and the parts are
+        // planned from it. Building is what a change asked for, so it asks for no other.
+        self.finish_slot_edit();
         self.apply_pending();
-        self.slots_changed();
+        self.refresh_slot_inputs();
         self.layout_theme = theme.clone();
         let size = if self.rect.width() > 0.0 {
             (self.rect.width(), self.rect.height())
@@ -4544,6 +4593,15 @@ impl Widget for NavShell {
         dirty
     }
 
+    /// The shell's own changes (a column shown or hidden, a part swapped) rebuild; what its
+    /// parts describe (a column's content changed in place) stays described.
+    fn take_structure_change(&mut self) -> StructureChange {
+        self.take_requests();
+        let mut change = StructureChange::of(std::mem::take(&mut self.structure_dirty));
+        self.for_each_owned_mut(|child| change = change.join(child.take_structure_change()));
+        change
+    }
+
     /// A part whose overlay holds the pointer (a popover a header button
     /// owns, an open More menu) first; then the default.
     fn modal_capture(&self) -> Option<Rect> {
@@ -4624,80 +4682,6 @@ impl crate::widget::controls::ActionControls for NavShell {
             pending |= crate::widget::controls::has_pending_control_invocation(child);
         });
         pending
-    }
-}
-
-/// A header button the shell hands to the window's bar is not among the
-/// shell's laid-out children, yet a press on it in the bar runs it: it
-/// publishes its action, and the operation the press starts reaches it.
-impl crate::resources::PublishesResources for NavShell {
-    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = Vec::new();
-        for part in self.bar_parts() {
-            if let Some(widget) = self.part(part) {
-                crate::widget::collect_widget_resources(widget, doc, &mut resources);
-            }
-        }
-        resources
-    }
-}
-
-impl crate::widget::ResourceOperations for NavShell {
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        let mut handlers = crate::widget::resource_operation::subtree_handlers(
-            self,
-            crate::widget::resource_operation::local_resource_operation_handlers(self),
-        );
-        for part in self.bar_parts() {
-            if let Some(widget) = self.part(part) {
-                handlers
-                    .extend(crate::widget::resource_operation::resource_operation_handlers(widget));
-            }
-        }
-        handlers
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        if let Some(started) =
-            crate::widget::resource_operation::start_by_default(self, op, doc, path)?
-        {
-            return Ok(Some(started));
-        }
-        let parts = self.bar_parts();
-        crate::widget::resource_operation::start_in(self.parts_mut(&parts), op, doc, path)
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        doc: &automerge::AutoCommit,
-        path: &automerge::ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if let Some(update) = crate::widget::resource_operation::poll_by_default(
-            self,
-            invocation,
-            cancellation_requested,
-            doc,
-            path,
-        ) {
-            return Some(update);
-        }
-        let parts = self.bar_parts();
-        self.parts_mut(&parts).into_iter().find_map(|widget| {
-            crate::widget::resource_operation::poll_resource_operation(
-                widget,
-                invocation,
-                cancellation_requested,
-                doc,
-                path,
-            )
-        })
     }
 }
 
@@ -4976,3 +4960,6 @@ impl NavShell {
 
 #[cfg(test)]
 mod tests;
+
+mod component;
+pub use component::NavShellProps;

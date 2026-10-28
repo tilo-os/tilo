@@ -8,13 +8,13 @@
 //! * The client: [`settings_store::device_vpn::THROUGH`] names the device to
 //!   route through. A task on the network's runtime dials it, asks the helper
 //!   for the link, carries the packets, and follows what
-//!   [`controller`] decides each outcome means, kill switch included.
+//!   `controller` decides each outcome means, kill switch included.
 //! * Which devices offer themselves is learnt by asking each online device
 //!   of the person, now and then, what it offers.
 //! * The fabric tick ([`refresh`]) follows the settings and the person's
 //!   devices, acts on a stop asked from Settings, and publishes a
 //!   [`DeviceVpnStatus`] for Settings, from which quick settings and the
-//!   palette read the same state ([`entries`], [`choose`], [`stop_device`]).
+//!   palette read the same state (`entries`, `choose`, `stop_device`).
 //! * The kill switch of the person's `NetworkManager` VPN profiles
 //!   ([`profile_block`]) asks the same helper to block traffic while a
 //!   profile is set to connect and is not connected; what blocks is part of

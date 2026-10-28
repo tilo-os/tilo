@@ -124,6 +124,7 @@ pub mod footprint;
 pub mod group;
 pub mod history;
 pub mod items;
+mod kept;
 pub mod keyed;
 pub mod kind;
 mod map;
@@ -158,7 +159,9 @@ pub use action::{
 pub use automerge::Patch;
 pub use child::{child_resource_id, publish_child};
 pub use children::{ChildList, ChildRef, Children, Trashed};
-pub use collection::{Collection, Id, Membership, Quarantined};
+pub use collection::{
+    Collection, Id, Membership, Quarantined, stored_entry, stored_ids, stored_item,
+};
 pub use delta::{Delta, ObjPath, Touch, Touched, Tracker};
 pub use derived::{Bound, Derived};
 pub use effect::{Answers, Effect, EffectDecl, EffectOffload, NoEffect};

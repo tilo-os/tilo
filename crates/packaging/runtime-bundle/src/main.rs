@@ -89,6 +89,12 @@ enum Cmd {
         /// Native service executable included in the signed runtime payload.
         #[arg(long = "include-bin", value_name = "PATH")]
         include_bin: Vec<PathBuf>,
+        /// Build a bundle of the `--include-bin` binaries alone, without the host loader, libc
+        /// and `ld.so.cache`: a runtime apps name as their entrypoint runtime (the tilolang
+        /// runtime). The launcher mounts it beside the app's own runtime, whose loader and
+        /// libraries its binaries run on, so a loader set of its own would never be read.
+        #[arg(long, requires = "include_bin", conflicts_with_all = ["release", "from", "include"])]
+        binaries_only: bool,
     },
     /// Verify an existing bundle by recomputing hashes (and, when
     /// signed, checking the signature).
@@ -160,7 +166,27 @@ fn main() -> ExitCode {
             identity,
             include,
             include_bin,
+            binaries_only,
         } => {
+            if binaries_only {
+                let (Some(version), Some(out)) = (version, out) else {
+                    eprintln!(
+                        "tilo-runtime-bundle build: --binaries-only takes --version and --out"
+                    );
+                    return ExitCode::from(2);
+                };
+                let built = runtime_bundle::build_binaries_bundle(
+                    &out,
+                    &version,
+                    arch.as_deref(),
+                    identity.as_deref(),
+                    &include_bin,
+                );
+                return cmd_build(
+                    built.map(|manifest| (manifest, out)),
+                    version_out.as_deref(),
+                );
+            }
             let opts = BuildOptions {
                 from: from.as_deref(),
                 arch: arch.as_deref(),

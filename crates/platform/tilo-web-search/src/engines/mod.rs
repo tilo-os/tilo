@@ -429,22 +429,17 @@ mod tests {
         ] {
             assert!(engine.filters(), "{engine}");
             let request = engine.request("rust", SafeMode::Strict).unwrap();
-            let asked: Vec<(String, String)> = request
-                .form
-                .as_ref()
-                .map(|fields| {
-                    fields
-                        .iter()
-                        .map(|(k, v)| ((*k).to_owned(), v.clone()))
-                        .collect()
-                })
-                .unwrap_or_else(|| {
-                    request
-                        .url
-                        .query_pairs()
-                        .map(|(k, v)| (k.into_owned(), v.into_owned()))
-                        .collect()
-                });
+            let asked: Vec<(String, String)> = match request.form.as_ref() {
+                Some(fields) => fields
+                    .iter()
+                    .map(|(k, v)| ((*k).to_owned(), v.clone()))
+                    .collect(),
+                None => request
+                    .url
+                    .query_pairs()
+                    .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                    .collect(),
+            };
             let filter = asked
                 .iter()
                 .find(|(key, _)| matches!(key.as_str(), "safe" | "adlt" | "safesearch" | "kp"));

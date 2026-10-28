@@ -87,6 +87,8 @@ mod directory_tests;
 mod embedded_host;
 #[cfg(test)]
 mod enrollment_resume_tests;
+#[cfg(test)]
+mod foreign_ask_tests;
 mod grant_in_force;
 #[cfg(test)]
 mod grant_in_force_tests;
@@ -719,7 +721,7 @@ fn home_peer_registry_path() -> PathBuf {
     )
 }
 
-fn decode_lower_hex_32(value: &str) -> Option<[u8; 32]> {
+pub(crate) fn decode_lower_hex_32(value: &str) -> Option<[u8; 32]> {
     if value.len() != 64
         || !value
             .bytes()
@@ -1525,7 +1527,7 @@ pub struct ShellNetwork {
     /// (its workspace identities): each has a person room of its own, routed
     /// to that root's other devices only.
     workspace_person_roots: Vec<[u8; 32]>,
-    personal_continuity_device: Option<crate::shell::personal_continuity::DeviceId>,
+    pub(crate) personal_continuity_device: Option<crate::shell::personal_continuity::DeviceId>,
     personal_continuity_counter: Mutex<u64>,
     personal_continuity_fingerprint: Mutex<Option<[u8; 32]>>,
     personal_continuity_path: Option<PathBuf>,
@@ -1659,7 +1661,10 @@ pub struct ShellNetwork {
     /// refused or the peer leaves.
     held_remote_actions: Mutex<std::collections::VecDeque<HeldRemoteAction>>,
     /// Local callers waiting for a remote-action answer from a device.
-    remote_action_replies: crate::shell::remote_action_link::ReplyWaiters,
+    pub(crate) remote_action_replies: crate::shell::remote_action_link::ReplyWaiters,
+    /// Names the questions this device puts to the person on another of
+    /// their own devices, so each answer names the one it answers.
+    pub(crate) next_foreign_ask: std::sync::atomic::AtomicU64,
     /// The suspend lease actions from the person's own devices renew.
     remote_use: Mutex<crate::shell::remote_use::RemoteUseLease>,
     /// Authenticated legacy-surface control, frame, and input messages.
@@ -2395,6 +2400,7 @@ impl ShellNetwork {
             inbound_remote_actions: Arc::new(Mutex::new(Vec::new())),
             held_remote_actions: Mutex::new(std::collections::VecDeque::new()),
             remote_action_replies: crate::shell::remote_action_link::ReplyWaiters::default(),
+            next_foreign_ask: std::sync::atomic::AtomicU64::new(1),
             remote_use: Mutex::default(),
             inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             workspace_control_observers: Mutex::new(Vec::new()),
@@ -3261,7 +3267,7 @@ impl ShellNetwork {
 
     /// Every root this device acts for: the one that certified it, then its
     /// workspace identities. Each has its own person room.
-    fn person_roots(&self) -> impl Iterator<Item = [u8; 32]> + '_ {
+    pub(crate) fn person_roots(&self) -> impl Iterator<Item = [u8; 32]> + '_ {
         self.personal_continuity_user
             .into_iter()
             .chain(self.workspace_person_roots.iter().copied())
@@ -4247,7 +4253,7 @@ impl ShellNetwork {
 
     /// The shared room to reach `endpoint` on: `named` when given, else the
     /// first shared room where the device is present.
-    fn online_enrolled_room(
+    pub(crate) fn online_enrolled_room(
         &self,
         endpoint: iroh::EndpointId,
         named: Option<RoomId>,
@@ -6428,7 +6434,10 @@ impl ShellNetwork {
 
     /// The person's own device endpoints other than `local_device`, from the
     /// enrolment file and the fleet as the worker last read them.
-    fn enrolled_personal_devices(&self, local_device: Option<[u8; 32]>) -> Vec<iroh::EndpointAddr> {
+    pub(crate) fn enrolled_personal_devices(
+        &self,
+        local_device: Option<[u8; 32]>,
+    ) -> Vec<iroh::EndpointAddr> {
         let devices = self.personal_device_peers.lock().map_or_else(
             |_| Arc::from([]),
             |mut peers| peers.devices_at(|| self.own_device_sources()),
@@ -8397,6 +8406,7 @@ pub(crate) fn shell_network_for_test(
         inbound_remote_actions: Arc::new(Mutex::new(Vec::new())),
         held_remote_actions: Mutex::new(std::collections::VecDeque::new()),
         remote_action_replies: crate::shell::remote_action_link::ReplyWaiters::default(),
+        next_foreign_ask: std::sync::atomic::AtomicU64::new(1),
         remote_use: Mutex::default(),
         inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
         workspace_control_observers: Mutex::new(Vec::new()),

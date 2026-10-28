@@ -549,6 +549,96 @@ fn an_issue_reads_its_goal_its_urgency_and_its_cost_and_its_agent_records_what_i
     assert_eq!(run.cost_budget, Some(5_000));
 }
 
+/// A run's lookups are listed on the task it works on: every resource it
+/// reached past the one the request named, in the order it read them, each
+/// naming the resource so the person follows it where the run went. Only the
+/// run's own agent records one, and a read of nothing is refused.
+#[test]
+fn a_run_lists_every_resource_it_looked_up_on_its_task() {
+    let mut person = ada();
+    person
+        .apply(Tracker::CREATE.with(create("Say what changed", None, Some(AGENT))))
+        .unwrap();
+    let issue = id_of(&person, "Say what changed");
+    person
+        .apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
+            issue: issue.clone(),
+        }))
+        .unwrap();
+    let mut agent = person.fork().as_agent_for(AGENT, "ada");
+    let mut other = agent.fork().as_agent_for("agent:other", "ada");
+    let read = |resource: &str, label: &str| {
+        Tracker::RECORD_READ.with(tracker::RecordRead {
+            issue: issue.clone(),
+            resource: ui::tilo_reference::ResourceAt {
+                app: "so.tilo.notes".into(),
+                record: None,
+                reference: ui::tilo_reference::ResourceRef::whole("notes.page", resource, label),
+            },
+        })
+    };
+
+    assert!(
+        other
+            .apply(read("notes.page:release", "Release notes"))
+            .is_err(),
+        "another agent cannot list a read on this run"
+    );
+    for resource in ["", "  "] {
+        assert!(
+            agent.apply(read(resource, "Nothing")).is_err(),
+            "a read names the resource it read"
+        );
+    }
+    agent
+        .apply(read("notes.page:release", "Release notes"))
+        .unwrap();
+    agent
+        .apply(read("notes.page:standup", "Standup notes"))
+        .unwrap();
+    person.sync_with(&mut agent).unwrap();
+
+    let state = person.state().unwrap();
+    let lookups: Vec<(String, &str)> = state
+        .issues
+        .get(&issue)
+        .unwrap()
+        .comments
+        .values()
+        .filter(|message| message.kind == MessageKind::Lookup)
+        .map(|message| {
+            let read: ui::tilo_reference::ResourceAt =
+                serde_json::from_str(&message.lookup).expect("a lookup names what it read");
+            (
+                format!("{}#{}", read.app, read.reference.id),
+                message.text.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        lookups,
+        [
+            (
+                "so.tilo.notes#notes.page:release".to_owned(),
+                "Release notes"
+            ),
+            (
+                "so.tilo.notes#notes.page:standup".to_owned(),
+                "Standup notes"
+            ),
+        ]
+    );
+    // The run ended: what it read is part of it, so a later read is refused.
+    agent
+        .apply(Tracker::FINISH_RUN.with(tracker::FinishRun {
+            issue: issue.clone(),
+            outcome: RunOutcome::Done,
+            summary: None,
+        }))
+        .unwrap();
+    assert!(agent.apply(read("notes.page:other", "Other")).is_err());
+}
+
 /// Every field of a task lives in the tracker's own document, so it syncs to
 /// the person's other devices, survives a restart, and merges between two
 /// devices working on it as any other collaborative edit.

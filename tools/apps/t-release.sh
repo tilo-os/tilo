@@ -213,6 +213,16 @@ case $command in
     app_identity=$(secret_file TAPP_PUBLISHER_IDENTITY)
     runtime_identity=$(secret_file RUNTIME_BUNDLE_SIGNING_KEY)
     trap 'rm -f "$app_identity" "$runtime_identity"' EXIT
+    # Before anything is packaged: the registry accepts Tilo's apps only from the publisher its
+    # entries already name, so an identity that signs as another key would fail at submit, after
+    # the tapps were signed and uploaded under it.
+    publisher=$("$built/compiled/release/tilo-app-package" publisher-key --identity "$app_identity") \
+      || die "TAPP_PUBLISHER_IDENTITY is no identity tilo-app-package reads (it takes {\"secret_key_hex\": ...})"
+    known=$(curl --fail --silent --show-error --max-time 30 --retry 3 "$registry_url/entries" \
+      | jq -r '[.entries[] | select(.package_id | startswith("so.tilo.")) | .publisher_pubkey_hex] | unique | join(" ")') \
+      || die "could not read $registry_url/entries to check the publisher"
+    [[ -z $known || " $known " == *" $publisher "* ]] \
+      || die "TAPP_PUBLISHER_IDENTITY signs as $publisher, but $registry_url's Tilo apps are published by $known"
     # Registry versions only ever increase: the release sequence is the commit's time, which grows
     # along stable's history.
     sequence=$(commit_epoch)
@@ -236,6 +246,15 @@ case $command in
     release_only
     token=${REGISTRY_TOKEN:?the package token is not set: the check needs secrets = [\"REGISTRY_TOKEN\"]}
     unset REGISTRY_TOKEN
+    # Before the first upload: the token writes packages (one probe file, removed again), so a
+    # token without the scope fails here, not with half the collection uploaded.
+    probe="$package_base/release-preflight/${T_COMMIT:?}/probe"
+    printf '%s\n' "$T_COMMIT" | curl --fail --silent --show-error --max-time 30 -X PUT \
+      -H "Authorization: token $token" --data-binary @- "$probe" >/dev/null \
+      || die "REGISTRY_TOKEN cannot upload to $package_base (it needs the write:package scope)"
+    curl --fail --silent --show-error --max-time 30 -X DELETE -H "Authorization: token $token" \
+      "$package_base/release-preflight/$T_COMMIT" >/dev/null \
+      || echo "warning: the upload probe release-preflight/$T_COMMIT was not removed" >&2
     publication_env "$@"
     mkdir -p "$out"
     TILO_APP_PUBLISH_STAGE=upload TILO_PACKAGE_TOKEN=$token TILO_APP_CHANNEL_OUT=$out/channel.json \

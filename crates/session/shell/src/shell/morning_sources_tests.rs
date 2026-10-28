@@ -468,6 +468,7 @@ fn morning_scheduled_refresh_updates_the_same_chosen_payload_through_production_
             inputs: fired[0].inputs.clone(),
             caused_by: None,
             parent: None,
+            chain: Vec::new(),
         },
     ));
     assert_eq!(report.outcome, tilo_automation::RunOutcome::Completed);

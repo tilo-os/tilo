@@ -211,13 +211,15 @@ class IdleThreads(unittest.TestCase):
     def test_tilo_ush_is_judged_only_once_terminals_shell_ran(self):
         budgets = {"idle_apps_ush_cpu_pct": 1.0, "idle_apps_ush_wakeups_per_s": 5.0}
         ush = self.summary()["ush"]
-        cpu, woke = resources.ush_problems(ush, 3.5, budgets)
+        wrong, (cpu, woke) = resources.ush_problems(ush, 3.5, budgets)
+        self.assertEqual(wrong, [])
         self.assertEqual(cpu, "tilo-ush CPU 10.0% > 1.0% (broker 8.0%, tilo-ush 2.0%; exited threads 0.0%)")
         self.assertEqual(woke, "tilo-ush woke 63.0/s > 5.0/s (broker 60.0/s, tilo-ush 3.0/s)")
-        [unmeasured] = resources.ush_problems(ush, None, budgets)
+        [unmeasured], over = resources.ush_problems(ush, None, budgets)
+        self.assertEqual(over, [])
         self.assertIn("was not measured idle", unmeasured)
         quiet = {**ush, "cpu_pct": 0.2, "wakeups_per_s": 1.0}
-        self.assertEqual(resources.ush_problems(quiet, 3.5, budgets), [])
+        self.assertEqual(resources.ush_problems(quiet, 3.5, budgets), ([], []))
 
     def test_an_over_budget_compositor_names_its_busiest_threads_and_age(self):
         m = {**self.summary(), "frames_painted": 0, "shell_loop_ticks_per_s": 0.0}
@@ -477,7 +479,8 @@ class Boot(unittest.TestCase):
         self.assertEqual(a["boot_steal_pct"], 25.0)
 
     def test_the_network_on_the_greeters_chain_fails_the_boot(self):
-        ctx, res, problems = self.attribution(BOOT_ANALYSIS_NM)
+        ctx, res, (problems, over) = self.attribution(BOOT_ANALYSIS_NM)
+        self.assertEqual(over, [])
         self.assertEqual(problems, ["network.target is on the greeter's critical chain",
                                     "NetworkManager.service is on the greeter's critical chain",
                                     "firewalld.service is on the greeter's critical chain"])
@@ -489,11 +492,14 @@ class Boot(unittest.TestCase):
         chain = BOOT_ANALYSIS_NM.replace(
             "    └─network.target @4.339s\n      └─NetworkManager.service @3.947s +391ms\n"
             "        └─network-pre.target @3.944s\n          └─firewalld.service @3.944s\n", "")
-        self.assertEqual(self.attribution(chain)[2], [])
+        self.assertEqual(self.attribution(chain)[2], ([], []))
 
     def test_a_slow_userspace_names_the_chain(self):
         slow = BOOT_ANALYSIS_NM.replace("greetd_us=10157000", "greetd_us=12698000")
-        [problem] = [p for p in self.attribution(slow)[2] if "userspace" in p]
+        # Over the userspace budget: reported as a budget, not as a broken boot.
+        wrong, over = self.attribution(slow)[2]
+        self.assertFalse([p for p in wrong if "userspace" in p])
+        [problem] = [p for p in over if "userspace" in p]
         self.assertTrue(problem.startswith("userspace took 7.0 s to the greeter > 6.0 s (chain: greetd.service"))
 
     def test_no_chain_is_unobservable(self):

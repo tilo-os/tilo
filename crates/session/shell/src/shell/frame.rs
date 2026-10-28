@@ -2005,7 +2005,7 @@ impl FrameBuilder {
     /// Lay the desktop out for the frame about to be painted, when anything
     /// it lays out changed since it was last laid out: its structure, the
     /// tree (a window opened or closed, a strip or tab change, a display
-    /// added: [`TreeRevisions`]), what an input or the session changed
+    /// added: `TreeRevisions`), what an input or the session changed
     /// ([`Self::owe_layout`]), or what a widget's animation moved
     /// ([`ui::widget::note_layout_moved`], in its update or as it was laid
     /// out). A frame nothing of that changed for (a client's new buffer,
@@ -2187,6 +2187,14 @@ impl FrameBuilder {
         frame.node_map.clear();
         *frame.host = ShellOverlayHost::with_fixture_content(content);
         frame.rebuild_layout_tree();
+        // Laid out as a desktop's first frames lay it out: the palette sizes
+        // against the host's first rect, then asks for one more pass.
+        for _ in 0..4 {
+            frame.relayout();
+            if !frame.host.structure_dirty() {
+                break;
+            }
+        }
         frame
     }
 

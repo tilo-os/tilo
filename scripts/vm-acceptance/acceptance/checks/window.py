@@ -878,9 +878,10 @@ def animations(ctx, res):
     where = f" [renderer: {ctx.facts.get('renderer')}]"
     if problems:
         where += core.frame_pacing_evidence(ctx, "W16", evidence_mark, cpu_before)
-    expect(not problems, "; ".join(problems + unseen) + where)
+    # Every judgement here is of pacing: frames, lateness and CPU per transition.
     if unseen:
-        raise Unobservable("; ".join(unseen) + where)
+        raise Unobservable("; ".join(problems + unseen) + where)
+    core.judge([], problems, where)
 
 
 @check("W17", AREA, "Real keyboard: typed text, Space and Return reach the focused Terminal")

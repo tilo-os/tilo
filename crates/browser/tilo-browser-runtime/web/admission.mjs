@@ -1,8 +1,8 @@
 /**
  * Getting into the room a link names, before anything about its target is
  * read. In order:
- * 1. the person's own room (`/me`) is a room like any other, carried for
- *    them by the home's host once its door let them in (`ownDesktop`);
+ * 1. the person's own room (`/me`) is this browser's own profile: no peer,
+ *    once the home's door would let this browser in (`ownDesktop`);
  * 2. an invitation is inspected (what the host verified: workspace, role,
  *    inviter), confirmed by the person, then redeemed; a pre-admission
  *    `token` admits at once, otherwise the owner admits while the page waits;
@@ -60,28 +60,17 @@ async function viaHost({workspace, room, deps, onProgress}) {
   return ready(peer);
 }
 
-/** The person's own desktop: their own room, which the host of the entry's
- * `home` carries for every person it let in (`deps.enterOwnRoom`), so it
- * syncs across their devices and has calls, presence and room actions as
- * any room does. Where the home lets only some in (`deps.ownDesktopOpen`),
- * a browser no host let in is sent to the home's door instead, which says
- * how to get in; and a person its host has not let in yet goes through the
- * door first (`deps.memberOf`). Watching the home for want of a seat lets
- * nobody in. Without a home, nothing carries the room: the desktop is the
- * browser's own, with no peer. */
+/** The person's own desktop: no peer. Where the entry's `home` lets only
+ * some in (`deps.ownDesktopOpen`), a browser no host let in is sent to the
+ * home's door instead, which says how to get in; one the door lets in has
+ * a desktop of its own from then on. Watching the home for want of a seat
+ * lets nobody in. */
 async function ownDesktop({home, deps, onProgress}) {
-  const gated = Boolean(home?.admission && deps.ownDesktopOpen) && !await deps.ownDesktopOpen(home);
-  const carrier = home?.host?.origin && deps.enterOwnRoom ? home : null;
-  const outside = carrier?.admission && deps.memberOf && !deps.memberOf(carrier);
-  if (gated || outside) {
-    const {peer} = await viaHost({workspace: home, deps, onProgress});
-    await peer?.dispose?.();
-    if (gated && !await deps.ownDesktopOpen(home)) throw new AdmissionError('no-access', NO_ACCESS);
-    if (outside && !deps.memberOf(carrier)) throw new AdmissionError('no-access', NO_ACCESS);
-  }
-  if (!carrier) return {peer: null};
-  onProgress({phase: 'joining'});
-  return ready(await deps.enterOwnRoom(carrier));
+  if (!home?.admission || !deps.ownDesktopOpen || await deps.ownDesktopOpen(home)) return {peer: null};
+  const {peer} = await viaHost({workspace: home, deps, onProgress});
+  await peer?.dispose?.();
+  if (!await deps.ownDesktopOpen(home)) throw new AdmissionError('no-access', NO_ACCESS);
+  return {peer: null};
 }
 
 export async function admit({scope, secrets = {}, tickets, home = null, deps, onProgress = () => {}}) {

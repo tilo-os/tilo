@@ -121,12 +121,21 @@ impl AgentParticipant {
                     }),
                 }
             }
+            // A question travels between a person's own devices; an agent
+            // neither asks it nor answers it.
+            RemoteActionMessage::ConfirmationRequest { correlation, .. } => {
+                RemoteActionMessage::ConfirmationResponse {
+                    correlation,
+                    result: Err(ActionHostError::ConfirmationRequired),
+                }
+            }
             RemoteActionMessage::FeedbackResponse { .. }
             | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::RecordResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
-            | RemoteActionMessage::CancelResponse { .. } => return,
+            | RemoteActionMessage::CancelResponse { .. }
+            | RemoteActionMessage::ConfirmationResponse { .. } => return,
         };
         match RemoteActionFrame::new(reply).encode() {
             Ok(bytes) => {
@@ -180,7 +189,7 @@ impl AgentParticipant {
             rows.extend(
                 self.catalogue
                     .iter()
-                    .map(|definition| definition.app_id)
+                    .map(ui::application::ApplicationDefinition::app_id)
                     .filter(|app| self.identity.delegation.permits_app(app))
                     .map(|app| open_row(&room, app)),
             );

@@ -90,7 +90,7 @@ pub(crate) fn content(
     let page = match core.screen {
         Screen::Vault => detail(core, requests, actions_in_bar),
         Screen::Editor => editor(core, shared, requests),
-        Screen::Review => review(core, requests),
+        Screen::Review => review(core),
         Screen::AppAccess => app_access(core, requests),
         Screen::Transfer => transfer(requests),
     };
@@ -438,7 +438,7 @@ fn count_tone(count: usize) -> Tone {
     }
 }
 
-fn review(core: &Core, requests: &Requests) -> Element {
+fn review(core: &Core) -> Element {
     let health = core.health;
     // Every tile is a finding with its verdict; how many were checked is a
     // fact about the review below.
@@ -463,13 +463,18 @@ fn review(core: &Core, requests: &Requests) -> Element {
         .iter()
         .filter_map(|finding| {
             let item = core.item(&finding.id)?;
-            Some(Box::new(
-                ListRow::new(format!("review:{}", item.id.0), item.title.clone())
-                    .icon(crate::search::icon(item.kind))
-                    .secondary(finding.reasons())
-                    .disclosure()
-                    .on_activate(ask(requests, Request::Open(item.id.clone()))),
-            ) as Element)
+            let row = ListRow::new(format!("review:{}", item.id.0), item.title.clone())
+                .icon(crate::search::icon(item.kind))
+                .secondary(finding.reasons())
+                .disclosure();
+            // The item's published `open`, by its opaque id alone.
+            let published = crate::actions::item_row(item).into_resource();
+            Some(
+                Box::new(match crate::actions::item_binding(&published, "open") {
+                    Some(open) => row.on_action(open),
+                    None => row,
+                }) as Element,
+            )
         })
         .collect();
     if health.total == 0 {

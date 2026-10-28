@@ -711,7 +711,9 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         | RemoteActionMessage::RecordRequest { .. }
         | RemoteActionMessage::RecordResponse { .. }
         | RemoteActionMessage::FeedbackRequest { .. }
-        | RemoteActionMessage::FeedbackResponse { .. } => None,
+        | RemoteActionMessage::FeedbackResponse { .. }
+        | RemoteActionMessage::ConfirmationRequest { .. }
+        | RemoteActionMessage::ConfirmationResponse { .. } => None,
     }
 }
 

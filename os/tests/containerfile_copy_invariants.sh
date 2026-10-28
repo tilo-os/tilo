@@ -330,7 +330,12 @@ containerfile="$repo/os/Containerfile"
 # own. The separate COPY of fex-emulator.json and fex-graphics-provider.json is
 # gone: the COPY of os/usr/share/tilo/windows/ already installs both, so their
 # two file rows leave the contract while the installed files are unchanged.
-expected_contract=93919120185809339fc263289ee0047cde929d5da8e28c8eabe35f6a0c43a35a
+# What a build's own keys sign (the runtimes' bundle.toml and publisher keys,
+# the app store's registry and signed records) arrives in a second COPY from
+# each of runtime-image-payload and app-store, from /signatures, so the
+# runtimes and app trees are the same layer whenever their bytes are; the
+# installed paths are unchanged.
+expected_contract=f2e3124a3aacffc1d12256bd068f5a342f6082b3d2a624ed0fbb068e34fd874a
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -346,9 +351,12 @@ actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" 
 # windows-compat sysext), and the assembled
 # runtime tree
 # (/usr/lib/tilo-runtime, /usr/share/fonts/tilo, /usr/share/tilo/font-catalogs),
-# which must be one COPY so its hard links stay one layer's.
+# which must be one COPY so its hard links stay one layer's. The signed records
+# of the runtimes and of the app store (/signatures) land in the trees the
+# COPYs before them wrote, at paths those leave out.
 duplicates="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   awk -F '\t' '$1 == "runtime-image-payload" && $2 == "/image/usr/" && $3 == "/usr/" { next }
+    $2 ~ /^\/signatures\// && ($1 == "runtime-image-payload" || $1 == "app-store") { next }
     { count[$3]++ } END { for (path in count) if (count[path] > 1) print path }')"
 [ -z "$duplicates" ] || {
   printf 'rootfs copy destinations are no longer unique:\n%s\n' "$duplicates" >&2
@@ -385,8 +393,10 @@ instructions="$(containerfile_instructions "$containerfile" | awk -v stages=" $(
 # The offline predefined Flathub descriptor adds one reviewed COPY (156).
 # The image is built as layer actions (os/image/layers.toml): the count is every
 # stage of their pieces, the seal's included, 151 of them.
-[ "$instructions" -le 156 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 156)" >&2
+# The signed records of the runtimes and of the app store, each copied apart
+# from the bytes they sign, add two COPYs (158).
+[ "$instructions" -le 158 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 158)" >&2
   exit 1
 }
 

@@ -146,6 +146,20 @@ impl RoomAdmission {
     pub(crate) async fn durable(self) -> Result<u64, String> {
         self.admission.durable().await
     }
+
+    /// [`Self::durable`], running `then` on the outcome before whoever reads
+    /// the workspace's retention stops waiting for this commit: what `then`
+    /// records about it is in place by the time a reader sees it retained.
+    pub(crate) async fn durable_then<R>(self, then: impl FnOnce(&Result<u64, String>) -> R) -> R {
+        let Self {
+            admission,
+            _ticket: ticket,
+        } = self;
+        let outcome = admission.durable().await;
+        let result = then(&outcome);
+        drop(ticket);
+        result
+    }
 }
 
 impl RoomRecords {

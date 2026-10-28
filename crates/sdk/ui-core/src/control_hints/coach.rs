@@ -203,6 +203,10 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
                 Phase::Done(since) => since + timing.done,
             });
         }
+        // Turned off, no hint begins: nothing is due.
+        if !self.learned.enabled {
+            return None;
+        }
         let started = self.started?;
         let mut due = self.last_began.map(|began| began + MIN_GAP);
         for (index, spec) in self.specs.iter().enumerate() {

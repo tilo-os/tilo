@@ -838,26 +838,21 @@ fn pin_pdf(agent: &ConfinedReplica, room: &ContentStore, hash: &str, name: &str)
             false,
         )
         .expect("the record pins the room's PDF");
-    agent
+    // The view opens the PDF it now names, and the record takes on what
+    // opening it adds the first time (its page plan, the markup the file
+    // carries) before the pin answers: the app's own work, caused by the
+    // pin and never by a later read.
+    let pinned = agent
         .take_mutation()
         .unwrap()
         .expect("the pin is the agent's change");
-    // The view opens the PDF it now names, and the record takes on what
-    // opening it adds the first time (its page plan, the markup the file
-    // carries): the app's own work, not a read's.
-    let read = operation(agent, "read-text");
-    agent
-        .invoke(&read.address, &serde_json::Map::new(), false)
-        .expect("the pinned PDF opens");
-    if let Some(opened) = agent.take_mutation().unwrap() {
-        let opening = did(&opened);
-        assert!(
-            opening
-                .iter()
-                .all(|verb| verb == "start-page-plan" || verb == "adopt-existing"),
-            "{opening:?}"
-        );
-    }
+    let mut pinning = did(&pinned);
+    pinning.sort();
+    assert_eq!(
+        pinning,
+        ["adopt-existing", "pin-source", "start-page-plan"],
+        "{pinning:?}"
+    );
 }
 
 /// A PDF the room holds is pinned in an agent's PDF record and its text

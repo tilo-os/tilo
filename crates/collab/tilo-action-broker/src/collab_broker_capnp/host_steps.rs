@@ -303,7 +303,7 @@ fn host_step_failure(
 }
 
 #[cfg(test)]
-pub(super) mod signed_test_support {
+pub(crate) mod signed_test_support {
     use super::super::{
         BrokerChannels, CapnpBrokerState, DurableInvocation, FanoutState, InvocationKey,
         PeerPublisher, principal_id_for_root, published_invocation::InvocationCaller,

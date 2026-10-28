@@ -8,13 +8,20 @@
 # imports them from there, every byte checked against the image's signed hash.
 # The rootfs's final RUN checks each named host file again, after the last
 # step that changes one, and puts back any that no longer matches.
+# The records that name a package by its id (the registry, each app's signed
+# root, manifest and collection, the CLI shims) leave /out for /signatures: a
+# build that publishes nothing signs its apps with a key of its own, so they
+# are new in every build, while the trees they verify are named by their
+# payload and stay the same layer.
 FROM trust AS app-store
 RUN --network=none \
     --mount=type=bind,from=native-builder-payload,source=/usr/share/tilo-apps,target=/run/tilo-apps-built,ro \
     --mount=type=bind,source=os/scripts/seed-env-runtime.py,target=/run/tilo-seed-env-runtime.py,ro \
+    --mount=type=bind,source=os/scripts/signed-records.py,target=/run/tilo-signed-records.py,ro \
     mkdir -p /out/usr/share \
     && cp -a /run/tilo-apps-built /out/usr/share/tilo-apps \
-    && python3 /run/tilo-seed-env-runtime.py prune /out/usr/share/tilo-apps /
+    && python3 /run/tilo-seed-env-runtime.py prune /out/usr/share/tilo-apps / \
+    && python3 /run/tilo-signed-records.py store /out/usr/share/tilo-apps /signatures/usr/share/tilo-apps
 
 # ---- The Tilo binaries ------------------------------------------------------
 # What the workspace compiles, arranged by os/components.toml, each tree its own
@@ -64,6 +71,9 @@ COPY --from=component-files /image/windows/ /
 # and the publishers of the runtimes it carries (runtime-bundle-publisher.hex,
 # browser-runtime-publisher.hex), from the same builder result as the bundles.
 COPY --from=runtime-image-payload /image/usr/ /usr/
+# What this build's runtime keys sign, and the keys, in a small layer of their
+# own: the runtimes above are the same layer whenever their bytes are.
+COPY --from=runtime-image-payload /signatures/usr/ /usr/
 # registry-runtime-publisher.hex is the publisher of the runtimes the Tilo
 # registry offers. An app installed or updated from the Store is linked against
 # the release runtime build, which is rarely this image's own bake, and the
@@ -91,3 +101,5 @@ COPY --from=native-builder-payload \
 # deliberately absent from it — a preinstalled package is self-signed by the
 # image build, and claims nothing more.
 COPY --from=app-store /out/usr/share/tilo-apps/ /usr/share/tilo-apps/
+# The registry and each app's signed record, apart from the trees above.
+COPY --from=app-store /signatures/usr/share/tilo-apps/ /usr/share/tilo-apps/
