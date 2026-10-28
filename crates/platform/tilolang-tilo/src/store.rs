@@ -699,13 +699,15 @@ impl TiloStore {
         self.inner.borrow().apps.values().all(AppIndex::ready)
     }
 
-    /// Take in the indexes built off the frame since the last call. Returns whether one was:
-    /// what every view reads may have changed.
+    /// Take in the indexes built off the frame since the last call, and the search indexes
+    /// taken in off the frame. Returns whether an index was taken in: what every view reads may
+    /// have changed.
     pub fn poll_index(&self) -> bool {
         self.take_in_builds(false)
     }
 
-    /// [`Self::poll_index`], waiting for the indexes being built: for a host without frames.
+    /// [`Self::poll_index`], waiting for the indexes being built, and their search indexes:
+    /// for a host without frames.
     pub fn wait_index(&self) -> bool {
         self.take_in_builds(true)
     }
@@ -779,6 +781,10 @@ impl TiloStore {
             inner.rebuild_overlay();
             inner.changed();
             inner.notify_all();
+        }
+        // The search indexes being taken in off the frame: what they hold changes no view.
+        for held in inner.apps.values().filter(|held| held.ready()) {
+            held.index.search().poll(wait);
         }
         any
     }

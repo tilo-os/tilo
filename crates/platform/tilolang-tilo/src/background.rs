@@ -1,6 +1,7 @@
-//! Work that reads a whole room off the frame path: search's first index and publication's first
-//! trees are read from a [`crate::store::Snapshot`] on a thread of their own, and the frame that
-//! follows their end takes the result in.
+//! Work that reads a whole room off the frame path: a package's index built from the record,
+//! its search index taken in from the index's commit, and publication's first trees read from a
+//! [`crate::store::Snapshot`], each on a thread of its own; a frame after their end takes the
+//! result in.
 
 use std::sync::{Arc, Mutex, mpsc};
 
