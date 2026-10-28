@@ -47,11 +47,55 @@ pub(crate) fn open_window(
     args: &crate::launch::LaunchArgs,
     pending: PendingWindow,
 ) -> Option<crate::app::App> {
-    let opening = pending.take()?;
-    building(opening, || crate::launch::dispatch_window(spec, args))
+    let mut opening = pending.take()?;
+    // A window whose record arrived with its join is built now, from the
+    // room's committed history.
+    if let Some(arriving) = opening.arriving.take() {
+        return building(opening, || {
+            crate::launch::dispatch_window_arrived(spec, args, arriving)
+        })
         .map_err(|error| tracing::error!(%error, "the window the shell asked for could not open"))
         .ok()
-        .flatten()
+        .flatten();
+    }
+    let reopen = pending.reopen.clone();
+    building(opening, || {
+        match crate::launch::dispatch_window(spec, args) {
+            Ok(crate::launch::WindowBuild::Built(app)) => app,
+            // The window's record is not on this device yet: its join, which
+            // brings it, is waited for off this thread, so the process's other
+            // windows go on meanwhile. The window is built when the join is
+            // over, handed back to this thread as it first arrived.
+            Ok(crate::launch::WindowBuild::Arriving(arriving)) => {
+                let (Some(mut opening), Some(reopen)) = (keep_building(), reopen) else {
+                    tracing::error!("the window the shell asked for cannot wait for its workspace");
+                    return None;
+                };
+                let back = PendingWindow {
+                    slot: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                    reopen: Some(std::sync::Arc::clone(&reopen)),
+                };
+                // Told on the join's thread, or at once when it is already
+                // over; either way the window comes back to this thread only
+                // after it is in `back`, below.
+                arriving.when_done({
+                    let back = back.clone();
+                    move || {
+                        if !reopen(back) {
+                            tracing::warn!("the window's loop ended before its join did");
+                        }
+                    }
+                });
+                opening.arriving = Some(arriving);
+                back.put(opening);
+                None
+            }
+            Err(error) => {
+                tracing::error!(%error, "the window the shell asked for could not open");
+                None
+            }
+        }
+    })
 }
 
 /// The instance of the window being built for the shell's request, while one
@@ -82,25 +126,58 @@ mod transport {
         pub request: WindowRequest,
         pub collaboration: Option<Descriptor>,
         pub shell_ui: Option<Descriptor>,
+        /// The window's record arrives with its workspace's join, waited
+        /// for off the window's thread; the window is built once it is over.
+        #[cfg(feature = "native")]
+        pub(crate) arriving: Option<crate::launch::Arriving>,
     }
+
+    /// Hand a [`PendingWindow`] to the loop that builds windows; `false`
+    /// once that loop is gone.
+    pub(crate) type Reopen = Arc<dyn Fn(PendingWindow) -> bool + Send + Sync>;
 
     /// One [`WindowOpening`] carried through the event loop, taken once by
     /// the runner that builds its window.
-    #[derive(Clone, Debug)]
-    pub struct PendingWindow(Arc<Mutex<Option<WindowOpening>>>);
+    #[derive(Clone)]
+    pub struct PendingWindow {
+        pub(crate) slot: Arc<Mutex<Option<WindowOpening>>>,
+        /// How the window comes back to its loop, when it went away to
+        /// join (`super::open_window`).
+        pub(crate) reopen: Option<Reopen>,
+    }
+
+    impl std::fmt::Debug for PendingWindow {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter
+                .debug_struct("PendingWindow")
+                .field("slot", &self.slot)
+                .finish_non_exhaustive()
+        }
+    }
 
     impl PendingWindow {
         #[must_use]
         pub fn new(opening: WindowOpening) -> Self {
-            Self(Arc::new(Mutex::new(Some(opening))))
+            Self {
+                slot: Arc::new(Mutex::new(Some(opening))),
+                reopen: None,
+            }
         }
 
         #[must_use]
         pub fn take(&self) -> Option<WindowOpening> {
-            self.0.lock().map_or_else(
+            self.slot.lock().map_or_else(
                 |poisoned| poisoned.into_inner().take(),
                 |mut slot| slot.take(),
             )
+        }
+
+        /// Carry `opening` again.
+        pub(crate) fn put(&self, opening: WindowOpening) {
+            match self.slot.lock() {
+                Ok(mut slot) => *slot = Some(opening),
+                Err(poisoned) => *poisoned.into_inner() = Some(opening),
+            }
         }
     }
 
@@ -148,6 +225,8 @@ mod transport {
             request,
             collaboration,
             shell_ui,
+            #[cfg(feature = "native")]
+            arriving: None,
         }))
     }
 
@@ -173,11 +252,18 @@ mod transport {
         if let Err(error) = runtime_portal::windows::send_serves(&door) {
             tracing::warn!(%error, "the shell was not told this app opens its windows");
         }
+        let open = Arc::new(Mutex::new(open));
+        let reopen: Reopen = Arc::new(move |pending| match open.lock() {
+            Ok(open) => open(pending),
+            Err(poisoned) => (poisoned.into_inner())(pending),
+        });
         tilo_rt::spawn_thread("tilo-window-door", move || {
             loop {
                 match receive(&door) {
                     Ok(Some(opening)) => {
-                        if !open(PendingWindow::new(opening)) {
+                        let mut pending = PendingWindow::new(opening);
+                        pending.reopen = Some(Arc::clone(&reopen));
+                        if !reopen(pending) {
                             return;
                         }
                     }
@@ -237,6 +323,14 @@ mod transport {
                 .as_mut()
                 .and_then(|opening| opening.collaboration.take())
         })
+    }
+
+    /// Take back the opening of the window being built, with what it has
+    /// not given yet (its shell-ui connection), to build it later: its
+    /// record arrives with its join.
+    #[cfg(feature = "native")]
+    pub(crate) fn keep_building() -> Option<WindowOpening> {
+        BUILDING.with(|slot| slot.borrow_mut().take())
     }
 
     /// The shell-ui connection of the window being built, once.
@@ -318,6 +412,8 @@ mod transport {
                 },
                 collaboration: connection(),
                 shell_ui: None,
+                #[cfg(feature = "native")]
+                arriving: None,
             };
             let carried = opening.collaboration.is_some();
             assert_eq!(instance(), None);
